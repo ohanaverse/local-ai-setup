@@ -1,7 +1,10 @@
 package litellm
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -125,6 +128,48 @@ func TestBuildEntryUnencodableModelInfoReturnsError(t *testing.T) {
 	m.ModelInfo = map[string]any{"bad": make(chan int)}
 	if _, err := BuildEntry(m, cfg.Providers[2]); err == nil {
 		t.Fatal("want an error, got nil (and no panic)")
+	}
+}
+
+// TestBuildEntrySecretRefResolvesExecForm pins that a SecretRef:true policy
+// (currently only openrouter) resolves auth.secret_ref through
+// config.ResolveSecret before writing config.yaml's api_key — including the
+// exec: form. Writing the ref string verbatim (the pre-fix behavior) sends
+// LiteLLM the literal string "exec:..." as a bearer token: a silent,
+// confusing 401 with no error surfaced anywhere.
+func TestBuildEntrySecretRefResolvesExecForm(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "key.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho sk-from-exec\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	p := cfg.Providers[2] // openrouter
+	p.Auth.SecretRef = "exec:" + script
+
+	node, err := BuildEntry(cfg.Models[2], p)
+	if err != nil {
+		t.Fatalf("BuildEntry: %v", err)
+	}
+	params := decode(t, node)["litellm_params"].(map[string]any)
+	if params["api_key"] != "sk-from-exec" {
+		t.Errorf("api_key = %v, want the exec: form resolved to %q", params["api_key"], "sk-from-exec")
+	}
+}
+
+// TestBuildEntrySecretRefPropagatesResolveError pins that a failing
+// secret_ref (e.g. a broken exec: helper) surfaces as a BuildEntry error
+// instead of silently writing a bad api_key.
+func TestBuildEntrySecretRefPropagatesResolveError(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "fail.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'no vault token' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	p := cfg.Providers[2] // openrouter
+	p.Auth.SecretRef = "exec:" + script
+
+	if _, err := BuildEntry(cfg.Models[2], p); err == nil || !strings.Contains(err.Error(), "no vault token") {
+		t.Fatalf("BuildEntry error = %v, want it to surface the helper's stderr", err)
 	}
 }
 
