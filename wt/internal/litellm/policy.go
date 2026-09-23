@@ -7,8 +7,8 @@ package litellm
 //   - Prefix     — LiteLLM `model` prefix (verbatim model string when FixedModel).
 //   - APIKey     — literal api_key to write, "" to omit.
 //   - SecretRef  — api_key comes from resolving the provider's
-//                  auth.secret_ref (config.ResolveSecret — env, exec:, or
-//                  literal) instead.
+//     auth.secret_ref (config.ResolveSecret — env, exec:, or
+//     literal) instead.
 //   - Cloud      — the model lives remotely: exempt from the ready gate.
 type Policy struct {
 	Prefix     string
