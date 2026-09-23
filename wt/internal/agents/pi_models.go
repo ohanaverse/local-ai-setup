@@ -282,6 +282,18 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 // detected differently since non-ollama base_urls are arbitrary registry
 // values with no fixed "known stale" form to match against.
 //
+// A secret_ref resolution failure (e.g. a failing exec: credential helper)
+// for ANY provider with models aborts the whole sync, not just the block
+// for the provider actually being launched — because this loop resolves
+// every provider's secret up front rather than only the launch target's.
+// A registry with a second provider whose helper is broken (not logged in,
+// etc.) will therefore fail launches against an unrelated, healthy
+// provider too. Deliberately left this way for now (see the 2026-09-23
+// nyt-litellm-provider plan/review): fixing it means threading "which
+// provider is actually being launched" into this function, which today
+// only sees the whole registry. Revisit if/when a second exec:-secured
+// provider is added.
+//
 // Returns whether anything changed.
 func syncDirectProviders(cfg *config.Config, f piModelsFile) (bool, error) {
 	byProvider := map[string][]config.Model{}

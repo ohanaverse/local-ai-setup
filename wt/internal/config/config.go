@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -259,11 +261,17 @@ func BaseOrigin(url string) string {
 
 // ResolveSecret resolves a secret_ref-style value. Three forms:
 //   - "exec:<path> [args...]" runs the command (no shell — split on
-//     whitespace) and returns its trimmed stdout; a non-zero exit is an
-//     error whose text includes the command's own stderr. Memoized per raw
-//     ref for the lifetime of the process, so a ref resolved from multiple
-//     call sites in one launch (ResolveRoute and pi's models.json sync both
-//     resolve the same provider's secret_ref) only runs the command once.
+//     whitespace, so a path containing spaces is not supported) with a
+//     execSecretTimeout deadline and returns its trimmed stdout; a
+//     non-zero exit, a timeout, or a zero exit with empty stdout are all
+//     errors (the latter because an exec: command claims success is not
+//     the same contract as an os.environ/NAME ref, whose absence
+//     legitimately resolves to ""). Memoized per raw ref for the lifetime
+//     of the process — including across concurrent callers — so a ref
+//     resolved from multiple call sites or goroutines in one launch
+//     (ResolveRoute and pi's models.json sync both resolve the same
+//     provider's secret_ref; the TUI can resolve routes for several table
+//     rows concurrently) only runs the command once.
 //   - "os.environ/NAME" or a bare "^[A-Z][A-Z0-9_]*$" name reads that env
 //     var — unchanged: a missing var resolves to "", never an error.
 //   - anything else is used verbatim, unchanged.
@@ -272,7 +280,14 @@ func BaseOrigin(url string) string {
 // never uses the exec: form today, but nothing prevents it).
 var envRefName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
-var execSecretCache sync.Map // ref string -> execSecretResult
+// execSecretTimeout bounds how long an exec: secret_ref command may run.
+// This is the only unbounded-by-default subprocess wt would otherwise
+// spawn; every other exec site (proxy restart, git fetch, lifecycle
+// backends) already carries a deadline.
+const execSecretTimeout = 15 * time.Second
+
+var execSecretMu sync.Mutex
+var execSecretCache = map[string]execSecretResult{}
 
 type execSecretResult struct {
 	value string
@@ -281,28 +296,13 @@ type execSecretResult struct {
 
 func ResolveSecret(ref string) (string, error) {
 	if cmdline, ok := strings.CutPrefix(ref, "exec:"); ok {
-		if cached, ok := execSecretCache.Load(ref); ok {
-			r := cached.(execSecretResult)
+		execSecretMu.Lock()
+		defer execSecretMu.Unlock()
+		if r, ok := execSecretCache[ref]; ok {
 			return r.value, r.err
 		}
-		parts := strings.Fields(cmdline)
-		if len(parts) == 0 {
-			err := fmt.Errorf("secret_ref %q: exec: form has no command", ref)
-			execSecretCache.Store(ref, execSecretResult{"", err})
-			return "", err
-		}
-		out, runErr := exec.Command(parts[0], parts[1:]...).Output()
-		value := strings.TrimSpace(string(out))
-		var err error
-		if runErr != nil {
-			if exitErr, ok := runErr.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
-				err = fmt.Errorf("secret_ref %q: %s", ref, strings.TrimSpace(string(exitErr.Stderr)))
-			} else {
-				err = fmt.Errorf("secret_ref %q: %w", ref, runErr)
-			}
-			value = ""
-		}
-		execSecretCache.Store(ref, execSecretResult{value, err})
+		value, err := runExecSecret(ref, cmdline)
+		execSecretCache[ref] = execSecretResult{value, err}
 		return value, err
 	}
 	if name, ok := strings.CutPrefix(ref, "os.environ/"); ok {
@@ -312,6 +312,42 @@ func ResolveSecret(ref string) (string, error) {
 		return os.Getenv(ref), nil
 	}
 	return ref, nil
+}
+
+// runExecSecret runs the command line for a single exec: ref (already
+// stripped of its "exec:" prefix) and returns its resolved value or error.
+// Held behind execSecretMu by its only caller, ResolveSecret, so the whole
+// run-and-cache sequence for one ref is atomic across concurrent callers.
+func runExecSecret(ref, cmdline string) (string, error) {
+	parts := strings.Fields(cmdline)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("secret_ref %q: exec: form has no command", ref)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execSecretTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	// WaitDelay bounds how long Wait (inside Output) waits for the child's
+	// own I/O pipes to close after the context is done. Without it, a
+	// script whose last command is a separate child process (e.g. a shell
+	// script ending in `sleep 30`) leaves that grandchild holding the
+	// stdout pipe open after the immediate child is killed, and Output
+	// hangs until the grandchild itself exits — defeating the timeout.
+	cmd.WaitDelay = 2 * time.Second
+	out, runErr := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("secret_ref %q: timed out after %s", ref, execSecretTimeout)
+	}
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("secret_ref %q: %s", ref, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", fmt.Errorf("secret_ref %q: %w", ref, runErr)
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", fmt.Errorf("secret_ref %q: command succeeded but produced no output", ref)
+	}
+	return value, nil
 }
 
 // AuthConfig describes how to authenticate with a provider.

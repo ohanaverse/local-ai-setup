@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestBaseOriginTrimsV1Suffix pins the normalization rule readers apply to
@@ -58,7 +60,7 @@ func TestResolveSecret(t *testing.T) {
 		{name: "literal form", ref: "sk-or-v1-literal", want: "sk-or-v1-literal"},
 		{name: "exec form success, trims whitespace", ref: "exec:" + okScript, want: "sk-vault-key"},
 		{name: "exec form failure surfaces stderr", ref: "exec:" + failScript, wantErr: "permission denied"},
-		{name: "exec form nonexistent binary", ref: "exec:/no/such/binary-xyz", wantErr: "exec:"},
+		{name: "exec form nonexistent binary", ref: "exec:/no/such/binary-xyz", wantErr: "no such file"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -79,6 +81,84 @@ func TestResolveSecret(t *testing.T) {
 				t.Errorf("ResolveSecret(%q) = %q, want %q", tc.ref, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestResolveSecretExecEmptyOutputErrors pins that a helper which exits 0
+// but prints nothing is treated as a failure, not a legitimate empty key.
+// An os.environ/NAME ref has a documented "unset -> empty string" contract;
+// an exec: command that claims success has no such contract, and letting it
+// through as "" produces exactly the confusing downstream 401 this feature
+// exists to prevent (spec section 6).
+func TestResolveSecretExecEmptyOutputErrors(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "empty.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveSecret("exec:" + script)
+	if err == nil {
+		t.Fatalf("ResolveSecret: want error for empty stdout on success, got value %q", got)
+	}
+	if !strings.Contains(err.Error(), "no output") {
+		t.Errorf("error = %q, want it to mention the command produced no output", err.Error())
+	}
+}
+
+// TestResolveSecretExecTimesOut pins that a hung exec: command is killed
+// after a bounded deadline instead of hanging wt forever — this is the
+// only unbounded subprocess in wt otherwise (every other exec site uses
+// exec.CommandContext with a deadline).
+func TestResolveSecretExecTimesOut(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "hang.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := ResolveSecret("exec:" + script)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("ResolveSecret: want timeout error for a hung command, got nil")
+	}
+	if elapsed > 20*time.Second {
+		t.Errorf("ResolveSecret took %v, want it to time out well under the test's own 30s sleep", elapsed)
+	}
+}
+
+// TestResolveSecretExecMemoizedConcurrent pins that concurrent resolutions
+// of the same exec: ref run the underlying command exactly once — the
+// Load-then-Store pattern has a window where two goroutines can both miss
+// the cache, both exec, and both pay the cost the memoization exists to
+// avoid (a Vault network round trip). This is reachable in practice: the
+// TUI resolves routes for multiple table rows from concurrent goroutines.
+func TestResolveSecretExecMemoizedConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	counterFile := filepath.Join(dir, "count")
+	script := filepath.Join(dir, "counted.sh")
+	body := "#!/bin/sh\nprintf %s x >> " + counterFile + "\necho sk-counted\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ref := "exec:" + script
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := ResolveSecret(ref); err != nil {
+				t.Errorf("ResolveSecret: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	data, err := os.ReadFile(counterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 1 {
+		t.Errorf("command ran %d times across %d concurrent resolutions of the same ref, want 1 (memoized)", len(data), n)
 	}
 }
 
@@ -837,6 +917,33 @@ func TestResolveRouteDirectUsesProviderBaseURL(t *testing.T) {
 	}
 	if route.ModelRef != "z-ai/glm-4.6" {
 		t.Errorf("ModelRef = %q, want bare ModelName in direct mode", route.ModelRef)
+	}
+}
+
+// TestResolveRouteDirectExecSecretErrorAborts ensures that a failing exec:
+// secret_ref aborts route resolution with that error, instead of silently
+// treating it as an empty API key and letting the launch proceed to a
+// confusing downstream 401 from the provider.
+func TestResolveRouteDirectExecSecretErrorAborts(t *testing.T) {
+	scriptDir := t.TempDir()
+	failScript := filepath.Join(scriptDir, "fail.sh")
+	if err := os.WriteFile(failScript, []byte("#!/bin/sh\necho 'no key found' >&2\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		Providers: []Provider{{
+			ID:   "nyt-litellm",
+			Auth: AuthConfig{Type: "api_key", BaseURL: "https://llm-gateway.nyt.net", SecretRef: "exec:" + failScript},
+		}},
+	}
+	m := Model{ID: "nyt-litellm/claude-sonnet-4-6", ModelName: "claude-sonnet-4-6", ProviderID: "nyt-litellm"}
+
+	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
+	if err == nil {
+		t.Fatal("ResolveRoute: want error from failing exec: secret_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "no key found") {
+		t.Errorf("ResolveRoute error = %q, want it to include the helper's stderr (\"no key found\")", err.Error())
 	}
 }
 
