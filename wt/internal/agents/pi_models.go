@@ -126,7 +126,7 @@ func isDefaultOllamaAPIKey(apiKey string) bool {
 // bare entries would 400 through LiteLLM), and prunes the "ollama/…" entries
 // an older litellm-mode sync left under the ollama provider, which pi's
 // --model grammar can never launch.
-func syncModels(cfg *config.Config, path string) error {
+func syncModels(cfg *config.Config, path string, target config.Model) error {
 	var f piModelsFile
 	data, err := os.ReadFile(path)
 	switch {
@@ -152,9 +152,7 @@ func syncModels(cfg *config.Config, path string) error {
 		mutated = syncLitellmProvider(cfg, f) || mutated
 		mutated = revertOllamaProvider(cfg, f) || mutated
 	} else {
-		var err error
-		var directMutated bool
-		directMutated, err = syncDirectProviders(cfg, f)
+		directMutated, err := syncDirectProviders(cfg, f, target)
 		if err != nil {
 			return err
 		}
@@ -283,19 +281,19 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 // values with no fixed "known stale" form to match against.
 //
 // A secret_ref resolution failure (e.g. a failing exec: credential helper)
-// for ANY provider with models aborts the whole sync, not just the block
-// for the provider actually being launched — because this loop resolves
-// every provider's secret up front rather than only the launch target's.
-// A registry with a second provider whose helper is broken (not logged in,
-// etc.) will therefore fail launches against an unrelated, healthy
-// provider too. Deliberately left this way for now (see the 2026-09-23
-// nyt-litellm-provider plan/review): fixing it means threading "which
-// provider is actually being launched" into this function, which today
-// only sees the whole registry. Revisit if/when a second exec:-secured
-// provider is added.
+// only aborts the sync when it belongs to target's own provider — the
+// model actually being launched. Any other provider's broken helper is
+// logged to stderr and that provider's block is left as-is (skipped this
+// run, not written or resynced); the sync still succeeds for target's own
+// provider and every other healthy one. target may be the zero Model (no
+// specific launch in progress), in which case no provider is ever treated
+// as the target and every failure is logged rather than fatal. Map
+// iteration order over byProvider means, when multiple non-target
+// providers fail in the same run, which one's warning prints first is
+// unspecified — harmless now that no such failure can abort the sync.
 //
 // Returns whether anything changed.
-func syncDirectProviders(cfg *config.Config, f piModelsFile) (bool, error) {
+func syncDirectProviders(cfg *config.Config, f piModelsFile, target config.Model) (bool, error) {
 	byProvider := map[string][]config.Model{}
 	for _, m := range cfg.Models {
 		if m.Native || m.ModelName == "" {
@@ -317,7 +315,11 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) (bool, error) {
 			var err error
 			wantAPIKey, err = config.ResolveSecret(provider.Auth.SecretRef)
 			if err != nil {
-				return false, fmt.Errorf("pi models.json sync: provider %q: %w", providerID, err)
+				if providerID == target.ProviderID {
+					return false, fmt.Errorf("pi models.json sync: provider %q: %w", providerID, err)
+				}
+				fmt.Fprintf(os.Stderr, "wt: pi models.json sync: provider %q: %v (skipping — not the model being launched)\n", providerID, err)
+				continue
 			}
 		}
 		// pi's models.json schema requires a non-empty apiKey (see

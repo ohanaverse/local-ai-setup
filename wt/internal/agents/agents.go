@@ -64,9 +64,13 @@ type Driver interface {
 
 // Syncer is an optional Driver capability: a pre-launch step that needs the
 // full config (e.g. pi syncing its model catalog). Launch paths call it once
-// before Build.
+// before Build. target is the model about to be launched, so an
+// implementation can scope any per-provider, failure-prone work (e.g. pi's
+// exec: secret_ref resolution) to the provider actually being launched
+// instead of treating every registry provider as equally load-bearing for
+// this one launch.
 type Syncer interface {
-	SyncModels(cfg *config.Config) error
+	SyncModels(cfg *config.Config, target config.Model) error
 }
 
 // ArgSetter is an optional Driver capability: some agents (e.g. shell) need
@@ -322,7 +326,7 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 		fmt.Fprintf(os.Stderr, "wt: %s requires LiteLLM for %s (no direct protocol overlap with provider %q) — routing through the proxy\n", agent, m.ID, route.ProviderID)
 	}
 	if s, ok := d.(Syncer); ok {
-		if err := s.SyncModels(cfg); err != nil {
+		if err := s.SyncModels(cfg, m); err != nil {
 			return nil, err
 		}
 	}

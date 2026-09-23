@@ -17,12 +17,15 @@ func (piDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAI
 
 // SyncModels adds any non-native models from cfg that are missing from pi's
 // models.json, so rotation-selected models are always available to pi.
-func (piDriver) SyncModels(cfg *config.Config) error {
+// target is the model this launch is about to use (see Syncer's doc
+// comment) — syncDirectProviders uses it to decide which provider's
+// secret_ref failure, if any, should actually fail this launch.
+func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
 	path, err := piModelsPath()
 	if err != nil {
 		return err
 	}
-	return syncModels(cfg, path)
+	return syncModels(cfg, path, target)
 }
 
 // Build passes --model only when the target model is present in pi's
