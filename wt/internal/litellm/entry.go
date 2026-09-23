@@ -98,7 +98,11 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 	}
 	switch {
 	case pol.SecretRef:
-		params = append(params, kv{"api_key", p.Auth.SecretRef})
+		key, err := config.ResolveSecret(p.Auth.SecretRef)
+		if err != nil {
+			return nil, fmt.Errorf("model %q: resolving credentials for provider %q: %w", m.ID, p.ID, err)
+		}
+		params = append(params, kv{"api_key", key})
 	case pol.APIKey != "":
 		params = append(params, kv{"api_key", pol.APIKey})
 	}

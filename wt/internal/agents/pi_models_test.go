@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -47,7 +48,7 @@ func TestPiSyncModelsAddsMissing(t *testing.T) {
 			{ID: "claude/native", ModelName: "native", Native: true},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -81,10 +82,10 @@ func TestPiSyncModelsIdempotent(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("first syncModels: %v", err)
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("second syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -105,7 +106,7 @@ func TestPiSyncModelsUsesModelName(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -125,7 +126,7 @@ func TestPiSyncModelsPreservesExisting(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -148,7 +149,7 @@ func TestPiSyncModelsMissingFile(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels on missing file = %v, want nil", err)
 	}
 }
@@ -236,7 +237,7 @@ func TestSyncModelsLitellm(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -276,7 +277,7 @@ func TestSyncModelsLitellmDedicatedProvider(t *testing.T) {
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	for run := 1; run <= 2; run++ {
-		if err := syncModels(cfg, path); err != nil {
+		if err := syncModels(cfg, path, config.Model{}); err != nil {
 			t.Fatalf("syncModels run %d: %v", run, err)
 		}
 	}
@@ -314,7 +315,7 @@ func TestSyncModelsDirectPreservesLitellmProvider(t *testing.T) {
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -340,7 +341,7 @@ func TestSyncModelsDirectRevertsGatewayProvider(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -371,7 +372,7 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -381,6 +382,86 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 	}
 	if ol.APIKey != defaultPiOllamaAPIKey {
 		t.Errorf("apiKey = %q, want %q (pi placeholder)", ol.APIKey, defaultPiOllamaAPIKey)
+	}
+}
+
+// A provider whose secret_ref is an exec: form that fails (e.g. the Vault
+// credential helper isn't logged in) must abort the whole sync with that
+// error, not silently skip the provider block the way a merely-unset
+// os.environ/NAME secret_ref does. Before this fix, ResolveSecret had no
+// error return at all, so a failing exec: helper and a genuinely-unset env
+// var were indistinguishable — both produced "" and got skipped.
+func TestSyncModelsDirectPropagatesExecSecretError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+
+	scriptDir := t.TempDir()
+	failScript := filepath.Join(scriptDir, "fail.sh")
+	if err := os.WriteFile(failScript, []byte("#!/bin/sh\necho 'no key found' >&2\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "nyt-litellm", Auth: config.AuthConfig{Type: "api_key", BaseURL: "https://llm-gateway.nyt.net", SecretRef: "exec:" + failScript}},
+		},
+		Models: []config.Model{
+			{ID: "nyt-litellm/claude-sonnet-4-6", ModelName: "claude-sonnet-4-6", ProviderID: "nyt-litellm"},
+		},
+	}
+
+	// The failing provider is the one being launched, so its secret_ref
+	// error must abort the sync.
+	err := syncModels(cfg, path, cfg.Models[0])
+	if err == nil {
+		t.Fatal("syncModels: want error from failing exec: secret_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "no key found") {
+		t.Errorf("syncModels error = %q, want it to include the helper's stderr (\"no key found\")", err.Error())
+	}
+}
+
+// TestSyncModelsDirectUnrelatedProviderFailureDoesNotAbort pins the fix for
+// a real launch-blocking bug: a registry with two direct-mode providers, one
+// broken (a failing exec: credential helper) and one healthy, must still let
+// a launch of the healthy one's model succeed. Before this fix,
+// syncDirectProviders resolved every provider's secret up front and aborted
+// the whole sync on the first failure, so launching a healthy ollama model
+// failed just because an unrelated, broken nyt-litellm provider was also in
+// the registry.
+func TestSyncModelsDirectUnrelatedProviderFailureDoesNotAbort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+
+	scriptDir := t.TempDir()
+	failScript := filepath.Join(scriptDir, "fail.sh")
+	if err := os.WriteFile(failScript, []byte("#!/bin/sh\necho 'no key found' >&2\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "nyt-litellm", Auth: config.AuthConfig{Type: "api_key", BaseURL: "https://llm-gateway.nyt.net", SecretRef: "exec:" + failScript}},
+		},
+		Models: []config.Model{
+			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
+			{ID: "nyt-litellm/claude-sonnet-4-6", ModelName: "claude-sonnet-4-6", ProviderID: "nyt-litellm"},
+		},
+	}
+
+	// Launching the ollama model: nyt-litellm's broken helper must not
+	// abort the sync.
+	target := cfg.Models[0]
+	if err := syncModels(cfg, path, target); err != nil {
+		t.Fatalf("syncModels: want nil (unrelated provider's failure must not abort), got %v", err)
+	}
+	f := readPiModels(t, path)
+	if _, ok := f.Providers["ollama"]; !ok {
+		t.Error("ollama provider block missing — the launch target's own sync must still succeed")
+	}
+	if _, ok := f.Providers["nyt-litellm"]; ok {
+		t.Error("nyt-litellm block written despite its secret_ref failing — should be skipped, not written")
 	}
 }
 
@@ -397,7 +478,7 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -431,7 +512,7 @@ func TestSyncModelsDirectResyncsStaleNonOllamaProvider(t *testing.T) {
 			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -464,7 +545,7 @@ func TestSyncModelsDirectPreservesForeignNonOllamaProvider(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -514,7 +595,7 @@ func TestSyncModelsDirectMarkedBlockSurvivesModelRename(t *testing.T) {
 			{ID: "mtplx/new-quant-variant", ModelName: "new-quant-variant", ProviderID: "mtplx"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -544,7 +625,7 @@ func TestSyncModelsDirectStampsLegacyOwnedBlock(t *testing.T) {
 			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -569,7 +650,7 @@ func TestSyncModelsDirectForeignBlockNeverMarked(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -599,7 +680,7 @@ func TestSyncModelsDirectForeignEmptyBlockNeverAdopted(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -627,7 +708,7 @@ func TestSyncModelsLitellmCreatesMissingFile(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -709,7 +790,7 @@ func TestSyncModelsDirectCreatesSchemaValidProviderBlock(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -743,7 +824,7 @@ func TestSyncModelsSkipsProviderWithUnresolvableSecret(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path); err != nil {
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	if _, ok := readPiModels(t, path).Providers["openrouter"]; ok {

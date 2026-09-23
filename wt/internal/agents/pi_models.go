@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -125,7 +126,7 @@ func isDefaultOllamaAPIKey(apiKey string) bool {
 // bare entries would 400 through LiteLLM), and prunes the "ollama/…" entries
 // an older litellm-mode sync left under the ollama provider, which pi's
 // --model grammar can never launch.
-func syncModels(cfg *config.Config, path string) error {
+func syncModels(cfg *config.Config, path string, target config.Model) error {
 	var f piModelsFile
 	data, err := os.ReadFile(path)
 	switch {
@@ -151,7 +152,11 @@ func syncModels(cfg *config.Config, path string) error {
 		mutated = syncLitellmProvider(cfg, f) || mutated
 		mutated = revertOllamaProvider(cfg, f) || mutated
 	} else {
-		mutated = syncDirectProviders(cfg, f) || mutated
+		directMutated, err := syncDirectProviders(cfg, f, target)
+		if err != nil {
+			return err
+		}
+		mutated = directMutated || mutated
 	}
 	if !mutated {
 		return nil
@@ -275,8 +280,20 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 // detected differently since non-ollama base_urls are arbitrary registry
 // values with no fixed "known stale" form to match against.
 //
+// A secret_ref resolution failure (e.g. a failing exec: credential helper)
+// only aborts the sync when it belongs to target's own provider — the
+// model actually being launched. Any other provider's broken helper is
+// logged to stderr and that provider's block is left as-is (skipped this
+// run, not written or resynced); the sync still succeeds for target's own
+// provider and every other healthy one. target may be the zero Model (no
+// specific launch in progress), in which case no provider is ever treated
+// as the target and every failure is logged rather than fatal. Map
+// iteration order over byProvider means, when multiple non-target
+// providers fail in the same run, which one's warning prints first is
+// unspecified — harmless now that no such failure can abort the sync.
+//
 // Returns whether anything changed.
-func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
+func syncDirectProviders(cfg *config.Config, f piModelsFile, target config.Model) (bool, error) {
 	byProvider := map[string][]config.Model{}
 	for _, m := range cfg.Models {
 		if m.Native || m.ModelName == "" {
@@ -295,12 +312,22 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 		wantBaseURL := config.BaseOrigin(provider.Auth.BaseURL) + "/v1"
 		wantAPIKey := defaultPiOllamaAPIKey
 		if provider.Auth.SecretRef != "" {
-			wantAPIKey = config.ResolveSecret(provider.Auth.SecretRef)
+			var err error
+			wantAPIKey, err = config.ResolveSecret(provider.Auth.SecretRef)
+			if err != nil {
+				if providerID == target.ProviderID {
+					return false, fmt.Errorf("pi models.json sync: provider %q: %w", providerID, err)
+				}
+				fmt.Fprintf(os.Stderr, "wt: pi models.json sync: provider %q: %v (skipping — not the model being launched)\n", providerID, err)
+				continue
+			}
 		}
 		// pi's models.json schema requires a non-empty apiKey (see
-		// defaultPiOllamaAPIKey); a provider whose secret cannot be resolved
-		// cannot produce a schema-valid block, so skip it entirely rather
-		// than write one and poison the whole catalog.
+		// defaultPiOllamaAPIKey); a provider whose secret is simply unset
+		// (an os.environ/NAME or bare-name ref that resolved to "" with no
+		// error) cannot produce a schema-valid block, so skip it entirely
+		// rather than write one and poison the whole catalog. An exec: form
+		// that fails outright is handled above and never reaches here.
 		if wantAPIKey == "" {
 			continue
 		}
@@ -433,7 +460,7 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 			f.Providers[providerID] = p
 		}
 	}
-	return mutated
+	return mutated, nil
 }
 
 // isLaunchable reports whether id is present under providerID in pi's

@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -182,6 +185,50 @@ func TestRenderTableUnknownStatusAligns(t *testing.T) {
 	}
 	if got := string(line(1)[col("RUNNING") : col("RUNNING")+3]); got != "run" {
 		t.Errorf("RUNNING cell = %q (column drift after a widened STATUS)", got)
+	}
+}
+
+// TestRenderTableResolvesRoutesConcurrently pins that renderTable resolves
+// different rows' routes in parallel rather than one at a time: a slow
+// provider (e.g. a hung exec: secret_ref helper) must not add its own
+// latency on top of every other row's otherwise-fast resolution. Before this
+// fix, a sequential per-row loop meant N distinct slow providers summed
+// their costs into renderTable's total wall-clock time.
+func TestRenderTableResolvesRoutesConcurrently(t *testing.T) {
+	scriptDir := t.TempDir()
+	// Two DISTINCT scripts (not the same ref twice): config.ResolveSecret
+	// memoizes per exact ref string, so reusing one script for both
+	// providers would let the second resolution ride the first's cached
+	// result and pass even without this fix.
+	slowScript1 := filepath.Join(scriptDir, "slow1.sh")
+	slowScript2 := filepath.Join(scriptDir, "slow2.sh")
+	if err := os.WriteFile(slowScript1, []byte("#!/bin/sh\nsleep 1\necho sk-slow-1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(slowScript2, []byte("#!/bin/sh\nsleep 1\necho sk-slow-2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "slow-provider", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "api_key", BaseURL: "http://localhost:9001", SecretRef: "exec:" + slowScript1}},
+			{ID: "slow-provider-2", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "api_key", BaseURL: "http://localhost:9002", SecretRef: "exec:" + slowScript2}},
+		},
+		Agents: []config.Agent{{Name: "opencode", SupportedProviders: []string{"slow-provider", "slow-provider-2"}}},
+	}
+	rows := []tableRow{
+		{Row: catalog.Row{Model: config.Model{ID: "slow-provider/m1", ProviderID: "slow-provider", ModelName: "m1"}, Status: catalog.StatusOK}},
+		{Row: catalog.Row{Model: config.Model{ID: "slow-provider-2/m2", ProviderID: "slow-provider-2", ModelName: "m2"}, Status: catalog.StatusOK}},
+	}
+
+	start := time.Now()
+	renderTable(rows, cfg, "opencode", nil, "")
+	elapsed := time.Since(start)
+
+	// Two distinct providers each with a ~1s exec: helper: sequential
+	// resolution would take >=2s, parallel resolution ~1s.
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("renderTable took %v resolving 2 distinct 1s-slow providers, want ~1s (parallel), not ~2s (sequential)", elapsed)
 	}
 }
 

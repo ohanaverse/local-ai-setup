@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -68,10 +69,43 @@ func buildTable(in tableInput, refs refcount.Store, lastID string) modelTable {
 	return renderTable(rows, cfg, in.agent, refCounts, lastID)
 }
 
+// resolvedRoute pairs one row's ResolveRoute result, computed ahead of
+// renderTable's per-row rendering loop.
+type resolvedRoute struct {
+	route config.Route
+	err   error
+}
+
 // renderTable formats already-sorted rows. Columns are separated by two
 // spaces and padded to the widest cell (headings included) so the header and
 // every row line up; measured in runes so multi-byte names don't shift them.
 func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[string]int, lastID string) modelTable {
+	// Resolve every row's route up front, in parallel, instead of one at a
+	// time in the rendering loop below: cfg.ResolveRoute may dial an exec:
+	// secret_ref subprocess (up to execSecretTimeout) per distinct provider,
+	// and resolving rows sequentially would let one slow/hung provider's
+	// helper add its full cost on top of every other row's otherwise-fast
+	// resolution. config.ResolveSecret memoizes per ref with its own
+	// per-ref locking (internal/config), so concurrent rows for the SAME
+	// provider still only pay for one subprocess run; this only
+	// parallelizes across DISTINCT providers. All goroutines are joined
+	// (wg.Wait) before this function returns, so nothing is left running in
+	// the background afterward.
+	var routes []resolvedRoute
+	if cfg != nil {
+		routes = make([]resolvedRoute, len(rows))
+		var wg sync.WaitGroup
+		for i, r := range rows {
+			wg.Add(1)
+			go func(i int, m config.Model) {
+				defer wg.Done()
+				route, err := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
+				routes[i] = resolvedRoute{route: route, err: err}
+			}(i, r.Model)
+		}
+		wg.Wait()
+	}
+
 	cost := make([]string, len(rows))
 	fam := make([]string, len(rows))
 	c1, c7, c30 := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
@@ -126,7 +160,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			it.start = true
 		}
 		if cfg != nil {
-			route, err := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(agent))
+			route, err := routes[i].route, routes[i].err
 			switch {
 			case r.RefusedByRoute(route, err):
 				// A discovered model is not in LiteLLM's model_list: routing

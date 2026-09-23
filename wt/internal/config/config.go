@@ -2,12 +2,16 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -189,7 +193,11 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 	}
 	apiKey := ""
 	if provider.Auth.SecretRef != "" {
-		apiKey = ResolveSecret(provider.Auth.SecretRef)
+		var err error
+		apiKey, err = ResolveSecret(provider.Auth.SecretRef)
+		if err != nil {
+			return Route{}, fmt.Errorf("resolving credentials for provider %q: %w", providerID, err)
+		}
 	}
 	protocol := ProtocolOpenAIChat
 	if len(common) > 0 {
@@ -251,19 +259,151 @@ func BaseOrigin(url string) string {
 	return strings.TrimRight(trimmed, "/")
 }
 
-// ResolveSecret resolves a secret_ref-style value: "os.environ/NAME" or a
-// bare "^[A-Z][A-Z0-9_]*$" name reads that env var; anything else is used
-// verbatim. Shared by direct-mode provider auth and [litellm].api_key.
+// ResolveSecret resolves a secret_ref-style value. Three forms:
+//   - "exec:<path> [args...]" runs the command (no shell — split on
+//     whitespace, so a path containing spaces is not supported) with a
+//     execSecretTimeout deadline and returns its trimmed stdout; a
+//     non-zero exit, a timeout, or a zero exit with empty stdout are all
+//     errors (the latter because an exec: command claims success is not
+//     the same contract as an os.environ/NAME ref, whose absence
+//     legitimately resolves to ""). Memoized per raw ref for the lifetime
+//     of the process — including across concurrent callers — so a ref
+//     resolved from multiple call sites or goroutines in one launch
+//     (ResolveRoute and pi's models.json sync both resolve the same
+//     provider's secret_ref; the TUI can resolve routes for several table
+//     rows concurrently) only runs the command once. Only a successful
+//     resolution is memoized this way — a failure is not cached, so a
+//     transient problem (e.g. not yet logged into Vault) can succeed on a
+//     later call without restarting wt.
+//   - "os.environ/NAME" or a bare "^[A-Z][A-Z0-9_]*$" name reads that env
+//     var — unchanged: a missing var resolves to "", never an error.
+//   - anything else is used verbatim, unchanged.
+//
+// Shared by direct-mode provider auth and LiteLLM's SecretRef:true policy
+// api_key (internal/litellm.BuildEntry).
 var envRefName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
-func ResolveSecret(ref string) string {
+// execSecretTimeout bounds how long an exec: secret_ref command may run.
+// This is the only unbounded-by-default subprocess wt would otherwise
+// spawn; every other exec site (proxy restart, git fetch, lifecycle
+// backends) already carries a deadline. A var (not const), following this
+// package's seam convention (wt/CLAUDE.md's Go tests section — "a var x =
+// realX plus a realX function"), so a test can shrink it instead of paying
+// the real deadline in wall-clock time.
+var execSecretTimeout = 15 * time.Second
+
+// execSecretMu guards execSecretCache and execSecretInflight only long
+// enough to read or write those two maps — never for the duration of a
+// subprocess run. Holding one global lock across a whole runExecSecret call
+// (the prior implementation) meant two DIFFERENT exec: refs could not
+// resolve concurrently: a slow or hung helper for provider A would block an
+// unrelated, already-fast provider B behind it. Deduping concurrent callers
+// of the SAME ref onto one subprocess run (the memoization
+// TestResolveSecretExecMemoizedConcurrent pins) is handled per-ref instead,
+// via execSecretInflight.
+var execSecretMu sync.Mutex
+
+// execSecretCache holds only successful resolutions, for the process
+// lifetime. A failed resolution is deliberately never cached: an exec:
+// helper backed by e.g. Vault or 1Password can fail once for a transient
+// reason (not yet logged in, a stale token) and succeed moments later, and
+// wt's TUI is long-lived enough that caching the failure would force a full
+// restart to recover.
+var execSecretCache = map[string]string{}
+
+// execSecretInflight tracks exec: resolutions currently running, one entry
+// per ref, so concurrent callers for the same ref share a single subprocess
+// run instead of each starting their own.
+var execSecretInflight = map[string]*execSecretCall{}
+
+// execSecretCall is one in-flight (or just-finished) exec: resolution.
+// value/err are only written once, by the goroutine that created the
+// entry, before done is closed — every other reader only touches them
+// after receiving from done, so no further synchronization is needed.
+type execSecretCall struct {
+	done  chan struct{}
+	value string
+	err   error
+}
+
+func ResolveSecret(ref string) (string, error) {
+	if cmdline, ok := strings.CutPrefix(ref, "exec:"); ok {
+		return resolveExecSecret(ref, cmdline)
+	}
 	if name, ok := strings.CutPrefix(ref, "os.environ/"); ok {
-		return os.Getenv(name)
+		return os.Getenv(name), nil
 	}
 	if envRefName.MatchString(ref) {
-		return os.Getenv(ref)
+		return os.Getenv(ref), nil
 	}
-	return ref
+	return ref, nil
+}
+
+// resolveExecSecret resolves one exec: ref. See execSecretMu/execSecretCache/
+// execSecretInflight above for the concurrency and caching contract.
+func resolveExecSecret(ref, cmdline string) (string, error) {
+	execSecretMu.Lock()
+	if v, ok := execSecretCache[ref]; ok {
+		execSecretMu.Unlock()
+		return v, nil
+	}
+	if call, ok := execSecretInflight[ref]; ok {
+		execSecretMu.Unlock()
+		<-call.done
+		return call.value, call.err
+	}
+	call := &execSecretCall{done: make(chan struct{})}
+	execSecretInflight[ref] = call
+	execSecretMu.Unlock()
+
+	value, err := runExecSecret(ref, cmdline)
+	call.value, call.err = value, err
+	close(call.done)
+
+	execSecretMu.Lock()
+	delete(execSecretInflight, ref)
+	if err == nil {
+		execSecretCache[ref] = value
+	}
+	execSecretMu.Unlock()
+
+	return value, err
+}
+
+// runExecSecret runs the command line for a single exec: ref (already
+// stripped of its "exec:" prefix) and returns its resolved value or error.
+// Held behind execSecretMu by its only caller, ResolveSecret, so the whole
+// run-and-cache sequence for one ref is atomic across concurrent callers.
+func runExecSecret(ref, cmdline string) (string, error) {
+	parts := strings.Fields(cmdline)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("secret_ref %q: exec: form has no command", ref)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execSecretTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	// WaitDelay bounds how long Wait (inside Output) waits for the child's
+	// own I/O pipes to close after the context is done. Without it, a
+	// script whose last command is a separate child process (e.g. a shell
+	// script ending in `sleep 30`) leaves that grandchild holding the
+	// stdout pipe open after the immediate child is killed, and Output
+	// hangs until the grandchild itself exits — defeating the timeout.
+	cmd.WaitDelay = 2 * time.Second
+	out, runErr := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("secret_ref %q: timed out after %s", ref, execSecretTimeout)
+	}
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("secret_ref %q: %s", ref, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", fmt.Errorf("secret_ref %q: %w", ref, runErr)
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", fmt.Errorf("secret_ref %q: command succeeded but produced no output", ref)
+	}
+	return value, nil
 }
 
 // AuthConfig describes how to authenticate with a provider.
