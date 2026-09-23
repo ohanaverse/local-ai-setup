@@ -25,20 +25,97 @@ func TestBaseOriginTrimsV1Suffix(t *testing.T) {
 	}
 }
 
-// TestResolveSecretEnvAndLiteral pins that a secret_ref/api_key value can
-// be either a literal (today's live registry shape) or an env-var
-// reference (the fixture's shape) — a wrong resolution here would send a
-// stale or empty credential to a real provider.
-func TestResolveSecretEnvAndLiteral(t *testing.T) {
+// TestResolveSecret pins every secret_ref form: os.environ/NAME and bare
+// NAME env lookups (never error, empty on a miss), a literal value used
+// verbatim, and the exec: form that runs a command and returns its trimmed
+// stdout, erroring (with the command's own stderr surfaced) on a non-zero
+// exit. Getting the exec: form wrong either silently produces an empty key
+// (a confusing downstream 401) or panics on a command with no captured
+// stderr.
+func TestResolveSecret(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-from-env")
-	if got := ResolveSecret("os.environ/OPENROUTER_API_KEY"); got != "sk-or-from-env" {
-		t.Errorf("os.environ/ form: got %q", got)
+
+	scriptDir := t.TempDir()
+	okScript := filepath.Join(scriptDir, "ok.sh")
+	if err := os.WriteFile(okScript, []byte("#!/bin/sh\necho '  sk-vault-key  '\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got := ResolveSecret("OPENROUTER_API_KEY"); got != "sk-or-from-env" {
-		t.Errorf("bare env-name form: got %q", got)
+	failScript := filepath.Join(scriptDir, "fail.sh")
+	if err := os.WriteFile(failScript, []byte("#!/bin/sh\necho 'permission denied' >&2\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got := ResolveSecret("sk-or-v1-literal"); got != "sk-or-v1-literal" {
-		t.Errorf("literal form: got %q", got)
+
+	tests := []struct {
+		name    string
+		ref     string
+		want    string
+		wantErr string // substring expected in the error, "" if no error expected
+	}{
+		{name: "os.environ form", ref: "os.environ/OPENROUTER_API_KEY", want: "sk-or-from-env"},
+		{name: "bare env-name form", ref: "OPENROUTER_API_KEY", want: "sk-or-from-env"},
+		{name: "os.environ form missing var", ref: "os.environ/NO_SUCH_VAR", want: ""},
+		{name: "bare env-name form missing var", ref: "NO_SUCH_VAR_XYZ", want: ""},
+		{name: "literal form", ref: "sk-or-v1-literal", want: "sk-or-v1-literal"},
+		{name: "exec form success, trims whitespace", ref: "exec:" + okScript, want: "sk-vault-key"},
+		{name: "exec form failure surfaces stderr", ref: "exec:" + failScript, wantErr: "permission denied"},
+		{name: "exec form nonexistent binary", ref: "exec:/no/such/binary-xyz", wantErr: "exec:"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveSecret(tc.ref)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("ResolveSecret(%q): want error containing %q, got nil (result %q)", tc.ref, tc.wantErr, got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("ResolveSecret(%q) error = %q, want substring %q", tc.ref, err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveSecret(%q): unexpected error: %v", tc.ref, err)
+			}
+			if got != tc.want {
+				t.Errorf("ResolveSecret(%q) = %q, want %q", tc.ref, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveSecretExecMemoized pins that an exec: ref only actually runs
+// the command once per process, no matter how many times it is resolved —
+// ResolveRoute and pi's models.json sync both resolve the same ref on every
+// pi launch, and the underlying command here is a Vault-backed credential
+// helper that may trigger a slow network call or an interactive OIDC login
+// prompt. A non-memoized implementation would pay that cost twice per
+// launch.
+func TestResolveSecretExecMemoized(t *testing.T) {
+	dir := t.TempDir()
+	counterFile := filepath.Join(dir, "count")
+	script := filepath.Join(dir, "counted.sh")
+	// Each invocation appends one byte to counterFile and echoes the key.
+	body := "#!/bin/sh\nprintf %s x >> " + counterFile + "\necho sk-counted\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ref := "exec:" + script
+
+	for i := 0; i < 3; i++ {
+		got, err := ResolveSecret(ref)
+		if err != nil {
+			t.Fatalf("ResolveSecret call %d: %v", i, err)
+		}
+		if got != "sk-counted" {
+			t.Errorf("call %d: got %q", i, got)
+		}
+	}
+
+	data, err := os.ReadFile(counterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 1 {
+		t.Errorf("command ran %d times across 3 resolutions of the same ref, want 1 (memoized)", len(data))
 	}
 }
 

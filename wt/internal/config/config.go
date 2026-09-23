@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 )
@@ -189,7 +191,11 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 	}
 	apiKey := ""
 	if provider.Auth.SecretRef != "" {
-		apiKey = ResolveSecret(provider.Auth.SecretRef)
+		var err error
+		apiKey, err = ResolveSecret(provider.Auth.SecretRef)
+		if err != nil {
+			return Route{}, fmt.Errorf("resolving credentials for provider %q: %w", providerID, err)
+		}
 	}
 	protocol := ProtocolOpenAIChat
 	if len(common) > 0 {
@@ -251,19 +257,61 @@ func BaseOrigin(url string) string {
 	return strings.TrimRight(trimmed, "/")
 }
 
-// ResolveSecret resolves a secret_ref-style value: "os.environ/NAME" or a
-// bare "^[A-Z][A-Z0-9_]*$" name reads that env var; anything else is used
-// verbatim. Shared by direct-mode provider auth and [litellm].api_key.
+// ResolveSecret resolves a secret_ref-style value. Three forms:
+//   - "exec:<path> [args...]" runs the command (no shell — split on
+//     whitespace) and returns its trimmed stdout; a non-zero exit is an
+//     error whose text includes the command's own stderr. Memoized per raw
+//     ref for the lifetime of the process, so a ref resolved from multiple
+//     call sites in one launch (ResolveRoute and pi's models.json sync both
+//     resolve the same provider's secret_ref) only runs the command once.
+//   - "os.environ/NAME" or a bare "^[A-Z][A-Z0-9_]*$" name reads that env
+//     var — unchanged: a missing var resolves to "", never an error.
+//   - anything else is used verbatim, unchanged.
+//
+// Shared by direct-mode provider auth and [litellm].api_key (the latter
+// never uses the exec: form today, but nothing prevents it).
 var envRefName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
-func ResolveSecret(ref string) string {
+var execSecretCache sync.Map // ref string -> execSecretResult
+
+type execSecretResult struct {
+	value string
+	err   error
+}
+
+func ResolveSecret(ref string) (string, error) {
+	if cmdline, ok := strings.CutPrefix(ref, "exec:"); ok {
+		if cached, ok := execSecretCache.Load(ref); ok {
+			r := cached.(execSecretResult)
+			return r.value, r.err
+		}
+		parts := strings.Fields(cmdline)
+		if len(parts) == 0 {
+			err := fmt.Errorf("secret_ref %q: exec: form has no command", ref)
+			execSecretCache.Store(ref, execSecretResult{"", err})
+			return "", err
+		}
+		out, runErr := exec.Command(parts[0], parts[1:]...).Output()
+		value := strings.TrimSpace(string(out))
+		var err error
+		if runErr != nil {
+			if exitErr, ok := runErr.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+				err = fmt.Errorf("secret_ref %q: %s", ref, strings.TrimSpace(string(exitErr.Stderr)))
+			} else {
+				err = fmt.Errorf("secret_ref %q: %w", ref, runErr)
+			}
+			value = ""
+		}
+		execSecretCache.Store(ref, execSecretResult{value, err})
+		return value, err
+	}
 	if name, ok := strings.CutPrefix(ref, "os.environ/"); ok {
-		return os.Getenv(name)
+		return os.Getenv(name), nil
 	}
 	if envRefName.MatchString(ref) {
-		return os.Getenv(ref)
+		return os.Getenv(ref), nil
 	}
-	return ref
+	return ref, nil
 }
 
 // AuthConfig describes how to authenticate with a provider.
