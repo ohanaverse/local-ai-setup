@@ -107,8 +107,15 @@ func TestResolveSecretExecEmptyOutputErrors(t *testing.T) {
 // TestResolveSecretExecTimesOut pins that a hung exec: command is killed
 // after a bounded deadline instead of hanging wt forever — this is the
 // only unbounded subprocess in wt otherwise (every other exec site uses
-// exec.CommandContext with a deadline).
+// exec.CommandContext with a deadline). execSecretTimeout is shrunk for
+// the duration of this test (wt/CLAUDE.md's var-seam convention) so the
+// test doesn't pay the real ~15-17s deadline in wall-clock time on every
+// run.
 func TestResolveSecretExecTimesOut(t *testing.T) {
+	orig := execSecretTimeout
+	execSecretTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { execSecretTimeout = orig })
+
 	script := filepath.Join(t.TempDir(), "hang.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -119,9 +126,87 @@ func TestResolveSecretExecTimesOut(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveSecret: want timeout error for a hung command, got nil")
 	}
-	if elapsed > 20*time.Second {
-		t.Errorf("ResolveSecret took %v, want it to time out well under the test's own 30s sleep", elapsed)
+	// Bounded by execSecretTimeout (200ms) plus runExecSecret's own 2s
+	// WaitDelay grace period for the child's I/O pipes to close.
+	if elapsed > 5*time.Second {
+		t.Errorf("ResolveSecret took %v with execSecretTimeout=200ms, want it to time out quickly", elapsed)
 	}
+}
+
+// TestResolveSecretExecErrorNotCached pins that a failed exec: resolution is
+// NOT memoized: a helper that fails once (e.g. not yet logged into Vault)
+// must succeed on a later call once the underlying problem is fixed,
+// without requiring a process restart. Caching the error here would mean a
+// wt TUI session started before `vault login` stays broken until relaunched.
+func TestResolveSecretExecErrorNotCached(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "flaky.sh")
+	body := `#!/bin/sh
+if [ -f "` + dir + `/ok" ]; then
+  echo sk-recovered
+  exit 0
+fi
+touch "` + dir + `/ok"
+echo "not logged in" >&2
+exit 1
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ref := "exec:" + script
+
+	if _, err := ResolveSecret(ref); err == nil {
+		t.Fatal("ResolveSecret: want error on first (failing) call, got nil")
+	}
+	got, err := ResolveSecret(ref)
+	if err != nil {
+		t.Fatalf("ResolveSecret second call: want success once the helper recovers, got error: %v", err)
+	}
+	if got != "sk-recovered" {
+		t.Errorf("ResolveSecret second call = %q, want %q", got, "sk-recovered")
+	}
+}
+
+// TestResolveSecretExecDistinctRefsRunConcurrently pins that resolving two
+// DIFFERENT exec: refs at the same time does not serialize one behind the
+// other — a single global lock held for a whole subprocess run would make
+// an unrelated, already-cached-or-fast provider wait out a slow/hung one.
+func TestResolveSecretExecDistinctRefsRunConcurrently(t *testing.T) {
+	dir := t.TempDir()
+	slow := filepath.Join(dir, "slow.sh")
+	fast := filepath.Join(dir, "fast.sh")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nsleep 1\necho sk-slow\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fast, []byte("#!/bin/sh\necho sk-fast\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := ResolveSecret("exec:" + slow); err != nil {
+			t.Errorf("slow ResolveSecret: %v", err)
+		}
+	}()
+	// Give the slow call a moment to acquire and start its subprocess before
+	// timing the fast one.
+	time.Sleep(100 * time.Millisecond)
+
+	start := time.Now()
+	got, err := ResolveSecret("exec:" + fast)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("fast ResolveSecret: %v", err)
+	}
+	if got != "sk-fast" {
+		t.Errorf("fast ResolveSecret = %q, want %q", got, "sk-fast")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("fast ResolveSecret took %v while a distinct ref was in flight, want it to not wait on the slow ref", elapsed)
+	}
+	wg.Wait()
 }
 
 // TestResolveSecretExecMemoizedConcurrent pins that concurrent resolutions
