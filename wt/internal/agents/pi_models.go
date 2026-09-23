@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -151,7 +152,13 @@ func syncModels(cfg *config.Config, path string) error {
 		mutated = syncLitellmProvider(cfg, f) || mutated
 		mutated = revertOllamaProvider(cfg, f) || mutated
 	} else {
-		mutated = syncDirectProviders(cfg, f) || mutated
+		var err error
+		var directMutated bool
+		directMutated, err = syncDirectProviders(cfg, f)
+		if err != nil {
+			return err
+		}
+		mutated = directMutated || mutated
 	}
 	if !mutated {
 		return nil
@@ -276,7 +283,7 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 // values with no fixed "known stale" form to match against.
 //
 // Returns whether anything changed.
-func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
+func syncDirectProviders(cfg *config.Config, f piModelsFile) (bool, error) {
 	byProvider := map[string][]config.Model{}
 	for _, m := range cfg.Models {
 		if m.Native || m.ModelName == "" {
@@ -295,12 +302,18 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 		wantBaseURL := config.BaseOrigin(provider.Auth.BaseURL) + "/v1"
 		wantAPIKey := defaultPiOllamaAPIKey
 		if provider.Auth.SecretRef != "" {
-			wantAPIKey = config.ResolveSecret(provider.Auth.SecretRef)
+			var err error
+			wantAPIKey, err = config.ResolveSecret(provider.Auth.SecretRef)
+			if err != nil {
+				return false, fmt.Errorf("pi models.json sync: provider %q: %w", providerID, err)
+			}
 		}
 		// pi's models.json schema requires a non-empty apiKey (see
-		// defaultPiOllamaAPIKey); a provider whose secret cannot be resolved
-		// cannot produce a schema-valid block, so skip it entirely rather
-		// than write one and poison the whole catalog.
+		// defaultPiOllamaAPIKey); a provider whose secret is simply unset
+		// (an os.environ/NAME or bare-name ref that resolved to "" with no
+		// error) cannot produce a schema-valid block, so skip it entirely
+		// rather than write one and poison the whole catalog. An exec: form
+		// that fails outright is handled above and never reaches here.
 		if wantAPIKey == "" {
 			continue
 		}
@@ -433,7 +446,7 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 			f.Providers[providerID] = p
 		}
 	}
-	return mutated
+	return mutated, nil
 }
 
 // isLaunchable reports whether id is present under providerID in pi's

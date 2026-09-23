@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -381,6 +382,40 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 	}
 	if ol.APIKey != defaultPiOllamaAPIKey {
 		t.Errorf("apiKey = %q, want %q (pi placeholder)", ol.APIKey, defaultPiOllamaAPIKey)
+	}
+}
+
+// A provider whose secret_ref is an exec: form that fails (e.g. the Vault
+// credential helper isn't logged in) must abort the whole sync with that
+// error, not silently skip the provider block the way a merely-unset
+// os.environ/NAME secret_ref does. Before this fix, ResolveSecret had no
+// error return at all, so a failing exec: helper and a genuinely-unset env
+// var were indistinguishable — both produced "" and got skipped.
+func TestSyncModelsDirectPropagatesExecSecretError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+
+	scriptDir := t.TempDir()
+	failScript := filepath.Join(scriptDir, "fail.sh")
+	if err := os.WriteFile(failScript, []byte("#!/bin/sh\necho 'no key found' >&2\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "nyt-litellm", Auth: config.AuthConfig{Type: "api_key", BaseURL: "https://llm-gateway.nyt.net", SecretRef: "exec:" + failScript}},
+		},
+		Models: []config.Model{
+			{ID: "nyt-litellm/claude-sonnet-4-6", ModelName: "claude-sonnet-4-6", ProviderID: "nyt-litellm"},
+		},
+	}
+
+	err := syncModels(cfg, path)
+	if err == nil {
+		t.Fatal("syncModels: want error from failing exec: secret_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "no key found") {
+		t.Errorf("syncModels error = %q, want it to include the helper's stderr (\"no key found\")", err.Error())
 	}
 }
 
