@@ -444,3 +444,95 @@ location = "local"
 		t.Errorf("reloaded.Profiles = %v, want the one entry preserved", reloaded.Profiles)
 	}
 }
+
+// TestProfileToggleHandlesTrailingWhitespaceOnEnabledLine is the
+// regression lock for the final-review finding that the trailing-comment
+// fix (topLevelEnabledLineRe) reintroduced the exact invalid-TOML bug it
+// was meant to close, just triggered by a different pre-existing
+// condition: a hand-edited `enabled = true` line with trailing whitespace
+// but NO comment no longer matched at all (the old regex's unconditional
+// `\s*$` allowed bare trailing whitespace; the fix's
+// `([ \t]*#[^\n]*)?$` only allows whitespace when a comment follows), so
+// setEnabledLine fell through to prepending a duplicate `enabled` line.
+func TestProfileToggleHandlesTrailingWhitespaceOnEnabledLine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "enabled = true  \n\n[[profiles]]\nagent = \"claude\"\nmatch = \"location\"\nlocation = \"local\"\n"
+	path := filepath.Join(dir, "agent-wt", "profiles.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := profiles.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{profiles: store}
+	off := profileCmd(a)
+	off.SetArgs([]string{"off"})
+	if err := off.Execute(); err != nil {
+		t.Fatalf("off: execute error = %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if strings.Count(got, "enabled = ") != 1 {
+		t.Fatalf("profiles.toml after toggle has %d 'enabled = ' occurrences, want exactly 1 (no duplicate top-level key): %q", strings.Count(got, "enabled = "), got)
+	}
+
+	if _, err := profiles.Load(); err != nil {
+		t.Fatalf("profiles.toml is not valid TOML after toggle: %v", err)
+	}
+}
+
+// TestProfileToggleHandlesCRLFEnabledLine is the regression lock for the
+// same final-review finding, for a CRLF-terminated enabled line (a file
+// edited on Windows, or by a tool that preserves CRLF line endings): the
+// trailing-comment fix's `$` never matches when a bare `\r` sits between
+// `true`/`false` and the `\n`, so this must also produce valid TOML.
+func TestProfileToggleHandlesCRLFEnabledLine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "enabled = true\r\n\r\n[[profiles]]\r\nagent = \"claude\"\r\nmatch = \"location\"\r\nlocation = \"local\"\r\n"
+	path := filepath.Join(dir, "agent-wt", "profiles.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := profiles.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{profiles: store}
+	off := profileCmd(a)
+	off.SetArgs([]string{"off"})
+	if err := off.Execute(); err != nil {
+		t.Fatalf("off: execute error = %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if strings.Count(got, "enabled = ") != 1 {
+		t.Fatalf("profiles.toml after toggle has %d 'enabled = ' occurrences, want exactly 1 (no duplicate top-level key): %q", strings.Count(got, "enabled = "), got)
+	}
+
+	reloaded, err := profiles.Load()
+	if err != nil {
+		t.Fatalf("profiles.toml is not valid TOML after toggle: %v", err)
+	}
+	if reloaded.Enabled {
+		t.Error("reloaded.Enabled = true, want false")
+	}
+}

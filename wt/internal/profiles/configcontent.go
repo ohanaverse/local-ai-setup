@@ -265,6 +265,37 @@ func surgicalRestoreJSON(originalSnapshot []byte, target string, touchedKeys []s
 	return data, true
 }
 
+// surgicalDeleteJSON removes touchedKeys from target's CURRENT on-disk
+// content — used when config_content wrote into a JSON target that did
+// NOT exist before the write, so there is no original snapshot to restore
+// values from, only keys to remove. ok is false (caller falls back to
+// deleting the whole file, the pre-existing "didn't exist before"
+// semantics) when target's current content isn't a JSON object, or when
+// removing touchedKeys leaves nothing behind: an empty object left over
+// from a profile-only write (nothing else added) is exactly as pointless
+// a file as none at all.
+func surgicalDeleteJSON(target string, touchedKeys []string) (reduced []byte, ok bool) {
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return nil, false
+	}
+	var curDoc map[string]any
+	if err := json.Unmarshal(current, &curDoc); err != nil {
+		return nil, false
+	}
+	for _, k := range touchedKeys {
+		delete(curDoc, k)
+	}
+	if len(curDoc) == 0 {
+		return nil, false
+	}
+	data, err := json.MarshalIndent(curDoc, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
 // withTargetLock serializes snapshotAndWrite/restoreIfBackedUp for target
 // across processes via an flock on a lock file keyed by target (mirrors
 // internal/litellm/configfile.go's WithLock). The lock only serializes the
@@ -292,14 +323,19 @@ func withTargetLock(target string, fn func() error) error {
 // restoreIfBackedUpLocked) unless it is still owned by a live sibling
 // process (in which case it refuses with an error, rather than writing on
 // top of a file a different running wt session still relies on), then
-// snapshots target's current state (content, permission bits, and this
-// process's pid as owner — or "did not exist") before calling buildData to
-// compute the bytes to write, plus the set of top-level keys it touched
-// (JSON targets only; nil for a whole-file target like codex's). The whole
-// sequence runs under withTargetLock, so a concurrent snapshotAndWrite or
-// restoreIfBackedUp for the same target from another process waits instead
-// of racing it. buildData receives target's existing content (nil if it
-// did not exist) so a JSON target can merge rather than replace.
+// calls buildData to compute the bytes to write (plus the set of
+// top-level keys it touched — JSON targets only; nil for a whole-file
+// target like codex's) BEFORE writing any backup marker: a buildData
+// failure (e.g. existing content is not valid JSON) must leave nothing on
+// disk for a later launch's self-heal to mistake for an orphaned crash
+// backup and restore over whatever the user has since fixed the file to.
+// Only once buildData succeeds does it snapshot target's pre-write state
+// (content, permission bits, and this process's pid as owner — or "did
+// not exist") and write the new content. The whole sequence runs under
+// withTargetLock, so a concurrent snapshotAndWrite or restoreIfBackedUp
+// for the same target from another process waits instead of racing it.
+// buildData receives target's existing content (nil if it did not exist)
+// so a JSON target can merge rather than replace.
 func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing []byte, existed bool) (data []byte, touchedKeys []string, err error)) error {
 	return withTargetLock(target, func() error {
 		if _, live, err := restoreIfBackedUpLocked(target); err != nil {
@@ -309,15 +345,22 @@ func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing [
 		}
 		existing, err := os.ReadFile(target)
 		existed := true
-		switch {
-		case os.IsNotExist(err):
+		if os.IsNotExist(err) {
 			existed = false
+		} else if err != nil {
+			return err
+		}
+
+		data, touchedKeys, berr := buildData(existing, existed)
+		if berr != nil {
+			return berr
+		}
+
+		if !existed {
 			if err := config.WriteFileAtomic(backupAbsentPath(target), []byte{}, 0o600); err != nil {
 				return err
 			}
-		case err != nil:
-			return err
-		default:
+		} else {
 			info, statErr := os.Stat(target)
 			if statErr != nil {
 				return statErr
@@ -333,11 +376,12 @@ func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing [
 		if err := config.WriteFileAtomic(backupOwnerPath(target), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 			return err
 		}
-		data, touchedKeys, berr := buildData(existing, existed)
-		if berr != nil {
-			return berr
-		}
-		if existed && len(touchedKeys) > 0 {
+		// touchedKeys is recorded regardless of existed: a JSON target the
+		// agent creates fresh during the session (the common case for a
+		// worktree with no pre-existing settings.local.json) still needs
+		// key-level restore, not a wholesale delete of everything the
+		// agent wrote — see restoreIfBackedUpLocked's absent branch.
+		if len(touchedKeys) > 0 {
 			keysJSON, jerr := json.Marshal(touchedKeys)
 			if jerr != nil {
 				return jerr
@@ -432,9 +476,31 @@ func restoreIfBackedUpLocked(target string) (restored bool, live bool, err error
 	}
 
 	if absentPresent {
+		// touchedKeys (recorded even for a target that did not exist
+		// before — see snapshotAndWrite) lets a JSON target the agent
+		// wrote additional content into during the session keep that
+		// content: only the profile's own keys are stripped, not the
+		// whole file. Falls back to deleting the whole file (the original
+		// "didn't exist before" semantics) when there's no .keys marker,
+		// the current content isn't valid JSON, or nothing is left after
+		// stripping the profile's keys.
+		if keysRaw, kerr := os.ReadFile(backupKeysPath(target)); kerr == nil {
+			var touchedKeys []string
+			if json.Unmarshal(keysRaw, &touchedKeys) == nil {
+				if reduced, ok := surgicalDeleteJSON(target, touchedKeys); ok {
+					if werr := config.WriteFileAtomic(target, reduced, 0o644); werr != nil {
+						return false, false, werr
+					}
+					_ = os.Remove(backupKeysPath(target))
+					_ = os.Remove(backupOwnerPath(target))
+					return true, false, os.Remove(backupAbsentPath(target))
+				}
+			}
+		}
 		if rmErr := os.Remove(target); rmErr != nil && !os.IsNotExist(rmErr) {
 			return false, false, rmErr
 		}
+		_ = os.Remove(backupKeysPath(target))
 		_ = os.Remove(backupOwnerPath(target))
 		return true, false, os.Remove(backupAbsentPath(target))
 	}

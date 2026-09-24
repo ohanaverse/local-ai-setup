@@ -68,25 +68,55 @@ differently:
 
 Any real file a profile's `config_content` writes
 (`.claude/settings.local.json`, `agent-wt-profile.config.toml`) is
-snapshotted before the write and restored right after the launched agent's
-`cmd.Run()` call returns — on a normal exit, success or a non-zero exit
-code. **It is NOT restored on Ctrl+C or SIGHUP**: Go processes exit on
-those signals by default without running wt's explicit (non-deferred)
-cleanup call, so interrupting a profiled session, or closing the terminal
-mid-session, can leave the profile-rewritten file in place. Nothing is
-lost forever, though — every subsequent model-routed launch of that same
-agent (claude or codex; native-model and command-agent launches skip this,
-same as they skip profile resolution itself) checks that agent's
-config_content target for a leftover file from a past session, whether or
-not a profile happens to match THIS launch, and restores it automatically
-before doing anything else, printing a one-line notice
+snapshotted before the write. What happens at write time and at restore
+differs by agent:
+
+- **claude's `settings.local.json` is MERGED, not replaced.** It isn't a
+  wt-exclusive file — Claude Code itself writes to it during the session
+  (e.g. persisting a user-approved "always allow" permission grant) — so
+  the write merges `config_content` into whatever is already there, and
+  cleanup restores only the specific top-level keys `config_content`
+  itself touched (or removes them, if the file didn't exist before the
+  write), leaving anything the agent wrote to OTHER keys during the
+  session untouched. Hand-editing a key the profile does NOT touch is
+  therefore safe even mid-session; hand-editing a key it DOES touch will
+  be reverted to its pre-launch value (or removed, if it didn't exist
+  before) when the session ends.
+- **codex's `agent-wt-profile.config.toml` is a dedicated, wt-owned global
+  file** nothing else writes to, so it keeps a simple whole-file
+  snapshot/replace/restore — don't hand-edit it while a profiled codex
+  session might be running.
+
+Every other file a profile touches (env vars, CLI args) leaves nothing
+behind.
+
+Restore runs right after the launched agent's `cmd.Run()` call returns —
+on a normal exit, success or a non-zero exit code. **It is NOT restored on
+Ctrl+C or SIGHUP**: Go processes exit on those signals by default without
+running wt's explicit (non-deferred) cleanup call, so interrupting a
+profiled session, or closing the terminal mid-session, can leave the
+profile-rewritten file in place. Nothing is lost forever, though — every
+subsequent launch of that same agent (claude or codex, INCLUDING a
+native-model launch — self-heal runs before profile resolution and does
+not depend on this launch matching a profile of its own; only a
+command-agent launch skips it, since command agents have no
+config_content target at all) checks that agent's config_content target
+for a leftover file from a past session, whether or not a profile happens
+to match THIS launch, and restores it automatically before doing anything
+else, printing a one-line notice
 (`wt: restored a leftover profile-managed file from a previous session: <path>`)
 when it does. So a Ctrl+C mid-session just delays the restore until the
-*next* (non-native, model-routed) launch of that agent, rather than
-losing the original content.
-Don't hand-edit these two specific files while a profiled session might be
-running; every other file a profile touches (env vars, CLI args) leaves
-nothing behind.
+*next* launch of that agent, rather than losing the original content.
+
+**A second launch touching the same target while the first is still
+running is refused, not raced.** Each backup records the pid of the wt
+process that owns it; a launch whose config_content target is still owned
+by a DIFFERENT, still-live wt process (most relevant to codex, whose
+target is one fixed global path shared across every worktree) fails with
+"already in use by another live wt session" instead of self-healing over
+it or writing on top of it — that launch degrades to unprofiled, same as
+any other config_content failure. A process is always free to restore its
+own backup at its own normal exit.
 
 ## Phase-1 example profiles
 

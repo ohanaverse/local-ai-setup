@@ -166,17 +166,27 @@ func findModelByID(cfg *config.Config, id string) (config.Model, error) {
 }
 
 // topLevelEnabledLineRe matches a top-level `enabled = true|false` line,
-// with or without a trailing same-line `#` comment (capture group 1).
-// Profile's Go struct (internal/profiles.Profile) has no field named
-// "enabled", so this can only ever match the file's own top-level toggle —
-// but the search is still scoped to the text BEFORE the first
-// "[[profiles]]" table header (see setEnabledLine) so a future field
-// addition, or a profile entry with stray top-level-looking text in a
-// string value, can never be mistaken for the toggle line. The trailing
-// group uses [ \t] (not \s) so it can never cross a newline and swallow an
-// unrelated comment on the FOLLOWING line (e.g. one documenting the first
-// [[profiles]] entry below it).
-var topLevelEnabledLineRe = regexp.MustCompile(`(?m)^enabled\s*=\s*(?:true|false)([ \t]*#[^\n]*)?$`)
+// capturing whatever trailing same-line content follows it (group 1: any
+// run of spaces/tabs, then an optional `#` comment) plus an optional
+// trailing `\r` (group 2) for a CRLF-terminated file. Profile's Go struct
+// (internal/profiles.Profile) has no field named "enabled", so this can
+// only ever match the file's own top-level toggle — but the search is
+// still scoped to the text BEFORE the first "[[profiles]]" table header
+// (see setEnabledLine) so a future field addition, or a profile entry
+// with stray top-level-looking text in a string value, can never be
+// mistaken for the toggle line. Group 1 is NOT itself optional — its own
+// pieces (`[ \t]*` and the `#...` comment) can each match zero-width — so
+// bare trailing whitespace with no comment is captured too (a `(...)?`
+// wrapping the whole group, as an earlier version of this regex had,
+// requires the WHOLE group to fail together on a comment-free line with
+// trailing whitespace, which then made `$` unable to match past that
+// whitespace at all — the exact invalid-duplicate-`enabled`-key bug this
+// regex exists to prevent, just triggered by trailing whitespace instead
+// of a trailing comment). `[ \t]`/`[^\r\n]` (not `\s`) keep both groups
+// from ever crossing a newline and swallowing an unrelated comment on the
+// FOLLOWING line (e.g. one documenting the first [[profiles]] entry
+// below it).
+var topLevelEnabledLineRe = regexp.MustCompile(`(?m)^enabled\s*=\s*(?:true|false)([ \t]*(?:#[^\r\n]*)?)(\r?)$`)
 
 // setEnabledLine returns content with its top-level `enabled = ...` line
 // set to want, editing only that one line (or inserting one at the top
@@ -197,10 +207,11 @@ func setEnabledLine(content string, want bool) string {
 		head, tail = content[:i], content[i:]
 	}
 	if loc := topLevelEnabledLineRe.FindStringSubmatchIndex(head); loc != nil {
-		trailing := ""
-		if loc[2] != -1 {
-			trailing = head[loc[2]:loc[3]]
-		}
+		// Groups 1 (trailing whitespace/comment) and 2 (an optional \r)
+		// are adjacent in the pattern with nothing between them, so the
+		// span from the start of group 1 to the end of group 2 is exactly
+		// their concatenation.
+		trailing := head[loc[2]:loc[5]]
 		return head[:loc[0]] + newLine + trailing + head[loc[1]:] + tail
 	}
 	return newLine + "\n\n" + head + tail

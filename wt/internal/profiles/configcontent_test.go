@@ -934,3 +934,95 @@ func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
 		t.Errorf("self-healed content = %v, want %v", gotDoc, wantDoc)
 	}
 }
+
+// TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails is the
+// regression lock for the final-review finding that a buildData failure
+// (e.g. existing settings.local.json is not valid JSON) used to still
+// leave a fresh backup + owner marker behind, because they were written
+// BEFORE buildData ran. A later launch's self-heal would then treat that
+// marker as an ordinary orphaned-crash backup and silently overwrite
+// whatever the user had since hand-fixed the file to, with the stale
+// pre-failure snapshot. buildData must run — and succeed — before any
+// backup marker is written, so a failed write leaves nothing behind to
+// self-heal over.
+func TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	invalidJSON := []byte(`{ not valid json`)
+	if err := os.WriteFile(target, invalidJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err == nil {
+		t.Fatal("ApplyConfigContent() error = nil, want an error (existing content is not valid JSON)")
+	}
+
+	if _, statErr := os.Stat(backupPresentPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupPresentPath exists after a buildData failure, want no orphaned backup (stat err = %v)", statErr)
+	}
+	if _, statErr := os.Stat(backupOwnerPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupOwnerPath exists after a buildData failure, want no orphaned owner marker (stat err = %v)", statErr)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(invalidJSON) {
+		t.Errorf("target = %s, want it left untouched %s", got, invalidJSON)
+	}
+}
+
+// TestApplyConfigContentCleanupPreservesKeysWrittenDuringSessionWhenTargetDidNotExistBefore
+// is the regression lock for the final-review finding that the "target did
+// not exist before" restore branch always deleted the whole file, even
+// when the launched agent wrote legitimate content into it during the
+// session (e.g. Claude Code creating settings.local.json for the first
+// time — the common case for a fresh worktree — and then persisting a
+// permission grant into it): TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession
+// already fixed this for a target that DID exist beforehand, but the
+// "did not exist" branch still discarded everything unconditionally.
+func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSessionWhenTargetDidNotExistBefore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	cleanup, err := ApplyConfigContent(cmd, "claude", worktree, rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+
+	// Simulate the launched agent creating settings.local.json for the
+	// first time and persisting a permission grant into it mid-session.
+	withGrant := []byte(`{"env":{"X":"1"},"permissions":{"allow":["Bash(npm test)"]}}`)
+	if err := os.WriteFile(target, withGrant, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("target was deleted, losing the agent's permission grant: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("restored file is not valid JSON: %v (%s)", err, got)
+	}
+	if _, has := doc["permissions"]; !has {
+		t.Errorf("restored content = %s, lost the permission grant the agent wrote during the session", got)
+	}
+	if _, has := doc["env"]; has {
+		t.Errorf("restored content = %s, want the profile's own env key removed (target did not exist before)", got)
+	}
+}
