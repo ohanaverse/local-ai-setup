@@ -71,6 +71,37 @@ func TestResolveModelTierOverridesLocationTierSameKey(t *testing.T) {
 	}
 }
 
+// TestResolveConfigContentDeepMergesAcrossTiers is the regression lock for
+// the code-review finding that Resolve's ConfigContent merge was a shallow
+// top-level overwrite: a location-tier profile setting
+// config_content.env.MAX_THINKING_TOKENS and a model-tier profile setting
+// config_content.env.ANTHROPIC_DEFAULT_SONNET_MODEL both collide on the
+// SAME top-level "env" key. Both nested fields must survive in the merged
+// result — the model tier must not wholesale-replace the location tier's
+// "env" object just because they share that one top-level key.
+func TestResolveConfigContentDeepMergesAcrossTiers(t *testing.T) {
+	store := Store{Enabled: true, Profiles: []Profile{
+		{Agent: "claude", Match: "location", Location: "local", ConfigContent: map[string]any{
+			"env": map[string]any{"MAX_THINKING_TOKENS": "4096"},
+		}},
+		{Agent: "claude", Match: "model", Model: "ollama/qwen3.8:27b-mlx", ConfigContent: map[string]any{
+			"env": map[string]any{"ANTHROPIC_DEFAULT_SONNET_MODEL": "{{model_name}}"},
+		}},
+	}}
+	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama", ModelName: "qwen3.8:27b-mlx"}
+	rp := Resolve(store, "claude", testCfg(), m)
+	env, ok := rp.ConfigContent["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("ConfigContent[env] = %#v, want a map", rp.ConfigContent["env"])
+	}
+	if env["MAX_THINKING_TOKENS"] != "4096" {
+		t.Errorf("env[MAX_THINKING_TOKENS] = %v, want 4096 (location-tier value must survive the model-tier merge)", env["MAX_THINKING_TOKENS"])
+	}
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "qwen3.8:27b-mlx" {
+		t.Errorf("env[ANTHROPIC_DEFAULT_SONNET_MODEL] = %v, want the substituted model name", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+}
+
 // TestResolveArgsIsWholeFieldReplace verifies Args (a list, not a keyed
 // map) follows whole-field replacement: a more specific tier's Args fully
 // replaces a less specific tier's Args rather than concatenating, per the

@@ -61,11 +61,12 @@ func Resolve(store Store, agent string, cfg *config.Config, m config.Model) Reso
 			}
 			out.Env[k] = substitute(v, m)
 		}
-		for k, v := range p.ConfigContent {
+		if len(p.ConfigContent) > 0 {
 			if out.ConfigContent == nil {
 				out.ConfigContent = map[string]any{}
 			}
-			out.ConfigContent[k] = substituteAny(v, m)
+			substituted, _ := substituteAny(p.ConfigContent, m).(map[string]any)
+			mergeInto(out.ConfigContent, substituted)
 		}
 		if len(p.Args) > 0 {
 			out.ExtraArgs = substituteAll(p.Args, m)

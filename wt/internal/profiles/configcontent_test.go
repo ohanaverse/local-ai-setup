@@ -501,6 +501,45 @@ func TestApplyConfigContentOpenCodeMergesIntoEnv(t *testing.T) {
 	}
 }
 
+// TestMergeOpenCodeEnvDeepMergesCollidingTopLevelKey is the regression lock
+// for the code-review finding that mergeOpenCodeEnv did a shallow merge: a
+// profile's config_content.provider colliding with the opencode driver's
+// own top-level "provider" key (baseURL/apiKey/models — set by Build())
+// must merge the profile's new nested field in, not wholesale-replace the
+// whole object and silently drop the connectivity fields.
+func TestMergeOpenCodeEnvDeepMergesCollidingTopLevelKey(t *testing.T) {
+	cmd := exec.Command("opencode")
+	cmd.Env = []string{`OPENCODE_CONFIG_CONTENT={"provider":{"agent-wt":{"baseURL":"http://x","apiKey":"k"}}}`}
+	rp := ResolvedProfile{ConfigContent: map[string]any{
+		"provider": map[string]any{"agent-wt": map[string]any{"extra": "field"}},
+	}}
+	cleanup, err := ApplyConfigContent(cmd, "opencode", "/tmp/wt", rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	defer cleanup()
+
+	merged := strings.TrimPrefix(cmd.Env[0], openCodeConfigEnvPrefix)
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(merged), &doc); err != nil {
+		t.Fatalf("merged env is not valid JSON: %v (%s)", err, merged)
+	}
+	provider, ok := doc["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("doc[provider] = %#v, want a map", doc["provider"])
+	}
+	agentWT, ok := provider["agent-wt"].(map[string]any)
+	if !ok {
+		t.Fatalf("doc[provider][agent-wt] = %#v, want a map", provider["agent-wt"])
+	}
+	if agentWT["baseURL"] != "http://x" || agentWT["apiKey"] != "k" {
+		t.Errorf("doc[provider][agent-wt] = %v, lost the driver's own baseURL/apiKey", agentWT)
+	}
+	if agentWT["extra"] != "field" {
+		t.Errorf("doc[provider][agent-wt] = %v, missing the profile's merged field", agentWT)
+	}
+}
+
 // TestApplyConfigContentPreservesOriginalFilePermissions verifies that
 // cleanup restores a pre-existing target with its ORIGINAL permission bits
 // (e.g. a hand-set 0600), not a hardcoded 0644 — restoreIfBackedUpLocked

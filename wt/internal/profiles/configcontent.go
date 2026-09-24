@@ -120,9 +120,7 @@ func mergeOpenCodeEnv(cmd *exec.Cmd, content map[string]any) error {
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(e, openCodeConfigEnvPrefix)), &doc); err != nil {
 			return fmt.Errorf("profile: existing OPENCODE_CONFIG_CONTENT is not valid JSON: %w", err)
 		}
-		for k, v := range content {
-			doc[k] = v
-		}
+		mergeInto(doc, content)
 		merged, err := json.Marshal(doc)
 		if err != nil {
 			return fmt.Errorf("profile: re-encode OPENCODE_CONFIG_CONTENT: %w", err)
