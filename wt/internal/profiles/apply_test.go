@@ -86,3 +86,36 @@ func TestApplyToCmdEmptyIsNoop(t *testing.T) {
 		t.Errorf("cmd.Args changed on empty ResolvedProfile: %v -> %v", before, cmd.Args)
 	}
 }
+
+// TestApplyEnvAndArgsNeverAppliesWrapper verifies the split-out
+// ApplyEnvAndArgs applies Env/ExtraArgs but leaves Wrapper untouched — a
+// caller (cmd/wt's applyResolvedProfile) that wants to interleave a
+// config_content mutation between args and wrapper depends on this.
+func TestApplyEnvAndArgsNeverAppliesWrapper(t *testing.T) {
+	cmd := exec.Command("pi", "--model", "x")
+	rp := ResolvedProfile{
+		ExtraArgs: []string{"--extra"},
+		Wrapper:   &WrapperSpec{Binary: "definitely-not-a-real-binary-xyz"},
+	}
+	ApplyEnvAndArgs(cmd, rp)
+	want := []string{"pi", "--model", "x", "--extra"}
+	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
+		t.Errorf("cmd.Args = %v, want %v (wrapper not applied)", cmd.Args, want)
+	}
+}
+
+// TestApplyWrapperExported verifies the exported ApplyWrapper (formerly
+// unexported applyWrapper) behaves identically — cmd/wt calls it directly
+// so it can apply config_content between args and wrapper.
+func TestApplyWrapperExported(t *testing.T) {
+	cmd := exec.Command("pi", "--model", "x")
+	w := &WrapperSpec{Binary: "true", ArgsTemplate: []string{"--wrapped", "{{args}}"}}
+	if err := ApplyWrapper(cmd, w); err != nil {
+		t.Fatalf("ApplyWrapper() error = %v", err)
+	}
+	want := []string{"--wrapped", "--model", "x"}
+	got := cmd.Args[1:]
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("cmd.Args[1:] = %v, want %v", got, want)
+	}
+}

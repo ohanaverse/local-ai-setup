@@ -1453,6 +1453,37 @@ func TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing(t *testing.
 	}
 }
 
+// TestApplyResolvedProfileExtraArgsPrecedeCodexProfileFlag is the
+// regression lock for the code-review finding that a codex profile
+// combining the args and config_file mechanisms (both declared by codex's
+// ProfileMechanisms, and therefore Validate-legal) placed the profile's own
+// ExtraArgs AFTER the config_content-driven "--profile agent-wt-profile"
+// flag instead of before it. This hand-builds a ResolvedProfile with both
+// (the only way to exercise it — no Phase-1 example profile combines them)
+// and asserts the ExtraArgs appear before "--profile" in cmd.Args.
+func TestApplyResolvedProfileExtraArgsPrecedeCodexProfileFlag(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", t.TempDir())
+
+	rp := profiles.ResolvedProfile{
+		ExtraArgs:     []string{"-c", "model_reasoning_effort=\"low\""},
+		ConfigContent: map[string]any{"some_key": "some_value"},
+	}
+	cmd := exec.Command("codex", "--model", "x")
+
+	cleanup, err := applyResolvedProfile(cmd, "codex", rp)
+	if err != nil {
+		t.Fatalf("applyResolvedProfile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+
+	want := []string{"codex", "--model", "x", "-c", "model_reasoning_effort=\"low\"", "--profile", "agent-wt-profile"}
+	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
+		t.Errorf("cmd.Args = %v, want %v (ExtraArgs before --profile)", cmd.Args, want)
+	}
+}
+
 // TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled is the
 // regression lock for Important finding #4 (partial fix): a config_content
 // file left behind by a PRIOR session that never restored it (wt killed

@@ -391,18 +391,21 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 }
 
 // applyResolvedProfile applies an already-confirmed ResolvedProfile to
-// cmd: config_content first, then ApplyToCmd (env/args/wrapper) — so a
-// codex profile's "--profile agent-wt-profile" arg it appends is captured
-// by a later wrapper's {{args}} splice (no Phase-1 profile combines the
-// two, but this keeps the ordering correct if one ever does). Extracted
-// from applyProfileForLaunch so this config_content/wrapper interaction —
-// specifically that a wrapper failure must still trigger the
-// already-obtained content cleanup — is directly testable with a
-// hand-built ResolvedProfile, without needing a profiles.toml entry that
-// passes Validate (no Phase-1 agent declares both config_file and wrapper
-// mechanisms together).
+// cmd, in three steps: env/args first, then config_content, then the
+// wrapper last. This ordering means a codex profile's own declared args
+// (the "args" mechanism) land BEFORE config_content's own
+// "--profile agent-wt-profile" flag rather than after it, and the wrapper
+// — applied last — still captures everything appended before it in its
+// {{args}} splice (the one interaction this package's tests pin; no
+// Phase-1 profile combines config_file with wrapper, but this keeps the
+// ordering correct if one ever does). Extracted from applyProfileForLaunch
+// so this config_content/wrapper interaction — specifically that a
+// wrapper failure must still trigger the already-obtained content cleanup
+// — is directly testable with a hand-built ResolvedProfile, without
+// needing a profiles.toml entry that passes Validate.
 func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfile) (cleanup func() error, err error) {
 	noop := func() error { return nil }
+	profiles.ApplyEnvAndArgs(cmd, rp)
 	contentCleanup, err := profiles.ApplyConfigContent(cmd, agent, cmd.Dir, rp)
 	if err != nil {
 		// Per the design's global constraint, a profile resolution/
@@ -413,17 +416,19 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 		fmt.Fprintf(os.Stderr, "wt: profile config_content: %v (profiles disabled for this launch)\n", err)
 		return noop, nil
 	}
-	if err := profiles.ApplyToCmd(cmd, rp); err != nil {
-		// ApplyToCmd's one error case (a wrapper mechanism naming a
-		// missing binary) is the sole exception the design calls out as
-		// fatal — but any config file ApplyConfigContent already wrote or
-		// backed up above must still be restored before we return, or a
-		// combined config_content+wrapper profile would leak the
-		// rewritten file on disk.
-		if cerr := contentCleanup(); cerr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profile cleanup after wrapper error: %v\n", cerr)
+	if rp.Wrapper != nil {
+		if err := profiles.ApplyWrapper(cmd, rp.Wrapper); err != nil {
+			// ApplyWrapper's one error case (a wrapper mechanism naming a
+			// missing binary) is the sole exception the design calls out
+			// as fatal — but any config file ApplyConfigContent already
+			// wrote or backed up above must still be restored before we
+			// return, or a combined config_content+wrapper profile would
+			// leak the rewritten file on disk.
+			if cerr := contentCleanup(); cerr != nil {
+				fmt.Fprintf(os.Stderr, "wt: profile cleanup after wrapper error: %v\n", cerr)
+			}
+			return noop, err
 		}
-		return noop, err
 	}
 	return contentCleanup, nil
 }
