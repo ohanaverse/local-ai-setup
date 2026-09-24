@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -134,9 +136,13 @@ func TestConfigFileTargetCodexHomeDirErrorPropagates(t *testing.T) {
 }
 
 // TestApplyConfigContentWritesAndBacksUpExistingFile verifies an existing
-// target file's content is snapshotted before being overwritten, and that
-// the returned cleanup restores it exactly — the "save, overwrite for the
-// session, restore on exit" behavior the design commits to.
+// target file's content is snapshotted before config_content is merged in,
+// and that the returned cleanup restores the profile's own top-level keys
+// to their pre-launch values — the "save, merge for the session, restore
+// on exit" behavior the design commits to. Cleanup now does a key-level
+// restore (re-marshaled JSON), not a byte-for-byte one — compared
+// semantically here; see
+// TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession for why.
 func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
@@ -175,8 +181,15 @@ func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(restored) != string(original) {
-		t.Errorf("restored content = %s, want original %s", restored, original)
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(restored, &gotDoc); err != nil {
+		t.Fatalf("restored content is not valid JSON: %v (%s)", err, restored)
+	}
+	if err := json.Unmarshal(original, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("restored content = %v, want %v (same keys/values as the pre-launch original)", gotDoc, wantDoc)
 	}
 }
 
@@ -247,8 +260,15 @@ func TestApplyConfigContentSelfHealsOrphanedBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(handEdited) {
-		t.Errorf("self-healed content = %s, want original hand-edited content %s", got, handEdited)
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(got, &gotDoc); err != nil {
+		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
+	}
+	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("self-healed content = %v, want %v (the original hand-edited content)", gotDoc, wantDoc)
 	}
 }
 
@@ -436,8 +456,15 @@ func TestSelfHealRestoresOrphanedBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(handEdited) {
-		t.Errorf("self-healed content = %s, want original hand-edited content %s", got, handEdited)
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(got, &gotDoc); err != nil {
+		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
+	}
+	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("self-healed content = %v, want %v (the original hand-edited content)", gotDoc, wantDoc)
 	}
 }
 
@@ -508,8 +535,15 @@ func TestRestoreIfBackedUpReturnsTrueWhenCleanupFailsAfterSuccessfulRestore(t *t
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if string(got) != string(handEdited) {
-		t.Errorf("target content = %s, want the restored hand-edited content %s", got, handEdited)
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(got, &gotDoc); err != nil {
+		t.Fatalf("restored content is not valid JSON: %v (%s)", err, got)
+	}
+	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("target content = %v, want %v (the restored hand-edited content)", gotDoc, wantDoc)
 	}
 }
 
@@ -669,5 +703,234 @@ func TestWithTargetLockSerializesConcurrentAccess(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("restoreIfBackedUp() never completed after the lock was released")
+	}
+}
+
+// TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession is the
+// regression lock for the code-review finding that cleanup blindly
+// restored the pre-launch snapshot, discarding any legitimate content the
+// launched agent itself wrote to the same file during the session (e.g.
+// Claude Code persisting a user-approved permission grant into
+// settings.local.json). It simulates the agent writing a new top-level key
+// while the profile-merged file is in place, then asserts cleanup keeps
+// that key while still reverting the profile's own "env" key to its
+// pre-launch value.
+func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"env":{"MY_OWN_SETTING":"keep-me"}}`)
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"MAX_THINKING_TOKENS": "4096"}}}
+	cleanup, err := ApplyConfigContent(cmd, "claude", worktree, rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+
+	// Simulate the launched agent (e.g. Claude Code) persisting a new
+	// top-level key into the same file mid-session — a real "always
+	// allow" permission grant, in production.
+	withGrant := []byte(`{"env":{"MY_OWN_SETTING":"keep-me","MAX_THINKING_TOKENS":"4096"},"permissions":{"allow":["Bash(npm test)"]}}`)
+	if err := os.WriteFile(target, withGrant, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("restored file is not valid JSON: %v (%s)", err, got)
+	}
+	if _, has := doc["permissions"]; !has {
+		t.Errorf("restored content = %s, lost the permission grant the agent wrote during the session", got)
+	}
+	env, ok := doc["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("restored content = %s, want an env object", got)
+	}
+	if env["MY_OWN_SETTING"] != "keep-me" {
+		t.Errorf("env = %v, want the pre-launch MY_OWN_SETTING preserved", env)
+	}
+	if _, has := env["MAX_THINKING_TOKENS"]; has {
+		t.Errorf("env = %v, want the profile's own MAX_THINKING_TOKENS key removed on restore", env)
+	}
+}
+
+// TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession is the
+// regression lock for the code-review finding that the per-target flock
+// only serializes the brief snapshot/write/restore call, not a launched
+// agent's whole lifetime: a second launch touching the SAME config_content
+// target (e.g. codex's fixed global path, shared across every worktree)
+// used to self-heal over — or write on top of — a backup that in fact
+// still belongs to a live, still-running sibling wt session. This
+// simulates that sibling by writing the backup's .owner marker to a
+// different (fake) pid and forcing pidAlive to report it alive; the
+// second session's write must refuse instead of clobbering the first
+// session's still-in-use file.
+func TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"hooks":{"my-own":"thing"}}`)
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := exec.Command("claude")
+	rp1 := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := ApplyConfigContent(cmd1, "claude", worktree, rp1); err != nil {
+		t.Fatalf("session A ApplyConfigContent() error = %v", err)
+	}
+
+	fakeOwnerPid := os.Getpid() + 999983 // arbitrary, distinct from this test process's own pid
+	if err := os.WriteFile(backupOwnerPath(target), []byte(strconv.Itoa(fakeOwnerPid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origPidAlive := pidAlive
+	pidAlive = func(pid int) bool { return pid == fakeOwnerPid }
+	t.Cleanup(func() { pidAlive = origPidAlive })
+
+	sessionAContent, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd2 := exec.Command("claude")
+	rp2 := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"Y": "2"}}}
+	if _, err := ApplyConfigContent(cmd2, "claude", worktree, rp2); err == nil {
+		t.Fatal("session B ApplyConfigContent() error = nil, want an error (target owned by a live sibling session)")
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(sessionAContent) {
+		t.Errorf("target was modified by session B: got %s, want session A's untouched content %s", got, sessionAContent)
+	}
+	if _, err := os.Stat(backupPresentPath(target)); err != nil {
+		t.Errorf("session A's backup was removed by session B's failed attempt: %v", err)
+	}
+}
+
+// TestSelfHealSkipsBackupOwnedByLiveProcess verifies the exported SelfHeal
+// entry point (used by cmd/wt's applyProfileForLaunch on every launch of an
+// agent) also respects the live-owner guard: it must never restore a
+// backup a different, still-running wt process still owns.
+func TestSelfHealSkipsBackupOwnedByLiveProcess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"hooks":{"my-own":"thing"}}`)
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+
+	fakeOwnerPid := os.Getpid() + 999983
+	if err := os.WriteFile(backupOwnerPath(target), []byte(strconv.Itoa(fakeOwnerPid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origPidAlive := pidAlive
+	pidAlive = func(pid int) bool { return pid == fakeOwnerPid }
+	t.Cleanup(func() { pidAlive = origPidAlive })
+
+	liveContent, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := SelfHeal(target)
+	if err != nil {
+		t.Fatalf("SelfHeal() error = %v, want nil (a live owner must never fail the launch)", err)
+	}
+	if restored {
+		t.Error("SelfHeal() restored = true, want false (backup is owned by a live sibling session)")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(liveContent) {
+		t.Errorf("SelfHeal() modified a live-owned target: got %s, want %s", got, liveContent)
+	}
+}
+
+// TestRestoreIfBackedUpStillHealsWhenOwnerIsDead verifies the pre-existing
+// crash-recovery self-heal behavior survives the new owner-liveness guard:
+// when the recorded owner pid is a DIFFERENT process that is no longer
+// alive (the owning wt process was killed, e.g. `kill -9`), the backup is
+// still treated as orphaned and restored, exactly as before this fix.
+func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
+	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+
+	fakeOwnerPid := os.Getpid() + 999983
+	if err := os.WriteFile(backupOwnerPath(target), []byte(strconv.Itoa(fakeOwnerPid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origPidAlive := pidAlive
+	pidAlive = func(int) bool { return false } // the recorded owner is no longer running
+	t.Cleanup(func() { pidAlive = origPidAlive })
+
+	restored, err := restoreIfBackedUp(target)
+	if err != nil {
+		t.Fatalf("restoreIfBackedUp() error = %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreIfBackedUp() restored = false, want true (owner pid is dead — orphaned backup)")
+	}
+	var gotDoc, wantDoc map[string]any
+	gotBytes, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(gotBytes, &gotDoc); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("self-healed content = %v, want %v", gotDoc, wantDoc)
 	}
 }
