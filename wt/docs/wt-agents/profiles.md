@@ -121,11 +121,10 @@ config_content = { compaction = { auto = true, reserved = 10000 } }
 
 ## Confirm prompt
 
-An interactive launch (`wt -A <agent> -M <model>`, or the picker once the
-TUI follow-up lands) that resolves a non-empty profile asks before
-applying it — default **yes** on a bare Enter. A non-interactive launch
-(no controlling terminal: scripts, CI) applies automatically with no
-prompt.
+An interactive launch (`wt -A <agent> -M <model>`, or the worktree/agent/
+model picker) that resolves a non-empty profile asks before applying it —
+default **yes** on a bare Enter. A non-interactive launch (no controlling
+terminal: scripts, CI) applies automatically with no prompt.
 
 **`wt smoke` does NOT apply profiles today.** It builds its launch
 commands directly via `agents.BuildLaunchCmd` and never goes through
