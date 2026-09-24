@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
@@ -1030,5 +1032,197 @@ func TestRunAgentCmdNativeModelSkipsStopPicker(t *testing.T) {
 	}
 	if called {
 		t.Error("stop picker ran for a native model")
+	}
+}
+
+// TestRunAgentCmdAppliesConfirmedProfile verifies a matching, TTY-confirmed
+// profile's Env lands on the launched process's environment — the
+// end-to-end path from resolution through ApplyToCmd, exercised through
+// runAgentCmd itself (not just the internal/profiles unit tests) so a
+// wiring mistake in launch.go is caught here.
+func TestRunAgentCmdAppliesConfirmedProfile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+env = { WT_TEST_PROFILE_APPLIED = "1" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return true, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+	if err := runAgentCmd(cmd, "claude", m, cfg); err != nil {
+		t.Fatalf("runAgentCmd() error = %v", err)
+	}
+	found := false
+	for _, e := range cmd.Env {
+		if e == "WT_TEST_PROFILE_APPLIED=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("cmd.Env = %v, want WT_TEST_PROFILE_APPLIED=1", cmd.Env)
+	}
+}
+
+// TestRunAgentCmdSkipsProfileWhenDeclined verifies declining the confirm
+// prompt runs the agent completely unprofiled — the "use default" branch
+// of the prompt must actually skip application, not just skip the prompt
+// text.
+func TestRunAgentCmdSkipsProfileWhenDeclined(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+env = { WT_TEST_PROFILE_APPLIED = "1" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return false, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+	if err := runAgentCmd(cmd, "claude", m, cfg); err != nil {
+		t.Fatalf("runAgentCmd() error = %v", err)
+	}
+	for _, e := range cmd.Env {
+		if e == "WT_TEST_PROFILE_APPLIED=1" {
+			t.Errorf("cmd.Env = %v, profile was declined but applied anyway", cmd.Env)
+		}
+	}
+}
+
+// TestRunAgentCmdGlobalOffSkipsPromptAndApplication verifies `enabled =
+// false` in profiles.toml is a true kill switch: no prompt (confirmProfile
+// must not even be called) and no application, even when a profile would
+// otherwise match.
+func TestRunAgentCmdGlobalOffSkipsPromptAndApplication(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+enabled = false
+
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+env = { WT_TEST_PROFILE_APPLIED = "1" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	promptCalled := false
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { promptCalled = true; return true, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+	if err := runAgentCmd(cmd, "claude", m, cfg); err != nil {
+		t.Fatalf("runAgentCmd() error = %v", err)
+	}
+	if promptCalled {
+		t.Error("confirmProfile was called with profiles disabled — it must never be reached")
+	}
+}
+
+// TestRunAgentCmdSkipsProfileForCommandAndNativeModels verifies command
+// agents (m.ID == "") and native models never trigger profile resolution
+// at all — confirmProfile must not be called, matching the existing
+// "no priced model, no survey" convention for both cases.
+func TestRunAgentCmdSkipsProfileForCommandAndNativeModels(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	promptCalled := false
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { promptCalled = true; return true, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	cfg := &config.Config{}
+	if err := runAgentCmd(exec.Command("true"), "shell", config.Model{}, cfg); err != nil {
+		t.Fatalf("runAgentCmd() error = %v", err)
+	}
+	if promptCalled {
+		t.Error("confirmProfile called for a command agent (m.ID == \"\")")
+	}
+	if err := runAgentCmd(exec.Command("true"), "claude", config.Model{ID: "claude/native", Native: true, ModelName: "native"}, cfg); err != nil {
+		t.Fatalf("runAgentCmd() error = %v", err)
+	}
+	if promptCalled {
+		t.Error("confirmProfile called for a native model")
+	}
+}
+
+// TestRunAgentCmdMalformedProfilesTomlDegradesGracefully verifies a
+// syntax error in profiles.toml warns to stderr and still launches
+// normally — a user's typo in a hand-edited file must never block an
+// agent launch.
+func TestRunAgentCmdMalformedProfilesTomlDegradesGracefully(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte("not [ valid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) {
+		t.Fatal("confirmProfile called despite a malformed profiles.toml")
+		return false, nil
+	}
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	if err := runAgentCmd(exec.Command("true"), "claude", m, cfg); err != nil {
+		t.Fatalf("runAgentCmd() error = %v, want a normal launch despite the malformed file", err)
+	}
+}
+
+// TestPromptProfileNoTTYDefaultsToApply verifies promptProfile itself
+// (not the confirmProfile seam other tests in this file swap out) applies
+// automatically — returns (true, nil) — when /dev/tty cannot be opened.
+// This is the actual behavior a non-interactive launch (script, wt smoke,
+// CI) relies on; it's tested via the openTTY seam so the test is
+// deterministic and never hangs waiting on real terminal input regardless
+// of whether the test runner happens to have a controlling terminal.
+func TestPromptProfileNoTTYDefaultsToApply(t *testing.T) {
+	old := openTTY
+	openTTY = func() (*os.File, error) { return nil, errors.New("no tty") }
+	t.Cleanup(func() { openTTY = old })
+
+	apply, err := promptProfile(profiles.ResolvedProfile{Sources: []string{"location=local"}})
+	if err != nil {
+		t.Fatalf("promptProfile() error = %v", err)
+	}
+	if !apply {
+		t.Error("promptProfile() apply = false, want true (no TTY available → auto-apply)")
 	}
 }

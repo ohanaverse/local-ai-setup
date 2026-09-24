@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
@@ -38,6 +42,51 @@ var runStopPicker = realRunStopPicker
 
 func realRunStopPicker(cfg *config.Config) {
 	survey.Picker(os.Stdin, os.Stdout, cfg)
+}
+
+// loadProfileStore is a seam for tests: production reads
+// ~/.config/agent-wt/profiles.toml (via profiles.Load); tests swap it so
+// no test depends on the developer's real file.
+var loadProfileStore = profiles.Load
+
+// confirmProfile is a seam for tests: production asks on /dev/tty whether
+// to apply a resolved profile, defaulting to yes on a bare Enter or when
+// no TTY is available (non-interactive launches — scripts, wt smoke, CI —
+// must never block on input that can't arrive); tests swap it so nothing
+// blocks on real terminal input.
+var confirmProfile = promptProfile
+
+// openTTY is a seam for tests: production opens the controlling terminal
+// directly; tests swap it so a non-TTY (or TTY-available-but-must-not-
+// block) scenario is deterministic regardless of whether the test runner
+// itself happens to have a real /dev/tty attached.
+var openTTY = func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_RDWR, 0) }
+
+func promptProfile(rp profiles.ResolvedProfile) (bool, error) {
+	f, err := openTTY()
+	if err != nil {
+		return true, nil
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintf(f, "wt: local-model profile available for this launch (%s) — apply? [Y/n] ", strings.Join(rp.Sources, ", ")); err != nil {
+		return false, err
+	}
+	return askYesNoDefault(f, true)
+}
+
+func askYesNoDefault(r io.Reader, def bool) (bool, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && line == "" {
+		return def, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	case "n", "no":
+		return false, nil
+	default:
+		return def, nil
+	}
 }
 
 // buildLaunch constructs the agent command for the given model and worktree,
@@ -223,6 +272,59 @@ func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []st
 	return runAgentCmd(cmd, agent, config.Model{}, cfg)
 }
 
+// applyProfileForLaunch resolves and, on confirmation, applies a
+// local-model profile for agent/m to cmd before it runs. It returns a
+// cleanup func that MUST be called after cmd.Run() returns (success or
+// failure) to restore any config file a profile's config_content
+// mechanism rewrote — called explicitly, never via defer, since the
+// os.Exit branch in runAgentCmd below would otherwise skip a deferred
+// cleanup (the same reasoning that already makes
+// lifecycle.WaitPendingRoutes an explicit call there, not a defer).
+// Command agents (m.ID == "") and native models never match a profile —
+// ResolveRoute returns a zero Route for both — so this no-ops for them
+// without even loading profiles.toml.
+func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config) (cleanup func() error, err error) {
+	noop := func() error { return nil }
+	if m.ID == "" || m.Native || cfg == nil {
+		return noop, nil
+	}
+	store, err := loadProfileStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", err)
+		return noop, nil
+	}
+	if verr := profiles.Validate(store, agentProfileMechanisms); verr != nil {
+		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", verr)
+		return noop, nil
+	}
+	if !store.Enabled {
+		return noop, nil
+	}
+	rp := profiles.Resolve(store, agent, cfg, m)
+	if rp.Empty() {
+		return noop, nil
+	}
+	apply, err := confirmProfile(rp)
+	if err != nil {
+		return noop, err
+	}
+	if !apply {
+		return noop, nil
+	}
+	// config_content first, so a codex profile's "--profile
+	// agent-wt-profile" arg it appends is captured by a later wrapper's
+	// {{args}} splice (no Phase-1 profile combines the two, but this
+	// keeps the ordering correct if one ever does).
+	contentCleanup, err := profiles.ApplyConfigContent(cmd, agent, cmd.Dir, rp)
+	if err != nil {
+		return noop, err
+	}
+	if err := profiles.ApplyToCmd(cmd, rp); err != nil {
+		return noop, err
+	}
+	return contentCleanup, nil
+}
+
 // runAgentCmd wires stdio through to the agent, runs it, then runs the
 // post-exit flow and propagates the agent's exit code to the caller. Order
 // (issues #115/#116): release this session's refcount entry → survey (skipped
@@ -237,8 +339,17 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg)
+	if perr != nil {
+		return perr
+	}
+
 	start := time.Now()
 	err := cmd.Run()
+	if cerr := profileCleanup(); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
+	}
 	summary := agents.Summary(agent, m, time.Since(start))
 
 	releaseSession()
