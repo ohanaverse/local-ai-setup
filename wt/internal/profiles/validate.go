@@ -11,9 +11,20 @@ import (
 // agents.ByName(agent).(profiles.ProfileCapable)). It returns one
 // combined error naming every offending profile, or nil if all profiles
 // pass.
+// validMatchTiers are the only values Resolve's tierRank recognizes; any
+// other value (typically a typo) makes a profile silently unmatchable
+// forever, with no error anywhere else in the package.
+var validMatchTiers = map[string]bool{"location": true, "provider": true, "model": true}
+
 func Validate(store Store, mechanismsFor func(agent string) []Mechanism) error {
 	var problems []string
 	for i, p := range store.Profiles {
+		if !validMatchTiers[p.Match] {
+			problems = append(problems, fmt.Sprintf(
+				"profiles.toml[%d] (agent=%s): invalid match %q (must be \"location\", \"provider\", or \"model\")",
+				i, p.Agent, p.Match))
+			continue
+		}
 		allowed := map[Mechanism]bool{}
 		for _, mech := range mechanismsFor(p.Agent) {
 			allowed[mech] = true

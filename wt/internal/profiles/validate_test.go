@@ -93,6 +93,25 @@ func TestValidateZeroMechanismsAlwaysPasses(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsInvalidMatchTier verifies a profile whose `match`
+// field is anything other than "location"/"provider"/"model" (typically a
+// typo) fails validation loudly instead of passing silently — before this
+// check existed, Resolve's tierRank lookup silently skipped such a profile
+// forever, with no error anywhere to tell the user why it never applied.
+func TestValidateRejectsInvalidMatchTier(t *testing.T) {
+	store := Store{Profiles: []Profile{
+		{Agent: "claude", Match: "locaton", Location: "local", Env: map[string]string{"X": "1"}},
+	}}
+	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismEnv} }
+	err := Validate(store, mechs)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error naming the invalid match tier")
+	}
+	if !contains(err.Error(), "invalid match") {
+		t.Errorf("Validate() error = %v, want it to mention the invalid match value", err)
+	}
+}
+
 // Helper function for test assertions
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
