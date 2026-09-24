@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
@@ -207,5 +208,23 @@ func TestClaudeNativeIgnoresGateway(t *testing.T) {
 	}
 	if got != m.ModelName {
 		t.Fatalf("--model value = %q, want %q", got, m.ModelName)
+	}
+}
+
+// TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms verifies
+// claude's ProfileMechanisms matches the Phase-1 design (env for the
+// attribution header/thinking cap, config_content for the
+// ANTHROPIC_DEFAULT_*_MODEL mapping via settings.local.json) — a profile
+// using any other mechanism for claude must fail Validate.
+func TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
+	mechs := claudeDriver{}.ProfileMechanisms()
+	want := map[profiles.Mechanism]bool{profiles.MechanismEnv: true, profiles.MechanismConfigFile: true}
+	if len(mechs) != len(want) {
+		t.Fatalf("ProfileMechanisms() = %v, want exactly %v", mechs, want)
+	}
+	for _, m := range mechs {
+		if !want[m] {
+			t.Errorf("unexpected mechanism %q", m)
+		}
 	}
 }

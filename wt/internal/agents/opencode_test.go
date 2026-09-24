@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
@@ -147,5 +148,23 @@ func TestOpenCodeNativeBypass(t *testing.T) {
 	lc := d.Build(m, false, directRoute(m))
 	if lc.Bin != "opencode" || len(lc.Args) != 0 || len(lc.Env) != 0 {
 		t.Errorf("native build = %+v, want bare opencode (no args, no env)", lc)
+	}
+}
+
+// TestOpenCodeDriverDeclaresEnvAndConfigFileProfileMechanisms verifies
+// opencode accepts env and config_file — config_file mechanically merges
+// into the OPENCODE_CONFIG_CONTENT env entry (internal/profiles handles
+// that dispatch), but from the capability-declaration side it is still
+// the config_file mechanism the compaction-tuning profile uses.
+func TestOpenCodeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
+	mechs := opencodeDriver{}.ProfileMechanisms()
+	want := map[profiles.Mechanism]bool{profiles.MechanismEnv: true, profiles.MechanismConfigFile: true}
+	if len(mechs) != len(want) {
+		t.Fatalf("ProfileMechanisms() = %v, want exactly %v", mechs, want)
+	}
+	for _, m := range mechs {
+		if !want[m] {
+			t.Errorf("unexpected mechanism %q", m)
+		}
 	}
 }

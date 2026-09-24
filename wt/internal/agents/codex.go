@@ -2,6 +2,7 @@ package agents
 
 import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 func init() { register("codex", func() Driver { return codexDriver{} }) }
@@ -65,6 +66,14 @@ func (codexDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		"--model", modelName,
 	)
 	return lc
+}
+
+// ProfileMechanisms declares codex accepts env, args (inline -c
+// overrides — what the Phase-1 codex profile uses), and config_file (a
+// dedicated ~/.codex/agent-wt-profile.config.toml, available but unused
+// by the Phase-1 example).
+func (codexDriver) ProfileMechanisms() []profiles.Mechanism {
+	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismArgs, profiles.MechanismConfigFile}
 }
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by

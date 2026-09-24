@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 func init() { register("pi", func() Driver { return piDriver{} }) }
@@ -61,6 +62,13 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		lc.Warn = fmt.Sprintf("pi: model %q not configured for pi, using default model", modelArg)
 	}
 	return lc
+}
+
+// ProfileMechanisms declares that pi only accepts a wrapper profile — the
+// little-coder integration; pi has no env/config-file lever of its own
+// for this.
+func (piDriver) ProfileMechanisms() []profiles.Mechanism {
+	return []profiles.Mechanism{profiles.MechanismWrapper}
 }
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by

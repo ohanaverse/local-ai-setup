@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // codexLitellmProviderArgs builds the exact expected args for a LiteLLM-routed
@@ -37,5 +38,24 @@ func TestCodexBuildLitellm(t *testing.T) {
 	wantEnv := []string{codexGatewayEnvKey + "=sk-litellm"}
 	if !slices.Equal(lc.Env, wantEnv) {
 		t.Fatalf("env = %v, want %v (gateway key for env_key lookup)", lc.Env, wantEnv)
+	}
+}
+
+// TestCodexDriverDeclaresEnvArgsConfigFileProfileMechanisms verifies
+// codex accepts env, args, and config_file — the Phase-1 codex profile
+// uses args (-c overrides) only, but config_file is declared as
+// available capability per the design's generic mechanism model.
+func TestCodexDriverDeclaresEnvArgsConfigFileProfileMechanisms(t *testing.T) {
+	mechs := codexDriver{}.ProfileMechanisms()
+	want := map[profiles.Mechanism]bool{
+		profiles.MechanismEnv: true, profiles.MechanismArgs: true, profiles.MechanismConfigFile: true,
+	}
+	if len(mechs) != len(want) {
+		t.Fatalf("ProfileMechanisms() = %v, want exactly %v", mechs, want)
+	}
+	for _, m := range mechs {
+		if !want[m] {
+			t.Errorf("unexpected mechanism %q", m)
+		}
 	}
 }

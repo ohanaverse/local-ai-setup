@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
@@ -65,6 +66,14 @@ func (opencodeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		modelRef, modelRef, opencodeGatewayProviderID, baseURL, r.APIKey, r.ModelRef, r.Display,
 	))
 	return lc
+}
+
+// ProfileMechanisms declares opencode accepts env and config_file —
+// config_file is merged into the OPENCODE_CONFIG_CONTENT env payload
+// (internal/profiles' ApplyConfigContent), not written as a separate
+// file.
+func (opencodeDriver) ProfileMechanisms() []profiles.Mechanism {
+	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile}
 }
 
 // opencodeGatewayProviderID names the custom provider wt declares in

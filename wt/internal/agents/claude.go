@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
@@ -72,6 +73,13 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	)
 	lc.Args = append(lc.Args, "--model", r.ModelRef)
 	return lc
+}
+
+// ProfileMechanisms declares which profile mechanisms claude accepts:
+// env (the attribution-header/thinking-token tweaks) and config_file
+// (the ANTHROPIC_DEFAULT_*_MODEL mapping via .claude/settings.local.json).
+func (claudeDriver) ProfileMechanisms() []profiles.Mechanism {
+	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile}
 }
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by
