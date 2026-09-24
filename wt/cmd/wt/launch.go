@@ -49,6 +49,21 @@ func realRunStopPicker(cfg *config.Config) {
 // no test depends on the developer's real file.
 var loadProfileStore = profiles.Load
 
+// precomputedProfiles carries a.profiles/a.profilesLoadErr/
+// a.profilesValidateErr (newApp() already loaded and validated
+// profiles.toml once at startup) through to applyProfileForLaunch, so a
+// launch never re-reads and re-parses the file a second time in the same
+// process. nil means "not precomputed" — every direct test call, and any
+// caller with no *app in scope — and applyProfileForLaunch falls back to
+// loadProfileStore()/profiles.Validate exactly as before. Mirrors the
+// nil-means-not-precomputed convention launchFilteredImpl's own `eligible`
+// parameter already uses.
+type precomputedProfiles struct {
+	store       profiles.Store
+	loadErr     error
+	validateErr error
+}
+
 // confirmProfile is a seam for tests: production asks on /dev/tty whether
 // to apply a resolved profile, defaulting to yes on a bare Enter or when
 // no TTY is available (non-interactive launches — scripts, wt smoke, CI —
@@ -166,7 +181,7 @@ var launchFiltered = launchFilteredImpl
 // "user did not pass -M". It's used to surface a stderr note when -M is
 // passed together with a command agent (where the pin would otherwise be
 // silently dropped).
-func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
 	if agents.IsCommand(agent) {
 		if pinnedSupplied {
 			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
@@ -178,7 +193,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if err != nil {
 			return err
 		}
-		return runAgentCmd(cmd, agent, config.Model{}, cfg)
+		return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
 	}
 
 	// Resolve the model. If the caller precomputed the eligible list, reuse
@@ -250,7 +265,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
-	return runAgentCmd(cmd, agent, m, cfg)
+	return runAgentCmd(cmd, agent, m, cfg, pp)
 }
 
 // launchPassthrough builds and runs the bare-agent command for an
@@ -264,12 +279,12 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 // mirroring launchFiltered above.
 var launchPassthrough = launchPassthroughImpl
 
-func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
 	cmd, err := agents.BuildPassthroughCmd(agent, worktreePath, yolo, extraArgs)
 	if err != nil {
 		return err
 	}
-	return runAgentCmd(cmd, agent, config.Model{}, cfg)
+	return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
 }
 
 // selfHealAgentConfigContentTarget checks agent's config_content file
@@ -312,22 +327,38 @@ func selfHealAgentConfigContentTarget(agent, worktreePath string) {
 // lifecycle.WaitPendingRoutes an explicit call there, not a defer).
 // Command agents (m.ID == "") and native models never match a profile —
 // ResolveRoute returns a zero Route for both — so this no-ops for them
-// without even loading profiles.toml.
-func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config) (cleanup func() error, err error) {
+// without even loading profiles.toml. pp, when non-nil, is newApp()'s
+// already-loaded profiles.toml state (see precomputedProfiles) — reused
+// instead of loading and validating the file again.
+func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) (cleanup func() error, err error) {
 	noop := func() error { return nil }
 	if m.ID == "" || m.Native || cfg == nil {
 		return noop, nil
 	}
 	selfHealAgentConfigContentTarget(agent, cmd.Dir)
 
-	store, err := loadProfileStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", err)
-		return noop, nil
-	}
-	if verr := profiles.Validate(store, agentProfileMechanisms); verr != nil {
-		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", verr)
-		return noop, nil
+	var store profiles.Store
+	if pp != nil {
+		if pp.loadErr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.loadErr)
+			return noop, nil
+		}
+		if pp.validateErr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.validateErr)
+			return noop, nil
+		}
+		store = pp.store
+	} else {
+		var loadErr error
+		store, loadErr = loadProfileStore()
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", loadErr)
+			return noop, nil
+		}
+		if verr := profiles.Validate(store, agentProfileMechanisms); verr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", verr)
+			return noop, nil
+		}
 	}
 	if !store.Enabled {
 		return noop, nil
@@ -400,12 +431,12 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 // exits, not when the summary prints. The survey call sits before the
 // os.Exit(ExitCode) branch so a non-zero agent exit is still surveyed — a
 // crashed session is exactly a "did it work? no" data point.
-func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config) error {
+func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg)
+	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp)
 	if perr != nil {
 		return perr
 	}

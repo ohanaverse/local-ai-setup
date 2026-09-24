@@ -277,7 +277,7 @@ func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "pwd.txt")
-	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{recorder, out}, nil); err != nil {
+	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{recorder, out}, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
 	}
 	got, err := os.ReadFile(out)
@@ -323,7 +323,7 @@ func TestRunAgentCmdPrintsSummary(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -358,7 +358,7 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -399,7 +399,7 @@ func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -477,7 +477,7 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 		},
 	})
 
-	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered in litellm mode: %v", err)
 	}
 }
@@ -534,7 +534,7 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 		},
 	})
 
-	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered with protocol-forced litellm: %v", err)
 	}
 }
@@ -630,7 +630,7 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 	want := []string{"claude/a", "claude/b", "claude/c"}
 	statePath := filepath.Join(dir, "agent-wt", "rotation.state")
 	for i, id := range want {
-		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 			t.Fatalf("launchFiltered run %d: %v", i+1, err)
 		}
 		data, err := os.ReadFile(statePath)
@@ -686,7 +686,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 
-	if err := launchFiltered("claude", worktree, cfg, false, "design", "", "", false, nil, nil); err != nil {
+	if err := launchFiltered("claude", worktree, cfg, false, "design", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
 	}
 
@@ -732,7 +732,7 @@ func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 	}
 	cfg.ExposeAllForTest()
 
-	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
 	}
 
@@ -773,7 +773,7 @@ func TestLaunchFilteredRecordsUsageForAgent(t *testing.T) {
 	}
 	cfg.ExposeAllForTest()
 
-	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
 	}
 
@@ -807,7 +807,7 @@ func TestCommandAgentDoesNotRecordRefcount(t *testing.T) {
 		Agents: []config.Agent{{Name: "shell", SupportedProviders: nil}},
 	}
 
-	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{truePath}, nil); err != nil {
+	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{truePath}, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
 	}
 
@@ -853,7 +853,7 @@ func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	// launchFiltered with -A shell -M claude/opus. The actual exec may
 	// fail (no TTY, no args), but the stderr note is printed before the
 	// exec, so it lands in our pipe regardless of the outcome.
-	_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil, nil)
+	_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil, nil, nil)
 
 	// Close the writer to flush the pipe and read.
 	_ = w.Close()
@@ -888,7 +888,7 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if !called {
@@ -925,7 +925,7 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 	os.Stdout = w
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil); err != nil {
 		w.Close()
 		os.Stdout = old
 		t.Fatalf("runAgentCmd() error: %v", err)
@@ -961,7 +961,7 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "shell", config.Model{}, &config.Config{}); err != nil {
+	if err := runAgentCmd(cmd, "shell", config.Model{}, &config.Config{}, nil); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if called {
@@ -1008,7 +1008,7 @@ func TestRunAgentCmdPostExitOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	runErr := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{})
+	runErr := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
 	w.Close()
 	os.Stdout = old
 	if runErr != nil {
@@ -1040,7 +1040,7 @@ func TestRunAgentCmdCommandAgentSkipsStopPicker(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	if err := runAgentCmd(exec.Command(truePath), "shell", config.Model{}, &config.Config{}); err != nil {
+	if err := runAgentCmd(exec.Command(truePath), "shell", config.Model{}, &config.Config{}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	if called {
@@ -1061,7 +1061,7 @@ func TestRunAgentCmdNativeModelSkipsStopPicker(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	if err := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "claude/native", Native: true}, &config.Config{}); err != nil {
+	if err := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "claude/native", Native: true}, &config.Config{}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	if called {
@@ -1097,7 +1097,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
-	if err := runAgentCmd(cmd, "claude", m, cfg); err != nil {
+	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	found := false
@@ -1138,7 +1138,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
-	if err := runAgentCmd(cmd, "claude", m, cfg); err != nil {
+	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	for _, e := range cmd.Env {
@@ -1178,7 +1178,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
-	if err := runAgentCmd(cmd, "claude", m, cfg); err != nil {
+	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if promptCalled {
@@ -1199,13 +1199,13 @@ func TestRunAgentCmdSkipsProfileForCommandAndNativeModels(t *testing.T) {
 	t.Cleanup(func() { confirmProfile = oldConfirm })
 
 	cfg := &config.Config{}
-	if err := runAgentCmd(exec.Command("true"), "shell", config.Model{}, cfg); err != nil {
+	if err := runAgentCmd(exec.Command("true"), "shell", config.Model{}, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if promptCalled {
 		t.Error("confirmProfile called for a command agent (m.ID == \"\")")
 	}
-	if err := runAgentCmd(exec.Command("true"), "claude", config.Model{ID: "claude/native", Native: true, ModelName: "native"}, cfg); err != nil {
+	if err := runAgentCmd(exec.Command("true"), "claude", config.Model{ID: "claude/native", Native: true, ModelName: "native"}, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if promptCalled {
@@ -1235,7 +1235,7 @@ func TestRunAgentCmdMalformedProfilesTomlDegradesGracefully(t *testing.T) {
 
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
-	if err := runAgentCmd(exec.Command("true"), "claude", m, cfg); err != nil {
+	if err := runAgentCmd(exec.Command("true"), "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v, want a normal launch despite the malformed file", err)
 	}
 }
@@ -1293,7 +1293,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
 
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v, want nil (a confirm-prompt error must degrade to an unprofiled launch, not fail it)", err)
 	}
@@ -1304,6 +1304,48 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 		if e == "WT_TEST_PROFILE_APPLIED=1" {
 			t.Errorf("cmd.Env = %v, profile env applied despite a confirmProfile error", cmd.Env)
 		}
+	}
+}
+
+// TestApplyProfileForLaunchUsesPrecomputedStoreWithoutReloading verifies a
+// non-nil pp is used directly instead of calling loadProfileStore() again
+// — newApp() already loaded and validated profiles.toml once at startup,
+// and applyProfileForLaunch used to always reload/re-validate it a second
+// time regardless. loadProfileStore is stubbed to fail the test if called
+// at all, so this only passes if pp's store is what actually got resolved.
+func TestApplyProfileForLaunchUsesPrecomputedStoreWithoutReloading(t *testing.T) {
+	oldLoad := loadProfileStore
+	loadProfileStore = func() (profiles.Store, error) {
+		t.Fatal("loadProfileStore() called despite a precomputed pp being supplied")
+		return profiles.Store{}, nil
+	}
+	t.Cleanup(func() { loadProfileStore = oldLoad })
+
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return true, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	pp := &precomputedProfiles{store: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+		{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"WT_TEST_PRECOMPUTED": "1"}},
+	}}}
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, pp)
+	if err != nil {
+		t.Fatalf("applyProfileForLaunch() error = %v, want nil", err)
+	}
+	t.Cleanup(func() { cleanup() })
+
+	found := false
+	for _, e := range cmd.Env {
+		if e == "WT_TEST_PRECOMPUTED=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("cmd.Env = %v, want the precomputed store's profile applied", cmd.Env)
 	}
 }
 
@@ -1389,7 +1431,7 @@ func TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v", err)
 	}
@@ -1436,7 +1478,7 @@ func TestApplyProfileForLaunchSelfHealPrintsNotice(t *testing.T) {
 		t.Fatal(perr)
 	}
 	os.Stderr = w
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
 	w.Close()
 	os.Stderr = oldStderr
 	if err != nil {
@@ -1470,7 +1512,7 @@ func TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError(t *testing.T) {
 		t.Fatal(perr)
 	}
 	os.Stderr = w
-	cleanup, err := applyProfileForLaunch(cmd, "codex", m, cfg)
+	cleanup, err := applyProfileForLaunch(cmd, "codex", m, cfg, nil)
 	w.Close()
 	os.Stderr = oldStderr
 	if err != nil {

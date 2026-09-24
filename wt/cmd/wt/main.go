@@ -155,13 +155,13 @@ func runLaunchPath(
 			return fmt.Errorf("agent %q is not configured; cannot pin model %q", agent, pinned)
 		}
 		fmt.Fprintf(os.Stderr, "wt: %s is not configured — launching it directly without a model\n", agent)
-		return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg)
+		return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg, a.profileState())
 	}
 
 	if needsModelPicker(agent, pinned) {
 		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
 		if err == nil && resolved {
-			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible)
+			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState())
 		}
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
@@ -169,7 +169,7 @@ func runLaunchPath(
 		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
 	}
 
-	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil)
+	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState())
 }
 
 func rootCmd() *cobra.Command {

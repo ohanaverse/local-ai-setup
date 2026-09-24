@@ -390,7 +390,7 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 	var gotAgent string
 	var gotArgs []string
 	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
 		gotAgent = agent
 		gotArgs = extraArgs
 		return nil
@@ -510,7 +510,7 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 
 	called := false
 	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
 		called = true
 		return nil
 	}
@@ -725,7 +725,7 @@ func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
 
 	var called bool
 	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
 		called = true
 		return nil
 	}
@@ -760,7 +760,7 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 	var gotAgent string
 	var gotPath string
 	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
 		called = true
 		gotAgent = agent
 		gotPath = worktreePath
@@ -849,7 +849,7 @@ func TestRunLaunchPath(t *testing.T) {
 				gotPath = c.launchPath
 				return nil
 			}
-			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
 				gotLaunch = true
 				gotPath = worktreePath
 				return nil
@@ -953,7 +953,7 @@ func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
 	var called bool
 	var gotAgent, gotPath string
 	oldLaunchPassthrough := launchPassthrough
-	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
 		called, gotAgent, gotPath = true, agent, worktreePath
 		return nil
 	}
@@ -1008,7 +1008,7 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 
 	var passthroughCalled bool
 	oldLaunchPassthrough := launchPassthrough
-	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
 		passthroughCalled = true
 		return nil
 	}
@@ -1096,7 +1096,7 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 
 	var passthroughCalled bool
 	oldLaunchPassthrough := launchPassthrough
-	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
 		passthroughCalled = true
 		return nil
 	}

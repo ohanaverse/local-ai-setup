@@ -34,6 +34,13 @@ type app struct {
 	profilesValidateErr error
 }
 
+// profileState packages a's already-loaded profiles.toml state for
+// applyProfileForLaunch (via runAgentCmd's pp parameter), so a launch reuses
+// newApp()'s single Load/Validate instead of repeating both.
+func (a *app) profileState() *precomputedProfiles {
+	return &precomputedProfiles{store: a.profiles, loadErr: a.profilesLoadErr, validateErr: a.profilesValidateErr}
+}
+
 // agentProfileMechanisms looks up the profile mechanisms agent's driver
 // declares via profiles.ProfileCapable, or nil for an unregistered agent
 // or one that implements no mechanisms at all (copilot, shell).
