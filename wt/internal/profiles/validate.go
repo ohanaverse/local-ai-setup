@@ -25,6 +25,12 @@ func Validate(store Store, mechanismsFor func(agent string) []Mechanism) error {
 				i, p.Agent, p.Match))
 			continue
 		}
+		if matchFieldEmpty(p) {
+			problems = append(problems, fmt.Sprintf(
+				"profiles.toml[%d] (agent=%s, match=%s): empty %s value — a profile whose match tier has no value would match every launch",
+				i, p.Agent, p.Match, p.Match))
+			continue
+		}
 		allowed := map[Mechanism]bool{}
 		for _, mech := range mechanismsFor(p.Agent) {
 			allowed[mech] = true
@@ -41,6 +47,23 @@ func Validate(store Store, mechanismsFor func(agent string) []Mechanism) error {
 		return nil
 	}
 	return errors.New(strings.Join(problems, "; "))
+}
+
+// matchFieldEmpty reports whether p's match-tier field (Location/Provider/
+// Model, selected by p.Match) is empty — the same condition matchesTier
+// (resolve.go) guards against at resolution time. Called only after
+// validMatchTiers has already confirmed p.Match is one of the three known
+// values, so the switch has no default case of its own to worry about.
+func matchFieldEmpty(p Profile) bool {
+	switch p.Match {
+	case "location":
+		return p.Location == ""
+	case "provider":
+		return p.Provider == ""
+	case "model":
+		return p.Model == ""
+	}
+	return false
 }
 
 func usedMechanisms(p Profile) []Mechanism {

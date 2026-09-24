@@ -115,3 +115,35 @@ func TestResolveDisabledAgentSkipsOtherAgentsProfiles(t *testing.T) {
 		t.Errorf("Resolve() for claude = %+v, want Empty() (profile is for pi)", rp)
 	}
 }
+
+// TestMatchesTierRejectsEmptyFieldEvenWithZeroModel is the regression lock
+// for the code-review finding that matchesTier treated an empty/unset
+// match-tier field as a valid match value: a malformed profile with
+// `match = "model"` but no `model = ...` line (Model == "") used to match
+// ANY zero-value config.Model (m.ID == ""), which `wt profile show -A
+// <agent>` (no -M) resolves with — directly contradicting the design's "no
+// tier can match without a model" comment. Now it must never match.
+func TestMatchesTierRejectsEmptyFieldEvenWithZeroModel(t *testing.T) {
+	store := Store{Enabled: true, Profiles: []Profile{
+		{Agent: "claude", Match: "model", Env: map[string]string{"X": "1"}}, // Model left empty (malformed)
+	}}
+	rp := Resolve(store, "claude", testCfg(), config.Model{})
+	if !rp.Empty() {
+		t.Errorf("Resolve() = %+v, want Empty() (an empty Model field must never match, even against a zero-value model)", rp)
+	}
+}
+
+// TestMatchesTierRejectsEmptyProviderField verifies the same empty-field
+// guard for the provider tier: a malformed profile with `match =
+// "provider"` and no `provider = ...` line must never match a model whose
+// own provider fallback also happens to be empty.
+func TestMatchesTierRejectsEmptyProviderField(t *testing.T) {
+	store := Store{Enabled: true, Profiles: []Profile{
+		{Agent: "codex", Match: "provider", Args: []string{"-c", "x=1"}}, // Provider left empty (malformed)
+	}}
+	m := config.Model{ID: "no-slash-in-this-id"} // providerID(m) falls back to "" too
+	rp := Resolve(store, "codex", testCfg(), m)
+	if !rp.Empty() {
+		t.Errorf("Resolve() = %+v, want Empty() (an empty Provider field must never match)", rp)
+	}
+}

@@ -112,6 +112,26 @@ func TestValidateRejectsInvalidMatchTier(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsEmptyMatchField is the regression lock for the other
+// half of the matchesTier empty-field bug: a profile whose match tier
+// names a field left empty (e.g. `match = "model"` with no `model = ...`)
+// must fail loudly at validation time — the same way an invalid match tier
+// value already does — rather than silently becoming a wildcard that
+// matches every launch of its agent.
+func TestValidateRejectsEmptyMatchField(t *testing.T) {
+	store := Store{Profiles: []Profile{
+		{Agent: "claude", Match: "model", Env: map[string]string{"X": "1"}}, // Model left empty
+	}}
+	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismEnv} }
+	err := Validate(store, mechs)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error naming the empty model match field")
+	}
+	if !contains(err.Error(), "empty") {
+		t.Errorf("Validate() error = %v, want it to mention the empty match field", err)
+	}
+}
+
 // Helper function for test assertions
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {

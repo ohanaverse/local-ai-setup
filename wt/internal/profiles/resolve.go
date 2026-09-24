@@ -80,11 +80,20 @@ func Resolve(store Store, agent string, cfg *config.Config, m config.Model) Reso
 func matchesTier(p Profile, cfg *config.Config, m config.Model) bool {
 	switch p.Match {
 	case "location":
+		if p.Location == "" {
+			return false
+		}
 		loc, err := cfg.ResolveLocation(m)
 		return err == nil && string(loc) == p.Location
 	case "provider":
+		if p.Provider == "" {
+			return false
+		}
 		return providerID(m) == p.Provider
 	case "model":
+		if p.Model == "" {
+			return false
+		}
 		return m.ID == p.Model
 	default:
 		return false
