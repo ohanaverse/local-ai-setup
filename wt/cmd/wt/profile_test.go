@@ -60,6 +60,34 @@ func TestProfileShowResolvesForAgentAndModel(t *testing.T) {
 	}
 }
 
+// TestProfileShowWithoutModelDoesNotError verifies `wt profile show -A
+// <agent>` (no `-M`) succeeds instead of erroring "model \"\" not found in
+// registry" — the design spec documents `-M` as optional
+// (`wt profile show -A <agent> [-M <model>]`), but findModelByID used to be
+// called unconditionally with an empty id, which can never match a
+// registry entry.
+func TestProfileShowWithoutModelDoesNotError(t *testing.T) {
+	a := &app{
+		cfg: &config.Config{
+			Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+			Models:    []config.Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
+		},
+		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+			{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
+		}},
+	}
+	var out bytes.Buffer
+	cmd := profileCmd(a)
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"show", "-A", "claude"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute error = %v, want nil (-M is optional)", err)
+	}
+	if !strings.Contains(out.String(), "no matching profile") {
+		t.Errorf("output = %q, want \"no matching profile\" (a location-tier profile can't match without a model)", out.String())
+	}
+}
+
 // TestProfileStatusOnOffTogglesEnabledFlag verifies `wt profile off` then
 // `wt profile status` reflects the change by writing/reading the same
 // profiles.toml, and `wt profile on` reverts it — the global kill switch

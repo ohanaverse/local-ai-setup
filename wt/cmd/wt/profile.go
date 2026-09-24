@@ -61,9 +61,19 @@ func profileCmd(a *app) *cobra.Command {
 			if a.profilesLoadErr != nil {
 				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
 			}
-			m, err := findModelByID(a.cfg, showModel)
-			if err != nil {
-				return err
+			// -M is optional (design spec: `wt profile show -A <agent> [-M
+			// <model>]`): with none given, resolve with a zero Model
+			// instead of erroring — no tier can match without a model
+			// (Resolve degrades to reporting no match), which still lets an
+			// agent-only run confirm the agent has no profile at all rather
+			// than failing outright.
+			var m config.Model
+			if showModel != "" {
+				var err error
+				m, err = findModelByID(a.cfg, showModel)
+				if err != nil {
+					return err
+				}
 			}
 			rp := profiles.Resolve(a.profiles, showAgent, a.cfg, m)
 			if rp.Empty() {
