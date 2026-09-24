@@ -3,6 +3,7 @@ package profiles
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -41,6 +42,11 @@ func Validate(store Store, mechanismsFor func(agent string) []Mechanism) error {
 					"profiles.toml[%d] (agent=%s, match=%s): agent does not support mechanism %q",
 					i, p.Agent, p.Match, mech))
 			}
+		}
+		if p.Wrapper != nil && !slices.Contains(p.Wrapper.ArgsTemplate, "{{args}}") {
+			problems = append(problems, fmt.Sprintf(
+				"profiles.toml[%d] (agent=%s, match=%s): wrapper args_template %v has no \"{{args}}\" placeholder — the launched agent's own arguments would be silently dropped",
+				i, p.Agent, p.Match, p.Wrapper.ArgsTemplate))
 		}
 	}
 	if len(problems) == 0 {

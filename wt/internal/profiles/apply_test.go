@@ -7,90 +7,92 @@ import (
 	"testing"
 )
 
-// TestApplyToCmdEnvWinsOnCollision verifies a profile's Env value for a
-// key the command already carries wins — exec.Cmd.Env is documented to
-// use the LAST value for a duplicate key, so ApplyToCmd must APPEND
+// TestApplyEnvAndArgsEnvWinsOnCollision verifies a profile's Env value for
+// a key the command already carries wins — exec.Cmd.Env is documented to
+// use the LAST value for a duplicate key, so ApplyEnvAndArgs must APPEND
 // (never prepend or dedupe) so profile values always land after
 // driver-set ones.
-func TestApplyToCmdEnvWinsOnCollision(t *testing.T) {
+func TestApplyEnvAndArgsEnvWinsOnCollision(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Env = []string{"FOO=driver-value"}
 	rp := ResolvedProfile{Env: map[string]string{"FOO": "profile-value"}}
-	if err := ApplyToCmd(cmd, rp); err != nil {
-		t.Fatalf("ApplyToCmd() error = %v", err)
-	}
+	ApplyEnvAndArgs(cmd, rp)
 	if cmd.Env[len(cmd.Env)-1] != "FOO=profile-value" {
 		t.Errorf("cmd.Env = %v, want profile value appended last", cmd.Env)
 	}
 }
 
-// TestApplyToCmdExtraArgsAppended verifies ExtraArgs land at the end of
-// cmd.Args, after whatever BuildLaunchCmd already assembled (driver args,
-// user passthrough, resume flag) — see the plan's ordering note in Task 7.
-func TestApplyToCmdExtraArgsAppended(t *testing.T) {
+// TestApplyEnvAndArgsExtraArgsAppended verifies ExtraArgs land at the end
+// of cmd.Args, after whatever BuildLaunchCmd already assembled (driver
+// args, user passthrough, resume flag) — matching cmd/wt's
+// applyResolvedProfile ordering (env/args before config_content/wrapper).
+func TestApplyEnvAndArgsExtraArgsAppended(t *testing.T) {
 	cmd := exec.Command("codex", "--model", "x")
 	rp := ResolvedProfile{ExtraArgs: []string{"-c", "model_reasoning_effort=\"low\""}}
-	if err := ApplyToCmd(cmd, rp); err != nil {
-		t.Fatalf("ApplyToCmd() error = %v", err)
-	}
+	ApplyEnvAndArgs(cmd, rp)
 	want := []string{"codex", "--model", "x", "-c", "model_reasoning_effort=\"low\""}
 	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
 		t.Errorf("cmd.Args = %v, want %v", cmd.Args, want)
 	}
 }
 
-// TestApplyToCmdWrapperReplacesBinaryAndSplicesArgs verifies a Wrapper
-// swaps cmd.Path/Args[0] for the wrapper binary and splices the ORIGINAL
-// argv (everything after the old argv[0]) into the "{{args}}" template
-// slot, dropping the old binary name — the little-coder-wraps-pi case.
-func TestApplyToCmdWrapperReplacesBinaryAndSplicesArgs(t *testing.T) {
+// TestApplyEnvAndArgsThenApplyWrapperComposesCorrectly verifies the real
+// production sequence (cmd/wt's applyResolvedProfile: ApplyEnvAndArgs,
+// then — with a config_content step interleaved in production, omitted
+// here since it's tested separately — ApplyWrapper) swaps cmd.Path/Args[0]
+// for the wrapper binary and splices the ORIGINAL argv, including
+// anything ApplyEnvAndArgs already appended, into the "{{args}}" template
+// slot — the little-coder-wraps-pi case.
+func TestApplyEnvAndArgsThenApplyWrapperComposesCorrectly(t *testing.T) {
 	cmd := exec.Command("pi", "--model", "ollama/qwen3.8:27b-mlx")
-	rp := ResolvedProfile{Wrapper: &WrapperSpec{
-		Binary:       "true", // a binary guaranteed to exist on PATH for the test
-		ArgsTemplate: []string{"--pi-args", "{{args}}"},
-	}}
-	if err := ApplyToCmd(cmd, rp); err != nil {
-		t.Fatalf("ApplyToCmd() error = %v", err)
+	rp := ResolvedProfile{
+		ExtraArgs: []string{"--extra"},
+		Wrapper: &WrapperSpec{
+			Binary:       "true", // a binary guaranteed to exist on PATH for the test
+			ArgsTemplate: []string{"--pi-args", "{{args}}"},
+		},
+	}
+	ApplyEnvAndArgs(cmd, rp)
+	if err := ApplyWrapper(cmd, rp.Wrapper); err != nil {
+		t.Fatalf("ApplyWrapper() error = %v", err)
 	}
 	if !strings.HasSuffix(cmd.Path, "true") {
 		t.Errorf("cmd.Path = %q, want the resolved `true` binary", cmd.Path)
 	}
-	want := []string{"--pi-args", "--model", "ollama/qwen3.8:27b-mlx"}
+	want := []string{"--pi-args", "--model", "ollama/qwen3.8:27b-mlx", "--extra"}
 	got := cmd.Args[1:]
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("cmd.Args[1:] = %v, want %v", got, want)
 	}
 }
 
-// TestApplyToCmdWrapperMissingBinaryErrors verifies a wrapper binary that
-// isn't on PATH is a real launch error (not a silent fallback to
-// unwrapped) — the user asked for little-coder and it must actually run.
-func TestApplyToCmdWrapperMissingBinaryErrors(t *testing.T) {
+// TestApplyWrapperMissingBinaryErrors verifies a wrapper binary that isn't
+// on PATH is a real launch error (not a silent fallback to unwrapped) —
+// the user asked for little-coder and it must actually run.
+func TestApplyWrapperMissingBinaryErrors(t *testing.T) {
 	cmd := exec.Command("pi")
-	rp := ResolvedProfile{Wrapper: &WrapperSpec{Binary: "definitely-not-a-real-binary-xyz"}}
-	if err := ApplyToCmd(cmd, rp); err == nil {
-		t.Fatal("ApplyToCmd() error = nil, want an error for a missing wrapper binary")
+	w := &WrapperSpec{Binary: "definitely-not-a-real-binary-xyz", ArgsTemplate: []string{"{{args}}"}}
+	if err := ApplyWrapper(cmd, w); err == nil {
+		t.Fatal("ApplyWrapper() error = nil, want an error for a missing wrapper binary")
 	}
 }
 
-// TestApplyToCmdEmptyIsNoop verifies an empty ResolvedProfile changes
-// nothing, so calling ApplyToCmd unconditionally (Task 7 does) is always
-// safe on the "no profile matched" path.
-func TestApplyToCmdEmptyIsNoop(t *testing.T) {
+// TestApplyWrapperErrorsWhenArgsTemplateMissingPlaceholder is the
+// regression lock for the code-review finding that a wrapper profile's
+// ArgsTemplate omitting the "{{args}}" placeholder silently dropped the
+// launched agent's entire original argv (e.g. --model, worktree flags)
+// instead of failing loudly.
+func TestApplyWrapperErrorsWhenArgsTemplateMissingPlaceholder(t *testing.T) {
 	cmd := exec.Command("pi", "--model", "x")
-	before := append([]string{}, cmd.Args...)
-	if err := ApplyToCmd(cmd, ResolvedProfile{}); err != nil {
-		t.Fatalf("ApplyToCmd() error = %v", err)
-	}
-	if strings.Join(cmd.Args, "|") != strings.Join(before, "|") {
-		t.Errorf("cmd.Args changed on empty ResolvedProfile: %v -> %v", before, cmd.Args)
+	w := &WrapperSpec{Binary: "true", ArgsTemplate: []string{"--wrapped-with-no-placeholder"}}
+	if err := ApplyWrapper(cmd, w); err == nil {
+		t.Fatal("ApplyWrapper() error = nil, want an error for an args_template with no \"{{args}}\" placeholder")
 	}
 }
 
-// TestApplyEnvAndArgsNeverAppliesWrapper verifies the split-out
-// ApplyEnvAndArgs applies Env/ExtraArgs but leaves Wrapper untouched — a
-// caller (cmd/wt's applyResolvedProfile) that wants to interleave a
-// config_content mutation between args and wrapper depends on this.
+// TestApplyEnvAndArgsNeverAppliesWrapper verifies ApplyEnvAndArgs applies
+// Env/ExtraArgs but leaves Wrapper untouched — cmd/wt's applyResolvedProfile
+// depends on this to interleave a config_content mutation between the two.
 func TestApplyEnvAndArgsNeverAppliesWrapper(t *testing.T) {
 	cmd := exec.Command("pi", "--model", "x")
 	rp := ResolvedProfile{
@@ -104,9 +106,9 @@ func TestApplyEnvAndArgsNeverAppliesWrapper(t *testing.T) {
 	}
 }
 
-// TestApplyWrapperExported verifies the exported ApplyWrapper (formerly
-// unexported applyWrapper) behaves identically — cmd/wt calls it directly
-// so it can apply config_content between args and wrapper.
+// TestApplyWrapperExported verifies ApplyWrapper behaves as documented —
+// cmd/wt calls it directly so it can apply config_content between args and
+// wrapper.
 func TestApplyWrapperExported(t *testing.T) {
 	cmd := exec.Command("pi", "--model", "x")
 	w := &WrapperSpec{Binary: "true", ArgsTemplate: []string{"--wrapped", "{{args}}"}}

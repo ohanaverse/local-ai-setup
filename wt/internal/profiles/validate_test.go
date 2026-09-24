@@ -132,6 +132,24 @@ func TestValidateRejectsEmptyMatchField(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsWrapperArgsTemplateMissingPlaceholder is the
+// regression lock for the code-review finding that a wrapper profile
+// missing "{{args}}" in its args_template passed validation cleanly, only
+// to silently drop the launched agent's own arguments at launch time.
+func TestValidateRejectsWrapperArgsTemplateMissingPlaceholder(t *testing.T) {
+	store := Store{Profiles: []Profile{
+		{Agent: "pi", Match: "location", Location: "local", Wrapper: &WrapperSpec{Binary: "little-coder", ArgsTemplate: []string{"--foo"}}},
+	}}
+	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismWrapper} }
+	err := Validate(store, mechs)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error naming the missing {{args}} placeholder")
+	}
+	if !contains(err.Error(), "{{args}}") {
+		t.Errorf("Validate() error = %v, want it to mention the missing {{args}} placeholder", err)
+	}
+}
+
 // Helper function for test assertions
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {

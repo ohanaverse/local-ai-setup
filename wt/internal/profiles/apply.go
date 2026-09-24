@@ -4,39 +4,17 @@ package profiles
 import (
 	"fmt"
 	"os/exec"
+	"slices"
 )
-
-// ApplyToCmd mutates cmd in place per rp: Env is appended (so it wins on
-// a duplicate key, matching exec.Cmd.Env's documented last-value-wins
-// behavior), ExtraArgs are appended after everything cmd.Args already
-// carries, and a Wrapper — applied last — replaces cmd.Path/Args[0] with
-// the wrapper binary, splicing the command's existing argv (built so far,
-// including any ExtraArgs just appended) into the "{{args}}" slot in
-// ArgsTemplate. A no-op ResolvedProfile changes nothing.
-//
-// It is the composition of ApplyEnvAndArgs then ApplyWrapper, exported
-// separately so a caller combining config_content with args/wrapper (only
-// codex declares all three mechanisms together) can interleave a
-// config_content-driven cmd.Args mutation between them: env/args first, so
-// a codex profile's own declared args land before config_content's
-// "--profile agent-wt-profile" flag instead of after it, then wrapper
-// last, so its {{args}} splice still captures everything appended before
-// it (the one interaction this package's own tests pin).
-func ApplyToCmd(cmd *exec.Cmd, rp ResolvedProfile) error {
-	if rp.Empty() {
-		return nil
-	}
-	ApplyEnvAndArgs(cmd, rp)
-	if rp.Wrapper != nil {
-		return ApplyWrapper(cmd, rp.Wrapper)
-	}
-	return nil
-}
 
 // ApplyEnvAndArgs appends rp.Env (last value wins on a duplicate key,
 // matching exec.Cmd.Env's documented behavior) and rp.ExtraArgs (appended
 // after everything cmd.Args already carries) to cmd. It never touches
-// Wrapper — see ApplyToCmd and ApplyWrapper.
+// Wrapper: cmd/wt's applyResolvedProfile calls ApplyConfigContent between
+// this and ApplyWrapper, so a codex profile's own declared args land
+// before config_content's "--profile agent-wt-profile" flag, and the
+// wrapper — applied last — still captures everything appended before it in
+// its {{args}} splice.
 func ApplyEnvAndArgs(cmd *exec.Cmd, rp ResolvedProfile) {
 	for k, v := range rp.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
@@ -48,8 +26,17 @@ func ApplyEnvAndArgs(cmd *exec.Cmd, rp ResolvedProfile) {
 
 // ApplyWrapper replaces cmd.Path/Args[0] with w.Binary, splicing the
 // command's existing argv (everything after the old argv[0], built so far)
-// into the "{{args}}" slot in w.ArgsTemplate.
+// into the "{{args}}" slot in w.ArgsTemplate. Rejects an ArgsTemplate with
+// no "{{args}}" placeholder at all: silently building newArgs from only
+// the literal tokens would drop the launched agent's entire original argv
+// (e.g. --model, worktree flags) with no error anywhere. Validate also
+// rejects this at profiles.toml load time — this check exists too so any
+// other caller building a ResolvedProfile by hand (bypassing Validate) is
+// still protected.
 func ApplyWrapper(cmd *exec.Cmd, w *WrapperSpec) error {
+	if !slices.Contains(w.ArgsTemplate, "{{args}}") {
+		return fmt.Errorf("profile wrapper %q: args_template %v has no \"{{args}}\" placeholder — the launched agent's own arguments would be silently dropped", w.Binary, w.ArgsTemplate)
+	}
 	binPath, err := exec.LookPath(w.Binary)
 	if err != nil {
 		return fmt.Errorf("profile wrapper %q not installed: %w", w.Binary, err)

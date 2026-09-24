@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1071,7 +1073,7 @@ func TestRunAgentCmdNativeModelSkipsStopPicker(t *testing.T) {
 
 // TestRunAgentCmdAppliesConfirmedProfile verifies a matching, TTY-confirmed
 // profile's Env lands on the launched process's environment — the
-// end-to-end path from resolution through ApplyToCmd, exercised through
+// end-to-end path from resolution through ApplyEnvAndArgs, exercised through
 // runAgentCmd itself (not just the internal/profiles unit tests) so a
 // wiring mistake in launch.go is caught here.
 func TestRunAgentCmdAppliesConfirmedProfile(t *testing.T) {
@@ -1261,7 +1263,7 @@ func TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary(t *testing.T) {
 
 	pp := &precomputedProfiles{store: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
 		{Agent: "pi", Match: "location", Location: "local",
-			Wrapper: &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz"}},
+			Wrapper: &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz", ArgsTemplate: []string{"{{args}}"}}},
 	}}}
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
@@ -1410,7 +1412,7 @@ func TestApplyProfileForLaunchUsesPrecomputedStoreWithoutReloading(t *testing.T)
 }
 
 // TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing verifies
-// the second PR-review finding: when ApplyToCmd fails on the one
+// the second PR-review finding: when ApplyWrapper fails on the one
 // legitimately-fatal case (a wrapper profile naming a missing binary)
 // AFTER ApplyConfigContent already wrote/backed-up a real config file,
 // applyResolvedProfile must still invoke the already-obtained content
@@ -1429,7 +1431,7 @@ func TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing(t *testing.
 
 	rp := profiles.ResolvedProfile{
 		ConfigContent: map[string]any{"ANTHROPIC_DEFAULT_SONNET_MODEL": "test-model"},
-		Wrapper:       &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz"},
+		Wrapper:       &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz", ArgsTemplate: []string{"{{args}}"}},
 	}
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
@@ -1583,8 +1585,15 @@ func TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(handEdited) {
-		t.Errorf("target = %s, want the orphaned hand-edited content restored (self-heal must run unconditionally, even with profiles disabled/absent)", got)
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(got, &gotDoc); err != nil {
+		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
+	}
+	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("target = %v, want the orphaned hand-edited content restored (self-heal must run unconditionally, even with profiles disabled/absent)", gotDoc)
 	}
 }
 
@@ -1629,8 +1638,15 @@ func TestApplyProfileForLaunchSelfHealsForNativeModelLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(handEdited) {
-		t.Errorf("target = %s, want the orphaned hand-edited content restored on a native-model launch too", got)
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(got, &gotDoc); err != nil {
+		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
+	}
+	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("target = %v, want the orphaned hand-edited content restored on a native-model launch too", gotDoc)
 	}
 }
 
