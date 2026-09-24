@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 // TestConfigFileTargetClaudeIsWorktreeScoped verifies claude's target is
@@ -14,7 +16,10 @@ import (
 // the global ~/.claude/settings.json — the whole point of the
 // worktree-scoped design (spec §4).
 func TestConfigFileTargetClaudeIsWorktreeScoped(t *testing.T) {
-	path, isTOML, ok := ConfigFileTarget("claude", "/tmp/some-worktree")
+	path, isTOML, ok, err := ConfigFileTarget("claude", "/tmp/some-worktree")
+	if err != nil {
+		t.Fatalf("ConfigFileTarget(claude) error = %v, want nil", err)
+	}
 	if !ok || isTOML {
 		t.Fatalf("ConfigFileTarget(claude) = (%q, %v, %v), want (path, false, true)", path, isTOML, ok)
 	}
@@ -28,8 +33,53 @@ func TestConfigFileTargetClaudeIsWorktreeScoped(t *testing.T) {
 // — its config_content goes through OPENCODE_CONFIG_CONTENT env merging
 // instead (ApplyConfigContent's opencode branch), never a file.
 func TestConfigFileTargetOpenCodeHasNoFile(t *testing.T) {
-	if _, _, ok := ConfigFileTarget("opencode", "/tmp/wt"); ok {
+	_, _, ok, err := ConfigFileTarget("opencode", "/tmp/wt")
+	if err != nil {
+		t.Fatalf("ConfigFileTarget(opencode) error = %v, want nil", err)
+	}
+	if ok {
 		t.Error("ConfigFileTarget(opencode) ok = true, want false (env-merged, no file)")
+	}
+}
+
+// TestConfigFileTargetCodexUsesGlobalHomeScopedPath verifies codex's target
+// resolves to ~/.codex/agent-wt-profile.config.toml (TOML, ok=true, no
+// error) using the real os.UserHomeDir() resolution ($HOME on
+// darwin/linux) — codex has no project-scoped profile mechanism, so its
+// target is a dedicated wt-owned GLOBAL file, never inside a
+// repo/worktree.
+func TestConfigFileTargetCodexUsesGlobalHomeScopedPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, isTOML, ok, err := ConfigFileTarget("codex", "/tmp/some-worktree")
+	if err != nil {
+		t.Fatalf("ConfigFileTarget(codex) error = %v, want nil", err)
+	}
+	if !ok || !isTOML {
+		t.Fatalf("ConfigFileTarget(codex) = (%q, %v, %v), want (path, true, true)", path, isTOML, ok)
+	}
+	want := filepath.Join(home, ".codex", "agent-wt-profile.config.toml")
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+}
+
+// TestConfigFileTargetCodexHomeDirErrorPropagates verifies that when
+// os.UserHomeDir() cannot resolve $HOME, ConfigFileTarget reports a real
+// error instead of silently falling back to a relative path under the
+// process's cwd — a relative path would defeat codex's target being a
+// fixed global file, never inside a repo/worktree (this was a real bug in
+// the original brief: `home, _ := os.UserHomeDir()` swallowed the error).
+func TestConfigFileTargetCodexHomeDirErrorPropagates(t *testing.T) {
+	t.Setenv("HOME", "")
+	// os.UserHomeDir() on darwin/linux consults $HOME only; clearing it
+	// with no fallback makes resolution fail.
+	_, _, ok, err := ConfigFileTarget("codex", "/tmp/some-worktree")
+	if err == nil {
+		t.Fatal("ConfigFileTarget(codex) error = nil, want non-nil when $HOME is unresolvable")
+	}
+	if !ok {
+		t.Error("ConfigFileTarget(codex) ok = false, want true (codex does have a target mechanism; err signals resolution failure)")
 	}
 }
 
@@ -149,6 +199,75 @@ func TestApplyConfigContentSelfHealsOrphanedBackup(t *testing.T) {
 	}
 	if string(got) != string(handEdited) {
 		t.Errorf("self-healed content = %s, want original hand-edited content %s", got, handEdited)
+	}
+}
+
+// TestApplyConfigContentCodexWritesValidTOMLAndAppendsProfileFlag verifies
+// codex's config_content is written as valid TOML that round-trips
+// rp.ConfigContent's shape, and that ApplyConfigContent appends
+// `--profile agent-wt-profile` to cmd.Args so codex actually picks the
+// written file up — without that flag codex would silently ignore the
+// wt-written profile file.
+func TestApplyConfigContentCodexWritesValidTOMLAndAppendsProfileFlag(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+
+	cmd := exec.Command("codex")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"model_reasoning_effort": "high"}}
+	cleanup, err := ApplyConfigContent(cmd, "codex", "/tmp/some-worktree", rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	defer cleanup()
+
+	target := filepath.Join(home, ".codex", "agent-wt-profile.config.toml")
+	written, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("codex config_content file not written: %v", err)
+	}
+	var doc map[string]any
+	if _, err := toml.Decode(string(written), &doc); err != nil {
+		t.Fatalf("written file is not valid TOML: %v (%s)", err, written)
+	}
+	if doc["model_reasoning_effort"] != "high" {
+		t.Errorf("round-tripped TOML = %v, want model_reasoning_effort=high", doc)
+	}
+
+	wantArgs := []string{"--profile", "agent-wt-profile"}
+	gotArgs := cmd.Args[len(cmd.Args)-2:]
+	if gotArgs[0] != wantArgs[0] || gotArgs[1] != wantArgs[1] {
+		t.Errorf("cmd.Args tail = %v, want %v appended", gotArgs, wantArgs)
+	}
+}
+
+// TestApplyConfigContentCodexHomeDirErrorFailsLoudly verifies that when
+// codex's global target can't be resolved (unresolvable $HOME),
+// ApplyConfigContent returns a real error and writes nothing, rather than
+// silently writing to a relative path under the process's cwd (see fix
+// for the swallowed os.UserHomeDir() error in ConfigFileTarget).
+func TestApplyConfigContentCodexHomeDirErrorFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relTarget := filepath.Join(cwd, ".codex", "agent-wt-profile.config.toml")
+
+	cmd := exec.Command("codex")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"model_reasoning_effort": "high"}}
+	if _, err := ApplyConfigContent(cmd, "codex", "/tmp/some-worktree", rp); err == nil {
+		t.Fatal("ApplyConfigContent() error = nil, want non-nil when $HOME is unresolvable")
+	}
+	if _, statErr := os.Stat(relTarget); !os.IsNotExist(statErr) {
+		t.Errorf("ApplyConfigContent wrote to relative-path fallback %q, want no write anywhere", relTarget)
 	}
 }
 

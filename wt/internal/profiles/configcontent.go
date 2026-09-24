@@ -21,16 +21,24 @@ import (
 // an inline env var instead (opencode). claude's target is worktree-
 // scoped (never the user's global ~/.claude/settings.json); codex's is a
 // dedicated wt-owned global profile file, since codex has no
-// project-scoped profile mechanism to use instead.
-func ConfigFileTarget(agent, worktreePath string) (path string, isTOML bool, ok bool) {
+// project-scoped profile mechanism to use instead — since that file's
+// whole point is to be a FIXED global path (never inside a repo or
+// worktree), a failure to resolve the home directory is reported via err
+// rather than silently falling back to a relative path: ok is still true
+// (codex does have a target mechanism), but the caller must fail loudly
+// instead of writing anywhere.
+func ConfigFileTarget(agent, worktreePath string) (path string, isTOML bool, ok bool, err error) {
 	switch agent {
 	case "claude":
-		return filepath.Join(worktreePath, ".claude", "settings.local.json"), false, true
+		return filepath.Join(worktreePath, ".claude", "settings.local.json"), false, true, nil
 	case "codex":
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".codex", "agent-wt-profile.config.toml"), true, true
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return "", false, true, fmt.Errorf("profile: resolve home directory for codex config_content target: %w", homeErr)
+		}
+		return filepath.Join(home, ".codex", "agent-wt-profile.config.toml"), true, true, nil
 	default:
-		return "", false, false
+		return "", false, false, nil
 	}
 }
 
@@ -52,7 +60,10 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 		}
 		return noop, nil
 	}
-	path, isTOML, ok := ConfigFileTarget(agent, worktreePath)
+	path, isTOML, ok, targetErr := ConfigFileTarget(agent, worktreePath)
+	if targetErr != nil {
+		return nil, targetErr
+	}
 	if !ok {
 		return nil, fmt.Errorf("profile: agent %q has no config_content target", agent)
 	}
@@ -145,18 +156,31 @@ func snapshotAndWrite(target string, data []byte, perm os.FileMode) error {
 // the SAME operation for the normal post-launch restore and for
 // self-healing an orphaned backup before a fresh write; the two are not
 // distinguished by the function, only by when the caller invokes it.
+//
+// A real filesystem error (permission denied, I/O error) reading either
+// marker is returned rather than treated as "no backup" — silently
+// swallowing it here would let a caller proceed to overwrite a `.present`
+// backup that in fact still holds the true pre-write original, which is
+// exactly the data loss self-heal exists to prevent.
 func restoreIfBackedUp(target string) (restored bool, err error) {
-	if _, err := os.Stat(backupAbsentPath(target)); err == nil {
+	switch _, statErr := os.Stat(backupAbsentPath(target)); {
+	case statErr == nil:
 		if rmErr := os.Remove(target); rmErr != nil && !os.IsNotExist(rmErr) {
 			return false, rmErr
 		}
 		return true, os.Remove(backupAbsentPath(target))
+	case !os.IsNotExist(statErr):
+		return false, statErr
 	}
-	if data, err := os.ReadFile(backupPresentPath(target)); err == nil {
+	data, readErr := os.ReadFile(backupPresentPath(target))
+	switch {
+	case readErr == nil:
 		if werr := config.WriteFileAtomic(target, data, 0o644); werr != nil {
 			return false, werr
 		}
 		return true, os.Remove(backupPresentPath(target))
+	case !os.IsNotExist(readErr):
+		return false, readErr
 	}
 	return false, nil
 }
