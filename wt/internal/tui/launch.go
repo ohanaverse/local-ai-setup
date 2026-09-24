@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -122,19 +121,16 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		start := time.Now()
-		err := cmd.Run()
-		if profileCleanup != nil {
-			if cerr := profileCleanup(); cerr != nil {
-				fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
-			}
+		if profileCleanup == nil {
+			profileCleanup = func() error { return nil }
 		}
+		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
 		// Capture (do not print) the summary line. Printing here would
 		// land inside the alt-screen buffer, which bubbletea discards at
 		// tea.Quit shutdown. Run() reads pendingSummary after p.Run()
 		// returns and prints it to the parent terminal — the only point
 		// in the TUI lifecycle where stdout reaches the user's terminal.
-		pendingSummary = agents.Summary(agent, m, time.Since(start))
+		pendingSummary = agents.Summary(agent, m, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: m}
 		return launchDoneMsg{err: err}
 	}

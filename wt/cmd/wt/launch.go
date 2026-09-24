@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -478,12 +477,8 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 		return perr
 	}
 
-	start := time.Now()
-	err := cmd.Run()
-	if cerr := profileCleanup(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
-	}
-	summary := agents.Summary(agent, m, time.Since(start))
+	duration, err := agents.RunAndCleanup(cmd, profileCleanup)
+	summary := agents.Summary(agent, m, duration)
 
 	releaseSession()
 	stats := survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
