@@ -1240,6 +1240,66 @@ func TestRunAgentCmdMalformedProfilesTomlDegradesGracefully(t *testing.T) {
 	}
 }
 
+// TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary is the
+// regression lock for the code-review finding that a pre-launch profile
+// application error (e.g. a wrapper profile naming a missing binary) used
+// to return immediately from runAgentCmd, skipping releaseSession() and the
+// summary line — unlike the ollama-check failure path in launchFilteredImpl,
+// which explicitly prints the summary before returning. This verifies
+// cmd.Run() never executes (the sentinel file is never created), the
+// refcount entry is released, and the summary line is printed with a 0
+// duration.
+func TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary(t *testing.T) {
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return true, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	released := false
+	oldRelease := releaseSession
+	releaseSession = func() { released = true }
+	t.Cleanup(func() { releaseSession = oldRelease })
+
+	pp := &precomputedProfiles{store: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+		{Agent: "pi", Match: "location", Location: "local",
+			Wrapper: &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz"}},
+	}}}
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+
+	sentinelDir := t.TempDir()
+	sentinel := filepath.Join(sentinelDir, "should-not-exist")
+	cmd := exec.Command("touch", sentinel)
+
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	err := runAgentCmd(cmd, "pi", m, cfg, pp)
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if err == nil {
+		t.Fatal("runAgentCmd() error = nil, want the wrapper-not-installed error")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("error = %v, want a wrapper-not-installed error", err)
+	}
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Error("sentinel file exists — cmd.Run() executed despite the profile apply error")
+	}
+	if !released {
+		t.Error("releaseSession() was not called on a pre-launch profile apply error")
+	}
+	if !strings.Contains(string(out), "wt: pi · ollama/x") {
+		t.Errorf("stdout = %q, want the summary line printed", out)
+	}
+}
+
 // TestPromptProfileNoTTYDefaultsToApply verifies promptProfile itself
 // (not the confirmProfile seam other tests in this file swap out) applies
 // automatically — returns (true, nil) — when /dev/tty cannot be opened.

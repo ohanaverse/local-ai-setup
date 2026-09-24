@@ -445,6 +445,15 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 
 	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp)
 	if perr != nil {
+		// Mirrors the ollama-check failure path in launchFilteredImpl above:
+		// a pre-launch config error must still release the refcount entry
+		// already recorded before runAgentCmd was called, and print the
+		// summary line, so the user sees it on a pre-launch config error
+		// exactly as on a real exit. Duration is 0 — the subprocess never
+		// started. Survey and the stop picker are deliberately skipped:
+		// there is no session to ask "did it work?" about.
+		releaseSession()
+		fmt.Println("\n" + agents.Summary(agent, m, 0))
 		return perr
 	}
 
