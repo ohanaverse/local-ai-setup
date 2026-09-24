@@ -37,6 +37,18 @@ type piProvider struct {
 	BaseURL string    `json:"baseUrl"`
 	Models  []piModel `json:"models"`
 	WTOwned bool      `json:"_wtOwned,omitempty"`
+	// Compat carries pi's per-provider wire-compat overrides (its own
+	// ProviderConfigSchema.compat). Only SupportsStore is populated today,
+	// for the nyt-litellm gateway workaround below; nil omits the field
+	// entirely so providers that don't need it round-trip unchanged.
+	Compat *piCompat `json:"compat,omitempty"`
+}
+
+// piCompat mirrors the subset of pi's OpenAICompletionsCompatSchema wt
+// needs to write. Pointer fields so "unset" (omit) is distinct from
+// "false".
+type piCompat struct {
+	SupportsStore *bool `json:"supportsStore,omitempty"`
 }
 
 // piModel is a single entry in pi's model catalog.
@@ -79,7 +91,28 @@ const (
 	// receive the unprefixed name. A provider whose id cannot appear as the
 	// first path segment of a registry model id keeps ids verbatim.
 	piLitellmProviderID = "litellm"
+
+	// nytLitellmProviderID is the NYT-internal LiteLLM gateway registry
+	// provider. Its Bedrock-backed models 400 on the OpenAI `store` param
+	// (UnsupportedParamsError) rather than dropping it, and pi's
+	// openai-completions client defaults to sending store:false for any
+	// provider not on its own hardcoded non-standard-provider list. See
+	// the supportsStoreFalse call in syncDirectProviders.
+	nytLitellmProviderID = "nyt-litellm"
 )
+
+// supportsStoreFalse is pi's compat override for providers whose backend
+// rejects the OpenAI `store` param outright (see nytLitellmProviderID).
+var supportsStoreFalse = &piCompat{SupportsStore: boolPtr(false)}
+
+func boolPtr(b bool) *bool { return &b }
+
+// hasSupportsStoreFalse reports whether c already carries the
+// supportsStoreFalse override, so a resync doesn't mark the file mutated
+// (and rewrite it) on every launch once the override is in place.
+func hasSupportsStoreFalse(c *piCompat) bool {
+	return c != nil && c.SupportsStore != nil && !*c.SupportsStore
+}
 
 // isLocalOllamaBaseURL reports whether baseURL points at the local Ollama
 // OpenAI-compatible endpoint (localhost or 127.0.0.1 on port 11434), in any
@@ -345,6 +378,9 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile, target config.Model
 			if providerID != piOllamaProviderID {
 				p.WTOwned = true
 			}
+			if providerID == nytLitellmProviderID {
+				p.Compat = supportsStoreFalse
+			}
 			mutated = true
 		}
 
@@ -450,6 +486,10 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile, target config.Model
 						// rename/removal would otherwise defeat that
 						// inference.
 						p.WTOwned = true
+						mutated = true
+					}
+					if providerID == nytLitellmProviderID && !hasSupportsStoreFalse(p.Compat) {
+						p.Compat = supportsStoreFalse
 						mutated = true
 					}
 				}

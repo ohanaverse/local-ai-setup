@@ -104,6 +104,32 @@ leaves the stale binary in charge: `go env GOPATH` is asdf-managed
       showed the GOPATH command; the gotchas at `:345`/`:473` now read as the
       "why" behind the corrected command.
 
+## 6. `piCompat` full-pointer-replacement risk in `pi_models.go` (2026-09-23)
+
+From `/code-review` on branch `pi-nyt-litellm-compat-store` (PR #150, commit
+35f19fb, `wt/internal/agents/pi_models.go`). Not a bug in the current fix —
+today wt only ever writes `{supportsStore:false}` and nothing richer — but a
+maintenance trap if `piCompat` ever grows more fields.
+
+- `pi_models.go:491` — resync does `p.Compat = supportsStoreFalse` (full
+  pointer replacement) instead of merging just `SupportsStore`. If a `compat`
+  block on a provider ever picks up other sub-fields (e.g. a hand-added
+  `supportsDeveloperRole`), the next wt-triggered rewrite silently drops them.
+  Confirmed via an ad-hoc test: a foreign block with
+  `compat:{supportsDeveloperRole:true,supportsReasoningEffort:false}`
+  round-trips as `compat:{}` once any other provider mutation forces a file
+  rewrite. The create path (`:382`, `!existed`) has the same full-replacement
+  shape.
+- `pi_models.go:106` — `supportsStoreFalse` is a single shared `*piCompat`
+  pointer assigned by reference into every nyt-litellm provider-block write.
+  Harmless today since nothing mutates it in place, but if future code ever
+  does `p.Compat.SupportsStore = x` in place rather than reassigning, it would
+  corrupt the shared singleton for every other in-memory `piProvider` pointing
+  at it in the same process.
+
+- [ ] Fix: merge into existing `compat` fields instead of full-pointer
+      replacement (deferred until `piCompat` gains a second field)
+
 ## Minor / already handled notes
 
 - wt PATH shadowing (stale `~/.local/bin/wt` hides GOPATH builds): documented in

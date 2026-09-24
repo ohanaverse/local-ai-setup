@@ -809,6 +809,31 @@ func TestSyncModelsDirectCreatesSchemaValidProviderBlock(t *testing.T) {
 	}
 }
 
+// The nyt-litellm gateway's Bedrock-backed models reject the OpenAI `store`
+// param outright (400 UnsupportedParamsError) instead of dropping it, and
+// pi's openai-completions client defaults to sending store:false for any
+// provider it doesn't special-case. wt must write compat.supportsStore:
+// false into the nyt-litellm provider block so pi stops sending the param.
+func TestSyncModelsDirectSetsNytLitellmSupportsStoreFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "nyt-litellm", Auth: config.AuthConfig{Type: "api_key", BaseURL: "https://llm-gateway.nyt.net", SecretRef: "sk-literal"}},
+		},
+		Models: []config.Model{
+			{ID: "nyt-litellm/claude-sonnet-4-6", ModelName: "claude-sonnet-4-6", ProviderID: "nyt-litellm"},
+		},
+	}
+	if err := syncModels(cfg, path, config.Model{}); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	p := readPiModels(t, path).Providers["nyt-litellm"]
+	if p.Compat == nil || p.Compat.SupportsStore == nil || *p.Compat.SupportsStore != false {
+		t.Errorf("compat = %+v, want supportsStore: false", p.Compat)
+	}
+}
+
 // A provider whose secret_ref resolves to empty (env var unset) must be
 // skipped entirely: writing its block would either carry an empty apiKey
 // (schema-invalid) or lose the identity fields.
