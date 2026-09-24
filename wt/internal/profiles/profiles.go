@@ -1,6 +1,7 @@
 package profiles
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,4 +91,16 @@ func Load() (Store, error) {
 		enabled = *fs.Enabled
 	}
 	return Store{Enabled: enabled, Profiles: fs.Profiles}, nil
+}
+
+// Save writes store to profiles.toml as a whole-file atomic write
+// (config.WriteFileAtomic), the same convention config.Save uses for
+// config.toml. Used by `wt profile on|off`.
+func Save(store Store) error {
+	var buf bytes.Buffer
+	fs := fileSchema{Enabled: &store.Enabled, Profiles: store.Profiles}
+	if err := toml.NewEncoder(&buf).Encode(&fs); err != nil {
+		return err
+	}
+	return config.WriteFileAtomic(Path(), buf.Bytes(), 0o644)
 }
