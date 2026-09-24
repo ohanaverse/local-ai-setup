@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // emptyPiModels is a minimal valid models.json with no models but pi's own
@@ -854,5 +855,16 @@ func TestSyncModelsSkipsProviderWithUnresolvableSecret(t *testing.T) {
 	}
 	if _, ok := readPiModels(t, path).Providers["openrouter"]; ok {
 		t.Error("openrouter block written despite unresolvable secret — would poison the catalog with an empty apiKey")
+	}
+}
+
+// TestPiDriverDeclaresWrapperProfileMechanism verifies pi's
+// ProfileMechanisms is exactly {wrapper} — the little-coder integration —
+// and nothing else, so a hand-written pi profile using env/args/config_file
+// fails Validate rather than silently doing nothing.
+func TestPiDriverDeclaresWrapperProfileMechanism(t *testing.T) {
+	mechs := piDriver{}.ProfileMechanisms()
+	if len(mechs) != 1 || mechs[0] != profiles.MechanismWrapper {
+		t.Errorf("ProfileMechanisms() = %v, want exactly [wrapper]", mechs)
 	}
 }

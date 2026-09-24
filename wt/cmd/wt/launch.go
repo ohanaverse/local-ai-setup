@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"time"
+	"slices"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
@@ -38,6 +42,66 @@ var runStopPicker = realRunStopPicker
 
 func realRunStopPicker(cfg *config.Config) {
 	survey.Picker(os.Stdin, os.Stdout, cfg)
+}
+
+// loadProfileStore is a seam for tests: production reads
+// ~/.config/agent-wt/profiles.toml (via profiles.Load); tests swap it so
+// no test depends on the developer's real file.
+var loadProfileStore = profiles.Load
+
+// precomputedProfiles carries a.profiles/a.profilesLoadErr/
+// a.profilesValidateErr (newApp() already loaded and validated
+// profiles.toml once at startup) through to applyProfileForLaunch, so a
+// launch never re-reads and re-parses the file a second time in the same
+// process. nil means "not precomputed" — every direct test call, and any
+// caller with no *app in scope — and applyProfileForLaunch falls back to
+// loadProfileStore()/profiles.Validate exactly as before. Mirrors the
+// nil-means-not-precomputed convention launchFilteredImpl's own `eligible`
+// parameter already uses.
+type precomputedProfiles struct {
+	store       profiles.Store
+	loadErr     error
+	validateErr error
+}
+
+// confirmProfile is a seam for tests: production asks on /dev/tty whether
+// to apply a resolved profile, defaulting to yes on a bare Enter or when
+// no TTY is available (non-interactive launches — scripts, wt smoke, CI —
+// must never block on input that can't arrive); tests swap it so nothing
+// blocks on real terminal input.
+var confirmProfile = promptProfile
+
+// openTTY is a seam for tests: production opens the controlling terminal
+// directly; tests swap it so a non-TTY (or TTY-available-but-must-not-
+// block) scenario is deterministic regardless of whether the test runner
+// itself happens to have a real /dev/tty attached.
+var openTTY = func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_RDWR, 0) }
+
+func promptProfile(rp profiles.ResolvedProfile) (bool, error) {
+	f, err := openTTY()
+	if err != nil {
+		return true, nil
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintf(f, "wt: local-model profile available for this launch (%s) — apply? [Y/n] ", strings.Join(rp.Sources, ", ")); err != nil {
+		return false, err
+	}
+	return askYesNoDefault(f, true)
+}
+
+func askYesNoDefault(r io.Reader, def bool) (bool, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && line == "" {
+		return def, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	case "n", "no":
+		return false, nil
+	default:
+		return def, nil
+	}
 }
 
 // buildLaunch constructs the agent command for the given model and worktree,
@@ -117,7 +181,7 @@ var launchFiltered = launchFilteredImpl
 // "user did not pass -M". It's used to surface a stderr note when -M is
 // passed together with a command agent (where the pin would otherwise be
 // silently dropped).
-func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
 	if agents.IsCommand(agent) {
 		if pinnedSupplied {
 			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
@@ -129,7 +193,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if err != nil {
 			return err
 		}
-		return runAgentCmd(cmd, agent, config.Model{}, cfg)
+		return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
 	}
 
 	// Resolve the model. If the caller precomputed the eligible list, reuse
@@ -201,7 +265,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
-	return runAgentCmd(cmd, agent, m, cfg)
+	return runAgentCmd(cmd, agent, m, cfg, pp)
 }
 
 // launchPassthrough builds and runs the bare-agent command for an
@@ -215,12 +279,173 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 // mirroring launchFiltered above.
 var launchPassthrough = launchPassthroughImpl
 
-func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
 	cmd, err := agents.BuildPassthroughCmd(agent, worktreePath, yolo, extraArgs)
 	if err != nil {
 		return err
 	}
-	return runAgentCmd(cmd, agent, config.Model{}, cfg)
+	return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
+}
+
+// selfHealAgentConfigContentTarget checks agent's config_content file
+// target (claude, codex — opencode has none, it merges into env instead)
+// for an orphaned backup left by a previous session that never restored it
+// (e.g. wt was killed with `kill -9` mid-launch) and restores it if found,
+// printing a one-line notice. It runs UNCONDITIONALLY, on every launch of
+// that agent — not only a launch that itself resolves a matching profile —
+// closing the gap where a stale, profile-rewritten file would otherwise
+// only get cleaned up the next time a profile happened to match for that
+// exact agent+target again. Its only job is repairing PAST session state,
+// so it deliberately runs before profiles.toml is even loaded: it must
+// still self-heal when the profile layer is globally disabled (`enabled =
+// false`) or profiles.toml doesn't exist at all. A ConfigFileTarget error
+// (e.g. codex's $HOME unresolvable) or a restore error is reported to
+// stderr and otherwise ignored — this must never fail the launch, the same
+// graceful-degradation posture as every other profile step here.
+func selfHealAgentConfigContentTarget(agent, worktreePath string) {
+	target, _, ok, err := profiles.ConfigFileTarget(agent, worktreePath)
+	if err != nil || !ok {
+		return
+	}
+	restored, herr := profiles.SelfHeal(target)
+	if herr != nil {
+		fmt.Fprintf(os.Stderr, "wt: profile self-heal check for %s: %v\n", target, herr)
+		return
+	}
+	if restored {
+		fmt.Fprintf(os.Stderr, "wt: restored a leftover profile-managed file from a previous session: %s\n", target)
+	}
+}
+
+// applyProfileForLaunch resolves and, on confirmation, applies a
+// local-model profile for agent/m to cmd before it runs. It returns a
+// cleanup func that MUST be called after cmd.Run() returns (success or
+// failure) to restore any config file a profile's config_content
+// mechanism rewrote — called explicitly, never via defer, since the
+// os.Exit branch in runAgentCmd below would otherwise skip a deferred
+// cleanup (the same reasoning that already makes
+// lifecycle.WaitPendingRoutes an explicit call there, not a defer).
+// Command agents (m.ID == "") and native models never match a profile —
+// ResolveRoute returns a zero Route for both — so this no-ops for them
+// without even loading profiles.toml. pp, when non-nil, is newApp()'s
+// already-loaded profiles.toml state (see precomputedProfiles) — reused
+// instead of loading and validating the file again.
+func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) (cleanup func() error, err error) {
+	noop := func() error { return nil }
+	// Self-heal runs before the early-return guards below: it repairs PAST
+	// session state (an orphaned config_content backup left by a prior
+	// launch that was killed mid-run) and depends only on agent/cmd.Dir,
+	// never on m or cfg — it must still run for a native-model or
+	// command-agent launch of the same agent, which is exactly the launch
+	// class the guard below skips for THIS launch's own profile
+	// resolution.
+	selfHealAgentConfigContentTarget(agent, cmd.Dir)
+	if m.ID == "" || m.Native || cfg == nil {
+		return noop, nil
+	}
+
+	var store profiles.Store
+	if pp != nil {
+		if pp.loadErr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.loadErr)
+			return noop, nil
+		}
+		if pp.validateErr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.validateErr)
+			return noop, nil
+		}
+		store = pp.store
+	} else {
+		var loadErr error
+		store, loadErr = loadProfileStore()
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", loadErr)
+			return noop, nil
+		}
+		if verr := profiles.Validate(store, agentProfileMechanisms); verr != nil {
+			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", verr)
+			return noop, nil
+		}
+	}
+	if !store.Enabled {
+		return noop, nil
+	}
+	rp := profiles.Resolve(store, agent, cfg, m)
+	if rp.Empty() {
+		return noop, nil
+	}
+	apply, err := confirmProfile(rp)
+	if err != nil {
+		// Per the design's global constraint, a profile resolution/
+		// application error must degrade to a normal, unprofiled launch —
+		// never block the agent from starting — so a confirm-prompt
+		// failure (e.g. a /dev/tty write error) is a warning, not a
+		// launch-aborting error.
+		fmt.Fprintf(os.Stderr, "wt: profile confirm prompt: %v (profiles disabled for this launch)\n", err)
+		return noop, nil
+	}
+	if !apply {
+		return noop, nil
+	}
+	return applyResolvedProfile(cmd, agent, rp)
+}
+
+// applyResolvedProfile applies an already-confirmed ResolvedProfile to
+// cmd, in three steps: env/args first, then config_content, then the
+// wrapper last. This ordering means a codex profile's own declared args
+// (the "args" mechanism) land BEFORE config_content's own
+// "--profile agent-wt-profile" flag rather than after it, and the wrapper
+// — applied last — still captures everything appended before it in its
+// {{args}} splice (the one interaction this package's tests pin; no
+// Phase-1 profile combines config_file with wrapper, but this keeps the
+// ordering correct if one ever does). Extracted from applyProfileForLaunch
+// so this config_content/wrapper interaction — specifically that a
+// wrapper failure must still trigger the already-obtained content cleanup
+// — is directly testable with a hand-built ResolvedProfile, without
+// needing a profiles.toml entry that passes Validate.
+//
+// Because ApplyEnvAndArgs now runs before ApplyConfigContent (that
+// ordering is the whole point of this split — see the doc above), a
+// config_content failure must undo whatever ApplyEnvAndArgs already
+// appended to cmd.Env/cmd.Args before degrading to an unprofiled launch;
+// otherwise the launch would be silently half-profiled (env vars and
+// extra args applied) while the user is told profiles are disabled.
+// ApplyEnvAndArgs only ever appends, so resetting to a pre-append snapshot
+// is a clean, complete undo.
+func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfile) (cleanup func() error, err error) {
+	noop := func() error { return nil }
+	origEnv := slices.Clone(cmd.Env)
+	origArgs := slices.Clone(cmd.Args)
+	profiles.ApplyEnvAndArgs(cmd, rp)
+	contentCleanup, err := profiles.ApplyConfigContent(cmd, agent, cmd.Dir, rp)
+	if err != nil {
+		// Per the design's global constraint, a profile resolution/
+		// application error must degrade to a normal, unprofiled launch —
+		// never block the agent from starting — so a file-write error here
+		// (permissions, a resolve-home-dir failure for codex, …) is a
+		// warning, not a launch-aborting error. Restore cmd.Env/cmd.Args to
+		// their pre-ApplyEnvAndArgs state (see the doc comment above) so
+		// this degrade is genuinely unprofiled, not half-profiled.
+		cmd.Env = origEnv
+		cmd.Args = origArgs
+		fmt.Fprintf(os.Stderr, "wt: profile config_content: %v (profiles disabled for this launch)\n", err)
+		return noop, nil
+	}
+	if rp.Wrapper != nil {
+		if err := profiles.ApplyWrapper(cmd, rp.Wrapper); err != nil {
+			// ApplyWrapper's one error case (a wrapper mechanism naming a
+			// missing binary) is the sole exception the design calls out
+			// as fatal — but any config file ApplyConfigContent already
+			// wrote or backed up above must still be restored before we
+			// return, or a combined config_content+wrapper profile would
+			// leak the rewritten file on disk.
+			if cerr := contentCleanup(); cerr != nil {
+				fmt.Fprintf(os.Stderr, "wt: profile cleanup after wrapper error: %v\n", cerr)
+			}
+			return noop, err
+		}
+	}
+	return contentCleanup, nil
 }
 
 // runAgentCmd wires stdio through to the agent, runs it, then runs the
@@ -233,13 +458,27 @@ func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []st
 // exits, not when the summary prints. The survey call sits before the
 // os.Exit(ExitCode) branch so a non-zero agent exit is still surveyed — a
 // crashed session is exactly a "did it work? no" data point.
-func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config) error {
+func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	start := time.Now()
-	err := cmd.Run()
-	summary := agents.Summary(agent, m, time.Since(start))
+
+	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp)
+	if perr != nil {
+		// Mirrors the ollama-check failure path in launchFilteredImpl above:
+		// a pre-launch config error must still release the refcount entry
+		// already recorded before runAgentCmd was called, and print the
+		// summary line, so the user sees it on a pre-launch config error
+		// exactly as on a real exit. Duration is 0 — the subprocess never
+		// started. Survey and the stop picker are deliberately skipped:
+		// there is no session to ask "did it work?" about.
+		releaseSession()
+		fmt.Println("\n" + agents.Summary(agent, m, 0))
+		return perr
+	}
+
+	duration, err := agents.RunAndCleanup(cmd, profileCleanup)
+	summary := agents.Summary(agent, m, duration)
 
 	releaseSession()
 	stats := survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)

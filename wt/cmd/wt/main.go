@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -133,12 +134,22 @@ func runLaunchPath(
 		maybeInstallGuard()
 	}
 
+	// applyProfile closes over a's already-loaded profiles.toml state
+	// (newApp() loaded and validated it once) so the TUI launch path
+	// applies local-model launch profiles exactly like the non-TUI path
+	// does, via the same applyProfileForLaunch — internal/tui cannot call
+	// it directly (import-cycle/package-boundary reasons documented on
+	// tui.ProfileApplier), so it is handed in as a closure instead.
+	applyProfile := func(cmd *exec.Cmd, agentName string, m config.Model) (func() error, error) {
+		return applyProfileForLaunch(cmd, agentName, m, a.cfg, a.profileState())
+	}
+
 	// launchPath == "" means the worktree picker should be shown; the launch
 	// directory is not known until the user picks inside the TUI, so never
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
 	if launchPath == "" {
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile)
 	}
 
 	pinnedSupplied := cmd.Flags().Changed("model")
@@ -155,21 +166,21 @@ func runLaunchPath(
 			return fmt.Errorf("agent %q is not configured; cannot pin model %q", agent, pinned)
 		}
 		fmt.Fprintf(os.Stderr, "wt: %s is not configured — launching it directly without a model\n", agent)
-		return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg)
+		return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg, a.profileState())
 	}
 
 	if needsModelPicker(agent, pinned) {
 		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
 		if err == nil && resolved {
-			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible)
+			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState())
 		}
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
 		}
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile)
 	}
 
-	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil)
+	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState())
 }
 
 func rootCmd() *cobra.Command {
@@ -435,6 +446,6 @@ func rootCmd() *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), litellmCmd(a))
+	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), litellmCmd(a), profileCmd(a))
 	return cmd
 }
