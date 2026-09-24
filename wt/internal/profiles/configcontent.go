@@ -28,11 +28,21 @@ import (
 // worktree), a failure to resolve the home directory is reported via err
 // rather than silently falling back to a relative path: ok is still true
 // (codex does have a target mechanism), but the caller must fail loudly
-// instead of writing anywhere.
+// instead of writing anywhere. claude's worktreePath is resolved to an
+// absolute path for the same reason: an outside-a-git-repo launch passes
+// the literal relative path "." (cmd/wt/main.go), and backupKey hashes
+// the STRING this function returns — two such launches from different
+// real directories would otherwise collide on the identical relative
+// string ".claude/settings.local.json" and self-heal/restore over each
+// other's unrelated file.
 func ConfigFileTarget(agent, worktreePath string) (path string, isTOML bool, ok bool, err error) {
 	switch agent {
 	case "claude":
-		return filepath.Join(worktreePath, ".claude", "settings.local.json"), false, true, nil
+		abs, absErr := filepath.Abs(worktreePath)
+		if absErr != nil {
+			return "", false, true, fmt.Errorf("profile: resolve worktree path for claude config_content target: %w", absErr)
+		}
+		return filepath.Join(abs, ".claude", "settings.local.json"), false, true, nil
 	case "codex":
 		home, homeErr := os.UserHomeDir()
 		if homeErr != nil {

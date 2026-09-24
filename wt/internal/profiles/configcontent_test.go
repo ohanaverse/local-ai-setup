@@ -32,6 +32,53 @@ func TestConfigFileTargetClaudeIsWorktreeScoped(t *testing.T) {
 	}
 }
 
+// TestConfigFileTargetClaudeResolvesRelativeWorktreePathToAbsolute is the
+// regression lock for the code-review finding that an outside-a-git-repo
+// claude launch (worktreePath == ".", see cmd/wt/main.go's outside-repo
+// passthrough) always hashed the SAME backup key regardless of which real
+// directory the launch actually ran in: ConfigFileTarget joined "." onto
+// ".claude/settings.local.json" literally, and backupKey (which hashes the
+// returned path string) collided across launches from different
+// directories that all happened to pass the relative path ".". Two
+// launches from different directories must resolve to different,
+// directory-specific backup keys.
+func TestConfigFileTargetClaudeResolvesRelativeWorktreePathToAbsolute(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+
+	if err := os.Chdir(dirA); err != nil {
+		t.Fatal(err)
+	}
+	pathA, _, _, err := ConfigFileTarget("claude", ".")
+	if err != nil {
+		t.Fatalf("ConfigFileTarget(claude, \".\") in dirA: %v", err)
+	}
+
+	if err := os.Chdir(dirB); err != nil {
+		t.Fatal(err)
+	}
+	pathB, _, _, err := ConfigFileTarget("claude", ".")
+	if err != nil {
+		t.Fatalf("ConfigFileTarget(claude, \".\") in dirB: %v", err)
+	}
+
+	if !filepath.IsAbs(pathA) || !filepath.IsAbs(pathB) {
+		t.Fatalf("ConfigFileTarget(claude, \".\") = (%q, %q), want both absolute", pathA, pathB)
+	}
+	if pathA == pathB {
+		t.Fatalf("ConfigFileTarget(claude, \".\") returned the same path %q for two different directories", pathA)
+	}
+	if backupKey(pathA) == backupKey(pathB) {
+		t.Error("backupKey(pathA) == backupKey(pathB), want distinct backup keys for distinct directories")
+	}
+}
+
 // TestConfigFileTargetOpenCodeHasNoFile verifies opencode reports ok=false
 // — its config_content goes through OPENCODE_CONFIG_CONTENT env merging
 // instead (ApplyConfigContent's opencode branch), never a file.
