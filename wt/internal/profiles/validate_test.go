@@ -48,3 +48,57 @@ func TestValidateUnknownAgentRejectsAnyMechanism(t *testing.T) {
 		t.Fatal("Validate() = nil, want an error for copilot (no declared mechanisms)")
 	}
 }
+
+// TestValidateMultipleOffendingProfiles verifies that Validate collects
+// and reports every offending profile in one combined error message — so
+// a hand-edited profiles.toml with multiple violations is surfaced all at
+// once, not one at a time, and a user can fix them all in one edit cycle.
+func TestValidateMultipleOffendingProfiles(t *testing.T) {
+	store := Store{Profiles: []Profile{
+		{Agent: "claude", Match: "location", Location: "local", ConfigContent: map[string]any{"x": "1"}},
+		{Agent: "pi", Match: "location", Location: "local", Args: []string{"--arg"}},
+	}}
+	mechs := func(agent string) []Mechanism {
+		if agent == "claude" {
+			return []Mechanism{MechanismEnv}
+		}
+		if agent == "pi" {
+			return []Mechanism{MechanismWrapper}
+		}
+		return nil
+	}
+	err := Validate(store, mechs)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error naming both offending profiles")
+	}
+	errMsg := err.Error()
+	// Both profiles should be mentioned by index in the combined error message
+	if !contains(errMsg, "profiles.toml[0]") || !contains(errMsg, "profiles.toml[1]") {
+		t.Errorf("Validate() error message does not name both profiles: %v", errMsg)
+	}
+}
+
+// TestValidateZeroMechanismsAlwaysPasses verifies that a profile using no
+// mechanisms at all (no Env, Args, ConfigContent, or Wrapper) always passes
+// validation regardless of what mechanisms its agent declares or doesn't
+// declare — a bare profile with just agent/match/selector fields has nothing
+// to validate and is always valid.
+func TestValidateZeroMechanismsAlwaysPasses(t *testing.T) {
+	store := Store{Profiles: []Profile{
+		{Agent: "unknown", Match: "location", Location: "local"},
+	}}
+	mechs := func(agent string) []Mechanism { return nil }
+	if err := Validate(store, mechs); err != nil {
+		t.Errorf("Validate() = %v, want nil for profile with zero mechanisms", err)
+	}
+}
+
+// Helper function for test assertions
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
