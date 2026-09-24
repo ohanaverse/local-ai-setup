@@ -152,9 +152,28 @@ no prompt, no file writes, no wrapper substitution.
 - **`Env`** — merged into `LaunchCmd.Env`; profile values overwrite the
   driver's own same-key defaults (the point is overriding standard
   behavior).
-- **`ExtraArgs`** — appended to the driver's own args, inserted *before*
-  the launch's user-supplied passthrough args, so `claude-wt -W x --
-  --foo` still lets `--foo` win on collision.
+- **`ExtraArgs`** — appended at the very end of `cmd.Args`, AFTER the
+  launch's user-supplied passthrough args and any resume flag
+  (`ApplyToCmd` in `internal/profiles/apply.go`; the actual call order is
+  `BuildLaunchCmd` builds driver args + passthrough + resume, then
+  `ApplyToCmd` appends `ExtraArgs` last). This is a documented, accepted
+  implementation simplification, not the original intent: an earlier draft
+  of this section said `ExtraArgs` would be inserted *before* the user's
+  own passthrough args so `claude-wt -W x -- --foo` still let `--foo` win
+  on collision. Doing that would require threading passthrough-arg-length
+  information through `BuildLaunchCmd` (or otherwise restructuring where
+  profile args are spliced in), which was judged too invasive for the
+  implementation phase that shipped this feature; the final whole-branch
+  review flagged the gap between this section's original wording and the
+  shipped "appended last" behavior, and ruled that fixing the ordering was
+  out of scope for that fix wave (see
+  `.superpowers/sdd/2026-09-24-wt-agent-profiles/progress.md`, "Final
+  whole-branch review", deferred item "Important #4"). Practical
+  consequence: for a last-wins flag format (e.g. codex's repeated `-c
+  key=value`), a profile's `ExtraArgs` value for a key the user also
+  passes on the command line will win over the user's own value, the
+  opposite of the original intent. This is a known, open risk, not yet
+  fixed.
 - **`ConfigContent`** — mechanically different per agent:
   - **claude** → written to `<worktree>/.claude/settings.local.json`
     (project/worktree-scoped, never the global `~/.claude/settings.json`).
