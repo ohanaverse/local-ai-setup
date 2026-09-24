@@ -298,8 +298,10 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 // pre-launch profileApplier error must skip cmd.Run() entirely, still
 // release the refcount entry already recorded by launchAndRecord before
 // runAndWaitCmd was returned, and still populate pendingSummary (duration
-// 0) — but must NOT populate pendingSurveyState, since nothing ran and
-// there is no session to survey or offer a stop picker for.
+// 0) and print the error to stderr (the TUI never surfaces
+// launchDoneMsg's error, so without it the user sees no diagnostic at all)
+// — but must NOT populate pendingSurveyState, since nothing ran and there
+// is no session to survey or offer a stop picker for.
 func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	oldApplier := profileApplier
 	t.Cleanup(func() { profileApplier = oldApplier })
@@ -319,11 +321,26 @@ func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	cmd := exec.Command("touch", sentinel)
 	m := config.Model{ID: "ollama/x", ModelName: "x"}
 
+	// Capture stderr: the Update handler never renders launchDoneMsg's
+	// error and Run() does not return it, so this stderr line is the
+	// user's only diagnostic for a launch that never ran.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
 	msg := runAndWaitCmd(cmd, "pi", m)()
+	os.Stderr = oldStderr
+	_ = w.Close()
+	stderrOut, _ := io.ReadAll(r)
 
 	done, ok := msg.(launchDoneMsg)
 	if !ok || done.err == nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a launchDoneMsg carrying the profileApplier error", msg)
+	}
+	if !strings.Contains(string(stderrOut), "wt: wrapper not installed") {
+		t.Errorf("stderr = %q, want it to contain %q — a profileApplier error must be visible to the user", stderrOut, "wt: wrapper not installed")
 	}
 	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
 		t.Error("sentinel file exists — cmd.Run() executed despite the profileApplier error")

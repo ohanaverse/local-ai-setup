@@ -111,6 +111,11 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 				// value.
 				releaseSession()
 				pendingSummary = agents.Summary(agent, m, 0)
+				// The terminal is released here, so this reaches the
+				// user's real stderr. It is the only diagnostic: the
+				// Update handler never renders launchDoneMsg's error and
+				// Run() does not return it.
+				fmt.Fprintf(os.Stderr, "wt: %v\n", perr)
 				return launchDoneMsg{err: perr}
 			}
 		}
