@@ -1247,13 +1247,19 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // has a valid directory even if it becomes reachable from the pre-path entry
 // point. cfg is the already-loaded config from cmd/wt's newApp (validated
 // before Run is called); it is not re-loaded here.
-func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+// applyProfile, when non-nil, applies a local-model launch profile before
+// the agent's cmd.Run() and is called from runAndWaitCmd for every launch
+// this session makes; cmd/wt's main.go builds it as a closure over the
+// already-loaded profiles.toml state (mirrors the non-TUI path's
+// applyProfileForLaunch).
+func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier) error {
 	p := tea.NewProgram(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
 	pendingSummary = ""
 	pendingSurveyState = pendingSurvey{}
+	profileApplier = applyProfile
 	finalModel, err := p.Run()
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal

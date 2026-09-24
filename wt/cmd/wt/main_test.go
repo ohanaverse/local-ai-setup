@@ -11,7 +11,9 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -204,7 +206,7 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
 		gotAgent = agent
 		gotPinned = pinned
 		return nil
@@ -266,7 +268,7 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 
 			var got, called bool
 			oldTuiRun := tuiRun
-			tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+			tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
 				got, called = allowReplace, true
 				return nil
 			}
@@ -343,7 +345,7 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
 		gotAgent = agent
 		gotPinned = pinned
 		return nil
@@ -575,7 +577,7 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 
 	var called bool
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
 		called = true
 		return nil
 	}
@@ -844,7 +846,7 @@ func TestRunLaunchPath(t *testing.T) {
 			oldSweep := sweepRefcounts
 			var gotPath string
 			var gotTUI, gotLaunch, gotGuard, gotSweep bool
-			tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config) error {
+			tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier) error {
 				gotTUI = true
 				gotPath = c.launchPath
 				return nil
@@ -1016,7 +1018,7 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 
 	var gotAgent string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
 		gotAgent = agent
 		return nil
 	}
@@ -1085,7 +1087,7 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 
 	var tuiCalled bool
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
 		tuiCalled = true
 		return nil
 	}
@@ -1115,5 +1117,71 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 	}
 	if passthroughCalled {
 		t.Error("launchPassthrough must not be called when no agent is pinned")
+	}
+}
+
+// TestRunLaunchPathPassesWorkingProfileApplierToTUI is the regression lock
+// for the code-review finding that the TUI launch path never applied
+// local-model launch profiles at all (finding #1, the most severe of the
+// review). It captures the tui.ProfileApplier closure runLaunchPath hands
+// to tuiRun and invokes it directly against a hand-written profiles.toml,
+// verifying it actually resolves and applies a profile exactly like the
+// non-TUI path's applyProfileForLaunch does — not a nil or no-op closure.
+func TestRunLaunchPathPassesWorkingProfileApplierToTUI(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return true, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	var captured tui.ProfileApplier
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile tui.ProfileApplier) error {
+		captured = applyProfile
+		return nil
+	}
+	t.Cleanup(func() { tuiRun = oldTuiRun })
+
+	a := &app{cfg: &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}}
+	var loadErr error
+	a.profiles, loadErr = profiles.Load()
+	if loadErr != nil {
+		t.Fatalf("profiles.Load() error = %v", loadErr)
+	}
+	a.profilesValidateErr = profiles.Validate(a.profiles, agentProfileMechanisms)
+
+	if err := runLaunchPath(&cobra.Command{}, a, "", "", "", "", nil, "", ""); err != nil {
+		t.Fatalf("runLaunchPath() error = %v", err)
+	}
+	if captured == nil {
+		t.Fatal("tuiRun received a nil ProfileApplier — the TUI launch path never wires profile application")
+	}
+
+	cmd := exec.Command("true")
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	if _, err := captured(cmd, "claude", m); err != nil {
+		t.Fatalf("captured ProfileApplier() error = %v", err)
+	}
+	found := false
+	for _, e := range cmd.Env {
+		if e == "WT_TEST_TUI_PROFILE_APPLIED=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("cmd.Env = %v, want WT_TEST_TUI_PROFILE_APPLIED=1 (the captured applier must actually apply the profile)", cmd.Env)
 	}
 }

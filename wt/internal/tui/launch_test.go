@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -246,5 +247,111 @@ func TestLaunchAgentSyncsPi(t *testing.T) {
 		if !strings.Contains(got, "--model ollama/deepseek-v4-pro:cloud") {
 			t.Errorf("args = %q, want --model ollama/deepseek-v4-pro:cloud (sync + verify)", got)
 		}
+	}
+}
+
+// TestRunAndWaitCmdAppliesProfileApplier is the regression lock for the
+// code-review finding that runAndWaitCmd (the interactive picker's launch
+// path) never applied local-model launch profiles at all. It stubs
+// profileApplier to record the (cmd, agent, m) it was called with and
+// returns a cleanup that records whether it ran; both must fire around
+// cmd.Run(), exactly mirroring the non-TUI path's runAgentCmd.
+func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
+	oldApplier := profileApplier
+	t.Cleanup(func() { profileApplier = oldApplier })
+
+	var gotAgent string
+	var gotModel config.Model
+	cleanupCalled := false
+	profileApplier = func(cmd *exec.Cmd, agent string, m config.Model) (func() error, error) {
+		gotAgent, gotModel = agent, m
+		cmd.Env = append(cmd.Env, "WT_TEST_PROFILE_APPLIED=1")
+		return func() error { cleanupCalled = true; return nil }, nil
+	}
+
+	cmd := exec.Command("true")
+	m := config.Model{ID: "ollama/x", ModelName: "x"}
+	msg := runAndWaitCmd(cmd, "claude", m)()
+
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+		t.Fatalf("runAndWaitCmd() = %#v, want a successful launchDoneMsg", msg)
+	}
+	if gotAgent != "claude" || gotModel.ID != "ollama/x" {
+		t.Errorf("profileApplier called with (%q, %+v), want (claude, {ID: ollama/x})", gotAgent, gotModel)
+	}
+	found := false
+	for _, e := range cmd.Env {
+		if e == "WT_TEST_PROFILE_APPLIED=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("profileApplier's cmd.Env mutation did not survive into cmd.Run()")
+	}
+	if !cleanupCalled {
+		t.Error("profileApplier's cleanup was not called after cmd.Run()")
+	}
+}
+
+// TestRunAndWaitCmdProfileApplierErrorSkipsRun is the regression lock for
+// the TUI-side equivalent of the non-TUI runAgentCmd fix (plan item #5): a
+// pre-launch profileApplier error must skip cmd.Run() entirely, still
+// release the refcount entry already recorded by launchAndRecord before
+// runAndWaitCmd was returned, and still populate pendingSummary (duration
+// 0) — but must NOT populate pendingSurveyState, since nothing ran and
+// there is no session to survey or offer a stop picker for.
+func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
+	oldApplier := profileApplier
+	t.Cleanup(func() { profileApplier = oldApplier })
+	oldRelease := releaseSession
+	t.Cleanup(func() { releaseSession = oldRelease })
+	pendingSummary, pendingSurveyState = "", pendingSurvey{}
+	t.Cleanup(func() { pendingSummary, pendingSurveyState = "", pendingSurvey{} })
+
+	released := false
+	releaseSession = func() { released = true }
+	profileApplier = func(cmd *exec.Cmd, agent string, m config.Model) (func() error, error) {
+		return nil, errors.New("wrapper not installed")
+	}
+
+	sentinelDir := t.TempDir()
+	sentinel := filepath.Join(sentinelDir, "should-not-exist")
+	cmd := exec.Command("touch", sentinel)
+	m := config.Model{ID: "ollama/x", ModelName: "x"}
+
+	msg := runAndWaitCmd(cmd, "pi", m)()
+
+	done, ok := msg.(launchDoneMsg)
+	if !ok || done.err == nil {
+		t.Fatalf("runAndWaitCmd() = %#v, want a launchDoneMsg carrying the profileApplier error", msg)
+	}
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Error("sentinel file exists — cmd.Run() executed despite the profileApplier error")
+	}
+	if !released {
+		t.Error("releaseSession() was not called on a profileApplier error")
+	}
+	if pendingSummary == "" {
+		t.Error("pendingSummary was not set on a profileApplier error")
+	}
+	if pendingSurveyState.agent != "" {
+		t.Error("pendingSurveyState was populated despite the profileApplier error — nothing ran, there is no session to survey")
+	}
+}
+
+// TestRunAndWaitCmdNilProfileApplierIsNoop verifies a nil profileApplier
+// (its zero value — the state every other test in this file runs under,
+// since only Run() ever sets it) leaves runAndWaitCmd's behavior exactly
+// as it was before this task, so the profile layer is opt-in via Run's new
+// parameter and never a behavior change for a caller that doesn't wire it.
+func TestRunAndWaitCmdNilProfileApplierIsNoop(t *testing.T) {
+	oldApplier := profileApplier
+	profileApplier = nil
+	t.Cleanup(func() { profileApplier = oldApplier })
+
+	cmd := exec.Command("true")
+	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+		t.Fatalf("runAndWaitCmd() = %#v, want a successful launchDoneMsg", msg)
 	}
 }

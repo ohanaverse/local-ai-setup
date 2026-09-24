@@ -43,6 +43,27 @@ type pendingSurvey struct {
 // Run() before launch.
 var pendingSurveyState pendingSurvey
 
+// ProfileApplier applies a local-model launch profile (env/args/
+// config_content/wrapper) to cmd before it runs, returning a cleanup func
+// the caller MUST invoke after cmd.Run() returns (success or failure) to
+// restore anything the profile's config_content mechanism rewrote. It
+// mirrors cmd/wt's applyProfileForLaunch signature, minus cfg/pp: this
+// package cannot import cmd/wt (package main — not importable, and it
+// would be a cycle regardless, since cmd/wt already imports internal/tui)
+// or internal/profiles directly (mechanism validation needs an
+// agent-driver lookup that lives with cmd/wt's own app state). Run's
+// caller builds the real implementation as a closure over its own
+// cfg/precomputedProfiles.
+type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model) (cleanup func() error, err error)
+
+// profileApplier is a seam: production is set by Run() from its
+// ProfileApplier parameter before p.Run() starts. nil — the zero value
+// every test in this file that calls runAndWaitCmd directly (without going
+// through Run()) runs under — means "no profile layer available", and
+// runAndWaitCmd treats that as a no-op, matching the non-TUI path's own
+// graceful-degradation posture for a missing/disabled profiles.toml.
+var profileApplier ProfileApplier
+
 // launchAgent builds the command for agent/model in worktreePath, optionally
 // appending passthrough args and a resume flag for claude or opencode. It
 // delegates to agents.BuildLaunchCmd so the launch construction logic lives
@@ -73,11 +94,36 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 				}
 			}()
 		}
+		var profileCleanup func() error
+		if profileApplier != nil {
+			var perr error
+			profileCleanup, perr = profileApplier(cmd, agent, m)
+			if perr != nil {
+				// Mirrors cmd/wt's runAgentCmd: a pre-launch profile
+				// application error (e.g. a wrapper profile naming a
+				// missing binary) must still release the refcount entry
+				// launchAndRecord already recorded before this command
+				// was returned, and still populate pendingSummary
+				// (duration 0) so Run() prints it exactly as on a real
+				// exit — but there is no session to survey or a stop
+				// picker to offer, since nothing ever ran, so
+				// pendingSurveyState is deliberately left at its zero
+				// value.
+				releaseSession()
+				pendingSummary = agents.Summary(agent, m, 0)
+				return launchDoneMsg{err: perr}
+			}
+		}
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		start := time.Now()
 		err := cmd.Run()
+		if profileCleanup != nil {
+			if cerr := profileCleanup(); cerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
+			}
+		}
 		// Capture (do not print) the summary line. Printing here would
 		// land inside the alt-screen buffer, which bubbletea discards at
 		// tea.Quit shutdown. Run() reads pendingSummary after p.Run()
