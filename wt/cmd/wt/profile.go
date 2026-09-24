@@ -19,8 +19,10 @@ func matchValueForDisplay(p profiles.Profile) string {
 		return "location=" + p.Location
 	case "provider":
 		return "provider=" + p.Provider
-	default:
+	case "model":
 		return "model=" + p.Model
+	default:
+		return fmt.Sprintf("match=%q (invalid)", p.Match)
 	}
 }
 
@@ -47,6 +49,9 @@ func profileCmd(a *app) *cobra.Command {
 			for _, p := range a.profiles.Profiles {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: match=%s %s\n", p.Agent, p.Match, matchValueForDisplay(p))
 			}
+			if a.profilesValidateErr != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "warning: profiles.toml failed validation — profiles are disabled for every launch: %v\n", a.profilesValidateErr)
+			}
 			return nil
 		},
 	}
@@ -60,6 +65,10 @@ func profileCmd(a *app) *cobra.Command {
 			}
 			if a.profilesLoadErr != nil {
 				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
+			}
+			if a.profilesValidateErr != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "(profiles disabled for every launch — profiles.toml failed validation: %v)\n", a.profilesValidateErr)
+				return nil
 			}
 			// -M is optional (design spec: `wt profile show -A <agent> [-M
 			// <model>]`): with none given, resolve with a zero Model

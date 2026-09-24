@@ -88,6 +88,87 @@ func TestProfileShowWithoutModelDoesNotError(t *testing.T) {
 	}
 }
 
+// TestProfileListFlagsInvalidMatchTier is the regression lock for the
+// code-review finding that `wt profile list` silently misdescribed a
+// profile with an invalid/typo'd match tier as "model=" (showing whatever
+// stale/empty Model field happened to be set) instead of flagging the
+// problem the same way `wt profile show`/a real launch would.
+func TestProfileListFlagsInvalidMatchTier(t *testing.T) {
+	a := &app{profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+		{Agent: "claude", Match: "locaton", Location: "local"},
+	}}}
+	var out bytes.Buffer
+	cmd := profileCmd(a)
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute error = %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "invalid") {
+		t.Errorf("output = %q, want the invalid match tier flagged", got)
+	}
+	if strings.Contains(got, "model=") {
+		t.Errorf("output = %q, misdescribed the invalid entry as a model match", got)
+	}
+}
+
+// TestProfileListWarnsOnValidateError verifies `wt profile list` also
+// surfaces a.profilesValidateErr as a warning after the listing — the file
+// parsed fine (list still shows every entry) but no profile in it can ever
+// actually apply at launch time, and the user should see that.
+func TestProfileListWarnsOnValidateError(t *testing.T) {
+	a := &app{
+		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+			{Agent: "claude", Match: "location", Location: "local"},
+		}},
+		profilesValidateErr: errors.New(`profiles.toml[0] (agent=claude): agent does not support mechanism "wrapper"`),
+	}
+	var out bytes.Buffer
+	cmd := profileCmd(a)
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute error = %v", err)
+	}
+	if !strings.Contains(out.String(), "disabled for every launch") {
+		t.Errorf("output = %q, want a validate-error warning", out.String())
+	}
+}
+
+// TestProfileShowReportsValidateErrorInsteadOfResolving is the regression
+// lock for the code-review finding that `wt profile show` ignored
+// a.profilesValidateErr and called profiles.Resolve directly — so its
+// dry-run output could claim a profile applies when a real launch would
+// disable ALL profile application file-wide (applyProfileForLaunch checks
+// both loadErr and validateErr and disables everything on either).
+func TestProfileShowReportsValidateErrorInsteadOfResolving(t *testing.T) {
+	a := &app{
+		cfg: &config.Config{
+			Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+			Models:    []config.Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
+		},
+		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+			{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
+		}},
+		profilesValidateErr: errors.New(`profiles.toml[1] (agent=pi): agent does not support mechanism "config_file"`),
+	}
+	var out bytes.Buffer
+	cmd := profileCmd(a)
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"show", "-A", "claude", "-M", "ollama/x"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute error = %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "X=1") {
+		t.Errorf("output = %q, showed a profile as applying despite a.profilesValidateErr set (a real launch would disable it)", got)
+	}
+	if !strings.Contains(got, "disabled") {
+		t.Errorf("output = %q, want it to report profiles are disabled due to the validation error", got)
+	}
+}
+
 // TestProfileStatusOnOffTogglesEnabledFlag verifies `wt profile off` then
 // `wt profile status` reflects the change by writing/reading the same
 // profiles.toml, and `wt profile on` reverts it — the global kill switch
