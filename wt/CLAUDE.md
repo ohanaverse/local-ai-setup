@@ -109,6 +109,7 @@ Order on every launch: **survey prompts → stop picker → summary → after-su
 - `docs/configuration.md` — Claude Code / Codex CLI config
 - `docs/wt-config.md` — `wt config` subcommands
 - `docs/wt-agents/` — per-agent reference (one file per launcher)
+- `docs/wt-agents/profiles.md` — local-model launch profiles (`wt profile ...`, `internal/profiles`)
 - `docs/superpowers/specs/` — design specs (input to implementation)
 - `docs/superpowers/plans/` — implementation plans (output of planning, input to execution)
 - `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, and shared config ownership (modelman owns `registry.toml`/`modelman.toml`; wt owns `~/.config/agent-wt/config.toml`).
