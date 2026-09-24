@@ -301,6 +301,15 @@ func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
 // TestRunAgentCmdPrintsSummary asserts the non-TUI launch path prints the
 // summary line to stdout after the subprocess exits.
 func TestRunAgentCmdPrintsSummary(t *testing.T) {
+	// Isolate XDG_CONFIG_HOME: runAgentCmd now reaches applyProfileForLaunch
+	// for a non-command, non-native model, which calls loadProfileStore
+	// (profiles.Load) and the config_content self-heal check — without
+	// this a test on a machine with a real ~/.config/agent-wt/profiles.toml
+	// could prompt on /dev/tty mid test-run or otherwise behave differently
+	// than intended (finding #7 of the final whole-branch review).
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skip("`true` not available")
@@ -331,6 +340,11 @@ func TestRunAgentCmdPrintsSummary(t *testing.T) {
 // "…thinking about itwt: claude · claude/sonnet · 12s" instead of two
 // clean lines.
 func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
+	// Isolate XDG_CONFIG_HOME — see TestRunAgentCmdPrintsSummary's comment
+	// (finding #7 of the final whole-branch review).
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skip("`true` not available")
@@ -367,6 +381,11 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 // never hang or error a non-interactive run, and must not print any
 // prompt text in that case.
 func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
+	// Isolate XDG_CONFIG_HOME — see TestRunAgentCmdPrintsSummary's comment
+	// (finding #7 of the final whole-branch review).
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skip("`true` not available")
@@ -852,6 +871,11 @@ func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 // the call site's position between summary and survey is reviewed code, the
 // seam test only guards against the call being dropped.
 func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
+	// Isolate XDG_CONFIG_HOME — see TestRunAgentCmdPrintsSummary's comment
+	// (finding #7 of the final whole-branch review).
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
 	prevNotice := emitPriceNotice
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
@@ -877,6 +901,11 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 // path. The test uses a captured stdout pipe; notice output (when
 // emitted) is concatenated after the summary in the captured stream.
 func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
+	// Isolate XDG_CONFIG_HOME — see TestRunAgentCmdPrintsSummary's comment
+	// (finding #7 of the final whole-branch review).
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
 	prevNotice := emitPriceNotice
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
@@ -951,6 +980,11 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 // rather than by a seam, so a summary moved above the picker would keep every
 // other assertion green.
 func TestRunAgentCmdPostExitOrder(t *testing.T) {
+	// Isolate XDG_CONFIG_HOME — see TestRunAgentCmdPrintsSummary's comment
+	// (finding #7 of the final whole-branch review).
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
 	prevNotice, prevRelease, prevPicker := emitPriceNotice, releaseSession, runStopPicker
 	t.Cleanup(func() { emitPriceNotice, releaseSession, runStopPicker = prevNotice, prevRelease, prevPicker })
 
@@ -1314,5 +1348,139 @@ func TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing(t *testing.
 	}
 	if cerr := cleanup(); cerr != nil {
 		t.Errorf("returned cleanup() error = %v, want nil (noop, since real cleanup already ran)", cerr)
+	}
+}
+
+// TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled is the
+// regression lock for Important finding #4 (partial fix): a config_content
+// file left behind by a PRIOR session that never restored it (wt killed
+// mid-launch, e.g. `kill -9`) must be self-healed on EVERY launch of that
+// agent — not only the next launch that itself happens to resolve a
+// matching profile for that exact target. This test seeds an orphaned
+// backup and then calls applyProfileForLaunch with NO profiles.toml on
+// disk at all (so nothing could possibly match for THIS launch), proving
+// the self-heal runs unconditionally, before profiles.toml is even loaded.
+func TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
+	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A prior "session" wrote profile content over the hand-edited file and
+	// never called cleanup — simulates `kill -9` before the restore ran.
+	rp := profiles.ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	priorCmd := exec.Command("claude")
+	if _, err := profiles.ApplyConfigContent(priorCmd, "claude", worktree, rp); err != nil {
+		t.Fatalf("seed orphaned backup: %v", err)
+	}
+
+	// No profiles.toml exists at all for THIS launch — nothing could match
+	// even if the layer were enabled. The self-heal must still restore the
+	// orphaned file.
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+	cmd.Dir = worktree
+
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg)
+	if err != nil {
+		t.Fatalf("applyProfileForLaunch() error = %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(handEdited) {
+		t.Errorf("target = %s, want the orphaned hand-edited content restored (self-heal must run unconditionally, even with profiles disabled/absent)", got)
+	}
+}
+
+// TestApplyProfileForLaunchSelfHealPrintsNotice verifies a successful
+// self-heal prints the one-line stderr notice the design calls for, so the
+// user knows a file was restored from a previous session rather than
+// silently changing under them.
+func TestApplyProfileForLaunchSelfHealPrintsNotice(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rp := profiles.ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	priorCmd := exec.Command("claude")
+	if _, err := profiles.ApplyConfigContent(priorCmd, "claude", worktree, rp); err != nil {
+		t.Fatalf("seed orphaned backup: %v", err)
+	}
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+	cmd.Dir = worktree
+
+	oldStderr := os.Stderr
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	os.Stderr = w
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg)
+	w.Close()
+	os.Stderr = oldStderr
+	if err != nil {
+		t.Fatalf("applyProfileForLaunch() error = %v", err)
+	}
+	defer func() { _ = cleanup() }()
+
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "wt: restored a leftover profile-managed file from a previous session: "+target) {
+		t.Errorf("stderr = %q, want the self-heal notice naming %q", string(out), target)
+	}
+}
+
+// TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError verifies
+// that when ConfigFileTarget itself fails (e.g. codex's $HOME can't be
+// resolved), the self-heal step is skipped without failing the launch or
+// printing a spurious notice — matching the graceful-degradation posture
+// of every other profile step in applyProfileForLaunch.
+func TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", "") // codex's ConfigFileTarget calls os.UserHomeDir(), which fails with $HOME unset
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+
+	oldStderr := os.Stderr
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	os.Stderr = w
+	cleanup, err := applyProfileForLaunch(cmd, "codex", m, cfg)
+	w.Close()
+	os.Stderr = oldStderr
+	if err != nil {
+		t.Fatalf("applyProfileForLaunch() error = %v, want nil (a self-heal ConfigFileTarget error must never fail the launch)", err)
+	}
+	if cerr := cleanup(); cerr != nil {
+		t.Errorf("cleanup() error = %v, want nil", cerr)
+	}
+	out, _ := io.ReadAll(r)
+	if strings.Contains(string(out), "restored a leftover") {
+		t.Errorf("stderr = %q, want no self-heal notice when the target couldn't even be resolved", string(out))
 	}
 }

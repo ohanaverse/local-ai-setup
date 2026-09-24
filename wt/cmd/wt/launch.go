@@ -272,6 +272,36 @@ func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []st
 	return runAgentCmd(cmd, agent, config.Model{}, cfg)
 }
 
+// selfHealAgentConfigContentTarget checks agent's config_content file
+// target (claude, codex — opencode has none, it merges into env instead)
+// for an orphaned backup left by a previous session that never restored it
+// (e.g. wt was killed with `kill -9` mid-launch) and restores it if found,
+// printing a one-line notice. It runs UNCONDITIONALLY, on every launch of
+// that agent — not only a launch that itself resolves a matching profile —
+// closing the gap where a stale, profile-rewritten file would otherwise
+// only get cleaned up the next time a profile happened to match for that
+// exact agent+target again. Its only job is repairing PAST session state,
+// so it deliberately runs before profiles.toml is even loaded: it must
+// still self-heal when the profile layer is globally disabled (`enabled =
+// false`) or profiles.toml doesn't exist at all. A ConfigFileTarget error
+// (e.g. codex's $HOME unresolvable) or a restore error is reported to
+// stderr and otherwise ignored — this must never fail the launch, the same
+// graceful-degradation posture as every other profile step here.
+func selfHealAgentConfigContentTarget(agent, worktreePath string) {
+	target, _, ok, err := profiles.ConfigFileTarget(agent, worktreePath)
+	if err != nil || !ok {
+		return
+	}
+	restored, herr := profiles.SelfHeal(target)
+	if herr != nil {
+		fmt.Fprintf(os.Stderr, "wt: profile self-heal check for %s: %v\n", target, herr)
+		return
+	}
+	if restored {
+		fmt.Fprintf(os.Stderr, "wt: restored a leftover profile-managed file from a previous session: %s\n", target)
+	}
+}
+
 // applyProfileForLaunch resolves and, on confirmation, applies a
 // local-model profile for agent/m to cmd before it runs. It returns a
 // cleanup func that MUST be called after cmd.Run() returns (success or
@@ -288,6 +318,8 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 	if m.ID == "" || m.Native || cfg == nil {
 		return noop, nil
 	}
+	selfHealAgentConfigContentTarget(agent, cmd.Dir)
+
 	store, err := loadProfileStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", err)
