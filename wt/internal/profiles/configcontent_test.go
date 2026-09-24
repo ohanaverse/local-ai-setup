@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -445,5 +447,90 @@ func TestApplyConfigContentOpenCodeMergesIntoEnv(t *testing.T) {
 	}
 	if _, has := doc["compaction"]; !has {
 		t.Errorf("merged doc missing new key: %v", doc)
+	}
+}
+
+// TestApplyConfigContentPreservesOriginalFilePermissions verifies that
+// cleanup restores a pre-existing target with its ORIGINAL permission bits
+// (e.g. a hand-set 0600), not a hardcoded 0644 — restoreIfBackedUpLocked
+// used to always write the restored file back at 0644 regardless of what
+// mode it found, silently loosening a tighter-permissioned config file.
+func TestApplyConfigContentPreservesOriginalFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(`{"env":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	cleanup, err := ApplyConfigContent(cmd, "claude", worktree, rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("restored mode = %o, want 0600 (the original, not a hardcoded 0644)", got)
+	}
+}
+
+// TestWithTargetLockSerializesConcurrentAccess verifies restoreIfBackedUp
+// (and therefore snapshotAndWrite, which shares the same per-target lock)
+// blocks while another process holds the lock instead of racing it — the
+// gap that let two concurrent profiled launches of the same agent (e.g.
+// codex, whose config_content target is a fixed global path, not
+// worktree-scoped) self-heal over or restore out from under each other's
+// still-in-use write.
+func TestWithTargetLockSerializesConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	target := filepath.Join(dir, "target.toml")
+
+	if err := os.MkdirAll(backupDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := os.OpenFile(backupKey(target)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := restoreIfBackedUp(target)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("restoreIfBackedUp() returned (err = %v) while another holder still held the lock", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("restoreIfBackedUp() error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("restoreIfBackedUp() never completed after the lock was released")
 	}
 }

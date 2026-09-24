@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -144,27 +146,68 @@ func backupKey(target string) string {
 func backupPresentPath(target string) string { return backupKey(target) + ".present" }
 func backupAbsentPath(target string) string  { return backupKey(target) + ".absent" }
 
+// backupModePath holds target's original permission bits (octal, e.g.
+// "0600") alongside its content backup, so restoreIfBackedUpLocked can put
+// the file back exactly as it found it instead of guessing a mode.
+func backupModePath(target string) string { return backupKey(target) + ".mode" }
+
+// withTargetLock serializes snapshotAndWrite/restoreIfBackedUp for target
+// across processes via an flock on a lock file keyed by target (mirrors
+// internal/litellm/configfile.go's WithLock). Without this, two concurrent
+// profiled launches touching the same target — e.g. codex's config_content
+// target, a fixed global path rather than a worktree-scoped one — can
+// self-heal over each other's still-in-use write and, on exit, restore the
+// wrong snapshot out from under the other's still-running process.
+func withTargetLock(target string, fn func() error) error {
+	if err := os.MkdirAll(backupDir(), 0o700); err != nil {
+		return err
+	}
+	lf, err := os.OpenFile(backupKey(target)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	return fn()
+}
+
 // snapshotAndWrite self-heals any leftover backup for target first (see
-// restoreIfBackedUp), then snapshots target's current state (content, or
-// "did not exist") before writing data.
+// restoreIfBackedUpLocked), then snapshots target's current state (content
+// and permission bits, or "did not exist") before writing data. The whole
+// sequence runs under withTargetLock, so a concurrent snapshotAndWrite or
+// restoreIfBackedUp for the same target from another process waits instead
+// of racing it.
 func snapshotAndWrite(target string, data []byte, perm os.FileMode) error {
-	if _, err := restoreIfBackedUp(target); err != nil {
-		return err
-	}
-	existing, err := os.ReadFile(target)
-	switch {
-	case os.IsNotExist(err):
-		if err := config.WriteFileAtomic(backupAbsentPath(target), []byte{}, 0o600); err != nil {
+	return withTargetLock(target, func() error {
+		if _, err := restoreIfBackedUpLocked(target); err != nil {
 			return err
 		}
-	case err != nil:
-		return err
-	default:
-		if err := config.WriteFileAtomic(backupPresentPath(target), existing, 0o600); err != nil {
+		existing, err := os.ReadFile(target)
+		switch {
+		case os.IsNotExist(err):
+			if err := config.WriteFileAtomic(backupAbsentPath(target), []byte{}, 0o600); err != nil {
+				return err
+			}
+		case err != nil:
 			return err
+		default:
+			info, statErr := os.Stat(target)
+			if statErr != nil {
+				return statErr
+			}
+			mode := fmt.Sprintf("%04o", info.Mode().Perm())
+			if err := config.WriteFileAtomic(backupModePath(target), []byte(mode), 0o600); err != nil {
+				return err
+			}
+			if err := config.WriteFileAtomic(backupPresentPath(target), existing, 0o600); err != nil {
+				return err
+			}
 		}
-	}
-	return config.WriteFileAtomic(target, data, perm)
+		return config.WriteFileAtomic(target, data, perm)
+	})
 }
 
 // restoreIfBackedUp restores target from whatever snapshotAndWrite backed
@@ -172,7 +215,9 @@ func snapshotAndWrite(target string, data []byte, perm os.FileMode) error {
 // restore. It is safe to call with no backup present (a no-op) — this is
 // the SAME operation for the normal post-launch restore and for
 // self-healing an orphaned backup before a fresh write; the two are not
-// distinguished by the function, only by when the caller invokes it.
+// distinguished by the function, only by when the caller invokes it. Runs
+// under withTargetLock so it can't race a concurrent snapshotAndWrite or
+// restoreIfBackedUp for the same target in another process.
 //
 // A real filesystem error (permission denied, I/O error) reading either
 // marker is returned rather than treated as "no backup" — silently
@@ -191,6 +236,19 @@ func SelfHeal(target string) (restored bool, err error) {
 }
 
 func restoreIfBackedUp(target string) (restored bool, err error) {
+	err = withTargetLock(target, func() error {
+		var lockErr error
+		restored, lockErr = restoreIfBackedUpLocked(target)
+		return lockErr
+	})
+	return restored, err
+}
+
+// restoreIfBackedUpLocked is restoreIfBackedUp's lock-free core. It exists
+// separately so snapshotAndWrite's internal self-heal call can run inside
+// the single withTargetLock it already holds for its whole snapshot+write
+// sequence, instead of nesting a second (deadlocking) lock acquisition.
+func restoreIfBackedUpLocked(target string) (restored bool, err error) {
 	switch _, statErr := os.Stat(backupAbsentPath(target)); {
 	case statErr == nil:
 		if rmErr := os.Remove(target); rmErr != nil && !os.IsNotExist(rmErr) {
@@ -203,10 +261,25 @@ func restoreIfBackedUp(target string) (restored bool, err error) {
 	data, readErr := os.ReadFile(backupPresentPath(target))
 	switch {
 	case readErr == nil:
-		if werr := config.WriteFileAtomic(target, data, 0o644); werr != nil {
+		// The stored mode is best-effort: a backup written by an older wt
+		// version (or one whose .mode file was lost) has none, and 0o644
+		// remains the pre-existing fallback rather than a new failure mode.
+		perm := os.FileMode(0o644)
+		if modeData, merr := os.ReadFile(backupModePath(target)); merr == nil {
+			if parsed, perr := strconv.ParseUint(strings.TrimSpace(string(modeData)), 8, 32); perr == nil {
+				perm = os.FileMode(parsed)
+			}
+		}
+		if werr := config.WriteFileAtomic(target, data, perm); werr != nil {
 			return false, werr
 		}
-		return true, os.Remove(backupPresentPath(target))
+		if rmErr := os.Remove(backupPresentPath(target)); rmErr != nil {
+			return false, rmErr
+		}
+		if rmErr := os.Remove(backupModePath(target)); rmErr != nil && !os.IsNotExist(rmErr) {
+			return false, rmErr
+		}
+		return true, nil
 	case !os.IsNotExist(readErr):
 		return false, readErr
 	}
