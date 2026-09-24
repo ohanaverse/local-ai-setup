@@ -1446,6 +1446,52 @@ func TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled(t *testing.T) {
 	}
 }
 
+// TestApplyProfileForLaunchSelfHealsForNativeModelLaunch is the regression
+// lock for the code-review finding that self-heal used to run AFTER the
+// early-return guard for native models/command agents, contradicting its
+// own doc comment ("runs UNCONDITIONALLY, on every launch of that agent").
+// A native-model launch never resolves or applies a profile of its own
+// (ResolveRoute returns a zero Route), but it must still self-heal an
+// orphaned config_content backup left by a PRIOR session's non-native
+// launch of the same agent.
+func TestApplyProfileForLaunchSelfHealsForNativeModelLaunch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
+	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rp := profiles.ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	priorCmd := exec.Command("claude")
+	if _, err := profiles.ApplyConfigContent(priorCmd, "claude", worktree, rp); err != nil {
+		t.Fatalf("seed orphaned backup: %v", err)
+	}
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "claude/native", Native: true, ModelName: "native"}
+	cmd := exec.Command("true")
+	cmd.Dir = worktree
+
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+	if err != nil {
+		t.Fatalf("applyProfileForLaunch() error = %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(handEdited) {
+		t.Errorf("target = %s, want the orphaned hand-edited content restored on a native-model launch too", got)
+	}
+}
+
 // TestApplyProfileForLaunchSelfHealPrintsNotice verifies a successful
 // self-heal prints the one-line stderr notice the design calls for, so the
 // user knows a file was restored from a previous session rather than

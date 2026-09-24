@@ -332,10 +332,17 @@ func selfHealAgentConfigContentTarget(agent, worktreePath string) {
 // instead of loading and validating the file again.
 func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) (cleanup func() error, err error) {
 	noop := func() error { return nil }
+	// Self-heal runs before the early-return guards below: it repairs PAST
+	// session state (an orphaned config_content backup left by a prior
+	// launch that was killed mid-run) and depends only on agent/cmd.Dir,
+	// never on m or cfg — it must still run for a native-model or
+	// command-agent launch of the same agent, which is exactly the launch
+	// class the guard below skips for THIS launch's own profile
+	// resolution.
+	selfHealAgentConfigContentTarget(agent, cmd.Dir)
 	if m.ID == "" || m.Native || cfg == nil {
 		return noop, nil
 	}
-	selfHealAgentConfigContentTarget(agent, cmd.Dir)
 
 	var store profiles.Store
 	if pp != nil {
