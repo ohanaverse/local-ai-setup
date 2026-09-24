@@ -1226,3 +1226,93 @@ func TestPromptProfileNoTTYDefaultsToApply(t *testing.T) {
 		t.Error("promptProfile() apply = false, want true (no TTY available → auto-apply)")
 	}
 }
+
+// TestApplyProfileForLaunchDegradesOnConfirmError verifies the design's
+// global constraint directly on applyProfileForLaunch (not routed through
+// runAgentCmd/os.Exit): a confirmProfile error — e.g. a /dev/tty write
+// failure inside the real promptProfile — must degrade to a normal,
+// unprofiled launch (nil error, a noop cleanup, no env applied), never
+// abort the agent launch outright. This is the regression lock for the
+// PR-review finding that the original code returned the error and hard-
+// failed the whole launch.
+func TestApplyProfileForLaunchDegradesOnConfirmError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+env = { WT_TEST_PROFILE_APPLIED = "1" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldConfirm := confirmProfile
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return false, errors.New("tty write failed") }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	cmd := exec.Command("true")
+
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg)
+	if err != nil {
+		t.Fatalf("applyProfileForLaunch() error = %v, want nil (a confirm-prompt error must degrade to an unprofiled launch, not fail it)", err)
+	}
+	if cerr := cleanup(); cerr != nil {
+		t.Errorf("cleanup() error = %v, want nil (noop)", cerr)
+	}
+	for _, e := range cmd.Env {
+		if e == "WT_TEST_PROFILE_APPLIED=1" {
+			t.Errorf("cmd.Env = %v, profile env applied despite a confirmProfile error", cmd.Env)
+		}
+	}
+}
+
+// TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing verifies
+// the second PR-review finding: when ApplyToCmd fails on the one
+// legitimately-fatal case (a wrapper profile naming a missing binary)
+// AFTER ApplyConfigContent already wrote/backed-up a real config file,
+// applyResolvedProfile must still invoke the already-obtained content
+// cleanup before returning the error — otherwise a profile combining
+// config_content and wrapper would leak the rewritten file on disk for
+// this launch (it does self-heal on a later launch targeting the same
+// path, but not this one). No Phase-1 agent declares both mechanisms
+// together (so this can't be exercised through a real, Validate-passing
+// profiles.toml entry), which is exactly why this test calls
+// applyResolvedProfile directly with a hand-built ResolvedProfile.
+func TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir) // profiles' backupDir() lives under config.Dir()
+	worktree := t.TempDir()
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+
+	rp := profiles.ResolvedProfile{
+		ConfigContent: map[string]any{"ANTHROPIC_DEFAULT_SONNET_MODEL": "test-model"},
+		Wrapper:       &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz"},
+	}
+	cmd := exec.Command("true")
+	cmd.Dir = worktree
+
+	cleanup, err := applyResolvedProfile(cmd, "claude", rp)
+	if err == nil {
+		t.Fatal("applyResolvedProfile() error = nil, want an error (missing wrapper binary is the one legitimately-fatal case)")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("error = %v, want a wrapper-not-installed error", err)
+	}
+	// The config file ApplyConfigContent wrote (it did not exist before)
+	// must already be gone — proof that applyResolvedProfile invoked the
+	// content cleanup itself before returning the wrapper error, rather
+	// than discarding it.
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Errorf("target file %q still exists after a wrapper error — contentCleanup was not invoked", target)
+	}
+	if cerr := cleanup(); cerr != nil {
+		t.Errorf("returned cleanup() error = %v, want nil (noop, since real cleanup already ran)", cerr)
+	}
+}

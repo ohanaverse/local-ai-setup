@@ -8,8 +8,10 @@ import (
 
 // TestNewAppLoadsProfilesStore verifies newApp populates a.profiles from
 // profiles.toml (via the same XDG_CONFIG_HOME resolution config.Dir()
-// uses) so `wt profile ...` commands and the launch path share one
-// loaded-once-per-invocation copy — a missing file must not be an error.
+// uses), the same load path `wt profile ...` commands use — a.profiles
+// and the launch path's independent loadProfileStore call each load their
+// own copy (runAgentCmd does not take *app), not a shared one — a missing
+// file must not be an error.
 func TestNewAppLoadsProfilesStore(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
