@@ -4,6 +4,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"regexp"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -30,6 +33,13 @@ func profileCmd(a *app) *cobra.Command {
 	listC := &cobra.Command{
 		Use: "list", Short: "List every defined profile", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// A load error means profiles.toml is malformed/unreadable —
+			// a.profiles is NOT real data (it's the zero-value Store{}), so
+			// rendering it as "(no profiles defined)" would misreport a
+			// broken file as an empty one. Report the real error instead.
+			if a.profilesLoadErr != nil {
+				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
+			}
 			if len(a.profiles.Profiles) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "(no profiles defined)")
 				return nil
@@ -48,8 +58,8 @@ func profileCmd(a *app) *cobra.Command {
 			if showAgent == "" {
 				return fmt.Errorf("-A/--agent is required")
 			}
-			if a.profilesErr != nil {
-				return fmt.Errorf("profiles.toml error: %w", a.profilesErr)
+			if a.profilesLoadErr != nil {
+				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
 			}
 			m, err := findModelByID(a.cfg, showModel)
 			if err != nil {
@@ -81,6 +91,9 @@ func profileCmd(a *app) *cobra.Command {
 	statusC := &cobra.Command{
 		Use: "status", Short: "Show whether the profile layer is enabled", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if a.profilesLoadErr != nil {
+				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
+			}
 			if a.profiles.Enabled {
 				fmt.Fprintln(cmd.OutOrStdout(), "profiles: on")
 			} else {
@@ -94,12 +107,20 @@ func profileCmd(a *app) *cobra.Command {
 		return &cobra.Command{
 			Use: use, Short: short, Args: cobra.NoArgs, SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				store := a.profiles
-				store.Enabled = enabled
-				if err := writeProfilesEnabled(store); err != nil {
+				// A load error means profiles.toml failed to parse: writing
+				// now would re-encode whatever a.profiles currently holds
+				// (the zero-value Store{}), silently destroying every
+				// existing [[profiles]] entry and comment in the real file.
+				// Refuse and tell the user to fix the file first. A
+				// validation-only error is safe to toggle — the file
+				// parsed correctly, so store.Profiles is real data.
+				if a.profilesLoadErr != nil {
+					return fmt.Errorf("profiles.toml: %w (fix the file before toggling — 'on'/'off' refuses to write over a file it couldn't parse)", a.profilesLoadErr)
+				}
+				if err := writeProfilesEnabled(enabled); err != nil {
 					return err
 				}
-				a.profiles = store
+				a.profiles.Enabled = enabled
 				fmt.Fprintf(cmd.OutOrStdout(), "profiles: %s\n", map[bool]string{true: "on", false: "off"}[enabled])
 				return nil
 			},
@@ -125,11 +146,54 @@ func findModelByID(cfg *config.Config, id string) (config.Model, error) {
 	return config.Model{}, fmt.Errorf("model %q not found in registry", id)
 }
 
-// writeProfilesEnabled rewrites the top-level `enabled` key in
-// profiles.toml, preserving every existing [[profiles]] entry exactly —
-// it re-encodes the whole Store, matching config.Save's whole-file
-// atomic-write convention (config.WriteFileAtomic) rather than a
-// partial/line-level edit.
-func writeProfilesEnabled(store profiles.Store) error {
-	return profiles.Save(store)
+// topLevelEnabledLineRe matches a top-level `enabled = true|false` line.
+// Profile's Go struct (internal/profiles.Profile) has no field named
+// "enabled", so this can only ever match the file's own top-level toggle —
+// but the search is still scoped to the text BEFORE the first
+// "[[profiles]]" table header (see setEnabledLine) so a future field
+// addition, or a profile entry with stray top-level-looking text in a
+// string value, can never be mistaken for the toggle line.
+var topLevelEnabledLineRe = regexp.MustCompile(`(?m)^enabled\s*=\s*(true|false)\s*$`)
+
+// setEnabledLine returns content with its top-level `enabled = ...` line
+// set to want, editing only that one line (or inserting one at the top
+// when absent) — everything else in the file (comments, [[profiles]]
+// entries, their own formatting) is byte-for-byte untouched. The search
+// for an existing line is scoped to the text before the first
+// "[[profiles]]" occurrence, so a hypothetical profile field that also
+// happened to be named "enabled" inside a table body could never be
+// mismatched (Profile has no such field today; this is defense in depth).
+func setEnabledLine(content string, want bool) string {
+	newLine := fmt.Sprintf("enabled = %t", want)
+	head, tail := content, ""
+	if i := strings.Index(content, "[[profiles]]"); i >= 0 {
+		head, tail = content[:i], content[i:]
+	}
+	if loc := topLevelEnabledLineRe.FindStringIndex(head); loc != nil {
+		return head[:loc[0]] + newLine + head[loc[1]:] + tail
+	}
+	return newLine + "\n\n" + head + tail
+}
+
+// writeProfilesEnabled sets profiles.toml's top-level `enabled` flag via a
+// surgical, line-level text edit: it replaces (or inserts) only the
+// `enabled = ...` line and leaves the rest of the file — comments, unknown
+// keys, [[profiles]] entries and their formatting — byte-for-byte
+// untouched. This is deliberately NOT a full profiles.Save() re-encode:
+// Profile's Go struct doesn't preserve TOML comments, and the TOML
+// encoder's output formatting differs from arbitrary hand-written TOML, so
+// re-encoding the whole Store on every `on`/`off` toggle would silently
+// strip a user's comments and reformat their file. When profiles.toml does
+// not exist yet (the very first toggle, nothing on disk to preserve), this
+// falls back to profiles.Save's whole-file encode.
+func writeProfilesEnabled(enabled bool) error {
+	data, err := os.ReadFile(profiles.Path())
+	if os.IsNotExist(err) {
+		return profiles.Save(profiles.Store{Enabled: enabled})
+	}
+	if err != nil {
+		return err
+	}
+	newContent := setEnabledLine(string(data), enabled)
+	return config.WriteFileAtomic(profiles.Path(), []byte(newContent), 0o644)
 }
