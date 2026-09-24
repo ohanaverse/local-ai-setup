@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -403,8 +404,19 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 // wrapper failure must still trigger the already-obtained content cleanup
 // — is directly testable with a hand-built ResolvedProfile, without
 // needing a profiles.toml entry that passes Validate.
+//
+// Because ApplyEnvAndArgs now runs before ApplyConfigContent (that
+// ordering is the whole point of this split — see the doc above), a
+// config_content failure must undo whatever ApplyEnvAndArgs already
+// appended to cmd.Env/cmd.Args before degrading to an unprofiled launch;
+// otherwise the launch would be silently half-profiled (env vars and
+// extra args applied) while the user is told profiles are disabled.
+// ApplyEnvAndArgs only ever appends, so resetting to a pre-append snapshot
+// is a clean, complete undo.
 func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfile) (cleanup func() error, err error) {
 	noop := func() error { return nil }
+	origEnv := slices.Clone(cmd.Env)
+	origArgs := slices.Clone(cmd.Args)
 	profiles.ApplyEnvAndArgs(cmd, rp)
 	contentCleanup, err := profiles.ApplyConfigContent(cmd, agent, cmd.Dir, rp)
 	if err != nil {
@@ -412,7 +424,11 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 		// application error must degrade to a normal, unprofiled launch —
 		// never block the agent from starting — so a file-write error here
 		// (permissions, a resolve-home-dir failure for codex, …) is a
-		// warning, not a launch-aborting error.
+		// warning, not a launch-aborting error. Restore cmd.Env/cmd.Args to
+		// their pre-ApplyEnvAndArgs state (see the doc comment above) so
+		// this degrade is genuinely unprofiled, not half-profiled.
+		cmd.Env = origEnv
+		cmd.Args = origArgs
 		fmt.Fprintf(os.Stderr, "wt: profile config_content: %v (profiles disabled for this launch)\n", err)
 		return noop, nil
 	}

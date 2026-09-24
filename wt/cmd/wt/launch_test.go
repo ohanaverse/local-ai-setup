@@ -1484,6 +1484,57 @@ func TestApplyResolvedProfileExtraArgsPrecedeCodexProfileFlag(t *testing.T) {
 	}
 }
 
+// TestApplyResolvedProfileEnvArgsRevertedWhenConfigContentFails is the
+// regression lock for the final-review finding on Task 7 (commit 124971d):
+// reordering applyResolvedProfile to run ApplyEnvAndArgs BEFORE
+// ApplyConfigContent (needed so codex's own ExtraArgs precede its
+// config_content-driven "--profile" flag) introduced a side effect the plan
+// didn't account for — if ApplyConfigContent then fails (unwritable config
+// dir, a lock error, …), cmd.Env/cmd.Args already carry the profile's
+// Env/ExtraArgs even though the caller is told "profiles disabled for this
+// launch" and the launch is supposed to degrade to fully unprofiled. This
+// forces ApplyConfigContent to fail deterministically by making claude's
+// config_content target's parent directory (.claude) a plain file instead
+// of a directory, so the write's MkdirAll fails with ENOTDIR — no
+// permission tricks needed. Asserts the launch still degrades gracefully
+// (err == nil) AND that cmd.Env/cmd.Args carry none of the profile's
+// Env/ExtraArgs afterward — a half-profiled launch would be a real
+// correctness bug, not a hypothetical one, since claude's own Phase-1
+// profile example combines env and config_file.
+func TestApplyResolvedProfileEnvArgsRevertedWhenConfigContentFails(t *testing.T) {
+	worktree := t.TempDir()
+	// Make .claude a regular file so ApplyConfigContent's write into
+	// .claude/settings.local.json fails deterministically (MkdirAll on a
+	// path that already exists as a non-directory returns ENOTDIR).
+	if err := os.WriteFile(filepath.Join(worktree, ".claude"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed .claude as a file: %v", err)
+	}
+
+	rp := profiles.ResolvedProfile{
+		Env:           map[string]string{"X": "1"},
+		ExtraArgs:     []string{"--extra"},
+		ConfigContent: map[string]any{"some_key": "some_value"},
+	}
+	cmd := exec.Command("true", "--model", "x")
+	cmd.Dir = worktree
+	origArgs := append([]string{}, cmd.Args...)
+
+	cleanup, err := applyResolvedProfile(cmd, "claude", rp)
+	if err != nil {
+		t.Fatalf("applyResolvedProfile() error = %v, want nil (a config_content failure must still degrade to an unprofiled launch)", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+
+	for _, e := range cmd.Env {
+		if e == "X=1" {
+			t.Errorf("cmd.Env = %v, contains profile Env \"X=1\" despite config_content failure — launch is half-profiled", cmd.Env)
+		}
+	}
+	if strings.Join(cmd.Args, "|") != strings.Join(origArgs, "|") {
+		t.Errorf("cmd.Args = %v, want unchanged %v (ExtraArgs must be reverted when config_content fails)", cmd.Args, origArgs)
+	}
+}
+
 // TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled is the
 // regression lock for Important finding #4 (partial fix): a config_content
 // file left behind by a PRIOR session that never restored it (wt killed
