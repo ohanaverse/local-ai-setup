@@ -380,3 +380,67 @@ location = "local"
 		t.Errorf("reloaded.Profiles = %v, want the one entry preserved", reloaded.Profiles)
 	}
 }
+
+// TestProfileToggleHandlesTrailingCommentOnEnabledLine is the regression
+// lock for the code-review finding that setEnabledLine produced invalid
+// TOML (two conflicting top-level `enabled` keys) when the existing
+// `enabled = ...` line carried a trailing comment: the old regex required
+// the line to end immediately after true/false, so it fell through to
+// PREPENDING a brand-new enabled line ahead of the untouched original,
+// leaving both in the file — which BurntSushi/toml then rejects as a
+// duplicate key on the next Load.
+func TestProfileToggleHandlesTrailingCommentOnEnabledLine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `enabled = true  # keep local profiles on
+
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+`
+	path := filepath.Join(dir, "agent-wt", "profiles.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := profiles.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{profiles: store}
+	off := profileCmd(a)
+	off.SetArgs([]string{"off"})
+	if err := off.Execute(); err != nil {
+		t.Fatalf("off: execute error = %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if strings.Count(got, "enabled = ") != 1 {
+		t.Fatalf("profiles.toml after toggle has %d 'enabled = ' occurrences, want exactly 1 (no duplicate top-level key): %q", strings.Count(got, "enabled = "), got)
+	}
+	if !strings.Contains(got, "enabled = false") {
+		t.Errorf("profiles.toml after toggle = %q, want enabled = false", got)
+	}
+	if !strings.Contains(got, "# keep local profiles on") {
+		t.Errorf("profiles.toml after toggle = %q, want the trailing comment preserved", got)
+	}
+
+	reloaded, err := profiles.Load()
+	if err != nil {
+		t.Fatalf("profiles.toml is not valid TOML after toggle: %v", err)
+	}
+	if reloaded.Enabled {
+		t.Error("reloaded.Enabled = true, want false")
+	}
+	if len(reloaded.Profiles) != 1 {
+		t.Errorf("reloaded.Profiles = %v, want the one entry preserved", reloaded.Profiles)
+	}
+}

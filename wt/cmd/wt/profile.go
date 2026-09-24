@@ -165,31 +165,43 @@ func findModelByID(cfg *config.Config, id string) (config.Model, error) {
 	return config.Model{}, fmt.Errorf("model %q not found in registry", id)
 }
 
-// topLevelEnabledLineRe matches a top-level `enabled = true|false` line.
+// topLevelEnabledLineRe matches a top-level `enabled = true|false` line,
+// with or without a trailing same-line `#` comment (capture group 1).
 // Profile's Go struct (internal/profiles.Profile) has no field named
 // "enabled", so this can only ever match the file's own top-level toggle —
 // but the search is still scoped to the text BEFORE the first
 // "[[profiles]]" table header (see setEnabledLine) so a future field
 // addition, or a profile entry with stray top-level-looking text in a
-// string value, can never be mistaken for the toggle line.
-var topLevelEnabledLineRe = regexp.MustCompile(`(?m)^enabled\s*=\s*(true|false)\s*$`)
+// string value, can never be mistaken for the toggle line. The trailing
+// group uses [ \t] (not \s) so it can never cross a newline and swallow an
+// unrelated comment on the FOLLOWING line (e.g. one documenting the first
+// [[profiles]] entry below it).
+var topLevelEnabledLineRe = regexp.MustCompile(`(?m)^enabled\s*=\s*(?:true|false)([ \t]*#[^\n]*)?$`)
 
 // setEnabledLine returns content with its top-level `enabled = ...` line
 // set to want, editing only that one line (or inserting one at the top
 // when absent) — everything else in the file (comments, [[profiles]]
-// entries, their own formatting) is byte-for-byte untouched. The search
-// for an existing line is scoped to the text before the first
-// "[[profiles]]" occurrence, so a hypothetical profile field that also
-// happened to be named "enabled" inside a table body could never be
-// mismatched (Profile has no such field today; this is defense in depth).
+// entries, their own formatting) is byte-for-byte untouched, including a
+// same-line trailing comment on the enabled line itself (preserved via
+// topLevelEnabledLineRe's capture group — a naive regex without it used to
+// fail to match such a line at all, falling through to PREPENDING a second
+// enabled line and producing invalid, duplicate-key TOML). The search for
+// an existing line is scoped to the text before the first "[[profiles]]"
+// occurrence, so a hypothetical profile field that also happened to be
+// named "enabled" inside a table body could never be mismatched (Profile
+// has no such field today; this is defense in depth).
 func setEnabledLine(content string, want bool) string {
 	newLine := fmt.Sprintf("enabled = %t", want)
 	head, tail := content, ""
 	if i := strings.Index(content, "[[profiles]]"); i >= 0 {
 		head, tail = content[:i], content[i:]
 	}
-	if loc := topLevelEnabledLineRe.FindStringIndex(head); loc != nil {
-		return head[:loc[0]] + newLine + head[loc[1]:] + tail
+	if loc := topLevelEnabledLineRe.FindStringSubmatchIndex(head); loc != nil {
+		trailing := ""
+		if loc[2] != -1 {
+			trailing = head[loc[2]:loc[3]]
+		}
+		return head[:loc[0]] + newLine + trailing + head[loc[1]:] + tail
 	}
 	return newLine + "\n\n" + head + tail
 }
