@@ -273,11 +273,14 @@ func restoreIfBackedUpLocked(target string) (restored bool, err error) {
 		if werr := config.WriteFileAtomic(target, data, perm); werr != nil {
 			return false, werr
 		}
+		// From here on the target's content is already restored — a
+		// cleanup failure below must still report restored=true, mirroring
+		// the .absent branch above for the structurally equivalent case.
 		if rmErr := os.Remove(backupPresentPath(target)); rmErr != nil {
-			return false, rmErr
+			return true, rmErr
 		}
 		if rmErr := os.Remove(backupModePath(target)); rmErr != nil && !os.IsNotExist(rmErr) {
-			return false, rmErr
+			return true, rmErr
 		}
 		return true, nil
 	case !os.IsNotExist(readErr):

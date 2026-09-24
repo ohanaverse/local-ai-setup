@@ -415,6 +415,57 @@ func TestSelfHealNoopWithoutBackup(t *testing.T) {
 	}
 }
 
+// TestRestoreIfBackedUpReturnsTrueWhenCleanupFailsAfterSuccessfulRestore is
+// the regression lock for the code-review finding that
+// restoreIfBackedUpLocked's two restore branches disagreed on what
+// `restored` bool to return when the restore itself succeeds but the
+// following backup-marker cleanup then fails: the "target was absent"
+// branch already returned (true, err) for this case, but the "target
+// existed" branch returned (false, err) — falsely reporting "not restored"
+// despite the target's content already being back in place.
+func TestRestoreIfBackedUpReturnsTrueWhenCleanupFailsAfterSuccessfulRestore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
+	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	cmd := exec.Command("claude")
+	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+
+	// Make backupDir() read-only so the restore's own WriteFileAtomic(target,
+	// ...) still succeeds (target lives under worktree, not backupDir()) but
+	// the subsequent os.Remove(backupPresentPath(target)) inside backupDir()
+	// fails with permission denied — the exact split this test pins.
+	if err := os.Chmod(backupDir(), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(backupDir(), 0o700) })
+
+	restored, err := restoreIfBackedUp(target)
+	if err == nil {
+		t.Fatal("restoreIfBackedUp() error = nil, want the cleanup permission error")
+	}
+	if !restored {
+		t.Error("restoreIfBackedUp() restored = false, want true — the target's content was already restored before cleanup failed")
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(handEdited) {
+		t.Errorf("target content = %s, want the restored hand-edited content %s", got, handEdited)
+	}
+}
+
 // TestApplyConfigContentOpenCodeMergesIntoEnv verifies opencode's
 // config_content merges into the existing OPENCODE_CONFIG_CONTENT env
 // entry (already set by the opencode driver's Build()) rather than
