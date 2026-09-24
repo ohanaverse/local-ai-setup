@@ -74,9 +74,6 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 			return nil, fmt.Errorf("encode profile config_content: %w", err)
 		}
 		data = buf.Bytes()
-		if agent == "codex" {
-			cmd.Args = append(cmd.Args, "--profile", "agent-wt-profile")
-		}
 	} else {
 		data, err = json.MarshalIndent(rp.ConfigContent, "", "  ")
 		if err != nil {
@@ -86,14 +83,34 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 	if err := snapshotAndWrite(path, data, 0o644); err != nil {
 		return nil, err
 	}
+	// The --profile flag is only appended once the write above has
+	// actually succeeded: appending it earlier (even when the write then
+	// fails and the caller degrades to an unprofiled launch) would still
+	// point codex at a file that is missing or stale, since a failed write
+	// leaves no guarantee about the target's contents.
+	if agent == "codex" {
+		cmd.Args = append(cmd.Args, "--profile", "agent-wt-profile")
+	}
 	return func() error {
 		_, err := restoreIfBackedUp(path)
 		return err
 	}, nil
 }
 
+// mergeOpenCodeEnv merges content into the OPENCODE_CONFIG_CONTENT entry in
+// cmd.Env. It searches from the END of cmd.Env, not the start: Command()
+// (internal/agents) builds cmd.Env as os.Environ() (the inherited parent
+// environment) followed by the driver's own env entries, so if the parent
+// process already happens to export OPENCODE_CONFIG_CONTENT (e.g. wt was
+// itself launched from inside an opencode session), the FIRST match would
+// be that inherited, unrelated value rather than the opencode driver's own
+// (later) entry — and since exec.Cmd.Env uses the LAST value for a
+// duplicate key, the driver's own untouched entry would then win at exec
+// time, silently dropping the merged profile content. The last match is
+// always the one that actually takes effect.
 func mergeOpenCodeEnv(cmd *exec.Cmd, content map[string]any) error {
-	for i, e := range cmd.Env {
+	for i := len(cmd.Env) - 1; i >= 0; i-- {
+		e := cmd.Env[i]
 		if !strings.HasPrefix(e, openCodeConfigEnvPrefix) {
 			continue
 		}
@@ -162,6 +179,17 @@ func snapshotAndWrite(target string, data []byte, perm os.FileMode) error {
 // swallowing it here would let a caller proceed to overwrite a `.present`
 // backup that in fact still holds the true pre-write original, which is
 // exactly the data loss self-heal exists to prevent.
+// SelfHeal restores target from an orphaned config_content backup, if one
+// exists — the exported entry point for callers outside this package
+// (cmd/wt's applyProfileForLaunch) that want to self-heal a claude/codex
+// config_content target on EVERY launch of that agent, not only the next
+// launch that happens to resolve a matching profile for that exact target
+// (which is what snapshotAndWrite's own internal self-heal call already
+// covers). Safe to call with no backup present (a no-op, restored=false).
+func SelfHeal(target string) (restored bool, err error) {
+	return restoreIfBackedUp(target)
+}
+
 func restoreIfBackedUp(target string) (restored bool, err error) {
 	switch _, statErr := os.Stat(backupAbsentPath(target)); {
 	case statErr == nil:

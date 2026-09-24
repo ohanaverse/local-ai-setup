@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -268,6 +269,147 @@ func TestApplyConfigContentCodexHomeDirErrorFailsLoudly(t *testing.T) {
 	}
 	if _, statErr := os.Stat(relTarget); !os.IsNotExist(statErr) {
 		t.Errorf("ApplyConfigContent wrote to relative-path fallback %q, want no write anywhere", relTarget)
+	}
+}
+
+// TestApplyConfigContentCodexProfileFlagOnlyAppendedAfterSuccessfulWrite is
+// the regression lock for Important finding #2: --profile
+// agent-wt-profile must be appended to cmd.Args ONLY after
+// snapshotAndWrite has actually succeeded. Before the fix, the flag was
+// appended unconditionally before the write, so a failed write (which the
+// caller degrades to an unprofiled launch) still left codex pointed at a
+// file that might be missing or stale. This forces a deterministic write
+// failure by pre-creating the target path AS A DIRECTORY (so
+// os.ReadFile/WriteFileAtomic fail on it), then asserts cmd.Args is
+// completely unchanged.
+func TestApplyConfigContentCodexProfileFlagOnlyAppendedAfterSuccessfulWrite(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+
+	target := filepath.Join(home, ".codex", "agent-wt-profile.config.toml")
+	if err := os.MkdirAll(target, 0o755); err != nil { // target is a DIRECTORY, not a file
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("codex", "--model", "x")
+	before := append([]string{}, cmd.Args...)
+	rp := ResolvedProfile{ConfigContent: map[string]any{"model_reasoning_effort": "high"}}
+	if _, err := ApplyConfigContent(cmd, "codex", "/tmp/some-worktree", rp); err == nil {
+		t.Fatal("ApplyConfigContent() error = nil, want an error (target path is a directory)")
+	}
+	if strings.Join(cmd.Args, "|") != strings.Join(before, "|") {
+		t.Errorf("cmd.Args = %v, want unchanged %v (--profile must not be appended before a successful write)", cmd.Args, before)
+	}
+}
+
+// TestMergeOpenCodeEnvUsesLastEntryNotFirst is the regression lock for
+// Important finding #3: mergeOpenCodeEnv must merge into the LAST
+// OPENCODE_CONFIG_CONTENT entry in cmd.Env, not the first. Command()
+// (internal/agents) builds cmd.Env as os.Environ() (inherited parent env)
+// followed by the driver's own entries; if the parent process already
+// exports OPENCODE_CONFIG_CONTENT (e.g. wt launched from inside an
+// opencode session), a first-match merge would silently target that
+// unrelated inherited value — and since exec.Cmd.Env uses the LAST value
+// for a duplicate key, the driver's own untouched (unmerged) entry would
+// then win at exec time, silently dropping the profile.
+func TestMergeOpenCodeEnvUsesLastEntryNotFirst(t *testing.T) {
+	cmd := exec.Command("opencode")
+	cmd.Env = []string{
+		`OPENCODE_CONFIG_CONTENT={"model":"stale-inherited-value"}`,                       // simulates a parent shell's own inherited env
+		`OPENCODE_CONFIG_CONTENT={"model":"agent-wt/real","small_model":"agent-wt/real"}`, // the opencode driver's own (real, later) entry
+	}
+	rp := ResolvedProfile{ConfigContent: map[string]any{"compaction": map[string]any{"auto": true}}}
+	cleanup, err := ApplyConfigContent(cmd, "opencode", "/tmp/wt", rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	defer cleanup()
+
+	if len(cmd.Env) != 2 {
+		t.Fatalf("cmd.Env = %v, want 2 entries (no dedupe/removal)", cmd.Env)
+	}
+	if cmd.Env[0] != `OPENCODE_CONFIG_CONTENT={"model":"stale-inherited-value"}` {
+		t.Errorf("first (inherited) entry was mutated: %v, want it left untouched", cmd.Env[0])
+	}
+	merged := strings.TrimPrefix(cmd.Env[1], openCodeConfigEnvPrefix)
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(merged), &doc); err != nil {
+		t.Fatalf("last entry not valid JSON: %v (%s)", err, merged)
+	}
+	if doc["model"] != "agent-wt/real" {
+		t.Errorf("merged doc = %v, lost its own model key", doc)
+	}
+	if _, has := doc["compaction"]; !has {
+		t.Errorf("merged doc = %v, missing the merged compaction key", doc)
+	}
+}
+
+// TestSelfHealRestoresOrphanedBackup verifies the exported SelfHeal
+// wrapper (added for Important finding #4, so cmd/wt's
+// applyProfileForLaunch can self-heal a config_content target from outside
+// this package) delegates correctly to the same restore logic
+// TestApplyConfigContentSelfHealsOrphanedBackup exercises directly: a
+// backup left behind by a session that never called its cleanup (kill -9)
+// is restored, and the restored flag reports true.
+func TestSelfHealRestoresOrphanedBackup(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree := filepath.Join(dir, "worktree")
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
+	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
+		t.Fatalf("first ApplyConfigContent() error = %v", err)
+	}
+	// No cleanup called — simulates kill -9 before the restore could run.
+
+	restored, err := SelfHeal(target)
+	if err != nil {
+		t.Fatalf("SelfHeal() error = %v", err)
+	}
+	if !restored {
+		t.Fatal("SelfHeal() restored = false, want true (orphaned backup from the prior session)")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(handEdited) {
+		t.Errorf("self-healed content = %s, want original hand-edited content %s", got, handEdited)
+	}
+}
+
+// TestSelfHealNoopWithoutBackup verifies SelfHeal is safe to call
+// unconditionally on every launch (as applyProfileForLaunch now does) even
+// when there is nothing to restore — no backup file, no error, and the
+// target (which may not even exist) is left alone.
+func TestSelfHealNoopWithoutBackup(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	target := filepath.Join(dir, "worktree", ".claude", "settings.local.json")
+
+	restored, err := SelfHeal(target)
+	if err != nil {
+		t.Fatalf("SelfHeal() error = %v, want nil", err)
+	}
+	if restored {
+		t.Error("SelfHeal() restored = true, want false (no backup exists)")
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Errorf("SelfHeal() created %q out of nothing", target)
 	}
 }
 
