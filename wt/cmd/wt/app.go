@@ -9,12 +9,29 @@ import (
 
 // app holds shared dependencies loaded once at startup.
 type app struct {
-	cfg         *config.Config
-	cfgErr      error        // config load/validation error, if any; surfaced by commands that can repair it
-	loadErr     error        // config.Load error ONLY (parse/IO/registry missing); gates commands that just rewrite wt's own [litellm] state
-	theme       themes.Theme // active theme; populated by newApp()
-	profiles    profiles.Store
-	profilesErr error // profiles.toml load or Validate error, if any; surfaced by `wt profile` commands
+	cfg      *config.Config
+	cfgErr   error        // config load/validation error, if any; surfaced by commands that can repair it
+	loadErr  error        // config.Load error ONLY (parse/IO/registry missing); gates commands that just rewrite wt's own [litellm] state
+	theme    themes.Theme // active theme; populated by newApp()
+	profiles profiles.Store
+	// profilesLoadErr is set ONLY when profiles.Load() itself fails (a
+	// genuine parse/IO failure — the file is malformed or unreadable). When
+	// set, a.profiles is the zero-value Store{} (empty, Enabled: false),
+	// NOT real data, so `wt profile on|off` must refuse to write (it would
+	// silently overwrite the malformed file with just "enabled = false",
+	// destroying every hand-authored profile and comment) and
+	// list/show/status must report the error instead of rendering an
+	// empty/default profiles view. Mirrors how cfg/cfgErr/loadErr already
+	// separate "config.Load failed" from "config validation failed".
+	profilesLoadErr error
+	// profilesValidateErr is set ONLY when profiles.Validate() fails, which
+	// only runs when Load succeeded — a.profiles therefore still holds the
+	// file's real, correctly-parsed data (some profile just names a
+	// mechanism its agent doesn't declare support for). This is safe to
+	// toggle/list/show since nothing was lost; it only means that specific
+	// profile can never actually apply at launch time (applyProfileForLaunch
+	// also runs Validate and degrades gracefully on failure).
+	profilesValidateErr error
 }
 
 // agentProfileMechanisms looks up the profile mechanisms agent's driver
@@ -56,12 +73,13 @@ func newApp() (*app, error) {
 	if err != nil && !themes.IsThemeNameError(err) {
 		return nil, err
 	}
-	store, profilesErr := profiles.Load()
-	if profilesErr == nil {
-		profilesErr = profiles.Validate(store, agentProfileMechanisms)
+	store, profilesLoadErr := profiles.Load()
+	var profilesValidateErr error
+	if profilesLoadErr == nil {
+		profilesValidateErr = profiles.Validate(store, agentProfileMechanisms)
 	}
 	return &app{
 		cfg: cfg, cfgErr: cfgErr, loadErr: loadErr, theme: theme,
-		profiles: store, profilesErr: profilesErr,
+		profiles: store, profilesLoadErr: profilesLoadErr, profilesValidateErr: profilesValidateErr,
 	}, nil
 }
