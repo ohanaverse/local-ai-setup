@@ -8,6 +8,7 @@ package smoke
 import (
 	"crypto/rand"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -62,11 +63,10 @@ func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
 // row's combined output and exit code (a non-zero code makes the row FAIL), and
 // returns the func restoring the real seam. It exists for cmd/wt's tests, which
 // cannot assign this package's unexported buildAndRun. Tests only.
-func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) (output string, exitCode int)) (restore func()) {
+func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome) (restore func()) {
 	old := buildAndRun
-	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
-		out, code := fn(cfg, agentName, m, prompt, cwd, timeout)
-		return execOutcome{Command: agentName + " (stub)", Output: out, ExitCode: code}
+	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+		return fn(cfg, agentName, m, prompt, cwd, timeout, profileApplier, cleanup)
 	}
 	return func() { buildAndRun = old }
 }
@@ -186,10 +186,21 @@ type execOutcome struct {
 	StartErr error // non-nil if the command never started (e.g. agent not installed)
 }
 
+// ExecOutcome is the exported alias for execOutcome, used by cross-package
+// test stubs (cmd/wt's smoke tests) that cannot access the unexported type.
+type ExecOutcome = execOutcome
+
 // buildAndRun builds and runs one agent's one-shot launch command. It is a
 // package-level var so tests can stub it with canned outcomes, following
 // the seam pattern documented in wt/CLAUDE.md's Go Tests section.
 var buildAndRun = realBuildAndRun
+
+// ProfileApplier applies a resolved profile to an already-built exec.Cmd.
+// It returns a cleanup function that MUST be called after the command exits
+// (success or failure) to restore any config file a profile's config_content
+// mechanism rewrote, and an error if the profile itself could not be applied
+// (e.g. wrapper binary missing). A nil ProfileApplier is a no-op.
+type ProfileApplier func(cmd *exec.Cmd) (cleanup func() error, err error)
 
 // notInstalledMessage mirrors agents.Command's exact error text ("agent %s
 // not installed") so RunRow can classify a missing binary as SKIP rather
@@ -244,7 +255,16 @@ func (b *boundedWriter) String() string {
 	return string(b.tail)
 }
 
-func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
+// StubOutcome constructs an execOutcome for tests that stub buildAndRun
+// and need to return a canned result (e.g. exit code 0 with some output).
+func StubOutcome(output string, exitCode int) execOutcome {
+	return execOutcome{Output: output, ExitCode: exitCode}
+}
+
+func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
+	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
+	*cleanup = func() error { return nil }
 	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, false, nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
@@ -260,6 +280,21 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	cmd.Stdout = buf
 	cmd.Stderr = buf
 	cmdLine := strings.Join(cmd.Args, " ")
+
+	// Apply the profile before Start so env/args modifications take effect.
+	// The cleanup is deferred by the caller (RunRow) so it runs regardless
+	// of whether the agent exits successfully or times out.
+	if profileApplier != nil {
+		var applyErr error
+		*cleanup, applyErr = profileApplier(cmd)
+		if applyErr != nil {
+			// Profile application error: degrade to unprofiled.
+			fmt.Fprintf(os.Stderr, "wt: profile apply: %v (proceeding unprofiled)\n", applyErr)
+			*cleanup = func() error { return nil }
+		}
+		// Rebuild cmdLine after profile may have changed Args.
+		cmdLine = strings.Join(cmd.Args, " ")
+	}
 
 	// cmd.Stdout/Stderr being the exact same io.Writer value makes os/exec
 	// share one pipe and copy goroutine between them instead of racing two
@@ -311,9 +346,18 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 // agent to echo; pass "" when prompt was overridden by the caller (a
 // custom prompt was never asked to produce a sentinel), which degrades
 // verification to "exited 0 within timeout".
-func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, cwd string) RowResult {
+//
+// profileApplier, when non-nil, is called after the launch command is built
+// but before execution to apply a local-model profile overlay (env, args,
+// config_file, wrapper). It returns a cleanup func that the caller MUST
+// invoke after the command exits (success or failure) to restore any config
+// file a profile's config_content mechanism rewrote. A nil profileApplier
+// is a no-op.
+func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, cwd string, profileApplier ProfileApplier) RowResult {
 	start := time.Now()
-	out := buildAndRun(cfg, agentName, m, prompt, cwd, timeout)
+	var cleanup func() error
+	out := buildAndRun(cfg, agentName, m, prompt, cwd, timeout, profileApplier, &cleanup)
+	defer cleanup()
 	res := RowResult{
 		Agent:    agentName,
 		Model:    m.ID,

@@ -12,12 +12,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -141,6 +144,23 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 
 	runID := smoke.NewRunID()
 	stderr := cmd.ErrOrStderr()
+
+	// Load profiles once before the agent loop. If profiles.toml is missing
+	// or malformed, degrade gracefully: smoke still runs but without profile
+	// application (same best-effort posture as applyProfileForLaunch).
+	store, loadErr := loadProfileStore()
+	var validateErr error
+	if loadErr == nil {
+		validateErr = profiles.Validate(store, agentProfileMechanisms)
+	}
+	if loadErr != nil {
+		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", loadErr)
+		store = profiles.Store{}
+	}
+	if validateErr != nil {
+		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", validateErr)
+	}
+
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
 	for _, agentName := range agentsToRun {
 		prompt, sentinel := promptOverride, ""
@@ -148,7 +168,43 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
 		}
 		logSmokeStart(stderr, agentName, m.ID)
-		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd)
+
+		// Resolve the profile for this agent×model pair. If one matches,
+		// build a ProfileApplier closure that applies it to the command
+		// before execution (mirroring applyResolvedProfile's three-step
+		// process). The closure captures agentName so ApplyConfigContent
+		// knows which agent's config file to rewrite.
+		var pa smoke.ProfileApplier
+		if loadErr == nil && validateErr == nil && store.Enabled {
+			rp := profiles.Resolve(store, agentName, a.cfg, m)
+			if !rp.Empty() {
+				pa = func(agent string, rp profiles.ResolvedProfile) smoke.ProfileApplier {
+					return func(cmd *exec.Cmd) (cleanup func() error, err error) {
+						origEnv := slices.Clone(cmd.Env)
+						origArgs := slices.Clone(cmd.Args)
+						profiles.ApplyEnvAndArgs(cmd, rp)
+						contentCleanup, contentErr := profiles.ApplyConfigContent(cmd, agent, cmd.Dir, rp)
+						if contentErr != nil {
+							cmd.Env = origEnv
+							cmd.Args = origArgs
+							fmt.Fprintf(os.Stderr, "wt: profile config_content: %v (proceeding unprofiled)\n", contentErr)
+							contentCleanup = func() error { return nil }
+						}
+						if rp.Wrapper != nil {
+							if err := profiles.ApplyWrapper(cmd, rp.Wrapper); err != nil {
+								if cerr := contentCleanup(); cerr != nil {
+									fmt.Fprintf(os.Stderr, "wt: profile cleanup after wrapper error: %v\n", cerr)
+								}
+								return nil, fmt.Errorf("profile wrapper: %w", err)
+							}
+						}
+						return contentCleanup, nil
+					}
+				}(agentName, rp)
+			}
+		}
+
+		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd, pa)
 		logSmokeResult(stderr, r)
 		rows = append(rows, r)
 	}

@@ -224,7 +224,8 @@ func TestEligibilityExcludesDiscoveredUnderLitellm(t *testing.T) {
 func withStubBuildAndRun(t *testing.T, out execOutcome) {
 	t.Helper()
 	old := buildAndRun
-	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
+	buildAndRun = func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ ProfileApplier, cleanup *func() error) execOutcome {
+		*cleanup = func() error { return nil }
 		return out
 	}
 	t.Cleanup(func() { buildAndRun = old })
@@ -234,7 +235,7 @@ func withStubBuildAndRun(t *testing.T, out execOutcome) {
 // output classifies PASS.
 func TestRunRowPass(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "before WT-SMOKE-claude-run-1 after"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".")
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v, want PASS (err=%v)", res.Status, res.Err)
 	}
@@ -245,7 +246,7 @@ func TestRunRowPass(t *testing.T) {
 // enough on its own when a sentinel was requested.
 func TestRunRowFailMissingSentinel(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "wrong output"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".")
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -255,7 +256,7 @@ func TestRunRowFailMissingSentinel(t *testing.T) {
 // regardless of what the output contains.
 func TestRunRowFailNonZeroExit(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 1, Output: "WT-SMOKE-claude-run-1"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".")
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -266,7 +267,7 @@ func TestRunRowFailNonZeroExit(t *testing.T) {
 // substring convention agents-smoke.sh's classifier uses.
 func TestRunRowSkipNotInstalled(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf("agent claude not installed")})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".")
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
 	if res.Status != StatusSkip {
 		t.Fatalf("Status = %v, want SKIP", res.Status)
 	}
@@ -277,7 +278,7 @@ func TestRunRowSkipNotInstalled(t *testing.T) {
 // not SKIP — only the exact installed-check message means SKIP.
 func TestRunRowFailOtherStartErr(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf(`unknown provider "x" for model "y"`)})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".")
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -287,7 +288,7 @@ func TestRunRowFailOtherStartErr(t *testing.T) {
 // timeout-specific error, and never blocks on a hung process.
 func TestRunRowFailTimeout(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{TimedOut: true})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".")
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
 	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "timed out") {
 		t.Fatalf("Status = %v, Err = %v, want FAIL with a timeout error", res.Status, res.Err)
 	}
@@ -298,7 +299,7 @@ func TestRunRowFailTimeout(t *testing.T) {
 // the documented verification degradation for a custom prompt.
 func TestRunRowCustomPromptSkipsSentinelCheck(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "anything at all"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, ".")
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, ".", nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v, want PASS (empty sentinel means exit-code-only)", res.Status)
 	}
