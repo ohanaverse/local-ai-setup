@@ -5,6 +5,11 @@ LiteLLM proxy session's logs out of the `LiteLLM_SpendLogs` Postgres table
 and reconstructing a readable Markdown chat transcript from them. Not wired
 into modelman or wt — run manually, per session, from this directory.
 
+The pipeline can only see sessions whose harness sends a session id LiteLLM
+recognizes. Which harnesses do, and where each keeps its own local session
+record instead: [session-log-sources.md](session-log-sources.md) (pi documented;
+others stubbed).
+
 ## Pipeline
 
 1. **`01_export_session_logs.sql`** — runs against the live DB, dumps
