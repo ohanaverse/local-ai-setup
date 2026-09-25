@@ -275,7 +275,10 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
 	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
 	*cleanup = func() error { return nil }
-	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, false, nil, cfg, nil)
+	// yolo=true: a one-shot smoke prompt must never stall on an
+	// interactive tool-permission prompt it has no TTY to answer — see
+	// TestRealBuildAndRunPassesYolo for the failure this prevents.
+	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, true, nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}

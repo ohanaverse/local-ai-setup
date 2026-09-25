@@ -343,6 +343,27 @@ func TestRealBuildAndRunOneShotArgsNilApplier(t *testing.T) {
 	}
 }
 
+// TestRealBuildAndRunPassesYolo pins that wt smoke's one-shot launches grant
+// tool-use permission (copilot: --yolo). Without it, copilot CLI's own docs
+// say non-interactive mode ("-p") cannot get tool-call approval at all — any
+// tool call the backing model attempts is denied outright
+// ("Permission denied and could not request permission from user"), which a
+// less rigidly instruction-following model can spiral on for many minutes
+// before giving up or timing out (observed live against an mtplx model,
+// 2026-09-25: ~1118s and ~200K tokens burned narrating the denials as a
+// "macOS security restriction" before it finally answered the trivial
+// smoke prompt). A regression here would reintroduce that failure mode
+// silently, since a well-behaved model (as in the ollama case that passed)
+// never exercises the missing flag.
+func TestRealBuildAndRunPassesYolo(t *testing.T) {
+	writeFakeAgentBinary(t, "copilot")
+	var cleanup func() error
+	outcome := realBuildAndRun(&config.Config{}, "copilot", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	if !strings.HasSuffix(outcome.Command, "--yolo -p the prompt") {
+		t.Fatalf("Command = %q, want it to end with \"--yolo -p the prompt\" (yolo must be passed for one-shot copilot launches)", outcome.Command)
+	}
+}
+
 // TestRealBuildAndRunOneShotArgsPlacedByApplier locks realBuildAndRun's
 // "profileApplier != nil, success" branch: the applier — not
 // realBuildAndRun — places oneShotArgs, and realBuildAndRun must adopt the

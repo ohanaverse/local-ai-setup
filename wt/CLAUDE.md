@@ -448,6 +448,13 @@ See the `adding-a-wt-agent` skill.
 `wt smoke <model-id>` finds every agent currently eligible for one model and
 runs a one-shot prompt through each via `agents.BuildLaunchCmd` (the same
 in-process launch construction a real launch uses), reporting PASS/FAIL/SKIP.
+Every one-shot launch runs with the agent's yolo flag forced on
+(`agents.BuildLaunchCmd(..., yolo=true, ...)` in `internal/smoke/smoke.go`,
+independent of the root `--yolo` flag) — a one-shot prompt has no TTY to
+answer an interactive tool-permission prompt, and without this a backing
+model that attempts a tool call for the trivial smoke prompt can spiral on
+repeated permission denials for many minutes instead of failing fast (see
+`TestRealBuildAndRunPassesYolo`).
 Distinct from `make test-agents`/agents-smoke.sh's hand-curated regression
 matrix (static agent×model list, both routing modes) — `wt smoke` tests
 whatever routing mode is live right now, against whichever model you point it

@@ -51,6 +51,14 @@ message
 An idle pick is started first through the shared start driver, honouring
 the root `--replace` flag when another model occupies a single-model
 provider's slot.
+- **Tool-use permission.** Every one-shot launch runs with the agent's
+  yolo/`--allow-all-tools`-equivalent flag set, regardless of the root
+  `--yolo` flag's own state. A one-shot prompt has no TTY to answer an
+  interactive tool-permission prompt; without this, a backing model that
+  attempts any tool call during the trivial smoke prompt gets a
+  permission-denied response it may not recover from within the timeout
+  (observed with copilot CLI, whose own docs call `--allow-all-tools`
+  "required for non-interactive mode").
 
 ## Exit flow
 
