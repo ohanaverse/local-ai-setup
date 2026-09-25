@@ -7,8 +7,11 @@ into modelman or wt — run manually, per session, from this directory.
 
 The pipeline can only see sessions whose harness sends a session id LiteLLM
 recognizes. Which harnesses do, and where each keeps its own local session
-record instead: [session-log-sources.md](session-log-sources.md) (pi documented;
-others stubbed).
+record instead: [session-log-sources.md](session-log-sources.md). Five harnesses
+are documented there (pi, Claude Code, Codex, Copilot, OpenCode — only Claude
+Code's sessions group), Antigravity is a partial stub, and the exact rule
+LiteLLM applies to a request's headers is quoted in that file under
+"How LiteLLM decides a session id".
 
 ## Pipeline
 
