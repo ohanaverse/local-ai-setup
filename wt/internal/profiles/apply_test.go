@@ -36,6 +36,33 @@ func TestApplyEnvAndArgsExtraArgsAppended(t *testing.T) {
 	}
 }
 
+// TestRestoreAndReattachDropsMutationsAndKeepsOneShotArgs verifies
+// RestoreAndReattach's two call sites (cmd/wt's applyResolvedProfile, wt
+// smoke's realBuildAndRun) both get a genuinely clean revert: any
+// cmd.Env/cmd.Args mutation made between the snapshot and the failure must
+// be gone afterward, not just have oneShotArgs appended on top of it — a
+// half-reverted degrade would leave the "profiles disabled for this launch"
+// message a lie.
+func TestRestoreAndReattachDropsMutationsAndKeepsOneShotArgs(t *testing.T) {
+	cmd := exec.Command("codex", "--model", "x")
+	origEnv := append([]string{}, cmd.Env...)
+	origArgs := append([]string{}, cmd.Args...)
+	cmd.Env = append(cmd.Env, "PROFILE_VAR=1")
+	cmd.Args = append(cmd.Args, "-c", "model_provider=agent-wt")
+
+	RestoreAndReattach(cmd, origEnv, origArgs, []string{"exec", "the prompt"})
+
+	for _, e := range cmd.Env {
+		if e == "PROFILE_VAR=1" {
+			t.Errorf("cmd.Env = %v, still carries the profile's env mutation after revert", cmd.Env)
+		}
+	}
+	want := []string{"codex", "--model", "x", "exec", "the prompt"}
+	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
+		t.Errorf("cmd.Args = %v, want %v (profile args dropped, oneShotArgs reattached)", cmd.Args, want)
+	}
+}
+
 // TestApplyEnvAndArgsThenApplyWrapperComposesCorrectly verifies the real
 // production sequence (cmd/wt's applyResolvedProfile: ApplyEnvAndArgs,
 // then — with a config_content step interleaved in production, omitted

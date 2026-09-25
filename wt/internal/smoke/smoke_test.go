@@ -5,6 +5,9 @@ package smoke
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -302,6 +305,89 @@ func TestRunRowCustomPromptSkipsSentinelCheck(t *testing.T) {
 	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, ".", nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v, want PASS (empty sentinel means exit-code-only)", res.Status)
+	}
+}
+
+// writeFakeAgentBinary points PATH at a temp dir containing a no-op
+// executable named name, so agents.BuildLaunchCmd's exec.LookPath resolves
+// to this harmless script rather than a real codex/agy/etc binary that
+// might happen to be installed on the machine running the test — a
+// realBuildAndRun test actually calls cmd.Start(), unlike every other test
+// in this file (which stubs buildAndRun and never execs anything).
+func writeFakeAgentBinary(t *testing.T, name string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake %s binary: %v", name, err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// TestRealBuildAndRunOneShotArgsNilApplier locks realBuildAndRun's own
+// "profileApplier == nil" branch. Every other test in this file exercises
+// RunRow through the buildAndRun stub and never runs realBuildAndRun's own
+// oneShotArgs branching (code review finding, 2026-09-25) — without this, a
+// regression that silently dropped oneShotArgs when no profile applies
+// (the common case: most agent/model pairs have no profile configured)
+// would compile and pass every other test in this package.
+func TestRealBuildAndRunOneShotArgsNilApplier(t *testing.T) {
+	writeFakeAgentBinary(t, "agy")
+	var cleanup func() error
+	outcome := realBuildAndRun(&config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	if cleanup == nil {
+		t.Fatal("realBuildAndRun never set *cleanup")
+	}
+	if !strings.HasSuffix(outcome.Command, "-p the prompt") {
+		t.Fatalf("Command = %q, want it to end with agy's one-shot args \"-p the prompt\"", outcome.Command)
+	}
+}
+
+// TestRealBuildAndRunOneShotArgsPlacedByApplier locks realBuildAndRun's
+// "profileApplier != nil, success" branch: the applier — not
+// realBuildAndRun — places oneShotArgs, and realBuildAndRun must adopt the
+// applier's returned cleanup instead of its own no-op default.
+func TestRealBuildAndRunOneShotArgsPlacedByApplier(t *testing.T) {
+	writeFakeAgentBinary(t, "agy")
+	cleanupCalled := false
+	applier := func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+		cmd.Args = append(cmd.Args, "--extra")
+		cmd.Args = append(cmd.Args, oneShotArgs...)
+		return func() error { cleanupCalled = true; return nil }, nil
+	}
+	var cleanup func() error
+	outcome := realBuildAndRun(&config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, applier, &cleanup)
+	if !strings.HasSuffix(outcome.Command, "--extra -p the prompt") {
+		t.Fatalf("Command = %q, want the applier's own flag then oneShotArgs at the end", outcome.Command)
+	}
+	if cleanup == nil {
+		t.Fatal("realBuildAndRun did not adopt the applier's cleanup")
+	}
+	if err := cleanup(); err != nil || !cleanupCalled {
+		t.Fatalf("cleanup() called=%v err=%v, want realBuildAndRun's *cleanup to be the applier's own cleanup", cleanupCalled, err)
+	}
+}
+
+// TestRealBuildAndRunRevertsAndReappendsOneShotArgsOnApplierError locks the
+// exact invariant code review flagged as uncovered (2026-09-25): when
+// profileApplier fails after already mutating cmd.Args, realBuildAndRun
+// must revert to the pre-apply snapshot AND still reattach oneShotArgs — a
+// regression that reordered this (or dropped the revert) would leak the
+// applier's partial mutation ("--partial" below) into the degraded command,
+// or land the degraded command with no oneShotArgs at all.
+func TestRealBuildAndRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.T) {
+	writeFakeAgentBinary(t, "agy")
+	applier := func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+		cmd.Args = append(cmd.Args, "--partial")
+		return func() error { return nil }, fmt.Errorf("boom")
+	}
+	var cleanup func() error
+	outcome := realBuildAndRun(&config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, applier, &cleanup)
+	if strings.Contains(outcome.Command, "--partial") {
+		t.Fatalf("Command = %q, still contains the failed applier's partial mutation — revert did not happen", outcome.Command)
+	}
+	if !strings.HasSuffix(outcome.Command, "-p the prompt") {
+		t.Fatalf("Command = %q, want oneShotArgs reattached after the revert", outcome.Command)
 	}
 }
 

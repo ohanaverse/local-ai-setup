@@ -20,6 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // Status is a row's classification.
@@ -309,12 +310,11 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		var applyErr error
 		*cleanup, applyErr = profileApplier(cmd, oneShotArgs)
 		if applyErr != nil {
-			cmd.Env = origEnv
 			// oneShotArgs must still land on the reverted, unprofiled
 			// argv — the applier failed before (or while) placing it, but
 			// the command still needs its one-shot subcommand/prompt to
 			// run at all.
-			cmd.Args = append(origArgs, oneShotArgs...)
+			profiles.RestoreAndReattach(cmd, origEnv, origArgs, oneShotArgs)
 			fmt.Fprintf(os.Stderr, "wt: profile apply: %v (proceeding unprofiled)\n", applyErr)
 			*cleanup = func() error { return nil }
 		}

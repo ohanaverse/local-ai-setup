@@ -1531,7 +1531,11 @@ func TestApplyResolvedProfileOneShotArgsAfterProfileFlags(t *testing.T) {
 // little-coder) must still see the one-shot prompt args in its {{args}}
 // splice, since little-coder "forwards unrecognized args straight to pi"
 // (profiles.toml) — the prompt has to be part of what gets wrapped, not
-// appended after the wrapped command.
+// appended after the wrapped command. If this regresses, wt smoke's
+// one-shot prompt for a wrapper-profiled agent would silently fall outside
+// the wrapped invocation — little-coder would launch with no prompt at all,
+// so the smoke run would hang until timeout (or exit with an unrelated
+// error) instead of actually testing the model.
 func TestApplyResolvedProfileOneShotArgsSplicedIntoWrapper(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

@@ -445,11 +445,19 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 		// this degrade is genuinely unprofiled, not half-profiled — then
 		// reattach oneShotArgs, since this is the only path back to the
 		// caller and it must still produce a runnable one-shot command.
-		cmd.Env = origEnv
-		cmd.Args = append(origArgs, oneShotArgs...)
+		profiles.RestoreAndReattach(cmd, origEnv, origArgs, oneShotArgs)
 		fmt.Fprintf(os.Stderr, "wt: profile config_content: %v (profiles disabled for this launch)\n", err)
 		return noop, nil
 	}
+	// This append must happen here — before the rp.Wrapper branch below —
+	// even though it means a wrapper's one error case (missing binary)
+	// wastes the append: ApplyWrapper splices the CURRENT cmd.Args
+	// verbatim into its "{{args}}" template, so oneShotArgs must already
+	// be present by the time it runs, or a wrapper-profiled agent's
+	// one-shot prompt would silently never be spliced in at all. Moving
+	// this after the wrapper block would fix nothing on the rare
+	// missing-binary error path and would break the far more important
+	// success path.
 	if len(oneShotArgs) > 0 {
 		cmd.Args = append(cmd.Args, oneShotArgs...)
 	}
