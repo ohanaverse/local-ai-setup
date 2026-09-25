@@ -5,16 +5,17 @@ the `messages` column in that export is always `{}` for standard chat
 completions, so the user/tool-result side is not reconstructable from it.
 For a two-sided transcript, see build_full_transcript.py instead.
 
-Usage: python3 build_transcript.py [session_logs_<id>.json]
-Defaults to session_logs_08cd3034.json in this directory.
+Usage: python3 build_transcript.py <session_logs_<id>.json>
 """
 import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "session_logs_08cd3034.json"
+if len(sys.argv) < 2:
+    print(__doc__)
+    sys.exit(1)
+SRC = Path(sys.argv[1])
 OUT = SRC.with_name(SRC.stem + "-transcript.md")
 
 with open(SRC) as f:
