@@ -7,11 +7,13 @@ from the same agent × model location/provider/id `wt` already computes
 root) for the full design; this page is the operator-facing reference.
 
 **Nothing is enabled out of the box.** `~/.config/agent-wt/profiles.toml`
-starts absent (equivalent to `enabled = true`, zero profiles) — the four
-examples below are Phase-1 recipes, drawn from
-`docs/minimal-agent-harnesses/optimizing-coding-agents-for-local-models.md`,
-meant to be copied into that file by hand and adjusted, not shipped
-defaults.
+starts absent (equivalent to `enabled = true`, zero profiles) — the
+example config below is a worked, verified local-model starting point,
+drawn from
+`docs/minimal-agent-harnesses/optimizing-coding-agents-for-local-models.md`.
+It has been resolved end to end with `wt profile show` and cross-checked
+against the installed agent binaries; it is meant to be copied into that
+file by hand and adjusted, not shipped as a default.
 
 ## Commands
 
@@ -118,36 +120,151 @@ it or writing on top of it — that launch degrades to unprofiled, same as
 any other config_content failure. A process is always free to restore its
 own backup at its own normal exit.
 
-## Phase-1 example profiles
+## Working example: local models, all four agents
+
+A verified starting point for a machine serving local models through
+ollama/omlx/mtplx and driving claude, codex, opencode, and pi. Every
+entry matches on `location = "local"`, so it applies to any local model
+from any local provider and never to a native or cloud route. Copy it
+into `~/.config/agent-wt/profiles.toml` and adjust; it is not a shipped
+default.
 
 ```toml
 enabled = true
 
+# pi: run the launched pi under little-coder's scaffold. little-coder has no
+# --pi-args flag; it forwards unrecognized args straight to pi, so it splices
+# wt's own argv verbatim.
 [[profiles]]
 agent = "pi"
 match = "location"
 location = "local"
-wrapper = { binary = "little-coder", args_template = ["--pi-args", "{{args}}"] }
+wrapper = { binary = "little-coder", args_template = ["{{args}}"] }
 
+# claude: MAX_THINKING_TOKENS and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC are
+# plain process-env settings, so they use the env mechanism.
+# CLAUDE_CODE_ATTRIBUTION_HEADER must NOT move into env: the optimization doc
+# reports a shell env var does not stick for it, and a per-request attribution
+# header invalidates the local KV cache (~90% slower). It goes through
+# <worktree>/.claude/settings.local.json via config_content, which wt merges
+# and restores.
 [[profiles]]
 agent = "claude"
 match = "location"
 location = "local"
-env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0", MAX_THINKING_TOKENS = "4096" }
-config_content = { env = { ANTHROPIC_DEFAULT_SONNET_MODEL = "{{model_name}}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{{model_name}}" } }
+env = { MAX_THINKING_TOKENS = "4096", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" } }
 
+# codex: args are appended AFTER wt's driver args and any user passthrough, and
+# codex's repeated -c form is last-wins — so these values also win over a user's
+# own `-c model_reasoning_effort=...` on the command line.
 [[profiles]]
 agent = "codex"
-match = "provider"
-provider = "ollama"
+match = "location"
+location = "local"
 args = ["-c", "model_reasoning_effort=\"low\"", "-c", "tool_output_token_limit=12000"]
 
+# opencode: config_content is merged into the OPENCODE_CONFIG_CONTENT env
+# payload wt already sets (no file). prune is spelled out explicitly.
 [[profiles]]
 agent = "opencode"
 match = "location"
 location = "local"
-config_content = { compaction = { auto = true, reserved = 10000 } }
+config_content = { compaction = { auto = true, prune = false, reserved = 10000 } }
 ```
+
+### What each entry changes
+
+| Agent | Mechanism | Effect on a local launch |
+|---|---|---|
+| pi | `wrapper` | runs `little-coder` instead of bare `pi`, splicing wt's own `--model …` argv into `{{args}}` |
+| claude | `env` | caps thinking at 4096 tokens; suppresses nonessential background traffic |
+| claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`, then restores it |
+| codex | `args` | caps `model_reasoning_effort` at `low`; truncates tool output at 12000 tokens |
+| opencode | `config_file` | merges `compaction { auto = true, prune = false, reserved = 10000 }` into the `OPENCODE_CONFIG_CONTENT` payload (no file written) |
+
+### Why these values
+
+- **pi — `wrapper`.** little-coder is pi plus a curated extension/skill
+  set; wrapping the launch gets the scaffold without a new agent driver.
+  wt still chooses the model: little-coder sees `--model` already present
+  and does not inject its own default. No `--thinking` override is used;
+  the effective level is pi's fallback default of `medium` in the
+  installed pi 0.83.0 (a `defaultThinkingLevel` in
+  `~/.pi/agent/settings.json` overrides it), and little-coder does not
+  inject a level here — its thinking heuristic treats the `:` in a wt
+  model id such as `litellm/ollama/qwen3.8:27b-mlx` as a `:level` suffix.
+- **claude — thinking + attribution.** `MAX_THINKING_TOKENS=4096` stops a
+  small model from over-deliberating instead of acting;
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` keeps background requests
+  off an endpoint that cannot use them. The attribution header is the one
+  setting the optimization doc says must live in Claude Code's settings
+  rather than the process environment, hence the `config_file` split.
+- **codex — reasoning effort + output cap.** `model_reasoning_effort="low"`
+  is codex's thinking-budget knob; `tool_output_token_limit=12000` is its
+  built-in read-guard, capping runaway file reads before they flood a
+  small context window. `model_context_window` and
+  `model_auto_compact_token_limit` are deliberately left out — the
+  optimization doc reports them as unreliable in current builds.
+- **opencode — compaction.** Compacts earlier and reserves less headroom
+  (10000 tokens) so the working set stays small; `prune` is spelled out
+  as `false` to match the source doc rather than tracking an upstream
+  default. `small_model` is already pinned to the same provider by the
+  opencode driver, so it is not repeated here.
+
+### Verifying a profile
+
+`wt profile show` resolves without launching. Substitute a model id from
+your own `registry.toml`:
+
+```bash
+wt profile show -A claude -M ollama/qwen3.8:27b-mlx   # -> env/config_content lines
+wt profile show -A claude -M claude/native            # -> (no matching profile)
+```
+
+Every agent should resolve against any local model, and resolve nothing
+against a native or cloud model. A `location` profile is provider-agnostic:
+the same entry matches an `ollama`, `omlx`, or `mtplx` model.
+
+### Notes and caveats
+
+- **`--pi-args` is not a little-coder flag.** little-coder's launcher
+  strips only its own documented flags and forwards everything else to pi,
+  so `args_template = ["--pi-args", "{{args}}"]` would hand pi a flag it
+  rejects. Use `["{{args}}"]`. A missing wrapper binary is the one fatal
+  profile error — a requested wrapper must actually run — so `little-coder`
+  must be on `PATH`.
+- **The claude `ANTHROPIC_DEFAULT_*_MODEL` mapping cannot use
+  `{{model_name}}`.** With LiteLLM on, a launch routes through the proxy
+  using the full registry id (`ollama/qwen3.8:27b-mlx`); that is what
+  `wt/internal/litellm` writes as the proxy's `model_name`. The only value
+  placeholder `internal/profiles` substitutes is `{{model_name}}` =
+  `m.ModelName` (`qwen3.8:27b-mlx`), which the proxy does not know. The
+  mapping is therefore omitted above. To route claude's tier defaults to
+  a local model, add a `match = "model"` profile per model with the
+  literal registry id, or turn LiteLLM off (`wt litellm off`) so the
+  provider-side `{{model_name}}` is what's dialled — that only yields
+  direct mode if the provider speaks claude's protocol; a provider with
+  no Anthropic support still force-routes through LiteLLM. There is no
+  `{{model_ref}}`/`{{model_id}}` placeholder yet.
+- **The claude attribution header belongs in `config_content`, not
+  `env`.** A shell environment variable does not stick for
+  `CLAUDE_CODE_ATTRIBUTION_HEADER`; it has to be set in Claude Code's
+  settings, so it goes through the `config_file` mechanism
+  (`.claude/settings.local.json`). Moving it into the `env` map silently
+  reintroduces the KV-cache invalidation this profile exists to avoid.
+- **codex's `-c` values are last-wins.** Because profile `args` are
+  appended after wt's driver args and after any user passthrough, a
+  user's own `codex-wt -M <local> -- -c model_reasoning_effort="high"`
+  is overridden back to `low`. The profile winning is wt's own arg
+  ordering (profile args are appended last; the design spec records this
+  as a deferred "ExtraArgs ordering tradeoff"), not a codex behavior —
+  codex's repeated `-c` last-wins format is upstream, but the outcome
+  here is wt's. It is not something this config file can fix. To force a different value for
+  one model, add a `match = "model"` profile for it whose own `args` list
+  replaces this one's — a later tier's non-empty `args` fully replaces an
+  earlier tier's, so it must repeat any codex args you still want;
+  `wt profile off` disables the whole layer.
 
 ## Confirm prompt
 
