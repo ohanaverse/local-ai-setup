@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -199,11 +200,28 @@ func (e *env) tryChat(ctx context.Context, chatURL string, payload []byte) (ok b
 // JSON blob, and the caller's final error must stay a readable one-liner.
 func truncateForError(b []byte) string {
 	const max = 300
-	s := strings.TrimSpace(string(b))
-	if len(s) > max {
-		return s[:max] + "…"
+	// strings.Fields splits on any whitespace (including newlines/tabs) and
+	// drops empty runs; joining with a single space collapses the body to
+	// one line and trims its ends, so an HTML error page or a formatted
+	// stack trace can't carry its line breaks into the caller's one-line
+	// error message.
+	s := strings.Join(strings.Fields(string(b)), " ")
+	if len(s) <= max {
+		return s
 	}
-	return s
+	s = s[:max]
+	// Back off to a valid rune boundary: DecodeLastRuneInString reports
+	// (RuneError, 1) only when the trailing byte(s) are not a complete,
+	// valid encoding — the impossible-for-correct-UTF-8 signal that the cut
+	// landed mid-rune.
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s + "…"
 }
 
 // liveServed asks a single-model provider's server directly what it is serving,

@@ -64,6 +64,9 @@ var preservedParamKeys = []string{"additional_drop_params", "use_chat_completion
 // presence_penalty map to ollama's repeat_penalty and can produce a value
 // ollama's sampler rejects ("must be finite and greater than 0") for some
 // models even when the caller sends 0 — copilot CLI always sends both.
+// Cost: litellm has no per-model way to drop a param only where it crashes,
+// so any client-supplied value for these three is silently ignored for
+// every ollama_chat/ model, including ones that would have handled it fine.
 var droppedOllamaChatParams = []string{"reasoning_effort", "frequency_penalty", "presence_penalty"}
 
 var loopbackHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}

@@ -42,7 +42,7 @@
 
 **Root cause (from the investigation):** `realBuildAndRun` in `smoke.go` calls `agents.BuildLaunchCmd(agentName, m, cwd, false, nil, cfg, nil)` — `yolo` is hardcoded `false`. GitHub Copilot CLI's own `--help` documents `--allow-all-tools`/`--yolo` as **"required for non-interactive mode."** Without it, any tool call copilot's backing model attempts during the one-shot `-p` run gets `Permission denied and could not request permission from user` (no TTY to approve it). Live evidence (`/tmp/local-ai-setup-mtplx.log`, `wt smoke` run `run-6213ded0` against an mtplx model): given only the trivial "reply with exactly this text" prompt, the model tried to explore the repo and run commands (`codesign`, `go run`, the `wt` binary), got denied every time, and narrated the denials as a "macOS security restriction" — burning ~200K prompt tokens over 1118 seconds before finally complying, well past `wt smoke`'s default 900s local timeout. Under normal conditions this row FAILs on timeout with that misleading narrative in its captured output. The same run against `ollama/qwen3.8:27b-mlx` passed cleanly because that model never attempted a tool call for the trivial prompt — the missing flag simply never got exercised.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `wt/internal/smoke/smoke_test.go`, next to `TestRealBuildAndRunOneShotArgsNilApplier`:
 
@@ -69,12 +69,12 @@ func TestRealBuildAndRunPassesYolo(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd wt && go test ./internal/smoke -run TestRealBuildAndRunPassesYolo -v`
 Expected: FAIL — `Command = ".../copilot -p the prompt"` (no `--yolo`).
 
-- [ ] **Step 3: Fix the call site**
+- [x] **Step 3: Fix the call site**
 
 In `wt/internal/smoke/smoke.go`, change line 278 from:
 
@@ -91,17 +91,17 @@ to:
 	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, true, nil, cfg, nil)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd wt && go test ./internal/smoke -run TestRealBuildAndRunPassesYolo -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full smoke package's test suite to check for regressions**
+- [x] **Step 5: Run the full smoke package's test suite to check for regressions**
 
 Run: `cd wt && go test ./internal/smoke -v`
 Expected: PASS (all tests, including the existing `TestRealBuildAndRunOneShotArgsNilApplier`/`...PlacedByApplier`/`...RevertsAndReappends...` tests, which use `agy` and are unaffected by copilot's yolo behavior but must still pass since `yolo=true` is now global to every agent's smoke launch).
 
-- [ ] **Step 6: Update `wt/docs/wt-smoke.md`**
+- [x] **Step 6: Update `wt/docs/wt-smoke.md`**
 
 Add a new bullet under the existing `## Eligibility` section (after the paragraph ending "...`smoke.Candidates` walks the same `catalog` rows a real launch consults)."):
 
@@ -116,7 +116,7 @@ Add a new bullet under the existing `## Eligibility` section (after the paragrap
   "required for non-interactive mode").
 ```
 
-- [ ] **Step 7: Update `wt/CLAUDE.md`'s Smoke test section**
+- [x] **Step 7: Update `wt/CLAUDE.md`'s Smoke test section**
 
 In the `## Smoke test (\`wt smoke\`)` section, after the sentence ending "...reporting PASS/FAIL/SKIP.", add:
 
@@ -130,7 +130,7 @@ repeated permission denials for many minutes instead of failing fast (see
 `TestRealBuildAndRunPassesYolo`).
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 cd wt
@@ -164,7 +164,7 @@ EOF
 
 **Root cause (from the investigation):** `registry.toml`'s `omlx/mlx-community--Qwen3.8-27B-8bit` points at an on-disk model directory that is an **incomplete download** (6 of its weight shards are missing — confirmed via omlx's own `model_discovery` warning, present on every server startup in `/opt/homebrew/var/log/omlx.log` since 2026-09-10). omlx correctly excludes the incomplete model from `/v1/models` and 404s any chat request naming it. `internal/lifecycle/omlx.go`'s `start()` calls `e.warmup(ctx, origin+"/v1/chat/completions", path.Base(t.ModelName), health, e.warmupTimeout)`, and `warmup` (in `probe.go`) polls `tryChat` once per `pollInterval` (1s) for up to `warmupTimeout` (600s = 10 minutes), discarding every failure's actual reason. The result: `wt smoke` (and `wt start`) just sit there for up to 10 minutes with no visible cause before the generic `"failed to warm up model %s at %s"` error — which is what reads as "stuck." This fix does not repair the underlying incomplete download (that is local machine state, not a code bug — see the operational note at the end of this task); it makes the *next* time this happens (any model, any provider using `warmup`) immediately diagnosable instead of requiring a raw-log spelunk like this investigation needed.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `wt/internal/lifecycle/probe_test.go`, after `TestWarmupRejectsNon2xx`:
 
@@ -201,12 +201,12 @@ func TestWarmupTimeoutErrorIncludesLastFailureReason(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd wt && go test ./internal/lifecycle -run TestWarmupTimeoutErrorIncludesLastFailureReason -v`
 Expected: FAIL — `warmup err = "failed to warm up model m at ..."`, missing "404"/"not found"/"other-model".
 
-- [ ] **Step 3: Change `tryChat` to return a reason alongside its bool**
+- [x] **Step 3: Change `tryChat` to return a reason alongside its bool**
 
 In `wt/internal/lifecycle/probe.go`, add `"strings"` to the import block (alongside the existing `"regexp"`), then replace `tryChat`:
 
@@ -253,7 +253,7 @@ func truncateForError(b []byte) string {
 }
 ```
 
-- [ ] **Step 4: Update `warmup` to track and surface the last reason**
+- [x] **Step 4: Update `warmup` to track and surface the last reason**
 
 Replace the body of `warmup` in the same file:
 
@@ -298,12 +298,12 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL string, time
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `cd wt && go test ./internal/lifecycle -run TestWarmupTimeoutErrorIncludesLastFailureReason -v`
 Expected: PASS
 
-- [ ] **Step 6: Add a truncation test and a distinct-health-check-reason test, then run all three together**
+- [x] **Step 6: Add a truncation test and a distinct-health-check-reason test, then run all three together**
 
 A large response body (an HTML error page, a big JSON blob) must not balloon the final error, and a server that never answers the health check at all must report that distinctly from a chat-completion failure — otherwise a cold-starting server's timeout error could misleadingly repeat a stale reason from a different failure mode. Add both to `wt/internal/lifecycle/probe_test.go`:
 
@@ -350,17 +350,17 @@ func TestWarmupHealthCheckNeverRespondingReasonIsDistinct(t *testing.T) {
 Run: `cd wt && go test ./internal/lifecycle -run 'TestWarmupTimeoutErrorIncludesLastFailureReason|TestTryChatReasonIsTruncated|TestWarmupHealthCheckNeverRespondingReasonIsDistinct' -v`
 Expected: all three PASS.
 
-- [ ] **Step 7: Run the full lifecycle package's test suite to check for regressions**
+- [x] **Step 7: Run the full lifecycle package's test suite to check for regressions**
 
 Run: `cd wt && go test ./internal/lifecycle -v`
 Expected: PASS (in particular `TestWarmupSendsOneTokenChatAndWaitsForCompletion` and `TestWarmupRejectsNon2xx`, which call `warmup` and check `err.Error()` for the substring `"warm"` — still present in the new message — and retry-count behavior, which the reason tracking does not change).
 
-- [ ] **Step 8: Build and vet the whole module**
+- [x] **Step 8: Build and vet the whole module**
 
 Run: `cd wt && go build ./... && go vet ./...`
 Expected: clean (no output, exit 0) — confirms no other file in the module called `tryChat` with the old single-return signature.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 cd wt
@@ -408,7 +408,7 @@ This is **not** a tool-calling capability gap — removing `tools` entirely stil
 
 **Constraint to respect:** `additional_drop_params` is presence-based (`mapGet(params, "additional_drop_params") == nil` guards the whole case) — a row that already has *any* list, including the currently-deployed `gpt-oss:20b` row's `[reasoning_effort]`, is left untouched by `EnsureSettings` on every future write. This is intentional (`TestSetRowPreservesUserManagedParams`) so a user's own opt-out (including a deliberate empty list) is never silently reset. That means this code change only affects **new** rows going forward (a fresh `wt litellm expose`); the currently-deployed `gpt-oss:20b` row needs a one-time manual edit, called out as a separate step below.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `wt/internal/litellm/configfile_test.go`, after `TestEnsureSettings`:
 
@@ -465,7 +465,7 @@ func TestEnsureSettingsNeverExtendsAnExistingDropList(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify the first one fails**
+- [x] **Step 2: Run tests to verify the first one fails**
 
 Run: `cd wt && go test ./internal/litellm -run TestEnsureSettingsDropsFrequencyAndPresencePenaltyOnFreshOllamaChatRows -v`
 Expected: FAIL — output is missing `frequency_penalty` and `presence_penalty`.
@@ -473,7 +473,7 @@ Expected: FAIL — output is missing `frequency_penalty` and `presence_penalty`.
 Run: `cd wt && go test ./internal/litellm -run TestEnsureSettingsNeverExtendsAnExistingDropList -v`
 Expected: PASS already (current code never extends existing lists) — this one is a regression pin, not a red/green step; confirm it passes before and after Step 3.
 
-- [ ] **Step 3: Widen the default drop list**
+- [x] **Step 3: Widen the default drop list**
 
 In `wt/internal/litellm/configfile.go`, add a package var near `preservedParamKeys` (around line 58):
 
@@ -510,22 +510,22 @@ Then replace the `ollama_chat/` case in `EnsureSettings` (around line 310-313):
 			mapSet(params, "additional_drop_params", stringSeq(droppedOllamaChatParams))
 ```
 
-- [ ] **Step 4: Run both tests to verify they pass**
+- [x] **Step 4: Run both tests to verify they pass**
 
 Run: `cd wt && go test ./internal/litellm -run 'TestEnsureSettingsDropsFrequencyAndPresencePenaltyOnFreshOllamaChatRows|TestEnsureSettingsNeverExtendsAnExistingDropList' -v`
 Expected: both PASS.
 
-- [ ] **Step 5: Run the full litellm package's test suite to check for regressions**
+- [x] **Step 5: Run the full litellm package's test suite to check for regressions**
 
 Run: `cd wt && go test ./internal/litellm -v`
 Expected: PASS, including `TestEnsureSettings` (still asserts `"reasoning_effort"` is present — unaffected by the widened list) and `TestSetRowPreservesUserManagedParams`.
 
-- [ ] **Step 6: Build and vet the whole module**
+- [x] **Step 6: Build and vet the whole module**
 
 Run: `cd wt && go build ./... && go vet ./...`
 Expected: clean.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd wt
@@ -563,15 +563,15 @@ curl -s http://localhost:4000/v1/chat/completions -H "Content-Type: application/
 
 ## Final verification (all three tasks)
 
-- [ ] **Run the whole module's test suite**
+- [x] **Run the whole module's test suite**
 
 Run: `cd wt && go build ./... && go vet ./... && go test ./...`
 Expected: PASS, no vet warnings.
 
-- [ ] **Run `make check`** (shellcheck + shfmt + go-format-check) from `wt/`
+- [x] **Run `make check`** (shellcheck + shfmt + go-format-check) from `wt/`
 Expected: clean.
 
-- [ ] **Live re-verification** (this machine, after `make install` from `wt/`):
+- [x] **Live re-verification** (this machine, after `make install` from `wt/`):
 
 ```bash
 wt smoke ollama/gpt-oss:20b --only copilot --timeout 60s   # was 500, should now PASS

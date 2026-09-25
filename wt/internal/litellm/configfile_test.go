@@ -191,6 +191,17 @@ litellm_settings:
 	if strings.Count(out, "use_chat_completions_api") != 1 {
 		t.Errorf("real OpenAI row must not get the bridge flag:\n%s", out)
 	}
+	// Pin that the wider ollama_chat/ drop list (reasoning_effort,
+	// frequency_penalty, presence_penalty) attaches only to the one
+	// ollama_chat/ row ("a") — the openai/ rows ("b", loopback; "c", real
+	// OpenAI) must never gain these entries (code review finding,
+	// 2026-09-25: this was structurally guaranteed by the switch but had no
+	// explicit pin).
+	for _, want := range []string{"frequency_penalty", "presence_penalty"} {
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("%q appears %d times, want exactly 1 (only on the ollama_chat/ row):\n%s", want, n, out)
+		}
+	}
 	f2, _ := Open(writeConfig(t, out))
 	f2.EnsureSettings()
 	if f2.Changed() {
@@ -246,6 +257,17 @@ func TestEnsureSettingsNeverExtendsAnExistingDropList(t *testing.T) {
 	}
 	if !strings.Contains(out, "reasoning_effort") {
 		t.Fatalf("existing additional_drop_params entry lost:\n%s", out)
+	}
+	// Pin "left exactly as-is", not just "didn't gain these two strings"
+	// (code review finding, 2026-09-25): re-running EnsureSettings on the
+	// row this call already touched (for litellm_settings, which this
+	// config lacked) must report no further change — a stray rewrite of
+	// the row's formatting or ordering would fail this even though the
+	// substring checks above would still pass.
+	f2, _ := Open(writeConfig(t, out))
+	f2.EnsureSettings()
+	if f2.Changed() {
+		t.Fatalf("EnsureSettings is not idempotent on a row with a pre-existing additional_drop_params list:\n%s", enc(t, f2))
 	}
 }
 
