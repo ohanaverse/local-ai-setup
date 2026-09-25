@@ -1,0 +1,2 @@
+# Pipeline outputs (session dumps, transcripts) stay untracked.
+session_*

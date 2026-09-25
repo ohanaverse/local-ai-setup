@@ -10,7 +10,8 @@ SHELL_SCRIPTS := \
 	benchmarks/lib/benchmark-common.sh \
 	benchmarks/lib/benchmark-multi.sh \
 	wt/bin/*-wt \
-	wt/scripts/agents-smoke.sh
+	wt/scripts/agents-smoke.sh \
+	litellm-session-logs/02_export_proxy_server_request.sh
 
 lint: lint-shell check-links
 
