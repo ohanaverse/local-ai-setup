@@ -10,10 +10,9 @@ import (
 
 func rotateCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
-		Use:    "rotate <tag>",
-		Short:  "Print the model after the last-launched in a tag group (debug)",
-		Hidden: true,
-		Args:   cobra.ExactArgs(1),
+		Use:   "rotate <tag>",
+		Short: "Print the model after the last-launched in a tag group (debug)",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			tag := args[0]
 			models := a.cfg.ModelsWithTag(tag)

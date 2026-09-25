@@ -147,7 +147,7 @@ In this mode the model name passed to agents is the registry id (e.g.
 
 - Launching a model **advances rotation**: the picker cursor (and any model-less launch) lands on the next eligible model after the last-launched one. There is no key or command to advance manually.
 - State is a **single global file**, `~/.config/agent-wt/rotation.state`, one line, bare model id (`internal/rotation/rotation.go`: `Rotation reads and writes the single global rotation.state file.`). Old per-tag/per-agent `rotation-*.state` files are one-shot migration inputs — the newest one is folded in once and the files deleted; migration only runs when `rotation.state` is missing — it exists, so the legacy files simply remain (two legacy leftovers, `rotation-claude-code-_.state` and `rotation-pi-code-_.state`, still sat in `~/.config/agent-wt/` on 2026-08-29). See [03-model-families](03-model-families.md).
-- Hidden read-only probe:
+- Read-only probe:
 
   ```bash
   wt rotate code        # from: any dir, read-only
