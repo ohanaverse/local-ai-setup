@@ -3091,6 +3091,10 @@ async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_pat
             # itself catches WtBridgeError and returns {}, so this must not
             # propagate as an unhandled exception out of the prefetch pool.
             raise wt_bridge.WtBridgeError("wt litellm providers timed out")
+        if args[:1] == ["list"]:
+            # _load_routed_ids_cache calls wt litellm list; degrade gracefully
+            # like providers (hung wt returns no routed ids).
+            raise wt_bridge.WtBridgeError("wt litellm list timed out")
         raise AssertionError(args)
 
     monkeypatch.setattr(wt_bridge, "_run", hung)
@@ -3172,3 +3176,97 @@ async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypa
         await _open_model_screen(pilot)
     elapsed = time_mod.monotonic() - start
     assert elapsed < 0.55, f"mount took {elapsed:.2f}s, want the two reads run concurrently (~0.3s)"
+
+
+@pytest.mark.asyncio
+async def test_exposed_column_local_model_reads_wt_routes_not_flag(tmp_path, monkeypatch):
+    """The EXPOSED column for LOCAL models reads wt's live routes
+    (`wt litellm list`) instead of the stale modelman.toml exposed flag
+    (issue #145).
+
+    A local model started via `wt start` is genuinely routed through
+    LiteLLM even if modelman.toml's exposed flag is False. The column
+    must show Y in that case."""
+    from modelman import wt_bridge
+    from modelman.registry import ModelEntry
+    from textual.widgets import DataTable
+
+    a = ModelEntry(
+        id="ollama/a",
+        family="ornith",
+        provider_id="ollama",
+        model_name="a",
+        location="local",
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[a])
+    state = load_state(state_path)
+    # exposed=False — the stale flag. wt has actually routed this model.
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
+    save_state(state, state_path)
+
+    routed = []  # filled by the fake routed_ids
+
+    def fake_routed(*, litellm_path=None):
+        return routed
+
+    monkeypatch.setattr(wt_bridge, "routed_ids", fake_routed)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+
+        table = app.screen.query_one("#model-table", DataTable)
+        row_key = list(table.rows.keys())[0]
+        exposed_col = next(
+            key for key, col in table.columns.items() if str(col.label) == "EXPOSED"
+        )
+
+        # Model not in wt's routes → EXPOSED should show "–"
+        assert str(table.get_cell(row_key, exposed_col)) == "–"
+
+        # Now wt says the model IS routed → EXPOSED should show Y
+        routed.append("ollama/a")
+        app.screen._routed_ids_cache = routed  # sync the cache
+        app.screen.reload()
+        await pilot.pause()
+
+        assert str(table.get_cell(row_key, exposed_col)) == "Y"  # EXPOSED column
+
+
+@pytest.mark.asyncio
+async def test_exposed_column_local_model_wt_unreachable_degrades(tmp_path, monkeypatch):
+    """When wt is unreachable, the EXPOSED column for LOCAL models falls
+    back to "–" (safe default) instead of crashing or showing stale data."""
+    from modelman import wt_bridge
+    from modelman.registry import ModelEntry
+    from textual.widgets import DataTable
+
+    a = ModelEntry(
+        id="ollama/a",
+        family="ornith",
+        provider_id="ollama",
+        model_name="a",
+        location="local",
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[a])
+    state = load_state(state_path)
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
+    save_state(state, state_path)
+
+    monkeypatch.setattr(wt_bridge, "routed_ids", lambda **kw: (_ for _ in ()).throw(
+        wt_bridge.WtBridgeError("wt unavailable")
+    ))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+
+        table = app.screen.query_one("#model-table", DataTable)
+        row_key = list(table.rows.keys())[0]
+        exposed_col = next(
+            key for key, col in table.columns.items() if str(col.label) == "EXPOSED"
+        )
+        # wt unreachable → cache is None → falls back to "–"
+        assert str(table.get_cell(row_key, exposed_col)) == "–"

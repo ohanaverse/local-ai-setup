@@ -231,6 +231,10 @@ class ModelScreen(Screen[None]):
         # Last `wt litellm status` (None = wt unreachable); refreshed only on
         # mount and after a toggle so keystrokes never spawn wt.
         self._litellm_status: wt_bridge.LitellmStatus | None = None
+        # Cached routed model ids from `wt litellm list` (populated on mount;
+        # used by the EXPOSED column for local models whose exposed flag in
+        # modelman.toml is stale — wt owns the actual routes in config.yaml).
+        self._routed_ids_cache: list[str] | None = None
         # Provider of the last model added or edited this session; used to
         # default the Add dialog's provider dropdown.
         self._last_provider_used: str | None = None
@@ -297,6 +301,7 @@ class ModelScreen(Screen[None]):
             "SIZE",
         )
         self._prefetch_litellm_state()
+        self._load_routed_ids_cache()
         self.reload()
         self._refresh_pending_bar()
         self._render_litellm_status()
@@ -416,6 +421,19 @@ class ModelScreen(Screen[None]):
             status_future.result()
             flags_future.result()
 
+    def _load_routed_ids_cache(self) -> None:
+        """Populate `_routed_ids_cache` from `wt litellm list --json`.
+
+        Called once on mount so the EXPOSED column for local models reads
+        wt's live routing state instead of the stale modelman.toml flag
+        (issue #145). Never raises: an unreachable wt leaves the cache as
+        None and the column falls back to the flag.
+        """
+        try:
+            self._routed_ids_cache = wt_bridge.routed_ids()
+        except wt_bridge.WtBridgeError:
+            self._routed_ids_cache = None
+
     def _render_litellm_status(self) -> None:
         status = self._litellm_status
         if status is None:
@@ -506,8 +524,20 @@ class ModelScreen(Screen[None]):
                 # Native rows are the one exception: the column shows Y
                 # unconditionally while the apply gate still rejects them
                 # ("no LiteLLM mapping") — that split is deliberate.
+                #
+                # For LOCAL models, wt owns the actual routes in config.yaml
+                # (Phase 4, issues #140-#144) so the modelman.toml exposed
+                # flag is stale — read wt's live routing state instead.
+                is_local = is_local_location(m.location) or is_local_location(
+                    self.registry.provider(m.provider_id).location
+                    if any(p.id == m.provider_id for p in self.registry.providers)
+                    else None
+                )
                 exposed_str = (
                     "Y"
+                    if is_local
+                    and self._is_locally_routed(m.id)
+                    else "Y"
                     if is_effectively_exposed(
                         m,
                         self.state,
@@ -516,11 +546,6 @@ class ModelScreen(Screen[None]):
                         ready_override=ready_override,
                     )
                     else "–"
-                )
-                is_local = is_local_location(m.location) or is_local_location(
-                    self.registry.provider(m.provider_id).location
-                    if any(p.id == m.provider_id for p in self.registry.providers)
-                    else None
                 )
                 running_str = "●" if (is_local and self.state.get(m.id).running) else "-"
                 mt.add_row(
@@ -571,6 +596,19 @@ class ModelScreen(Screen[None]):
         if model_id in self.queued_ready:
             return self.queued_ready[model_id]
         return self.state.get(model_id).ready
+
+    def _is_locally_routed(self, model_id: str) -> bool:
+        """Whether a local model is currently routed through LiteLLM.
+
+        For LOCAL models, wt owns the actual routes in config.yaml (since
+        Phase 4, issues #140-#144) and the `exposed` flag in modelman.toml
+        is stale. This reads wt's live routing state from the on-mount
+        cache instead. Returns False when wt is unreachable (cache is None)
+        — the column shows "–" which is the safe default.
+        """
+        if self._routed_ids_cache is None:
+            return False
+        return model_id in self._routed_ids_cache
 
     def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
         """Single invariant: expose depends on ready. A queued expose=True
