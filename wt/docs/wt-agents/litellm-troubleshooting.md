@@ -22,8 +22,8 @@ to answer a one-shot prompt on stdout.
 | claude | ✅ works | `ANTHROPIC_BASE_URL` → LiteLLM proxy, `--model <registry-id>`; a `claude-code:unrecognized_model` notice is benign. This row only covered `ollama_chat/*` — local `openai/*` backends (mtplx/omlx/mlx_lm_server) needed a further fix, see below |
 | pi | ✅ works | after the dedicated `litellm` provider fix (below) |
 | opencode | ✅ works | after the custom-provider fix (below) |
-| copilot | ✅ works | after proxy `litellm_settings.drop_params: true` and wt-side `WIRE_API=completions` (below) |
-| codex | ✅ works | after per-model `additional_drop_params: ["reasoning_effort"]` (below) |
+| copilot | ✅ works | after proxy `litellm_settings.drop_params: true` and wt-side `WIRE_API=completions` (below); a later, model-specific `additional_drop_params` crash is documented separately below (`gpt-oss:20b`) |
+| codex | ✅ works | after per-model `additional_drop_params: ["reasoning_effort"]` (below) — wt now seeds this automatically on every fresh `ollama_chat/*` row, alongside two more entries added later for the copilot/`gpt-oss:20b` crash |
 | agy | N/A | no model passthrough; the model is chosen inside its own TUI |
 | shell | N/A | command executor, not an LLM agent |
 
@@ -158,13 +158,23 @@ it.
    through `wt` (green). Every `ollama_chat/*` entry needs this key for
    codex to work with it.
 
+   **wt now applies this automatically** (`internal/litellm/configfile.go`'s
+   `EnsureSettings`, since 2026-09-21): any `ollama_chat/*` row written
+   without its own `additional_drop_params` gets `reasoning_effort` seeded
+   in — by design, only on a row that has no list yet (a pre-existing list,
+   even a single-entry one, is left untouched; see the copilot section
+   below for why a fresh entry actually carries two more items today).
+
 2. **Proper fix (upstream, unreleased):**
    [BerriAI/litellm#37452](https://github.com/BerriAI/litellm/issues/37452);
    fix PRs [#37465](https://github.com/BerriAI/litellm/pull/37465) /
    [#37467](https://github.com/BerriAI/litellm/pull/37467) (open as of
    2026-08-31, not in any release — PyPI latest = 1.98.0 = the crashing
    version). They extract `value.get("effort")` when the value is a dict.
-   Once a release ships it, remove the `additional_drop_params` entries.
+   Once a release ships it, remove **the `reasoning_effort` entry** from
+   `additional_drop_params` (not the whole key — a row may carry other
+   entries for unrelated fixes, e.g. the `frequency_penalty`/
+   `presence_penalty` entries below).
 
 3. **Alternative:** change the proxy entries wt writes to route these models
    through the OpenAI-compatible passthrough
@@ -215,6 +225,75 @@ not stop copilot sending `parallel_tool_calls`.
 Re-test trigger: LiteLLM's responses bridge fixes
 ([BerriAI/litellm#37452](https://github.com/BerriAI/litellm/issues/37452))
 ship in a release, or copilot CLI's responses client changes.
+
+### copilot — `ollama_chat` bridge rejects `frequency_penalty`/`presence_penalty` for some models (e.g. `gpt-oss:20b`)
+
+Symptom: every copilot request against an affected model fails with a `500`
+after litellm's own retries:
+
+```
+litellm.APIConnectionError: Ollama_chatException - {"error":"{\"error\":{\"code\":400,
+\"message\":\"Failed to initialize samplers: penalty_repeat must be finite and greater
+than 0\",\"type\":\"invalid_request_error\"}}"}. Received Model Group=ollama/gpt-oss:20b
+```
+
+Root cause (found debugging `wt smoke ollama/gpt-oss:20b --only copilot`,
+2026-09-25, isolated via direct curl probes): copilot CLI always sends
+`frequency_penalty`/`presence_penalty` (at `0`), and LiteLLM's `ollama_chat`
+bridge maps them into ollama's native `repeat_penalty` — for `gpt-oss:20b`
+that mapping produces a value ollama's sampler rejects, even though `0` is a
+normal default many OpenAI-style clients send. **Not** a tool-calling gap:
+the same request fails identically with `tools` removed entirely, succeeds
+with the same params against a different model (`qwen3.8:27b-mlx`) through
+the same bridge, and succeeds with the same params sent straight to ollama's
+own OpenAI-compatible endpoint — it is specific to this one bridge+model
+combination.
+
+**Fix (shipped in wt, 2026-09-25):** `EnsureSettings` now seeds
+`frequency_penalty` and `presence_penalty` into `additional_drop_params`
+alongside `reasoning_effort` (above) for every **freshly-written**
+`ollama_chat/*` row (`internal/litellm/configfile.go`'s
+`droppedOllamaChatParams`):
+
+```yaml
+- model_name: ollama/gpt-oss:20b
+  litellm_params:
+    model: ollama_chat/gpt-oss:20b
+    api_base: http://localhost:11434
+    additional_drop_params:
+      - reasoning_effort
+      - frequency_penalty
+      - presence_penalty
+```
+
+Cost: like the `reasoning_effort` drop above, any client-supplied
+`frequency_penalty`/`presence_penalty` is silently ignored for every
+`ollama_chat/*` model, including ones (like `qwen3.8:27b-mlx`) that handled
+them fine — litellm has no per-model way to drop a param only where it
+actually crashes.
+
+**Presence-based, so an already-deployed row is not touched automatically**
+(same rule as the `reasoning_effort` seed above): a row written before
+2026-09-25 already has `additional_drop_params: [reasoning_effort]`, which
+satisfies `EnsureSettings`'s "has this key at all" guard and is left exactly
+as-is on every future write — it will keep crashing under copilot until one
+of:
+
+- `wt litellm unexpose <id> && wt litellm expose <id>` (drops and re-adds
+  the row fresh, picking up the wider default), or
+- a hand edit of that row's `additional_drop_params` to add
+  `frequency_penalty`/`presence_penalty`, then restart the proxy
+  (`wt litellm sync`, or the `launchctl kickstart` fallback in the Ops
+  notes below).
+
+Verify with a direct curl probe (expect a normal `chat.completion`, not a
+`500`):
+
+```bash
+KEY=$(grep -A5 '\[litellm\]' ~/.config/agent-wt/config.toml | grep api_key | sed 's/.*"\(.*\)"/\1/')
+curl -s http://localhost:4000/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer $KEY" \
+  -d '{"model":"ollama/gpt-oss:20b","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"frequency_penalty":0,"presence_penalty":0}'
+```
 
 ### opencode — builtin `openai` provider is unusable for proxy-routed models
 

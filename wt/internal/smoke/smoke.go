@@ -275,10 +275,19 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
 	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
 	*cleanup = func() error { return nil }
-	// yolo=true: a one-shot smoke prompt must never stall on an
-	// interactive tool-permission prompt it has no TTY to answer — see
-	// TestRealBuildAndRunPassesYolo for the failure this prevents.
-	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, true, nil, cfg, nil)
+	// yolo=true for every agent except codex: a one-shot smoke prompt must
+	// never stall on an interactive tool-permission prompt it has no TTY
+	// to answer — see TestRealBuildAndRunPassesYolo for the failure this
+	// prevents. codex's "exec" subcommand already never prompts (its own
+	// startup banner reports "approval: never"), so it never had this
+	// failure mode; its yolo flag additionally strips its own sandbox
+	// (--dangerously-bypass-approvals-and-sandbox), which smoke has no
+	// reason to need — see TestRealBuildAndRunSkipsYoloForCodex. Every
+	// agent driver runs the smoke prompt with permission checks bypassed
+	// in the current working directory (see docs/wt-smoke.md's
+	// "Tool-use permission" note): a --prompt override therefore runs
+	// unsupervised here too, not just the fixed sentinel prompt.
+	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, agentName != "codex", nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}

@@ -364,6 +364,28 @@ func TestRealBuildAndRunPassesYolo(t *testing.T) {
 	}
 }
 
+// TestRealBuildAndRunSkipsYoloForCodex pins that wt smoke does NOT force
+// codex's yolo flag (--dangerously-bypass-approvals-and-sandbox). Unlike
+// copilot, codex's "exec" subcommand is already built for non-interactive
+// use — it never prompts for tool-call approval (code review finding,
+// 2026-09-25: live-observed as "approval: never" in codex exec's own
+// startup banner) — so forcing its yolo flag buys smoke nothing but does
+// strip codex's own sandbox (workspace-write by default) for no reason,
+// widening the blast radius of a trivial smoke prompt with no evidence codex
+// ever needed it. A regression here would silently drop that sandbox on
+// every codex smoke run.
+func TestRealBuildAndRunSkipsYoloForCodex(t *testing.T) {
+	writeFakeAgentBinary(t, "codex")
+	var cleanup func() error
+	outcome := realBuildAndRun(&config.Config{}, "codex", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	if strings.Contains(outcome.Command, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("Command = %q, want it to NOT contain codex's yolo flag (codex exec never prompts; forcing it only strips its sandbox)", outcome.Command)
+	}
+	if !strings.HasSuffix(outcome.Command, "exec the prompt") {
+		t.Fatalf("Command = %q, want it to end with codex's one-shot args \"exec the prompt\"", outcome.Command)
+	}
+}
+
 // TestRealBuildAndRunOneShotArgsPlacedByApplier locks realBuildAndRun's
 // "profileApplier != nil, success" branch: the applier — not
 // realBuildAndRun — places oneShotArgs, and realBuildAndRun must adopt the
