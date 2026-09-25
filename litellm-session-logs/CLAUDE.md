@@ -14,7 +14,8 @@ into modelman or wt — run manually, per session, from this directory.
    ```
    psql postgresql://keith@localhost:5432/litellm \
      -v session_id="'<session-id>'" \
-     -f 01_export_session_logs.sql
+     -f 01_export_session_logs.sql \
+     > session_logs_<id>.json
    ```
    (`LITELLM_DATABASE_URL` overrides the connection string, as in step 2.)
 2. **`02_export_proxy_server_request.sh <session_id> [output_file]`** —
@@ -46,10 +47,12 @@ stdlib.
   session was captured.
 - **Failure rows** (`status: failure`) have empty `response` and
   `request_duration_ms: 0` with no captured error message/exception type.
-  Both transcript builders emit an `[ERROR]` marker and *infer* a likely
-  cause from token/spend counts (zero everything → rejected before reaching
-  the provider, e.g. a proxy-side budget/limit; nonzero → provider was
-  reached, e.g. mid-stream timeout) — this inference is not logged fact.
+  Both transcript builders emit an `[ERROR]` marker; `build_transcript.py`
+  additionally *infers* a likely cause from token/spend counts (zero
+  everything → rejected before reaching the provider, e.g. a proxy-side
+  budget/limit; nonzero → provider was reached, e.g. mid-stream timeout) —
+  this inference is not logged fact, and `build_full_transcript.py` does
+  not attempt it.
 - **Truncation**: LiteLLM's `MAX_STRING_LENGTH_PROMPT_IN_DB` truncates long
   `content`/`reasoning_content` before DB write. Truncated spots carry an
   inline `(litellm_truncated skipped N chars ...)` marker copied verbatim
@@ -80,8 +83,10 @@ stdlib.
   maintained files. Regenerate them by re-running the pipeline rather than
   patching the Markdown/JSON in place.
 - Artifacts for the sessions already analyzed live in
-  `~/tmp/litellm-session-logs/` (moved here from there 2026-09-25); point
-  the builders at those files by path, or write fresh exports into /tmp.
+  `~/tmp/litellm-session-logs/` (the pipeline moved from there into the
+  repo on 2026-09-25; the artifacts stayed put). Point the builders at
+  those files by path, or write fresh exports alongside the scripts — the
+  `session_*` gitignore keeps them untracked.
 - These files can be large (the `.ndjson` and `-transcript-full.md` files
   run tens to hundreds of MB) — prefer targeted `grep`/`jq`/line-range reads
   over loading a whole file when investigating a specific turn or thread.

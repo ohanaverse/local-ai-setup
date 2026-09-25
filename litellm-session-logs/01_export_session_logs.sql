@@ -8,7 +8,7 @@
 -- 02_export_proxy_server_request.sh):
 --   psql "${LITELLM_DATABASE_URL:-postgresql://keith@localhost:5432/litellm}" \
 --     -v session_id="'<session-id>'" \
---     -f 01_export_session_logs.sql
+--     -f 01_export_session_logs.sql > session_logs_<id>.json
 
 SELECT
   request_id,
