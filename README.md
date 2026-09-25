@@ -6,7 +6,7 @@ components — fresh install starts at
 
 | Component | Role |
 |---|---|
-| Root (`bin/`, `benchmarks/`, `docs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides |
+| Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
 | `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, exposure, benchmarks, usage |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
@@ -73,6 +73,7 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ├── bin/                # check-links, mlx-quantize (monorepo-wide utilities; provider isolation moved to modelman's `provider` CLI)
 ├── benchmarks/         # legacy benchmark scripts + write-ups
 │   └── results/        # benchmark output artifacts
+├── litellm-session-logs/ # pull one LiteLLM session's request/response logs from Postgres, rebuild transcripts — has its own CLAUDE.md
 ├── docs/
 │   ├── guides/         # user playbooks — index above
 │   ├── reference/      # backend-specific guides
