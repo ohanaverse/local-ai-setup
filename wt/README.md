@@ -113,7 +113,7 @@ The `internal/rotation` package implements tag-based model rotation. Any tag can
 
 - State is persisted to `~/.config/agent-wt/rotation.state` (single global slot: the last-launched model ID)
 - Legacy per-tag `rotation-<tag>.state` files are one-shot migration inputs; they are merged into the global slot on first run and then deleted
-- The hidden `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
+- The `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
 
 ```bash
 wt rotate code    # print the model after the last launch within the "code" tag group
@@ -176,7 +176,7 @@ go vet ./...       # Vet
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
-| `cmd/wt/commands.go` | Subcommand constructors: `rotate` (hidden) |
+| `cmd/wt/commands.go` | Subcommand constructors: `rotate` (debug helper) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
 | `internal/config/` | Config loading, model registry types (joined from modelman's `registry.toml`), validation, secrets, legacy migration |
