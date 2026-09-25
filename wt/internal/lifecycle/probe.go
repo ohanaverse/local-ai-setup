@@ -200,6 +200,18 @@ func (e *env) tryChat(ctx context.Context, chatURL string, payload []byte) (ok b
 // JSON blob, and the caller's final error must stay a readable one-liner.
 func truncateForError(b []byte) string {
 	const max = 300
+	// strings.Fields+Join below is O(len(b)); warmup polls once a second for
+	// up to warmupTimeout (600s), so a failing server that keeps answering
+	// with a multi-MB body (a misrouted proxy, an unrelated HTTP service on
+	// the probed port) would otherwise pay a full-body allocate-and-split
+	// pass on every poll purely to produce a 300-character message.
+	// Whitespace collapsing only removes characters, never adds them, so
+	// bounding the input to a fixed multiple of max bytes before splitting
+	// still leaves far more than enough to fill max runes.
+	const scanLimit = max * 8
+	if len(b) > scanLimit {
+		b = []byte(trimTrailingPartialRune(string(b[:scanLimit])))
+	}
 	// strings.Fields splits on any whitespace (including newlines/tabs) and
 	// drops empty runs; joining with a single space collapses the body to
 	// one line and trims its ends, so an HTML error page or a formatted
@@ -209,11 +221,14 @@ func truncateForError(b []byte) string {
 	if len(s) <= max {
 		return s
 	}
-	s = s[:max]
-	// Back off to a valid rune boundary: DecodeLastRuneInString reports
-	// (RuneError, 1) only when the trailing byte(s) are not a complete,
-	// valid encoding — the impossible-for-correct-UTF-8 signal that the cut
-	// landed mid-rune.
+	return trimTrailingPartialRune(s[:max]) + "…"
+}
+
+// trimTrailingPartialRune backs off to a valid rune boundary: DecodeLastRuneInString
+// reports (RuneError, 1) only when the trailing byte(s) are not a complete,
+// valid encoding — the impossible-for-correct-UTF-8 signal that a byte cut
+// landed mid-rune.
+func trimTrailingPartialRune(s string) string {
 	for len(s) > 0 {
 		r, size := utf8.DecodeLastRuneInString(s)
 		if r != utf8.RuneError || size != 1 {
@@ -221,7 +236,7 @@ func truncateForError(b []byte) string {
 		}
 		s = s[:len(s)-1]
 	}
-	return s + "…"
+	return s
 }
 
 // liveServed asks a single-model provider's server directly what it is serving,
