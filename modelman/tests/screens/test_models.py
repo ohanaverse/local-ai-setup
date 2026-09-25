@@ -3192,11 +3192,14 @@ async def test_render_litellm_status_tolerates_unmounted_screen(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypatch):
-    # provider_cloud_flags() and litellm_status() must run CONCURRENTLY at
-    # mount, not back-to-back — two cold, 5s-bounded subprocess reads run
-    # one after another would block the initial paint for up to ~10s.
-    # Both stubs sleep briefly and are timed; concurrent execution keeps
-    # the wall-clock total close to one sleep instead of the sum of both.
+    # provider_cloud_flags(), litellm_status(), and routed_ids() must run
+    # CONCURRENTLY at mount, not back-to-back — three cold, ~5s-bounded
+    # subprocess reads run one after another would block the initial paint
+    # for up to ~15s. All three stubs sleep briefly and are timed;
+    # concurrent execution keeps the wall-clock total close to one sleep
+    # instead of the sum of all three. The threshold below has slack for
+    # CI scheduling jitter across three threads — a serialized run's floor
+    # (three sleeps summed) is well above it.
     import time as time_mod
 
     from modelman import wt_bridge
@@ -3233,8 +3236,13 @@ async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypa
         time_mod.sleep(0.3)
         return wt_bridge.LitellmStatus(True, "http://localhost:4000", True)
 
+    def slow_routed(*, litellm_path=None, timeout=None):
+        time_mod.sleep(0.3)
+        return []
+
     monkeypatch.setattr(wt_bridge, "provider_cloud_flags", slow_flags)
     monkeypatch.setattr(wt_bridge, "litellm_status", slow_status)
+    monkeypatch.setattr(wt_bridge, "routed_ids", slow_routed)
 
     app = ModelmanApp()
     start = time_mod.monotonic()
@@ -3242,7 +3250,9 @@ async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypa
         await pilot.pause()
         await _open_model_screen(pilot)
     elapsed = time_mod.monotonic() - start
-    assert elapsed < 0.55, f"mount took {elapsed:.2f}s, want the two reads run concurrently (~0.3s)"
+    assert elapsed < 0.75, (
+        f"mount took {elapsed:.2f}s, want the three reads run concurrently (~0.3s)"
+    )
 
 
 @pytest.mark.asyncio
