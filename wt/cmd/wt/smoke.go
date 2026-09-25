@@ -12,12 +12,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -141,6 +143,22 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 
 	runID := smoke.NewRunID()
 	stderr := cmd.ErrOrStderr()
+
+	// Reuse newApp()'s already-loaded profiles.toml state instead of
+	// loading and re-validating the file a second time. If profiles.toml
+	// was missing or malformed, degrade gracefully: smoke still runs but
+	// without profile application (same best-effort posture as
+	// applyProfileForLaunch).
+	pp := a.profileState()
+	store, loadErr, validateErr := pp.store, pp.loadErr, pp.validateErr
+	if loadErr != nil {
+		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", loadErr)
+		store = profiles.Store{}
+	}
+	if validateErr != nil {
+		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", validateErr)
+	}
+
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
 	for _, agentName := range agentsToRun {
 		prompt, sentinel := promptOverride, ""
@@ -148,7 +166,23 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
 		}
 		logSmokeStart(stderr, agentName, m.ID)
-		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd)
+
+		// Resolve the profile for this agent×model pair. If one matches,
+		// build a ProfileApplier that applies it via the same
+		// applyResolvedProfile used by a real launch (cmd/wt/launch.go),
+		// so smoke and a real launch can never drift on apply/rollback
+		// semantics.
+		var pa smoke.ProfileApplier
+		if loadErr == nil && validateErr == nil && store.Enabled {
+			rp := profiles.Resolve(store, agentName, a.cfg, m)
+			if !rp.Empty() {
+				pa = func(cmd *exec.Cmd) (func() error, error) {
+					return applyResolvedProfile(cmd, agentName, rp)
+				}
+			}
+		}
+
+		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd, pa)
 		logSmokeResult(stderr, r)
 		rows = append(rows, r)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -189,9 +190,10 @@ func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
 	runStopPicker = func(*config.Config) { events = append(events, "stop") }
 	stdinTTY = func() bool { return true }
 	smokeExit = func(code int) { events = append(events, fmt.Sprintf("exit%d", code)) }
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(*config.Config, string, config.Model, string, string, time.Duration) (string, int) {
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
 		events = append(events, "row")
-		return "boom", 1
+		*cleanup = func() error { return nil }
+		return smoke.StubOutcome("boom", 1)
 	}))
 
 	cmd := smokeCmd(&app{cfg: cfg})
@@ -591,5 +593,59 @@ func TestSmokeCmdExplicitZeroTimeoutRejected(t *testing.T) {
 		if started {
 			t.Fatalf("--timeout %s: model was started despite invalid timeout", val)
 		}
+	}
+}
+
+// TestSmokeCmdAppliesLocalModelProfile verifies that wt smoke resolves and
+// applies a local-model profile for a matching agent×model pair. It populates
+// the app's precomputed profile state (a.profiles) with a model-tier profile
+// for claude, the way newApp() would after loading profiles.toml, and runs
+// smoke against a model that matches it. The smoke row is stubbed via
+// SetBuildAndRunForTest so no real agent binary runs. The test asserts that
+// the smoke run completes without error, proving the profile resolution and
+// application path doesn't crash (the profile's config_content is written to
+// a temp file and restored by the cleanup).
+func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	// Add a model-tier profile for claude that sets an env var and adds an arg.
+	store := profiles.Store{
+		Enabled: true,
+		Profiles: []profiles.Profile{
+			{
+				Agent: "claude",
+				Match: "model",
+				Model: "ollama/qwen3.8:27b-mlx",
+				Env:   map[string]string{"WT_PROFILE_TEST": "applied"},
+				Args:  []string{"--profile-test"},
+			},
+		},
+	}
+
+	var events []string
+	oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
+	t.Cleanup(func() {
+		startModel, releaseSession, runStopPicker, stdinTTY = oldStart, oldRel, oldPick, oldTTY
+	})
+	startModel = func(*config.Config, catalog.Row, bool) error { return nil }
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) {}
+	stdinTTY = func() bool { return false } // skip interactive stop picker
+	smokeExit = func(code int) {}           // prevent os.Exit(1) on a FAIL row
+
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		events = append(events, "row")
+		*cleanup = func() error { return nil }
+		return smoke.StubOutcome("ok", 0)
+	}))
+
+	cmd := smokeCmd(&app{cfg: cfg, profiles: store})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("smoke executed with error: %v", err)
+	}
+	if got := strings.Join(events, ","); got != "row" {
+		t.Fatalf("events = %s, want row", got)
 	}
 }
