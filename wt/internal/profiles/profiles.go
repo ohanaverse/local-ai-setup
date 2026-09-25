@@ -30,6 +30,21 @@ type ProfileCapable interface {
 	ProfileMechanisms() []Mechanism
 }
 
+// MechanismRequirer is implemented by agents whose ProfileMechanisms
+// includes a mechanism that only has an effect when a second mechanism is
+// also present on the SAME profile entry — composition across match tiers
+// does not satisfy it, since Resolve can merge two profiles that never
+// both apply to the same launch. pi's env mechanism is the motivating
+// case: env lands on the launched process before a wrapper (if any)
+// replaces it, and bare pi has no env lever of its own — only a wrapper
+// like little-coder reads it. Validate uses this to reject a profile that
+// sets env with no wrapper alongside it.
+type MechanismRequirer interface {
+	// RequiredMechanism reports the mechanism that must also be set on any
+	// profile entry using m, or ok=false when m has no such requirement.
+	RequiredMechanism(m Mechanism) (required Mechanism, ok bool)
+}
+
 // WrapperSpec replaces the launched binary with Binary, substituting the
 // original argv into ArgsTemplate wherever the literal element "{{args}}"
 // appears (see apply.go).

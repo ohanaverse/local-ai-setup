@@ -73,6 +73,16 @@ func (piDriver) ProfileMechanisms() []profiles.Mechanism {
 	return []profiles.Mechanism{profiles.MechanismWrapper, profiles.MechanismEnv}
 }
 
+// RequiredMechanism declares that env has no effect on pi without wrapper
+// on the same profile entry: bare pi has no env lever of its own, only the
+// little-coder wrapper reads LITTLE_CODER_* vars. See profiles.Validate.
+func (piDriver) RequiredMechanism(m profiles.Mechanism) (profiles.Mechanism, bool) {
+	if m == profiles.MechanismEnv {
+		return profiles.MechanismWrapper, true
+	}
+	return "", false
+}
+
 // OneShotArgs runs a single prompt non-interactively and exits — used by
 // wt smoke to verify a model works through this agent.
 func (piDriver) OneShotArgs(prompt string) []string { return []string{"-p", prompt} }

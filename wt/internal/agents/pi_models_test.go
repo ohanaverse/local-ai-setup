@@ -871,9 +871,32 @@ func TestPiDriverDeclaresWrapperAndEnvProfileMechanisms(t *testing.T) {
 	if len(mechs) != len(want) {
 		t.Fatalf("ProfileMechanisms() = %v, want exactly %v", mechs, want)
 	}
+	got := map[profiles.Mechanism]bool{}
 	for _, m := range mechs {
+		got[m] = true
 		if !want[m] {
 			t.Errorf("unexpected mechanism %q", m)
 		}
+	}
+	for m := range want {
+		if !got[m] {
+			t.Errorf("ProfileMechanisms() = %v, missing expected mechanism %q", mechs, m)
+		}
+	}
+}
+
+// TestPiDriverRequiredMechanismCouplesEnvToWrapper verifies pi declares
+// (via profiles.MechanismRequirer) that env requires wrapper on the same
+// profile entry — env has no effect on bare pi, so profiles.Validate must
+// reject a profile setting env without wrapper (code-review regression
+// lock: ProfileMechanisms alone let such a profile pass validation
+// cleanly, only to silently no-op at launch time).
+func TestPiDriverRequiredMechanismCouplesEnvToWrapper(t *testing.T) {
+	required, ok := piDriver{}.RequiredMechanism(profiles.MechanismEnv)
+	if !ok || required != profiles.MechanismWrapper {
+		t.Errorf("RequiredMechanism(env) = (%q, %v), want (wrapper, true)", required, ok)
+	}
+	if _, ok := (piDriver{}).RequiredMechanism(profiles.MechanismWrapper); ok {
+		t.Error("RequiredMechanism(wrapper) reports a requirement, want none")
 	}
 }

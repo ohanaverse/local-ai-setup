@@ -17,7 +17,7 @@ func TestValidateRejectsUnsupportedMechanism(t *testing.T) {
 		}
 		return nil
 	}
-	err := Validate(store, mechs)
+	err := Validate(store, mechs, nil)
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the config_content/pi mismatch")
 	}
@@ -31,7 +31,7 @@ func TestValidateAcceptsDeclaredMechanisms(t *testing.T) {
 		{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
 	}}
 	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismEnv, MechanismConfigFile} }
-	if err := Validate(store, mechs); err != nil {
+	if err := Validate(store, mechs, nil); err != nil {
 		t.Errorf("Validate() = %v, want nil", err)
 	}
 }
@@ -44,7 +44,7 @@ func TestValidateUnknownAgentRejectsAnyMechanism(t *testing.T) {
 		{Agent: "copilot", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
 	}}
 	mechs := func(agent string) []Mechanism { return nil }
-	if err := Validate(store, mechs); err == nil {
+	if err := Validate(store, mechs, nil); err == nil {
 		t.Fatal("Validate() = nil, want an error for copilot (no declared mechanisms)")
 	}
 }
@@ -67,7 +67,7 @@ func TestValidateMultipleOffendingProfiles(t *testing.T) {
 		}
 		return nil
 	}
-	err := Validate(store, mechs)
+	err := Validate(store, mechs, nil)
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming both offending profiles")
 	}
@@ -88,7 +88,7 @@ func TestValidateZeroMechanismsAlwaysPasses(t *testing.T) {
 		{Agent: "unknown", Match: "location", Location: "local"},
 	}}
 	mechs := func(agent string) []Mechanism { return nil }
-	if err := Validate(store, mechs); err != nil {
+	if err := Validate(store, mechs, nil); err != nil {
 		t.Errorf("Validate() = %v, want nil for profile with zero mechanisms", err)
 	}
 }
@@ -103,7 +103,7 @@ func TestValidateRejectsInvalidMatchTier(t *testing.T) {
 		{Agent: "claude", Match: "locaton", Location: "local", Env: map[string]string{"X": "1"}},
 	}}
 	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismEnv} }
-	err := Validate(store, mechs)
+	err := Validate(store, mechs, nil)
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the invalid match tier")
 	}
@@ -123,7 +123,7 @@ func TestValidateRejectsEmptyMatchField(t *testing.T) {
 		{Agent: "claude", Match: "model", Env: map[string]string{"X": "1"}}, // Model left empty
 	}}
 	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismEnv} }
-	err := Validate(store, mechs)
+	err := Validate(store, mechs, nil)
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the empty model match field")
 	}
@@ -141,12 +141,60 @@ func TestValidateRejectsWrapperArgsTemplateMissingPlaceholder(t *testing.T) {
 		{Agent: "pi", Match: "location", Location: "local", Wrapper: &WrapperSpec{Binary: "little-coder", ArgsTemplate: []string{"--foo"}}},
 	}}
 	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismWrapper} }
-	err := Validate(store, mechs)
+	err := Validate(store, mechs, nil)
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the missing {{args}} placeholder")
 	}
 	if !contains(err.Error(), "{{args}}") {
 		t.Errorf("Validate() error = %v, want it to mention the missing {{args}} placeholder", err)
+	}
+}
+
+// TestValidateRejectsMechanismMissingRequiredPair is the regression lock for
+// the code-review finding that pi's env mechanism was accepted even without
+// wrapper on the same profile entry — env has no effect on bare pi (only
+// the little-coder wrapper reads LITTLE_CODER_* vars), so a hand-edited
+// profiles.toml setting env alone would silently do nothing at launch time.
+func TestValidateRejectsMechanismMissingRequiredPair(t *testing.T) {
+	store := Store{Profiles: []Profile{
+		{Agent: "pi", Match: "location", Location: "local", Env: map[string]string{"LITTLE_CODER_PERMISSION_MODE": "accept-all"}},
+	}}
+	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismWrapper, MechanismEnv} }
+	requires := func(agent string, m Mechanism) (Mechanism, bool) {
+		if agent == "pi" && m == MechanismEnv {
+			return MechanismWrapper, true
+		}
+		return "", false
+	}
+	err := Validate(store, mechs, requires)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error naming the env-without-wrapper mismatch")
+	}
+	if !contains(err.Error(), "no effect without") {
+		t.Errorf("Validate() error = %v, want it to mention the missing required mechanism", err)
+	}
+}
+
+// TestValidateAcceptsMechanismWithRequiredPair verifies a profile entry
+// that sets both a mechanism and the one it requires (e.g. pi's env
+// alongside wrapper, on the same entry) passes cleanly.
+func TestValidateAcceptsMechanismWithRequiredPair(t *testing.T) {
+	store := Store{Profiles: []Profile{
+		{
+			Agent: "pi", Match: "location", Location: "local",
+			Env:     map[string]string{"LITTLE_CODER_PERMISSION_MODE": "accept-all"},
+			Wrapper: &WrapperSpec{Binary: "little-coder", ArgsTemplate: []string{"{{args}}"}},
+		},
+	}}
+	mechs := func(agent string) []Mechanism { return []Mechanism{MechanismWrapper, MechanismEnv} }
+	requires := func(agent string, m Mechanism) (Mechanism, bool) {
+		if agent == "pi" && m == MechanismEnv {
+			return MechanismWrapper, true
+		}
+		return "", false
+	}
+	if err := Validate(store, mechs, requires); err != nil {
+		t.Errorf("Validate() = %v, want nil for env paired with wrapper", err)
 	}
 }
 

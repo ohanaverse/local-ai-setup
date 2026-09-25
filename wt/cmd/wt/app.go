@@ -56,6 +56,22 @@ func agentProfileMechanisms(agent string) []profiles.Mechanism {
 	return pc.ProfileMechanisms()
 }
 
+// agentRequiredMechanism looks up, via profiles.MechanismRequirer, the
+// mechanism agent's driver requires alongside m on the same profile entry,
+// or ok=false for an unregistered agent or one that declares no such
+// coupling (every agent but pi, currently).
+func agentRequiredMechanism(agent string, m profiles.Mechanism) (profiles.Mechanism, bool) {
+	d := agents.ByName(agent)
+	if d == nil {
+		return "", false
+	}
+	mr, ok := d.(profiles.MechanismRequirer)
+	if !ok {
+		return "", false
+	}
+	return mr.RequiredMechanism(m)
+}
+
 // newApp loads the config (best-effort), the active theme, and the
 // profiles store. Config and profiles validation errors are stored in the
 // returned app rather than returned as a fatal error, so `wt config`/
@@ -83,7 +99,7 @@ func newApp() (*app, error) {
 	store, profilesLoadErr := profiles.Load()
 	var profilesValidateErr error
 	if profilesLoadErr == nil {
-		profilesValidateErr = profiles.Validate(store, agentProfileMechanisms)
+		profilesValidateErr = profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism)
 	}
 	return &app{
 		cfg: cfg, cfgErr: cfgErr, loadErr: loadErr, theme: theme,

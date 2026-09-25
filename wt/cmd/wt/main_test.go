@@ -1191,7 +1191,7 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 	if loadErr != nil {
 		t.Fatalf("profiles.Load() error = %v", loadErr)
 	}
-	a.profilesValidateErr = profiles.Validate(a.profiles, agentProfileMechanisms)
+	a.profilesValidateErr = profiles.Validate(a.profiles, agentProfileMechanisms, agentRequiredMechanism)
 
 	if err := runLaunchPath(&cobra.Command{}, a, "", "", "", "", nil, "", ""); err != nil {
 		t.Fatalf("runLaunchPath() error = %v", err)
