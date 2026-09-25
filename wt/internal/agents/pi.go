@@ -64,11 +64,13 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	return lc
 }
 
-// ProfileMechanisms declares that pi only accepts a wrapper profile — the
-// little-coder integration; pi has no env/config-file lever of its own
-// for this.
+// ProfileMechanisms declares the profile mechanisms pi supports: wrapper
+// (the little-coder integration) and env. There is no pi-specific env
+// lever, but profile env lands on the launched process (cmd/wt applies
+// env before the wrapper), and with the little-coder wrapper that process
+// is little-coder itself — which reads LITTLE_CODER_* env vars.
 func (piDriver) ProfileMechanisms() []profiles.Mechanism {
-	return []profiles.Mechanism{profiles.MechanismWrapper}
+	return []profiles.Mechanism{profiles.MechanismWrapper, profiles.MechanismEnv}
 }
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by
