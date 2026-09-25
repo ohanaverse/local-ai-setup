@@ -163,4 +163,5 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 - Design of the whole reconciliation: `/Users/keith/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-28-modelman-usage-design.md` — data sources, window rules, non-goals (read-only), and the SQL it runs against `LiteLLM_SpendLogs`.
 - Launch/rotation side of the data: [06-wt-agents-and-models](06-wt-agents-and-models.md) (picker, `rotation.state` life cycle, `usage.jsonl` writer).
 - LiteLLM wiring and spend logging setup: [01-initial-setup](01-initial-setup.md), [04-litellm-config](04-litellm-config.md).
+- Raw request/response text for one specific session (not aggregate spend): `litellm-session-logs/` at the repo root — a standalone pipeline that pulls a session's rows from `LiteLLM_SpendLogs` and rebuilds a readable chat transcript; see `litellm-session-logs/CLAUDE.md`.
 - This is a leaf guide — nothing further builds on it in `docs/guides/`.
