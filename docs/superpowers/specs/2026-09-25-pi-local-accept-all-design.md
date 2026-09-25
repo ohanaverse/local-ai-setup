@@ -26,7 +26,13 @@ In `accept-all` mode little-coder skips the whitelist gate entirely; every shell
 
 - Applies only to pi launched from the main repo location (`location = "local"`). Worktree launches match no profile and stay gated.
 - Other agents (claude, codex, …) are unaffected.
-- Change is to a dotfile outside this repo; no repo code is touched and no restart is needed — it takes effect on the next `wt` launch.
+- No restart is needed — the profile change takes effect on the next `wt` launch.
+
+## Scope change (2026-09-25, post-review)
+
+The original decision assumed the profile `env` mechanism was already usable for pi. It was not: wt's pi driver declared wrapper-only mechanisms (`wt/internal/agents/pi.go` `ProfileMechanisms`), and profile validation is global — an `env` line on the pi profile disabled every profile. First attempt was caught by verification and reverted.
+
+Amended decision: extend wt's pi driver to also declare `profiles.MechanismEnv`. `cmd/wt/launch.go` already applies profile env to the launched process before the wrapper; with the little-coder wrapper the launched process is little-coder itself, which reads `LITTLE_CODER_PERMISSION_MODE`. The config change above is unchanged.
 
 ## Alternatives considered
 
