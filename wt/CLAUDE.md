@@ -149,7 +149,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra), exit-code handling |
 | `cmd/wt/app.go` | shared dependency struct (loads/validates config once) |
-| `cmd/wt/commands.go` | hidden `rotate` subcommand |
+| `cmd/wt/commands.go` | `rotate` subcommand (debug helper) |
 | `cmd/wt/commands_config.go` | `wt config` subcommand family |
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch, resolved from live `catalog` rows; a `-M` pin on a start row starts it through `startModel` |
 | `cmd/wt/start.go` | `startForLaunch` — the non-TUI start driver: progress on stderr, Ctrl+C cancel, the replace confirmation, and the package-level `allowReplace` the flag sets |

@@ -153,7 +153,7 @@ ollama/glm-5.3-flash:cloud
 
 On this machine, legacy per-slot files from the pre-global-rotation scheme (`rotation-claude-code-_.state` → `ollama/gemma4:9b`, `rotation-pi-code-_.state` → `ollama/deepseek-v4-flash:cloud`, both dated 2026-08-22) still sit in `~/.config/agent-wt/` but are **inert**: wt only reads/writes `rotation.state` (last modified 2026-08-29 14:33). If `rotation.state` is ever missing, wt migrates once — takes the newest `rotation-*.state`, seeds the global file from its last line, then deletes the legacy files.
 
-The hidden debug helper prints the next model for a tag group (read-only; not listed in `--help`):
+The debug helper prints the next model for a tag group (read-only; listed in `wt --help`):
 
 ```bash
 wt rotate code

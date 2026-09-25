@@ -943,6 +943,10 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 // accidental Hidden: true. Cobra's own "__"-prefixed shell-completion
 // plumbing is hidden by design and skipped.
 func TestNoWtCommandIsHidden(t *testing.T) {
+	root := rootCmd()
+	if len(root.Commands()) == 0 {
+		t.Fatal("rootCmd() has no subcommands; the hidden-command walk would pass vacuously")
+	}
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
 		for _, child := range c.Commands() {
@@ -955,7 +959,7 @@ func TestNoWtCommandIsHidden(t *testing.T) {
 			walk(child)
 		}
 	}
-	walk(rootCmd())
+	walk(root)
 }
 
 // A model-driven agent with no config.toml entry launches via the bare
