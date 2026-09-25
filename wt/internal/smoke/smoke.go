@@ -197,11 +197,19 @@ type ExecOutcome = execOutcome
 var buildAndRun = realBuildAndRun
 
 // ProfileApplier applies a resolved profile to an already-built exec.Cmd.
-// It returns a cleanup function that MUST be called after the command exits
-// (success or failure) to restore any config file a profile's config_content
-// mechanism rewrote, and an error if the profile itself could not be applied
-// (e.g. wrapper binary missing). A nil ProfileApplier is a no-op.
-type ProfileApplier func(cmd *exec.Cmd) (cleanup func() error, err error)
+// oneShotArgs is the one-shot invocation this row is about to run (e.g.
+// codex's ["exec", prompt]) — the applier, not the caller, is responsible
+// for appending it to cmd.Args, because where it belongs depends on the
+// profile's mechanism: after any CLI flags the profile itself injects (a
+// codex "-c"/"--profile" flag trailing "exec <prompt>" makes codex silently
+// drop an earlier provider override), but before a wrapper mechanism runs
+// (which must splice the complete command, prompt included, into its own
+// argv). It returns a cleanup function that MUST be called after the
+// command exits (success or failure) to restore any config file a
+// profile's config_content mechanism rewrote, and an error if the profile
+// itself could not be applied (e.g. wrapper binary missing). A nil
+// ProfileApplier is a no-op.
+type ProfileApplier func(cmd *exec.Cmd, oneShotArgs []string) (cleanup func() error, err error)
 
 // notInstalledMessage mirrors agents.Command's exact error text ("agent %s
 // not installed") so RunRow can classify a missing binary as SKIP rather
@@ -275,16 +283,20 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	if !ok {
 		return execOutcome{StartErr: fmt.Errorf("agent %q does not support one-shot invocation", agentName)}
 	}
-	cmd.Args = append(cmd.Args, osr.OneShotArgs(prompt)...)
+	oneShotArgs := osr.OneShotArgs(prompt)
 
 	buf := &boundedWriter{}
 	cmd.Stdout = buf
 	cmd.Stderr = buf
-	cmdLine := strings.Join(cmd.Args, " ")
 
 	// Apply the profile before Start so env/args modifications take effect.
 	// The cleanup is deferred by the caller (RunRow) so it runs regardless
-	// of whether the agent exits successfully or times out.
+	// of whether the agent exits successfully or times out. oneShotArgs is
+	// threaded through the applier rather than appended here first: it must
+	// land AFTER any profile-injected CLI flags for an agent like codex
+	// (see ProfileApplier's doc comment — codex silently drops an earlier
+	// provider override when "-c"/"--profile" flags trail "exec <prompt>"),
+	// which the applier alone knows how to place correctly.
 	if profileApplier != nil {
 		// Snapshot before calling the applier: an applier may mutate
 		// cmd.Env/cmd.Args before failing partway through (e.g. env/args
@@ -295,16 +307,21 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		origEnv := slices.Clone(cmd.Env)
 		origArgs := slices.Clone(cmd.Args)
 		var applyErr error
-		*cleanup, applyErr = profileApplier(cmd)
+		*cleanup, applyErr = profileApplier(cmd, oneShotArgs)
 		if applyErr != nil {
 			cmd.Env = origEnv
-			cmd.Args = origArgs
+			// oneShotArgs must still land on the reverted, unprofiled
+			// argv — the applier failed before (or while) placing it, but
+			// the command still needs its one-shot subcommand/prompt to
+			// run at all.
+			cmd.Args = append(origArgs, oneShotArgs...)
 			fmt.Fprintf(os.Stderr, "wt: profile apply: %v (proceeding unprofiled)\n", applyErr)
 			*cleanup = func() error { return nil }
 		}
-		// Rebuild cmdLine after profile may have changed Args.
-		cmdLine = strings.Join(cmd.Args, " ")
+	} else {
+		cmd.Args = append(cmd.Args, oneShotArgs...)
 	}
+	cmdLine := strings.Join(cmd.Args, " ")
 
 	// cmd.Stdout/Stderr being the exact same io.Writer value makes os/exec
 	// share one pipe and copy goroutine between them instead of racing two

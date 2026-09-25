@@ -387,7 +387,7 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 	if !apply {
 		return noop, nil
 	}
-	return applyResolvedProfile(cmd, agent, rp)
+	return applyResolvedProfile(cmd, agent, rp, nil)
 }
 
 // applyResolvedProfile applies an already-confirmed ResolvedProfile to
@@ -404,6 +404,21 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 // — is directly testable with a hand-built ResolvedProfile, without
 // needing a profiles.toml entry that passes Validate.
 //
+// oneShotArgs is nil for a real (interactive) launch — the caller above
+// never has a one-shot subcommand to place. wt smoke passes the agent's
+// OneShotArgs (e.g. codex's ["exec", prompt]) here instead of appending
+// them to cmd.Args itself, because they must land in a specific slot:
+// AFTER every profile-injected CLI flag (ExtraArgs, then config_content's
+// "--profile" flag) but BEFORE the wrapper runs. codex's CLI silently
+// drops an earlier "-c model_provider=..." override — falling back to its
+// default "openai" provider — whenever any "-c"/"--profile" flag trails
+// "exec <prompt>" in argv (confirmed 2026-09-25 by hand-reproducing wt
+// smoke's exact argv with only the flag order changed), so those flags can
+// never land after oneShotArgs. The wrapper mechanism (pi's little-coder)
+// needs the opposite: it splices the CURRENT cmd.Args into its own argv,
+// so oneShotArgs must already be present by the time ApplyWrapper runs, or
+// the one-shot prompt would silently fall outside the wrapped command.
+//
 // Because ApplyEnvAndArgs now runs before ApplyConfigContent (that
 // ordering is the whole point of this split — see the doc above), a
 // config_content failure must undo whatever ApplyEnvAndArgs already
@@ -411,8 +426,10 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 // otherwise the launch would be silently half-profiled (env vars and
 // extra args applied) while the user is told profiles are disabled.
 // ApplyEnvAndArgs only ever appends, so resetting to a pre-append snapshot
-// is a clean, complete undo.
-func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfile) (cleanup func() error, err error) {
+// is a clean, complete undo — but oneShotArgs must still be appended onto
+// that reverted snapshot, or the degraded-unprofiled command would be
+// missing its one-shot subcommand/prompt entirely.
+func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfile, oneShotArgs []string) (cleanup func() error, err error) {
 	noop := func() error { return nil }
 	origEnv := slices.Clone(cmd.Env)
 	origArgs := slices.Clone(cmd.Args)
@@ -425,11 +442,16 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 		// (permissions, a resolve-home-dir failure for codex, …) is a
 		// warning, not a launch-aborting error. Restore cmd.Env/cmd.Args to
 		// their pre-ApplyEnvAndArgs state (see the doc comment above) so
-		// this degrade is genuinely unprofiled, not half-profiled.
+		// this degrade is genuinely unprofiled, not half-profiled — then
+		// reattach oneShotArgs, since this is the only path back to the
+		// caller and it must still produce a runnable one-shot command.
 		cmd.Env = origEnv
-		cmd.Args = origArgs
+		cmd.Args = append(origArgs, oneShotArgs...)
 		fmt.Fprintf(os.Stderr, "wt: profile config_content: %v (profiles disabled for this launch)\n", err)
 		return noop, nil
+	}
+	if len(oneShotArgs) > 0 {
+		cmd.Args = append(cmd.Args, oneShotArgs...)
 	}
 	if rp.Wrapper != nil {
 		if err := profiles.ApplyWrapper(cmd, rp.Wrapper); err != nil {
