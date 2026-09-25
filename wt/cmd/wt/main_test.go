@@ -913,9 +913,10 @@ func TestResolveModelForLaunchCloudOnlyResolves(t *testing.T) {
 	}
 }
 
-// TestRootHelpListsModelSubcommands verifies `wt --help` documents start, stop
-// and smoke with usage examples, so the model subcommands are discoverable
-// without reading the docs.
+// TestRootHelpListsModelSubcommands verifies `wt --help` documents the
+// model subcommands and the newer top-level commands, with the model
+// subcommands' usage examples, so the command set is discoverable without
+// reading the docs.
 func TestRootHelpListsModelSubcommands(t *testing.T) {
 	var out bytes.Buffer
 	root := rootCmd()
@@ -925,11 +926,36 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"start", "stop", "smoke", "wt start", "wt stop", "wt smoke"} {
+	for _, want := range []string{
+		"start", "stop", "smoke",
+		"config", "litellm", "profile", "stats", "rotate",
+		"wt start", "wt stop", "wt smoke",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help output missing %q:\n%s", want, out.String())
 		}
 	}
+}
+
+// TestNoWtCommandIsHidden asserts no wt command is hidden from `wt --help`.
+// A hidden command is undiscoverable — absent from both help and shell
+// completion — so this guards every present and future command against an
+// accidental Hidden: true. Cobra's own "__"-prefixed shell-completion
+// plumbing is hidden by design and skipped.
+func TestNoWtCommandIsHidden(t *testing.T) {
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		for _, child := range c.Commands() {
+			if strings.HasPrefix(child.Name(), "__") {
+				continue
+			}
+			if child.Hidden {
+				t.Errorf("command %q is hidden from help", child.CommandPath())
+			}
+			walk(child)
+		}
+	}
+	walk(rootCmd())
 }
 
 // A model-driven agent with no config.toml entry launches via the bare
