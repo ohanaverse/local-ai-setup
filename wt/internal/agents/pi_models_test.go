@@ -858,13 +858,45 @@ func TestSyncModelsSkipsProviderWithUnresolvableSecret(t *testing.T) {
 	}
 }
 
-// TestPiDriverDeclaresWrapperProfileMechanism verifies pi's
-// ProfileMechanisms is exactly {wrapper} — the little-coder integration —
-// and nothing else, so a hand-written pi profile using env/args/config_file
-// fails Validate rather than silently doing nothing.
-func TestPiDriverDeclaresWrapperProfileMechanism(t *testing.T) {
+// TestPiDriverDeclaresWrapperAndEnvProfileMechanisms verifies pi's
+// ProfileMechanisms is exactly {wrapper, env} — wrapper is the little-coder
+// integration; env is allowed because profile env lands on the launched
+// process (cmd/wt applies env before the wrapper), which with the
+// little-coder wrapper is little-coder itself and its LITTLE_CODER_*
+// whitelist gate reads it. Anything else (args/config_file) must still fail
+// Validate rather than silently doing nothing.
+func TestPiDriverDeclaresWrapperAndEnvProfileMechanisms(t *testing.T) {
 	mechs := piDriver{}.ProfileMechanisms()
-	if len(mechs) != 1 || mechs[0] != profiles.MechanismWrapper {
-		t.Errorf("ProfileMechanisms() = %v, want exactly [wrapper]", mechs)
+	want := map[profiles.Mechanism]bool{profiles.MechanismWrapper: true, profiles.MechanismEnv: true}
+	if len(mechs) != len(want) {
+		t.Fatalf("ProfileMechanisms() = %v, want exactly %v", mechs, want)
+	}
+	got := map[profiles.Mechanism]bool{}
+	for _, m := range mechs {
+		got[m] = true
+		if !want[m] {
+			t.Errorf("unexpected mechanism %q", m)
+		}
+	}
+	for m := range want {
+		if !got[m] {
+			t.Errorf("ProfileMechanisms() = %v, missing expected mechanism %q", mechs, m)
+		}
+	}
+}
+
+// TestPiDriverRequiredMechanismCouplesEnvToWrapper verifies pi declares
+// (via profiles.MechanismRequirer) that env requires wrapper on the same
+// profile entry — env has no effect on bare pi, so profiles.Validate must
+// reject a profile setting env without wrapper (code-review regression
+// lock: ProfileMechanisms alone let such a profile pass validation
+// cleanly, only to silently no-op at launch time).
+func TestPiDriverRequiredMechanismCouplesEnvToWrapper(t *testing.T) {
+	required, ok := piDriver{}.RequiredMechanism(profiles.MechanismEnv)
+	if !ok || required != profiles.MechanismWrapper {
+		t.Errorf("RequiredMechanism(env) = (%q, %v), want (wrapper, true)", required, ok)
+	}
+	if _, ok := (piDriver{}).RequiredMechanism(profiles.MechanismWrapper); ok {
+		t.Error("RequiredMechanism(wrapper) reports a requirement, want none")
 	}
 }

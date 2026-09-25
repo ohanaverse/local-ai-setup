@@ -9,15 +9,18 @@ import (
 
 // Validate checks that every profile's mechanisms are ones its agent
 // declares support for via mechanismsFor (typically backed by
-// agents.ByName(agent).(profiles.ProfileCapable)). It returns one
-// combined error naming every offending profile, or nil if all profiles
-// pass.
+// agents.ByName(agent).(profiles.ProfileCapable)). requiredMechanismFor
+// (typically backed by agents.ByName(agent).(profiles.MechanismRequirer))
+// additionally rejects a profile entry that uses a mechanism without the
+// second mechanism its agent requires alongside it; pass nil to skip that
+// check. It returns one combined error naming every offending profile, or
+// nil if all profiles pass.
 // validMatchTiers are the only values Resolve's tierRank recognizes; any
 // other value (typically a typo) makes a profile silently unmatchable
 // forever, with no error anywhere else in the package.
 var validMatchTiers = map[string]bool{"location": true, "provider": true, "model": true}
 
-func Validate(store Store, mechanismsFor func(agent string) []Mechanism) error {
+func Validate(store Store, mechanismsFor func(agent string) []Mechanism, requiredMechanismFor func(agent string, m Mechanism) (Mechanism, bool)) error {
 	var problems []string
 	for i, p := range store.Profiles {
 		if !validMatchTiers[p.Match] {
@@ -36,11 +39,24 @@ func Validate(store Store, mechanismsFor func(agent string) []Mechanism) error {
 		for _, mech := range mechanismsFor(p.Agent) {
 			allowed[mech] = true
 		}
-		for _, mech := range usedMechanisms(p) {
+		used := usedMechanisms(p)
+		usedSet := map[Mechanism]bool{}
+		for _, mech := range used {
+			usedSet[mech] = true
+		}
+		for _, mech := range used {
 			if !allowed[mech] {
 				problems = append(problems, fmt.Sprintf(
 					"profiles.toml[%d] (agent=%s, match=%s): agent does not support mechanism %q",
 					i, p.Agent, p.Match, mech))
+			}
+			if requiredMechanismFor == nil {
+				continue
+			}
+			if req, ok := requiredMechanismFor(p.Agent, mech); ok && !usedSet[req] {
+				problems = append(problems, fmt.Sprintf(
+					"profiles.toml[%d] (agent=%s, match=%s): mechanism %q has no effect without %q on the same profile entry",
+					i, p.Agent, p.Match, mech, req))
 			}
 		}
 		if p.Wrapper != nil && !slices.Contains(p.Wrapper.ArgsTemplate, "{{args}}") {

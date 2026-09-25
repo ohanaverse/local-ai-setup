@@ -29,7 +29,7 @@ wt profile on / wt profile off        # global kill switch
 | Agent | Mechanisms | Notes |
 |---|---|---|
 | claude | env, config_file | config_file → `<worktree>/.claude/settings.local.json`, never your global `~/.claude/settings.json` |
-| pi | wrapper | swaps the launched binary (e.g. `little-coder`) around pi's own argv |
+| pi | wrapper, env | swaps the launched binary (e.g. `little-coder`) around pi's own argv; env lands on the launched wrapper process, which reads `LITTLE_CODER_*` |
 | codex | env, args, config_file | config_file → `~/.codex/agent-wt-profile.config.toml` (`--profile agent-wt-profile`); codex has no project-scoped profile mechanism, so this one file is global and wt-owned |
 | opencode | env, config_file | config_file merges into the `OPENCODE_CONFIG_CONTENT` env payload wt already sets — no file at all |
 
@@ -140,6 +140,8 @@ agent = "pi"
 match = "location"
 location = "local"
 wrapper = { binary = "little-coder", args_template = ["{{args}}"] }
+# env lands on the wrapper process — little-coder itself — so this is its permission-mode lever (accept-all skips the shell whitelist).
+env = { LITTLE_CODER_PERMISSION_MODE = "accept-all" }
 
 # claude: MAX_THINKING_TOKENS and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC are
 # plain process-env settings, so they use the env mechanism.
@@ -178,6 +180,7 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
 | Agent | Mechanism | Effect on a local launch |
 |---|---|---|
 | pi | `wrapper` | runs `little-coder` instead of bare `pi`, splicing wt's own `--model …` argv into `{{args}}` |
+| pi | `env` | sets `LITTLE_CODER_PERMISSION_MODE=accept-all` on the wrapper process (little-coder), skipping its shell whitelist |
 | claude | `env` | caps thinking at 4096 tokens; suppresses nonessential background traffic |
 | claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`, then restores it |
 | codex | `args` | caps `model_reasoning_effort` at `low`; truncates tool output at 12000 tokens |
@@ -185,15 +188,23 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
 
 ### Why these values
 
-- **pi — `wrapper`.** little-coder is pi plus a curated extension/skill
-  set; wrapping the launch gets the scaffold without a new agent driver.
-  wt still chooses the model: little-coder sees `--model` already present
-  and does not inject its own default. No `--thinking` override is used;
-  the effective level is pi's fallback default of `medium` in the
-  installed pi 0.83.0 (a `defaultThinkingLevel` in
+- **pi — `wrapper` + `env`.** little-coder is pi plus a curated
+  extension/skill set; wrapping the launch gets the scaffold without a new
+  agent driver. wt still chooses the model: little-coder sees `--model`
+  already present and does not inject its own default. No `--thinking`
+  override is used; the effective level is pi's fallback default of
+  `medium` in the installed pi 0.83.0 (a `defaultThinkingLevel` in
   `~/.pi/agent/settings.json` overrides it), and little-coder does not
   inject a level here — its thinking heuristic treats the `:` in a wt
   model id such as `litellm/ollama/qwen3.8:27b-mlx` as a `:level` suffix.
+  The `env` entry is safe despite pi having no env lever of its own: wt
+  applies profile env to the launched process before the wrapper runs, and
+  with little-coder that process is little-coder itself — so
+  `LITTLE_CODER_PERMISSION_MODE` is that binary's own knob for its shell
+  whitelist (`accept-all` skips the gate entirely; a deliberate,
+  spec-approved trade-off —
+  `docs/superpowers/specs/2026-09-25-pi-local-accept-all-design.md`,
+  monorepo root).
 - **claude — thinking + attribution.** `MAX_THINKING_TOKENS=4096` stops a
   small model from over-deliberating instead of acting;
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` keeps background requests

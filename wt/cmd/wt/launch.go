@@ -362,7 +362,7 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", loadErr)
 			return noop, nil
 		}
-		if verr := profiles.Validate(store, agentProfileMechanisms); verr != nil {
+		if verr := profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism); verr != nil {
 			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", verr)
 			return noop, nil
 		}
