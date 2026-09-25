@@ -646,7 +646,10 @@ def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path, bridge_ca
     pending.apply()
 
     assert pending.failures == []
-    assert bridge_calls == []
+    # For local models (ollama), the delete step always queues an unexpose
+    # even when the exposed flag is false — wt may have routed the model
+    # independently of modelman's flag (issue #145).
+    assert bridge_calls == [("unexpose", ["ollama/a"])]
 
 
 def test_apply_batches_litellm_route_calls(tmp_path, bridge_calls):
@@ -2321,3 +2324,106 @@ def test_apply_persists_prior_deletes_when_download_raises_keyboardinterrupt(tmp
     provider.delete.assert_called_once()  # the delete really ran
     reloaded = load_registry(reg_path)
     assert all(m.id != "ollama/a" for m in reloaded.models)  # and is persisted
+
+
+# ---------------------------------------------------------------------------
+# Issue #145 — local models: delete/ready-off cascade always unexposes
+# ---------------------------------------------------------------------------
+
+
+def test_apply_delete_local_model_always_unexposes(tmp_path, bridge_calls):
+    """Deleting a LOCAL model must always queue an unexpose, even when
+    modelman.toml's exposed flag is False.
+
+    Since Phase 4 (wt owns LiteLLM management), wt's `wt start`/`wt stop`
+    add and remove config.yaml routes without touching modelman's exposed
+    flag. A local model started with `wt start` is genuinely routed through
+    LiteLLM even if modelman.toml shows exposed=False. If modelman deletes
+    it without unexposing, the route is left stranded in config.yaml
+    (issue #145).
+
+    This test uses ollama (a local provider) with exposed=False to verify
+    the unexpose is still queued."""
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    litellm_path = tmp_path / "config.yaml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    # exposed=False — the stale flag that the old code relied on.
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
+    save_state(state, state_path)
+    write_litellm_config(
+        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
+        litellm_path,
+    )
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={"ollama": MagicMock()},
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    # The unexpose is queued even though exposed=False — wt will clean up
+    # any route it may have added independently.
+    assert bridge_calls == [("unexpose", ["ollama/a"])]
+    assert pending.failures == []
+
+
+def test_apply_ready_off_local_model_always_unexposes(tmp_path, bridge_calls):
+    """Turning ready=False for a LOCAL model must always queue an unexpose,
+    even when modelman.toml's exposed flag is False.
+
+    Same rationale as test_apply_delete_local_model_always_unexposes:
+    wt may have routed the model independently of modelman's flag, and
+    a ready-off should clean up that route (issue #145)."""
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    litellm_path = tmp_path / "config.yaml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
+    write_litellm_config(
+        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
+        litellm_path,
+    )
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={"ollama": MagicMock()},
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    # The unexpose is queued even though exposed=False.
+    assert bridge_calls == [("unexpose", ["ollama/a"])]
+    assert pending.failures == []
+    assert state.get("ollama/a").ready is False
