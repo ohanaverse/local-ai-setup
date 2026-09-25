@@ -57,6 +57,15 @@ var enforcedSettings = []string{
 // user-managed).
 var preservedParamKeys = []string{"additional_drop_params", "use_chat_completions_api"}
 
+// droppedOllamaChatParams are dropped by default on every fresh ollama_chat/
+// deployment via additional_drop_params: reasoning_effort crashes litellm's
+// ollama_chat responses bridge for codex (see
+// docs/wt-agents/litellm-troubleshooting.md); frequency_penalty and
+// presence_penalty map to ollama's repeat_penalty and can produce a value
+// ollama's sampler rejects ("must be finite and greater than 0") for some
+// models even when the caller sends 0 — copilot CLI always sends both.
+var droppedOllamaChatParams = []string{"reasoning_effort", "frequency_penalty", "presence_penalty"}
+
 var loopbackHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 
 // File is an open, editable LiteLLM config.yaml.
@@ -154,6 +163,17 @@ func mapSet(m *yaml.Node, key string, val *yaml.Node) {
 func boolNode(v bool) *yaml.Node {
 	n, _ := toNode(v)
 	return n
+}
+
+// stringSeq builds a YAML sequence of string scalars. Each value is a
+// literal Go string, so toNode always succeeds.
+func stringSeq(values []string) *yaml.Node {
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, v := range values {
+		n, _ := toNode(v)
+		seq.Content = append(seq.Content, n)
+	}
+	return seq
 }
 
 func isTrue(n *yaml.Node) bool {
@@ -308,9 +328,7 @@ func (f *File) EnsureSettings() {
 		}
 		switch {
 		case strings.HasPrefix(model.Value, "ollama_chat/") && mapGet(params, "additional_drop_params") == nil:
-			reasoningNode, _ := toNode("reasoning_effort") // literal string always succeeds
-			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{reasoningNode}}
-			mapSet(params, "additional_drop_params", seq)
+			mapSet(params, "additional_drop_params", stringSeq(droppedOllamaChatParams))
 		case strings.HasPrefix(model.Value, "openai/") && mapGet(params, "use_chat_completions_api") == nil && isLoopback(mapGet(params, "api_base")):
 			mapSet(params, "use_chat_completions_api", boolNode(true))
 		}
