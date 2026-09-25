@@ -597,13 +597,14 @@ func TestSmokeCmdExplicitZeroTimeoutRejected(t *testing.T) {
 }
 
 // TestSmokeCmdAppliesLocalModelProfile verifies that wt smoke resolves and
-// applies a local-model profile for a matching agent×model pair. It sets up
-// a profiles.toml with a model-tier profile for claude, stubs loadProfileStore
-// to return it, and runs smoke against a model that matches the profile. The
-// smoke row is stubbed via SetBuildAndRunForTest so no real agent binary runs.
-// The test asserts that the smoke run completes without error, proving the
-// profile resolution and application path doesn't crash (the profile's
-// config_content is written to a temp file and restored by the cleanup).
+// applies a local-model profile for a matching agent×model pair. It populates
+// the app's precomputed profile state (a.profiles) with a model-tier profile
+// for claude, the way newApp() would after loading profiles.toml, and runs
+// smoke against a model that matches it. The smoke row is stubbed via
+// SetBuildAndRunForTest so no real agent binary runs. The test asserts that
+// the smoke run completes without error, proving the profile resolution and
+// application path doesn't crash (the profile's config_content is written to
+// a temp file and restored by the cleanup).
 func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	// Add a model-tier profile for claude that sets an env var and adds an arg.
@@ -619,9 +620,6 @@ func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
 			},
 		},
 	}
-	oldLoad := loadProfileStore
-	loadProfileStore = func() (profiles.Store, error) { return store, nil }
-	t.Cleanup(func() { loadProfileStore = oldLoad })
 
 	var events []string
 	oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
@@ -640,7 +638,7 @@ func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg})
+	cmd := smokeCmd(&app{cfg: cfg, profiles: store})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx"})

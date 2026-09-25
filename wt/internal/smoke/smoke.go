@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -285,10 +286,19 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// The cleanup is deferred by the caller (RunRow) so it runs regardless
 	// of whether the agent exits successfully or times out.
 	if profileApplier != nil {
+		// Snapshot before calling the applier: an applier may mutate
+		// cmd.Env/cmd.Args before failing partway through (e.g. env/args
+		// applied, then a wrapper binary turns out to be missing).
+		// Restoring this snapshot on error guarantees "proceeding
+		// unprofiled" below is never half-profiled, regardless of how the
+		// specific ProfileApplier implementation handles its own failure.
+		origEnv := slices.Clone(cmd.Env)
+		origArgs := slices.Clone(cmd.Args)
 		var applyErr error
 		*cleanup, applyErr = profileApplier(cmd)
 		if applyErr != nil {
-			// Profile application error: degrade to unprofiled.
+			cmd.Env = origEnv
+			cmd.Args = origArgs
 			fmt.Fprintf(os.Stderr, "wt: profile apply: %v (proceeding unprofiled)\n", applyErr)
 			*cleanup = func() error { return nil }
 		}
@@ -357,7 +367,11 @@ func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentin
 	start := time.Now()
 	var cleanup func() error
 	out := buildAndRun(cfg, agentName, m, prompt, cwd, timeout, profileApplier, &cleanup)
-	defer cleanup()
+	defer func() {
+		if cerr := cleanup(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
+		}
+	}()
 	res := RowResult{
 		Agent:    agentName,
 		Model:    m.ID,
