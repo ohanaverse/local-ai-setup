@@ -47,6 +47,7 @@ from ..registry import (
     Registry,
     _cost_from_dict,
     is_local_location,
+    is_model_local,
     is_native_provider,
     known_families,
     model_entry_to_variant,
@@ -301,7 +302,6 @@ class ModelScreen(Screen[None]):
             "SIZE",
         )
         self._prefetch_litellm_state()
-        self._load_routed_ids_cache()
         self.reload()
         self._refresh_pending_bar()
         self._render_litellm_status()
@@ -409,28 +409,33 @@ class ModelScreen(Screen[None]):
         self._render_litellm_status()
 
     def _prefetch_litellm_state(self) -> None:
-        """Warm the provider-flags cache and read wt's status CONCURRENTLY
-        instead of back-to-back: each is a subprocess call bounded at ~5s
-        when its cache is cold, and running them one after another could
-        block the initial paint for up to ~10s. Blocks until both are done
-        (still synchronous overall), but the wall-clock cost is the slower
-        of the two, not their sum."""
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        """Warm the provider-flags cache, read wt's status, and load the
+        routed-ids cache all CONCURRENTLY instead of back-to-back: each is
+        a subprocess call bounded at ~5s when its cache is cold, and
+        running them one after another could block the initial paint for
+        up to ~15s. Blocks until all three are done (still synchronous
+        overall), but the wall-clock cost is the slowest of the three, not
+        their sum."""
+        with ThreadPoolExecutor(max_workers=3) as pool:
             status_future = pool.submit(self._fetch_litellm_status)
             flags_future = pool.submit(wt_bridge.provider_cloud_flags)
+            routed_future = pool.submit(self._load_routed_ids_cache)
             status_future.result()
             flags_future.result()
+            routed_future.result()
 
     def _load_routed_ids_cache(self) -> None:
         """Populate `_routed_ids_cache` from `wt litellm list --json`.
 
-        Called once on mount so the EXPOSED column for local models reads
-        wt's live routing state instead of the stale modelman.toml flag
-        (issue #145). Never raises: an unreachable wt leaves the cache as
-        None and the column falls back to the flag.
+        Called on mount (as part of `_prefetch_litellm_state`, so it never
+        blocks the initial paint beyond `wt_bridge.STATUS_TIMEOUT`) so the
+        EXPOSED column for local models reads wt's live routing state
+        instead of the stale modelman.toml flag (issue #145). Never
+        raises: an unreachable wt leaves the cache as None and the column
+        falls back to "–".
         """
         try:
-            self._routed_ids_cache = wt_bridge.routed_ids()
+            self._routed_ids_cache = wt_bridge.routed_ids(timeout=wt_bridge.STATUS_TIMEOUT)
         except wt_bridge.WtBridgeError:
             self._routed_ids_cache = None
 
@@ -527,26 +532,28 @@ class ModelScreen(Screen[None]):
                 #
                 # For LOCAL models, wt owns the actual routes in config.yaml
                 # (Phase 4, issues #140-#144) so the modelman.toml exposed
-                # flag is stale — read wt's live routing state instead.
-                is_local = is_local_location(m.location) or is_local_location(
-                    self.registry.provider(m.provider_id).location
-                    if any(p.id == m.provider_id for p in self.registry.providers)
-                    else None
+                # flag can be stale relative to wt's live routing state —
+                # e.g. a model started with `wt start` is genuinely routed
+                # even though modelman's flag is still False. The column is
+                # therefore Y if EITHER source says so: wt's live routes
+                # (for a local model with no queued change this session) OR
+                # the persisted-or-queued flag/ready projection (needed so
+                # 'r'/'x' still give immediate feedback before apply, since
+                # wt has no way to know about an unapplied queued change).
+                # This was previously written as a nested ternary that is
+                # logically identical to the explicit `or` below but reads
+                # as if the second branch were unreachable once the first
+                # is False — written out plainly to avoid that trap.
+                is_local = is_model_local(m.location, m.provider_id, self.registry)
+                locally_routed = is_local and self._is_locally_routed(m.id)
+                flag_exposed = is_effectively_exposed(
+                    m,
+                    self.state,
+                    self.registry,
+                    exposed_override=exposed_override,
+                    ready_override=ready_override,
                 )
-                exposed_str = (
-                    "Y"
-                    if is_local
-                    and self._is_locally_routed(m.id)
-                    else "Y"
-                    if is_effectively_exposed(
-                        m,
-                        self.state,
-                        self.registry,
-                        exposed_override=exposed_override,
-                        ready_override=ready_override,
-                    )
-                    else "–"
-                )
+                exposed_str = "Y" if locally_routed or flag_exposed else "–"
                 running_str = "●" if (is_local and self.state.get(m.id).running) else "-"
                 mt.add_row(
                     m.family,
@@ -851,6 +858,7 @@ class ModelScreen(Screen[None]):
             )
             return
         self._resync_running_flags()
+        self._load_routed_ids_cache()
         message = (
             f"{model_id} is already running." if result.already_running else f"Started {model_id}."
         )
@@ -868,6 +876,7 @@ class ModelScreen(Screen[None]):
             )
             return
         self._resync_running_flags()
+        self._load_routed_ids_cache()
         message = (
             f"Stopped {model_id}." if result.stopped_model_id else f"{model_id} was not running."
         )

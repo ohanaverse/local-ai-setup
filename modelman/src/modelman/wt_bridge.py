@@ -193,8 +193,14 @@ def unexpose(ids: list[str], *, litellm_path: Path | None = None) -> BridgeResul
     return _change(["unexpose", "--json", "--", *ids], litellm_path)
 
 
-def routed_ids(*, litellm_path: Path | None = None) -> list[str]:
-    proc = _run(["list", "--json"], _env(litellm_path))
+def routed_ids(*, litellm_path: Path | None = None, timeout: float | None = None) -> list[str]:
+    """`timeout` (seconds) overrides _run's 120s default; the TUI passes a
+    short one at mount so a hung wt cannot freeze the initial paint."""
+    proc = _run(
+        ["list", "--json"],
+        _env(litellm_path),
+        timeout=_DEFAULT_TIMEOUT if timeout is None else timeout,
+    )
     try:
         return parse_routed(proc.stdout)
     except (ValueError, KeyError, TypeError):

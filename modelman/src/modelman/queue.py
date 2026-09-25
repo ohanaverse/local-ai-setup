@@ -19,11 +19,10 @@ from .litellm import apply_expose_queue
 from .providers._progress import DownloadCancelled, human_bytes
 from .providers.registry import ProviderRegistry
 from .registry import (
-    DEFAULT_PROVIDER_IDS,
     FamilyEntry,
-    find_shared_artifact_owner,
-    is_local_location,
     ModelEntry,
+    find_shared_artifact_owner,
+    is_model_local,
     save_registry,
 )
 from .state import locked_state
@@ -434,17 +433,9 @@ class PendingChanges:
                 # never routed. For non-local models the persisted flag is
                 # still authoritative.
                 was_exposed = self.state.get(model_id).exposed
-                is_local = False
-                if model_entry is not None:
-                    is_local = is_local_location(
-                        model_entry.location
-                        if model_entry.location
-                        else (
-                            self.registry.provider(model_entry.provider_id).location
-                            if any(p.id == model_entry.provider_id for p in self.registry.providers)
-                            else None
-                        )
-                    )
+                is_local = model_entry is not None and is_model_local(
+                    model_entry.location, model_entry.provider_id, self.registry
+                )
                 self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
                 if was_exposed or is_local:
                     self.exposes.append((model_id, False))
@@ -639,16 +630,10 @@ class PendingChanges:
                 #
                 # For LOCAL models, the `exposed` flag in modelman.toml is
                 # stale (wt owns the routes); always queue the unexpose.
-                if not target and (self.state.get(model_id).exposed or is_local_location(
-                    variant.get("location")
-                    if variant.get("location")
-                    else (
-                        self.registry.provider(provider_id).location
-                        if provider_id in self.providers
-                        and any(p.id == provider_id for p in self.registry.providers)
-                        else None
-                    )
-                )):
+                if not target and (
+                    self.state.get(model_id).exposed
+                    or is_model_local(variant.get("location"), provider_id, self.registry)
+                ):
                     self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
                     if provider is None:
                         self.state.set(model_id, replace(self.state.get(model_id), exposed=False))

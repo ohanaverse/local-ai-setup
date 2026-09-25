@@ -2763,6 +2763,67 @@ async def test_start_toggle_preserves_in_session_reconciled_state(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_start_refreshes_routed_ids_cache(tmp_path, monkeypatch):
+    # Starting a local model must refresh `_routed_ids_cache`, not just the
+    # running/exposed flags — otherwise EXPOSED stays stale ("–") for the
+    # rest of the session even though wt just routed the model, until the
+    # TUI is restarted. Regression: only _resync_running_flags() ran after
+    # start, with no equivalent refresh of the wt-routes cache.
+    from unittest.mock import MagicMock
+
+    from modelman import wt_bridge
+    from modelman.local_control import StartResult
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmModal
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=False, exposed=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    routed: list[str] = []  # empty at mount; fake_start "routes" the model
+
+    def fake_routed(*, litellm_path=None, timeout=None):
+        return list(routed)
+
+    monkeypatch.setattr(wt_bridge, "routed_ids", fake_routed)
+
+    def fake_start(registry, model_id, state_path=None, **kwargs):
+        routed.append(model_id)
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+
+        assert app.screen._routed_ids_cache == []
+
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.press("y")
+        for _ in range(200):
+            await pilot.pause()
+            if app.screen._routed_ids_cache == ["ollama/a"]:
+                break
+
+        assert app.screen._routed_ids_cache == ["ollama/a"]
+
+
+@pytest.mark.asyncio
 async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp_path, monkeypatch):
     # Design §4: when the model being started will REPLACE a same-provider
     # occupant (omlx/mtplx/mlx_lm_server serve one model per process), the
@@ -3079,6 +3140,7 @@ async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_pat
 
     _seed_registry_and_state(tmp_path, monkeypatch)
     timeouts = []
+    list_timeouts = []
 
     def hung(args, env=None, timeout=120):
         if args[:1] == ["status"]:
@@ -3093,7 +3155,11 @@ async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_pat
             raise wt_bridge.WtBridgeError("wt litellm providers timed out")
         if args[:1] == ["list"]:
             # _load_routed_ids_cache calls wt litellm list; degrade gracefully
-            # like providers (hung wt returns no routed ids).
+            # like providers (hung wt returns no routed ids). Without a short
+            # explicit timeout this used _run's 120s default and could freeze
+            # the initial paint for up to two minutes — assert it passes the
+            # same short STATUS_TIMEOUT as the status/providers reads.
+            list_timeouts.append(timeout)
             raise wt_bridge.WtBridgeError("wt litellm list timed out")
         raise AssertionError(args)
 
@@ -3104,6 +3170,7 @@ async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_pat
         await _open_model_screen(pilot)
         assert "LiteLLM: unavailable" in _status_text(app.screen)
     assert timeouts and set(timeouts) == {wt_bridge.STATUS_TIMEOUT}
+    assert list_timeouts and set(list_timeouts) == {wt_bridge.STATUS_TIMEOUT}
     assert wt_bridge.STATUS_TIMEOUT <= 10
 
 
@@ -3187,9 +3254,10 @@ async def test_exposed_column_local_model_reads_wt_routes_not_flag(tmp_path, mon
     A local model started via `wt start` is genuinely routed through
     LiteLLM even if modelman.toml's exposed flag is False. The column
     must show Y in that case."""
+    from textual.widgets import DataTable
+
     from modelman import wt_bridge
     from modelman.registry import ModelEntry
-    from textual.widgets import DataTable
 
     a = ModelEntry(
         id="ollama/a",
@@ -3206,7 +3274,7 @@ async def test_exposed_column_local_model_reads_wt_routes_not_flag(tmp_path, mon
 
     routed = []  # filled by the fake routed_ids
 
-    def fake_routed(*, litellm_path=None):
+    def fake_routed(*, litellm_path=None, timeout=None):
         return routed
 
     monkeypatch.setattr(wt_bridge, "routed_ids", fake_routed)
@@ -3218,9 +3286,7 @@ async def test_exposed_column_local_model_reads_wt_routes_not_flag(tmp_path, mon
 
         table = app.screen.query_one("#model-table", DataTable)
         row_key = list(table.rows.keys())[0]
-        exposed_col = next(
-            key for key, col in table.columns.items() if str(col.label) == "EXPOSED"
-        )
+        exposed_col = next(key for key, col in table.columns.items() if str(col.label) == "EXPOSED")
 
         # Model not in wt's routes → EXPOSED should show "–"
         assert str(table.get_cell(row_key, exposed_col)) == "–"
@@ -3238,9 +3304,10 @@ async def test_exposed_column_local_model_reads_wt_routes_not_flag(tmp_path, mon
 async def test_exposed_column_local_model_wt_unreachable_degrades(tmp_path, monkeypatch):
     """When wt is unreachable, the EXPOSED column for LOCAL models falls
     back to "–" (safe default) instead of crashing or showing stale data."""
+    from textual.widgets import DataTable
+
     from modelman import wt_bridge
     from modelman.registry import ModelEntry
-    from textual.widgets import DataTable
 
     a = ModelEntry(
         id="ollama/a",
@@ -3254,9 +3321,11 @@ async def test_exposed_column_local_model_wt_unreachable_degrades(tmp_path, monk
     state.set("ollama/a", ModelState(ready=True, exposed=False))
     save_state(state, state_path)
 
-    monkeypatch.setattr(wt_bridge, "routed_ids", lambda **kw: (_ for _ in ()).throw(
-        wt_bridge.WtBridgeError("wt unavailable")
-    ))
+    monkeypatch.setattr(
+        wt_bridge,
+        "routed_ids",
+        lambda **kw: (_ for _ in ()).throw(wt_bridge.WtBridgeError("wt unavailable")),
+    )
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -3265,8 +3334,6 @@ async def test_exposed_column_local_model_wt_unreachable_degrades(tmp_path, monk
 
         table = app.screen.query_one("#model-table", DataTable)
         row_key = list(table.rows.keys())[0]
-        exposed_col = next(
-            key for key, col in table.columns.items() if str(col.label) == "EXPOSED"
-        )
+        exposed_col = next(key for key, col in table.columns.items() if str(col.label) == "EXPOSED")
         # wt unreachable → cache is None → falls back to "–"
         assert str(table.get_cell(row_key, exposed_col)) == "–"
