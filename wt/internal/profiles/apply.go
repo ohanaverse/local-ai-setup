@@ -54,3 +54,17 @@ func ApplyWrapper(cmd *exec.Cmd, w *WrapperSpec) error {
 	cmd.Args = append([]string{binPath}, newArgs...)
 	return nil
 }
+
+// RestoreAndReattach resets cmd.Env/cmd.Args to a pre-apply snapshot
+// (origEnv/origArgs, taken before ApplyEnvAndArgs/ApplyConfigContent ran)
+// and reattaches oneShotArgs. Both callers (cmd/wt's applyResolvedProfile,
+// wt smoke's realBuildAndRun) use this on the same failure shape: a profile
+// application step failed partway through, so the launch must degrade to
+// fully unprofiled — never half-profiled — while still producing a runnable
+// one-shot command when oneShotArgs is non-empty. Kept as one function so a
+// future field added to what must be restored on that degrade is not easy
+// to update in one call site and forget in the other.
+func RestoreAndReattach(cmd *exec.Cmd, origEnv, origArgs, oneShotArgs []string) {
+	cmd.Env = origEnv
+	cmd.Args = append(origArgs, oneShotArgs...)
+}

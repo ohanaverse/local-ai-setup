@@ -1436,7 +1436,7 @@ func TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing(t *testing.
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	cleanup, err := applyResolvedProfile(cmd, "claude", rp)
+	cleanup, err := applyResolvedProfile(cmd, "claude", rp, nil)
 	if err == nil {
 		t.Fatal("applyResolvedProfile() error = nil, want an error (missing wrapper binary is the one legitimately-fatal case)")
 	}
@@ -1474,7 +1474,7 @@ func TestApplyResolvedProfileExtraArgsPrecedeCodexProfileFlag(t *testing.T) {
 	}
 	cmd := exec.Command("codex", "--model", "x")
 
-	cleanup, err := applyResolvedProfile(cmd, "codex", rp)
+	cleanup, err := applyResolvedProfile(cmd, "codex", rp, nil)
 	if err != nil {
 		t.Fatalf("applyResolvedProfile() error = %v", err)
 	}
@@ -1483,6 +1483,85 @@ func TestApplyResolvedProfileExtraArgsPrecedeCodexProfileFlag(t *testing.T) {
 	want := []string{"codex", "--model", "x", "-c", "model_reasoning_effort=\"low\"", "--profile", "agent-wt-profile"}
 	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
 		t.Errorf("cmd.Args = %v, want %v (ExtraArgs before --profile)", cmd.Args, want)
+	}
+}
+
+// TestApplyResolvedProfileOneShotArgsAfterProfileFlags is the regression
+// lock for the wt-smoke codex bug (debugged 2026-09-25): wt smoke appends a
+// codex profile's ExtraArgs ("-c model_reasoning_effort=...") via
+// applyResolvedProfile, and separately appends the one-shot invocation
+// ("exec <prompt>") via agents.OneShotRunner.OneShotArgs. codex's CLI
+// silently drops the earlier "-c model_provider=..." override (falling back
+// to its default "openai" provider, which then fails auth against the real
+// OpenAI API) whenever ANY "-c"/"--profile" flag trails "exec <prompt>" in
+// argv — confirmed by hand-reproducing the exact argv wt smoke built, with
+// only the flag order changed. So oneShotArgs must be threaded through
+// applyResolvedProfile and land AFTER every profile-injected flag
+// (ExtraArgs, then config_content's "--profile" flag), never before.
+func TestApplyResolvedProfileOneShotArgsAfterProfileFlags(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", t.TempDir())
+
+	rp := profiles.ResolvedProfile{
+		ExtraArgs:     []string{"-c", "model_reasoning_effort=\"low\""},
+		ConfigContent: map[string]any{"some_key": "some_value"},
+	}
+	cmd := exec.Command("codex", "-c", "model_provider=agent-wt", "--model", "x")
+	oneShotArgs := []string{"exec", "the prompt"}
+
+	cleanup, err := applyResolvedProfile(cmd, "codex", rp, oneShotArgs)
+	if err != nil {
+		t.Fatalf("applyResolvedProfile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+
+	want := []string{
+		"codex", "-c", "model_provider=agent-wt", "--model", "x",
+		"-c", "model_reasoning_effort=\"low\"", "--profile", "agent-wt-profile",
+		"exec", "the prompt",
+	}
+	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
+		t.Errorf("cmd.Args = %v, want %v (oneShotArgs after every profile-injected flag)", cmd.Args, want)
+	}
+}
+
+// TestApplyResolvedProfileOneShotArgsSplicedIntoWrapper verifies the
+// counterpart invariant: a profile using the wrapper mechanism (e.g. pi's
+// little-coder) must still see the one-shot prompt args in its {{args}}
+// splice, since little-coder "forwards unrecognized args straight to pi"
+// (profiles.toml) — the prompt has to be part of what gets wrapped, not
+// appended after the wrapped command. If this regresses, wt smoke's
+// one-shot prompt for a wrapper-profiled agent would silently fall outside
+// the wrapped invocation — little-coder would launch with no prompt at all,
+// so the smoke run would hang until timeout (or exit with an unrelated
+// error) instead of actually testing the model.
+func TestApplyResolvedProfileOneShotArgsSplicedIntoWrapper(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	rp := profiles.ResolvedProfile{
+		Wrapper: &profiles.WrapperSpec{Binary: "true", ArgsTemplate: []string{"--wrapped", "{{args}}"}},
+	}
+	cmd := exec.Command("pi", "--model", "x")
+	oneShotArgs := []string{"-p", "the prompt"}
+
+	cleanup, err := applyResolvedProfile(cmd, "pi", rp, oneShotArgs)
+	if err != nil {
+		t.Fatalf("applyResolvedProfile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+
+	truePath, lookErr := exec.LookPath("true")
+	if lookErr != nil {
+		t.Fatalf("exec.LookPath(true) error = %v", lookErr)
+	}
+	// ApplyWrapper drops the pre-wrap argv[0] ("pi") by design (see its own
+	// doc comment) — everything after it, oneShotArgs included, is spliced
+	// into "{{args}}" verbatim.
+	want := []string{truePath, "--wrapped", "--model", "x", "-p", "the prompt"}
+	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
+		t.Errorf("cmd.Args = %v, want %v (oneShotArgs spliced inside the wrapper, not appended after it)", cmd.Args, want)
 	}
 }
 
@@ -1521,7 +1600,7 @@ func TestApplyResolvedProfileEnvArgsRevertedWhenConfigContentFails(t *testing.T)
 	cmd.Dir = worktree
 	origArgs := append([]string{}, cmd.Args...)
 
-	cleanup, err := applyResolvedProfile(cmd, "claude", rp)
+	cleanup, err := applyResolvedProfile(cmd, "claude", rp, nil)
 	if err != nil {
 		t.Fatalf("applyResolvedProfile() error = %v, want nil (a config_content failure must still degrade to an unprofiled launch)", err)
 	}

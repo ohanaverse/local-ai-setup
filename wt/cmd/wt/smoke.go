@@ -176,8 +176,8 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		if loadErr == nil && validateErr == nil && store.Enabled {
 			rp := profiles.Resolve(store, agentName, a.cfg, m)
 			if !rp.Empty() {
-				pa = func(cmd *exec.Cmd) (func() error, error) {
-					return applyResolvedProfile(cmd, agentName, rp)
+				pa = func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+					return applyResolvedProfile(cmd, agentName, rp, oneShotArgs)
 				}
 			}
 		}
