@@ -355,6 +355,26 @@ def is_local_location(location: str | None) -> bool:
     return location is None or location == "" or location == LOCATION_LOCAL
 
 
+def is_model_local(location: str | None, provider_id: str, registry: Registry) -> bool:
+    """Whether a model counts as local: its own `location` override when
+    set, else its provider's `location`. A `provider_id` missing from the
+    registry is NOT local — mirroring model_has_local_artifact()'s
+    treatment of the same edge case.
+
+    Single definition for a resolution that had drifted into near-
+    duplicate inline copies (queue.py's delete loop, its ready-off
+    cascade, and the TUI's EXPOSED/RUNNING columns), each of which
+    defaulted a missing provider to local via is_local_location(None).
+    """
+    if location is not None:
+        return is_local_location(location)
+    try:
+        provider = registry.provider(provider_id)
+    except KeyError:
+        return False
+    return is_local_location(provider.location)
+
+
 def is_native_provider(provider: ProviderEntry) -> bool:
     """True when the provider authenticates natively (agent-managed, no
     LiteLLM route). The single shared predicate for native-ness — mirrors

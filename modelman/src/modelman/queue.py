@@ -20,7 +20,9 @@ from .providers._progress import DownloadCancelled, human_bytes
 from .providers.registry import ProviderRegistry
 from .registry import (
     FamilyEntry,
+    ModelEntry,
     find_shared_artifact_owner,
+    is_model_local,
     save_registry,
 )
 from .state import locked_state
@@ -412,17 +414,30 @@ class PendingChanges:
                 # Record the model's family before removing the entry, so a
                 # family emptied by this delete lingers (stickiness). A failed
                 # delete records nothing — the model stays.
+                model_entry: ModelEntry | None = None
                 with contextlib.suppress(KeyError):
-                    recorded_families.add(self.registry.model(model_id).family)
+                    model_entry = self.registry.model(model_id)
+                    recorded_families.add(model_entry.family)
                 # Remove from in-memory registry.
                 self.registry.models = [m for m in self.registry.models if m.id != model_id]
                 # If the model was exposed through LiteLLM, queue an unexpose
                 # so config.yaml doesn't keep routing to a model whose file
-                # is gone. Any queued expose toggle for the same id is moot
-                # now that the model is being removed.
+                # is gone.
+                #
+                # For LOCAL models, the `exposed` flag in modelman.toml is
+                # stale (wt owns the actual routes in config.yaml since #140-
+                # #144). A local model started via `wt start` is genuinely
+                # routed through LiteLLM even if modelman.toml's flag is
+                # false. So for local models we always queue the unexpose
+                # — `wt litellm unexpose` is a safe no-op if the model was
+                # never routed. For non-local models the persisted flag is
+                # still authoritative.
                 was_exposed = self.state.get(model_id).exposed
+                is_local = model_entry is not None and is_model_local(
+                    model_entry.location, model_entry.provider_id, self.registry
+                )
                 self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
-                if was_exposed:
+                if was_exposed or is_local:
                     self.exposes.append((model_id, False))
                 # Clear any state entry so modelman.toml doesn't carry a
                 # stale downloaded=True after the user removed the file.
@@ -612,7 +627,13 @@ class PendingChanges:
                 # Flag-only providers have no LiteLLM config row, so just flip
                 # the state flag directly instead of routing through the
                 # config writer.
-                if not target and self.state.get(model_id).exposed:
+                #
+                # For LOCAL models, the `exposed` flag in modelman.toml is
+                # stale (wt owns the routes); always queue the unexpose.
+                if not target and (
+                    self.state.get(model_id).exposed
+                    or is_model_local(variant.get("location"), provider_id, self.registry)
+                ):
                     self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
                     if provider is None:
                         self.state.set(model_id, replace(self.state.get(model_id), exposed=False))
