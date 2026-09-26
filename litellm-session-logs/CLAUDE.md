@@ -43,6 +43,16 @@ LiteLLM applies to a request's headers is quoted in that file under
    export's `response` column against the ndjson export's
    `proxy_server_request.messages`. Requires step 2's output.
 
+`header_probe.py` is a separate one-off debugging tool, not part of the
+numbered pipeline: a minimal `http.server` handler that logs every header a
+client sends and answers with a JSON shape permissive enough to satisfy an
+OpenAI chat-completions or legacy completions caller. Used to determine what
+headers a harness actually sends when the binary can't be `strings`-grepped
+(e.g. Copilot CLI's compressed Node SEA build) by pointing the harness's
+provider-base-URL override at it instead of the real provider. See the
+Copilot section of [session-log-sources.md](session-log-sources.md) for the
+worked example.
+
 Run scripts with `python3 <script>.py ...` — no venv/dependencies beyond the
 stdlib.
 

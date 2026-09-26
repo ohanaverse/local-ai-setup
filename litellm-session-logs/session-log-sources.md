@@ -9,9 +9,13 @@
 > at `/opt/homebrew/lib/node_modules/`; Claude Code, Codex CLI, GitHub Copilot
 > CLI and OpenCode were verified the same day against the versions in the
 > [harness index](#harness-index) and the live `LiteLLM_SpendLogs` table —
-> 46,534 rows at the time. Antigravity is a **partial stub**: its store is
-> located and its payload format identified, but the payloads were not decoded
-> ([Antigravity CLI](#antigravity-cli)). `shell` keeps no session record at all.
+> 46,534 rows at the time. Copilot's header set was confirmed the same day by a
+> live capture ([Copilot → the LiteLLM pipeline](#copilot--the-litellm-pipeline)).
+> Antigravity is a **partial stub**: its store is located, its payload format
+> identified, and payload decoding now works (validated against every local
+> `step_payload`, 0 failures) — but whether any session header reaches the
+> proxy is still unverified ([Antigravity CLI](#antigravity-cli)). `shell`
+> keeps no session record at all.
 >
 > **Why this exists:** the pipeline in [CLAUDE.md](CLAUDE.md) reconstructs a
 > transcript from what the *proxy* saw. The proxy only sees what the client
@@ -28,7 +32,7 @@
 | pi | `pi` (`pi-wt`) | JSONL transcript tree, v3 | `~/.pi/agent/sessions/<cwd-slug>/<ts>_<uuid>.jsonl` | **No** — 0 of 847 | documented below |
 | Claude Code | `claude` (`claude-wt`) | JSONL transcript tree + one file per sub-agent | `~/.claude/projects/<slug>/<sessionId>.jsonl` | **Yes** — header captured on 1,277 rows and equal to the column | documented below |
 | Codex CLI | `codex` (`codex-wt`) | JSONL rollout, linear | `~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl` | **No** — 0 of 211 | documented below |
-| GitHub Copilot CLI | `copilot` (`copilot-wt`) | JSONL event tree | `~/.copilot/session-state/<uuid>/events.jsonl` | **Ambiguous** — 1 of 262, on failure rows only | documented below |
+| GitHub Copilot CLI | `copilot` (`copilot-wt`) | JSONL event tree | `~/.copilot/session-state/<uuid>/events.jsonl` | **No** — 1 of 262, and that one is LiteLLM's random fallback | documented below |
 | OpenCode | `opencode` (`opencode-wt`) | SQLite, relational | `~/.local/share/opencode/opencode.db` | **No** — 0 of 47 | documented below |
 | Antigravity CLI | `agy` (`agy-wt`) | SQLite, one DB per conversation, protobuf payloads | `~/.gemini/antigravity-cli/conversations/<uuid>.db` | **Unverified** | partial stub |
 | Shell | `shell` (`shell-wt`) | none | — | n/a | n/a |
@@ -760,29 +764,55 @@ Types across all 235 transcripts (~23,700 events):
 
 ### Copilot → the LiteLLM pipeline
 
-**Conclusion: unreliable — treat Copilot sessions as unlinkable.** The evidence
-is genuinely mixed, so both halves are recorded:
+**Conclusion: Copilot sends no session-shaped header at all — treat Copilot
+sessions as unlinkable.** This was ambiguous as of the first pass (header name
+unverified against the compressed binary); it is now resolved by a live
+capture.
 
 - **No Copilot user agent appears** among the 1,595 rows with a captured request
   body (all are `claude-cli/*` or `Python-urllib/3.13`).
 - **Exactly one** of the 262 local session ids
   (`956f3299-09c3-49c2-b083-ece1f87068b5`) appears in `session_id` — on three
   `status: failure` rows dated 2026-09-02 for model `gpt-5.4-nano`, which the
-  proxy config did not contain (`ProxyModelNotFoundError`). Since that value is
-  not derivable from the request, Copilot *did* send something LiteLLM recognises
-  at least once.
-- **But not in the 2026-09-25 `wt smoke` run.** Copilot's row at 19:08:31
+  proxy config did not contain (`ProxyModelNotFoundError`). That match is now
+  understood to be coincidental rather than a sent header: see below.
+- **Not in the 2026-09-25 `wt smoke` run.** Copilot's row at 19:08:31
   (`ollama_chat/gpt-oss:20b`, `total_tokens: 34329`) carries
-  `session_id = f2c2deea-30af-4dbc-be0a-618d16ef162e`, another LiteLLM-assigned
-  random UUID that appears nowhere in the session record. That row is Copilot's
-  and not Codex's: the session's own `session.shutdown` reports exactly
+  `session_id = f2c2deea-30af-4dbc-be0a-618d16ef162e`, a LiteLLM-assigned random
+  UUID that appears nowhere in the session record. That row is Copilot's and not
+  Codex's: the session's own `session.shutdown` reports exactly
   `inputTokens: 34278, outputTokens: 51`.
-- **The header name is UNVERIFIED.** Copilot ships as a Node SEA binary
-  (`NODE_SEA` marker; `/opt/homebrew/Caskroom/copilot-cli/1.0.80/copilot`, which
-  reports `1.0.88`) whose JS payload is compressed: `strings` finds *none* of its
-  own known JS strings (e.g. `tool.execution_complete` → 0 occurrences), so a
-  header grep proves nothing here. Naming it needs a live request with proxy
-  debug logging.
+- **The header set is now VERIFIED by direct capture**, since `strings` against
+  the compressed Node SEA binary proves nothing either way (see the prior
+  UNVERIFIED note this replaces). Copilot routes local/custom providers through
+  `COPILOT_PROVIDER_BASE_URL`, which made it possible to stand in for the
+  provider and log the raw request:
+
+  ```bash
+  # terminal 1 — logs every header to /tmp/copilot_headers.log
+  python3 header_probe.py   # trivial http.server handler, see below
+
+  # terminal 2
+  env COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:4199/v1 \
+      COPILOT_PROVIDER_API_KEY=dummy-key \
+      COPILOT_PROVIDER_WIRE_API=completions \
+      COPILOT_MODEL=probe-model \
+      copilot -p "say ok"
+  ```
+
+  The captured `POST /v1/chat/completions` (OpenAI JS SDK 5.20.1, confirmed by
+  `x-stainless-*` headers and `user-agent: OpenAI/JS 5.20.1`) carries **18
+  headers total**: `authorization`, `content-type`, `accept`,
+  `accept-encoding`, `content-length`, `host`, `user-agent`, seven
+  `x-stainless-*` SDK-internal headers, plus `x-interaction-type` and
+  `x-initiator` (both fixed values — `conversation-user` / `user` — not
+  identifiers). **None matches `^x-.+-session-id$`, none is
+  `x-litellm-trace-id`/`x-litellm-session-id`, and there is no `traceparent` or
+  `baggage`.** No session identity is sent in headers, full stop — this puts
+  Copilot alongside Codex and OpenCode rather than in an ambiguous middle
+  state. The body's `messages[0]` is the full Copilot CLI system prompt, which
+  also confirms the probe intercepted a real, complete Copilot turn rather than
+  an aborted or malformed one.
 
 Practical consequence: a Copilot `session_id` cannot be trusted to mean
 anything. Read `events.jsonl` directly, and find a session by `cwd` in
@@ -986,8 +1016,9 @@ sidecars); `message.data` and `part.data` are JSON *strings* inside SQLite, so u
 
 ## Antigravity CLI
 
-**Partial stub — locations and format verified 2026-09-25 against `agy` 1.2.4;
-payload decoding and proxy linkage are NOT verified.**
+**Partial stub — locations, format and payload decoding verified 2026-09-25
+against `agy` 1.2.4; proxy linkage (whether any session header reaches
+LiteLLM) is still NOT verified.**
 
 The stub's assumed root, `~/.antigravity`, **does not exist**. Antigravity keeps
 its CLI state under `~/.gemini/antigravity-cli/` (Google/Gemini lineage).
@@ -1011,14 +1042,70 @@ steps(idx, step_type, status, has_subtrajectory, metadata BLOB, error_details BL
       permissions BLOB, task_details BLOB, render_info BLOB, step_payload BLOB, step_format)
 ```
 
-A `step_payload` does not decode as JSON (a sample read back as raw bytes), so
-reconstructing a conversation needs the matching `.proto` definitions from the
-Antigravity distribution. Largest observed: 185 steps.
+A `step_payload` does not decode as JSON (a sample read back as raw bytes) —
+it's a serialized `gemini_coder.Step` protobuf message, and `agy` ships no
+`.proto` files on disk to decode it with. Largest observed: 185 steps.
+
+### Decoding `step_payload`
+
+The schema is embedded *inside the `agy` binary itself*: protoc-gen-go
+compiles each generated file's `FileDescriptorProto` in as a raw byte blob,
+one per Go package, with no length-prefixed container grouping them.
+[`antigravity/extract_descriptors.py`](antigravity/extract_descriptors.py)
+locates and reassembles them:
+
+1. Every `FileDescriptorProto` serializes its `name` field (field 1) first,
+   and every name ends in `.proto` — so it scans the binary for
+   `<0x0a><varint length><...>.proto` and keeps candidates whose captured
+   string looks like a plausible file path. Against the installed 1.2.4
+   binary this finds **333 candidates**.
+2. Each blob's length isn't stored anywhere, so the script walks the
+   generic protobuf wire format (tag/wire-type only — no message-specific
+   schema needed) from the candidate start until a tag byte that isn't a
+   valid continuation is hit. That's what naturally happens at the true
+   end of one embedded blob, where either zero-byte alignment padding or
+   unrelated binary content follows. **277 of 333 candidates parse cleanly**
+   this way (41 fail outright; 15 names occur twice at different sizes —
+   in every case checked, the larger was a strict superset of the smaller's
+   message/enum types, not a different schema version, so the larger is
+   kept).
+3. Building the `gemini_coder.Step` closure from
+   `third_party/gemini_coder/proto/trajectory.proto` (package
+   `gemini_coder`, `Step` has 134 top-level fields) needs **37 files**, all
+   present except one: `third_party/jetski/browser_pb/browser.proto`. Only
+   three enums from it are actually referenced (`ClickType`,
+   `ScrollDirection`, `WindowState`, all on browser-tool config fields), so
+   the script stubs a minimal `exa.browser_pb` file defining just those
+   three enums with a zero value each, rather than leaving the closure
+   unresolved.
+4. The 37 files assemble into a `FileDescriptorSet` (~500 KB), loadable via
+   `descriptor_pool` (Python) or `protoc --descriptor_set_in=<path>
+   --decode=gemini_coder.Step` (CLI).
+
+```bash
+python3 antigravity/extract_descriptors.py ~/.local/bin/agy \
+  third_party/gemini_coder/proto/trajectory.proto antigravity/step.desc
+```
+
+**Validated against every `step_payload` in every readable local conversation
+DB: 1,049 of 1,049 decoded successfully, 0 failures.** (A handful of DBs
+failed to open at all — `database disk image is malformed` — likely stale
+live-WAL files; unrelated to descriptor correctness.) Decoded output is
+fully readable, e.g. `type: CORTEX_STEP_TYPE_PLANNER_RESPONSE status:
+CORTEX_STEP_STATUS_DONE metadata { created_at { seconds: ... } source:
+CORTEX_STEP_SOURCE_MODEL ... }` — named enums and all, confirming the
+extracted schema matches the binary's actual encoder.
+
+The generated `.desc` file is gitignored (`antigravity/*.desc`) and
+regenerated from the locally-installed `agy` binary rather than committed —
+it's extracted internal Google schema *metadata* (message/field/enum names
+and numbers), used here only to decode the current user's own local
+conversation data, not redistributed.
 
 The CLI does support resume (`agy --continue`, `agy --conversation <id>`,
 `--log-file`), so conversations have stable ids — but **whether any session
-header reaches LiteLLM is unverified**, and `wt`'s `agyDriver` has no resume
-support at all.
+header reaches LiteLLM is still unverified**, and `wt`'s `agyDriver` has no
+resume support at all.
 
 To confirm the store against a fresh run:
 
@@ -1029,9 +1116,11 @@ sqlite3 "file:$HOME/.gemini/antigravity-cli/conversation_summaries.db?immutable=
    from conversation_summaries order by last_modified_time desc limit 5"
 ```
 
-Finishing this harness needs two things not done here: decoding `step_payload`
-(protobuf), and one `agy` session run while watching `proxy_server_request`
-headers.
+What's left to finish this harness: proxy linkage (one `agy` session run
+while watching `proxy_server_request` headers — the same technique used for
+[Copilot](#copilot--the-litellm-pipeline) applies here), and, optionally, a
+small helper that walks a conversation DB's `steps` table end-to-end and
+prints each decoded `Step` (deferred — not built here).
 
 ---
 
