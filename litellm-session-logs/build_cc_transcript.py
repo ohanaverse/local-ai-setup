@@ -431,7 +431,8 @@ def render_appendix(md, *transcripts):
         counts.update(t.tally_entries)
     rows = []
     for t, n in sorted(counts.items()):
-        if t in ("user", "assistant", "attachment", "(unparseable)"):
+        if t in ("user", "assistant", "system", "attachment",
+                 "(unparseable)"):
             continue
         desc = BOOKKEEPING.get(t, "unrecognized entry type — counted, not rendered")
         rows.append(f"| `{t}` | {n} | {desc} |")
