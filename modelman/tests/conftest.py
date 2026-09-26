@@ -80,6 +80,25 @@ def _never_call_real_ollama(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_run_real_price_refresh(monkeypatch):
+    """The suite must never let the on-mount price-refresh worker reach the
+    OpenRouter pricing API. `_never_touch_live_providers` blocks
+    `urllib.request`, but pricing.py fetches with `requests`, so that path is
+    a separate gap: with a cloud model seeded, `should_run_price_refresh` is
+    True and the worker does a real `requests.get(..., timeout=30)`. While
+    that call is in flight, ModelScreen's Escape guard sees a running worker
+    and shows ConfirmForceQuitDialog instead of ConfirmExitDialog, which made
+    `test_escape_with_pending_shows_dialog_and_apply` fail on ~11 of 12 runs
+    (issue #166). Stubbing the daily gate to False keeps the worker's code
+    path but returns before the fetch, so no network I/O happens and the
+    worker settles like any worker with no work."""
+    monkeypatch.setattr(
+        "modelman.pricing.should_run_price_refresh",
+        lambda state, registry: False,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _never_call_real_wt(monkeypatch):
     """The suite must never run the real `wt` binary: it would rewrite the
     developer's real LiteLLM config.yaml and bounce their live proxy. Every
