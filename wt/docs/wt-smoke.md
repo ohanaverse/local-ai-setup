@@ -30,7 +30,10 @@ wt smoke <model-id> --json
 - `--prompt` — override the default sentinel-echo prompt. A custom prompt
   cannot be verified for a sentinel it was never asked to produce, so
   verification degrades to "the agent exited 0 within the timeout" — this
-  confirms wiring, not response correctness.
+  confirms wiring, not response correctness. **Runs with tool-use
+  permission bypassed, in the current working directory** (see "Tool-use
+  permission" below) — an override prompt therefore runs whatever it asks
+  for unsupervised in this checkout, not just the fixed sentinel text.
 - `--timeout` — per-agent timeout. Default: `180s` for cloud models, `900s` for local models (cold prefill of large agent prompts can take minutes). An explicit value applies to both.
 - `--only` — comma-separated agents to restrict the run to; must be a
   subset of the model's currently eligible agents.
@@ -51,6 +54,27 @@ message
 An idle pick is started first through the shared start driver, honouring
 the root `--replace` flag when another model occupies a single-model
 provider's slot.
+
+## Tool-use permission
+
+Every one-shot launch except codex runs with the agent's
+yolo/`--allow-all-tools`-equivalent flag set, regardless of the root
+`--yolo` flag's own state. A one-shot prompt has no TTY to answer an
+interactive tool-permission prompt; without this, a backing model that
+attempts any tool call during the trivial smoke prompt gets a
+permission-denied response it may not recover from within the timeout
+(observed with copilot CLI, whose own docs call `--allow-all-tools`
+"required for non-interactive mode"). codex is excluded: its `exec`
+subcommand already never prompts for approval, so it never had this
+failure mode, and its yolo flag
+(`--dangerously-bypass-approvals-and-sandbox`) would additionally strip
+its own sandbox for no benefit.
+
+**Cost:** the agent runs in the current working directory with permission
+checks bypassed — with the default sentinel prompt this is inert (the
+prompt only asks for an exact-text echo), but a `--prompt` override (above)
+or a backing model that decides to explore unprompted runs genuinely
+unsupervised here, not in a scratch directory.
 
 ## Exit flow
 

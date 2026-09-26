@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // testEnv is an env with tiny poll intervals and timeouts so polling tests run
@@ -216,5 +217,155 @@ func TestWarmupRejectsNon2xx(t *testing.T) {
 	// POST: >= 2 cannot flake.
 	if got := atomic.LoadInt32(&posts); got < 2 {
 		t.Errorf("posts = %d, want >= 2: the loop must retry the non-2xx instead of failing on the first attempt", got)
+	}
+}
+
+// TestWarmupTimeoutErrorIncludesLastFailureReason pins that a warmup
+// timeout's error names the actual reason the last attempt failed, not just
+// a generic "failed to warm up" message. Without this, a warmup loop that
+// retries against a model the server will never serve (e.g. an incomplete
+// download the server correctly excludes from /v1/models and 404s) looks
+// indistinguishable from "still starting" for the entire warmupTimeout — a
+// real incident (omlx, 2026-09-25) needed raw server-log spelunking to find
+// the 404's explanation because this reason was being discarded here.
+func TestWarmupTimeoutErrorIncludesLastFailureReason(t *testing.T) {
+	e := testEnv()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Model 'm' not found. Available models: other-model"}`))
+	}))
+	defer srv.Close()
+
+	err := e.warmup(context.Background(), srv.URL+"/v1/chat/completions", "m", srv.URL+"/health", e.warmupTimeout)
+	if err == nil {
+		t.Fatal("warmup: want an error, got nil")
+	}
+	for _, want := range []string{"404", "not found", "other-model"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("warmup err = %q, want it to contain %q (the server's own explanation)", err.Error(), want)
+		}
+	}
+}
+
+// TestTryChatReasonIsTruncated pins that a large response body embedded in
+// tryChat's failure reason is bounded, not copied verbatim — a warmup
+// failure against a server returning an HTML error page or a large JSON
+// blob must not balloon the caller's final error message.
+func TestTryChatReasonIsTruncated(t *testing.T) {
+	e := testEnv()
+	big := strings.Repeat("x", 10_000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(big))
+	}))
+	defer srv.Close()
+
+	ok, reason := e.tryChat(context.Background(), srv.URL, []byte(`{}`))
+	if ok {
+		t.Fatal("tryChat: want ok=false for a 500 response")
+	}
+	if len(reason) > 400 {
+		t.Errorf("reason length = %d, want it truncated well under the 10,000-byte body (max 300 chars of body plus a short prefix)", len(reason))
+	}
+}
+
+// TestTruncateForErrorRespectsUTF8Boundary pins that truncating at the
+// 300-byte limit never splits a multibyte rune (code review finding,
+// 2026-09-25): a naive byte slice at exactly the wrong offset would leave
+// invalid UTF-8 in the error text a caller might print or log verbatim.
+func TestTruncateForErrorRespectsUTF8Boundary(t *testing.T) {
+	// A single-byte prefix shifts every subsequent 3-byte rune ("★") off a
+	// multiple-of-3 boundary, so the naive s[:300] cut lands one byte inside
+	// a rune (300-1=299, and 299 is not a multiple of 3) instead of
+	// harmlessly on a rune boundary.
+	body := "x" + strings.Repeat("★", 200) // 601 bytes
+	got := truncateForError([]byte(body))
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateForError result is not valid UTF-8: %q", got)
+	}
+}
+
+// TestTruncateForErrorCollapsesWhitespace pins that embedded newlines and
+// other whitespace runs are collapsed to single spaces (code review finding,
+// 2026-09-25): the function's own doc comment promises a "readable
+// one-liner", but an HTML error page or a formatted stack trace body would
+// otherwise carry its original line breaks straight into the caller's
+// single-line error message.
+func TestTruncateForErrorCollapsesWhitespace(t *testing.T) {
+	body := "line one\nline two\n\tindented line three"
+	got := truncateForError([]byte(body))
+	if strings.ContainsAny(got, "\n\t") {
+		t.Fatalf("truncateForError result still contains a newline or tab: %q", got)
+	}
+	want := "line one line two indented line three"
+	if got != want {
+		t.Errorf("truncateForError(%q) = %q, want %q", body, got, want)
+	}
+}
+
+// TestWarmupHealthCheckNeverRespondingReasonIsDistinct pins that a server
+// whose health endpoint never answers reports that specifically, not a
+// generic or stale chat-completion reason — a cold-starting server's
+// eventual timeout error should say "did not respond", not misattribute the
+// failure to whatever tryChat last returned in an earlier iteration.
+func TestWarmupHealthCheckNeverRespondingReasonIsDistinct(t *testing.T) {
+	e := testEnv()
+	err := e.warmup(context.Background(), "http://127.0.0.1:1/chat", "m", "http://127.0.0.1:1/health", e.warmupTimeout)
+	if err == nil {
+		t.Fatal("warmup: want an error when the health endpoint never responds")
+	}
+	if !strings.Contains(err.Error(), "did not respond") {
+		t.Errorf("warmup err = %q, want it to contain \"did not respond\"", err.Error())
+	}
+}
+
+// TestWarmupStaleChatReasonReplacedByHealthReason pins the other half of the
+// distinct-reason contract (code review finding, 2026-09-25): a chat
+// failure's reason must not linger in the final error once the server goes
+// away entirely. The health endpoint answers normally until the first chat
+// request fails (404), then starts refusing every connection — without
+// warmup overwriting lastReason on every iteration (not just chat
+// failures), the final timeout error would misleadingly still say "not
+// found" for a server that has, by the time warmup gives up, been down for
+// most of the timeout window.
+func TestWarmupStaleChatReasonReplacedByHealthReason(t *testing.T) {
+	e := testEnv()
+	var down int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if atomic.LoadInt32(&down) == 1 {
+			// Simulate the server going away: hijack and close the raw
+			// connection with no response, so the client sees a connection
+			// error rather than a slow-but-valid HTTP response.
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hj.Hijack(); err == nil {
+					conn.Close()
+					return
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
+		atomic.StoreInt32(&down, 1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Model 'm' not found"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	err := e.warmup(context.Background(), srv.URL+"/chat", "m", srv.URL+"/health", e.warmupTimeout)
+	if err == nil {
+		t.Fatal("warmup: want an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "did not respond") {
+		t.Errorf("warmup err = %q, want it to contain \"did not respond\" (the health reason must win once the server stops answering)", err.Error())
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("warmup err = %q, want it to NOT still carry the earlier chat-completion reason after the health check started failing", err.Error())
 	}
 }

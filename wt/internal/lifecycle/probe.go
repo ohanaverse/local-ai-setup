@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -134,19 +136,23 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL string, time
 		"stream":      false,
 	})
 	deadline := time.Now().Add(timeout)
+	var lastReason string
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if responded, _ := e.probe(ctx, healthURL, 2*time.Second); !responded {
+			lastReason = "health check at " + healthURL + " did not respond"
 			if err := e.sleep(ctx, e.pollInterval); err != nil {
 				return err
 			}
 			continue
 		}
-		if e.tryChat(ctx, chatURL, payload) {
+		ok, reason := e.tryChat(ctx, chatURL, payload)
+		if ok {
 			return nil
 		}
+		lastReason = reason
 		if err := e.sleep(ctx, e.pollInterval); err != nil {
 			return err
 		}
@@ -154,33 +160,83 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL string, time
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return fmt.Errorf("failed to warm up model %s at %s", model, chatURL)
+	if lastReason == "" {
+		lastReason = "no attempts completed"
+	}
+	return fmt.Errorf("failed to warm up model %s at %s: %s", model, chatURL, lastReason)
 }
 
-func (e *env) tryChat(ctx context.Context, chatURL string, payload []byte) bool {
+func (e *env) tryChat(ctx context.Context, chatURL string, payload []byte) (ok bool, reason string) {
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(payload))
 	if err != nil {
-		return false
+		return false, err.Error()
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := e.chatClient.Do(req)
 	if err != nil {
-		return false
+		return false, err.Error()
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false
+		return false, "reading response: " + err.Error()
 	}
 	// A non-2xx answer is not a warmup, even when its body echoes a
 	// chat.completion marker: the ported probe raises HTTPError here and
 	// retries. Accepting it reports a model as resident that is not.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false
+		return false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateForError(body))
 	}
-	return chatCompletionMarker.Match(body)
+	if !chatCompletionMarker.Match(body) {
+		return false, "response missing chat.completion marker: " + truncateForError(body)
+	}
+	return true, ""
+}
+
+// truncateForError bounds a server response body embedded in an error
+// message: a warmup failure's body can be an HTML error page or a large
+// JSON blob, and the caller's final error must stay a readable one-liner.
+func truncateForError(b []byte) string {
+	const max = 300
+	// strings.Fields+Join below is O(len(b)); warmup polls once a second for
+	// up to warmupTimeout (600s), so a failing server that keeps answering
+	// with a multi-MB body (a misrouted proxy, an unrelated HTTP service on
+	// the probed port) would otherwise pay a full-body allocate-and-split
+	// pass on every poll purely to produce a 300-character message.
+	// Whitespace collapsing only removes characters, never adds them, so
+	// bounding the input to a fixed multiple of max bytes before splitting
+	// still leaves far more than enough to fill max runes.
+	const scanLimit = max * 8
+	if len(b) > scanLimit {
+		b = []byte(trimTrailingPartialRune(string(b[:scanLimit])))
+	}
+	// strings.Fields splits on any whitespace (including newlines/tabs) and
+	// drops empty runs; joining with a single space collapses the body to
+	// one line and trims its ends, so an HTML error page or a formatted
+	// stack trace can't carry its line breaks into the caller's one-line
+	// error message.
+	s := strings.Join(strings.Fields(string(b)), " ")
+	if len(s) <= max {
+		return s
+	}
+	return trimTrailingPartialRune(s[:max]) + "…"
+}
+
+// trimTrailingPartialRune backs off to a valid rune boundary: DecodeLastRuneInString
+// reports (RuneError, 1) only when the trailing byte(s) are not a complete,
+// valid encoding — the impossible-for-correct-UTF-8 signal that a byte cut
+// landed mid-rune.
+func trimTrailingPartialRune(s string) string {
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // liveServed asks a single-model provider's server directly what it is serving,

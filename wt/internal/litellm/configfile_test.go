@@ -191,10 +191,83 @@ litellm_settings:
 	if strings.Count(out, "use_chat_completions_api") != 1 {
 		t.Errorf("real OpenAI row must not get the bridge flag:\n%s", out)
 	}
+	// Pin that the wider ollama_chat/ drop list (reasoning_effort,
+	// frequency_penalty, presence_penalty) attaches only to the one
+	// ollama_chat/ row ("a") — the openai/ rows ("b", loopback; "c", real
+	// OpenAI) must never gain these entries (code review finding,
+	// 2026-09-25: this was structurally guaranteed by the switch but had no
+	// explicit pin).
+	for _, want := range []string{"frequency_penalty", "presence_penalty"} {
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("%q appears %d times, want exactly 1 (only on the ollama_chat/ row):\n%s", want, n, out)
+		}
+	}
 	f2, _ := Open(writeConfig(t, out))
 	f2.EnsureSettings()
 	if f2.Changed() {
 		t.Fatal("EnsureSettings is not idempotent")
+	}
+}
+
+// TestEnsureSettingsDropsFrequencyAndPresencePenaltyOnFreshOllamaChatRows
+// pins that a fresh (no additional_drop_params yet) ollama_chat/ row gets
+// frequency_penalty and presence_penalty dropped alongside reasoning_effort.
+// Root cause (2026-09-25, isolated via direct curl against LiteLLM): LiteLLM's
+// ollama_chat bridge translates frequency_penalty/presence_penalty into
+// ollama's native repeat_penalty, and for some models (observed with
+// gpt-oss:20b) that translation can produce a value ollama's sampler rejects
+// ("penalty_repeat must be finite and greater than 0") even when the caller
+// sent 0 — copilot CLI always sends both params, so every copilot request
+// against an affected model 500s. Without this, a fresh expose of any such
+// model silently reintroduces the crash.
+func TestEnsureSettingsDropsFrequencyAndPresencePenaltyOnFreshOllamaChatRows(t *testing.T) {
+	f, _ := Open(writeConfig(t, `model_list:
+  - model_name: ollama/gpt-oss:20b
+    litellm_params: {model: ollama_chat/gpt-oss:20b}
+`))
+	f.EnsureSettings()
+	out := enc(t, f)
+	for _, want := range []string{"reasoning_effort", "frequency_penalty", "presence_penalty"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in additional_drop_params:\n%s", want, out)
+		}
+	}
+}
+
+// TestEnsureSettingsNeverExtendsAnExistingDropList pins the presence-based
+// contract this task must not weaken: a row that already has
+// additional_drop_params (even a single, now-incomplete entry like the
+// pre-existing [reasoning_effort] this fix's own currently-deployed
+// gpt-oss:20b row carries) is left exactly as-is by EnsureSettings — never
+// silently widened. TestSetRowPreservesUserManagedParams already pins the
+// general presence-based rule; this test pins it specifically for the case
+// this task introduces (a list that predates the wider default and would
+// otherwise look like an obvious "just add the missing ones" target).
+func TestEnsureSettingsNeverExtendsAnExistingDropList(t *testing.T) {
+	f, _ := Open(writeConfig(t, `model_list:
+  - model_name: ollama/gpt-oss:20b
+    litellm_params:
+      model: ollama_chat/gpt-oss:20b
+      additional_drop_params: [reasoning_effort]
+`))
+	f.EnsureSettings()
+	out := enc(t, f)
+	if strings.Contains(out, "frequency_penalty") || strings.Contains(out, "presence_penalty") {
+		t.Fatalf("EnsureSettings widened an existing additional_drop_params list:\n%s", out)
+	}
+	if !strings.Contains(out, "reasoning_effort") {
+		t.Fatalf("existing additional_drop_params entry lost:\n%s", out)
+	}
+	// Pin "left exactly as-is", not just "didn't gain these two strings"
+	// (code review finding, 2026-09-25): re-running EnsureSettings on the
+	// row this call already touched (for litellm_settings, which this
+	// config lacked) must report no further change — a stray rewrite of
+	// the row's formatting or ordering would fail this even though the
+	// substring checks above would still pass.
+	f2, _ := Open(writeConfig(t, out))
+	f2.EnsureSettings()
+	if f2.Changed() {
+		t.Fatalf("EnsureSettings is not idempotent on a row with a pre-existing additional_drop_params list:\n%s", enc(t, f2))
 	}
 }
 
