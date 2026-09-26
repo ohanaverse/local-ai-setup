@@ -1,9 +1,13 @@
 # CLAUDE.md
 
-Standalone pipeline (psql SQL + sh + stdlib-only Python) for pulling one
-LiteLLM proxy session's logs out of the `LiteLLM_SpendLogs` Postgres table
-and reconstructing a readable Markdown chat transcript from them. Not wired
-into modelman or wt — run manually, per session, from this directory.
+Standalone pipeline (psql SQL + sh + stdlib-only Python) for reconstructing
+readable Markdown chat transcripts from session logs, from two sources: the
+LiteLLM proxy's `LiteLLM_SpendLogs` Postgres table (steps 1–2 + the
+`build_transcript.py`/`build_full_transcript.py` builders), and Claude Code's
+local session record under `~/.claude/projects/` (steps 3–4, whose builder
+adds the harness context and subagent threads the proxy DB cannot see).
+Not wired into modelman or wt — run manually, per session, from this
+directory.
 
 The pipeline can only see sessions whose harness sends a session id LiteLLM
 recognizes. Which harnesses do, and where each keeps its own local session
@@ -34,11 +38,23 @@ LiteLLM applies to a request's headers is quoted in that file under
    (`\x01`/`\x02`) for `\copy` specifically to avoid Postgres's default TEXT
    format double-escaping backslashes inside the JSON text (which would break
    `json.loads`).
-3. **`build_transcript.py <session_logs_<id>.json>`** — builds an
+3. **`03_capture_claude_code.sh <session-id> [snapshot-dir]`** — snapshots
+   a Claude Code session's local record (the main `<sessionId>.jsonl` plus
+   the `<sessionId>/` directory with subagent transcripts) from
+   `~/.claude/projects/<slug>/` into `session_cc_<id>/`, with a
+   `capture.json` manifest. The snapshot is stable against a still-live
+   session and survives `~/.claude`'s retention cleanup (default 30 days).
+4. **`build_cc_transcript.py <snapshot-dir> [output.md]`** — builds a
+   **full-context** transcript from a step-3 snapshot: harness context
+   (system prompt, instructions, environment), the conversation with
+   thinking, tool calls and results, subagent transcripts, and an appendix
+   of skipped bookkeeping entry types. Design:
+   `docs/superpowers/specs/2026-09-25-cc-session-transcript-builder-design.md`.
+5. **`build_transcript.py <session_logs_<id>.json>`** — builds an
    **assistant-only** transcript from the JSON export alone (`response`
    column). Use when `messages` is empty (`{}`, the normal case for
    standard chat completions) and you don't have `proxy_server_request`.
-4. **`build_full_transcript.py <session_logs.json> <proxy_requests.ndjson>
+6. **`build_full_transcript.py <session_logs.json> <proxy_requests.ndjson>
    [output.md]`** — builds a **two-sided** transcript by joining the JSON
    export's `response` column against the ndjson export's
    `proxy_server_request.messages`. Requires step 2's output.
