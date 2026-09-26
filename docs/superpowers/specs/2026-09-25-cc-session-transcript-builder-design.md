@@ -94,8 +94,13 @@ and a source-tally table: per-entry-type and per-content-block-type counts
 computed from the raw files (doubles as a correctness check against jq).
 
 ## 1. Harness context
-Attachments that appear before the first user message, in
-first-appearance order, verbatim:
+Attachments that appear before the first assistant turn, in
+first-appearance order, verbatim. (Prompt assembly happens at turn
+start — in session cce7a30d… the heavyweight context attachments land
+between the queued user prompt and the first assistant reply, and in a
+sub-agent file they land right after the task prompt; "before the first
+assistant turn" captures both shapes, "before the first user message"
+does not.)
 - System prompt (`prompt_snapshot` → `systemPrompt` array, ~29 KB)
 - Instructions (CLAUDE.md / preference files, full contents)
 - session_context, date, environment, and any other leading attachments,
