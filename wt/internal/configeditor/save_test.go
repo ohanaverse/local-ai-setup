@@ -166,6 +166,89 @@ func TestSave_ConcurrentRequests_Deduplicated(t *testing.T) {
 	}
 }
 
+// TestSave_PreservesConcurrentLitellmChange reproduces issue #143: the
+// editor loads a Config with no [litellm], a concurrent `wt litellm set`
+// changes it on disk, and then the editor saves its own (agent) edit. A
+// whole-file save of the editor's stale snapshot would revert the
+// concurrent [litellm] change; this pins that the editor's save preserves
+// it instead.
+func TestSave_PreservesConcurrentLitellmChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	registryDir := tmpDir + "/local-ai"
+	if err := os.MkdirAll(registryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// migrateConfigSchema unconditionally ensures an "agy" agent on Load
+	// (wt/CLAUDE.md's "Fixture gotcha"), so the registry needs a matching
+	// agy provider (native) alongside ollama for the added claude agent.
+	registryToml := `providers = [{id = "ollama", name = "Ollama"}, {id = "agy", name = "Agy", auth = {type = "native"}}]
+models = []
+`
+	if err := os.WriteFile(registryDir+"/registry.toml", []byte(registryToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The editor "opens" with a stale, litellm-less snapshot.
+	editorCfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(testTheme(), editorCfg, nil)
+	m.cfg = editorCfg
+	m.cfg.Agents = append(m.cfg.Agents, config.Agent{Name: "claude", SupportedProviders: []string{"ollama"}})
+	m.dirty = true
+
+	// Concurrently, `wt litellm set` persists a change from its own load.
+	writerCfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writerCfg.UpdateLitellm(func(s *config.LitellmState) {
+		s.Enabled, s.URL, s.APIKey = true, "http://localhost:4000", "sk-concurrent"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The editor now saves.
+	_, cmd := m.handleSave()
+	if cmd == nil {
+		t.Fatal("expected save command, got nil")
+	}
+	msg := cmd()
+	save, ok := msg.(saveMsg)
+	if !ok {
+		t.Fatalf("expected saveMsg, got %T", msg)
+	}
+	if save.err != nil {
+		t.Fatalf("save failed: %v", save.err)
+	}
+
+	reloaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsLitellm() || reloaded.LitellmAPIKey() != "sk-concurrent" {
+		t.Fatalf("editor save clobbered concurrent litellm change: enabled=%v", reloaded.IsLitellm())
+	}
+	found := false
+	for _, a := range reloaded.Agents {
+		if a.Name == "claude" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("editor's own agent change was lost: %+v", reloaded.Agents)
+	}
+}
+
 // TestSave_FailureKeepsDirty verifies that a failed save leaves dirty=true
 // so the user can retry after fixing the problem.
 func TestSave_FailureKeepsDirty(t *testing.T) {

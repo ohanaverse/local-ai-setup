@@ -43,18 +43,32 @@ const OllamaBaseURL = "http://localhost:11434"
 
 // UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
 // wt's config.toml. wt owns this state (moved from modelman.toml 2026-09-21).
+//
+// It persists through PatchSave rather than a whole-file Save of c: c may be
+// a long-lived process's stale in-memory snapshot (issue #143 — a `wt
+// litellm` run against a Config loaded before a concurrent `wt config`
+// editor session saved its own Agents/DefaultTag change). PatchSave re-reads
+// config.toml fresh under the lock and touches only LitellmTable, so that
+// concurrent change survives.
 func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
 	prev, prevTable := c.litellm, c.LitellmTable
-	s := c.litellm
-	mutate(&s)
-	c.litellm = s
-	c.LitellmTable = &s
-	if err := Save(c); err != nil {
+	var result LitellmState
+	err := c.PatchSave(func(fresh *Config) {
+		s := LitellmState{}
+		if fresh.LitellmTable != nil {
+			s = *fresh.LitellmTable
+		}
+		mutate(&s)
+		fresh.LitellmTable = &s
+		result = s
+	})
+	if err != nil {
 		// Nothing persisted: keep memory in step with disk so later routing
 		// in this process does not act on a state that was never saved.
 		c.litellm, c.LitellmTable = prev, prevTable
 		return err
 	}
+	c.litellm, c.LitellmTable = result, &result
 	return nil
 }
 
@@ -521,20 +535,20 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("migration: %w", err)
 	}
 
-	cfg := &Config{DefaultTag: "code"}
-	data, err := os.ReadFile(Path())
-	if os.IsNotExist(err) {
+	cfg, exists, err := readConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
 		providers, models, err := loadRegistry()
 		if err != nil {
 			return cfgOrNilOnMissingRegistry(cfg, err), err
 		}
-		return finalizeCfg(cfg, providers, models)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if _, err := toml.Decode(string(data), cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		exposed, legacy, err := loadModelmanState()
+		if err != nil {
+			return nil, err
+		}
+		return finalizeCfg(cfg, providers, models, exposed, legacy)
 	}
 
 	providers, models, err := loadRegistry()
@@ -549,29 +563,50 @@ func Load() (*Config, error) {
 		return cfgOrNilOnMissingRegistry(cfg, err), err
 	}
 
-	changed, err := migrateConfigSchema(cfg)
+	// migrateConfigSchema runs against a fresh, lock-protected read (via
+	// lockedApply) rather than the unlocked cfg read above: loadRegistry and
+	// the schema-migration probe both take real time, and a concurrent
+	// PatchSave-based writer landing in that window must not be clobbered by
+	// a stale whole-file save (issue #143 follow-up).
+	fresh, changed, err := lockedApply(func(fresh *Config) (bool, error) {
+		return migrateConfigSchema(fresh)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("schema migration: %w", err)
 	}
 	if changed {
-		if err := Save(cfg); err != nil {
-			return nil, fmt.Errorf("save migrated config: %w", err)
-		}
 		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
+	}
+
+	exposed, legacy, err := loadModelmanState()
+	if err != nil {
+		return nil, err
 	}
 
 	// Join modelman-owned registry LAST so wt never mutates registry data
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	c, err := finalizeCfg(cfg, providers, models)
+	c, err := finalizeCfg(fresh, providers, models, exposed, legacy)
 	if err != nil {
 		return nil, err
 	}
 	if c.migratedLitellm {
-		if err := Save(c); err != nil {
+		// Re-checks LitellmTable on a fresh lockedApply read rather than
+		// blindly writing c: a concurrent `wt litellm set` between the
+		// schema-migration lock above and here must win over the legacy
+		// modelman.toml value finalizeCfg fell back to in memory.
+		_, persisted, err := lockedApply(func(fresh2 *Config) (bool, error) {
+			if fresh2.LitellmTable != nil {
+				return false, nil
+			}
+			fresh2.LitellmTable = c.LitellmTable
+			return true, nil
+		})
+		switch {
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "wt: could not persist [litellm] to config.toml: %v\n", err)
-		} else {
+		case persisted:
 			fmt.Fprintln(os.Stderr, "wt: moved [litellm] routing state from modelman.toml into wt's config.toml")
 		}
 		c.migratedLitellm = false
@@ -593,15 +628,14 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
-// from provider auth types, and loads modelman exposure state. Callers must
-// already have loaded config.toml and registry.toml.
-func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
+// from provider auth types, and applies the already-loaded modelman
+// exposure/legacy-litellm state (exposed, legacy). Callers must already have
+// loaded config.toml, registry.toml, and modelman.toml (loadModelmanState) —
+// finalizeCfg no longer reads modelman.toml itself, so Load calls it exactly
+// once instead of once per finalizeCfg call.
+func finalizeCfg(cfg *Config, providers []Provider, models []Model, exposed map[string]ExposureEntry, legacy *LitellmState) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	exposed, legacy, err := loadModelmanState()
-	if err != nil {
-		return nil, err
-	}
 	cfg.exposed = exposed
 	switch {
 	case cfg.LitellmTable != nil:
@@ -979,10 +1013,27 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return os.Rename(tmp, path)
 }
 
-// Save writes cfg to the config path using an atomic temp-file + rename.
-// Only wt-owned fields are persisted: Providers/Models live in
-// modelman-owned registry.toml and are never written by wt.
+// Save writes cfg to the config path using an atomic temp-file + rename,
+// under WithLock so it can never interleave with a PatchSave's
+// read-modify-write. Only wt-owned fields are persisted: Providers/Models
+// live in modelman-owned registry.toml and are never written by wt.
+//
+// Prefer PatchSave (or, for Load's own self-persisting migrations,
+// lockedApply) over Save whenever cfg may be a stale snapshot (loaded
+// earlier, possibly in a different process) — Save writes cfg wholesale and
+// so reverts any field a concurrent writer changed since cfg was loaded.
+// Every production writer (the `wt config` editor, `wt litellm on|off|set`,
+// Load's own migrations) now goes through one of those locked-fresh-read
+// paths instead; Save remains as the simple whole-file primitive they build
+// on and for tests/tools that construct and persist a Config in one step
+// with no concurrent-writer risk.
 func Save(cfg *Config) error {
+	return WithLock(func() error { return writeConfigFile(cfg) })
+}
+
+// writeConfigFile is Save's encode-and-write step, factored out so
+// PatchSave can reuse it after merging fresh's caller-owned fields.
+func writeConfigFile(cfg *Config) error {
 	trimmed := *cfg
 	trimmed.Providers = nil
 	trimmed.Models = nil
@@ -995,6 +1046,76 @@ func Save(cfg *Config) error {
 		mode = 0o600
 	}
 	return WriteFileAtomic(Path(), buf.Bytes(), mode)
+}
+
+// readConfigFile reads and decodes config.toml's wt-owned fields only — no
+// registry join, no schema migration side effects. A missing file is not an
+// error: it returns a fresh zero-value Config (default_tag "code") and
+// exists=false, mirroring the starting point Load uses on a first run. Load
+// and PatchSave both call this now, so a schema/decode change can't drift
+// between what Load sees on its initial read and what PatchSave's merge
+// base decodes for the same file.
+func readConfigFile() (cfg *Config, exists bool, err error) {
+	cfg = &Config{DefaultTag: "code"}
+	data, err := os.ReadFile(Path())
+	if os.IsNotExist(err) {
+		return cfg, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := toml.Decode(string(data), cfg); err != nil {
+		return nil, false, fmt.Errorf("parse config: %w", err)
+	}
+	return cfg, true, nil
+}
+
+// PatchSave serializes a locked read-modify-write cycle on config.toml: it
+// re-reads the file fresh from disk under WithLock, lets apply mutate only
+// the fields the caller owns, and writes the merged result. A caller whose
+// in-memory Config may be stale (loaded earlier, possibly by another
+// process) can therefore persist its own change without reverting anything
+// a concurrent writer changed in a field apply does not touch — see issue
+// #143 (config.toml writes were whole-file last-writer-wins between the
+// `wt config` editor and `wt litellm on|off|set`).
+func (c *Config) PatchSave(apply func(fresh *Config)) error {
+	return WithLock(func() error {
+		fresh, _, err := readConfigFile()
+		if err != nil {
+			return err
+		}
+		apply(fresh)
+		return writeConfigFile(fresh)
+	})
+}
+
+// lockedApply is Load's version of PatchSave's re-read-fresh pattern for its
+// two self-persisting migrations (schema fixups, legacy-litellm import): it
+// takes the config.toml lock, reads the file fresh, lets apply mutate that
+// fresh copy and report whether anything actually changed, and writes back
+// only when it did. Without this, Load's migration writes read config.toml
+// once — before loadRegistry and the migration probe run — and then saved
+// that stale snapshot wholesale, silently reverting a concurrent
+// PatchSave-based writer (`wt config` editor, `wt litellm set`) that landed
+// in that window. That reopened the exact lost-update race PatchSave closed
+// for those two writers (issue #143 follow-up).
+func lockedApply(apply func(fresh *Config) (bool, error)) (fresh *Config, changed bool, err error) {
+	err = WithLock(func() error {
+		var err error
+		fresh, _, err = readConfigFile()
+		if err != nil {
+			return err
+		}
+		changed, err = apply(fresh)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+		return writeConfigFile(fresh)
+	})
+	return fresh, changed, err
 }
 
 // ModelsForAgent returns the models whose ProviderID is in the named

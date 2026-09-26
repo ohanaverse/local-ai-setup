@@ -10,11 +10,23 @@ type saveMsg struct {
 	err error
 }
 
-// saveCmd writes cfg to disk and returns a saveMsg. It is a package-level
-// var so tests can override it to inject failures.
+// saveCmd persists the editor's own fields (Agents, DefaultTag) and returns
+// a saveMsg. It is a package-level var so tests can override it to inject
+// failures.
+//
+// It goes through PatchSave rather than a whole-file Save: cfg is the
+// snapshot the editor loaded when it opened, which may be stale by the time
+// the user saves (a `wt litellm on|off|set` run in the meantime — issue
+// #143). PatchSave re-reads config.toml fresh under the lock and only
+// overwrites the fields the editor owns, so a concurrent [litellm] change
+// survives.
 var saveCmd = func(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
-		return saveMsg{err: config.Save(cfg)}
+		err := cfg.PatchSave(func(fresh *config.Config) {
+			fresh.Agents = cfg.Agents
+			fresh.DefaultTag = cfg.DefaultTag
+		})
+		return saveMsg{err: err}
 	}
 }
 
