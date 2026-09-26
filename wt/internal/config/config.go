@@ -43,18 +43,32 @@ const OllamaBaseURL = "http://localhost:11434"
 
 // UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
 // wt's config.toml. wt owns this state (moved from modelman.toml 2026-09-21).
+//
+// It persists through PatchSave rather than a whole-file Save of c: c may be
+// a long-lived process's stale in-memory snapshot (issue #143 — a `wt
+// litellm` run against a Config loaded before a concurrent `wt config`
+// editor session saved its own Agents/DefaultTag change). PatchSave re-reads
+// config.toml fresh under the lock and touches only LitellmTable, so that
+// concurrent change survives.
 func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
 	prev, prevTable := c.litellm, c.LitellmTable
-	s := c.litellm
-	mutate(&s)
-	c.litellm = s
-	c.LitellmTable = &s
-	if err := Save(c); err != nil {
+	var result LitellmState
+	err := c.PatchSave(func(fresh *Config) {
+		s := LitellmState{}
+		if fresh.LitellmTable != nil {
+			s = *fresh.LitellmTable
+		}
+		mutate(&s)
+		fresh.LitellmTable = &s
+		result = s
+	})
+	if err != nil {
 		// Nothing persisted: keep memory in step with disk so later routing
 		// in this process does not act on a state that was never saved.
 		c.litellm, c.LitellmTable = prev, prevTable
 		return err
 	}
+	c.litellm, c.LitellmTable = result, &result
 	return nil
 }
 
@@ -979,10 +993,23 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return os.Rename(tmp, path)
 }
 
-// Save writes cfg to the config path using an atomic temp-file + rename.
-// Only wt-owned fields are persisted: Providers/Models live in
-// modelman-owned registry.toml and are never written by wt.
+// Save writes cfg to the config path using an atomic temp-file + rename,
+// under WithLock so it can never interleave with a PatchSave's
+// read-modify-write. Only wt-owned fields are persisted: Providers/Models
+// live in modelman-owned registry.toml and are never written by wt.
+//
+// Prefer PatchSave over Save whenever cfg may be a stale snapshot (loaded
+// earlier, possibly in a different process) — Save writes cfg wholesale
+// and so reverts any field a concurrent writer changed since cfg was
+// loaded. Save remains correct for callers that just read the file they
+// are about to save (Load's own schema-migration writes).
 func Save(cfg *Config) error {
+	return WithLock(func() error { return writeConfigFile(cfg) })
+}
+
+// writeConfigFile is Save's encode-and-write step, factored out so
+// PatchSave can reuse it after merging fresh's caller-owned fields.
+func writeConfigFile(cfg *Config) error {
 	trimmed := *cfg
 	trimmed.Providers = nil
 	trimmed.Models = nil
@@ -995,6 +1022,47 @@ func Save(cfg *Config) error {
 		mode = 0o600
 	}
 	return WriteFileAtomic(Path(), buf.Bytes(), mode)
+}
+
+// readConfigFile reads and decodes config.toml's wt-owned fields only — no
+// registry join, no schema migration side effects. A missing file is not an
+// error: it returns a fresh zero-value Config (default_tag "code"), mirroring
+// the starting point Load uses on a first run. This is deliberately a
+// separate, smaller read path from Load (which has its own not-exist-vs-
+// exists branching to decide whether to run schema migration) — PatchSave
+// only needs the raw on-disk fields to merge against, not a full Load.
+func readConfigFile() (*Config, error) {
+	cfg := &Config{DefaultTag: "code"}
+	data, err := os.ReadFile(Path())
+	if os.IsNotExist(err) {
+		return cfg, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if _, err := toml.Decode(string(data), cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	return cfg, nil
+}
+
+// PatchSave serializes a locked read-modify-write cycle on config.toml: it
+// re-reads the file fresh from disk under WithLock, lets apply mutate only
+// the fields the caller owns, and writes the merged result. A caller whose
+// in-memory Config may be stale (loaded earlier, possibly by another
+// process) can therefore persist its own change without reverting anything
+// a concurrent writer changed in a field apply does not touch — see issue
+// #143 (config.toml writes were whole-file last-writer-wins between the
+// `wt config` editor and `wt litellm on|off|set`).
+func (c *Config) PatchSave(apply func(fresh *Config)) error {
+	return WithLock(func() error {
+		fresh, err := readConfigFile()
+		if err != nil {
+			return err
+		}
+		apply(fresh)
+		return writeConfigFile(fresh)
+	})
 }
 
 // ModelsForAgent returns the models whose ProviderID is in the named
