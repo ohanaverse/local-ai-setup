@@ -5,6 +5,14 @@ LiteLLM proxy session's logs out of the `LiteLLM_SpendLogs` Postgres table
 and reconstructing a readable Markdown chat transcript from them. Not wired
 into modelman or wt — run manually, per session, from this directory.
 
+The pipeline can only see sessions whose harness sends a session id LiteLLM
+recognizes. Which harnesses do, and where each keeps its own local session
+record instead: [session-log-sources.md](session-log-sources.md). Five harnesses
+are documented there (pi, Claude Code, Codex, Copilot, OpenCode — only Claude
+Code's sessions group), Antigravity is a partial stub, and the exact rule
+LiteLLM applies to a request's headers is quoted in that file under
+"How LiteLLM decides a session id".
+
 ## Pipeline
 
 1. **`01_export_session_logs.sql`** — runs against the live DB, dumps
@@ -34,6 +42,16 @@ into modelman or wt — run manually, per session, from this directory.
    [output.md]`** — builds a **two-sided** transcript by joining the JSON
    export's `response` column against the ndjson export's
    `proxy_server_request.messages`. Requires step 2's output.
+
+`header_probe.py` is a separate one-off debugging tool, not part of the
+numbered pipeline: a minimal `http.server` handler that logs every header a
+client sends and answers with a JSON shape permissive enough to satisfy an
+OpenAI chat-completions or legacy completions caller. Used to determine what
+headers a harness actually sends when the binary can't be `strings`-grepped
+(e.g. Copilot CLI's compressed Node SEA build) by pointing the harness's
+provider-base-URL override at it instead of the real provider. See the
+Copilot section of [session-log-sources.md](session-log-sources.md) for the
+worked example.
 
 Run scripts with `python3 <script>.py ...` — no venv/dependencies beyond the
 stdlib.

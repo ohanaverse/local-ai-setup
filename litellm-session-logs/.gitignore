@@ -1,2 +1,6 @@
 # Pipeline outputs (session dumps, transcripts) stay untracked.
 session_*
+
+# Generated FileDescriptorSet from antigravity/extract_descriptors.py -
+# regenerate from the locally-installed agy binary rather than committing it.
+antigravity/*.desc
