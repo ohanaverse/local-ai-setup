@@ -57,9 +57,25 @@ def sync(
     yes: bool = typer.Option(
         False, "--yes", help="Apply registry changes without confirming (never deletes)."
     ),
+    delete: list[str] | None = typer.Option(  # noqa: B008
+        None,
+        "--delete",
+        help="Delete this pulled cloud stub without prompting (repeatable). "
+        "When given, delete candidates not named here are kept.",
+    ),
+    no_deletes: bool = typer.Option(
+        False, "--no-deletes", help="Keep every delete candidate without prompting."
+    ),
 ) -> None:
     """Add/update ollama cloud entries (incl. off-peak prices) and offer to
-    delete pulled cloud stubs that ollama.com/pricing no longer lists."""
+    delete pulled cloud stubs that ollama.com/pricing no longer lists.
+
+    Deletes are prompted per model (default no) unless --delete/--no-deletes
+    decide them up front — the non-interactive path the ollama-catalog skill
+    uses, since it cannot answer prompts."""
+    if no_deletes and delete:
+        typer.echo("error: --no-deletes and --delete are mutually exclusive", err=True)
+        raise typer.Exit(2)
     if html is not None:
         try:
             text = html.read_text()
@@ -105,9 +121,20 @@ def sync(
             f"Updated {len(fresh_plan.updates)} and added {len(fresh_plan.additions)} model(s)."
         )
 
+    if delete:
+        candidate_tags = {c.tag for c in plan.delete_candidates}
+        for tag in delete:
+            if tag not in candidate_tags:
+                typer.echo(f"warning: {tag} is not a delete candidate; left as-is", err=True)
     for candidate in plan.delete_candidates:
-        prompt = f"{candidate.tag} is pulled but no longer on ollama.com/pricing. Delete it?"
-        if typer.confirm(prompt, default=False):
+        if no_deletes:
+            continue
+        if delete:
+            chosen = candidate.tag in delete
+        else:
+            prompt = f"{candidate.tag} is pulled but no longer on ollama.com/pricing. Delete it?"
+            chosen = typer.confirm(prompt, default=False)
+        if chosen:
             failed = _delete(candidate) or failed
 
     if failed:

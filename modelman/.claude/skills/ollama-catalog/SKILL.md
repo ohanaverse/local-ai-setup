@@ -33,11 +33,17 @@ Run everything from `modelman/`.
 3. Go through each delete candidate with the user, one at a time, before
    running for real. Deleting a registered model also removes its registry
    entry and unexposes it.
-4. Real run: `uv run modelman ollama-catalog sync`
-   - Answer the registry-change confirm.
-   - Answer each delete prompt exactly as the user decided; the default is
-     no. Do not pass `--yes` unless the user asked, and note that `--yes`
-     never answers the delete prompts.
+4. Real run. Your Bash tool has no TTY, so the CLI's prompts cannot be
+   answered (click reads EOF and aborts). Pass every decision as a flag:
+   - `--yes` applies the registry changes the user approved in the dry
+     run. It never deletes anything.
+   - For deletes, pass `--delete <tag>` once per stub the user chose to
+     delete. Candidates not named are kept. If the user chose none, pass
+     `--no-deletes`.
+   - Example: `uv run modelman ollama-catalog sync --yes --delete old-model:cloud`
+   - A `warning: ... is not a delete candidate` line means the page or
+     `ollama list` changed since the dry run. Re-run the dry run and ask
+     again.
 5. Re-run the grep from step 1 and `diff` against the snapshot. The sync
    doesn't change `exposed`, but deletes of exposed models do, so report
    any drift in the six guides.

@@ -213,3 +213,64 @@ def test_delete_failure_exits_1(seeded, monkeypatch):
     )
     assert result.exit_code == 1
     assert "failed" in result.output
+
+
+def test_delete_option_decides_without_prompts(seeded, monkeypatch):
+    """The skill runs the CLI from a non-TTY: --delete names exactly the
+    stubs the user chose, and no delete prompt is shown (stdin is empty)."""
+    from modelman.main import app
+
+    _tags(monkeypatch, ["retired:cloud", "stray:cloud"])
+    queued, removed = [], []
+    monkeypatch.setattr("modelman.main.run_queued_ops", lambda q: queued.append(q) or False)
+    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
+    result = CliRunner().invoke(
+        app,
+        ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE), "--delete", "stray:cloud"],
+    )
+    assert result.exit_code == 0, result.output
+    assert removed == ["stray:cloud"]
+    assert queued == []
+    assert "Delete it?" not in result.output
+
+
+def test_delete_option_for_non_candidate_warns(seeded, monkeypatch):
+    from modelman.main import app
+
+    _tags(monkeypatch, ["stray:cloud"])
+    removed = []
+    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
+    result = CliRunner().invoke(
+        app,
+        ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE), "--delete", "gemma4:cloud"],
+    )
+    assert result.exit_code == 0, result.output
+    assert removed == []
+    assert "gemma4:cloud" in result.output and "not a delete candidate" in result.output
+
+
+def test_no_deletes_skips_prompts(seeded, monkeypatch):
+    from modelman.main import app
+
+    _tags(monkeypatch, ["retired:cloud", "stray:cloud"])
+    removed = []
+    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
+    result = CliRunner().invoke(
+        app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE), "--no-deletes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert removed == []
+    assert "Delete it?" not in result.output
+
+
+def test_no_deletes_conflicts_with_delete(seeded, monkeypatch):
+    from modelman.main import app
+
+    _tags(monkeypatch, [])
+    before = seeded.read_text()
+    result = CliRunner().invoke(
+        app,
+        ["ollama-catalog", "sync", "--html", str(FIXTURE), "--no-deletes", "--delete", "x:cloud"],
+    )
+    assert result.exit_code == 2
+    assert seeded.read_text() == before
