@@ -189,7 +189,7 @@ unknown keys, so later tag renames still match.
 | Situation | Action |
 |---|---|
 | On page, in registry | Update default row prices. Off-peak row on page → set/replace the single `label = "off-peak"` `time_prices` row. No off-peak row → remove any `off-peak` row. Leave subscription, family, `exposed`, `ready`, `model_info` and other `time_prices` rows untouched. |
-| On page, not in registry | Add `ollama/<tag>`: `provider_id = "ollama"`, `model_name = <tag>`, `location = "cloud"`, `source = "ollama-catalog"`, `family` = page name minus any `:size` suffix, prices as above. `subscription_*` is copied from the other ollama cloud entries **only if they all agree**; otherwise it is left unset with a warning. Not pulled, not ready, not exposed. |
+| On page, not in registry | Add `ollama/<tag>`: `provider_id = "ollama"`, `model_name = <tag>`, `location = "cloud"`, `source = "curated"` (wt treats `source` as a `curated`/`discovered` enum; provenance is marked by `catalog_name` instead), `catalog_name = X`, `family` = page name minus any `:size` suffix, prices as above. `subscription_*` is copied from the other ollama cloud entries **only if they all agree**; otherwise it is left unset with a warning. Not pulled, not ready, not exposed. |
 | In `ollama list` as a cloud stub (tag ends `:cloud` or `-cloud`), not on page | Delete candidate: prompt per model, default no. Yes → the existing delete path (provider `delete()` + registry/state cleanup + unexpose cascade, as `PendingChanges.apply()` does). |
 | In `ollama list` as a real local model | Ignored. |
 | Registry ollama cloud entry, not on page, not pulled | Report only (listed under "no longer on ollama.com/pricing"); never modified. |
