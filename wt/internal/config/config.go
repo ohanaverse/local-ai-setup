@@ -429,13 +429,37 @@ type AuthConfig struct {
 
 // ── Model ─────────────────────────────────────────────────
 
+// CostWindow is one [start, end) span on the listed weekdays, in its
+// TimePrice's timezone. Days use "mon".."sun"; times are "HH:MM" and end
+// may be "24:00".
+type CostWindow struct {
+	Days  []string `toml:"days"`
+	Start string   `toml:"start"`
+	End   string   `toml:"end"`
+}
+
+// TimePrice is a time-windowed override of a ModelCost's flat (default)
+// per-token prices, written by modelman (e.g. ollama off-peak pricing).
+// Decode-only in wt for now: the first row whose window contains an
+// instant wins, per field, falling back to the flat prices — see
+// modelman's time_pricing.price_at for the reference implementation.
+type TimePrice struct {
+	Label                 string       `toml:"label,omitempty"`
+	Timezone              string       `toml:"timezone"`
+	InputPricePerMillion  *float64     `toml:"input_price_per_million,omitempty"`
+	CachePricePerMillion  *float64     `toml:"cache_price_per_million,omitempty"`
+	OutputPricePerMillion *float64     `toml:"output_price_per_million,omitempty"`
+	Windows               []CostWindow `toml:"windows"`
+}
+
 // ModelCost holds optional per-token and subscription pricing for a model.
 type ModelCost struct {
-	InputPricePerMillion  *float64 `toml:"input_price_per_million,omitempty"`
-	CachePricePerMillion  *float64 `toml:"cache_price_per_million,omitempty"`
-	OutputPricePerMillion *float64 `toml:"output_price_per_million,omitempty"`
-	SubscriptionPrice     *float64 `toml:"subscription_price,omitempty"`
-	SubscriptionPeriod    string   `toml:"subscription_period,omitempty"`
+	InputPricePerMillion  *float64    `toml:"input_price_per_million,omitempty"`
+	CachePricePerMillion  *float64    `toml:"cache_price_per_million,omitempty"`
+	OutputPricePerMillion *float64    `toml:"output_price_per_million,omitempty"`
+	SubscriptionPrice     *float64    `toml:"subscription_price,omitempty"`
+	SubscriptionPeriod    string      `toml:"subscription_period,omitempty"`
+	TimePrices            []TimePrice `toml:"time_prices,omitempty"`
 }
 
 // Model is a specific variant of a base model available from a provider.

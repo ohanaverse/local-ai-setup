@@ -92,6 +92,20 @@ cache_price_per_million  = 0.25
 output_price_per_million = 1.00
 subscription_price       = 19.99
 subscription_period      = "month"
+# Time-windowed price rows (2026-09-28 ollama-catalog-sync design): the
+# flat prices above are the default; the first row whose window contains
+# the instant (in its IANA timezone) overrides each field it sets.
+[[models.cost.time_prices]]
+label    = "off-peak"
+timezone = "UTC"
+input_price_per_million  = 0.25
+cache_price_per_million  = 0.125
+output_price_per_million = 0.50
+windows = [
+  { days = ["mon", "tue", "wed", "thu", "fri"], start = "00:00", end = "12:00" },
+  { days = ["mon", "tue", "wed", "thu", "fri"], start = "18:00", end = "24:00" },
+  { days = ["sat", "sun"], start = "00:00", end = "24:00" },
+]
 
 [[models]]
 id = "agy/contract-fixture:native"

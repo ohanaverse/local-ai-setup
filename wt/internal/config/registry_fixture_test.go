@@ -226,3 +226,43 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 		t.Error("IsExposed(inherit model) = false, want true (provider location=cloud must inherit)")
 	}
 }
+
+// TestRegistryFixtureTimePrices pins the time-windowed pricing rows
+// (docs/superpowers/specs/2026-09-28-ollama-catalog-sync-design.md) that
+// modelman writes under [models.cost]. wt only decodes them today.
+func TestRegistryFixtureTimePrices(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+
+	_, models, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry() error: %v", err)
+	}
+	var cloud *Model
+	for i := range models {
+		if models[i].ID == "openrouter/contract-fixture:cloud" {
+			cloud = &models[i]
+		}
+	}
+	if cloud == nil {
+		t.Fatal("missing priced cloud model in fixture")
+	}
+	if len(cloud.Cost.TimePrices) != 1 {
+		t.Fatalf("got %d time prices, want 1", len(cloud.Cost.TimePrices))
+	}
+	tp := cloud.Cost.TimePrices[0]
+	if tp.Label != "off-peak" || tp.Timezone != "UTC" {
+		t.Errorf("time price decoded wrong: %+v", tp)
+	}
+	if tp.InputPricePerMillion == nil || *tp.InputPricePerMillion != 0.25 {
+		t.Errorf("input price = %v, want 0.25", tp.InputPricePerMillion)
+	}
+	if tp.OutputPricePerMillion == nil || *tp.OutputPricePerMillion != 0.50 {
+		t.Errorf("output price = %v, want 0.50", tp.OutputPricePerMillion)
+	}
+	if len(tp.Windows) != 3 || tp.Windows[1].Start != "18:00" || tp.Windows[1].End != "24:00" {
+		t.Errorf("windows decoded wrong: %+v", tp.Windows)
+	}
+	if got := tp.Windows[2].Days; len(got) != 2 || got[0] != "sat" || got[1] != "sun" {
+		t.Errorf("weekend window days = %v", got)
+	}
+}
