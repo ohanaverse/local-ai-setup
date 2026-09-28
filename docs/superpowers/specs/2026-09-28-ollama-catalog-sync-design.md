@@ -84,6 +84,14 @@ Implemented as a pure helper `price_at(cost: Cost, at: datetime) ->
 tuple[float | None, float | None, float | None]` (input, cache, output).
 No caller in this work.
 
+### TUI edit must not drop the new data
+
+The TUI edit dialog rebuilds `Cost` and `ModelEntry` from form fields,
+which today drops `Cost.extra` and `ModelEntry.extra`. The edit handler
+must carry over the old entry's `cost.time_prices`, `cost.extra` and
+`extra` (which holds `catalog_name`), otherwise one TUI edit silently
+undoes a catalog sync.
+
 ### Unchanged readers
 
 - The TUI COST column and all current cost readers keep using the
@@ -128,7 +136,9 @@ No caller in this work.
   - a required header is missing,
   - fewer than 5 model rows,
   - an off-peak row with no base row,
-  - a duplicate base name.
+  - a duplicate base name,
+  - more than half of the price cells are unrecognized (a silent format
+    change must not write `None` over every price).
 - `plan_sync(registry, catalog, ollama_list: list[str] | None) ->
   SyncPlan` — pure, no I/O. Returns `updates`, `additions`,
   `delete_candidates`, `unlisted_registry` (report-only), `warnings`.
@@ -211,7 +221,8 @@ above runs before anything reaches disk.
 
 - **Parser** (`tests/test_ollama_catalog.py`), against a captured fixture
   `tests/fixtures/ollama_pricing.html`:
-  - happy path (19 models; off-peak folded into the two deepseek entries),
+  - happy path (17 models from 19 table rows; off-peak folded into the two
+    deepseek entries),
   - reordered columns still parse,
   - a renamed or missing header raises `CatalogParseError`,
   - too few rows raises,
