@@ -101,6 +101,29 @@ finite number; `subscription_period` must be `month` or `year` when
 preserved on round-trip so hand-edited fields survive. Omit the whole
 `[models.cost]` table to leave cost unset (the TUI shows `—`).
 
+Optional time-windowed prices override the flat (default) per-token
+prices during their windows — e.g. Ollama's off-peak pricing, written by
+`modelman ollama-catalog sync`:
+
+```toml
+[[models.cost.time_prices]]
+label    = "off-peak"          # informational
+timezone = "UTC"               # IANA name
+input_price_per_million  = 0.66
+cache_price_per_million  = 0.022
+output_price_per_million = 1.98
+windows = [                    # union; start inclusive, end exclusive, end may be 24:00
+  { days = ["mon","tue","wed","thu","fri"], start = "00:00", end = "12:00" },
+  { days = ["mon","tue","wed","thu","fri"], start = "18:00", end = "24:00" },
+  { days = ["sat","sun"],                   start = "00:00", end = "24:00" },
+]
+```
+
+At an instant, the first row with a matching window supplies each price it
+sets; omitted fields and non-matching times use the flat prices
+(`time_pricing.price_at`). Stored only today — the TUI COST column and wt
+show the flat prices.
+
 The old `kind = "free" | "per_token" | "subscription"` schema is still
 accepted on read and is silently migrated to the flat fields above on
 save. `usage_tier` has been removed; use the pricing fields directly.

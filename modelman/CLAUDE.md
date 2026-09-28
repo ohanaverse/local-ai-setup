@@ -15,6 +15,7 @@ CLI (`src/modelman/main.py`, Typer; bare `modelman` opens the TUI via `@app.call
 | `expose <id>` / `unexpose <id>` | Apply modelman's gates, then delegate to `wt litellm expose\|unexpose` |
 | `litellm status\|on\|off\|set` | Passthroughs to `wt litellm ...` (wt owns routing state) |
 | `start [model_id]` / `stop <id>\|--all` | Local-model lifecycle (`local_control.py`); bare `stop` is a usage error. No-arg `start` prints a live inventory (see "Local-model lifecycle") |
+| `ollama-catalog sync [--dry-run] [--html F] [--yes]` | Sync ollama cloud entries + prices (incl. off-peak `time_prices`) from ollama.com/pricing; prompts per pulled cloud stub no longer listed (default no). Exit 2 fetch / 3 page-shape change (HTML saved). Driven by the `ollama-catalog` skill |
 | `refresh-prices` | Refresh cloud models' per-token prices from OpenRouter (`pricing.py`) |
 | `delete-family <name>` | Remove an empty family's lingering `[[families]]` entry (queue.py keeps families sticky); refuses if the family still has models |
 | `provider isolate\|stop\|stop-all\|restore\|list` | Low-level per-provider lifecycle (`providers/lifecycle/cli.py`) |
@@ -106,6 +107,8 @@ See the `adding-a-tui-screen` skill (`.claude/skills/adding-a-tui-screen/SKILL.m
 - `migrate.py` — one-shot legacy import, plus `migrate_wt_gateway_to_litellm` (never clobbers set `[litellm]` values). `manifest.py` (legacy `families/*.yaml`) and `config.py` (`default_config_path()`, `MODELMAN_CONFIG`) are migrate-only — add no new callers; new config goes in `registry.toml`.
 - `settings.py` — TUI preferences (theme) in `~/.config/local-ai/settings.yaml` (`MODELMAN_SETTINGS`); a corrupted file raises rather than falling back.
 - `_toml_io.py` — `atomic_write()` (temp + rename; `preserve_mode=True` keeps permission bits), `atomic_write_toml()`, `drop_none`, `unknown_keys`. Registry/state saves rewrite the whole file — preserve unknown keys on round-trip so hand-edited fields survive.
+- `time_pricing.py` — `Window`/`TimePrice` (`Cost.time_prices`, `[[models.cost.time_prices]]`): time-windowed overrides of the flat per-token prices, first-match-wins per field, reference resolver `price_at()`. Stored only (no TUI/wt reader yet); `_merge_api_cost` and the TUI edit (`screens/models.py::_carry_over_unedited`) must carry them through.
+- `ollama_catalog.py` + `ollama_catalog_cli.py` — `modelman ollama-catalog sync`. `parse_pricing` is the only code that knows ollama.com/pricing's HTML (header-keyed; raises `CatalogParseError` rather than writing partial data); `plan_sync` is pure (page name `X` → tag `X:cloud`/`X-cloud`, matched entries get `catalog_name` in model extra); deletes of registered stubs reuse `main.run_queued_ops`. Tests use `tests/fixtures/ollama_pricing.html`; conftest guards its HTTP/ollama default runners.
 
 ### Provider plugin system
 
