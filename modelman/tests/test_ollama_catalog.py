@@ -172,3 +172,255 @@ def test_offpeak_time_price_window():
     assert tp.matches(datetime(2026, 9, 28, 11, 0, tzinfo=UTC))  # Mon 11:00
     assert not tp.matches(datetime(2026, 9, 28, 12, 0, tzinfo=UTC))
     assert tp.matches(datetime(2026, 10, 4, 15, 0, tzinfo=UTC))  # Sunday
+
+
+def _registry(*models):
+    from modelman.registry import AuthConfig, ProviderEntry, Registry
+
+    return Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=list(models),
+    )
+
+
+def _entry(tag, *, family="fam", location="cloud", cost=None, extra=None):
+    from modelman.registry import ModelEntry
+
+    return ModelEntry(
+        id=f"ollama/{tag}",
+        family=family,
+        provider_id="ollama",
+        model_name=tag,
+        location=location,
+        source="curated",
+        cost=cost,
+        extra=dict(extra or {}),
+    )
+
+
+def _catalog(*models):
+    from modelman.ollama_catalog import Catalog
+
+    return Catalog(models=list(models))
+
+
+def _cm(name, inp=1.0, cache=0.1, out=2.0, offpeak=None):
+    from modelman.ollama_catalog import CatalogModel, PriceTriple
+
+    return CatalogModel(name, PriceTriple(inp, cache, out), offpeak)
+
+
+def test_cloud_tag_derivation():
+    from modelman.ollama_catalog import cloud_tag, is_cloud_tag
+
+    assert cloud_tag("glm-5.3") == "glm-5.3:cloud"
+    assert cloud_tag("gpt-oss:120b") == "gpt-oss:120b-cloud"
+    assert is_cloud_tag("glm-5.3:cloud") and is_cloud_tag("gpt-oss:120b-cloud")
+    assert not is_cloud_tag("gpt-oss:20b")
+
+
+def test_plan_updates_existing_and_records_catalog_name():
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import Cost
+
+    old = Cost(input_price_per_million=9.0, subscription_price=100.0, subscription_period="month")
+    reg = _registry(_entry("glm-5.3:cloud", cost=old))
+    plan = plan_sync(reg, _catalog(_cm("glm-5.3", 1.4, 0.26, 4.4)), [])
+    (u,) = plan.updates
+    assert u.model_id == "ollama/glm-5.3:cloud"
+    assert u.after.input_price_per_million == 1.4
+    assert u.after.subscription_price == 100.0  # untouched
+    assert plan.additions == []
+
+
+def test_plan_unchanged_when_prices_match_and_name_recorded():
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import Cost
+
+    cost = Cost(
+        input_price_per_million=1.0, cache_price_per_million=0.1, output_price_per_million=2.0
+    )
+    reg = _registry(_entry("glm-5.3:cloud", cost=cost, extra={"catalog_name": "glm-5.3"}))
+    plan = plan_sync(reg, _catalog(_cm("glm-5.3")), [])
+    assert plan.updates == []
+    assert plan.unchanged == ["ollama/glm-5.3:cloud"]
+    assert not plan.has_registry_changes()
+
+
+def test_plan_offpeak_set_replace_remove_keeps_other_rows():
+    from modelman.ollama_catalog import PriceTriple, plan_sync
+    from modelman.registry import Cost
+    from modelman.time_pricing import TimePrice, Window
+
+    custom = TimePrice(
+        label="mine", timezone="UTC", windows=[Window(days=["sun"], start="00:00", end="01:00")]
+    )
+    stale_offpeak = TimePrice(
+        label="off-peak", timezone="UTC", windows=[Window(days=["sat"], start="00:00", end="24:00")]
+    )
+    cost = Cost(input_price_per_million=1.0, time_prices=[custom, stale_offpeak])
+    reg = _registry(_entry("a:cloud", cost=cost), _entry("b:cloud", cost=cost))
+    plan = plan_sync(
+        reg,
+        _catalog(_cm("a", offpeak=PriceTriple(0.5, None, 1.0)), _cm("b")),
+        [],
+    )
+    after = {u.model_id: u.after for u in plan.updates}
+    a_rows = after["ollama/a:cloud"].time_prices
+    assert [tp.label for tp in a_rows] == ["mine", "off-peak"]
+    assert a_rows[1].input_price_per_million == 0.5
+    assert len(a_rows[1].windows) == 3
+    assert [tp.label for tp in after["ollama/b:cloud"].time_prices] == ["mine"]
+
+
+def test_plan_matches_by_catalog_name_after_rename():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("glm-5.3-renamed:cloud", extra={"catalog_name": "glm-5.3"}))
+    plan = plan_sync(reg, _catalog(_cm("glm-5.3")), ["glm-5.3-renamed:cloud"])
+    assert [u.model_id for u in plan.updates] == ["ollama/glm-5.3-renamed:cloud"]
+    assert plan.additions == []
+    assert plan.delete_candidates == []
+
+
+def test_plan_additions_family_and_subscription():
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import Cost
+
+    sub = Cost(subscription_price=100.0, subscription_period="month")
+    reg = _registry(
+        _entry("gpt-oss:20b", family="gpt-oss", location="local"),
+        _entry("glm-5.2:cloud", family="glm", cost=sub),
+    )
+    plan = plan_sync(reg, _catalog(_cm("glm-5.2"), _cm("gpt-oss:120b"), _cm("kimi-k3")), [])
+    added = {e.id: e for e in plan.additions}
+    gpt = added["ollama/gpt-oss:120b-cloud"]
+    assert gpt.family == "gpt-oss"  # reused from the local namesake's family
+    assert gpt.location == "cloud" and gpt.source == "curated"
+    assert gpt.extra == {"catalog_name": "gpt-oss:120b"}
+    assert gpt.cost is not None and gpt.cost.subscription_price == 100.0
+    assert added["ollama/kimi-k3:cloud"].family == "kimi-k3"
+
+
+def test_plan_subscription_disagreement_warns():
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import Cost
+
+    reg = _registry(
+        _entry("a:cloud", cost=Cost(subscription_price=100.0, subscription_period="month")),
+        _entry("b:cloud", cost=Cost(subscription_price=20.0, subscription_period="month")),
+    )
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b"), _cm("new")), [])
+    (new,) = plan.additions
+    assert new.cost is not None and new.cost.subscription_price is None
+    assert any("subscription" in w for w in plan.warnings)
+
+
+def test_plan_does_not_touch_local_namesake():
+    from modelman.ollama_catalog import plan_sync
+
+    local = _entry("gpt-oss:20b", family="gpt-oss", location="local")
+    reg = _registry(local)
+    plan = plan_sync(reg, _catalog(_cm("gpt-oss:20b")), ["gpt-oss:20b"])
+    assert plan.updates == []
+    assert [e.id for e in plan.additions] == ["ollama/gpt-oss:20b-cloud"]
+    assert plan.delete_candidates == []
+    assert plan.unlisted == []
+
+
+def test_plan_delete_candidates_only_pulled_cloud_stubs():
+    from modelman.ollama_catalog import DeleteCandidate, plan_sync
+
+    reg = _registry(_entry("old:cloud"), _entry("gone:cloud"), _entry("keep:cloud"))
+    tags = ["old:cloud", "stray-cloud-only:cloud", "ornith-1.5:35b", "keep:cloud"]
+    plan = plan_sync(reg, _catalog(_cm("keep")), tags)
+    assert plan.delete_candidates == [
+        DeleteCandidate(tag="old:cloud", model_id="ollama/old:cloud"),
+        DeleteCandidate(tag="stray-cloud-only:cloud", model_id=None),
+    ]
+    assert plan.unlisted == ["ollama/gone:cloud"]
+
+
+def test_plan_without_ollama_list():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("old:cloud"), _entry("keep:cloud"))
+    plan = plan_sync(reg, _catalog(_cm("keep")), None)
+    assert plan.delete_candidates == []
+    assert plan.unlisted == ["ollama/old:cloud"]
+    assert [u.model_id for u in plan.updates] == ["ollama/keep:cloud"]
+
+
+def test_plan_id_collision_with_non_ollama_entry_warns():
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import ModelEntry
+
+    squatter = ModelEntry(id="ollama/x:cloud", family="f", provider_id="other", model_name="zzz")
+    plan = plan_sync(_registry(squatter), _catalog(_cm("x")), [])
+    assert plan.additions == []
+    assert any("ollama/x:cloud" in w for w in plan.warnings)
+
+
+def test_apply_sync_mutates_registry():
+    from modelman.ollama_catalog import apply_sync, plan_sync
+
+    reg = _registry(_entry("a:cloud"))
+    plan = plan_sync(reg, _catalog(_cm("a", 3.0), _cm("b")), [])
+    apply_sync(reg, plan)
+    a = reg.model("ollama/a:cloud")
+    assert a.cost is not None and a.cost.input_price_per_million == 3.0
+    assert a.extra["catalog_name"] == "a"
+    assert a.pricing_updated_at is not None
+    assert reg.model("ollama/b:cloud").pricing_updated_at is not None
+
+
+def test_format_plan_mentions_every_section():
+    from modelman.ollama_catalog import format_plan, plan_sync
+
+    reg = _registry(_entry("a:cloud"), _entry("gone:cloud"), _entry("old:cloud"))
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), ["old:cloud"])
+    text = format_plan(plan)
+    for needle in ("ollama/a:cloud", "ollama/b:cloud", "old:cloud", "ollama/gone:cloud"):
+        assert needle in text
+
+
+def test_list_ollama_tags_parses_and_handles_failure():
+    import subprocess
+
+    from modelman.ollama_catalog import list_ollama_tags
+
+    out = "NAME                 ID      SIZE  MODIFIED\nglm-5.3:cloud  abc  -  2 days ago\nornith-1.5:35b  def  20 GB  1 week ago\n"
+
+    def ok(args, **kw):
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+    def down(args, **kw):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="could not connect")
+
+    def missing(args, **kw):
+        raise FileNotFoundError("ollama")
+
+    assert list_ollama_tags(runner=ok) == ["glm-5.3:cloud", "ornith-1.5:35b"]
+    assert list_ollama_tags(runner=down) is None
+    assert list_ollama_tags(runner=missing) is None
+
+
+def test_remove_ollama_tag():
+    import subprocess
+
+    from modelman.ollama_catalog import remove_ollama_tag
+
+    calls = []
+
+    def ok(args, **kw):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    remove_ollama_tag("x:cloud", runner=ok)
+    assert calls == [["ollama", "rm", "x:cloud"]]
+
+    def fail(args, **kw):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="nope")
+
+    with pytest.raises(RuntimeError, match="x:cloud"):
+        remove_ollama_tag("x:cloud", runner=fail)

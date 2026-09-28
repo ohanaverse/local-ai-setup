@@ -10,8 +10,9 @@ See docs/superpowers/specs/2026-09-28-ollama-catalog-sync-design.md.
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any
 
 import requests
 
+from .registry import Cost, ModelEntry, Registry, _cost_to_dict
 from .time_pricing import TimePrice, Window
 
 PRICING_URL = "https://ollama.com/pricing"
@@ -220,3 +222,245 @@ def parse_pricing(html: str) -> Catalog:
         raise CatalogParseError(f"off-peak rows with no base row: {orphans}")
     models = [CatalogModel(name, base[name], offpeak.get(name)) for name in order]
     return Catalog(models=models, warnings=warnings)
+
+
+CATALOG_NAME_KEY = "catalog_name"
+_OLLAMA = "ollama"
+
+
+def cloud_tag(name: str) -> str:
+    """Page name -> pulled ollama tag (`glm-5.3` -> `glm-5.3:cloud`,
+    `gpt-oss:120b` -> `gpt-oss:120b-cloud`)."""
+    return f"{name}-cloud" if ":" in name else f"{name}:cloud"
+
+
+def is_cloud_tag(tag: str) -> bool:
+    return tag.endswith(":cloud") or tag.endswith("-cloud")
+
+
+@dataclass
+class PriceUpdate:
+    model_id: str
+    catalog_name: str
+    before: Cost | None
+    after: Cost
+
+
+@dataclass(frozen=True)
+class DeleteCandidate:
+    tag: str
+    model_id: str | None  # registry id when the pulled stub is registered
+
+
+@dataclass
+class SyncPlan:
+    catalog_size: int
+    updates: list[PriceUpdate] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+    additions: list[ModelEntry] = field(default_factory=list)
+    delete_candidates: list[DeleteCandidate] = field(default_factory=list)
+    unlisted: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def has_registry_changes(self) -> bool:
+        return bool(self.updates or self.additions)
+
+
+def _is_ollama_cloud(m: ModelEntry) -> bool:
+    return m.provider_id == _OLLAMA and (m.location == "cloud" or is_cloud_tag(m.model_name))
+
+
+def _find_entry(registry: Registry, name: str) -> ModelEntry | None:
+    for m in registry.models:
+        if m.provider_id == _OLLAMA and m.extra.get(CATALOG_NAME_KEY) == name:
+            return m
+    tag = cloud_tag(name)
+    return next(
+        (m for m in registry.models if m.provider_id == _OLLAMA and m.model_name == tag), None
+    )
+
+
+def _with_catalog_prices(existing: Cost | None, cm: CatalogModel) -> Cost:
+    base = existing if existing is not None else Cost()
+    rows = [tp for tp in base.time_prices if tp.label != OFFPEAK_LABEL]
+    if cm.offpeak is not None:
+        rows.append(offpeak_time_price(cm.offpeak))
+    return replace(
+        base,
+        input_price_per_million=cm.prices.input,
+        cache_price_per_million=cm.prices.cache,
+        output_price_per_million=cm.prices.output,
+        time_prices=rows,
+        extra=dict(base.extra),
+    )
+
+
+def _family_for(registry: Registry, name: str) -> str:
+    stem = name.split(":", 1)[0]
+    for m in registry.models:
+        if m.provider_id == _OLLAMA and m.model_name.split(":", 1)[0] == stem:
+            return m.family
+    return stem
+
+
+def _shared_subscription(
+    registry: Registry, warnings: list[str]
+) -> tuple[float | None, str | None]:
+    subs = {
+        (m.cost.subscription_price, m.cost.subscription_period)
+        if m.cost is not None
+        else (None, None)
+        for m in registry.models
+        if _is_ollama_cloud(m)
+    }
+    if len(subs) == 1:
+        return next(iter(subs))
+    if len(subs) > 1:
+        warnings.append(
+            "ollama cloud entries disagree on subscription pricing; new entries get none"
+        )
+    return (None, None)
+
+
+def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | None) -> SyncPlan:
+    """Pure: what a sync would change. ``ollama_tags`` is `ollama list`'s
+    NAME column, or None when it could not be read (no delete check)."""
+    plan = SyncPlan(catalog_size=len(catalog.models), warnings=list(catalog.warnings))
+    matched: set[str] = set()
+    now_listed_tags: set[str] = set()
+    sub_price, sub_period = _shared_subscription(registry, plan.warnings)
+    ids = {m.id for m in registry.models}
+
+    for cm in catalog.models:
+        entry = _find_entry(registry, cm.name)
+        if entry is not None:
+            matched.add(entry.id)
+            now_listed_tags.add(entry.model_name)
+            after = _with_catalog_prices(entry.cost, cm)
+            before_d = _cost_to_dict(entry.cost) if entry.cost is not None else None
+            if before_d == _cost_to_dict(after) and entry.extra.get(CATALOG_NAME_KEY) == cm.name:
+                plan.unchanged.append(entry.id)
+            else:
+                plan.updates.append(PriceUpdate(entry.id, cm.name, entry.cost, after))
+            continue
+        tag = cloud_tag(cm.name)
+        now_listed_tags.add(tag)
+        new_id = f"{_OLLAMA}/{tag}"
+        if new_id in ids:
+            plan.warnings.append(f"{new_id} already exists on another provider; not adding")
+            continue
+        cost = _with_catalog_prices(
+            Cost(subscription_price=sub_price, subscription_period=sub_period), cm
+        )
+        plan.additions.append(
+            ModelEntry(
+                id=new_id,
+                family=_family_for(registry, cm.name),
+                provider_id=_OLLAMA,
+                model_name=tag,
+                location="cloud",
+                source="curated",
+                cost=cost,
+                extra={CATALOG_NAME_KEY: cm.name},
+            )
+        )
+
+    by_tag = {m.model_name: m for m in registry.models if m.provider_id == _OLLAMA}
+    pulled = set(ollama_tags or [])
+    if ollama_tags is not None:
+        for tag in ollama_tags:
+            if is_cloud_tag(tag) and tag not in now_listed_tags:
+                owner = by_tag.get(tag)
+                plan.delete_candidates.append(DeleteCandidate(tag, owner.id if owner else None))
+    for m in registry.models:
+        if _is_ollama_cloud(m) and m.id not in matched and m.model_name not in pulled:
+            plan.unlisted.append(m.id)
+    return plan
+
+
+def apply_sync(registry: Registry, plan: SyncPlan) -> None:
+    """Apply ``plan`` (computed against this same registry) in place."""
+    now = datetime.now().astimezone().replace(microsecond=0).isoformat()
+    for update in plan.updates:
+        entry = registry.model(update.model_id)
+        entry.cost = update.after
+        entry.extra[CATALOG_NAME_KEY] = update.catalog_name
+        entry.pricing_updated_at = now
+    for addition in plan.additions:
+        addition.pricing_updated_at = now
+        registry.models.append(addition)
+
+
+def _fmt(cost: Cost | None) -> str:
+    if cost is None:
+        return "no cost"
+
+    def p(v: float | None) -> str:
+        return "-" if v is None else f"{v:g}"
+
+    text = (
+        f"{p(cost.input_price_per_million)}/{p(cost.cache_price_per_million)}/"
+        f"{p(cost.output_price_per_million)}"
+    )
+    offpeak = next((tp for tp in cost.time_prices if tp.label == OFFPEAK_LABEL), None)
+    if offpeak is not None:
+        text += (
+            f" (off-peak {p(offpeak.input_price_per_million)}/"
+            f"{p(offpeak.cache_price_per_million)}/{p(offpeak.output_price_per_million)})"
+        )
+    return text
+
+
+def format_plan(plan: SyncPlan) -> str:
+    lines = [
+        f"ollama.com/pricing: {plan.catalog_size} models "
+        "(prices are input/cached/output per million tokens)"
+    ]
+    lines.append(f"Updates ({len(plan.updates)}):")
+    lines += [f"  {u.model_id}: {_fmt(u.before)} -> {_fmt(u.after)}" for u in plan.updates]
+    lines.append(f"Additions ({len(plan.additions)}):")
+    lines += [f"  {e.id} [family {e.family}]: {_fmt(e.cost)}" for e in plan.additions]
+    lines.append(f"Unchanged: {len(plan.unchanged)}")
+    lines.append(
+        f"Pulled but no longer listed — will ask to delete ({len(plan.delete_candidates)}):"
+    )
+    lines += [
+        f"  {c.tag}" + (f" ({c.model_id})" if c.model_id else " (not in registry)")
+        for c in plan.delete_candidates
+    ]
+    lines.append(
+        f"Registry entries no longer on ollama.com/pricing — left as-is ({len(plan.unlisted)}):"
+    )
+    lines += [f"  {mid}" for mid in plan.unlisted]
+    lines += [f"warning: {w}" for w in plan.warnings]
+    return "\n".join(lines)
+
+
+def _default_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, **kwargs)  # noqa: S603 — fixed argv
+
+
+def list_ollama_tags(runner: Any = None) -> list[str] | None:
+    """`ollama list` NAME column, or None if it can't be read."""
+    try:
+        r = (runner or _default_ollama_runner)(
+            ["ollama", "list"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    tags = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if line and not line.startswith("NAME"):
+            tags.append(line.split()[0])
+    return tags
+
+
+def remove_ollama_tag(tag: str, runner: Any = None) -> None:
+    r = (runner or _default_ollama_runner)(
+        ["ollama", "rm", tag], capture_output=True, text=True, timeout=60
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"`ollama rm {tag}` failed (exit {r.returncode}): {r.stderr.strip()}")

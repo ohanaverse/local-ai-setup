@@ -82,6 +82,7 @@ def _never_call_real_ollama(monkeypatch):
         raise RuntimeError("tests must not fetch ollama.com; pass runner=")
 
     monkeypatch.setattr("modelman.ollama_catalog._default_http_runner", _no_network)
+    monkeypatch.setattr("modelman.ollama_catalog._default_ollama_runner", _fake_ollama_runner)
 
 
 @pytest.fixture(autouse=True)
