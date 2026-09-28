@@ -424,3 +424,42 @@ def test_remove_ollama_tag():
 
     with pytest.raises(RuntimeError, match="x:cloud"):
         remove_ollama_tag("x:cloud", runner=fail)
+
+
+def test_unrecognized_cell_keeps_existing_price():
+    """A single column changing format (below the whole-page threshold) must
+    not overwrite a known price with None — only a real `-` cell clears it."""
+    from modelman.ollama_catalog import parse_pricing, plan_sync
+    from modelman.registry import Cost
+
+    html = _page(
+        _row("zz", "$1.00", "$0.10 / 1M", "$2.00"),
+        _row("yy", "$1.00", "-", "$2.00"),
+    )
+    catalog = parse_pricing(html)
+    old = Cost(
+        input_price_per_million=9.0, cache_price_per_million=0.5, output_price_per_million=9.0
+    )
+    reg = _registry(_entry("zz:cloud", cost=old), _entry("yy:cloud", cost=old))
+    after = {u.model_id: u.after for u in plan_sync(reg, catalog, []).updates}
+    assert after["ollama/zz:cloud"].cache_price_per_million == 0.5  # kept
+    assert after["ollama/zz:cloud"].input_price_per_million == 1.0
+    assert after["ollama/yy:cloud"].cache_price_per_million is None  # real "-"
+
+
+def test_unrecognized_offpeak_cell_keeps_existing_offpeak_price():
+    from modelman.ollama_catalog import PriceTriple, offpeak_time_price, parse_pricing, plan_sync
+    from modelman.registry import Cost
+
+    html = _page(
+        _row("zz", "$1.00", "$0.10", "$2.00"),
+        _row("zz (Off-Peak)", "$0.50", "$0.05*", "$1.00"),
+    )
+    catalog = parse_pricing(html)
+    old = Cost(
+        input_price_per_million=1.0, time_prices=[offpeak_time_price(PriceTriple(0.4, 0.04, 0.8))]
+    )
+    reg = _registry(_entry("zz:cloud", cost=old))
+    (u,) = plan_sync(reg, catalog, []).updates
+    (tp,) = u.after.time_prices
+    assert (tp.input_price_per_million, tp.cache_price_per_million) == (0.5, 0.04)

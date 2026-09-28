@@ -50,6 +50,11 @@ class PriceTriple:
     input: float | None
     cache: float | None
     output: float | None
+    # Fields ("input"/"cache"/"output") whose cell was present but not
+    # recognized as a price. They are None above, but a sync must keep the
+    # registry's existing value rather than clear it (only a real "-" cell
+    # clears a price).
+    unknown: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -187,7 +192,7 @@ def parse_pricing(html: str) -> Catalog:
         if (m := _PRICE.match(text)) is not None:
             return float(m.group(1))
         unrecognized += 1
-        warnings.append(f"{where}: unrecognized price {cell!r}; treated as unknown")
+        warnings.append(f"{where}: unrecognized price {cell!r}; existing price kept")
         return None
 
     width = max(cols.values()) + 1
@@ -201,11 +206,15 @@ def parse_pricing(html: str) -> Catalog:
         name = _OFFPEAK_SUFFIX.sub("", raw_name).strip()
         if not name:
             raise CatalogParseError(f"row {n} has an empty model name")
-        triple = PriceTriple(
-            price(row[cols["input"]], f"{name} input"),
-            price(row[cols["cache"]], f"{name} cached input"),
-            price(row[cols["output"]], f"{name} output"),
-        )
+        before = unrecognized
+        values = {}
+        unknown = set()
+        for key, label in (("input", "input"), ("cache", "cached input"), ("output", "output")):
+            values[key] = price(row[cols[key]], f"{name} {label}")
+            if unrecognized > before:
+                unknown.add(key)
+                before = unrecognized
+        triple = PriceTriple(**values, unknown=frozenset(unknown))
         target = offpeak if name != raw_name.strip() else base
         if name in target:
             raise CatalogParseError(f"duplicate row for {raw_name!r}")
@@ -280,16 +289,36 @@ def _find_entry(registry: Registry, name: str) -> ModelEntry | None:
     )
 
 
+def _merged(page: PriceTriple, old: Any) -> PriceTriple:
+    """``page`` with each unrecognized field replaced by ``old``'s value
+    (``old`` is a Cost or TimePrice, or None when there is nothing to keep)."""
+
+    def pick(key: str, attr: str) -> float | None:
+        if key in page.unknown:
+            kept: float | None = getattr(old, attr, None)
+            return kept
+        fresh: float | None = getattr(page, key)
+        return fresh
+
+    return PriceTriple(
+        pick("input", "input_price_per_million"),
+        pick("cache", "cache_price_per_million"),
+        pick("output", "output_price_per_million"),
+    )
+
+
 def _with_catalog_prices(existing: Cost | None, cm: CatalogModel) -> Cost:
     base = existing if existing is not None else Cost()
+    old_offpeak = next((tp for tp in base.time_prices if tp.label == OFFPEAK_LABEL), None)
     rows = [tp for tp in base.time_prices if tp.label != OFFPEAK_LABEL]
     if cm.offpeak is not None:
-        rows.append(offpeak_time_price(cm.offpeak))
+        rows.append(offpeak_time_price(_merged(cm.offpeak, old_offpeak)))
+    prices = _merged(cm.prices, existing)
     return replace(
         base,
-        input_price_per_million=cm.prices.input,
-        cache_price_per_million=cm.prices.cache,
-        output_price_per_million=cm.prices.output,
+        input_price_per_million=prices.input,
+        cache_price_per_million=prices.cache,
+        output_price_per_million=prices.output,
         time_prices=rows,
         extra=dict(base.extra),
     )
