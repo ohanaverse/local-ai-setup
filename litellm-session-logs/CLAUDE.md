@@ -20,12 +20,11 @@ LiteLLM applies to a request's headers is quoted in that file under
    completion_tokens, spend, messages, response` for one `session_id`,
    ordered by time, to `session_logs_<id>.json`.
    ```
-   psql postgresql://keith@localhost:5432/litellm \
+   psql "${LITELLM_DATABASE_URL:-postgresql://keith@localhost:5432/litellm}" \
      -v session_id="'<session-id>'" \
      -f 01_export_session_logs.sql \
      > session_logs_<id>.json
    ```
-   (`LITELLM_DATABASE_URL` overrides the connection string, as in step 2.)
 2. **`02_export_proxy_server_request.sh <session_id> [output_file]`** —
    dumps the `proxy_server_request` column (the real request body: messages,
    system prompt, tool results) to newline-delimited JSON. Only useful if
@@ -54,7 +53,10 @@ Copilot section of [session-log-sources.md](session-log-sources.md) for the
 worked example.
 
 Run scripts with `python3 <script>.py ...` — no venv/dependencies beyond the
-stdlib.
+stdlib. Exception: `antigravity/extract_descriptors.py` (one-off: extracts
+protobuf FileDescriptorProtos from the `agy` binary to decode Antigravity
+`step_payload` blobs) needs `protobuf`; see the Antigravity section of
+[session-log-sources.md](session-log-sources.md).
 
 ## Key data-model caveats (baked into the scripts, not obvious from output alone)
 
