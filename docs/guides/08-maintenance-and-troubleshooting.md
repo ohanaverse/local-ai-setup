@@ -239,6 +239,14 @@ kickstart OK
 
 Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; the port refused connections and answered `401` again after **7 s**. Guides 01/04 measured 9–15 s on earlier runs — plan for a ~10–20 s dead window and confirm with the Step 1 curl rather than assuming. Everything else uses the mechanics in the §1 table.
 
+**Step 9 — unexposed by the ready gate? `modelman sync` does not re-expose.** (Verified 2026-09-30, rebuild session.) A `wt litellm sync` on a box missing artifacts unexposes every not-ready local route (`ollama/qwen3.8:27b-mlx: unexposed`, etc.). Later downloading the artifact + `modelman sync` flips `ready = true` in `modelman.toml` — but the route stays out of `config.yaml` until you re-expose explicitly:
+
+```bash
+wt litellm expose ollama/qwen3.8:27b-mlx   # -> ollama/qwen3.8:27b-mlx: exposed
+```
+
+(A `wt start`/`wt stop` of that model re-adds the route too — the lifecycle route hook writes it on any start transition; the explicit expose is the no-launch path. Note `modelman`'s persistent exposure flag is never cleared by the ready-gate unexpose, which is why the guides' embedded exposure-flag snapshots don't drift when this happens.)
+
 ### 3. Log triage
 
 Log homes (all from live plists / on-disk checks, 2026-08-29):

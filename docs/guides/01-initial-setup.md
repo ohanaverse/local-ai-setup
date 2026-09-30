@@ -33,7 +33,7 @@ You need:
 - macOS Apple Silicon.
 - Homebrew (`brew --version`).
 - `uv` (`brew install uv` — LiteLLM is installed through it).
-- Go — only to build `wt` ([06-wt-agents-and-models](06-wt-agents-and-models.md)).
+- Go — only to build `wt` ([06-wt-agents-and-models](06-wt-agents-and-models.md)). Install via mise, pinned to wt-ci's version: `mise use -g go@1.26.7`. **Verified 2026-09-30:** a fresh box has no Go and `make install` dies with `make[1]: go: No such file or directory`; after the mise install it completes.
 - OpenRouter API key from openrouter.ai/keys (starts with `sk-or-v1-`).
 - Hugging Face account (only for pulling HF-hosted models; gated ones need a token).
 
@@ -306,6 +306,15 @@ hf auth whoami
 user=gitmanntoo orgs=Wisconsin,mlx-community
 ```
 
+**Rebuilding from a backup volume — skip the login** (verified 2026-09-30): copy the stored token(s), then confirm:
+
+```bash
+mkdir -p ~/.cache/huggingface
+cp "/Volumes/Users Bak/keith/.cache/huggingface/token" ~/.cache/huggingface/
+cp -R "/Volumes/Users Bak/keith/.cache/huggingface/stored_tokens" ~/.cache/huggingface/   # if present
+hf auth whoami   # -> user=gitmanntoo orgs=Wisconsin,mlx-community
+```
+
 What hf is needed for here:
 
 - **Downloading oMLX artifacts** the modelman registry references — e.g. the Tier-1 starter `hf download mlx-community/Qwen3.8-27B-4bit --local-dir ~/.omlx/models/Qwen3.8-27B-4bit` (paths must match the registry `disk_path`, and the directory must be **flat** — oMLX cannot parse the nested HF-cache layout; modelman's own TUI download path does the same snapshot-to-flat-dir correctly if you queue the download there instead)
@@ -343,6 +352,8 @@ Create the database the proxy logs into (fresh machine only):
 ```text
 CREATE DATABASE
 ```
+
+**Spend history does not migrate** (verified 2026-09-30): the `/Volumes/Users Bak/` backup carries user config dirs (`~/.config`, `~/Library/LaunchAgents`) — not the Postgres *data cluster* at `/opt/homebrew/var/postgresql@16` — so `LiteLLM_SpendLogs` and the Admin-UI tables start empty on the rebuild. LiteLLM's startup `migrate deploy` creates the full schema with zero rows; the `litellm-session-logs/` pipeline will find new rows only going forward. (If the old cluster was ever backed up separately, `pg_dump`/restore into this database before first launch.)
 
 Point the proxy at both services — `general_settings` in `~/.config/litellm/config.yaml` (see §1 for the verified block) plus `DATABASE_URL` + `LITELLM_SALT_KEY` in the LaunchAgent plist (§7).
 
@@ -552,6 +563,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 - **`echo "model_list: []"` beats `touch`** for the initial LiteLLM config — an empty file fails to start.
 - **Reinstalling LiteLLM wipes its tool env and resets the Python version.** Always reinstall as `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'` (§1): bare `litellm[proxy]` drops Prisma (`No module named 'prisma'` at proxy startup), and without the 3.11 pin uv may pick 3.14, where Prisma's engine binaries are missing. After any reinstall/upgrade, re-run §6's `prisma generate` — the generated client lives inside the tool env.
 - **`redisearch.so` is unreadable on this machine (2026-09-30).** The brew bottle pour fails on it (`Errno::EPERM`), and even a source-built copy aborts Redis at module load — no third-party AV is running; it's a per-file read denial this box applies to that module. If `brew services list` shows redis `error`/crash-looping, check `/opt/homebrew/var/log/redis.log` for `redisearch` first and apply the §6 fix (build-from-source + commented `loadmodule` line; original conf at `redis.conf.bak-original`).
+- **A tiny `max_tokens` against qwen3.8 returns empty `content`.** Reasoning tokens consume the cap before any visible text — the rebuild's first proxy smoke call (`max_tokens: 20`) came back empty; re-running at 80 returned the expected string with `finish_reason: stop`. Bump the cap when smoke-testing reasoning models through the proxy (verified 2026-09-30).
 - **`litellm` plist secrets:** the `EnvironmentVariables` block carries `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `DATABASE_URL` — redact all of it (plus OpenRouter `api_key` values inside `~/.config/litellm/config.yaml`) before pasting anything anywhere.
 - **brew services run in the user session** — services start at login, not bare boot (headless setups would need `/Library/LaunchAgents/` instead).
 

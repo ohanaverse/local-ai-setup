@@ -210,6 +210,8 @@ little-coder --version
 command -v little-coder   # must resolve — see below
 ```
 
+(The `npm warn install-scripts` line naming `@google/genai`/`protobufjs` is expected and inert: little-coder has shipped **no install scripts** since v1.12.0 — its launcher does that work at launch time — and the flagged packages are transitive dependencies. Silence it globally with `npm config set allow-scripts=@google/genai,protobufjs --location=user` if it annoys.)
+
 **The wrapper binary must be on PATH — a missing wrapper is the one *fatal* profile error.** Every other profile problem degrades to an unprofiled launch with a stderr warning; this one aborts the launch.
 
 No `~/.config/little-coder/models.json` override is needed for wt launches: wt's pi driver syncs `~/.pi/agent/models.json` (a wt-owned `litellm` provider block in LiteLLM mode) and passes `--model litellm/<registry-id>`; little-coder forwards unrecognized args to pi and does not inject its own default model when one is supplied.
