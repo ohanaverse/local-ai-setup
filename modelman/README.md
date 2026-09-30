@@ -1,12 +1,13 @@
 # modelman
 
-A terminal UI for managing LLM models across providers (Ollama,
-oMLX, OpenRouter, and native agent providers like `claude`, `codex`; the
-llama.cpp provider is retired — see `../docs/reference/provider-artifacts.md`). Models and providers live in a shared `registry.toml`;
-per-machine state (ready markers, LiteLLM exposure) lives in
-`modelman.toml`. The TUI lets you browse families, drill into a family's
-model list, and queue changes (add/edit/delete/ready/expose) that are
-applied on exit.
+A terminal UI and CLI for managing LLM models across providers (Ollama,
+oMLX, MTPLX, mlx_lm_server, OpenRouter, and native agent providers like
+`claude`, `codex`; the llama.cpp provider is retired — see
+`../docs/reference/provider-artifacts.md`). Models and providers live in a
+shared `registry.toml`; per-machine state (ready markers, LiteLLM exposure,
+running hints) lives in `modelman.toml`. The TUI shows every model in one
+table, queues changes (delete/ready/expose) that are applied on exit, and
+starts/stops local models.
 
 **Requires `wt` on PATH.** LiteLLM management is owned by the `wt` launcher
 (since 2026-09-21): modelman applies its own ready/exposure gates and then
@@ -116,7 +117,7 @@ running = false
 ```
 
 `ready` is the provider-agnostic readiness flag. For reconcilable providers
-(Ollama, oMLX; llama.cpp was retired 2026-09-07) it means "the model is present on this machine".
+(Ollama, oMLX, MTPLX, mlx_lm_server; llama.cpp was retired 2026-09-07) it means "the model is present on this machine".
 For flag-only providers (OpenRouter, native agents like `claude`) it means
 "the user has marked this model as available"; there is nothing to download
 or delete on disk.
@@ -146,8 +147,24 @@ modelman sync                   # reconcile configured models against providers
 modelman expose <model-id>      # expose a model through LiteLLM (delegates to `wt litellm expose`)
 modelman unexpose <model-id>    # remove a model's LiteLLM exposure (delegates to `wt litellm unexpose`)
 modelman litellm status|on|off|set   # passthroughs to `wt litellm ...`
+modelman start                  # list local models: registered+on-disk, registered-but-missing, discovered
+modelman start <model>          # start (and expose) a local model; a discovered artifact is registered first
+modelman stop <model-id>        # stop (and un-expose) one local model
+modelman stop --all             # stop every running local model
+modelman provider isolate|stop|stop-all|restore|list   # low-level provider lifecycle (benchmark isolation)
+modelman refresh-prices         # refresh cloud models' per-token prices from OpenRouter
+modelman delete-family <name>   # remove an empty family's leftover registry entry
+modelman usage report           # wt launch history joined with LiteLLM spend
 modelman migrate                # one-time import of legacy config (see below)
 ```
+
+`start <model>` accepts a registry id, a model's provider-side name, or the
+name of an on-disk artifact modelman hasn't registered yet (you are prompted
+for a family). Several local models can run at once; oMLX, MTPLX and
+mlx_lm_server serve one model per process, so starting another model on one
+of them replaces its current model. `modelman provider isolate
+<ollama|omlx|omlx-6bit|mtplx>` stops the other providers and starts one (used
+for benchmarking); `restore` brings them all back.
 
 ### TUI
 
@@ -156,12 +173,14 @@ The TUI has a single screen:
 - **Model screen** — the app's only/root screen: a single table of every
   model across every family, sorted family · location (local before
   cloud) · provider · model name (columns: family · provider · model ·
-  loc · status ✓/○/↓/↑/✗/→/+ · exposed · cost · size). An on-disk
+  loc · status ✓/○/↓/↑/✗/→/+ · exposed · running · cost · size). An on-disk
   artifact with no `registry.toml` entry shows up as an extra row with
   status `+`; pressing `enter`/`e` on it opens a registration dialog
   (Provider/Model prefilled and locked) instead of the normal edit
   dialog, so you just pick a family to register it. LOC is an icon
-  (↗ cloud / ▤ local / `—` when unknown) and EXPOSED shows `Y`/`–`; COST
+  (↗ cloud / ▤ local / `—` when unknown), EXPOSED shows `Y`/`–`, and
+  RUNNING shows `●` for a local model modelman started (verified by a
+  live probe when the TUI opens) and `-` otherwise; COST
   renders per-token input/cache/output prices per million tokens as
   three space-delimited values, each a leading-space-padded 2-digit
   integer part and 4 decimal places (e.g. ` 2.0000`, `12.5000`) so prices
@@ -177,14 +196,17 @@ The TUI has a single screen:
   exposed from this dialog), `d` queue delete (works on any model —
   apply skips the on-disk removal if the artifact is already gone, but
   still cleans registry/state), `r`
-  toggle ready (queues download/pull for reconcilable providers, or a
-  flag flip for cloud/native providers; a no-op with a notification if
-  the model is a local artifact that's already on disk — reconcile is
-  the only writer of ready=False for those, so delete the file instead),
+  toggle ready (ready-on queues a download/pull, or a flag flip for
+  cloud/native providers and MTPLX, which manages its own cache;
+  ready-off queues removal of the on-disk artifact; pressing `r` again
+  cancels the queued change),
   `x` toggle exposed (cascades a ready=True queue first if the model
-  isn't ready yet), `l` toggle LiteLLM routing on/off, `enter` edit,
+  isn't ready yet), `s` start/stop a ready local model (always asks for
+  confirmation; runs immediately, not queued, and also exposes/un-exposes
+  it), `l` toggle LiteLLM routing on/off, `enter` edit,
   `escape` shows the apply/discard/cancel dialog if anything is queued,
-  otherwise quits the app. Reconcile runs automatically on mount — there
+  otherwise quits the app (if a start/stop or other background task is
+  still running, you are offered "Keep waiting" or "Force quit"). Reconcile runs automatically on mount — there
   is no manual reconcile key. The cursor survives every reload —
   reconciling or toggling a row leaves you on that row. Provider and
   family dropdowns list options alphabetically.
@@ -209,8 +231,11 @@ after the TUI closes: **deletes, then moves, then ready changes
 provider progress and a thin lifecycle line per operation to stdout,
 then writes `registry.toml` + `modelman.toml` once. A failed operation
 is reported in an error summary at the end and the process exits
-non-zero; `Ctrl+C` mid-run cancels the remaining queue (already-applied
-steps are not undone, nothing is saved for the interrupted run). A
+non-zero. `Ctrl+C` mid-run stops the queue: every step that had already
+finished (deletes, moves, completed downloads and ready flips) is saved to
+`registry.toml`/`modelman.toml`, a partially downloaded artifact is
+removed, the remaining steps are skipped, and modelman prints
+`Cancelled: N steps completed, M remaining skipped.` and exits non-zero. A
 delete for a not-on-disk model is legal: the on-disk removal is
 skipped, but the registry/state cleanup, lifecycle events, and any
 cascade-unexpose still run.
@@ -243,11 +268,12 @@ to expose) and `–` otherwise. A mixed queue of exposes and unexposes can cost
 up to two proxy restarts (one per direction).
 
 **Local models and the EXPOSED column.** `wt start`/`wt stop` add and remove a
-local model's route automatically, without touching modelman's `exposed` flag,
-so for a local model this column can disagree with the real config: a model
-started with `wt start` is routed but may show `–` here, and the inverse after
-`wt stop` or `wt litellm sync`. The authoritative answer is `wt litellm list`.
-(Reading `wt litellm list` for the column is a deferred follow-up.)
+local model's route automatically, without touching modelman's `exposed` flag.
+So for a local model the column shows `Y` if *either* wt currently routes it
+(`wt litellm list`, read when the TUI opens and after each `s` start/stop) *or*
+modelman's flag says exposed. If wt can't be reached, only the flag is used.
+The `exposed` value in `modelman.toml` itself can still be stale for local
+models; `wt litellm list` is the authoritative answer.
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
 (wt honors `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`). wt's
@@ -278,8 +304,8 @@ launch from the wt config.
 
 `modelman sync` reconciles the ready state of models already in
 `registry.toml` against their providers — it never adds new models. Ollama
-is reconciled via `ollama show`; llama.cpp via the Hugging Face cache;
-oMLX via its `model_dir`. Cloud providers (OpenRouter, native agents) are
+is reconciled via `ollama list`; oMLX, MTPLX and mlx_lm_server (and the retired
+llama.cpp) via their on-disk model directories. Cloud providers (OpenRouter, native agents) are
 configured explicitly and are not reconciled. Sync intentionally does not
 propagate `cost` to providers; it is registry metadata only.
 
@@ -316,7 +342,7 @@ make test        # run the test suite
 make lint        # ruff check
 make format      # ruff format + ruff check --fix
 make typecheck   # mypy
-make check       # lint + typecheck (no auto-fixes)
+make check       # lint + format check + typecheck (no auto-fixes)
 make all         # format + test + check
 make clean       # remove caches
 ```
@@ -336,10 +362,13 @@ make clean       # remove caches
 - `src/modelman/sync.py` — reconciles configured models against provider state.
 - `src/modelman/migrate.py` — one-time import of legacy config into the registry/state.
 - `src/modelman/settings.py` — user preferences (`settings.yaml`).
-- `src/modelman/providers/` — one module per backend (`ollama.py`, `llamacpp.py`, `omlx.py`). Each registers itself with `ProviderRegistry` at import time and implements `is_downloaded`, `download`, `list_local`, and optionally `size_of`/`path_of`.
+- `src/modelman/providers/` — one module per backend (`ollama.py`, `omlx.py`, `mtplx.py`, `mlx_lm_server.py`, retired `llamacpp.py`). Each registers itself with `ProviderRegistry` at import time and implements `is_downloaded`, `download`, `list_local`, and optionally `size_of`/`path_of`/`resolve_local`.
+- `src/modelman/providers/lifecycle/` — start/stop/isolate/restore of local provider servers (`modelman provider ...`); `src/modelman/local_control.py` — `modelman start`/`stop` and the TUI `s` key.
+- `src/modelman/pricing.py` — OpenRouter price refresh (`modelman refresh-prices`, plus a daily check when the TUI starts).
 - `src/modelman/manifest.py` / `config.py` — legacy `families/*.yaml` / `config.yaml` loaders, read only by `migrate`.
 
-To add a new provider (e.g. vLLM):
+To add a new provider (e.g. vLLM) — the full checklist is the
+`adding-a-provider` skill in `.claude/skills/adding-a-provider/SKILL.md`:
 
 1. Create `src/modelman/providers/vllm.py` with a class extending `Provider`.
 2. Call `ProviderRegistry.register(VLLMProvider)` at module bottom.

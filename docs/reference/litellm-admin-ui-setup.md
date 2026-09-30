@@ -105,14 +105,11 @@ brew install redis
 brew services start redis
 ```
 
-> **macOS module loading issue (Redis 8.x):** If Redis fails to start with an error about `redisearch.so` (`dlopen ... errno=1`), comment out the module lines in `/opt/homebrew/etc/redis.conf`:
+> **macOS module loading issue (Redis 8.x) — refined 2026-09-30:** on the rebuilt machine `brew install redis` itself aborts at the pour (`Failed to read Mach-O binary ... redisearch.so ... Errno::EPERM`); a fresh bottle download doesn't help, and even the **source-built** file is unreadable system-wide (`dlopen ... errno=1`). No third-party AV is installed — it's a per-file read denial this box hands to that one module. Install with `brew install --build-from-source redis`, then comment out **only** the `redisearch.so` line in `/opt/homebrew/etc/redis.conf` — RedisBloom/ReJSON/Timeseries still load fine; original conf saved as `redis.conf.bak-original`:
 > ```
-> # loadmodule /opt/homebrew/opt/redis/lib/redis/modules/redisbloom.so
 > # loadmodule /opt/homebrew/opt/redis/lib/redis/modules/redisearch.so
-> # loadmodule /opt/homebrew/opt/redis/lib/redis/modules/rejson.so
-> # loadmodule /opt/homebrew/opt/redis/lib/redis/modules/redistimeseries.so
 > ```
-> Then run `brew services restart redis`. LiteLLM only needs basic Redis key-value operations — no modules required.
+> Then run `brew services restart redis`. LiteLLM only needs basic Redis key-value operations — no modules required. Future upgrades need `brew upgrade --build-from-source redis` — the bottle pour hits the same EPERM.
 
 Verify:
 
@@ -163,18 +160,20 @@ Add both to the plist's `EnvironmentVariables` block:
 
 ## Step 8 — Install Prisma and generate the client
 
-The LiteLLM proxy uses Prisma as its database ORM. The `prisma` Python package is **not** included in the `litellm[proxy]` extra and must be installed separately into the litellm venv:
+The LiteLLM proxy uses Prisma as its database ORM. **Since LiteLLM ≥1.98, `prisma` ships in a separate `extra-proxy` extra** — install the tool env with it once, pinned to Python 3.11 (the 2026-09-30 rebuild proved both points: `litellm[proxy]` alone boots all routes, then dies with `ModuleNotFoundError: No module named 'prisma'`; an unpinned reinstall landed on Python 3.14, where Prisma's engine binaries are missing):
 
 ```bash
-uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma
+uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'
 ```
 
-Then generate the Prisma client from LiteLLM's schema:
+(Fallback for a tool env predating this: `uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma`.)
+
+Then generate the Prisma client from LiteLLM's schema — glob the site-packages dir, never hardcode the Python version (it was `python3.13` on the old machine, `python3.11` on the 2026-09-30 rebuild):
 
 ```bash
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
-  ~/.local/share/uv/tools/litellm/bin/prisma generate --schema=./schema.prisma
+  "$HOME/.local/share/uv/tools/litellm/bin/python" -m prisma generate --schema="$SP/litellm/proxy/schema.prisma"
 ```
 
 This creates the Prisma client at `site-packages/prisma/`.
@@ -183,10 +182,13 @@ This creates the Prisma client at `site-packages/prisma/`.
 
 ## Step 9 — Push the database schema
 
+**Automatic on LiteLLM ≥1.98 — the proxy runs `prisma migrate deploy` against `$DATABASE_URL` at startup** (verified 2026-09-30: log shows "184 migrations found", then all `LiteLLM_*` tables present). Keep this only as a manual fallback for older versions:
+
 Create all 72 LiteLLM tables in the `litellm` database:
 
 ```bash
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
+cd "$SP/litellm/proxy"
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
   ~/.local/share/uv/tools/litellm/bin/prisma db push --schema=./schema.prisma
@@ -303,18 +305,21 @@ The complete `~/Library/LaunchAgents/local.litellm.proxy.plist` after all steps:
 
 ### `ModuleNotFoundError: No module named 'prisma'`
 
-The `prisma` package isn't bundled with `litellm[proxy]`. Install it manually:
+On LiteLLM ≥1.98 `prisma` ships in the `extra-proxy` extra, not `proxy`. Reinstall with it, pinned to Python 3.11 (see Step 8):
 
 ```bash
-uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma
+uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'
 ```
+
+(Fallback for an older tool env: `uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma`.)
 
 ### `Unable to find Prisma binaries. Please run 'prisma generate' first.`
 
-The Prisma client hasn't been generated. Run:
+First check the tool env's Python (`~/.local/share/uv/tools/litellm/bin/python --version`). On Python 3.14 Prisma's engine binaries are missing and `prisma generate` won't fix it — reinstall pinned to 3.11 (`uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'`, Step 8), then generate. Otherwise the Prisma client just hasn't been generated. Run:
 
 ```bash
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
+cd "$SP/litellm/proxy"
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
   ~/.local/share/uv/tools/litellm/bin/prisma generate --schema=./schema.prisma
 ```
@@ -324,7 +329,8 @@ PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 The database schema hasn't been pushed. Run:
 
 ```bash
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
+cd "$SP/litellm/proxy"
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
   ~/.local/share/uv/tools/litellm/bin/prisma db push --schema=./schema.prisma

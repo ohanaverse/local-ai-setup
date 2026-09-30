@@ -284,10 +284,11 @@ model picker) that resolves a non-empty profile asks before applying it —
 default **yes** on a bare Enter. A non-interactive launch (no controlling
 terminal: scripts, CI) applies automatically with no prompt.
 
-**`wt smoke` does NOT apply profiles today.** It builds its launch
-commands directly via `agents.BuildLaunchCmd` and never goes through
-`runAgentCmd` — the only choke point profile resolution is wired into — so
-a smoke-tested agent always launches unprofiled, regardless of
-profiles.toml. This is a known gap, not a feature; wiring `wt smoke`
-through the same profile resolution is a natural follow-up but isn't done
-yet.
+**`wt smoke` applies profiles too.** For each agent × model row it
+resolves the profile from the same already-loaded profiles.toml state and
+applies it via `applyResolvedProfile` — the same function a real launch
+uses (`cmd/wt/smoke.go`) — so smoke and a real launch can't drift on
+apply/rollback semantics. It never prompts. If profiles.toml fails to load
+or validate, smoke warns on stderr and runs unprofiled; `wt profile off`
+disables it for smoke as well. A profile whose wrapper binary is missing
+fails that smoke row.
