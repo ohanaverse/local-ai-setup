@@ -171,7 +171,7 @@ uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'
 Then generate the Prisma client from LiteLLM's schema — glob the site-packages dir, never hardcode the Python version (it was `python3.13` on the old machine, `python3.11` on the 2026-09-30 rebuild):
 
 ```bash
-SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.* | tail -1)
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
   "$HOME/.local/share/uv/tools/litellm/bin/python" -m prisma generate --schema="$SP/litellm/proxy/schema.prisma"
 ```
@@ -187,7 +187,8 @@ This creates the Prisma client at `site-packages/prisma/`.
 Create all 72 LiteLLM tables in the `litellm` database:
 
 ```bash
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
+cd "$SP/litellm/proxy"
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
   ~/.local/share/uv/tools/litellm/bin/prisma db push --schema=./schema.prisma
@@ -304,18 +305,21 @@ The complete `~/Library/LaunchAgents/local.litellm.proxy.plist` after all steps:
 
 ### `ModuleNotFoundError: No module named 'prisma'`
 
-The `prisma` package isn't bundled with `litellm[proxy]`. Install it manually:
+On LiteLLM ≥1.98 `prisma` ships in the `extra-proxy` extra, not `proxy`. Reinstall with it, pinned to Python 3.11 (see Step 8):
 
 ```bash
-uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma
+uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'
 ```
+
+(Fallback for an older tool env: `uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma`.)
 
 ### `Unable to find Prisma binaries. Please run 'prisma generate' first.`
 
-The Prisma client hasn't been generated. Run:
+First check the tool env's Python (`~/.local/share/uv/tools/litellm/bin/python --version`). On Python 3.14 Prisma's engine binaries are missing and `prisma generate` won't fix it — reinstall pinned to 3.11 (`uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'`, Step 8), then generate. Otherwise the Prisma client just hasn't been generated. Run:
 
 ```bash
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
+cd "$SP/litellm/proxy"
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
   ~/.local/share/uv/tools/litellm/bin/prisma generate --schema=./schema.prisma
 ```
@@ -325,7 +329,8 @@ PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 The database schema hasn't been pushed. Run:
 
 ```bash
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
+cd "$SP/litellm/proxy"
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
   ~/.local/share/uv/tools/litellm/bin/prisma db push --schema=./schema.prisma
