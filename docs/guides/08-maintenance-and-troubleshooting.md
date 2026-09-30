@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the four LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
+- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`; **`homebrew.mxcl.omlx.plist` is optional since the 2026-09-30 rebuild** — wt/modelman lifecycle backends run `omlx start` on demand, and the rebuild omits it; `brew services start omlx` restores it if you want oMLX always-on) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
 - modelman runnable from its repo, not a global install (it is not installed as a `uv tool` — guide 02 Gotchas).
 - This repo checked out — `modelman` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `modelman/`, and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
@@ -394,7 +394,8 @@ ollama version is 0.33.2
 <!-- UNVERIFIED — upgrade not run in this session (mutates Homebrew state). -->
 
 ```bash
-brew upgrade omlx postgresql@16 redis
+brew upgrade omlx postgresql@16
+brew upgrade --build-from-source redis   # redisearch.so bottle pour EPERMs on this machine (Gotchas) — 2026-09-30
 ```
 
 Verify after with a command run live, 2026-08-29 (current versions as of writing):
@@ -464,7 +465,9 @@ model_list entries: 9
 - **There is no Ollama LaunchAgent.** `launchctl list | grep ollama` shows `-	0	com.ollama.ollama` because the row comes from the app's login item — you cannot `kickstart` Ollama back; relaunch Ollama.app. (The `application.com.electron.ollama.*` row appears only while the app window lives — don't grep for it in scripts.)
 - **Run modelman from the `modelman/` directory.** modelman is not installed globally (only `download` would be available from an old install; guide 02 Gotchas) — always `# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman` + `uv run modelman …`.
 - **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
-- **Upgrades recreate the LiteLLM tool env** — recheck `prisma` in `/Users/keith/.local/share/uv/tools/litellm/bin/` after `uv tool upgrade` or `--force --reinstall`, or the Postgres-backed UI/auth features die on the next kickstart (guide 01 §6).
+- **Upgrades recreate the LiteLLM tool env** — after `uv tool upgrade` (or a `--force` reinstall), redo it as `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'` and re-run `prisma generate` (guide 01 §1/§6), or the Postgres-backed UI/auth features die on the next kickstart with one of: `ModuleNotFoundError: No module named 'prisma'` (Prisma ships in the `extra-proxy` extra on LiteLLM ≥1.98, not `[proxy]`) or `Unable to find Prisma binaries. Please run 'prisma generate' first.` (unpinned Python — uv picked 3.14 on the 2026-09-30 rebuild, where the engines are missing; 3.11 is known-good). Both symptoms verified 2026-09-30.
+- **Redis crash-loops on `redisearch.so` on this machine (2026-09-30).** The module file is unreadable system-wide (`dlopen ... errno=1` in `/opt/homebrew/var/log/redis.log`), even source-built; the bottle pour itself can also `EPERM` on it during `brew install`/`upgrade`, so use `--build-from-source`. Fix applied in `/opt/homebrew/etc/redis.conf`: only the `redisearch.so` `loadmodule` line is commented out (RedisBloom/ReJSON/Timeseries load fine; original at `redis.conf.bak-original`). LiteLLM needs plain Redis only.
+- **`homebrew.mxcl.omlx.plist` is optional (2026-09-30 rebuild omitted it).** wt/modelman's lifecycle backends run `omlx start` on demand when an omlx model starts, and wt's live probes keep `omlx/*` routes out of `config.yaml` while it's down — `omlx none` in `brew services list` is the *healthy* state now, not something to fix. `brew services start omlx` only if you want oMLX always-on; remember KeepAlive then fights `omlx stop` during benchmark isolation.
 - **modelman can pause on exit if you quit right after `s`.** Pressing `s` starts the model on a background thread that polls for it to finish loading (omlx/mtplx/mlx_lm_server warmup can take several minutes); Python can't cancel that thread once it's running. Quitting (Escape or Ctrl+Q) while it's still going now shows a "still running in the background" prompt with two choices: **Keep waiting** (let the start finish normally) or **Force quit** (returns to the shell instantly, abandoning the start — the model keeps loading in its own daemon regardless, and the RUNNING column self-heals via a live probe next launch). Without this prompt the shell would otherwise just hang with no explanation.
 
 ## Going deeper

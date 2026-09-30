@@ -2,7 +2,7 @@
 
 > Use this to: install and auto-start the full local-AI stack on a fresh macOS (Apple Silicon) machine and smoke-test it through the LiteLLM proxy on :4000.
 >
-> Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29
+> Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · **rebuild-verified 2026-09-30** on LiteLLM 1.103.1 — fresh box restored from the old machine's backup volume (§1 LiteLLM+Prisma, §4 oMLX, §6 Postgres/Redis, §7 LaunchAgent)
 
 ## Prerequisites
 
@@ -49,13 +49,13 @@ On this machine Ollama ships as the Ollama.app login item, not a brew service �
 # (LiteLLM §7); on a clean machine do Steps first, then rerun this block.
 
 # 1. brew installs (versions above are what's on this machine)
-brew install omlx postgresql@16 redis
+brew install omlx postgresql@16 redis   # redis: use --build-from-source if the pour hits an EPERM (§6)
 brew services start postgresql@16
 brew services start redis
 # Ollama: brew install ollama, or install Ollama.app from ollama.com
 
 # 2. LiteLLM proxy
-uv tool install 'litellm[proxy]'
+uv tool install --python 3.11 'litellm[proxy,extra-proxy]'   # extra-proxy: Prisma ships there on LiteLLM ≥1.98 (§1/§6)
 mkdir -p ~/.config/litellm
 echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY — on an existing box this wipes the live model_list (see Steps §1)
 
@@ -99,13 +99,15 @@ omlx/Ornith-1.5-35B-A3B-MLX-6bit
 Install and verify the version:
 
 ```bash
-uv tool install 'litellm[proxy]'
+uv tool install --python 3.11 'litellm[proxy,extra-proxy]'
 litellm --version
 ```
 
 ```text
-LiteLLM: Current Version = 1.98.0
+LiteLLM: Current Version = 1.103.1
 ```
+
+**2026-09-30 (rebuild-verified):** on LiteLLM ≥1.98 the Prisma DB stack moved out of `[proxy]` into a separate **`extra-proxy`** extra — `litellm[proxy]` alone boots and prints all routes, then dies at startup with `ModuleNotFoundError: No module named 'prisma'`. Pin `--python 3.11` as well: an unpinned reinstall landed on Python 3.14, where Prisma's engine binaries are missing (`Unable to find Prisma binaries. Please run 'prisma generate' first.`). §6 still generates the client — installing the package is necessary but not sufficient.
 
 Create the config (fresh machine only):
 
@@ -226,15 +228,15 @@ curl -s http://localhost:11434/api/tags | head -3
 ### 4. oMLX
 
 ```bash
-brew install omlx    # 0.6.3rc3 here
+brew install omlx    # 0.7.0 on the 2026-09-30 rebuild (0.6.3rc3 on the old machine)
 brew services list | grep omlx
 ```
 
 ```text
-omlx          started         keith ~/Library/LaunchAgents/homebrew.mxcl.omlx.plist
+omlx          none            keith   # 2026-09-30 rebuild — deliberately NO service ("started" was the old machine)
 ```
 
-(On this machine oMLX runs as a brew service. `omlx start` is oMLX's own managed-background-service command as an alternative; `omlx stop` halts it either way.)
+(It used to run as a brew service; since the wt/modelman lifecycle engines it's **optional**. Starting any omlx model — `wt start`, TUI `s`, `modelman provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
 
 oMLX auto-discovers models in `~/.omlx/models/` (set via `~/.omlx/settings.json`, key `model.model_dirs`). Get a model in with the HF CLI:
 
@@ -321,6 +323,8 @@ localhost:5432 - accepting connections
 PONG
 ```
 
+**2026-09-30 (rebuild-verified):** this machine threw a wrench at the Redis bottle — `brew install redis` aborted at the pour with `Failed to read Mach-O binary ... redisearch.so ... Errno::EPERM`, and even the source-built file was unreadable system-wide, so Redis aborted on module load (`dlopen ... errno=1`). No third-party AV is installed — it's a per-file read denial specific to that module. Fix: `brew install --build-from-source redis`, then comment out **only** the `redisearch.so` line in `/opt/homebrew/etc/redis.conf` (RedisBloom/ReJSON/Timeseries load fine; original conf kept as `redis.conf.bak-original`). LiteLLM needs plain Redis only. Future upgrades: `brew upgrade --build-from-source redis` — the bottle pour hits the same EPERM.
+
 Create the database the proxy logs into (fresh machine only):
 
 <!-- UNVERIFIED — `litellm` DB already exists here (verified via pg_database = 1); rerunning would error "already exists". -->
@@ -335,25 +339,31 @@ CREATE DATABASE
 
 Point the proxy at both services — `general_settings` in `~/.config/litellm/config.yaml` (see §1 for the verified block) plus `DATABASE_URL` + `LITELLM_SALT_KEY` in the LaunchAgent plist (§7).
 
-One-time Prisma setup (the `prisma` package is **not** in the `litellm[proxy]` extra):
-
-<!-- UNVERIFIED — already done on this machine; commands from docs/reference/litellm-admin-ui-setup.md §8–9. -->
+One-time Prisma setup (**verified 2026-09-30**; see also [litellm-admin-ui-setup.md](../reference/litellm-admin-ui-setup.md) §8–9):
 
 ```bash
-uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma
-cd ~/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy
+# 1. prisma ships in the `extra-proxy` extra on LiteLLM ≥1.98 — install via §1's command
+#    (fallback for older envs: uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma)
+# 2. generate the client — glob the site-packages dir, don't hardcode the Python version
+SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.* | tail -1)
 PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
-DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
-  ~/.local/share/uv/tools/litellm/bin/prisma generate --schema=./schema.prisma
-DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
-  ~/.local/share/uv/tools/litellm/bin/prisma db push --schema=./schema.prisma
+  "$HOME/.local/share/uv/tools/litellm/bin/python" -m prisma generate --schema="$SP/litellm/proxy/schema.prisma"
 ```
 
-Expected: 72 `LiteLLM_*` tables — `... prisma db push --schema=./schema.prisma` then `psql ... -d litellm -c "\dt"` lists them.
+No `prisma db push` needed on ≥1.98 — the proxy runs `prisma migrate deploy` against `$DATABASE_URL` automatically at startup. Expect the `LiteLLM_*` tables — `psql ... -d litellm -c "\dt"` lists them.
 
 ### 7. LaunchAgents
 
-The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then). Its plist template — fill in real secrets (`LITELLM_MASTER_KEY`/`LITELLM_SALT_KEY` start with `sk-` / random 40 chars; `OPENROUTER_API_KEY` from openrouter.ai; `UI_USERNAME`/`UI_PASSWORD` of your choice; `DATABASE_URL` from §6):
+The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then).
+
+Rebuilding from a backup volume with the same username? Skip the template — every path inside the old plist matches this machine verbatim (`/Users/keith/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
+
+```bash
+cp "/Volumes/Users Bak/keith/Library/LaunchAgents/local.litellm.proxy.plist" ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.litellm.proxy.plist   # bootout gui/$(id -u)/local.litellm.proxy first if already loaded
+```
+
+Otherwise, its plist template — fill in real secrets (`LITELLM_MASTER_KEY`/`LITELLM_SALT_KEY` start with `sk-` / random 40 chars; `OPENROUTER_API_KEY` from openrouter.ai; `UI_USERNAME`/`UI_PASSWORD` of your choice; `DATABASE_URL` from §6):
 
 <!-- UNVERIFIED — existing plist not overwritten; template mirrors the live plist's structure (verified: PATH, LITELLM_MASTER_KEY, UI_USERNAME, UI_PASSWORD, OPENROUTER_API_KEY, DATABASE_URL, LITELLM_SALT_KEY) merged with the archive doc's template. -->
 
@@ -533,7 +543,8 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
   ```
 
 - **`echo "model_list: []"` beats `touch`** for the initial LiteLLM config — an empty file fails to start.
-- **Reinstalling LiteLLM wipes its tool env:** packages pip-installed into the litellm tool env afterwards (e.g. `prisma` in §6) are removed by `uv tool install --force --reinstall 'litellm[proxy]'` — re-run the §6 Prisma steps after any reinstall/upgrade.
+- **Reinstalling LiteLLM wipes its tool env and resets the Python version.** Always reinstall as `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'` (§1): bare `litellm[proxy]` drops Prisma (`No module named 'prisma'` at proxy startup), and without the 3.11 pin uv may pick 3.14, where Prisma's engine binaries are missing. After any reinstall/upgrade, re-run §6's `prisma generate` — the generated client lives inside the tool env.
+- **`redisearch.so` is unreadable on this machine (2026-09-30).** The brew bottle pour fails on it (`Errno::EPERM`), and even a source-built copy aborts Redis at module load — no third-party AV is running; it's a per-file read denial this box applies to that module. If `brew services list` shows redis `error`/crash-looping, check `/opt/homebrew/var/log/redis.log` for `redisearch` first and apply the §6 fix (build-from-source + commented `loadmodule` line; original conf at `redis.conf.bak-original`).
 - **`litellm` plist secrets:** the `EnvironmentVariables` block carries `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `DATABASE_URL` — redact all of it (plus OpenRouter `api_key` values inside `~/.config/litellm/config.yaml`) before pasting anything anywhere.
 - **brew services run in the user session** — services start at login, not bare boot (headless setups would need `/Library/LaunchAgents/` instead).
 
