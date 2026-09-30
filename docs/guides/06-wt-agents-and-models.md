@@ -196,6 +196,52 @@ Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Rec
 
 The picker reads per-model (and per-agent-pair) 1d/7d/30d counts from this file at query time via `Store.Counts` / `CountsForAgent` — no schema change, and existing history stays valid. See `internal/usage`.
 
+### 9. Local-model launch profiles (pi + little-coder)
+
+`internal/profiles` overlays agent-specific tweaks onto any local-model launch — resolved by the same agent × model location computation wt already does. Config: `~/.config/agent-wt/profiles.toml`. **Nothing is enabled out of the box** — the file starts absent, and an absent file means every launch is unprofiled.
+
+**Setup step 1 — install little-coder** (`npm install -g little-coder`). It is the wrapper binary the pi profile runs: pi plus ~27 extensions + 30 skill files tuned for small local models (see `docs/minimal-agent-harnesses/optimizing-coding-agents-for-local-models.md`). It needs **Node ≥ 22.19** (`node --version`; this machine runs node via mise), bundles its own pinned pi (`--no-extensions` + curated set), and works from any directory:
+
+<!-- UNVERIFIED — not installed on the 2026-09-30 rebuild yet; commands from the little-coder README (github.com/itayinbarr/little-coder). -->
+
+```bash
+npm install -g little-coder
+little-coder --version
+command -v little-coder   # must resolve — see below
+```
+
+**The wrapper binary must be on PATH — a missing wrapper is the one *fatal* profile error.** Every other profile problem degrades to an unprofiled launch with a stderr warning; this one aborts the launch.
+
+No `~/.config/little-coder/models.json` override is needed for wt launches: wt's pi driver syncs `~/.pi/agent/models.json` (a wt-owned `litellm` provider block in LiteLLM mode) and passes `--model litellm/<registry-id>`; little-coder forwards unrecognized args to pi and does not inject its own default model when one is supplied.
+
+**Setup step 2 — write the profile.** The verified pi snippet from `wt/docs/wt-agents/profiles.md`:
+
+```toml
+enabled = true
+
+[[profiles]]
+agent = "pi"
+match = "location"
+location = "local"
+wrapper = { binary = "little-coder", args_template = ["{{args}}"] }
+env = { LITTLE_CODER_PERMISSION_MODE = "accept-all" }
+```
+
+(`wrapper` swaps the launched binary — wt's own `--model …` argv is spliced into `{{args}}`; `env` lands on the wrapper process, so `LITTLE_CODER_PERMISSION_MODE=accept-all` is little-coder's lever — it skips its shell whitelist, a deliberate spec-approved trade-off for local launches. Use `manual` to keep the gate. `--pi-args` is not a little-coder flag — `args_template = ["{{args}}"]` is correct.)
+
+**Inspect/toggle** (`cmd/wt/profile.go`):
+
+```bash
+wt profile list                       # every defined profile
+wt profile show -A pi -M <local-id>   # dry-run resolution, no launch
+wt profile status                     # on/off
+wt profile on / wt profile off        # global kill switch
+```
+
+An interactive launch that resolves a non-empty profile **asks before applying** (default yes on Enter); non-interactive launches apply automatically. Known gap: `wt smoke` never applies profiles.
+
+Full reference — all four agents' mechanisms, file-safety/self-heal rules, claude/codex/opencode working entries: `wt/docs/wt-agents/profiles.md`.
+
 ## Verification
 
 Live-ran (2026-08-29, all read-only):

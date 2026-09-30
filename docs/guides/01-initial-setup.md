@@ -294,7 +294,7 @@ grep -cE 'OPENROUTER_API_KEY|LITELLM_MASTER_KEY|DATABASE_URL|LITELLM_SALT_KEY|UI
 
 Hugging Face — install and log in:
 
-<!-- UNVERIFIED — `uv tool install` / `hf auth login` not rerun; installed + authed state verified via `uv tool list` and `hf auth whoami`. -->
+<!-- UNVERIFIED — `uv tool install` / `hf auth login` not rerun; installed + authed state verified via `uv tool list` and `hf auth whoami`. **Still pending on the 2026-09-30 rebuild** — hf is absent until this runs (Tier-1 artifact downloads below need it). -->
 
 ```bash
 uv tool install huggingface_hub
@@ -305,6 +305,13 @@ hf auth whoami
 ```text
 user=gitmanntoo orgs=Wisconsin,mlx-community
 ```
+
+What hf is needed for here:
+
+- **Downloading oMLX artifacts** the modelman registry references — e.g. the Tier-1 starter `hf download mlx-community/Qwen3.8-27B-4bit --local-dir ~/.omlx/models/Qwen3.8-27B-4bit` (paths must match the registry `disk_path`, and the directory must be **flat** — oMLX cannot parse the nested HF-cache layout; modelman's own TUI download path does the same snapshot-to-flat-dir correctly if you queue the download there instead)
+- `bin/mlx-quantize` (see [10-mlx-lm-quantization](10-mlx-lm-quantization.md)) and `benchmarks/` scripts that fetch models
+
+(Auth is not required for public repos like `mlx-community`; it raises rate limits and covers gated orgs.)
 
 ### 6. PostgreSQL + Redis
 
