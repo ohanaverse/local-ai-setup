@@ -93,8 +93,11 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 		model = pol.Prefix + m.ModelName
 	}
 	params := []kv{{"model", model}}
-	if p.Auth.BaseURL != "" {
-		params = append(params, kv{"api_base", p.Auth.BaseURL})
+	if base := p.Auth.BaseURL; base != "" {
+		if pol.V1Base {
+			base = config.BaseOrigin(base) + "/v1"
+		}
+		params = append(params, kv{"api_base", base})
 	}
 	switch {
 	case pol.SecretRef:
