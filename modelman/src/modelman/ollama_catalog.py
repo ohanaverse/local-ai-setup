@@ -13,7 +13,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,10 @@ _WEEKDAYS = ["mon", "tue", "wed", "thu", "fri"]
 _OFFPEAK_SUFFIX = re.compile(r"\s*\(\s*off[\s-]*peak\s*\)\s*$", re.IGNORECASE)
 _PRICE = re.compile(r"^\$\s*(\d+(?:\.\d+)?)$")
 _NO_PRICE = {"", "-", "—", "–"}
+# What an ollama model name looks like once the off-peak suffix is gone. A
+# cell that doesn't match (spaces, parens, footnote markers) means the page
+# wording changed — fail loudly instead of registering a junk tag.
+_MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
 
 
 class CatalogFetchError(Exception):
@@ -206,6 +210,8 @@ def parse_pricing(html: str) -> Catalog:
         name = _OFFPEAK_SUFFIX.sub("", raw_name).strip()
         if not name:
             raise CatalogParseError(f"row {n} has an empty model name")
+        if not _MODEL_NAME.match(name):
+            raise CatalogParseError(f"row {n} model name {raw_name!r} is not an ollama tag")
         before = unrecognized
         values = {}
         unknown = set()
@@ -310,9 +316,13 @@ def _merged(page: PriceTriple, old: Any) -> PriceTriple:
 def _with_catalog_prices(existing: Cost | None, cm: CatalogModel) -> Cost:
     base = existing if existing is not None else Cost()
     old_offpeak = next((tp for tp in base.time_prices if tp.label == OFFPEAK_LABEL), None)
+    # Replace the off-peak row in place: time_prices resolve first-match-wins,
+    # so moving it would change which row wins an overlapping window.
     rows = [tp for tp in base.time_prices if tp.label != OFFPEAK_LABEL]
     if cm.offpeak is not None:
-        rows.append(offpeak_time_price(_merged(cm.offpeak, old_offpeak)))
+        new_offpeak = offpeak_time_price(_merged(cm.offpeak, old_offpeak))
+        at = base.time_prices.index(old_offpeak) if old_offpeak is not None else len(rows)
+        rows.insert(at, new_offpeak)
     prices = _merged(cm.prices, existing)
     return replace(
         base,
@@ -364,7 +374,8 @@ def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | Non
         entry = _find_entry(registry, cm.name)
         if entry is not None:
             matched.add(entry.id)
-            now_listed_tags.add(entry.model_name)
+            # Both: the entry's tag and the canonical pulled tag are listed.
+            now_listed_tags.update((entry.model_name, cloud_tag(cm.name)))
             after = _with_catalog_prices(entry.cost, cm)
             before_d = _cost_to_dict(entry.cost) if entry.cost is not None else None
             if before_d == _cost_to_dict(after) and entry.extra.get(CATALOG_NAME_KEY) == cm.name:
@@ -376,8 +387,16 @@ def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | Non
         now_listed_tags.add(tag)
         new_id = f"{_OLLAMA}/{tag}"
         if new_id in ids:
-            plan.warnings.append(f"{new_id} already exists on another provider; not adding")
+            owner = next((m for m in registry.models if m.id == new_id), None)
+            if owner is None:
+                where = "as an earlier addition from this page"
+            elif owner.provider_id == _OLLAMA:
+                where = f"with model_name {owner.model_name!r}"
+            else:
+                where = "on another provider"
+            plan.warnings.append(f"{new_id} already exists {where}; not adding")
             continue
+        ids.add(new_id)
         cost = _with_catalog_prices(
             Cost(subscription_price=sub_price, subscription_period=sub_period), cm
         )
@@ -409,7 +428,7 @@ def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | Non
 
 def apply_sync(registry: Registry, plan: SyncPlan) -> None:
     """Apply ``plan`` (computed against this same registry) in place."""
-    now = datetime.now().astimezone().replace(microsecond=0).isoformat()
+    now = datetime.now(UTC).replace(microsecond=0).isoformat()
     for update in plan.updates:
         entry = registry.model(update.model_id)
         entry.cost = update.after

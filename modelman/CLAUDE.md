@@ -15,7 +15,7 @@ CLI (`src/modelman/main.py`, Typer; bare `modelman` opens the TUI via `@app.call
 | `expose <id>` / `unexpose <id>` | Apply modelman's gates, then delegate to `wt litellm expose\|unexpose` |
 | `litellm status\|on\|off\|set` | Passthroughs to `wt litellm ...` (wt owns routing state) |
 | `start [model_id]` / `stop <id>\|--all` | Local-model lifecycle (`local_control.py`); bare `stop` is a usage error. No-arg `start` prints a live inventory (see "Local-model lifecycle") |
-| `ollama-catalog sync [--dry-run] [--html F] [--yes] [--delete TAG]… [--no-deletes]` | Sync ollama cloud entries + prices (incl. off-peak `time_prices`) from ollama.com/pricing; prompts per pulled cloud stub no longer listed (default no), or decides deletes non-interactively via `--delete`/`--no-deletes` (`--yes` never deletes). Exit 2 fetch / 3 page-shape change (HTML saved). Driven by the `ollama-catalog` skill |
+| `ollama-catalog sync [--dry-run] [--html F] [--yes] [--delete TAG]… [--no-deletes]` | Sync ollama cloud entries + prices (incl. off-peak `time_prices`) from ollama.com/pricing; prompts per pulled cloud stub no longer listed (default no), or decides deletes non-interactively via `--delete`/`--no-deletes` (`--yes` never deletes). Exit 2 fetch / 3 page-shape change (HTML saved) / 4 invalid request, nothing changed (conflicting flags or a stale `--delete` tag). Driven by the `ollama-catalog` skill |
 | `refresh-prices` | Refresh cloud models' per-token prices from OpenRouter (`pricing.py`) |
 | `delete-family <name>` | Remove an empty family's lingering `[[families]]` entry (queue.py keeps families sticky); refuses if the family still has models |
 | `provider isolate\|stop\|stop-all\|restore\|list` | Low-level per-provider lifecycle (`providers/lifecycle/cli.py`) |

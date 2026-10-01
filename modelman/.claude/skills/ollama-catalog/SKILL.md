@@ -41,9 +41,9 @@ Run everything from `modelman/`.
      delete. Candidates not named are kept. If the user chose none, pass
      `--no-deletes`.
    - Example: `uv run modelman ollama-catalog sync --yes --delete old-model:cloud`
-   - A `warning: ... is not a delete candidate` line means the page or
-     `ollama list` changed since the dry run. Re-run the dry run and ask
-     again.
+   - Exit 4 with `error: not delete candidates: ...` means the page or
+     `ollama list` changed since the dry run. Nothing was written. Re-run
+     the dry run and ask again.
 5. Re-run the grep from step 1 and `diff` against the snapshot. The sync
    doesn't change `exposed`, but deletes of exposed models do, so report
    any drift in the six guides.
@@ -58,6 +58,7 @@ Run everything from `modelman/`.
 | 1 | a delete or the registry save failed | read the error and retry the failed piece |
 | 2 | page fetch failed | check network, retry; or pass `--html <saved page>` |
 | 3 | page shape changed | follow "Repairing the parser" |
+| 4 | invalid request, nothing changed: `--delete` with `--no-deletes`, or a `--delete` tag that is no longer a candidate | fix the flags, or re-run the dry run and ask again |
 
 ## Repairing the parser (exit 3)
 

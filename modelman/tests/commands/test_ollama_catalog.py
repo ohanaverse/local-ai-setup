@@ -234,19 +234,33 @@ def test_delete_option_decides_without_prompts(seeded, monkeypatch):
     assert "Delete it?" not in result.output
 
 
-def test_delete_option_for_non_candidate_warns(seeded, monkeypatch):
+def test_delete_option_for_non_candidate_exits_4_before_writing(seeded, monkeypatch):
+    """A stale --delete means the reviewed dry run no longer matches: refuse
+    before saving any registry change, not after."""
     from modelman.main import app
 
     _tags(monkeypatch, ["stray:cloud"])
     removed = []
     monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
+    before = seeded.read_text()
     result = CliRunner().invoke(
         app,
-        ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE), "--delete", "gemma4:cloud"],
+        [
+            "ollama-catalog",
+            "sync",
+            "--yes",
+            "--html",
+            str(FIXTURE),
+            "--delete",
+            "stray:cloud",
+            "--delete",
+            "gemma4:cloud",
+        ],
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 4, result.output
     assert removed == []
-    assert "gemma4:cloud" in result.output and "not a delete candidate" in result.output
+    assert seeded.read_text() == before
+    assert "gemma4:cloud" in result.output and "not delete candidates" in result.output
 
 
 def test_no_deletes_skips_prompts(seeded, monkeypatch):
@@ -272,5 +286,5 @@ def test_no_deletes_conflicts_with_delete(seeded, monkeypatch):
         app,
         ["ollama-catalog", "sync", "--html", str(FIXTURE), "--no-deletes", "--delete", "x:cloud"],
     )
-    assert result.exit_code == 2
+    assert result.exit_code == 4
     assert seeded.read_text() == before

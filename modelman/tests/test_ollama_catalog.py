@@ -463,3 +463,79 @@ def test_unrecognized_offpeak_cell_keeps_existing_offpeak_price():
     (u,) = plan_sync(reg, catalog, []).updates
     (tp,) = u.after.time_prices
     assert (tp.input_price_per_million, tp.cache_price_per_million) == (0.5, 0.04)
+
+
+@pytest.mark.parametrize(
+    "cell", ["glm-5.3 (Off-peak hours)", "glm-5.3 off-peak", "glm-5.3*", "GLM 5.3"]
+)
+def test_unrecognized_model_name_raises(cell):
+    from modelman.ollama_catalog import CatalogParseError, parse_pricing
+
+    with pytest.raises(CatalogParseError, match="not an ollama tag"):
+        parse_pricing(_page(_row(cell, "$1.00", "$0.10", "$2.00")))
+
+
+def test_plan_catalog_name_match_keeps_canonical_tag_listed():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("gpt-oss:120b-cloud-custom", extra={"catalog_name": "gpt-oss:120b"}))
+    plan = plan_sync(
+        reg, _catalog(_cm("gpt-oss:120b")), ["gpt-oss:120b-cloud", "gpt-oss:120b-cloud-custom"]
+    )
+    assert plan.delete_candidates == []
+
+
+def test_apply_sync_stamps_utc():
+    from modelman.ollama_catalog import apply_sync, plan_sync
+
+    reg = _registry(_entry("a:cloud"))
+    apply_sync(reg, plan_sync(reg, _catalog(_cm("a", 3.0)), []))
+    assert reg.model("ollama/a:cloud").pricing_updated_at.endswith("+00:00")
+
+
+def test_plan_offpeak_replaced_in_place_and_unchanged_when_same():
+    from modelman.ollama_catalog import PriceTriple, offpeak_time_price, plan_sync
+    from modelman.registry import Cost
+    from modelman.time_pricing import TimePrice, Window
+
+    holiday = TimePrice(
+        label="holiday", timezone="UTC", windows=[Window(days=["sun"], start="00:00", end="24:00")]
+    )
+    page_offpeak = PriceTriple(0.5, 0.05, 1.0)
+    cost = Cost(
+        input_price_per_million=1.0,
+        cache_price_per_million=0.1,
+        output_price_per_million=2.0,
+        time_prices=[offpeak_time_price(page_offpeak), holiday],
+    )
+    reg = _registry(_entry("a:cloud", cost=cost, extra={"catalog_name": "a"}))
+    same = plan_sync(reg, _catalog(_cm("a", offpeak=page_offpeak)), [])
+    assert same.updates == [] and same.unchanged == ["ollama/a:cloud"]
+
+    changed = plan_sync(reg, _catalog(_cm("a", offpeak=PriceTriple(0.4, 0.04, 0.8))), [])
+    (u,) = changed.updates
+    assert [tp.label for tp in u.after.time_prices] == ["off-peak", "holiday"]
+    assert u.after.time_prices[0].input_price_per_million == 0.4
+
+
+def test_plan_collision_with_ollama_entry_names_model_name():
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import ModelEntry
+
+    old = ModelEntry(
+        id="ollama/foo:cloud", family="f", provider_id="ollama", model_name="foo:cloud-old"
+    )
+    plan = plan_sync(_registry(old), _catalog(_cm("foo")), [])
+    assert plan.additions == []
+    (w,) = [w for w in plan.warnings if "ollama/foo:cloud" in w]
+    assert "foo:cloud-old" in w and "another provider" not in w
+
+
+def test_plan_never_adds_the_same_id_twice(monkeypatch):
+    from modelman import ollama_catalog
+    from modelman.ollama_catalog import plan_sync
+
+    monkeypatch.setattr(ollama_catalog, "cloud_tag", lambda name: "same:cloud")
+    plan = plan_sync(_registry(), _catalog(_cm("x"), _cm("y")), [])
+    assert [e.id for e in plan.additions] == ["ollama/same:cloud"]
+    assert any("earlier addition" in w for w in plan.warnings)

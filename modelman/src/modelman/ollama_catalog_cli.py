@@ -1,7 +1,9 @@
 """`modelman ollama-catalog` — sync ollama cloud entries with ollama.com/pricing.
 
 Exit codes: 0 ok, 1 save/delete failure, 2 page fetch failed, 3 page
-shape changed (raw HTML saved; fix ollama_catalog.parse_pricing).
+shape changed (raw HTML saved; fix ollama_catalog.parse_pricing), 4 invalid
+request — conflicting flags, or --delete names a tag that is not a delete
+candidate; nothing was changed.
 """
 
 from __future__ import annotations
@@ -75,7 +77,7 @@ def sync(
     uses, since it cannot answer prompts."""
     if no_deletes and delete:
         typer.echo("error: --no-deletes and --delete are mutually exclusive", err=True)
-        raise typer.Exit(2)
+        raise typer.Exit(4)
     if html is not None:
         try:
             text = html.read_text()
@@ -106,6 +108,17 @@ def sync(
     if dry_run:
         return
 
+    # Checked before any write: a --delete tag that isn't a candidate means
+    # the page or `ollama list` changed since the dry run the user reviewed.
+    stale = sorted(set(delete or []) - {c.tag for c in plan.delete_candidates})
+    if stale:
+        typer.echo(
+            f"error: not delete candidates: {', '.join(stale)} — the page or `ollama list` "
+            "changed since the dry run; nothing was changed. Re-run with --dry-run.",
+            err=True,
+        )
+        raise typer.Exit(4)
+
     failed = False
     if plan.has_registry_changes() and (
         yes or typer.confirm("Apply these registry changes?", default=True)
@@ -121,11 +134,6 @@ def sync(
             f"Updated {len(fresh_plan.updates)} and added {len(fresh_plan.additions)} model(s)."
         )
 
-    if delete:
-        candidate_tags = {c.tag for c in plan.delete_candidates}
-        for tag in delete:
-            if tag not in candidate_tags:
-                typer.echo(f"warning: {tag} is not a delete candidate; left as-is", err=True)
     for candidate in plan.delete_candidates:
         if no_deletes:
             continue

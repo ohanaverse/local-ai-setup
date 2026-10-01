@@ -779,6 +779,7 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
         if kind == "free":
             return _build_cost(
                 model_id,
+                time_prices=_time_prices_or_error(model_id, cost_raw.get("time_prices")),
                 extra=unknown_keys(
                     cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS
                 ),
@@ -789,6 +790,7 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
                 model_id,
                 input_price_per_million=price,
                 output_price_per_million=price,
+                time_prices=_time_prices_or_error(model_id, cost_raw.get("time_prices")),
                 extra=unknown_keys(
                     cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS
                 ),
@@ -798,6 +800,7 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
                 model_id,
                 subscription_price=_number_or_none("price_per_period"),
                 subscription_period=_subscription_period_or_none("period"),
+                time_prices=_time_prices_or_error(model_id, cost_raw.get("time_prices")),
                 extra=unknown_keys(
                     cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS
                 ),
