@@ -80,14 +80,12 @@ curl -s http://localhost:4000/v1/models \
 
 ```text
 ollama/qwen3.8:27b-mlx
-omlx/Qwen3.8-27B-4bit
+omlx/mlx-community--Qwen3.8-27B-4bit   # only while it runs — wt writes the route on start
 openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
 openrouter/qwen/qwen3.8-2.4t-a95b
 openrouter/qwen/qwen3.8-max
 ollama/ornith-1.5:35b
-omlx/Ornith-1.5-35B-A3B-MLX-4bit
-omlx/Ornith-1.5-35B-A3B-MLX-6bit
 
 # (your registry's ids differ — ≥1 model present = success)
 ```
@@ -251,7 +249,7 @@ ls ~/.omlx/models/
 Qwen3.8-27B-4bit
 ```
 
-Verify the server (no auth needed — `~/.omlx/settings.json` has `auth.skip_api_key_verification: true`):
+Turn off API-key auth for local inference. oMLX 0.7.0's first-run setup (the `:8000/admin` wizard) enables it, and then every request without a key gets `401 API key required`, including wt's warmup (`wt start` retries for up to 10 minutes) and every LiteLLM omlx route (`api_key: not-needed`). Set `auth.allow_unauthenticated_inference` to `true` in `~/.omlx/settings.json`, then `omlx stop` (the next `wt start` restarts it). Verified on the 2026-09-30 rebuild. Then verify the server answers without a key:
 
 ```bash
 curl -s http://localhost:8000/v1/models | head -c 250
@@ -484,14 +482,12 @@ curl -s http://localhost:4000/v1/models \
 
 ```text
 ollama/qwen3.8:27b-mlx
-omlx/Qwen3.8-27B-4bit
+omlx/mlx-community--Qwen3.8-27B-4bit   # only while it runs — wt writes the route on start
 openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
 openrouter/qwen/qwen3.8-2.4t-a95b
 openrouter/qwen/qwen3.8-max
 ollama/ornith-1.5:35b
-omlx/Ornith-1.5-35B-A3B-MLX-4bit
-omlx/Ornith-1.5-35B-A3B-MLX-6bit
 
 # (your registry's ids differ — ≥1 model present = success)
 ```
@@ -546,7 +542,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 
 ## Gotchas
 
-- **oMLX serves 4-bit and 6-bit variants — name the exact one.** LiteLLM model_list has `omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-6bit`, but the oMLX server currently serves only what it loaded at startup (`/v1/models` right now lists just `Qwen3.8-27B-4bit`). Requesting any other exposed `omlx/*` name fails until that variant is actually loaded — switch via `uv run --directory modelman modelman provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), restore with `uv run --directory modelman modelman provider restore`.
+- **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/mlx-community--Qwen3.8-27B-4bit` writes a `model_list` row named after the registry id, with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt's sync never removes ids that aren't in the registry. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory modelman modelman provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
 - **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` or `~/.local/bin/llm-restart`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).
