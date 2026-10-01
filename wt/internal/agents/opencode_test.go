@@ -1,8 +1,8 @@
 package agents
 
 import (
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,79 +10,145 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
-func gitInit(t *testing.T, dir string) {
+// stubOpenCodeQuery swaps the opencode `db` seam for one test and records the
+// SQL it was handed. Production shells out to the opencode binary itself;
+// stubbing here keeps these tests independent of what happens to be installed
+// on the host, which is what let the old sqlite3-based coverage skip in CI.
+func stubOpenCodeQuery(t *testing.T, out string, err error) *[]string {
 	t.Helper()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "t@t"},
-		{"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "init"},
+	var got []string
+	prev := opencodeDBQuery
+	opencodeDBQuery = func(sql string) ([]byte, error) {
+		got = append(got, sql)
+		return []byte(out), err
+	}
+	t.Cleanup(func() { opencodeDBQuery = prev })
+	return &got
+}
+
+// TestOpenCodeLatestSessionParsesNewestRow pins issue #162's contract: the
+// newest top-level, unarchived session for the exact path is returned, with
+// time_updated (epoch ms) converted to MTime.
+func TestOpenCodeLatestSessionParsesNewestRow(t *testing.T) {
+	stubOpenCodeQuery(t, `[{"id":"ses_new","time_updated":2000}]`, nil)
+
+	s, err := opencodeDriver{}.LatestSession("/work/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == nil || s.ID != "ses_new" {
+		t.Fatalf("LatestSession = %+v, want ses_new", s)
+	}
+	if want := time.UnixMilli(2_000); !s.MTime.Equal(want) {
+		t.Errorf("MTime = %v, want %v (time_updated is epoch ms)", s.MTime, want)
+	}
+}
+
+// TestOpenCodeLatestSessionQueryShape asserts the SQL still carries every #162
+// filter: exact directory match, top-level sessions only (parent_id is null),
+// unarchived only, newest first. Dropping any one of them makes resume offer
+// the wrong conversation — a sub-agent session or an archived one.
+func TestOpenCodeLatestSessionQueryShape(t *testing.T) {
+	got := stubOpenCodeQuery(t, `[]`, nil)
+
+	if _, err := (opencodeDriver{}).LatestSession("/work/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("expected exactly 1 query, got %d: %v", len(*got), *got)
+	}
+	q := strings.ToLower((*got)[0])
+	for _, want := range []string{
+		"from session",
+		"directory = '/work/repo'",
+		"parent_id is null",
+		"time_archived is null",
+		"order by time_updated desc",
+		"limit 1",
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		if !strings.Contains(q, want) {
+			t.Errorf("query %q is missing %q", (*got)[0], want)
 		}
 	}
 }
 
-// TestOpenCodeLatestSession asserts opencodeDriver finds the newest .json
-// session file under the project-id directory.
-func TestOpenCodeLatestSession(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+// TestOpenCodeLatestSessionEscapesPathQuotes asserts a worktree path holding a
+// single quote is matched literally rather than closing the SQL literal and
+// changing the query.
+func TestOpenCodeLatestSessionEscapesPathQuotes(t *testing.T) {
+	got := stubOpenCodeQuery(t, `[]`, nil)
 
-	repo := t.TempDir()
-	gitInit(t, repo)
-	id, err := session.OpenCodeProjectID(repo)
-	if err != nil {
+	if _, err := (opencodeDriver{}).LatestSession("/work/it's a repo"); err != nil {
 		t.Fatal(err)
 	}
-
-	dir := filepath.Join(home, ".local", "share", "opencode", "storage", "session", id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := filepath.Join(dir, "old.json")
-	new := filepath.Join(dir, "new.json")
-	if err := os.WriteFile(old, []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(new, []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldInfo, _ := os.Stat(old)
-	os.Chtimes(new, oldInfo.ModTime(), oldInfo.ModTime().Add(time.Second))
-
-	d := opencodeDriver{}
-	s, err := d.LatestSession(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s == nil || s.ID != "new.json" {
-		t.Fatalf("expected newest opencode session id \"new.json\", got %+v", s)
+	if !strings.Contains((*got)[0], `'/work/it''s a repo'`) {
+		t.Errorf("query %q does not escape the quote in the path", (*got)[0])
 	}
 }
 
-// TestOpenCodeLatestSessionNoDir asserts opencodeDriver returns nil when no
-// session directory exists, without returning an error.
-func TestOpenCodeLatestSessionNoDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+// TestOpenCodeLatestSessionNoSessions asserts a machine where opencode never
+// ran — the query returns an empty array — yields no session and no error.
+func TestOpenCodeLatestSessionNoSessions(t *testing.T) {
+	stubOpenCodeQuery(t, `[]`, nil)
 
-	repo := t.TempDir()
-	gitInit(t, repo)
-
-	d := opencodeDriver{}
-	s, err := d.LatestSession(repo)
+	s, err := opencodeDriver{}.LatestSession("/work/repo")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s != nil {
 		t.Fatalf("expected nil session, got %+v", s)
+	}
+}
+
+// TestOpenCodeLatestSessionQueryError asserts a failed query surfaces an error
+// rather than silently reporting "no sessions" — the failure mode that hid
+// #162 for so long.
+func TestOpenCodeLatestSessionQueryError(t *testing.T) {
+	stubOpenCodeQuery(t, "", errors.New("opencode: not found"))
+
+	if _, err := (opencodeDriver{}).LatestSession("/work/repo"); err == nil {
+		t.Fatal("expected an error when the query fails")
+	}
+}
+
+// TestOpenCodeLatestSessionMalformedOutput asserts unexpected output is
+// reported instead of being turned into a bogus session id that wt would then
+// hand to `opencode --session`.
+func TestOpenCodeLatestSessionMalformedOutput(t *testing.T) {
+	stubOpenCodeQuery(t, "not json at all", nil)
+
+	if _, err := (opencodeDriver{}).LatestSession("/work/repo"); err == nil {
+		t.Fatal("expected an error for unparseable query output")
+	}
+}
+
+// TestRealOpenCodeDBQueryRunsOpenCodeDB pins the command the real seam runs:
+// `opencode db <sql> --format json`. Going through opencode's own binary is
+// what makes the database location (OPENCODE_DB, the per-channel filename) and
+// WAL handling opencode's business rather than wt's — the previous bare
+// `sqlite3` invocation made a missing CLI block every opencode launch. A fake
+// `opencode` script on PATH keeps this test off the real binary and off
+// sqlite3, so it runs on any host.
+func TestRealOpenCodeDBQueryRunsOpenCodeDB(t *testing.T) {
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\nprintf '[]'\n"
+	if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, err := realOpenCodeDBQuery("select 1"); err != nil {
+		t.Fatalf("realOpenCodeDBQuery: %v", err)
+	}
+	raw, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(strings.Fields(string(raw)), " "); got != "db select 1 --format json" {
+		t.Errorf("opencode argv = %q, want %q", got, "db select 1 --format json")
 	}
 }
 

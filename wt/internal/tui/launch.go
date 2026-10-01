@@ -76,6 +76,13 @@ func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, s
 // (issue #147).
 var buildPassthrough = agents.BuildPassthroughCmd
 
+// resumeSession is a test seam wrapping agents.ResumeSession — the single
+// session lookup both launch paths share. The TUI and the non-TUI path used to
+// disagree about what a failed lookup means (abort the launch vs. silently
+// launch fresh), so the decision lives in agents.ResumeSession and is reached
+// through here.
+var resumeSession = agents.ResumeSession
+
 // runAndWaitCmd releases the TUI, runs the agent with stdio wired to the
 // terminal, restores the TUI, captures the post-run summary line into
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a

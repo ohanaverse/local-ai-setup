@@ -2,7 +2,6 @@ package session
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -74,39 +73,5 @@ func TestLatestByExtRanking(t *testing.T) {
 	}
 	if s == nil || s.ID != "new.jsonl" {
 		t.Fatalf("expected newest file, got %+v", s)
-	}
-}
-
-// gitInit creates a minimal git repo with one commit on main/master so
-// OpenCodeProjectID can resolve a root commit hash.
-func gitInit(t *testing.T, dir string) {
-	t.Helper()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "t@t"},
-		{"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "init"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-		}
-	}
-}
-
-// TestOpenCodeProjectID asserts the project id is the repo's root commit
-// hash, and that it is computed for the given path (git -C), not the test's
-// own working directory. A wrong id would point at the wrong session dir.
-func TestOpenCodeProjectID(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-
-	id, err := OpenCodeProjectID(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(id) != 40 {
-		t.Fatalf("expected a 40-char commit hash, got %q", id)
 	}
 }

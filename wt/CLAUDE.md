@@ -190,7 +190,7 @@ The picker's EXPOSED column shows `Y` for native and otherwise the raw modelman 
 
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt bug** — e.g. models referencing `provider_id`s with `providers = []`. Fix with `modelman sync`/`modelman migrate` on that machine (`sync` recreates default provider entries), not a code change here.
 
-**No subprocess discovery.** `newApp()` only loads config. `localmodels.Inventory` does HTTP + filesystem discovery only. The only execs are `internal/lifecycle` (provider binaries `omlx`, `mtplx`) and the pre-launch `ollamacheck.Check` (see Agents).
+**No subprocess discovery.** `newApp()` only loads config. `localmodels.Inventory` does HTTP + filesystem discovery only. The only execs are `internal/lifecycle` (provider binaries `omlx`, `mtplx`), the pre-launch `ollamacheck.Check` (see Agents), and resume detection's `opencode db` query (see Session resume) — the last one runs only when launching opencode, so it never costs anything on other paths.
 
 > **Fixture gotcha.** `Dir()` and `RegistryPath()` both honor `XDG_CONFIG_HOME` (and `RegistryPath()` also `MODELMAN_REGISTRY`) but use *different* subdirs: `config.toml` → `$XDG_CONFIG_HOME/agent-wt/`, `registry.toml` → `$XDG_CONFIG_HOME/local-ai/`. Test/smoke fixtures must populate both. Also, `migrateConfigSchema` unconditionally ensures an `agy` agent — any registry fixture with agents needs a matching `agy` provider or `Load`/`Validate` fails with `unknown provider "agy"`.
 
@@ -315,7 +315,9 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (absent = enabled, zero 
 
 ## Session resume (Go)
 
-`internal/session` finds the newest resumable session (claude `*.jsonl` under `~/.claude/projects/<slug>`, opencode `*.json` under `~/.local/share/opencode/storage/session/<project-id>`). Others (incl. shell) return nil. On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Resume (`--resume <id>` claude, `--session <id>` opencode). Non-TUI does the same without prompting.
+`internal/session` finds the newest resumable session (claude `*.jsonl` under `~/.claude/projects/<slug>`, opencode: the newest top-level, unarchived `session` row whose `directory` is exactly the worktree path — **not** opencode's project id, which every worktree of a repo shares). Others (incl. shell) return nil. On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Resume (`--resume <id>` claude, `--session <id>` opencode). Non-TUI does the same without prompting.
+
+> **Both paths go through `agents.ResumeSession`.** opencode's lookup runs `opencode db <sql> --format json` through the `opencodeDBQuery` seam (production: `realOpenCodeDBQuery`) — opencode's own binary resolves the database location (`OPENCODE_DB`, the per-channel `opencode-<channel>.db` name) and reads it with bundled SQLite, so wt never hardcodes a path or needs a `sqlite3` CLI on PATH (#162). A **failed lookup warns and launches fresh** on both paths — deliberately not fatal. The TUI used to abort the launch on a lookup error the non-TUI path silently discarded: two behaviours for one failure, and the abort made the agent unlaunchable. Tests drive the seam, so they run without opencode or sqlite3 installed.
 
 > **Native models never resume.** A native model (e.g. `claude/native`) launches with no model override; resuming would restore the session's stored model and silently override "native" (routing a proxy-routed model at the real Anthropic API). Both paths skip the session lookup for native models.
 

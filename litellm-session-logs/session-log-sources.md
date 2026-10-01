@@ -628,9 +628,10 @@ The rollout file is therefore the only per-session record for Codex, and must be
 read directly. The `threads` table is how you find the right one:
 
 ```bash
-sqlite3 "file:$HOME/.codex/state_5.sqlite?immutable=1" \
-  "select id, rollout_path, model, datetime(created_at,'unixepoch') from threads
+DB=$HOME/.codex/state_5.sqlite
+Q="select id, rollout_path, model, datetime(created_at,'unixepoch') from threads
    where cwd like '%local-ai-setup%' order by updated_at desc limit 5"
+sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
 ```
 
 ### Working with Codex transcripts
@@ -844,13 +845,16 @@ for line in open(sys.argv[1], errors="replace"):
 EOF
 
 # Per-call usage from the derived DB
-sqlite3 "file:$HOME/.copilot/session-store.db?immutable=1" \
-  "select turn_index, model, input_tokens, output_tokens, duration_ms, finish_reason
+DB=$HOME/.copilot/session-store.db
+Q="select turn_index, model, input_tokens, output_tokens, duration_ms, finish_reason
    from assistant_usage_events where session_id='<uuid>' order by id"
+sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
 ```
 
-Caveats: opening a live WAL store needs `file:…?immutable=1`, or SQLite reports
-`unable to open database file`; the DB is derived, so trust the JSONL.
+Caveats: query the DB read-only, `-readonly` first (see [the SQLite rule under
+"Filling in a harness"](#filling-in-a-harness)) — a *live* store needs it to see
+the `-wal`, while `?immutable=1` silently returns stale rows from a store that is
+being written; the DB is derived, so trust the JSONL.
 
 ### Reference
 
@@ -878,11 +882,16 @@ The anchor is `~/.local/share/opencode` (also check `~/.config/opencode`).
 **Important, and a behaviour change:** OpenCode has **migrated off its old
 `storage/session/<projectID>/*.json` layout to SQLite**. On this machine
 `storage/session`, `storage/message` and `storage/part` **do not exist**.
-`wt`'s resume support still looks for `storage/session/<root-commit>/*.json`
-(`wt/internal/agents/opencode.go` via `session.OpenCodeProjectID`), and
-`LatestByExt` silently returns "no sessions" for a missing directory — so
-`opencode-wt`'s resume prompt **no longer finds anything** on opencode 1.18.26.
-That is a wt bug, not an OpenCode defect.
+`wt`'s resume support used to look for `storage/session/<root-commit>/*.json`
+and silently found nothing on opencode 1.18.26 (#162). It now runs
+`opencode db "<sql>" --format json` (`wt/internal/agents/opencode.go`) and takes
+the newest `session` row whose `directory` is exactly the worktree path, with
+`parent_id` and `time_archived` both NULL. It goes through opencode's own `db`
+subcommand rather than a bare `sqlite3` so that opencode resolves the database
+location itself (`OPENCODE_DB`, the per-channel filename) and reads it with its
+bundled SQLite: a plain `sqlite3 -readonly` also sees the `-wal`, but an
+`immutable=1` open does not, and requiring the `sqlite3` CLI on PATH made every
+launch fail where it was absent.
 
 ### Transcript layout
 
@@ -979,38 +988,42 @@ Read the `session`/`message`/`part` tables directly; `project.worktree` is how
 you find a repo's sessions:
 
 ```bash
-sqlite3 "file:$HOME/.local/share/opencode/opencode.db?immutable=1" \
-  "select s.id, s.title, datetime(s.time_created/1000,'unixepoch'), s.tokens_input, s.tokens_output
+DB=$HOME/.local/share/opencode/opencode.db
+Q="select s.id, s.title, datetime(s.time_created/1000,'unixepoch'), s.tokens_input, s.tokens_output
    from session s join project p on p.id = s.project_id
    where p.worktree = '/Users/keith/github/ohanaverse/local-ai-setup'
    order by s.time_created desc limit 5"
+sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
 ```
 
 ### Working with OpenCode transcripts
 
 ```bash
 SID=ses_f268ec6ffffeaPf2iX
+DB=$HOME/.local/share/opencode/opencode.db
 
 # Full conversation, in order (message data + its parts)
-sqlite3 "file:$HOME/.local/share/opencode/opencode.db?immutable=1" "
-select json_extract(m.data,'\$.role'), json_extract(p.data,'\$.type'), substr(p.data,1,300)
-from message m join part p on p.message_id = m.id
-where m.session_id = '$SID' order by m.time_created, p.time_created limit 40"
+Q="select json_extract(m.data,'\$.role'), json_extract(p.data,'\$.type'), substr(p.data,1,300)
+   from message m join part p on p.message_id = m.id
+   where m.session_id = '$SID' order by m.time_created, p.time_created limit 40"
+sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
 
 # Per-message cost and tokens
-sqlite3 "file:$HOME/.local/share/opencode/opencode.db?immutable=1" "
-select json_extract(data,'\$.tokens.total'), json_extract(data,'\$.cost'), json_extract(data,'\$.finish')
-from message where session_id = '$SID'"
+Q="select json_extract(data,'\$.tokens.total'), json_extract(data,'\$.cost'), json_extract(data,'\$.finish')
+   from message where session_id = '$SID'"
+sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
 ```
 
-Caveats: open the DB read-only (`?immutable=1` — it has live `-wal`/`-shm`
-sidecars); `message.data` and `part.data` are JSON *strings* inside SQLite, so use
+Caveats: query the DB read-only, `-readonly` first (see [the SQLite rule under
+"Filling in a harness"](#filling-in-a-harness)) — during a session opencode holds
+this store open, so `?immutable=1` would skip the `-wal` and silently return older
+rows; `message.data` and `part.data` are JSON *strings* inside SQLite, so use
 `json_extract`; order by the millisecond time fields, not by id.
 
 ### Reference
 
-- `wt/internal/agents/opencode.go`, `wt/internal/session/session.go` —
-  `OpenCodeProjectID()` (root commit) and the now-stale `storage/session` path.
+- `wt/internal/agents/opencode.go` — `LatestSession` / `realOpenCodeDBQuery`
+  (the `opencode db` session lookup described above, #162).
 
 ---
 
@@ -1111,9 +1124,10 @@ To confirm the store against a fresh run:
 
 ```bash
 ls -lt ~/.gemini/antigravity-cli/conversations/*.db | head -3
-sqlite3 "file:$HOME/.gemini/antigravity-cli/conversation_summaries.db?immutable=1" \
-  "select conversation_id, title, step_count, last_modified_time
+DB=$HOME/.gemini/antigravity-cli/conversation_summaries.db
+Q="select conversation_id, title, step_count, last_modified_time
    from conversation_summaries order by last_modified_time desc limit 5"
+sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
 ```
 
 What's left to finish this harness: proxy linkage (one `agy` session run
@@ -1167,10 +1181,34 @@ and falsifiable):
    know the harness contains.
 5. **Characterize coverage**: what it stores, what it truncates, and what it
    omits — the same headings used for pi above.
-6. **For SQLite stores, open them read-only**:
-   `sqlite3 "file:/abs/path.db?immutable=1"`. A live `-wal`/`-shm` pair makes
-   plain `-readonly` fail with `unable to open database file`. Never write, never
-   `VACUUM`.
+6. **For SQLite stores, open them read-only — and reach for `-readonly` first**:
+   `sqlite3 -readonly "$DB" "$Q"`. Never write, never `VACUUM`.
+
+   The two read-only modes are not interchangeable, and `immutable=1` is the
+   *dangerous* default:
+
+   - `-readonly` is correct against a **live** store. It opens the `-shm`
+     sidecar (creating one if the directory allows it) and therefore *sees the
+     `-wal`*, which is where a running harness keeps its newest rows. This is the
+     state a store is in while you work.
+   - `immutable=1` asserts the file never changes. SQLite then **skips the `-wal`
+     entirely** — so against a live store it returns a silently stale subset with
+     **exit code 0**. No error, no missing-table message: just old rows. (Verified
+     2026-09-30: with the schema checkpointed and today's row living only in the
+     `-wal`, `immutable=1` printed `rows=['ses_old']` and exited 0.)
+   - The failure people actually hit — `unable to open database file` — is the
+     **reverse** of what you'd guess: a WAL store that is *closed and
+     checkpointed*, with **no `-shm` sidecar** on disk. `-readonly` cannot open
+     such a store at all; `immutable=1` reads it fine. There is no `-wal` content
+     to miss, which is exactly why the fallback is safe *there* and unsafe live.
+
+   So the order is: try `-readonly`, fall back to `immutable=1` only if it
+   fails — and treat the fallback's success as a signal that the store was
+   closed, so if a writer might be running, re-check:
+
+   ```bash
+   sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
+   ```
 7. **Add the row to the index table** and mark it verified with a date.
 
 ## Related

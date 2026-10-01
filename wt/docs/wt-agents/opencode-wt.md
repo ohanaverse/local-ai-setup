@@ -70,7 +70,11 @@ The builtin `openai` provider is not usable for LiteLLM-routed models: opencode 
 
 ## Session resume
 
-`wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--session <id>` automatically. Sessions are detected by git commit hash (OpenCode's project ID), not path-based slug.
+`wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--session <id>` automatically.
+
+Sessions are found by querying opencode's own database through `opencode db <sql> --format json` — the newest top-level, unarchived row in the `session` table whose `directory` column is **exactly the worktree path**. That is deliberately *not* the project id: every worktree of a repo shares one opencode project, so a project-keyed lookup would offer a different worktree's conversation. Going through opencode's `db` subcommand (rather than a bare `sqlite3`) also means opencode resolves its own database location — including the `OPENCODE_DB` override and the per-channel `opencode-<channel>.db` filename — and reads it with its bundled SQLite, so `-wal` contents are visible.
+
+A failed lookup never blocks a launch: `wt` warns (`resume check failed, starting fresh: …`) and starts a new session, identically on the TUI and non-TUI paths (see `agents.ResumeSession`).
 
 ## Agent init
 
@@ -82,4 +86,4 @@ OpenCode reads `AGENTS.md` natively and also has its own `/init` command for pro
 
 ## Verified on this machine
 
-Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode); session-resume and project-id behavior were verified against the binary's `--help` output and `git rev-list` output on this repo. The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.
+Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`; session resume re-verified 2026-09-30 against opencode v1.18.26, whose `session list`/`db` subcommands and `session.directory` column back the mechanism above. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode); the earlier project-id/`git rev-list` note was superseded by the SQLite session store. The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.

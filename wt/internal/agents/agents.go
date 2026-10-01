@@ -100,8 +100,9 @@ type Resumer interface {
 
 	// LatestSession returns the most recently modified resumable session
 	// for the worktree at path, or nil if none exists. Errors indicate
-	// a lookup failure (e.g. unreadable session directory); callers decide
-	// whether to surface or swallow them.
+	// a lookup failure (e.g. an unreadable session store). Callers should not
+	// call this directly — go through ResumeSession, which turns a failure
+	// into a warning and a fresh launch, identically on both launch paths.
 	LatestSession(path string) (*session.Session, error)
 }
 

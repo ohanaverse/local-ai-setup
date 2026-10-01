@@ -119,11 +119,11 @@ func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg
 	// Native models launch fresh: resuming a session would restore the
 	// session's stored model, overriding the user's "native" choice. Skip
 	// the session lookup so no --resume/--session flag is ever appended.
-	var sess *session.Session
-	if !m.Native {
-		if r, ok := agents.ByName(agent).(agents.Resumer); ok {
-			sess, _ = r.LatestSession(worktreePath)
-		}
+	// A failed lookup warns and launches fresh rather than failing — the TUI
+	// reaches the same helper, so the two paths cannot disagree about it.
+	sess, warning := agents.ResumeSession(agent, m.Native, worktreePath)
+	if warning != "" {
+		fmt.Fprintln(os.Stderr, "wt: "+warning)
 	}
 	return buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
 }
