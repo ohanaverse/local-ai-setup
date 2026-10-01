@@ -1070,17 +1070,13 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// Native models launch fresh: resuming a session would restore the
 	// session's stored model, silently overriding the user's "native" choice
 	// (and, for claude, routing a gateway model at the real Anthropic API).
-	// Look up a prior session only for non-native models.
-	var sess *session.Session
-	if !highlighted.model.Native {
-		if r, ok := agents.ByName(m.agent).(agents.Resumer); ok {
-			var err error
-			sess, err = r.LatestSession(m.selectedPath)
-			if err != nil {
-				m.status = "session check failed: " + err.Error()
-				return m.refreshTable()
-			}
-		}
+	// A failed lookup warns in the status line and still launches: resume is a
+	// convenience, and refusing to launch over it left the user unable to
+	// start the agent at all (opencode #162). The lookup itself is shared with
+	// the non-TUI path via agents.ResumeSession so the two cannot disagree.
+	sess, warning := resumeSession(m.agent, highlighted.model.Native, m.selectedPath)
+	if warning != "" {
+		m.status = warning
 	}
 	if sess == nil {
 		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)

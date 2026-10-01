@@ -579,32 +579,54 @@ func TestUnknownAgentLaunchShowsError(t *testing.T) {
 	}
 }
 
-// TestSessionCheckErrorShowsStatus asserts that if the agent's LatestSession
-// returns an error, the TUI surfaces it in status instead of crashing. The
-// error comes from an opencode.db that exists but is not a database.
-func TestSessionCheckErrorShowsStatus(t *testing.T) {
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not on PATH")
+// TestSessionCheckErrorWarnsAndLaunchesFresh asserts a failed resume lookup
+// does not block the launch: the warning lands in the status line and the
+// launch command is still produced. The previous behaviour returned to the
+// picker without launching, so a missing or unreadable session store made an
+// agent impossible to start — while the non-TUI path, for the same failure,
+// launched silently. Resume is a convenience; it must not gate the launch.
+func TestSessionCheckErrorWarnsAndLaunchesFresh(t *testing.T) {
+	tempStateDir(t) // launchAndRecord writes rotation + refcount state
+	stubFakeBinary(t, "opencode")
+	prev := resumeSession
+	resumeSession = func(agent string, native bool, path string) (*session.Session, string) {
+		return nil, "resume check failed, starting fresh: boom"
 	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", "")
-	dbDir := filepath.Join(home, ".local", "share", "opencode")
-	if err := os.MkdirAll(dbDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dbDir, "opencode.db"), []byte("not a database, just text padding it out"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { resumeSession = prev })
+
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "opencode", tag: "code",
 		selectedPath: "/work/repo", models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
-	if cmd != nil {
-		t.Errorf("expected nil cmd on session check error, got %v", cmd)
+	if cmd == nil {
+		t.Fatalf("expected the launch to proceed despite the failed resume lookup; status = %q", gotModel.status)
 	}
-	if !strings.Contains(gotModel.status, "session check failed") {
-		t.Errorf("status = %q, want 'session check failed'", gotModel.status)
+	if !strings.Contains(gotModel.status, "resume check failed") {
+		t.Errorf("status = %q, want the lookup warning", gotModel.status)
+	}
+}
+
+// TestSessionCheckSuccessStillPromptsToResume guards the other half of the
+// contract: when a session does exist the user still gets the resume prompt,
+// so the warn-and-continue path cannot have swallowed the happy path.
+func TestSessionCheckSuccessStillPromptsToResume(t *testing.T) {
+	tempStateDir(t)
+	stubFakeBinary(t, "opencode")
+	prev := resumeSession
+	resumeSession = func(agent string, native bool, path string) (*session.Session, string) {
+		return &session.Session{ID: "ses_prev"}, ""
+	}
+	t.Cleanup(func() { resumeSession = prev })
+
+	m := model{cfg: testConfig(), phase: phaseModel, agent: "opencode", tag: "code",
+		selectedPath: "/work/repo", models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel := got.(model)
+	if gotModel.phase != phaseResume {
+		t.Fatalf("phase = %v, want phaseResume when a prior session exists", gotModel.phase)
+	}
+	if cmd != nil {
+		t.Errorf("expected no cmd while showing the resume prompt, got %v", cmd)
 	}
 }
 

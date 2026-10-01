@@ -1,9 +1,8 @@
 package agents
 
 import (
-	"fmt"
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,63 +12,29 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
-// writeOpenCodeDB creates an opencode.db at <dataHome>/opencode/ with the
-// columns LatestSession reads from opencode's session table (the real table
-// has many more). Each row is {id, directory, parent_id, time_updated ms,
-// time_archived ms}; "" / 0 store NULL.
-func writeOpenCodeDB(t *testing.T, dataHome string, rows [][5]any) {
+// stubOpenCodeQuery swaps the opencode `db` seam for one test and records the
+// SQL it was handed. Production shells out to the opencode binary itself;
+// stubbing here keeps these tests independent of what happens to be installed
+// on the host, which is what let the old sqlite3-based coverage skip in CI.
+func stubOpenCodeQuery(t *testing.T, out string, err error) *[]string {
 	t.Helper()
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not on PATH")
+	var got []string
+	prev := opencodeDBQuery
+	opencodeDBQuery = func(sql string) ([]byte, error) {
+		got = append(got, sql)
+		return []byte(out), err
 	}
-	dir := filepath.Join(dataHome, "opencode")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	null := func(v any) string {
-		switch v := v.(type) {
-		case string:
-			if v == "" {
-				return "NULL"
-			}
-			return "'" + strings.ReplaceAll(v, "'", "''") + "'"
-		case int:
-			if v == 0 {
-				return "NULL"
-			}
-			return fmt.Sprint(v)
-		}
-		t.Fatalf("unsupported value %#v", v)
-		return ""
-	}
-	sql := "create table session (id text primary key, directory text not null, parent_id text, time_updated integer not null, time_archived integer);"
-	for _, r := range rows {
-		sql += fmt.Sprintf("insert into session values (%s, %s, %s, %d, %s);",
-			null(r[0]), null(r[1]), null(r[2]), r[3], null(r[4]))
-	}
-	if out, err := exec.Command("sqlite3", filepath.Join(dir, "opencode.db"), sql).CombinedOutput(); err != nil {
-		t.Fatalf("sqlite3: %v\n%s", err, out)
-	}
+	t.Cleanup(func() { opencodeDBQuery = prev })
+	return &got
 }
 
-// TestOpenCodeLatestSession pins issue #162: opencode keeps sessions in
-// SQLite (opencode.db), keyed by the session's directory. The newest
-// top-level, unarchived session for the exact path wins; child (sub-agent)
-// sessions, archived sessions and other directories are ignored.
-func TestOpenCodeLatestSession(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", "")
-	repo := "/work/repo"
-	writeOpenCodeDB(t, filepath.Join(home, ".local", "share"), [][5]any{
-		{"ses_old", repo, "", 1_000, 0},
-		{"ses_new", repo, "", 2_000, 0},
-		{"ses_child", repo, "ses_new", 3_000, 0},
-		{"ses_archived", repo, "", 4_000, 4_500},
-		{"ses_other_dir", repo + "/.worktrees/x", "", 5_000, 0},
-	})
+// TestOpenCodeLatestSessionParsesNewestRow pins issue #162's contract: the
+// newest top-level, unarchived session for the exact path is returned, with
+// time_updated (epoch ms) converted to MTime.
+func TestOpenCodeLatestSessionParsesNewestRow(t *testing.T) {
+	stubOpenCodeQuery(t, `[{"id":"ses_new","time_updated":2000}]`, nil)
 
-	s, err := opencodeDriver{}.LatestSession(repo)
+	s, err := opencodeDriver{}.LatestSession("/work/repo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,30 +46,52 @@ func TestOpenCodeLatestSession(t *testing.T) {
 	}
 }
 
-// TestOpenCodeLatestSessionXDGDataHome asserts the db is found under
-// $XDG_DATA_HOME when set (opencode follows the XDG base-dir spec), and that
-// a path containing a single quote is matched literally.
-func TestOpenCodeLatestSessionXDGDataHome(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	xdg := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", xdg)
-	repo := "/work/it's a repo"
-	writeOpenCodeDB(t, xdg, [][5]any{{"ses_q", repo, "", 1_000, 0}})
+// TestOpenCodeLatestSessionQueryShape asserts the SQL still carries every #162
+// filter: exact directory match, top-level sessions only (parent_id is null),
+// unarchived only, newest first. Dropping any one of them makes resume offer
+// the wrong conversation — a sub-agent session or an archived one.
+func TestOpenCodeLatestSessionQueryShape(t *testing.T) {
+	got := stubOpenCodeQuery(t, `[]`, nil)
 
-	s, err := opencodeDriver{}.LatestSession(repo)
-	if err != nil {
+	if _, err := (opencodeDriver{}).LatestSession("/work/repo"); err != nil {
 		t.Fatal(err)
 	}
-	if s == nil || s.ID != "ses_q" {
-		t.Fatalf("LatestSession = %+v, want ses_q", s)
+	if len(*got) != 1 {
+		t.Fatalf("expected exactly 1 query, got %d: %v", len(*got), *got)
+	}
+	q := strings.ToLower((*got)[0])
+	for _, want := range []string{
+		"from session",
+		"directory = '/work/repo'",
+		"parent_id is null",
+		"time_archived is null",
+		"order by time_updated desc",
+		"limit 1",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("query %q is missing %q", (*got)[0], want)
+		}
 	}
 }
 
-// TestOpenCodeLatestSessionNoDB asserts a machine where opencode never ran
-// (no opencode.db) yields no session and no error.
-func TestOpenCodeLatestSessionNoDB(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", "")
+// TestOpenCodeLatestSessionEscapesPathQuotes asserts a worktree path holding a
+// single quote is matched literally rather than closing the SQL literal and
+// changing the query.
+func TestOpenCodeLatestSessionEscapesPathQuotes(t *testing.T) {
+	got := stubOpenCodeQuery(t, `[]`, nil)
+
+	if _, err := (opencodeDriver{}).LatestSession("/work/it's a repo"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*got)[0], `'/work/it''s a repo'`) {
+		t.Errorf("query %q does not escape the quote in the path", (*got)[0])
+	}
+}
+
+// TestOpenCodeLatestSessionNoSessions asserts a machine where opencode never
+// ran — the query returns an empty array — yields no session and no error.
+func TestOpenCodeLatestSessionNoSessions(t *testing.T) {
+	stubOpenCodeQuery(t, `[]`, nil)
 
 	s, err := opencodeDriver{}.LatestSession("/work/repo")
 	if err != nil {
@@ -115,26 +102,53 @@ func TestOpenCodeLatestSessionNoDB(t *testing.T) {
 	}
 }
 
-// TestOpenCodeLatestSessionUnreadableDBErrors asserts a db that exists but
-// cannot be queried surfaces an error instead of silently reporting "no
-// sessions" (the failure mode that hid #162).
-func TestOpenCodeLatestSessionUnreadableDBErrors(t *testing.T) {
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not on PATH")
-	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", "")
-	dir := filepath.Join(home, ".local", "share", "opencode")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "opencode.db"), []byte("not a database, just text padding it out"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// TestOpenCodeLatestSessionQueryError asserts a failed query surfaces an error
+// rather than silently reporting "no sessions" — the failure mode that hid
+// #162 for so long.
+func TestOpenCodeLatestSessionQueryError(t *testing.T) {
+	stubOpenCodeQuery(t, "", errors.New("opencode: not found"))
 
 	if _, err := (opencodeDriver{}).LatestSession("/work/repo"); err == nil {
-		t.Fatal("expected an error for an unreadable opencode.db")
+		t.Fatal("expected an error when the query fails")
+	}
+}
+
+// TestOpenCodeLatestSessionMalformedOutput asserts unexpected output is
+// reported instead of being turned into a bogus session id that wt would then
+// hand to `opencode --session`.
+func TestOpenCodeLatestSessionMalformedOutput(t *testing.T) {
+	stubOpenCodeQuery(t, "not json at all", nil)
+
+	if _, err := (opencodeDriver{}).LatestSession("/work/repo"); err == nil {
+		t.Fatal("expected an error for unparseable query output")
+	}
+}
+
+// TestRealOpenCodeDBQueryRunsOpenCodeDB pins the command the real seam runs:
+// `opencode db <sql> --format json`. Going through opencode's own binary is
+// what makes the database location (OPENCODE_DB, the per-channel filename) and
+// WAL handling opencode's business rather than wt's — the previous bare
+// `sqlite3` invocation made a missing CLI block every opencode launch. A fake
+// `opencode` script on PATH keeps this test off the real binary and off
+// sqlite3, so it runs on any host.
+func TestRealOpenCodeDBQueryRunsOpenCodeDB(t *testing.T) {
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\nprintf '[]'\n"
+	if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, err := realOpenCodeDBQuery("select 1"); err != nil {
+		t.Fatalf("realOpenCodeDBQuery: %v", err)
+	}
+	raw, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(strings.Fields(string(raw)), " "); got != "db select 1 --format json" {
+		t.Errorf("opencode argv = %q, want %q", got, "db select 1 --format json")
 	}
 }
 

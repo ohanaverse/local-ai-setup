@@ -31,7 +31,7 @@ func TestLaunchAgentUnknownAgent(t *testing.T) {
 // a session appends --resume <id> to the command args. This is the resume
 // wiring that the bash wrappers do for claude.
 func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
-	requireBinary(t, "claude")
+	stubFakeBinary(t, "claude")
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}},
 	}
@@ -49,7 +49,7 @@ func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 // TestLaunchAgentOpenCodeResumeAppendsFlag asserts that an opencode launch
 // with a session appends --session <id> to the command args.
 func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
-	requireBinary(t, "opencode")
+	stubFakeBinary(t, "opencode")
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
@@ -68,7 +68,7 @@ func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 // is passed, no resume/session flag is injected. This is the "start fresh"
 // path.
 func TestLaunchAgentWithoutSessionOmitsResumeFlag(t *testing.T) {
-	requireBinary(t, "claude")
+	stubFakeBinary(t, "claude")
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}},
 	}

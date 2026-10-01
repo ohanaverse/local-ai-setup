@@ -1,11 +1,9 @@
 package agents
 
 import (
+	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,55 +22,61 @@ func (opencodeDriver) Protocols() []Protocol { return []Protocol{config.Protocol
 
 func (opencodeDriver) ResumeFlag() string { return "--session" }
 
-// LatestSession returns the newest top-level, unarchived opencode session
-// recorded for exactly path. opencode keeps sessions in SQLite
-// (<data>/opencode/opencode.db, session table), not the old
-// storage/session/<project-id>/*.json files (#162). Keying on the session's
-// own directory column, rather than on opencode's project id, matches how
-// claude's lookup is per-worktree-path. A missing db means opencode never
-// ran: no session, no error. Any other failure is returned so it is visible.
-func (opencodeDriver) LatestSession(path string) (*session.Session, error) {
-	db := opencodeDBPath()
-	if _, err := os.Stat(db); os.IsNotExist(err) {
-		return nil, nil
-	}
-	query := "select id, time_updated from session where directory = '" +
-		strings.ReplaceAll(path, "'", "''") +
-		"' and parent_id is null and time_archived is null" +
-		" order by time_updated desc limit 1"
-	// A plain read-only open reads the -wal sidecar, where a fresh db keeps
-	// all of its rows until a checkpoint; immutable=1 would miss them, so it
-	// is only the fallback for when the read-only open itself fails.
-	out, err := exec.Command("sqlite3", "-readonly", "-separator", "|", db, query).Output()
-	if err != nil {
-		out, err = exec.Command("sqlite3", "-separator", "|", "file:"+db+"?immutable=1", query).Output()
-	}
+// opencodeDBQuery is the seam LatestSession reads opencode's session table
+// through. Tests replace it; production runs realOpenCodeDBQuery.
+var opencodeDBQuery = realOpenCodeDBQuery
+
+// realOpenCodeDBQuery runs SQL against opencode's database via `opencode db`.
+//
+// Going through opencode instead of a bare `sqlite3` binary is deliberate.
+// opencode resolves its own database location — honoring the OPENCODE_DB
+// override and the per-channel `opencode-<channel>.db` filename — and opens it
+// with its own bundled SQLite, so wt neither reproduces the path rules nor has
+// to get WAL handling right. A missing `sqlite3` CLI, meanwhile, used to make
+// every opencode launch fail. `--format json` keeps the rows parseable without
+// inventing a separator. opencode creates its data directory when none exists,
+// which is the same thing it does on first run; callers only reach this from a
+// launch of opencode itself.
+func realOpenCodeDBQuery(sql string) ([]byte, error) {
+	out, err := exec.Command("opencode", "db", sql, "--format", "json").Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
 		}
-		return nil, fmt.Errorf("reading opencode sessions from %s: %w", db, err)
+		return nil, err
 	}
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		return nil, nil
-	}
-	id, ms, ok := strings.Cut(line, "|")
-	updated, convErr := strconv.ParseInt(ms, 10, 64)
-	if !ok || convErr != nil {
-		return nil, fmt.Errorf("reading opencode sessions from %s: unexpected row %q", db, line)
-	}
-	return &session.Session{ID: id, MTime: time.UnixMilli(updated)}, nil
+	return out, nil
 }
 
-// opencodeDBPath follows opencode's XDG data dir: $XDG_DATA_HOME/opencode,
-// else ~/.local/share/opencode.
-func opencodeDBPath() string {
-	data := os.Getenv("XDG_DATA_HOME")
-	if data == "" {
-		data = filepath.Join(os.Getenv("HOME"), ".local", "share")
+// LatestSession returns the newest top-level, unarchived opencode session
+// recorded for exactly path. opencode keeps sessions in SQLite (the session
+// table), not the old storage/session/<project-id>/*.json files (#162).
+// Keying on the session's own directory column, rather than on opencode's
+// project id, matches how claude's lookup is per-worktree-path: a project id
+// is shared by every worktree of a repo, so a project-keyed lookup would offer
+// another worktree's conversation. An empty result means opencode has no
+// session for this path — no session, no error.
+func (opencodeDriver) LatestSession(path string) (*session.Session, error) {
+	query := "select id, time_updated from session where directory = '" +
+		strings.ReplaceAll(path, "'", "''") +
+		"' and parent_id is null and time_archived is null" +
+		" order by time_updated desc limit 1"
+	out, err := opencodeDBQuery(query)
+	if err != nil {
+		return nil, fmt.Errorf("reading opencode sessions: %w", err)
 	}
-	return filepath.Join(data, "opencode", "opencode.db")
+	var rows []struct {
+		ID      string `json:"id"`
+		Updated int64  `json:"time_updated"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, fmt.Errorf("reading opencode sessions: unexpected output %q: %w",
+			strings.TrimSpace(string(out)), err)
+	}
+	if len(rows) == 0 || rows[0].ID == "" {
+		return nil, nil
+	}
+	return &session.Session{ID: rows[0].ID, MTime: time.UnixMilli(rows[0].Updated)}, nil
 }
 
 // OpenCode routes through a wt-declared custom provider

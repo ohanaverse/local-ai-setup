@@ -879,12 +879,15 @@ The anchor is `~/.local/share/opencode` (also check `~/.config/opencode`).
 `storage/session/<projectID>/*.json` layout to SQLite**. On this machine
 `storage/session`, `storage/message` and `storage/part` **do not exist**.
 `wt`'s resume support used to look for `storage/session/<root-commit>/*.json`
-and silently found nothing on opencode 1.18.26 (#162). It now queries
-`opencode.db` directly (`wt/internal/agents/opencode.go`): the newest
-`session` row whose `directory` is the worktree path, with `parent_id` and
-`time_archived` both NULL, read via `sqlite3 -readonly`. A plain read-only
-open is required because a fresh db can hold all of its rows in the `-wal`
-sidecar, which an `immutable=1` open ignores; immutable is only the fallback.
+and silently found nothing on opencode 1.18.26 (#162). It now runs
+`opencode db "<sql>" --format json` (`wt/internal/agents/opencode.go`) and takes
+the newest `session` row whose `directory` is exactly the worktree path, with
+`parent_id` and `time_archived` both NULL. It goes through opencode's own `db`
+subcommand rather than a bare `sqlite3` so that opencode resolves the database
+location itself (`OPENCODE_DB`, the per-channel filename) and reads it with its
+bundled SQLite: a plain `sqlite3 -readonly` also sees the `-wal`, but an
+`immutable=1` open does not, and requiring the `sqlite3` CLI on PATH made every
+launch fail where it was absent.
 
 ### Transcript layout
 
@@ -1011,8 +1014,8 @@ sidecars); `message.data` and `part.data` are JSON *strings* inside SQLite, so u
 
 ### Reference
 
-- `wt/internal/agents/opencode.go` — `LatestSession` (the `opencode.db`
-  lookup described above, #162).
+- `wt/internal/agents/opencode.go` — `LatestSession` / `realOpenCodeDBQuery`
+  (the `opencode db` session lookup described above, #162).
 
 ---
 
