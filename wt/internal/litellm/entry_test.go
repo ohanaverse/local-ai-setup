@@ -108,6 +108,38 @@ func TestBuildEntryLocalRows(t *testing.T) {
 	}
 }
 
+// TestBuildEntryOpenAICompatAPIBaseEndsInV1 pins issue #168: LiteLLM's
+// openai/ provider appends only /chat/completions to api_base, so an
+// OpenAI-compatible local server's row must dial <origin>/v1 whichever form
+// the registry stores (the seeded omlx base_url is the bare origin). Ollama's
+// ollama_chat/ rows keep the bare origin.
+func TestBuildEntryOpenAICompatAPIBaseEndsInV1(t *testing.T) {
+	cases := []struct {
+		provider, baseURL, want string
+	}{
+		{"omlx", "http://localhost:8000", "http://localhost:8000/v1"},
+		{"omlx", "http://localhost:8000/", "http://localhost:8000/v1"},
+		{"omlx", "http://localhost:8000/v1", "http://localhost:8000/v1"},
+		{"omlx", "http://localhost:8000/v1/", "http://localhost:8000/v1"},
+		{"omlx-6bit", "http://localhost:8000", "http://localhost:8000/v1"},
+		{"mlx_lm_server", "http://localhost:8001", "http://localhost:8001/v1"},
+		{"mtplx", "http://127.0.0.1:8003", "http://127.0.0.1:8003/v1"},
+		{"ollama", "http://localhost:11434/", "http://localhost:11434/"},
+	}
+	for _, c := range cases {
+		p := config.Provider{ID: c.provider, Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: c.baseURL}}
+		m := config.Model{ID: c.provider + "/m", ProviderID: c.provider, ModelName: "org/m", Location: config.LocationLocal}
+		node, err := BuildEntry(m, p)
+		if err != nil {
+			t.Fatalf("%s %q: BuildEntry: %v", c.provider, c.baseURL, err)
+		}
+		params := decode(t, node)["litellm_params"].(map[string]any)
+		if params["api_base"] != c.want {
+			t.Errorf("%s %q: api_base = %v, want %q", c.provider, c.baseURL, params["api_base"], c.want)
+		}
+	}
+}
+
 // TestBuildEntryRejectsUnmappedProvider guards the "no LiteLLM mapping"
 // invariant: a provider missing from the policy table must error, never
 // produce a half-built row.

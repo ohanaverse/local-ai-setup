@@ -213,17 +213,14 @@ grep -n "model_name" ~/.config/litellm/config.yaml
 
 ```text
 3:  - model_name: ollama/qwen3.8:27b-mlx
-12:  - model_name: omlx/Qwen3.8-27B-4bit
 19:  - model_name: openrouter/qwen/qwen3.8-27b
 26:  - model_name: openrouter/qwen/qwen3.8-flash
 32:  - model_name: openrouter/qwen/qwen3.8-2.4t-a95b
 38:  - model_name: openrouter/qwen/qwen3.8-max
 52:  - model_name: ollama/ornith-1.5:35b
-60:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-4bit
-67:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-6bit
 ```
 
-(9 entries after the 2026-09-07 llama.cpp retirement; was 11 live 2026-08-29. Never `cat` this file into chat/docs — its `api_key:` values include real `sk-or-v1-…` keys.)
+(9 entries after the 2026-09-07 llama.cpp retirement, minus the 3 hand-written omlx rows removed 2026-09-30 (#168); was 11 live 2026-08-29. A running omlx model adds its wt-written row, e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`. Never `cat` this file into chat/docs — its `api_key:` values include real `sk-or-v1-…` keys.)
 
 ```bash
 grep -A4 '"ollama/gpt-oss:20b"' ~/.config/local-ai/modelman.toml
@@ -245,7 +242,7 @@ grep -c "exposed = true" ~/.config/local-ai/modelman.toml
 27
 ```
 
-> **Historical note (2026-08-30, updated 2026-09-10):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models — the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models — twelve openrouter models exposed through the TUI/CLI since, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`) exposed by hand, and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66) exposed via `modelman expose`. Other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the remaining omlx entries stay hand-managed by design (the llama.cpp rows were retired 2026-09-07) and keep `exposed = false`.
+> **Historical note (2026-08-30, updated 2026-09-10):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models — the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models — twelve openrouter models exposed through the TUI/CLI since, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`) exposed by hand, and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66) exposed via `modelman expose`. Other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the other omlx entries keep `exposed = false` — for local models that flag isn't the routing truth, `wt litellm list` is (the hand-written omlx rows were removed 2026-09-30, #168; the llama.cpp rows were retired 2026-09-07).
 
 Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 ornith entry shape (the `id` line plus the 3 lines after it):
 

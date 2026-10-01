@@ -113,14 +113,12 @@ curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTE
 
 ```text
 ollama/qwen3.8:27b-mlx
-omlx/Qwen3.8-27B-4bit
+omlx/mlx-community--Qwen3.8-27B-4bit   # only while it runs — wt writes the route on start
 openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
 openrouter/qwen/qwen3.8-2.4t-a95b
 openrouter/qwen/qwen3.8-max
 ollama/ornith-1.5:35b
-omlx/Ornith-1.5-35B-A3B-MLX-4bit
-omlx/Ornith-1.5-35B-A3B-MLX-6bit
 ```
 
 Present in this list but not routeable? Skip to step 5 (backend down). Absent? Continue.
@@ -161,7 +159,7 @@ size_bytes = 19327352832
 exposed = true
 ```
 
-Historical note (2026-08-30, updated 2026-09-10): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models), twelve openrouter models, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`, exposed by hand), and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66). The remaining omlx entries stay hand-managed by design and will still show `exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is still what the proxy serves. **This is a LiteLLM-exposure debug flow, not necessarily a "why doesn't wt show my model" one** — as of the 2026-09-15 local-model-visibility design (`docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`), `exposed` is no longer the truth for what wt shows for LOCAL models at all:
+Historical note (2026-08-30, updated 2026-09-10): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models), twelve openrouter models, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`, exposed by hand), and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66). Other omlx entries show `exposed = false` (or are absent from `[model_state...]` entirely); for local models that flag isn't the routing truth, since `wt start`/`wt stop` write and remove their `config.yaml` routes. (The hand-written omlx rows were removed 2026-09-30, #168.) `config.yaml` is still what the proxy serves. **This is a LiteLLM-exposure debug flow, not necessarily a "why doesn't wt show my model" one** — as of the 2026-09-15 local-model-visibility design (`docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`), `exposed` is no longer the truth for what wt shows for LOCAL models at all:
 
 - **Model missing from wt's picker, and it's a LOCAL model** (ollama/omlx/mtplx/mlx_lm_server): don't look at `exposed`/`ready` here — run `wt -A <agent>` and read the STATUS/RUNNING columns; wt probes ollama/omlx/mtplx live and shows what is actually up. Every configured local model appears as a row: running → launchable; non-running ollama/omlx/mtplx → a start row (Enter starts it); `absent` (the provider answered and does not have the model) or a no-engine provider like `mlx_lm_server` → blocked with the reason. A model missing from the list entirely is neither in `registry.toml` nor discovered on disk — or its provider isn't in that agent's `supported_providers`; try another agent. `exposed`/`ready` play no role for local models in wt, and modelman.toml's per-model `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section). A local model that *is* running but gets `400 Invalid model name` on `:4000` lacks a `config.yaml` route: `wt litellm list` shows what is routed, `wt start`/`wt stop` keep routes current automatically, and `wt litellm sync` repairs them after a server was started or stopped outside wt (modelman's EXPOSED column for a local model is the stale `exposed` flag, not the route).
 - **Model missing from wt's picker, and it's a CLOUD model** (openrouter, or `location = "cloud"`): `exposed` is still the relevant flag — continue with the flow below (independent of whether LiteLLM routing is active; `wt litellm on`/`off` never changes exposure). A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
@@ -212,6 +210,8 @@ grep -A3 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/confi
       model: ollama_chat/qwen3.8:27b-mlx
       api_base: http://localhost:11434
 ```
+
+OpenAI-compatible local backends (omlx, omlx-6bit, mtplx, mlx_lm_server) must have `api_base` ending in `/v1`, because LiteLLM's `openai/` provider appends only `/chat/completions`. Without it, oMLX answers `404 {'detail': 'Not Found'}` even though the model is loaded and `wt start`'s warmup passed. wt has written `<origin>/v1` since #168 (PR #173); a row written by an older wt is repaired by `wt litellm sync`.
 
 (omlx rows use `http://localhost:8000`, OpenRouter rows no `api_base` — key from plist env instead.)
 
