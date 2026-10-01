@@ -315,7 +315,7 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (absent = enabled, zero 
 
 ## Session resume (Go)
 
-`internal/session` finds the newest resumable session (claude `*.jsonl` under `~/.claude/projects/<slug>`, opencode `*.json` under `~/.local/share/opencode/storage/session/<project-id>`). Others (incl. shell) return nil. On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Resume (`--resume <id>` claude, `--session <id>` opencode). Non-TUI does the same without prompting.
+`internal/session` finds the newest resumable session (claude `*.jsonl` under `~/.claude/projects/<slug>`, opencode: the newest top-level, unarchived `session` row whose `directory` is the worktree path, queried from `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` via the `sqlite3` CLI, read-only so the `-wal` is included; #162). Others (incl. shell) return nil. On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Resume (`--resume <id>` claude, `--session <id>` opencode). Non-TUI does the same without prompting.
 
 > **Native models never resume.** A native model (e.g. `claude/native`) launches with no model override; resuming would restore the session's stored model and silently override "native" (routing a proxy-routed model at the real Anthropic API). Both paths skip the session lookup for native models.
 

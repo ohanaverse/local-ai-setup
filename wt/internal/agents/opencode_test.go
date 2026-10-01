@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,79 +11,130 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
-func gitInit(t *testing.T, dir string) {
+// writeOpenCodeDB creates an opencode.db at <dataHome>/opencode/ with the
+// columns LatestSession reads from opencode's session table (the real table
+// has many more). Each row is {id, directory, parent_id, time_updated ms,
+// time_archived ms}; "" / 0 store NULL.
+func writeOpenCodeDB(t *testing.T, dataHome string, rows [][5]any) {
 	t.Helper()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "t@t"},
-		{"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "init"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-		}
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not on PATH")
 	}
-}
-
-// TestOpenCodeLatestSession asserts opencodeDriver finds the newest .json
-// session file under the project-id directory.
-func TestOpenCodeLatestSession(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	repo := t.TempDir()
-	gitInit(t, repo)
-	id, err := session.OpenCodeProjectID(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dir := filepath.Join(home, ".local", "share", "opencode", "storage", "session", id)
+	dir := filepath.Join(dataHome, "opencode")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old := filepath.Join(dir, "old.json")
-	new := filepath.Join(dir, "new.json")
-	if err := os.WriteFile(old, []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
+	null := func(v any) string {
+		switch v := v.(type) {
+		case string:
+			if v == "" {
+				return "NULL"
+			}
+			return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+		case int:
+			if v == 0 {
+				return "NULL"
+			}
+			return fmt.Sprint(v)
+		}
+		t.Fatalf("unsupported value %#v", v)
+		return ""
 	}
-	if err := os.WriteFile(new, []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
+	sql := "create table session (id text primary key, directory text not null, parent_id text, time_updated integer not null, time_archived integer);"
+	for _, r := range rows {
+		sql += fmt.Sprintf("insert into session values (%s, %s, %s, %d, %s);",
+			null(r[0]), null(r[1]), null(r[2]), r[3], null(r[4]))
 	}
-	oldInfo, _ := os.Stat(old)
-	os.Chtimes(new, oldInfo.ModTime(), oldInfo.ModTime().Add(time.Second))
-
-	d := opencodeDriver{}
-	s, err := d.LatestSession(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s == nil || s.ID != "new.json" {
-		t.Fatalf("expected newest opencode session id \"new.json\", got %+v", s)
+	if out, err := exec.Command("sqlite3", filepath.Join(dir, "opencode.db"), sql).CombinedOutput(); err != nil {
+		t.Fatalf("sqlite3: %v\n%s", err, out)
 	}
 }
 
-// TestOpenCodeLatestSessionNoDir asserts opencodeDriver returns nil when no
-// session directory exists, without returning an error.
-func TestOpenCodeLatestSessionNoDir(t *testing.T) {
+// TestOpenCodeLatestSession pins issue #162: opencode keeps sessions in
+// SQLite (opencode.db), keyed by the session's directory. The newest
+// top-level, unarchived session for the exact path wins; child (sub-agent)
+// sessions, archived sessions and other directories are ignored.
+func TestOpenCodeLatestSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	repo := "/work/repo"
+	writeOpenCodeDB(t, filepath.Join(home, ".local", "share"), [][5]any{
+		{"ses_old", repo, "", 1_000, 0},
+		{"ses_new", repo, "", 2_000, 0},
+		{"ses_child", repo, "ses_new", 3_000, 0},
+		{"ses_archived", repo, "", 4_000, 4_500},
+		{"ses_other_dir", repo + "/.worktrees/x", "", 5_000, 0},
+	})
 
-	repo := t.TempDir()
-	gitInit(t, repo)
+	s, err := opencodeDriver{}.LatestSession(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == nil || s.ID != "ses_new" {
+		t.Fatalf("LatestSession = %+v, want ses_new", s)
+	}
+	if want := time.UnixMilli(2_000); !s.MTime.Equal(want) {
+		t.Errorf("MTime = %v, want %v (time_updated is epoch ms)", s.MTime, want)
+	}
+}
 
-	d := opencodeDriver{}
-	s, err := d.LatestSession(repo)
+// TestOpenCodeLatestSessionXDGDataHome asserts the db is found under
+// $XDG_DATA_HOME when set (opencode follows the XDG base-dir spec), and that
+// a path containing a single quote is matched literally.
+func TestOpenCodeLatestSessionXDGDataHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
+	repo := "/work/it's a repo"
+	writeOpenCodeDB(t, xdg, [][5]any{{"ses_q", repo, "", 1_000, 0}})
+
+	s, err := opencodeDriver{}.LatestSession(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == nil || s.ID != "ses_q" {
+		t.Fatalf("LatestSession = %+v, want ses_q", s)
+	}
+}
+
+// TestOpenCodeLatestSessionNoDB asserts a machine where opencode never ran
+// (no opencode.db) yields no session and no error.
+func TestOpenCodeLatestSessionNoDB(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", "")
+
+	s, err := opencodeDriver{}.LatestSession("/work/repo")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s != nil {
 		t.Fatalf("expected nil session, got %+v", s)
+	}
+}
+
+// TestOpenCodeLatestSessionUnreadableDBErrors asserts a db that exists but
+// cannot be queried surfaces an error instead of silently reporting "no
+// sessions" (the failure mode that hid #162).
+func TestOpenCodeLatestSessionUnreadableDBErrors(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not on PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	dir := filepath.Join(home, ".local", "share", "opencode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "opencode.db"), []byte("not a database, just text padding it out"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (opencodeDriver{}).LatestSession("/work/repo"); err == nil {
+		t.Fatal("expected an error for an unreadable opencode.db")
 	}
 }
 

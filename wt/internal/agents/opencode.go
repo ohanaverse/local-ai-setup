@@ -3,7 +3,11 @@ package agents
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -20,16 +24,55 @@ func (opencodeDriver) Protocols() []Protocol { return []Protocol{config.Protocol
 
 func (opencodeDriver) ResumeFlag() string { return "--session" }
 
+// LatestSession returns the newest top-level, unarchived opencode session
+// recorded for exactly path. opencode keeps sessions in SQLite
+// (<data>/opencode/opencode.db, session table), not the old
+// storage/session/<project-id>/*.json files (#162). Keying on the session's
+// own directory column, rather than on opencode's project id, matches how
+// claude's lookup is per-worktree-path. A missing db means opencode never
+// ran: no session, no error. Any other failure is returned so it is visible.
 func (opencodeDriver) LatestSession(path string) (*session.Session, error) {
-	projectID, err := session.OpenCodeProjectID(path)
-	if err != nil {
-		return nil, err
+	db := opencodeDBPath()
+	if _, err := os.Stat(db); os.IsNotExist(err) {
+		return nil, nil
 	}
-	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode",
-		"storage", "session", projectID)
-	return session.LatestByExt(dir, ".json", func(f os.FileInfo) string {
-		return f.Name()
-	})
+	query := "select id, time_updated from session where directory = '" +
+		strings.ReplaceAll(path, "'", "''") +
+		"' and parent_id is null and time_archived is null" +
+		" order by time_updated desc limit 1"
+	// A plain read-only open reads the -wal sidecar, where a fresh db keeps
+	// all of its rows until a checkpoint; immutable=1 would miss them, so it
+	// is only the fallback for when the read-only open itself fails.
+	out, err := exec.Command("sqlite3", "-readonly", "-separator", "|", db, query).Output()
+	if err != nil {
+		out, err = exec.Command("sqlite3", "-separator", "|", "file:"+db+"?immutable=1", query).Output()
+	}
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("reading opencode sessions from %s: %w", db, err)
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return nil, nil
+	}
+	id, ms, ok := strings.Cut(line, "|")
+	updated, convErr := strconv.ParseInt(ms, 10, 64)
+	if !ok || convErr != nil {
+		return nil, fmt.Errorf("reading opencode sessions from %s: unexpected row %q", db, line)
+	}
+	return &session.Session{ID: id, MTime: time.UnixMilli(updated)}, nil
+}
+
+// opencodeDBPath follows opencode's XDG data dir: $XDG_DATA_HOME/opencode,
+// else ~/.local/share/opencode.
+func opencodeDBPath() string {
+	data := os.Getenv("XDG_DATA_HOME")
+	if data == "" {
+		data = filepath.Join(os.Getenv("HOME"), ".local", "share")
+	}
+	return filepath.Join(data, "opencode", "opencode.db")
 }
 
 // OpenCode routes through a wt-declared custom provider

@@ -3,7 +3,6 @@ package session
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strings"
@@ -22,16 +21,6 @@ var nonSlug = regexp.MustCompile(`[^a-zA-Z0-9-]`)
 
 func Slug(path string) string {
 	return nonSlug.ReplaceAllString(path, "-")
-}
-
-// OpenCodeProjectID returns the repo's root commit hash (opencode's project id).
-// It runs git inside path so the id matches the worktree being resumed.
-func OpenCodeProjectID(path string) (string, error) {
-	out, err := exec.Command("git", "-C", path, "rev-list", "--max-parents=0", "HEAD").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // LatestByExt finds the newest file with the given extension in dir.

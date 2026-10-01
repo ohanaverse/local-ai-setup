@@ -579,11 +579,25 @@ func TestUnknownAgentLaunchShowsError(t *testing.T) {
 	}
 }
 
-// TestSessionCheckErrorShowsStatus asserts that if session.LatestForAgent
-// returns an error, the TUI surfaces it in status instead of crashing.
+// TestSessionCheckErrorShowsStatus asserts that if the agent's LatestSession
+// returns an error, the TUI surfaces it in status instead of crashing. The
+// error comes from an opencode.db that exists but is not a database.
 func TestSessionCheckErrorShowsStatus(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not on PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	dbDir := filepath.Join(home, ".local", "share", "opencode")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dbDir, "opencode.db"), []byte("not a database, just text padding it out"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "opencode", tag: "code",
-		selectedPath: "/nonexistent/path/that/cannot/be/git", models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
+		selectedPath: "/work/repo", models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if cmd != nil {

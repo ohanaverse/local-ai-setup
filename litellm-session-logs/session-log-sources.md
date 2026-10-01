@@ -878,11 +878,13 @@ The anchor is `~/.local/share/opencode` (also check `~/.config/opencode`).
 **Important, and a behaviour change:** OpenCode has **migrated off its old
 `storage/session/<projectID>/*.json` layout to SQLite**. On this machine
 `storage/session`, `storage/message` and `storage/part` **do not exist**.
-`wt`'s resume support still looks for `storage/session/<root-commit>/*.json`
-(`wt/internal/agents/opencode.go` via `session.OpenCodeProjectID`), and
-`LatestByExt` silently returns "no sessions" for a missing directory — so
-`opencode-wt`'s resume prompt **no longer finds anything** on opencode 1.18.26.
-That is a wt bug, not an OpenCode defect.
+`wt`'s resume support used to look for `storage/session/<root-commit>/*.json`
+and silently found nothing on opencode 1.18.26 (#162). It now queries
+`opencode.db` directly (`wt/internal/agents/opencode.go`): the newest
+`session` row whose `directory` is the worktree path, with `parent_id` and
+`time_archived` both NULL, read via `sqlite3 -readonly`. A plain read-only
+open is required because a fresh db can hold all of its rows in the `-wal`
+sidecar, which an `immutable=1` open ignores; immutable is only the fallback.
 
 ### Transcript layout
 
@@ -1009,8 +1011,8 @@ sidecars); `message.data` and `part.data` are JSON *strings* inside SQLite, so u
 
 ### Reference
 
-- `wt/internal/agents/opencode.go`, `wt/internal/session/session.go` —
-  `OpenCodeProjectID()` (root commit) and the now-stale `storage/session` path.
+- `wt/internal/agents/opencode.go` — `LatestSession` (the `opencode.db`
+  lookup described above, #162).
 
 ---
 
