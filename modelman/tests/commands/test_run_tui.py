@@ -216,38 +216,81 @@ def test_run_queued_ops_missing_ready_model_id_prints_live_failure(tmp_path, mon
     assert "FAILED: ready ollama/missing: Unknown model" in out
 
 
-def test_run_queued_ops_counts_cascaded_unexpose_in_total(tmp_path, monkeypatch, capsys):
-    """Deleting a model that is currently exposed (with no explicit
-    expose/unexpose queued through the TUI) makes queue.py's apply()
-    append a cascaded unexpose to PendingChanges.exposes mid-run. The
-    pre-apply `total` count must grow to include it, or the "N of M
-    operations failed" summary undercounts real work — regression for a
-    review finding where a failing cascade silently disappeared from the
-    denominator."""
-    from dataclasses import replace
-
-    from modelman.state import locked_state
-
+def test_run_queued_ops_syncs_routes_once(tmp_path, monkeypatch, wt_calls):
+    """#179: one `wt litellm sync` after an applied queue — no per-model
+    expose/unexpose calls, whatever the queue held."""
     entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
-    reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry])
-    with locked_state(state_path) as state:
-        state.set("ollama/x", replace(state.get("ollama/x"), exposed=True))
-    # queued.exposes is intentionally empty: the cascade must come only
-    # from queue.py's delete-of-an-exposed-model logic, not a
-    # user-queued unexpose.
-    variant = model_entry_to_variant(entry)
-    fake_provider = MagicMock()
-    monkeypatch.setattr(
-        "modelman.queue.apply_expose_queue",
-        MagicMock(side_effect=RuntimeError("config unwritable")),
-    )
-    with patch("modelman.main.ProviderRegistry.get", return_value=fake_provider):
-        failed = run_queued_ops(QueuedOps(deletes={"ollama/x": variant}))
+    _seed(tmp_path, monkeypatch, models=[entry])
+    with patch("modelman.main.ProviderRegistry.get", return_value=MagicMock()):
+        failed = run_queued_ops(QueuedOps(deletes={"ollama/x": model_entry_to_variant(entry)}))
+    assert failed is False
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+    assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
 
+
+def test_run_queued_ops_syncs_once_after_unexpected_apply_exception(
+    tmp_path, monkeypatch, wt_calls
+):
+    """apply()'s safety net has persisted completed work before an
+    unexpected exception escapes, so the routes must still be brought in
+    line with it — exactly one sync."""
+    entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
+    _seed(tmp_path, monkeypatch, models=[entry])
+    monkeypatch.setattr(
+        "modelman.queue.find_shared_artifact_owner",
+        MagicMock(side_effect=RuntimeError("registry corrupted")),
+    )
+    with patch("modelman.main.ProviderRegistry.get", return_value=MagicMock()):
+        failed = run_queued_ops(QueuedOps(deletes={"ollama/x": model_entry_to_variant(entry)}))
     assert failed is True
-    out = capsys.readouterr().out
-    # 1 delete (succeeded) + 1 cascaded unexpose (failed) = 2, not 1.
-    assert "1 of 2 operations failed." in out
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+def test_run_queued_ops_keyboard_interrupt_does_not_sync(tmp_path, monkeypatch, wt_calls):
+    """Ctrl+C is a request to stop: no sync (the next one converges)."""
+    entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
+    _seed(tmp_path, monkeypatch, models=[entry])
+    fake_provider = MagicMock()
+    fake_provider.download.side_effect = KeyboardInterrupt()
+    with patch("modelman.main.ProviderRegistry.get", return_value=fake_provider):
+        failed = run_queued_ops(QueuedOps(ready={"ollama/x": True}))
+    assert failed is True
+    assert not [c for c in wt_calls if c[:1] == ["sync"]]
+
+
+def test_run_tui_syncs_when_registry_changed_without_queue(tmp_path, monkeypatch, wt_calls):
+    """An add/edit in the TUI writes registry.toml immediately and queues
+    nothing; the exit must still sync so the new cloud model gets its route."""
+    reg = tmp_path / "registry.toml"
+    reg.write_text("models = []\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg))
+
+    class FakeApp:
+        def run(self):
+            reg.write_text("models = []\n# edited\n")
+            return None
+
+    monkeypatch.setattr("modelman.app.ModelmanApp", FakeApp)
+    from modelman.main import run_tui
+
+    run_tui()
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+def test_run_tui_no_change_no_sync(tmp_path, monkeypatch, wt_calls):
+    reg = tmp_path / "registry.toml"
+    reg.write_text("models = []\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg))
+
+    class FakeApp:
+        def run(self):
+            return None
+
+    monkeypatch.setattr("modelman.app.ModelmanApp", FakeApp)
+    from modelman.main import run_tui
+
+    run_tui()
+    assert not [c for c in wt_calls if c[:1] == ["sync"]]
 
 
 def test_run_queued_ops_reports_provider_instantiation_error_without_crashing(
@@ -388,12 +431,11 @@ def test_print_event_recognizes_every_tag_queue_emits(capsys):
     source of truth for the lifecycle-tag vocabulary; print_event's
     dispatch and run_queued_ops's done_verbs set both hard-code that same
     vocabulary independently, with nothing enforcing agreement. This
-    enumerates every verb queue.py actually emits — via three patterns,
-    since queue.py builds tags three different ways: a literal passed
-    straight to emit(), a literal built as _finish_ready's `done_tag=`
+    enumerates every verb queue.py actually emits — via two patterns,
+    since queue.py builds tags two different ways: a literal passed
+    straight to emit(), and a literal built as _finish_ready's `done_tag=`
     keyword argument (emit() itself just does `emit(done_tag)` on a
-    variable), and a dynamic "expose"/"unexpose" prefix interpolated as
-    f"{verb}:..." — and asserts print_event handles each without falling
+    variable) — and asserts print_event handles each without falling
     into the "(unhandled event: ...)" catch-all. A future verb added to
     queue.py but missed here, or in print_event, now fails a test instead
     of only a runtime stderr line."""
@@ -405,15 +447,28 @@ def test_print_event_recognizes_every_tag_queue_emits(capsys):
     source = Path(queue_module.__file__).read_text()
     verbs = set(re.findall(r'emit\(f?"([a-z]+:[a-z]+)', source))
     verbs |= set(re.findall(r'done_tag=f"([a-z]+:[a-z]+)', source))
-    dynamic_suffixes = set(re.findall(r'f"\{verb\}:([a-z]+)', source))
-    for suffix in dynamic_suffixes:
-        verbs.add(f"expose:{suffix}")
-        verbs.add(f"unexpose:{suffix}")
-    assert len(verbs) >= 24, (
-        f"expected at least 24 distinct verbs (today's real count); found "
-        f"{len(verbs)}: {sorted(verbs)} — did queue.py's emit() call sites "
-        "move behind a helper this regex can no longer see?"
-    )
+    # The exact vocabulary today (#179 removed the expose/unexpose verbs).
+    # A mismatch means queue.py gained/lost a verb, or its emit() call
+    # sites moved behind a helper these regexes can no longer see.
+    assert verbs == {
+        "apply:cancelled",
+        "apply:done",
+        "delete:done",
+        "delete:fail",
+        "delete:start",
+        "download:cancelled",
+        "download:done",
+        "download:fail",
+        "download:start",
+        "move:done",
+        "move:fail",
+        "move:start",
+        "ready:done",
+        "ready:start",
+        "save:done",
+        "save:fail",
+        "save:start",
+    }, sorted(verbs)
 
     for verb in sorted(verbs):
         print_event(f"{verb}|a|b|c")

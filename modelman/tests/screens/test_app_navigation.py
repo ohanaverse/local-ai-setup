@@ -106,8 +106,8 @@ async def test_direct_download_syncs_agent_providers(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
-    """Pressing `x` on a not-ready row queues the expose and cascades a
-    queued ready-on (every provider queues now, mapped or not)."""
+    """Pressing `r` on a not-ready row queues a ready-on (every provider
+    queues now, mapped or not)."""
     o35 = ModelEntry(
         id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
     )
@@ -118,11 +118,9 @@ async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
         assert app.screen.queued_ready.get("ollama/o35") is True
-        assert app.screen.queued_exposes.get("ollama/o35") is True
-        assert "ollama/o35" in app.screen._ready_cascade_for_expose
 
 
 @pytest.mark.asyncio
@@ -167,11 +165,10 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
         assert "✓" in rows["dl"][4]
         assert "○" in rows["missing"][4]
 
-        # Toggle expose on missing → ↓ ('x' on a not-ready row cascades a
-        # queued ready-on now — nothing is ever mid-download while the TUI
-        # is open — and the glyph reflects that queued ready-on).
+        # Toggle ready on missing → ↓ (a queued ready-on — nothing is ever
+        # mid-download while the TUI is open — and the glyph reflects it).
         mt.cursor_coordinate = (1, 0)
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
         mt = app.screen.query_one("#model-table", DataTable)
         rows = {r[2]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
@@ -302,30 +299,24 @@ async def test_reconcile_shows_reality_when_manifest_out_of_date(tmp_path, monke
         mt = app.screen.query_one("#model-table", DataTable)
         row = mt.get_row_at(0)
         assert row[4] == "[green]✓[/green]"  # status
-        assert row[8] == "22.0 GB"  # size (col 8 after RUNNING was inserted before COST)
+        assert row[7] == "22.0 GB"  # size
 
 
 @pytest.mark.asyncio
-async def test_reconcile_self_heal_clears_exposed_column_for_dead_model(tmp_path, monkeypatch):
-    """A model left flagged running+exposed from a prior session, whose
-    process died externally before the TUI reopens, must show as NOT
-    exposed after the on-mount reconcile self-heals it — not just NOT
-    running. _clear_stale_running_flag() already un-exposes it on disk;
-    the in-memory self.state used to render the table was left stale."""
+async def test_reconcile_self_heal_clears_running_for_dead_model(tmp_path, monkeypatch):
+    """A model left flagged running from a prior session, whose process
+    died externally before the TUI reopens, must show as NOT running after
+    the on-mount reconcile self-heals it — in the table and in the
+    in-memory self.state used to render it, not just on disk."""
     from unittest.mock import MagicMock
 
     o35 = ModelEntry(
         id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
     )
     reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
-    litellm_path = tmp_path / "litellm-config.yaml"
-    litellm_path.write_text(
-        "model_list:\n  - model_name: ollama/o35\n    litellm_params:\n      model: ollama/o35\n"
-    )
-    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
 
     store = StateStore()
-    store.set("ollama/o35", ModelState(ready=True, exposed=True, running=True))
+    store.set("ollama/o35", ModelState(ready=True, running=True))
     save_state(store, state_path)
 
     from modelman.providers import registry
@@ -347,15 +338,14 @@ async def test_reconcile_self_heal_clears_exposed_column_for_dead_model(tmp_path
 
         mt = app.screen.query_one("#model-table", DataTable)
         row = mt.get_row_at(0)
-        assert row[5] == "–"  # EXPOSED column: "–", not "Y"
+        assert row[5] == "-"  # RUNNING column: "-", not "●"
         assert app.screen.state.get("ollama/o35").running is False
-        assert app.screen.state.get("ollama/o35").exposed is False
 
     from modelman.state import load_state as _load_state
 
     # And the disk-side flag (already written by _clear_stale_running_flag)
     # agrees.
-    assert _load_state(state_path).get("ollama/o35").exposed is False
+    assert _load_state(state_path).get("ollama/o35").running is False
 
 
 @pytest.mark.asyncio
@@ -389,90 +379,6 @@ async def test_reconcile_does_not_persist_to_disk_on_cancel(tmp_path, monkeypatc
     from modelman.state import load_state
 
     assert not load_state(state_path).get("ollama/o35").ready
-
-
-@pytest.mark.asyncio
-async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch):
-    """A reconcile-only-in-memory readiness overlay does not survive the
-    TUI/terminal boundary: `x` queues the expose without a ready-on
-    (ModelScreen's session-only reconcile of the on-disk artifact
-    satisfies the client-side ready gate), but QueuedOps carries only
-    ids/flags — none of that reconciled state — so main.run_queued_ops's
-    apply against fresh on-disk state re-checks readiness itself and
-    rejects the expose ('model is not ready') since modelman.toml was
-    never actually updated. Pins that the reconcile overlay only ever
-    informs what gets queued during the session, never what applies
-    after exit."""
-    from unittest.mock import MagicMock
-
-    from textual.widgets import DataTable
-
-    from modelman.main import run_queued_ops
-    from modelman.queue import QueuedOps
-
-    o35 = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
-    )
-    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
-    # Stale state: the model is on disk but modelman.toml claims otherwise.
-    from modelman.state import ModelState
-
-    store = StateStore()
-    store.set("ollama/o35", ModelState(ready=False))
-    save_state(store, state_path)
-    # LiteLLM config for the expose step.
-    litellm_path = tmp_path / "litellm" / "config.yaml"
-    litellm_path.parent.mkdir(parents=True, exist_ok=True)
-    from tests.conftest import write_litellm_config
-
-    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
-
-    from modelman.providers import registry
-
-    stub = MagicMock()
-    stub.name = "ollama"
-    stub.size_of.return_value = 22 * 1024**3  # reconcile: on disk
-    stub.is_downloaded.return_value = True
-    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.pause()  # let reconcile settle
-        mt = app.screen.query_one("#model-table", DataTable)
-        mt.cursor_coordinate = (0, 0)
-        # Reconcile knows the model is on disk, but state.ready is still
-        # False (stale). The reconcile overlay satisfies the expose gate,
-        # so `x` queues the expose without a ready-on cascade.
-        await pilot.press("x")  # toggle expose
-        await pilot.pause()
-        assert app.screen.queued_exposes.get("ollama/o35") is True
-        assert app.screen.queued_ready == {}
-        await pilot.press("escape")
-        await pilot.pause()
-        await pilot.press("y")
-        await pilot.pause()
-        assert isinstance(app.return_value, QueuedOps)
-        queued = app.return_value
-
-    # App has exited; apply the queue the same way main.py's run_tui() does.
-    failed = run_queued_ops(queued)
-    # The apply runs against fresh on-disk state, which never learned
-    # about the reconciled readiness — the expose fails the ready gate.
-    assert failed is True
-
-    from modelman.state import load_state
-
-    final = load_state(state_path).get("ollama/o35")
-    assert final.ready is False
-    assert final.exposed is False
-    from modelman.litellm import load_litellm_config
-
-    config = load_litellm_config(litellm_path)
-    assert config["model_list"] == []
 
 
 @pytest.mark.asyncio
@@ -612,9 +518,9 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.pause()
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
-        assert "ollama/o35" in app.screen._ready_cascade_for_expose
+        assert app.screen.queued_ready.get("ollama/o35") is True
         # Open the exit dialog.
         await pilot.press("escape")
         await pilot.pause()
@@ -882,8 +788,8 @@ async def test_model_screen_toggle_ready_queues_variant(
     tmp_path,
     monkeypatch,
 ):
-    """Pressing `x` on a not-ready row queues the expose and cascades a
-    queued ready-on (every provider queues now, mapped or not)."""
+    """Pressing `r` on a not-ready row queues a ready-on (every provider
+    queues now, mapped or not)."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -912,11 +818,9 @@ async def test_model_screen_toggle_ready_queues_variant(
     async with app.run_test() as pilot:
         pilot.app.push_screen(ms)
         await pilot.pause()
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
         assert ms.queued_ready.get("ollama/o35") is True
-        assert ms.queued_exposes.get("ollama/o35") is True
-        assert "ollama/o35" in ms._ready_cascade_for_expose
 
 
 @pytest.mark.asyncio
@@ -959,10 +863,9 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
         await pilot.pause()
         mt = ms.query_one("#model-table", DataTable)
         mt.cursor_coordinate = (0, 0)  # only one model in this family
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
-        assert ms.queued_exposes == {"llamacpp/ornith-q4": True}
-        assert "llamacpp/ornith-q4" in ms._ready_cascade_for_expose
+        assert ms.queued_ready == {"llamacpp/ornith-q4": True}
         # Open the exit dialog and discard.
         await pilot.press("escape")
         await pilot.pause()
@@ -1144,70 +1047,6 @@ def test_round_trip_preserves_quantizations():
     assert roundtripped["quantizations"] == quants
     assert roundtripped["repo"] == "o/r"
     assert roundtripped["files"] == ["x.gguf"]
-
-
-@pytest.mark.asyncio
-async def test_x_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
-    """Pressing `x` on a downloaded model queues an exposure change and the
-    EXPOSED column reflects the queued target state."""
-    from textual.widgets import DataTable
-
-    from modelman.app import ModelmanApp
-    from modelman.registry import ModelEntry
-    from modelman.screens.models import ModelScreen
-
-    reg_path, state_path = _seed_registry_and_state(
-        tmp_path,
-        monkeypatch,
-        models=(
-            ModelEntry(
-                id="ollama/a",
-                family="f",
-                provider_id="ollama",
-                model_name="a",
-            ),
-        ),
-        downloaded={"ollama/a": "ollama:a"},
-    )
-    # Stub the provider so reconcile reports the model as on disk (size
-    # non-None); otherwise the real ollama provider marks it not-downloaded
-    # and `x` refuses to queue.
-    from unittest.mock import MagicMock
-
-    from modelman.providers import registry as prov_registry
-
-    stub = MagicMock()
-    stub.name = "ollama"
-    stub.size_of.return_value = 10
-    stub.is_downloaded.return_value = True
-    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    from modelman.registry import load_registry
-    from modelman.state import load_state
-
-    ms = ModelScreen(
-        registry=load_registry(),
-        state=load_state(),
-        registry_path=reg_path,
-        state_path=state_path,
-    )
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        pilot.app.push_screen(ms)
-        await pilot.pause()
-        mt = ms.query_one("#model-table", DataTable)
-        # Focus the model table so `x` targets a model row.
-        mt.focus()
-        await pilot.press("x")
-        await pilot.pause()
-        assert "ollama/a" in ms.queued_exposes
-        assert ms.queued_exposes["ollama/a"] is True
-        # EXPOSED column exists (FAMILY, PROVIDER, MODEL, LOC, STATUS,
-        # EXPOSED, RUNNING, COST, SIZE).
-        assert len(mt.columns) == 9
-        # pending bar reflects the queued expose
-        bar = ms.query_one("#pending-bar")
-        assert "expose 1" in bar.content
 
 
 # ---------------------------------------------------------------------------
@@ -1412,7 +1251,7 @@ async def test_edit_survives_app_relaunch(tmp_path, monkeypatch):
         # Visible immediately in the same (only) screen's table.
         mt = app.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
-        assert rows[0][7] == "20.0000 ------- -------"
+        assert rows[0][6] == "20.0000 ------- -------"
 
     # And it was actually persisted, not just held in this session's
     # in-memory registry: a fresh app relaunch sees it too.
@@ -1422,7 +1261,7 @@ async def test_edit_survives_app_relaunch(tmp_path, monkeypatch):
         mt = app2.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
         assert rows, "model must still be listed after relaunch"
-        assert rows[0][7] == "20.0000 ------- -------"
+        assert rows[0][6] == "20.0000 ------- -------"
 
 
 def test_families_list_includes_state_only_families(tmp_path, monkeypatch):
@@ -1718,7 +1557,7 @@ async def test_app_mounts_without_live_daemon_or_proxy_restart():
 
     Regression guard for the two interference issues: without the
     fixtures, this would load the real registry and shell out to ollama
-    list/show thousands of times; applying any expose queue would also
+    list/show thousands of times; a LiteLLM route change would also
     run launchctl kickstart against the live proxy.
     """
     from textual.widgets import DataTable
@@ -2053,7 +1892,7 @@ async def test_ctrl_q_while_force_quit_dialog_open_force_quits(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_force_quit_dialog_warns_about_pending_changes(tmp_path, monkeypatch):
     # When a start/stop is in flight AND a queued change (ready/delete/
-    # move/expose) is pending, force-quit abandons both — the dialog must
+    # move) is pending, force-quit abandons both — the dialog must
     # say so, since it's a stronger warning than "just the operation".
     from unittest.mock import MagicMock
 

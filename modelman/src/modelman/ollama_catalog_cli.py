@@ -15,6 +15,7 @@ from pathlib import Path
 
 import typer
 
+from .litellm import sync_routes
 from .ollama_catalog import (
     CatalogFetchError,
     CatalogParseError,
@@ -180,18 +181,18 @@ def sync(
     typer.echo(f"Updated {len(fresh_plan.updates)} and added {len(fresh_plan.additions)} model(s).")
 
     failed = False
-    # Routes for every page model, not just new ones: an existing row keeps
-    # the prices it was exposed with until wt rebuilds it. wt restarts the
-    # proxy only when config.yaml changed; removals unexpose via queue.py.
-    ops = QueuedOps(
-        ready=dict.fromkeys(fresh_plan.pulls, True),
-        deletes=deletes,
-        exposes=dict.fromkeys(fresh_plan.routes, True),
-    )
-    if ops.ready or ops.deletes or ops.exposes:
+    # Routes for every page model come from one `wt litellm sync`, which
+    # rebuilds each row from the registry with its current prices and drops
+    # rows for removed models; wt restarts the proxy only when config.yaml
+    # changed. run_queued_ops syncs after applying the queue (#179).
+    ops = QueuedOps(ready=dict.fromkeys(fresh_plan.pulls, True), deletes=deletes)
+    if ops.ready or ops.deletes:
         from .main import run_queued_ops  # function-local: main imports this module
 
         failed = run_queued_ops(ops)
+    else:
+        for w in sync_routes():
+            typer.echo(f"warning: {w}", err=True)
     for tag in fresh_plan.stray_tags:
         try:
             remove_ollama_tag(tag)

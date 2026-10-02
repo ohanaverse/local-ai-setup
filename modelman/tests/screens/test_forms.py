@@ -1422,7 +1422,7 @@ async def test_confirm_modal_buttons_and_safe_focus():
 async def test_confirm_exit_dialog_buttons_and_safe_focus():
     from modelman.screens.forms import ConfirmExitDialog
 
-    modal = ConfirmExitDialog(ready=[], deletes=[], exposes=[], moves=[])
+    modal = ConfirmExitDialog(ready=[], deletes=[], moves=[])
     async with ModelmanApp().run_test() as pilot:
         await pilot.pause()
         pilot.app.push_screen(modal)
@@ -2400,7 +2400,7 @@ async def test_modelform_submit_carries_quantization():
 async def test_confirm_exit_dialog_shows_price_reminder_when_requested():
     from modelman.screens.forms import ConfirmExitDialog
 
-    modal = ConfirmExitDialog(ready=[], deletes=[], exposes=[], moves=[], show_price_reminder=True)
+    modal = ConfirmExitDialog(ready=[], deletes=[], moves=[], show_price_reminder=True)
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()

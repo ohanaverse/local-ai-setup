@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import typer
@@ -19,6 +20,7 @@ from .litellm import (
     LiteLLMConfigError,
     default_litellm_config_path,
     expose_model,
+    sync_routes,
     unexpose_model,
 )
 from .local_control import (
@@ -160,17 +162,6 @@ def print_event(tag: str) -> None:
         typer.echo(f"  done: moved {parts[2]} -> {parts[3]}")
     elif verb == "move:fail":
         typer.echo(f"  FAILED: move {parts[2]}: {parts[3]}")
-    elif verb in ("expose:start", "unexpose:start"):
-        action = "Exposing" if verb == "expose:start" else "Unexposing"
-        typer.echo(f"{action} {parts[2]}...")
-    elif verb in ("expose:done", "unexpose:done"):
-        action = "exposed" if verb == "expose:done" else "unexposed"
-        typer.echo(f"  done: {action} {parts[2]}")
-    elif verb in ("expose:fail", "unexpose:fail"):
-        action = verb.split(":")[0]
-        typer.echo(f"  FAILED: {action} {parts[2]}: {parts[3]}")
-    elif verb == "expose:warning":
-        typer.echo(f"  warning: {parts[1]}")
     elif verb == "save:done":
         typer.echo("Saved.")
     elif verb == "save:fail":
@@ -200,7 +191,7 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     Builds a PendingChanges the same way ModelScreen._run_apply used to,
     but against a Registry/StateStore just loaded from disk: adds/edits
     already persisted immediately while the TUI was open, while queued
-    deletes/moves/ready/exposes have not. Returns True iff the run
+    deletes/moves/ready have not. Returns True iff the run
     should exit non-zero (failures, or a Ctrl+C cancellation).
     """
     registry = load_registry()
@@ -269,8 +260,6 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         ready=ready_items,
         deletes=list(queued.deletes.items()),
         moves=list(queued.moves.items()),
-        exposes=list(queued.exposes.items()),
-        litellm_path=default_litellm_config_path(),
     )
     total = (
         len(pending.ready)
@@ -278,33 +267,18 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         + len(provider_ready_failures)
         + len(pending.deletes)
         + len(pending.moves)
-        + len(pending.exposes)
     )
     completed = 0
-    # Ids already counted in the `exposes` term above. apply() can append
-    # cascaded unexposes to PendingChanges.exposes mid-run (deleting, or
-    # clearing the ready flag of, a model that's exposed but has no
-    # explicit expose/unexpose queued — see queue.py's deletes loop and
-    # ready loop) — each cascade must grow `total` too, the first time its
-    # start tag is seen, or the "N of M" summary and the Ctrl+C remaining
-    # count both undercount real work.
-    counted_expose_ids = set(queued.exposes)
     done_verbs = {
         "delete:done",
         "download:done",
         "ready:done",
         "move:done",
-        "expose:done",
-        "unexpose:done",
     }
 
     def on_event(tag: str) -> None:
-        nonlocal completed, total
-        parts = tag.split("|")
-        verb = parts[0]
-        if verb in ("expose:start", "unexpose:start") and parts[1] not in counted_expose_ids:
-            total += 1
-            counted_expose_ids.add(parts[1])
+        nonlocal completed
+        verb = tag.split("|")[0]
         print_event(tag)
         if verb in done_verbs:
             completed += 1
@@ -312,7 +286,7 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     # A model id queued while the TUI was open but missing from a
     # freshly-loaded registry (deleted out-of-band, or a hand-edited
     # registry.toml) must not take down the whole run — every other op
-    # (deletes/moves/exposes) already degrades to a per-item failure on
+    # (deletes/moves) already degrades to a per-item failure on
     # a missing id with a live event, via queue.py's own emit() calls;
     # ready needs the same treatment, done here since its lookup happens
     # before PendingChanges even exists.
@@ -339,9 +313,23 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         # other failure instead of crashing with a raw traceback (mirrors
         # the deleted StatusScreen's equivalent except Exception).
         pending.failures.append(f"unexpected error: {exc}")
+        _sync_routes_and_warn()
         return print_error_summary(pending.failures, total)
 
+    _sync_routes_and_warn()
     return print_error_summary(pending.failures, total)
+
+
+def _sync_routes_and_warn() -> None:
+    """Bring LiteLLM's routes in line with what is now on disk (#179).
+
+    wt reads registry.toml and the live providers itself, so this runs
+    after apply() has saved both — on success and after an unexpected
+    exception (its safety net persisted the completed work), but not after
+    a Ctrl+C: that is a request to stop, and the next sync converges.
+    """
+    for warning in sync_routes():
+        typer.echo(f"warning: {warning}", err=True)
 
 
 def run_tui() -> None:
@@ -353,11 +341,23 @@ def run_tui() -> None:
     # usage, migrate) don't pay the Textual import cost at CLI startup.
     from .app import ModelmanApp
 
+    before = _file_digest(_default_registry_path())
     queued = ModelmanApp().run()
     if queued is None:
+        # Add/edit write registry.toml immediately and queue nothing; route
+        # what they changed (#179). run_queued_ops syncs on its own.
+        if _file_digest(_default_registry_path()) != before:
+            _sync_routes_and_warn()
         return
     if run_queued_ops(queued):
         raise typer.Exit(1)
+
+
+def _file_digest(path: Path) -> bytes | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).digest()
+    except OSError:
+        return None
 
 
 @app.callback(invoke_without_command=True)

@@ -134,19 +134,37 @@ def test_sync_pulls_missing_and_removes_off_page(seeded, monkeypatch, ops):
     assert ops["removed"] == ["stray:cloud"]
 
 
-def test_sync_routes_every_page_model(seeded, monkeypatch, ops):
-    """LiteLLM mirrors the page too: every page model (re)exposed so its
-    row carries current prices; removals are left to queue.py's unexpose
-    cascade."""
+def test_sync_queues_no_exposes(seeded, monkeypatch, ops, wt_calls):
+    """#179: routes are no longer queued per model — the queue carries only
+    pulls and deletes, and run_queued_ops (stubbed here) does the one sync."""
 
     _tags(monkeypatch, [])
     result = _sync_yes()
     assert result.exit_code == 0, result.output
     (q,) = ops["queued"]
-    assert len(q.exposes) == 17 and all(q.exposes.values())
-    assert "ollama/deepseek-v4-pro:cloud" in q.exposes
-    assert "ollama/gpt-oss:120b-cloud" in q.exposes  # added this run
-    assert "ollama/retired:cloud" not in q.exposes
+    assert not hasattr(q, "exposes")
+    assert not [c for c in wt_calls if c[:1] == ["sync"]]
+
+
+def test_sync_with_nothing_queued_still_syncs_routes(seeded, monkeypatch, ops, wt_calls):
+    """Price updates alone queue nothing, but every page model's route must
+    still be rebuilt with its current prices: exactly one `wt litellm sync`."""
+    from modelman.registry import load_registry, save_registry
+
+    reg = load_registry(seeded)
+    reg.models = [m for m in reg.models if m.id != "ollama/retired:cloud"]
+    save_registry(reg, seeded)
+    _tags(monkeypatch, [])
+    assert _sync_yes().exit_code == 0
+    (q,) = ops["queued"]
+    pulled = [load_registry(seeded).model(mid).model_name for mid in q.ready]
+    ops["queued"].clear()
+
+    _tags(monkeypatch, pulled)
+    result = _sync_yes()
+    assert result.exit_code == 0, result.output
+    assert ops["queued"] == []
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 
 def test_sync_marks_exposed_removals(seeded, monkeypatch, ops):
@@ -214,8 +232,6 @@ def test_sync_retags_entry_under_the_published_tag(seeded, monkeypatch, ops):
     (q,) = ops["queued"]
     assert q.deletes["ollama/mistral-large-3:cloud"]["name"] == "mistral-large-3:cloud"
     assert q.ready["ollama/mistral-large-3:675b-cloud"] is True
-    assert "ollama/mistral-large-3:675b-cloud" in q.exposes
-    assert "ollama/mistral-large-3:cloud" not in q.exposes
     # The old tag is already being rm'd through the delete, so it must not be
     # rm'd a second time as a stray.
     assert ops["removed"] == []
