@@ -167,7 +167,9 @@ def test_sync_with_nothing_queued_still_syncs_routes(seeded, monkeypatch, ops, w
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 
-def test_sync_marks_exposed_removals(seeded, monkeypatch, ops):
+def test_sync_plan_has_no_expose_section(seeded, monkeypatch, ops):
+    """#179: routes come from one `wt litellm sync`, so the printed plan no
+    longer lists per-model exposes or marks removals as unexposed."""
     from modelman.main import app
     from modelman.state import ModelState, locked_state
 
@@ -178,7 +180,10 @@ def test_sync_marks_exposed_removals(seeded, monkeypatch, ops):
         app, ["ollama-catalog", "sync", "--dry-run", "--html", str(FIXTURE)]
     )
     assert result.exit_code == 0, result.output
-    assert "ollama/retired:cloud (exposed — will be unexposed)" in result.output
+    assert "  ollama/retired:cloud\n" in result.output
+    assert "will be unexposed" not in result.output
+    assert "Not yet exposed" not in result.output
+    assert "LiteLLM routes" not in result.output
 
 
 def test_sync_retags_entry_under_the_published_tag(seeded, monkeypatch, ops):

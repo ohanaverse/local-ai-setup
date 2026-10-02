@@ -15,14 +15,7 @@ from . import (
 from .benchmark.cli import benchmark_app
 from .config import default_config_path
 from .formatting import format_size
-from .litellm import (
-    ExposeError,
-    LiteLLMConfigError,
-    default_litellm_config_path,
-    expose_model,
-    sync_routes,
-    unexpose_model,
-)
+from .litellm import sync_routes
 from .local_control import (
     DiscoveredModelNeedsFamily,
     LocalControlError,
@@ -337,7 +330,7 @@ def run_tui() -> None:
     Apply, run them against fresh on-disk state now that the TUI has
     closed — provider progress and lifecycle events print straight to
     stdout instead of a StatusScreen."""
-    # Imported lazily so non-TUI subcommands (expose, sync, benchmark,
+    # Imported lazily so non-TUI subcommands (sync, benchmark,
     # usage, migrate) don't pay the Textual import cost at CLI startup.
     from .app import ModelmanApp
 
@@ -446,50 +439,6 @@ def sync() -> None:
     )
 
 
-@app.command()
-def expose(
-    model_id: str = typer.Argument(..., help="Registry model id to expose"),
-) -> None:
-    """Expose a model through LiteLLM (writes a model_list entry)."""
-    registry = load_registry()
-    state = load_state()
-    try:
-        warnings = expose_model(registry, state, model_id, default_litellm_config_path())
-    except (ExposeError, LiteLLMConfigError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1) from exc
-    # Merge only the one model row this command reconciled: expose_model can
-    # spend up to the LiteLLM-restart timeout inside its config write, and a
-    # whole-file overwrite from the pre-restart snapshot would revert
-    # [local].running_model (or anything else) written concurrently.
-    with locked_state() as fresh:
-        if model_id in state.models:
-            fresh.models[model_id] = state.models[model_id]
-    typer.echo(f"Exposed {model_id} through LiteLLM.")
-    for warning in warnings:
-        typer.echo(f"warning: {warning}", err=True)
-
-
-@app.command()
-def unexpose(
-    model_id: str = typer.Argument(..., help="Registry model id to stop exposing"),
-) -> None:
-    """Remove a model's LiteLLM model_list entry."""
-    state = load_state()
-    try:
-        warnings = unexpose_model(state, model_id, default_litellm_config_path())
-    except (ExposeError, LiteLLMConfigError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1) from exc
-    # See expose above: merge only this command's model row.
-    with locked_state() as fresh:
-        if model_id in state.models:
-            fresh.models[model_id] = state.models[model_id]
-    typer.echo(f"Unexposed {model_id}.")
-    for warning in warnings:
-        typer.echo(f"warning: {warning}", err=True)
-
-
 @app.command("delete-family")
 def delete_family(
     name: str = typer.Argument(..., help="Family name to delete"),
@@ -526,8 +475,8 @@ def delete_family(
             typer.echo(f"error: failed to save registry: {exc}", err=True)
             raise typer.Exit(1) from exc
     if had_legacy:
-        # Merge-only write (see expose/unexpose above): don't overwrite
-        # modelman.toml wholesale from a snapshot that may be stale by now.
+        # Merge-only write: don't overwrite modelman.toml wholesale from a
+        # snapshot that may be stale by now.
         with locked_state() as fresh:
             fresh.forget_family(name)
     typer.echo(f"Deleted family '{name}'.")
@@ -556,12 +505,15 @@ def refresh_prices() -> None:
     # the TUI's rule (app.py): a zero-update refresh is not a success worth
     # gating on, and stamping it (no OpenRouter-priced candidates, or no
     # candidate matched) would suppress a same-day retry and the pricing of
-    # a model exposed later the same day.
+    # a model added later the same day.
     if result.updated > 0:
         stamp_price_refresh_today()
     for warning in result.warnings:
         typer.echo(f"warning: {warning}", err=True)
     typer.echo(f"Refreshed prices for {result.updated} model(s).")
+    # wt writes a route's prices from the registry, so new prices reach
+    # LiteLLM only through a sync (#179).
+    _sync_routes_and_warn()
 
 
 def _echo_inventory_caveats(inventory: LocalModelInventory) -> None:

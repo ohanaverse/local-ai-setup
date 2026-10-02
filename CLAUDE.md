@@ -52,7 +52,7 @@
 For focused test runs without live provider interference:
 ```bash
 # modelman (Python) — conftest.py autouse fixtures prevent live LiteLLM/ollama calls
-cd modelman && uv run pytest tests/test_expose.py -q
+cd modelman && uv run pytest tests/test_routes_sync.py -q
 
 # wt (Go) — no special isolation needed
 cd wt && go test ./cmd/wt -run TestStats

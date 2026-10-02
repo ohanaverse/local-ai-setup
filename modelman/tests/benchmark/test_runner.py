@@ -14,7 +14,7 @@ from modelman.benchmark.runner import (
 )
 from modelman.benchmark.workloads.base import WorkloadSpec
 from modelman.registry import DraftSpec, Fetch, ModelEntry, ProviderEntry, Registry
-from modelman.state import ModelState, StateStore
+from modelman.state import StateStore
 
 
 class _FakeWorkload:
@@ -48,7 +48,6 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
-    state.set("ollama/a", ModelState(exposed=True))
 
     def _fake_isolate(pid):
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8080"})()
@@ -71,7 +70,9 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
     with pytest.raises(WorkloadRunSavedButRestoreFailed) as excinfo:
-        run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+        run_benchmark(
+            registry, state, _FakeWorkload(), model_ids=["ollama/a"], results_dir=tmp_path
+        )
 
     exc = excinfo.value
     assert exc.run_dir == tmp_path / exc.run.run_id
@@ -94,37 +95,16 @@ def test_run_saved_but_restore_failed_carries_run_dir_and_run():
     assert isinstance(exc, BenchmarkError)
 
 
-def test_discover_targets_defaults_to_exposed_local_models():
-    """Exposed local models are benchmarked by default.
-
-    Without explicit --model or --family filters, discover_targets should only
-    return local models that are currently exposed through LiteLLM. Remote
-    providers and unexposed local models must be skipped so the runner does not
-    hit endpoints that are not configured.
-    """
-    registry = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", location="local"),
-            ProviderEntry(id="openrouter", name="OpenRouter", location="remote"),
-        ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
-            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
-            ModelEntry(id="openrouter/c", family="f", provider_id="openrouter", model_name="c"),
-        ],
-    )
-    state = StateStore()
-    state.set("ollama/a", ModelState(exposed=True))
-    state.set("ollama/b", ModelState(exposed=False))
-
-    targets = discover_targets(registry, state)
-    assert [t.model_id for t in targets] == ["ollama/a"]
+def test_discover_targets_requires_explicit_selection():
+    """#179: the exposed-models default is gone; benchmarking needs a choice."""
+    with pytest.raises(ValueError, match="--model"):
+        discover_targets(Registry(), StateStore())
 
 
 def test_discover_targets_skips_cloud_models_unless_named():
     """An ollama-hosted cloud model (local provider, location = "cloud") is
-    not a local benchmark target: the default and --family runs skip it;
-    only an explicit --model selects it."""
+    not a local benchmark target: a --family run skips it; only an explicit
+    --model selects it."""
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
         models=[
@@ -139,22 +119,14 @@ def test_discover_targets_skips_cloud_models_unless_named():
         ],
     )
     state = StateStore()
-    state.set("ollama/a", ModelState(exposed=True))
-    state.set("ollama/c:cloud", ModelState(exposed=True))
 
-    assert [t.model_id for t in discover_targets(registry, state)] == ["ollama/a"]
     assert [t.model_id for t in discover_targets(registry, state, family="f")] == ["ollama/a"]
     named = discover_targets(registry, state, model_ids=["ollama/c:cloud"])
     assert [t.model_id for t in named] == ["ollama/c:cloud"]
 
 
 def test_discover_targets_by_family_overrides_exposed():
-    """--family selects every model in that family regardless of expose state.
-
-    When a family is explicitly requested, all local models in that family
-    become targets; the LiteLLM-exposed gate is bypassed because the user has
-    narrowed the scope intentionally.
-    """
+    """--family selects every local model in that family."""
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
         models=[
@@ -168,11 +140,7 @@ def test_discover_targets_by_family_overrides_exposed():
 
 
 def test_discover_targets_by_model_ids():
-    """--model selects specific local models regardless of expose state.
-
-    Explicit model ids should override the default exposed-only filter so a
-    user can benchmark a downloaded-but-unexposed model directly.
-    """
+    """--model selects specific local models."""
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
@@ -265,7 +233,6 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
         ],
     )
     state = StateStore()
-    state.set("mlx_lm_server/pair", ModelState(exposed=True))
 
     calls: list[tuple[str, ...]] = []
 
@@ -287,7 +254,9 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
-    run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+    run_benchmark(
+        registry, state, _FakeWorkload(), model_ids=["mlx_lm_server/pair"], results_dir=tmp_path
+    )
 
     # local_path target normalized; repo-id draft forwarded verbatim (an
     # abspath'ed repo id would be a nonexistent cwd-prefixed path).
@@ -326,8 +295,6 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
         ],
     )
     state = StateStore()
-    state.set("mlx_lm_server/pair-1", ModelState(exposed=True))
-    state.set("mlx_lm_server/pair-2", ModelState(exposed=True))
 
     calls: list[tuple[str, ...]] = []
 
@@ -349,7 +316,13 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
-    run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+    run_benchmark(
+        registry,
+        state,
+        _FakeWorkload(),
+        model_ids=["mlx_lm_server/pair-1", "mlx_lm_server/pair-2"],
+        results_dir=tmp_path,
+    )
 
     assert calls == [
         ("mlx_lm_server", "org/target-1", "org/draft-1"),
@@ -377,7 +350,6 @@ def test_run_benchmark_forwards_mtplx_model_name_to_isolate(tmp_path, monkeypatc
         ],
     )
     state = StateStore()
-    state.set("mtplx/org/repo", ModelState(exposed=True))
 
     calls: list[tuple[str, ...]] = []
 
@@ -399,7 +371,9 @@ def test_run_benchmark_forwards_mtplx_model_name_to_isolate(tmp_path, monkeypatc
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
-    run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+    run_benchmark(
+        registry, state, _FakeWorkload(), model_ids=["mtplx/org/repo"], results_dir=tmp_path
+    )
 
     assert calls == [("mtplx", "org/repo")]
 
@@ -422,8 +396,6 @@ def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monke
         ],
     )
     state = StateStore()
-    state.set("mtplx/org/repo-1", ModelState(exposed=True))
-    state.set("mtplx/org/repo-2", ModelState(exposed=True))
 
     calls: list[tuple[str, ...]] = []
 
@@ -445,7 +417,13 @@ def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monke
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
-    run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+    run_benchmark(
+        registry,
+        state,
+        _FakeWorkload(),
+        model_ids=["mtplx/org/repo-1", "mtplx/org/repo-2"],
+        results_dir=tmp_path,
+    )
 
     assert calls == [("mtplx", "org/repo-1"), ("mtplx", "org/repo-2")]
 
@@ -470,7 +448,6 @@ def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_p
         ],
     )
     state = StateStore()
-    state.set("mlx_lm_server/broken", ModelState(exposed=True))
 
     def _unexpected_isolate(*args, **kwargs):
         raise AssertionError("isolate_provider must not be called with an incomplete pairing")
@@ -478,7 +455,9 @@ def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_p
     monkeypatch.setattr(runner_module, "isolate_provider", _unexpected_isolate)
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
 
-    run = run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+    run = run_benchmark(
+        registry, state, _FakeWorkload(), model_ids=["mlx_lm_server/broken"], results_dir=tmp_path
+    )
 
     assert all(r.error is not None for r in run.results)
     assert "draft" in run.results[0].error.lower() or "target" in run.results[0].error.lower()

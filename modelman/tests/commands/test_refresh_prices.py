@@ -75,6 +75,20 @@ def test_refresh_prices_updates_registry_and_reports(tmp_path, monkeypatch):
     assert "Refreshed prices for 1 model" in result.stdout
 
 
+def test_refresh_prices_syncs_routes(tmp_path, monkeypatch, wt_calls):
+    """#179: new prices only reach LiteLLM through a sync."""
+    _seed_registry(tmp_path, monkeypatch)
+    payload = {
+        "data": [
+            {"id": "openai/gpt-4o", "pricing": {"prompt": "0.0000025", "completion": "0.00001"}}
+        ]
+    }
+    with patch("modelman.pricing._default_runner", side_effect=_runner(payload)):
+        result = CliRunner().invoke(app, ["refresh-prices"])
+    assert result.exit_code == 0
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
 def test_refresh_prices_reports_api_error_and_exits(tmp_path, monkeypatch):
     _seed_registry(tmp_path, monkeypatch)
     with patch(

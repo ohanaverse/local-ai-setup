@@ -32,7 +32,6 @@ from .ollama_catalog import (
 )
 from .queue import QueuedOps
 from .registry import load_registry, locked_registry, model_entry_to_variant
-from .state import load_state
 
 ollama_catalog_app = typer.Typer(
     help="Sync ollama cloud models and prices from ollama.com/pricing.",
@@ -69,9 +68,9 @@ def sync(
     """Make ollama's pulled cloud models, modelman's ollama cloud entries and
     LiteLLM's routes match ollama.com/pricing: update prices (incl.
     off-peak), add/remove registry entries, `ollama pull` what's missing,
-    `ollama rm` what the page no longer lists, and (re)expose every page
-    model so its route carries current prices. Local (non-cloud) models
-    are never touched.
+    `ollama rm` what the page no longer lists, then one `wt litellm sync`
+    so every route carries current prices. Local (non-cloud) models are
+    never touched.
 
     One confirmation covers the whole plan (default No when it deletes
     anything). --yes skips it (the skill's non-interactive path — its Bash
@@ -125,8 +124,7 @@ def sync(
 
     plan = plan_sync(registry, catalog, tags, resolved)
     plan.warnings += tag_warnings
-    exposed = {mid for mid, st in load_state().models.items() if st.exposed}
-    typer.echo(format_plan(plan, exposed))
+    typer.echo(format_plan(plan))
     if dry_run:
         return
     if plan.mass_removal() and not force:
