@@ -54,15 +54,14 @@ var enforcedSettings = []string{
 
 // wtParamKeys are the litellm_params keys wt itself derives from the registry
 // and provider policy (entry.go's BuildEntry): model unconditionally, api_base
-// only when the provider supplies a base URL, and api_key from the provider's
-// credential ref or, for a provider with no ref, the policy's literal key
-// (entry.go switches on SecretRef, then APIKey). A row replacement never
-// carries these over from the old row: the registry and provider policy own
-// them, and a change there must reach config.yaml. Every other key on the old
-// row is user-authored (a hand-written timeout, rate limit, ...) and is carried
-// over when the new row lacks it — the presence-based keys
-// additional_drop_params and use_chat_completions_api (EnsureSettings writes
-// them only when absent) fall out of this rule.
+// only when the provider supplies a base URL, and api_key from whichever the
+// policy names — its secret ref (resolving the provider's credential) or its
+// literal key. A row replacement never carries these over from the old row:
+// the registry and provider policy own them, and a change there must reach
+// config.yaml. Every other key on the old row is user-authored (a hand-written
+// timeout, rate limit, ...) and is carried over when the new row lacks it — the
+// presence-based keys additional_drop_params and use_chat_completions_api
+// (EnsureSettings writes them only when absent) fall out of this rule.
 var wtParamKeys = map[string]bool{"model": true, "api_base": true, "api_key": true}
 
 // droppedOllamaChatParams are dropped by default on every fresh ollama_chat/

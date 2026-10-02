@@ -632,10 +632,9 @@ func TestSyncCarriesUserButNotWTParams(t *testing.T) {
 	// row, and that survived the whole suite before this assertion existed. The
 	// model pin does not catch that mutation — BuildEntry emits model
 	// unconditionally, so carryUserParams can never find it missing — it is the
-	// backstop for the day that changes (model made conditional in BuildEntry,
-	// or the carry allowed to overwrite an existing key): model is the string
-	// LiteLLM dials, and a rebuild that carried a stale one would leave wt
-	// believing it owns a row that routes elsewhere.
+	// backstop for the day BuildEntry stops emitting model unconditionally:
+	// model is the string LiteLLM dials, and a rebuild that carried a stale one
+	// would leave wt believing it owns a row that routes elsewhere.
 	if params["model"] != "ollama_chat/gemma:9b" {
 		t.Errorf("model = %v, want the registry's ollama_chat/gemma:9b", params["model"])
 	}
