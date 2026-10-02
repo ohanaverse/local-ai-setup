@@ -137,20 +137,35 @@ func Check(cfg *config.Config, ids []string, skipReady bool) []Outcome {
 	return out
 }
 
+// plannedAdd is one add from a plan: the id, with its row already built when
+// the plan made one. Sync's plan builds every desired row while comparing it
+// with the row on disk; rebuilding it in the write path would be a second
+// full prepare of every changed row. Apply plans by id only (nil rows).
+type plannedAdd struct {
+	id  string
+	row *yaml.Node
+}
+
 // Apply adds routes for `add` and removes routes for `remove` in one locked
 // read-modify-write and one restart. Per-id validation failures are reported
 // in Outcomes and do not block the rest. A missing/invalid config.yaml
 // returns (Result{}, err) with nothing changed. The file is written, and the
 // proxy restarted, only when the document actually changed.
 func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) {
-	return applyPlanned(cfg, func(*File) ([]string, []string) { return add, remove }, o)
+	return applyPlanned(cfg, func(*File) ([]plannedAdd, []string) {
+		out := make([]plannedAdd, len(add))
+		for i, id := range add {
+			out[i] = plannedAdd{id: id}
+		}
+		return out, remove
+	}, o)
 }
 
 // applyPlanned is Apply with the add/remove decision made by plan against the
 // document as read under the lock, so callers that derive the change from the
 // current routes (Sync) never act on a snapshot another process has since
 // changed.
-func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o Options) (Result, error) {
+func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []string), o Options) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -171,16 +186,19 @@ func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o
 			f.RemoveRow(id)
 			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "unexposed"})
 		}
-		for _, id := range add {
-			row, perr := prepare(cfg, id, o.SkipReadyGate)
-			if perr != nil {
-				res.Outcomes = append(res.Outcomes, Outcome{ID: id, Err: perr})
-				continue
+		for _, a := range add {
+			row := a.row
+			if row == nil {
+				var perr error
+				if row, perr = prepare(cfg, a.id, o.SkipReadyGate); perr != nil {
+					res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: perr})
+					continue
+				}
 			}
-			if err := f.SetRow(id, row); err != nil {
+			if err := f.SetRow(a.id, row); err != nil {
 				return err
 			}
-			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "exposed"})
+			res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Action: "exposed"})
 		}
 		f.EnsureSettings()
 		if !f.Changed() {
@@ -261,7 +279,9 @@ type SyncPlan struct {
 // latter covers rows written before the marker existed. Unmarked rows with
 // any other name are hand-written and never touched. Untouched ids are
 // neither added nor removed; Recheck (see Options) re-verifies local ids.
-func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan {
+// Built rows for plan.Add are returned alongside the plan: Sync's write path
+// reuses them instead of preparing every changed row a second time.
+func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPlan, map[string]*yaml.Node) {
 	local := map[string]bool{}
 	for _, m := range LocalModels(cfg) {
 		local[m.ID] = true
@@ -281,6 +301,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 		}
 	}
 	var plan SyncPlan
+	built := map[string]*yaml.Node{}
 	want := map[string]bool{}
 	// rowsPerID counts the mapping rows sharing each model_name: LiteLLM
 	// load-balances across duplicates, so a value-equal FIRST row still needs
@@ -308,6 +329,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 				continue
 			}
 		}
+		built[id] = row
 		plan.Add = append(plan.Add, id)
 		if old != nil && !IsManaged(old) {
 			plan.Adopt = append(plan.Adopt, id)
@@ -349,7 +371,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 			}
 		}
 	}
-	return plan
+	return plan, built
 }
 
 // PlanSync reports what Sync would change without writing (`sync --dry-run`).
@@ -367,7 +389,8 @@ func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error)
 	if err := f.checkModelList(); err != nil {
 		return SyncPlan{}, err
 	}
-	return planSync(cfg, f, running, o), nil
+	plan, _ := planSync(cfg, f, running, o)
+	return plan, nil
 }
 
 // ModelFor finds the registry model for a provider and provider-side name.
@@ -413,9 +436,17 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	o.SkipReadyGate = true
 	var plan SyncPlan
-	res, err := applyPlanned(cfg, func(f *File) (add, remove []string) {
-		plan = planSync(cfg, f, running, o)
-		return plan.Add, plan.Remove
+	res, err := applyPlanned(cfg, func(f *File) ([]plannedAdd, []string) {
+		p, built := planSync(cfg, f, running, o)
+		plan = p
+		// The plan already built every changed row while comparing it with the
+		// row on disk; hand the rows through so the write path does not
+		// prepare each one a second time.
+		add := make([]plannedAdd, 0, len(plan.Add))
+		for _, id := range plan.Add {
+			add = append(add, plannedAdd{id: id, row: built[id]})
+		}
+		return add, plan.Remove
 	}, o)
 	if err != nil {
 		return res, err
