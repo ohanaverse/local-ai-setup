@@ -102,7 +102,7 @@ Whole stack in one shot (post-download, post-upgrade): `~/.local/bin/llm-restart
 
 ### 2. "Model missing from LiteLLM" — ordered debug flow
 
-Worked on a model you expect on `:4000` but don't see (or a client gets 404/`model not found` for). Steps (1–3, 5–7) ran live read-only on 2026-08-29 against a healthy model (`ollama/qwen3.8:27b-mlx`), so the outputs show what clean looks like at each stage; step 4 is mutating (not run; marked UNVERIFIED); step 8 restarts the proxy — the one mutating step run, measured below.
+Worked on a model you expect on `:4000` but don't see (or a client gets 404/`model not found` for). Substitute your model's id for `<model-id>` throughout. Steps (1–3, 5–7) ran live read-only on 2026-08-29 against a then-healthy model; the outputs below are trimmed, labeled examples of what clean looks like at each stage — your ids will differ; step 4 is mutating (not run; marked UNVERIFIED); step 8 restarts the proxy — the one mutating step run, measured below.
 
 **Step 1 — is it in the proxy at all?** Without auth you learn nothing (`401`); pull the master key from the plist env (value stays un-printed) and list model ids:
 
@@ -111,17 +111,14 @@ LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<stri
 curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY" | python3 -c 'import json,sys; [print(m["id"]) for m in json.load(sys.stdin)["data"]]'
 ```
 
+Output is one model id per line. Example (illustrative — your ids will differ):
+
 ```text
 ollama/qwen3.8:27b-mlx
-omlx/mlx-community--Qwen3.8-27B-4bit   # only while it runs — wt writes the route on start
 openrouter/qwen/qwen3.8-27b
-openrouter/qwen/qwen3.8-flash
-openrouter/qwen/qwen3.8-2.4t-a95b
-openrouter/qwen/qwen3.8-max
-ollama/ornith-1.5:35b
 ```
 
-Present in this list but not routeable? Skip to step 5 (backend down). Absent? Continue.
+Local-model routes (ollama/omlx/mtplx/mlx_lm_server) appear only while that model runs — wt writes the route on start and removes it on stop. Present in this list but not routeable? Skip to step 5 (backend down). Absent? Continue.
 
 **Step 2 — does `model_list` in config.yaml carry it?** config.yaml is what the proxy routes from:
 
@@ -129,29 +126,26 @@ Present in this list but not routeable? Skip to step 5 (backend down). Absent? C
 grep -n 'model_name:' /Users/keith/.config/litellm/config.yaml
 ```
 
+Output is one `<line>:  - model_name: <id>` row per routed model. Example (illustrative — your ids and line numbers will differ):
+
 ```text
 3:  - model_name: ollama/qwen3.8:27b-mlx
-12:  - model_name: omlx/Qwen3.8-27B-4bit
-19:  - model_name: openrouter/qwen/qwen3.8-27b
-26:  - model_name: openrouter/qwen/qwen3.8-flash
-32:  - model_name: openrouter/qwen/qwen3.8-2.4t-a95b
-38:  - model_name: openrouter/qwen/qwen3.8-max
-45:  - model_name: ollama/ornith-1.5:35b
-52:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-4bit
-59:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-6bit
+12:  - model_name: openrouter/qwen/qwen3.8-27b
 ```
+
+`wt litellm list` shows the same routing from wt's side.
 
 Present here but absent from `:4000`? config.yaml changed since the proxy last started → jump to step 7 (restart). Absent here too? Continue.
 
-**Step 3 — is it exposed in modelman's state?** Check the per-model exposure flag, then count how many models modelman considers exposed:
+**Step 3 — is it exposed in modelman's state?** Check the per-model exposure flag:
 
 ```bash
-grep -c "exposed = true" /Users/keith/.config/local-ai/modelman.toml
-grep -A5 '^\[model_state."ollama/qwen3.8:27b-mlx"\]' /Users/keith/.config/local-ai/modelman.toml
+grep -A5 '^\[model_state."<model-id>"\]' /Users/keith/.config/local-ai/modelman.toml
 ```
 
+Example shape (illustrative — a downloaded local model; your id, path and size will differ):
+
 ```text
-27
 [model_state."ollama/qwen3.8:27b-mlx"]
 ready = true
 disk_path = "ollama:qwen3.8:27b-mlx"
@@ -159,7 +153,7 @@ size_bytes = 19327352832
 exposed = true
 ```
 
-Historical note (2026-08-30, updated 2026-09-10): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models), twelve openrouter models, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`, exposed by hand), and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66). Other omlx entries show `exposed = false` (or are absent from `[model_state...]` entirely); for local models that flag isn't the routing truth, since `wt start`/`wt stop` write and remove their `config.yaml` routes. (The hand-written omlx rows were removed 2026-09-30, #168.) `config.yaml` is still what the proxy serves. **This is a LiteLLM-exposure debug flow, not necessarily a "why doesn't wt show my model" one** — as of the 2026-09-15 local-model-visibility design (`docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`), `exposed` is no longer the truth for what wt shows for LOCAL models at all:
+No block at all means modelman has no state for that id yet (`exposed` absent = `false`). For local models the flag isn't the routing truth, since `wt start`/`wt stop` write and remove their `config.yaml` routes; `config.yaml` is what the proxy serves. **This is a LiteLLM-exposure debug flow, not necessarily a "why doesn't wt show my model" one** — as of the 2026-09-15 local-model-visibility design (`docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`), `exposed` is no longer the truth for what wt shows for LOCAL models at all:
 
 - **Model missing from wt's picker, and it's a LOCAL model** (ollama/omlx/mtplx/mlx_lm_server): don't look at `exposed`/`ready` here — run `wt -A <agent>` and read the STATUS/RUNNING columns; wt probes ollama/omlx/mtplx live and shows what is actually up. Every configured local model appears as a row: running → launchable; non-running ollama/omlx/mtplx → a start row (Enter starts it); `absent` (the provider answered and does not have the model) or a no-engine provider like `mlx_lm_server` → blocked with the reason. A model missing from the list entirely is neither in `registry.toml` nor discovered on disk — or its provider isn't in that agent's `supported_providers`; try another agent. `exposed`/`ready` play no role for local models in wt, and modelman.toml's per-model `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section). A local model that *is* running but gets `400 Invalid model name` on `:4000` lacks a `config.yaml` route: `wt litellm list` shows what is routed, `wt start`/`wt stop` keep routes current automatically, and `wt litellm sync` repairs them after a server was started or stopped outside wt (modelman's EXPOSED column for a local model is the stale `exposed` flag, not the route).
 - **Model missing from wt's picker, and it's a CLOUD model** (openrouter, or `location = "cloud"`): `exposed` is still the relevant flag — continue with the flow below (independent of whether LiteLLM routing is active; `wt litellm on`/`off` never changes exposure). A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
@@ -175,11 +169,11 @@ Historical note (2026-08-30, updated 2026-09-10): `modelman.toml` flags were out
 
 ```bash
 # from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman expose ollama/qwen3.8:27b-mlx
+uv run modelman expose <model-id>
 ```
 
 ```text
-Exposed ollama/qwen3.8:27b-mlx through LiteLLM.
+Exposed <model-id> through LiteLLM.
 ```
 
 Bad ids refuse instead — an `error: …` line on stderr, exit 1 (live-verified error paths: guide 02 §7, guide 04 §2) — meaning the id from Steps 1–3 never existed; fix the id, not the config.
@@ -201,8 +195,10 @@ A dead backend is a §1/§3 problem, not a config problem — fix the backend fi
 **Step 6 — api_base right?** The row must point the proxy at the right port:
 
 ```bash
-grep -A3 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config.yaml
+grep -A3 'model_name: <model-id>' /Users/keith/.config/litellm/config.yaml
 ```
+
+Example (illustrative — an ollama-served row):
 
 ```text
   - model_name: ollama/qwen3.8:27b-mlx
@@ -221,11 +217,7 @@ OpenAI-compatible local backends (omlx, omlx-6bit, mtplx, mlx_lm_server) must ha
 python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
-```text
-model_list entries: 9
-```
-
-Parse error → fix by hand or rebuild the row via `wt litellm expose` / `modelman expose` (wt does atomic, comment-preserving writes, guide 04 §1); count `9` on this machine = current healthy state (your count is however many you exposed).
+Output is one line, `model_list entries: <N>`. A traceback instead means a parse error → fix by hand or rebuild the row via `wt litellm expose` / `modelman expose` (wt does atomic, comment-preserving writes, guide 04 §1). `<N>` is however many rows `config.yaml` carries — compare it with the number of ids Step 1's authenticated `/v1/models` call returns (pipe that command into `wc -l`); after a restart (Step 8) the two should match.
 
 **Step 8 — restart, then re-check Step 1.** The proxy reads config.yaml only at start:
 
@@ -239,13 +231,13 @@ kickstart OK
 
 Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; the port refused connections and answered `401` again after **7 s**. Guides 01/04 measured 9–15 s on earlier runs — plan for a ~10–20 s dead window and confirm with the Step 1 curl rather than assuming. Everything else uses the mechanics in the §1 table.
 
-**Step 9 — local route dropped by `wt litellm sync`? Start the model; `modelman sync` does not re-add it.** (Observed 2026-09-30, rebuild session.) `wt litellm sync` skips the ready gate entirely and routes exactly the local models that are *running* at that moment — every other local model loses its route (`ollama/qwen3.8:27b-mlx: unexposed`, etc.). "Running" is a live probe: for Ollama, the model must appear in `/api/ps`, i.e. be loaded (`wt/internal/litellm/service.go` `Sync`, `wt/internal/localmodels/sources.go`). Downloading the artifact + `modelman sync` flips `ready = true` in `modelman.toml` but doesn't touch `config.yaml`. The durable fix is to start the model:
+**Step 9 — local route dropped by `wt litellm sync`? Start the model; `modelman sync` does not re-add it.** (Observed 2026-09-30, rebuild session.) `wt litellm sync` skips the ready gate entirely and routes exactly the local models that are *running* at that moment — every other local model loses its route (sync prints a `<model-id>: unexposed` line for each). "Running" is a live probe: for Ollama, the model must appear in `/api/ps`, i.e. be loaded (`wt/internal/litellm/service.go` `Sync`, `wt/internal/localmodels/sources.go`). Downloading the artifact + `modelman sync` flips `ready = true` in `modelman.toml` but doesn't touch `config.yaml`. The durable fix is to start the model:
 
 ```bash
-wt start ollama/qwen3.8:27b-mlx   # lifecycle route hook adds the route on the start transition
+wt start <model-id>   # lifecycle route hook adds the route on the start transition
 ```
 
-(`wt litellm expose ollama/qwen3.8:27b-mlx` also adds the route without loading the model, but the next `wt litellm sync` removes it again while the model isn't loaded. Note `modelman`'s persistent exposure flag is never cleared by sync, which is why the guides' embedded exposure-flag snapshots don't drift when this happens.)
+(`wt litellm expose <model-id>` also adds the route without loading the model, but the next `wt litellm sync` removes it again while the model isn't loaded. Note `modelman`'s persistent exposure flag is never cleared by sync.)
 
 ### 3. Log triage
 
@@ -459,11 +451,7 @@ launchctl list | grep litellm   # PID present; middle column 0 (or -15 post-kick
 python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
-```text
-model_list entries: 9
-```
-
-(Count matches the 9 ids the auth'd `/v1/models` list returns — Steps §2 step 1.)
+Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth'd `/v1/models` list returns (Steps §2 step 1 piped into `wc -l`) once the proxy has restarted since the last config change.
 
 ## Gotchas
 

@@ -18,7 +18,7 @@ from modelman.benchmark.isolation import (
 from modelman.benchmark.results import BenchmarkRun, TargetResult, write_results
 from modelman.benchmark.workloads import Workload
 from modelman.benchmark.workloads.base import BenchmarkMetrics
-from modelman.registry import DEFAULT_PROVIDER_IDS, Registry
+from modelman.registry import DEFAULT_PROVIDER_IDS, Registry, is_model_local
 from modelman.state import StateStore
 
 
@@ -74,6 +74,12 @@ def discover_targets(
     targets: list[Target] = []
     for model in registry.models:
         if model.provider_id not in LOCAL_PROVIDERS:
+            continue
+        # Cloud models on a local provider (ollama `:cloud`) aren't local
+        # benchmark targets; only an explicit --model selects one.
+        if model_ids is None and not is_model_local(
+            model.location, model.provider_id, registry, missing_provider_is_local=True
+        ):
             continue
         if family is not None and model.family != family:
             continue

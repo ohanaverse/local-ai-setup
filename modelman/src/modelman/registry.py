@@ -364,11 +364,19 @@ def is_local_location(location: str | None) -> bool:
     return location is None or location == "" or location == LOCATION_LOCAL
 
 
-def is_model_local(location: str | None, provider_id: str, registry: Registry) -> bool:
+def is_model_local(
+    location: str | None,
+    provider_id: str,
+    registry: Registry,
+    *,
+    missing_provider_is_local: bool = False,
+) -> bool:
     """Whether a model counts as local: its own `location` override when
     set, else its provider's `location`. A `provider_id` missing from the
     registry is NOT local — mirroring model_has_local_artifact()'s
-    treatment of the same edge case.
+    treatment of the same edge case — unless `missing_provider_is_local`
+    (sync's reconcile and benchmark discovery, which only need to skip
+    explicitly-cloud models such as ollama `:cloud` stubs).
 
     Single definition for a resolution that had drifted into near-
     duplicate inline copies (queue.py's delete loop, its ready-off
@@ -380,7 +388,7 @@ def is_model_local(location: str | None, provider_id: str, registry: Registry) -
     try:
         provider = registry.provider(provider_id)
     except KeyError:
-        return False
+        return missing_provider_is_local
     return is_local_location(provider.location)
 
 

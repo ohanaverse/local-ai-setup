@@ -36,8 +36,10 @@ Ollama has no LaunchAgent plist — it runs as the Ollama.app login item (`com.o
 
 - **Owner:** `modelman` — TUI queue applies on exit, and `modelman migrate`.
 - **Consumers:** `wt` (read-only; joins it in memory with `~/.config/agent-wt/config.toml`), `wt litellm expose` (copies `model_info` into LiteLLM `model_list` entries; `modelman expose` delegates to it).
-- **Purpose:** canonical providers + models. `providers` is still empty on this machine; only Ollama models are recorded, with `source = "discovered"`.
+- **Purpose:** canonical providers + models. `providers` may be empty (`providers = []`) when only discovered models are recorded; discovered entries carry `source = "discovered"`. See what yours holds with `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (model count) and `grep '^provider_id = ' ~/.config/local-ai/registry.toml | sort | uniq -c` (models per provider).
 - **Env override:** `MODELMAN_REGISTRY`.
+
+Example (illustrative — your ids will differ):
 
 ```toml
 providers = []
@@ -60,7 +62,16 @@ tags = []
 - **Env override:** `MODELMAN_STATE`.
 - **Exposure predicate (modelman's own rule; shared with wt for cloud/native models only):** A model is effectively exposed iff `exposed = true` AND (`ready = true` OR effective location is cloud), where effective location resolves model `location` first, then the provider's `location` (issue #46 parity). Native models (provider `auth.type = "native"`) are always exposed — they cannot route through LiteLLM. For cloud and native models, `wt` and the TUI apply this same rule, so a cloud/native model offered by `wt` always shows `Y` in the TUI's EXPOSED column. **For LOCAL models this no longer holds** (2026-09-15 design, `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`): `wt`'s picker lists every configured and discovered local model — with live STATUS/RUNNING columns probed from the providers themselves — regardless of `exposed`/`ready`, so `wt` can offer a local model the TUI's EXPOSED column renders `–` for. What the model can do there (launch, start, or block) is decided per row from those live probes: modelman.toml's per-model `running` flag is modelman-owned and **not read by wt**. The rules live in `wt/CLAUDE.md`'s "Local-model resolution" section — this guide does not repeat them.
 
-> Excerpt — 27 of the file's 41 `model_state` entries are `exposed = true` today (13 `ollama/*` + 12 `openrouter/*` + 1 `omlx/*` + 1 `mtplx/*`). The two exposed local-ollama blocks and one representative exposed `:cloud` block are shown; the other 10 `:cloud` ollama blocks have the identical shape to the `kimi-k3:cloud` example (`ready = false`, `exposed = true`), and the openrouter/omlx/mtplx blocks are omitted for brevity. The `[litellm]` routing table — read by wt — is shown at the top.
+Count your own entries and exposure flags with:
+
+```bash
+grep -c '^\[model_state\.' ~/.config/local-ai/modelman.toml   # model_state entries
+grep -c '^exposed = true' ~/.config/local-ai/modelman.toml    # entries flagged exposed
+```
+
+Each `[model_state."<id>"]` block has one of two shapes: a downloaded local model carries `ready = true` plus `disk_path`/`size_bytes`; a cloud model has no download, so it carries `ready = false` and is exposed on the flag alone (see the predicate above). The legacy `[litellm]` routing table, when present, sits at the top.
+
+Example (illustrative — your ids, sizes and flags will differ):
 
 ```toml
 [litellm]
@@ -72,12 +83,6 @@ api_key = "sk-litellm-…"
 ready = true
 disk_path = "ollama:qwen3.8:27b-mlx"
 size_bytes = 19327352832
-exposed = true
-
-[model_state."ollama/ornith-1.5:35b"]
-ready = true
-disk_path = "ollama:ornith-1.5:35b"
-size_bytes = 23622320128
 exposed = true
 
 [model_state."ollama/kimi-k3:cloud"]
@@ -124,6 +129,8 @@ providers:
 - **Purpose:** legacy family manifests: variants per provider, per-variant download state.
 - **Env override:** `MODELMAN_FAMILY_DIR`.
 
+Legacy example (illustrative — your families will differ):
+
 ```yaml
 family: qwen3.8
 display_name: Qwen 3.8
@@ -141,15 +148,16 @@ variants:
 ### `~/.config/litellm/config.yaml`
 
 - **Owner:** `wt` (`wt litellm expose|unexpose|sync`, plus the automatic route updates from `wt start`/`wt stop`; `modelman expose|unexpose` delegate to it), you by hand. modelman never writes this file.
-- **Hand-managed entries:** of the 36 `model_list` rows, wt writes the routes for the 27 exposed ids (13 `ollama/*` + 12 `openrouter/*` + 1 `omlx/*` + 1 `mtplx/*`, issue #66); the rest — the `openrouter/qwen/qwen3.8-*` set and `ollama/q8`/`ollama/o35` — are deliberately hand-managed. The 3 hand-written omlx rows were removed 2026-09-30 (#168): an omlx route now exists only while its model runs, written by `wt start` under the registry id. Don't hand-write rows for local models — `wt litellm sync` never removes ids that aren't in the registry. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
+- **Hand-managed entries:** wt writes the routes for exposed registry ids (issue #66) and for local models while they run; any other `model_list` row (e.g. a hand-written OpenRouter alias or a short-name alias for an Ollama model) is hand-managed and wt leaves it alone. `wt litellm list` prints the routes currently in the file; `grep -c '^  - model_name:' ~/.config/litellm/config.yaml` counts every row, wt-written or not. The 3 hand-written omlx rows were removed 2026-09-30 (#168): an omlx route now exists only while its model runs, written by `wt start` under the registry id. Don't hand-write rows for local models — `wt litellm sync` never removes ids that aren't in the registry. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
 - **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). wt only touches `model_list` (plus a few launcher-required `litellm_settings` keys); `general_settings`, other sections and comments are preserved (the first wt write normalizes list indentation and drops blank lines).
 - **Env override:** `WT_LITELLM_CONFIG` (legacy alias `MODELMAN_LITELLM_CONFIG`). The proxy restart command is `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`).
 - OpenRouter entries contain real `api_key: sk-or-v1-…` values — redact before sharing this file.
 
+Example (illustrative — your ids will differ; the second row is the shape `wt start` writes for an oMLX model while it runs):
+
 ```yaml
 model_list:
-  # ---- Ollama (local) ----
   - model_name: ollama/qwen3.8:27b-mlx
     litellm_params:
       model: ollama_chat/qwen3.8:27b-mlx
@@ -157,11 +165,11 @@ model_list:
     model_info:
       supports_function_calling: true
 
-  # ---- oMLX / MLX (Apple Silicon fourth backend) ----
-  # oMLX is OpenAI-compatible; use the openai/ prefix with api_base override
-  - model_name: omlx/Qwen3.8-27B-4bit
+  - model_name: omlx/<registry-model-id>
     litellm_params:
-      model: openai/Qwen3.8-27B-4bit
+      model: openai/<served-model-name>
+      api_base: http://localhost:8000/v1
+      api_key: not-needed
 ```
 
 ### `~/.config/agent-wt/config.toml`
@@ -189,7 +197,9 @@ default_tag = "code"
 
 - **Owner:** `wt` (`wt config theme <name>`).
 - **Consumers:** `wt` (every TUI picker, CLI tables).
-- **Purpose:** active theme (`tokyo-night` currently set).
+- **Purpose:** active theme.
+
+Example:
 
 ```toml
 theme = "tokyo-night"
@@ -200,6 +210,8 @@ theme = "tokyo-night"
 - **Owner:** you by hand, in the bash `ai-shell` era ("Managed by dotfiles").
 - **Consumers:** wt's first-run migration (runs once if `config.toml` is missing; reads `CODE_MODELS`/`DESIGN_MODELS` arrays and provider base URLs).
 - **Purpose:** legacy rotation + provider config. Superseded by `~/.config/agent-wt/config.toml` + `registry.toml`.
+
+Legacy example (illustrative — your model ids will differ):
 
 ```bash
 # Default model (fallback when the selected rotation array is empty)
@@ -218,6 +230,8 @@ CODE_MODELS=(
 - **Consumers:** `modelman usage` (usage reports / reconciliation with LiteLLM logs).
 - **Purpose:** launch log. A sibling `usage.jsonl.lock` is wt's empty lock file.
 
+Example (illustrative — your ids will differ):
+
 ```json
 {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
 {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.133588Z"}
@@ -227,7 +241,9 @@ CODE_MODELS=(
 
 - **Owner:** `wt` (single global rotation file; per-slot files legacy).
 - **Consumers:** `wt` (rotation cursor), `modelman usage` (last-launched model).
-- **Purpose:** rotation position — the file body is just the model id of the last launch. The `rotation-claude-code-_.state` / `rotation-pi-code-_.state` files on this machine are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/local-ai-setup/wt/internal/rotation/rotation.go:138-175`).
+- **Purpose:** rotation position — the file body is just the model id of the last launch. Per-slot files such as `rotation-claude-code-_.state` / `rotation-pi-code-_.state`, if present, are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/local-ai-setup/wt/internal/rotation/rotation.go:138-175`).
+
+Example (illustrative — your id will differ):
 
 ```
 ollama/glm-5.3-flash:cloud

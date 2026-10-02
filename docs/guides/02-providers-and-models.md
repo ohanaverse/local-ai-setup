@@ -41,6 +41,7 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`WT_LITELLM
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman                                # full TUI: browse the model table → add/edit/delete → queue changes → confirm on exit
 uv run modelman sync                           # reconcile downloaded/disk_path/size_bytes in modelman.toml against providers; never adds models
+# ollama/gpt-oss:20b below is an example id — substitute any id from your registry.toml
 uv run modelman expose ollama/gpt-oss:20b      # non-interactive: wt writes a model_list entry; sets exposed = true
 uv run modelman unexpose ollama/gpt-oss:20b    # removes the entry and clears the flag
 ```
@@ -92,11 +93,7 @@ Validate the file after editing (read-only registry load):
 uv run python -c 'from modelman.registry import load_registry; print(sorted(p.id for p in load_registry().providers))'
 ```
 
-```text
-['ollama']
-```
-
-<!-- UNVERIFIED — post-add state not exercised (would mutate the live registry.toml). After adding the openrouter block the same one-liner prints: -->
+It prints a sorted Python list of every `[[providers]]` id in the registry; a load error means the TOML is malformed. After adding the openrouter block, `'openrouter'` should appear in that list alongside your existing providers. Example (illustrative — your ids will differ):
 
 ```text
 ['ollama', 'openrouter']
@@ -108,7 +105,7 @@ Then register models under it with the same `[[models]]` shape as Step 3 (`provi
 
 In the TUI: press `a` on the model screen to add — then edit (`enter`/`e`) to fill the fields. The add/edit dialog includes optional **Per-token pricing** and **Subscription pricing** sections; check each section to reveal its labeled fields (Input / Cache / Output, each priced per million tokens, for per-token; Amount / Period for subscription) and fill them in. For Ollama models, `model_info` is auto-populated on add by running `ollama show <name>` and translating known capabilities (e.g. `tools` → `supports_function_calling: true`) — no manual capability wiring needed.
 
-Resulting `registry.toml` entry — real, as written on disk here (`~/.config/local-ai/registry.toml`, verified on this machine):
+Resulting `registry.toml` entry shape. Example (illustrative — your ids will differ):
 
 ```toml
 [[models]]
@@ -153,7 +150,7 @@ uv run modelman
 
 <!-- UNVERIFIED — interactive launch not driven from this session; run it, press `r` on the target model row to queue ready-on, and confirm the download queues, then apply on exit. -->
 
-Press `r` on the row you want (model id comes from the `family`/`provider`/`model_name` fields of the model rows in `registry.toml` — e.g. `ornith-1.5:35b`, verified on disk); `escape` shows the apply/discard/cancel dialog, and the queued download runs in the plain terminal once you choose `Apply`.
+Press `r` on the row you want (model id comes from the `family`/`provider`/`model_name` fields of the model rows in `registry.toml` — e.g. a row whose `model_name` is `ornith-1.5:35b`; your ids will differ); `escape` shows the apply/discard/cancel dialog, and the queued download runs in the plain terminal once you choose `Apply`.
 
 ### 6. Reconcile: `sync`
 
@@ -162,17 +159,14 @@ Press `r` on the row you want (model id comes from the `family`/`provider`/`mode
 uv run modelman sync
 ```
 
-```text
-Synced: 15 downloaded, 13 not downloaded.
-```
+It prints a single summary line, `Synced: <N> downloaded, <M> not downloaded.` (preceded by `Added provider entries: …` only if it repaired `registry.toml`), and exits 0. The two numbers are whatever your registry and disks hold — they change every time you add, pull or delete a model. `sync` takes no options at all; `sync --help` shows only `--help`.
 
-(Run live 2026-08-29; re-run 2026-09-03 — exactly this single line, exit 0. `sync` takes no options at all; `sync --help` shows only `--help`.)
+What it does / doesn't do:
 
-What it did / didn't do, as observed:
-
-- The counts span every reconcilable provider (ollama + llamacpp + omlx, per `DEFAULT_PROVIDER_IDS`), not just ollama. 15 downloaded = 13 local Ollama models on disk with sizes + the HF-cache `llamacpp/unsloth--Qwen3.8-27B-GGUF` + the `omlx/ornith-ai--Ornith-1.5-35B-A3B-MLX-4bit` model-dir (the omlx block flipped `ready = false → true` on this run — files were on disk but state had drifted, the Bug 1 fixed in PR #24). 13 not downloaded = the 12 `:cloud` ollama registry rows (`ollama list` shows them with size `-`, and sync marks them `ready = false`) + the newly state-blocked `llamacpp/ornith-ai--Ornith-1.5-35B-A3B-GGUF` (configured, files not yet fetched). In the TUI family screen, those `:cloud` rows do not count toward the `downloaded` column and do not contribute to the family's `size` total.
-- Only **configured** models are reconciled. This run created a `model_state` block for `llamacpp/ornith-ai--Ornith-1.5-35B-A3B-GGUF` (a configured model that had no state entry); models not in `registry.toml` are ignored — sync never adds models to the registry. (`glm-5.3:cloud`, the old absent-from-registry example, has since been added to `registry.toml`, so it reconciles now.)
-- `modelman.toml` was rewritten with non-identical values this run (the 2026-08-29 run had nothing drift; this one did). Corrected: the 12 `:cloud` ollama rows above were stale at `ready = true` with `disk_path` and got flipped to `ready = false` with the `disk_path` dropped; the omlx ornith row gained `ready`/`disk_path`/`size_bytes`; the llamacpp GGUF ornith row gained a state block. `litellm_exposed` was left untouched (sync preserves exposure state — it's owned by the LiteLLM feature; the 24 exposed ids are unchanged).
+- The counts span every reconcilable provider (ollama plus the model-dir providers such as omlx, per `DEFAULT_PROVIDER_IDS`), not just ollama. "Downloaded" = a configured model whose provider reports an on-disk artifact with a size (an `ollama list` row with a size, an oMLX model dir, an HF-cache entry); "not downloaded" = every other configured model of those providers. A model whose files were on disk but whose state had drifted gets flipped back to `ready = true` (the Bug 1 fixed in PR #24).
+- Only **configured** models are reconciled. A configured model with no `model_state` block gets one; models not in `registry.toml` are ignored — sync never adds models to the registry.
+- `modelman.toml` is rewritten on every run; drifted rows get corrected `ready`/`disk_path`/`size_bytes`. The `exposed` flag is left untouched (sync preserves exposure state — it's owned by the LiteLLM feature).
+- Cloud-hosted rows (`location = "cloud"`, including ollama `:cloud` models) never count toward the TUI family screen's `downloaded` column or its `size` total. Pulling/removing ollama `:cloud` stubs is the job of `modelman ollama-catalog sync` (see the `ollama-catalog` skill), not `modelman sync`.
 - Cloud providers (OpenRouter) are never reconciled. Documented reconcilable set is `("ollama", "omlx")` — llamacpp was retired 2026-09-07 (`src/modelman/sync.py:31`, `registry.py` `DEFAULT_PROVIDER_IDS`).
 
 Semantics summary: `sync` = read-only over providers (`ollama list`, HF cache, oMLX model dir), writes `~/.config/local-ai/modelman.toml` always; touches `registry.toml` only to repair missing provider entries (prints `Added provider entries: …`), never adds models.
@@ -180,6 +174,8 @@ Semantics summary: `sync` = read-only over providers (`ollama list`, HF cache, o
 ### 7. Expose / unexpose through LiteLLM (CLI)
 
 <!-- UNVERIFIED — mutating commands; not run on this machine (they rewrite the live `~/.config/litellm/config.yaml` + `modelman.toml`). Help text and success lines below are from live `--help` output and the command source (`src/modelman/main.py`). Local models must be downloaded to expose (cloud models exempt); errors go to stderr with exit 1. -->
+
+Example (illustrative — your ids will differ; use any `<provider>/<model>` id from `registry.toml`):
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman
@@ -203,28 +199,26 @@ On success `expose` has **wt** write a `model_list` entry into `~/.config/litell
 
 ## Verification
 
-Confirm a model is exposed — two independent greps, and both must agree:
-
-(Current machine fails this pair-check — see the drift note below.)
+Confirm a model is exposed — two independent greps, and both must agree (for cloud/native models; for local models see the note after the greps):
 
 ```bash
 grep -n "model_name" ~/.config/litellm/config.yaml
 ```
 
+One line per LiteLLM `model_list` entry, each `<line>:  - model_name: <model-id>` — the model you just exposed should appear. Example (illustrative — your ids will differ):
+
 ```text
 3:  - model_name: ollama/qwen3.8:27b-mlx
 19:  - model_name: openrouter/qwen/qwen3.8-27b
-26:  - model_name: openrouter/qwen/qwen3.8-flash
-32:  - model_name: openrouter/qwen/qwen3.8-2.4t-a95b
-38:  - model_name: openrouter/qwen/qwen3.8-max
-52:  - model_name: ollama/ornith-1.5:35b
 ```
 
-(9 entries after the 2026-09-07 llama.cpp retirement, minus the 3 hand-written omlx rows removed 2026-09-30 (#168); was 11 live 2026-08-29. A running omlx model adds its wt-written row, e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`. Never `cat` this file into chat/docs — its `api_key:` values include real `sk-or-v1-…` keys.)
+(A running local model, e.g. an omlx one, adds its wt-written row while it runs. Never `cat` this file into chat/docs — its `api_key:` values may hold literal keys.)
 
 ```bash
-grep -A4 '"ollama/gpt-oss:20b"' ~/.config/local-ai/modelman.toml
+grep -A4 '"<model-id>"' ~/.config/local-ai/modelman.toml
 ```
+
+The model's `[model_state]` block. Example (illustrative — your ids will differ): suppose `ollama/gpt-oss:20b` is pulled but not exposed —
 
 ```text
 [model_state."ollama/gpt-oss:20b"]
@@ -234,20 +228,20 @@ size_bytes = 13958643712
 exposed = false
 ```
 
+— then the first grep has no line for it, and after `modelman expose` both greps flip together (`exposed = true` plus a `model_name` line).
+
 ```bash
 grep -c "exposed = true" ~/.config/local-ai/modelman.toml
 ```
 
-```text
-27
-```
+Prints how many models carry the `exposed` flag; the number tracks your own expose/unexpose history and has no fixed expected value.
 
-> **Historical note (2026-08-30, updated 2026-09-10):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models — the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models — twelve openrouter models exposed through the TUI/CLI since, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`) exposed by hand, and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66) exposed via `modelman expose`. Other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the other omlx entries keep `exposed = false` — for local models that flag isn't the routing truth, `wt litellm list` is (the hand-written omlx rows were removed 2026-09-30, #168; the llama.cpp rows were retired 2026-09-07).
+> **Note:** the `exposed` flag is only authoritative for cloud/native models. For local models it isn't the routing truth — `wt start`/`wt stop`/`wt litellm sync` add and remove their `config.yaml` rows without touching the flag, so a local model can be routed with `exposed = false` (or vice versa). `wt litellm list` is the authoritative view of what LiteLLM actually routes. (Historical: the flags were once out of sync because some entries were seeded outside modelman; hand-written omlx rows were removed 2026-09-30, #168; the llama.cpp rows were retired 2026-09-07.)
 
-Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 ornith entry shape (the `id` line plus the 3 lines after it):
+Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 entry shape (the `id` line plus the 3 lines after it). Example (illustrative — your ids will differ):
 
 ```bash
-grep -n 'id = "<new-model>"' ~/.config/local-ai/registry.toml
+grep -A3 'id = "<new-model>"' ~/.config/local-ai/registry.toml
 ```
 
 ```text
@@ -263,10 +257,10 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 
 - **`registry.toml` is canonical + read-only to wt.** Model visibility for agents changes HERE — edit `~/.config/local-ai/registry.toml`, not wt's config. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `exposed` — legacy `downloaded`/`litellm_exposed` keys are still read as fallbacks; `[families]` display names); never treat it as the model catalog.
 - **Run modelman from the `modelman/` directory.** modelman is not installed as a global `uv tool`. Always run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`.
-- **`sync` semantics as observed:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), `:cloud` rows land `ready = false`, unconfigured models ignored, no models added, `exposed` preserved. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
+- **`sync` semantics:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), unconfigured models ignored, no models added, `exposed` preserved; ollama `:cloud` stubs are managed by `modelman ollama-catalog sync`, not `sync`. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
 - **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:91`).
 - **TUI changes apply on exit only.** Adds/edits/deletes/downloads/exposure toggles sit in an in-memory queue until you confirm the pending set; deletes run before downloads, downloads before exposure changes, then one write of both files.
-- **Secrets:** `secret_ref` is copied verbatim into the LiteLLM entry's `api_key`. The live `config.yaml` currently holds literal `sk-or-v1-…` keys — redact before pasting config anywhere.
+- **Secrets:** `secret_ref` is copied verbatim into the LiteLLM entry's `api_key`. If a `secret_ref` holds a literal key, the live `config.yaml` will too (e.g. `sk-or-v1-…`) — check and redact before pasting config anywhere.
 
 ## Going deeper
 

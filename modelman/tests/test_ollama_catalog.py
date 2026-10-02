@@ -244,7 +244,6 @@ def test_plan_unchanged_when_prices_match_and_name_recorded():
     plan = plan_sync(reg, _catalog(_cm("glm-5.3")), [])
     assert plan.updates == []
     assert plan.unchanged == ["ollama/glm-5.3:cloud"]
-    assert not plan.has_registry_changes()
 
 
 def test_plan_offpeak_set_replace_remove_keeps_other_rows():
@@ -280,7 +279,7 @@ def test_plan_matches_by_catalog_name_after_rename():
     plan = plan_sync(reg, _catalog(_cm("glm-5.3")), ["glm-5.3-renamed:cloud"])
     assert [u.model_id for u in plan.updates] == ["ollama/glm-5.3-renamed:cloud"]
     assert plan.additions == []
-    assert plan.delete_candidates == []
+    assert plan.removals == [] and plan.stray_tags == []
 
 
 def test_plan_additions_family_and_subscription():
@@ -324,31 +323,58 @@ def test_plan_does_not_touch_local_namesake():
     plan = plan_sync(reg, _catalog(_cm("gpt-oss:20b")), ["gpt-oss:20b"])
     assert plan.updates == []
     assert [e.id for e in plan.additions] == ["ollama/gpt-oss:20b-cloud"]
-    assert plan.delete_candidates == []
-    assert plan.unlisted == []
+    assert plan.removals == []
+    assert plan.stray_tags == []
 
 
-def test_plan_delete_candidates_only_pulled_cloud_stubs():
-    from modelman.ollama_catalog import DeleteCandidate, plan_sync
-
-    reg = _registry(_entry("old:cloud"), _entry("gone:cloud"), _entry("keep:cloud"))
-    tags = ["old:cloud", "stray-cloud-only:cloud", "ornith-1.5:35b", "keep:cloud"]
-    plan = plan_sync(reg, _catalog(_cm("keep")), tags)
-    assert plan.delete_candidates == [
-        DeleteCandidate(tag="old:cloud", model_id="ollama/old:cloud"),
-        DeleteCandidate(tag="stray-cloud-only:cloud", model_id=None),
-    ]
-    assert plan.unlisted == ["ollama/gone:cloud"]
-
-
-def test_plan_without_ollama_list():
+def test_plan_pulls_page_models_not_in_ollama_list():
     from modelman.ollama_catalog import plan_sync
 
-    reg = _registry(_entry("old:cloud"), _entry("keep:cloud"))
-    plan = plan_sync(reg, _catalog(_cm("keep")), None)
-    assert plan.delete_candidates == []
-    assert plan.unlisted == ["ollama/old:cloud"]
-    assert [u.model_id for u in plan.updates] == ["ollama/keep:cloud"]
+    reg = _registry(_entry("a:cloud"), _entry("b:cloud"))
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b"), _cm("c")), ["a:cloud"])
+    assert plan.pulls == ["ollama/b:cloud", "ollama/c:cloud"]
+
+
+def test_plan_pulls_entry_tag_when_matched_by_catalog_name():
+    from modelman.ollama_catalog import plan_sync
+
+    renamed = _entry("glm-old:cloud", extra={"catalog_name": "glm-5.3"})
+    plan = plan_sync(_registry(renamed), _catalog(_cm("glm-5.3")), ["glm-old:cloud"])
+    assert plan.pulls == []
+    assert plan.removals == []
+
+
+def test_plan_removes_off_page_cloud_entries_and_stray_stubs():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(
+        _entry("old:cloud"),
+        _entry("gone:cloud"),
+        _entry("keep:cloud"),
+        _entry("ornith-1.5:35b", location="local"),
+    )
+    tags = ["old:cloud", "stray:cloud", "ornith-1.5:35b", "keep:cloud"]
+    plan = plan_sync(reg, _catalog(_cm("keep")), tags)
+    # Pulled or not, an off-page cloud entry goes; local models never do.
+    assert plan.removals == ["ollama/old:cloud", "ollama/gone:cloud"]
+    assert plan.stray_tags == ["stray:cloud"]
+    assert plan.pulls == []
+
+
+def test_plan_mass_removal_guard():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("a:cloud"), _entry("b:cloud"), _entry("c:cloud"))
+    assert not plan_sync(reg, _catalog(_cm("a"), _cm("b")), []).mass_removal()
+    assert plan_sync(reg, _catalog(_cm("a")), []).mass_removal()
+
+
+def test_plan_routes_every_page_model():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("a:cloud"), _entry("gone:cloud"), _entry("x:7b", location="local"))
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), [])
+    assert plan.routes == ["ollama/a:cloud", "ollama/b:cloud"]
 
 
 def test_plan_id_collision_with_non_ollama_entry_warns():
@@ -378,10 +404,13 @@ def test_format_plan_mentions_every_section():
     from modelman.ollama_catalog import format_plan, plan_sync
 
     reg = _registry(_entry("a:cloud"), _entry("gone:cloud"), _entry("old:cloud"))
-    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), ["old:cloud"])
-    text = format_plan(plan)
-    for needle in ("ollama/a:cloud", "ollama/b:cloud", "old:cloud", "ollama/gone:cloud"):
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), ["old:cloud", "stray:cloud"])
+    text = format_plan(plan, exposed={"ollama/gone:cloud"})
+    for needle in ("ollama/a:cloud", "ollama/b:cloud", "ollama/old:cloud", "stray:cloud"):
         assert needle in text
+    assert "ollama/gone:cloud (exposed — will be unexposed)" in text
+    assert "LiteLLM routes — expose or refresh prices (2;" in text
+    assert "ollama/old:cloud (exposed" not in text
 
 
 def test_list_ollama_tags_parses_and_handles_failure():
@@ -418,6 +447,13 @@ def test_remove_ollama_tag():
 
     remove_ollama_tag("x:cloud", runner=ok)
     assert calls == [["ollama", "rm", "x:cloud"]]
+
+    def gone(args, **kw):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="Error: model 'x' not found")
+
+    # The reading OllamaProvider.delete applies, via the same test: a tag that
+    # vanished between `ollama list` and here is done, not a failure.
+    remove_ollama_tag("x:cloud", runner=gone)
 
     def fail(args, **kw):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="nope")
@@ -482,7 +518,7 @@ def test_plan_catalog_name_match_keeps_canonical_tag_listed():
     plan = plan_sync(
         reg, _catalog(_cm("gpt-oss:120b")), ["gpt-oss:120b-cloud", "gpt-oss:120b-cloud-custom"]
     )
-    assert plan.delete_candidates == []
+    assert plan.removals == [] and plan.stray_tags == []
 
 
 def test_apply_sync_stamps_utc():
@@ -539,3 +575,255 @@ def test_plan_never_adds_the_same_id_twice(monkeypatch):
     plan = plan_sync(_registry(), _catalog(_cm("x"), _cm("y")), [])
     assert [e.id for e in plan.additions] == ["ollama/same:cloud"]
     assert any("earlier addition" in w for w in plan.warnings)
+
+
+def _tags_page(name, *tags):
+    links = "".join(f'<a href="/library/{name}:{t}">{name}:{t}</a>' for t in tags)
+    return f'<html>{links}<a href="/library/{name}-other:cloud">x</a></html>'
+
+
+def _http(pages):
+    """Fake HTTP runner: url -> html, or an exception for missing pages."""
+
+    class R:
+        def __init__(self, text, status):
+            self.text, self.status_code = text, status
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    def run(url, **kw):
+        return R(pages[url], 200) if url in pages else R("", 404)
+
+    return run
+
+
+def test_resolve_cloud_tags_prefers_alias_then_single_sized_tag():
+    from modelman.ollama_catalog import resolve_cloud_tags
+
+    base = "https://ollama.com/library/"
+    runner = _http(
+        {
+            base + "glm-5.3/tags": _tags_page("glm-5.3", "cloud", "latest"),
+            base + "mistral-large-3/tags": _tags_page("mistral-large-3", "675b-cloud", "latest"),
+            base + "two/tags": _tags_page("two", "8b-cloud", "70b-cloud"),
+            base + "none/tags": _tags_page("none", "latest", "8b"),
+        }
+    )
+    names = ["glm-5.3", "mistral-large-3", "two", "none", "gone", "gpt-oss:120b"]
+    resolved, warnings = resolve_cloud_tags(names, runner=runner)
+    assert resolved == {
+        "glm-5.3": "glm-5.3:cloud",
+        "mistral-large-3": "mistral-large-3:675b-cloud",
+        "two": None,
+        "none": None,
+        "gone": None,
+        # A page name that already names a size pins its tag; no lookup.
+        "gpt-oss:120b": "gpt-oss:120b-cloud",
+    }
+    assert len(warnings) == 3 and all("skipped" in w for w in warnings)
+
+
+def test_plan_uses_resolved_tag_for_additions_and_pulls():
+    from modelman.ollama_catalog import plan_sync
+
+    plan = plan_sync(
+        _registry(),
+        _catalog(_cm("mistral-large-3")),
+        [],
+        resolved={"mistral-large-3": "mistral-large-3:675b-cloud"},
+    )
+    (added,) = plan.additions
+    assert added.id == "ollama/mistral-large-3:675b-cloud"
+    assert added.model_name == "mistral-large-3:675b-cloud"
+    assert plan.pulls == plan.routes == ["ollama/mistral-large-3:675b-cloud"]
+
+
+def test_plan_replaces_entry_whose_tag_does_not_resolve():
+    """An entry matched by catalog_name but carrying a tag that doesn't exist
+    (an earlier sync guessed `name:cloud`) is removed and re-added under the
+    resolved tag."""
+    from modelman.ollama_catalog import plan_sync
+
+    wrong = _entry("mistral-large-3:cloud", extra={"catalog_name": "mistral-large-3"})
+    plan = plan_sync(
+        _registry(wrong),
+        _catalog(_cm("mistral-large-3")),
+        [],
+        resolved={"mistral-large-3": "mistral-large-3:675b-cloud"},
+    )
+    assert plan.removals == ["ollama/mistral-large-3:cloud"]
+    assert [e.id for e in plan.additions] == ["ollama/mistral-large-3:675b-cloud"]
+    assert plan.updates == []
+
+
+def test_plan_retag_carries_the_replaced_entries_setup_forward():
+    """A re-tag is the same model under the tag ollama publishes, so the new
+    entry keeps the old one's family, hand-set extras, model_info and
+    subscription — not a fresh default. (The LiteLLM route name is the id,
+    so that one can't come across.)"""
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import Cost
+
+    old = _entry(
+        "mistral-large-3:cloud",
+        family="mistral",
+        cost=Cost(
+            input_price_per_million=9.0,
+            subscription_price=7.0,
+            subscription_period="month",
+        ),
+        extra={"catalog_name": "mistral-large-3", "context_length": 131072},
+    )
+    old.model_info = {"supports_function_calling": True}
+    plan = plan_sync(
+        _registry(old),
+        _catalog(_cm("mistral-large-3", 1.0, 0.1, 2.0)),
+        [],
+        resolved={"mistral-large-3": "mistral-large-3:675b-cloud"},
+    )
+    (added,) = plan.additions
+    assert added.family == "mistral"
+    assert added.extra == {"catalog_name": "mistral-large-3", "context_length": 131072}
+    assert added.model_info == {"supports_function_calling": True}
+    assert added.cost is not None
+    assert (added.cost.subscription_price, added.cost.subscription_period) == (7.0, "month")
+    # ... and the page's prices still replace the ones it carried over.
+    assert added.cost.input_price_per_million == 1.0
+
+
+def test_plan_retag_of_an_entry_with_no_cost_takes_the_shared_subscription():
+    from modelman.ollama_catalog import plan_sync
+
+    plan = plan_sync(
+        _registry(_entry("x:cloud", extra={"catalog_name": "x"})),
+        _catalog(_cm("x", 1.0, 0.1, 2.0)),
+        [],
+        resolved={"x": "x:675b-cloud"},
+    )
+    (added,) = plan.additions
+    assert added.extra == {"catalog_name": "x"}
+    assert plan.removals == ["ollama/x:cloud"]
+
+
+def test_plan_unresolved_model_keeps_entry_but_skips_pull_and_add():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("x:cloud", extra={"catalog_name": "x"}))
+    plan = plan_sync(reg, _catalog(_cm("x", 5.0), _cm("y")), [], resolved={"x": None, "y": None})
+    assert plan.removals == [] and plan.additions == [] and plan.pulls == []
+    # Its price is still known from the page, so the existing entry and route
+    # are refreshed.
+    assert [u.model_id for u in plan.updates] == ["ollama/x:cloud"]
+    assert plan.routes == ["ollama/x:cloud"]
+
+
+def test_plan_prefers_entry_already_under_resolved_tag():
+    """A guessed-tag entry carrying catalog_name must not shadow an entry
+    already under the real tag: only the guessed one goes."""
+    from modelman.ollama_catalog import plan_sync
+
+    guessed = _entry("ml3:cloud", extra={"catalog_name": "ml3"})
+    real = _entry("ml3:675b-cloud")
+    plan = plan_sync(
+        _registry(guessed, real),
+        _catalog(_cm("ml3")),
+        ["ml3:675b-cloud"],
+        resolved={"ml3": "ml3:675b-cloud"},
+    )
+    assert plan.removals == ["ollama/ml3:cloud"]
+    assert plan.additions == []
+    assert plan.routes == ["ollama/ml3:675b-cloud"]
+    assert [u.model_id for u in plan.updates] == ["ollama/ml3:675b-cloud"]
+    assert plan.stray_tags == []
+
+
+def test_plan_unresolved_model_protects_pulled_stub_and_sized_entry():
+    """A page model whose tag lookup failed is still on the page: neither
+    its pulled stub nor an entry under a sized tag may be removed."""
+    from modelman.ollama_catalog import plan_sync
+
+    sized = _entry("foo:1t-cloud")
+    plan = plan_sync(
+        _registry(sized),
+        _catalog(_cm("foo"), _cm("glm-5.3")),
+        ["glm-5.3:cloud", "foo:1t-cloud", "other:cloud"],
+        resolved={"foo": None, "glm-5.3": None},
+    )
+    assert plan.removals == []
+    assert plan.stray_tags == ["other:cloud"]
+    assert [u.model_id for u in plan.updates] == ["ollama/foo:1t-cloud"]
+
+
+def test_plan_retag_is_not_a_mass_removal():
+    """Re-tagging a guessed entry removes and re-adds it; that is not a
+    catalog shrinking, so the mass-removal guard ignores it."""
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(
+        _entry("a:cloud", extra={"catalog_name": "a"}),
+        _entry("b:cloud", extra={"catalog_name": "b"}),
+    )
+    plan = plan_sync(
+        reg,
+        _catalog(_cm("a"), _cm("b")),
+        [],
+        resolved={"a": "a:1t-cloud", "b": "b:2t-cloud"},
+    )
+    assert plan.removals == ["ollama/a:cloud", "ollama/b:cloud"]
+    assert plan.replaced == {
+        "ollama/a:cloud": "ollama/a:1t-cloud",
+        "ollama/b:cloud": "ollama/b:2t-cloud",
+    }
+    assert not plan.mass_removal()
+
+
+def test_removal_digest_tracks_removals_and_strays():
+    from modelman.ollama_catalog import format_plan, plan_sync
+
+    reg = _registry(_entry("keep:cloud"), _entry("gone:cloud"))
+    nothing = plan_sync(reg, _catalog(_cm("keep"), _cm("gone")), [])
+    assert nothing.removal_digest() is None
+    one = plan_sync(reg, _catalog(_cm("keep")), [])
+    other = plan_sync(reg, _catalog(_cm("keep")), ["stray:cloud"])
+    assert one.removal_digest() and one.removal_digest() != other.removal_digest()
+    assert one.removal_digest() == plan_sync(reg, _catalog(_cm("keep")), []).removal_digest()
+    assert one.removal_digest() in format_plan(one)
+
+
+def test_resolve_cloud_tags_skips_known_names():
+    from modelman.ollama_catalog import resolve_cloud_tags
+
+    def boom(url, **kw):
+        raise AssertionError(f"fetched {url}")
+
+    resolved, warnings = resolve_cloud_tags(["ml3"], runner=boom, known={"ml3": "ml3:675b-cloud"})
+    assert resolved == {"ml3": "ml3:675b-cloud"} and warnings == []
+
+
+def test_verified_tags_only_pulled_catalog_entries():
+    from modelman.ollama_catalog import verified_tags
+
+    reg = _registry(
+        _entry("a:1t-cloud", extra={"catalog_name": "a"}),
+        _entry("b:cloud", extra={"catalog_name": "b"}),  # not pulled: unverified
+        _entry("c:cloud"),  # no catalog_name
+    )
+    assert verified_tags(reg, ["a:1t-cloud", "c:cloud"]) == {"a": "a:1t-cloud"}
+
+
+def test_verified_tags_skips_a_name_two_pulled_entries_claim():
+    """An interrupted re-tag leaves the guessed tag and the real one both
+    pulled and both carrying the name. Answering from the registry picks one
+    by position; leaving it unanswered hands it to the library lookup, which
+    resolves the tag the page publishes — so the current entry is the one
+    matched, and the stale one is what gets re-tagged away."""
+    from modelman.ollama_catalog import verified_tags
+
+    reg = _registry(
+        _entry("foo:cloud", extra={"catalog_name": "foo"}),
+        _entry("foo:675b-cloud", extra={"catalog_name": "foo"}),
+        _entry("bar:cloud", extra={"catalog_name": "bar"}),
+    )
+    assert verified_tags(reg, ["foo:cloud", "foo:675b-cloud", "bar:cloud"]) == {"bar": "bar:cloud"}

@@ -7,7 +7,13 @@
 ## Prerequisites
 
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
-- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models (provider in `LOCAL_PROVIDERS`: ollama, omlx, mlx_lm_server, mtplx) with `exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`); today that's `ollama/qwen3.8:27b-mlx`, `ollama/ornith-1.5:35b`, `omlx/mlx-community--Qwen3.8-27B-4bit`, and `mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality` (issue #66) — four local models, out of 27 exposed in total (thirteen ollama + twelve openrouter + one omlx + one mtplx). If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
+- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks models on local providers (provider in `LOCAL_PROVIDERS`: ollama, omlx, mlx_lm_server, mtplx) with `exposed = true` in `~/.config/local-ai/modelman.toml`, skipping cloud-located ones such as ollama `:cloud` models (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`). OpenRouter models are never picked; a `:cloud` model is picked only when named with `--model`. To see which ids the default run would pick:
+
+  ```bash
+  python3 -c "import tomllib,os;c=lambda f:tomllib.load(open(os.path.expanduser('~/.config/local-ai/'+f),'rb'));r=c('registry.toml');s=c('modelman.toml').get('model_state',{});loc={p['id']:p.get('location') for p in r.get('providers',[])};[print(m['id']) for m in r.get('models',[]) if m['provider_id'] in ('ollama','omlx','mlx_lm_server','mtplx') and 'cloud' not in (m.get('location'),loc.get(m['provider_id'])) and s.get(m['id'],{}).get('exposed')]"
+  ```
+
+  (one id per line; the set changes whenever you expose/unexpose, and an id must also still be in `registry.toml`.) If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
 - Backends healthy: the three-port block in Verification answers (oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`). llama.cpp was retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).
 - modelman runnable from its repo (`uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`; modelman is not installed globally). Provider lifecycle CLI callable the same way:
   `uv run modelman provider isolate <ollama|omlx|omlx-6bit>` and `uv run modelman provider restore` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman` (or `uv run --directory modelman modelman provider ...` from the repo root — that's how the `benchmarks/` scripts invoke it).
@@ -22,7 +28,7 @@ uv run modelman provider isolate omlx --json
 # → {"provider": "omlx", "model": "Ornith-1.5-35B-A3B-MLX-4bit",
 #    "direct_url": "http://localhost:8000/v1/chat/completions", "ok": true, "error": null}
 
-uv run modelman benchmark run --family ornith-1.5:35b --passes 3
+uv run modelman benchmark run --family <family> --passes 3   # <family>: one of yours — grep '^family' ~/.config/local-ai/registry.toml
 # → Benchmark complete: <YYYYMMDD-HHMMSS>
 #   Results: /Users/keith/.config/local-ai/benchmarks/<YYYYMMDD-HHMMSS>
 
@@ -62,13 +68,13 @@ error: unknown provider: notaprovider
 ```
 (exit 1; the unknown-arg and no-arg paths exit before any service is touched.)
 
-Per-argument behavior (from `backends/ollama.py` and `backends/omlx.py`; unchanged from the bash version this replaced):
+Per-argument behavior (from `backends/ollama.py` and `backends/omlx.py`; unchanged from the bash version this replaced). The warmup models are code defaults — they need not be pulled or registered on your machine; override them as described below:
 
 | Arg | Stops | Starts + warms (model) | Serves on |
 |-----|-------|------------------------|-----------|
-| `ollama` | oMLX (`omlx stop`) | ollama daemon via `launchctl kickstart` if down; warmup `ornith-1.5:35b` | `http://localhost:11434/v1/chat/completions` |
-| `omlx` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`) | `http://localhost:8000/v1/chat/completions` |
-| `omlx-6bit` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`) | `http://localhost:8000/v1/chat/completions` |
+| `ollama` | oMLX (`omlx stop`) | ollama daemon via `launchctl kickstart` if down; warmup default `ornith-1.5:35b` (`DEFAULT_MODEL`, `backends/ollama.py`) | `http://localhost:11434/v1/chat/completions` |
+| `omlx` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup default Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`, `DEFAULT_4BIT_MODEL` in `backends/omlx.py`) | `http://localhost:8000/v1/chat/completions` |
+| `omlx-6bit` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup default Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`, `DEFAULT_6BIT_MODEL` in `backends/omlx.py`) | `http://localhost:8000/v1/chat/completions` |
 
 Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL` — this still works (the CLI deliberately keeps the env-var fallback for compatibility with the old bash helpers), but the **now-preferred** form is the explicit positional argument: `uv run modelman provider isolate ollama <model>` (or `--json` for the machine-readable envelope). With `--json`, it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — the same 5-key contract the bash script produced — which is what modelman's own benchmark adapter reads in-process (`src/modelman/benchmark/isolation.py`) without going through the CLI at all.
 
@@ -92,12 +98,12 @@ short
 Flag semantics (from `uv run modelman benchmark run --help` and `src/modelman/benchmark/cli.py`):
 
 - `--workload <name>` — default `chat`; `MODELMAN_BENCHMARK_WORKLOAD` envvar overrides.
-- `--model <id>` (repeatable) — registry ids, e.g. `ollama/qwen3.8:27b-mlx`.
-- `--family <name>` — all registry models in a family. **`--model` and `--family` stack as an AND-filter** (both are applied in `discover_targets`; only `--direct`/`--litellm` are mutually exclusive). Family names come from `family =` in `~/.config/local-ai/registry.toml` — they currently mirror per-model ids (`qwen3.8:27b-mlx`, `ornith-1.5:35b`, …), so a bare `--family qwen3.8` matches nothing.
+- `--model <id>` (repeatable) — registry ids (example: `ollama/qwen3.8:27b-mlx`; yours will differ).
+- `--family <name>` — all registry models in a family. **`--model` and `--family` stack as an AND-filter** (both are applied in `discover_targets`; only `--direct`/`--litellm` are mutually exclusive). Family names come from `family =` in `~/.config/local-ai/registry.toml` — a family name must match that string exactly (no prefix matching), so check the spelling before running. List yours with `grep '^family' ~/.config/local-ai/registry.toml | sort -u`.
 - `--direct` / `--litellm` — scope to one route; default benchmarks BOTH (direct URL + `http://localhost:4000/v1`), meaning every pass issues two requests per target.
 - `--passes N` (default 1), `--cooldown <seconds>` (default 15.0) — sleep between passes, not between routes.
 - `--results-dir <path>` — default `/Users/keith/.config/local-ai/benchmarks`.
-- Targets are local providers only (`ollama`, `omlx`; llamacpp retired 2026-09-07); OpenRouter/cloud rows are out of scope for modelman runs. This machine's registry currently carries only the `ollama` provider, so every target today is `ollama/*`.
+- Targets come from local providers only (`ollama`, `omlx`, `mlx_lm_server`, `mtplx`; llamacpp retired 2026-09-07): OpenRouter rows are out of scope, and cloud-located models (ollama `:cloud`) are skipped unless named with `--model`. Which providers your targets can come from depends on the `[[providers]]` in your registry (`grep -A1 '^\[\[providers\]\]' ~/.config/local-ai/registry.toml`).
 
 ### 3. Multi-pass methodology
 
@@ -106,10 +112,10 @@ Single-pass numbers wobble (thermal state, cold weights, background system churn
 <!-- UNVERIFIED — mutates live services — not driven; see verified error paths. -->
 ```bash
 # from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman benchmark run --workload chat --family ornith-1.5:35b --passes 3
+uv run modelman benchmark run --workload chat --family <family> --passes 3
 ```
 
-(3 passes × 2 routes × 1 target ≈ 6 requests, plus a 15 s cooldown after passes 1 and 2. Use `--passes 5` when comparing two configs; keep `--cooldown` at the default.)
+(For a family with one model: 3 passes × 2 routes × 1 target ≈ 6 requests, plus a 15 s cooldown after passes 1 and 2. Use `--passes 5` when comparing two configs; keep `--cooldown` at the default.)
 
 ### 4. Read results
 
@@ -129,7 +135,7 @@ error: no latest run recorded                             # never ran a benchmar
 error: results not found: /Users/keith/.config/local-ai/benchmarks/<run-id>/summary.md
 ```
 
-Latest-run pointer: after a run, `cli.py` writes `benchmarks.last_run` / `benchmarks.last_run_dir` into `~/.config/local-ai/modelman.toml` (state file, not the registry). Honest note: today's `modelman.toml` has only `[model_state]`/`[families]` — no `[benchmarks]` table yet, because no CLI run has completed on this machine. Gotcha: `--run-id` always resolves under the default dir even if you overrode `--results-dir` (hardcoded in `cli.py`); for custom-dir runs, open `summary.md` by hand.
+Latest-run pointer: after a run, `cli.py` writes `benchmarks.last_run` / `benchmarks.last_run_dir` into `~/.config/local-ai/modelman.toml` (state file, not the registry). Until a CLI run has completed, `modelman.toml` has no `[benchmarks]` table (`grep -A2 '^\[benchmarks\]' ~/.config/local-ai/modelman.toml` prints nothing) and `--latest` errors as shown above. Gotcha: `--run-id` always resolves under the default dir even if you overrode `--results-dir` (hardcoded in `cli.py`); for custom-dir runs, open `summary.md` by hand.
 
 ### 5. Legacy scripts (superseded — kept for history)
 
@@ -144,7 +150,7 @@ Latest-run pointer: after a run, `cli.py` writes `benchmarks.last_run` / `benchm
 ./ornith-1.5-benchmark-multi 3   # 3 passes (PASSES [max_tokens] [cooldown])
 ```
 
-Results are written to `/tmp/<script>-<timestamp>.md`; archive into `benchmarks/results/` (9 archived runs already there, e.g. `qwen3.8-benchmark-20260827-084908.md`, `ornith-1.5-benchmark-20260826-224834.md`):
+Results are written to `/tmp/<script>-<timestamp>.md`; archive into `benchmarks/results/` (archived runs already there, e.g. `qwen3.8-benchmark-20260827-084908.md`, `ornith-1.5-benchmark-20260826-224834.md`):
 
 ```bash
 # from: /Users/keith/github/ohanaverse/local-ai-setup
@@ -189,9 +195,9 @@ ls /Users/keith/.config/local-ai/benchmarks/
 
 - **Isolation is mandatory.** Local models share Apple Silicon GPU/RAM; a second loaded model skews every number in the run (this repo's `CLAUDE.md`). modelman enforces it internally — each target is isolated through `src/modelman/providers/lifecycle/orchestrate.py` (called in-process, not via a subprocess or PATH lookup — issue #79) before its requests, and the whole stack is restored in a `finally` (`src/modelman/benchmark/isolation.py`).
 - **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service.
-- **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `uv run modelman provider isolate omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. modelman always passes the provider id (`omlx`, never `omlx-6bit`), so an oMLX 6-bit target would be warmed as 4-bit — dormant today (no `omlx` provider in the registry yet), keep in mind for future backends.
-- **The isolate command only stops the *named* ollama model.** `ollama stop` targets `ornith-1.5:35b` by default (`LLM_ISOLATE_OLLAMA_MODEL`); a different ollama model you left loaded earlier survives isolation and will still fight for GPU/RAM. Unload it by hand or override the env var.
-- **Fixed warmup model for `ollama` isolation.** `uv run modelman provider isolate ollama` warms a FIXED model (`LLM_ISOLATE_OLLAMA_MODEL`, default `ornith-1.5:35b`), not the benchmark target — benchmarking any other ollama model requires `export LLM_ISOLATE_OLLAMA_MODEL=<target-model>` before `modelman benchmark run` (this also makes the `ollama stop`/poll path correct when isolating other backends). Two resident models = GPU/RAM contention = garbage timings.
+- **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `uv run modelman provider isolate omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. modelman always passes the provider id (`omlx`, never `omlx-6bit`), so an oMLX 6-bit target would be warmed as 4-bit — this bites only if your registry has an oMLX 6-bit model as a benchmark target; keep it in mind for future backends.
+- **The isolate command only stops the *named* ollama model.** `ollama stop` targets the code default `ornith-1.5:35b` (`DEFAULT_MODEL` in `backends/ollama.py`; override with `LLM_ISOLATE_OLLAMA_MODEL`); a different ollama model you left loaded earlier survives isolation and will still fight for GPU/RAM. Unload it by hand or override the env var.
+- **Fixed warmup model for `ollama` isolation.** `uv run modelman provider isolate ollama` warms a FIXED model (`LLM_ISOLATE_OLLAMA_MODEL`, code default `ornith-1.5:35b` set in `backends/ollama.py`), not the benchmark target — benchmarking any other ollama model requires `export LLM_ISOLATE_OLLAMA_MODEL=<target-model>` before `modelman benchmark run` (this also makes the `ollama stop`/poll path correct when isolating other backends). Two resident models = GPU/RAM contention = garbage timings.
 - **`--run-id` ignores `--results-dir`** — it reads `/Users/keith/.config/local-ai/benchmarks/<run-id>/summary.md` only.
 - **Shebang split.** `benchmarks/*` scripts use Homebrew bash (`#!/opt/homebrew/bin/bash`); `bin/*` (now just `check-links` and `mlx-quantize`) uses `#!/bin/bash` (`check-links` is Python, `#!/usr/bin/env python3`). Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style).
 - **Two result homes.** Legacy script output goes to `/tmp/<script>-<timestamp>.md` and should be archived into `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/results/`; modelman runs write under `/Users/keith/.config/local-ai/benchmarks/<run-id>/` — not inside this repo.

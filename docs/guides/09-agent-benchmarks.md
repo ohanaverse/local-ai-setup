@@ -4,8 +4,6 @@
 
 Design rationale, gate taxonomy, and scoring rules: `docs/superpowers/specs/2026-09-04-agent-coding-benchmark-design.md`. This guide is the day-to-day usage doc; the spec is the source of truth for *why* each rule exists.
 
-This guide, unlike 00/02/04/05/08, embeds no `exposed` snapshots — nothing here goes stale when a model is exposed/unexposed.
-
 ## Prerequisites
 
 - Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, isolation helpers on `PATH`).

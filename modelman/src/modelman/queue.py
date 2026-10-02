@@ -581,6 +581,11 @@ class PendingChanges:
                         reason = _reason(exc)
                         self.failures.append(f"download {model_id}: {exc}")
                         emit(f"download:fail|{model_id}|{label}|{reason}")
+                        # A route to a model that was never fetched would
+                        # only fail every request: drop its queued expose.
+                        if (model_id, True) in self.exposes:
+                            self.exposes.remove((model_id, True))
+                            emit(f"expose:fail|{model_id}|{model_id}|download failed")
                         continue
                     except BaseException:
                         # KeyboardInterrupt (Ctrl+C during the post-exit

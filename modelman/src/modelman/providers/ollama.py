@@ -33,6 +33,12 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text).strip()
 
 
+def _says_not_found(stderr: str | None) -> bool:
+    """Whether an `ollama show`/`ollama rm` failure means "no such model" —
+    the one shared test, so is_downloaded() and delete() agree on absence."""
+    return "not found" in (stderr or "").lower()
+
+
 def _terminate_with_escalation(proc: subprocess.Popen) -> None:
     """Send SIGTERM, escalating to SIGKILL on a daemon watchdog thread if
     the process is still alive after ~1s. No-op if already exited.
@@ -176,11 +182,11 @@ class OllamaProvider(Provider):
         # on this distinction: a False here skips the on-disk removal, so a
         # transient outage must not read as "already gone" and orphan the
         # artifact.
-        stderr = (r.stderr or "").lower()
-        if "not found" in stderr:
+        if _says_not_found(r.stderr):
             return False
         raise RuntimeError(
-            f"`ollama show {variant['name']}` failed (exit {r.returncode}): {stderr.strip()}"
+            f"`ollama show {variant['name']}` failed (exit {r.returncode}): "
+            f"{(r.stderr or '').strip()}"
         )
 
     def download(
@@ -213,7 +219,10 @@ class OllamaProvider(Provider):
         r = (runner or _default_runner)(
             ["ollama", "rm", variant["name"]], capture_output=True, text=True
         )
-        if r.returncode != 0:
+        # Already absent is success. is_downloaded() can't always confirm
+        # absence first: `ollama show` on a retired cloud model errors with
+        # "was retired", not "not found", so the delete is attempted anyway.
+        if r.returncode != 0 and not _says_not_found(r.stderr):
             raise RuntimeError(f"`ollama rm {variant['name']}` failed (exit {r.returncode})")
 
     def size_of(self, variant: VariantSpec, runner: _Runner | None = None) -> int | None:
