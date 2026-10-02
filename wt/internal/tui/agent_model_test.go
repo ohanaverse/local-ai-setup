@@ -1247,22 +1247,23 @@ func TestPinnedModelWithoutAgentValidatesAfterAgentPick(t *testing.T) {
 
 // buildTestConfigWithModels returns a minimal config with claude supporting
 // the ollama provider and the supplied models. Tests that exercise the
-// litellm_exposed filter use this helper so the fixture exposes exactly the
-// models the test intends.
+// catalog filter use this helper so the fixture exposes exactly the models
+// the test intends.
 func buildTestConfigWithModels(models ...config.Model) *config.Config {
 	return &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models:     models,
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
 }
 
-// TestEligibleModelsHidesUnexposed asserts that cfg.EligibleModels only
-// returns non-native models marked litellm_exposed. Without the exposure
-// gate, non-native models would leak into the picker even when they are not
-// routable through the LiteLLM gateway.
-func TestEligibleModelsHidesUnexposed(t *testing.T) {
+// TestEligibleModelsIncludesUnflagged asserts that cfg.EligibleModels returns
+// every model whose provider resolves — the litellm_exposed flag no longer
+// gates catalog membership (#179: configured means exposed). Before #179 an
+// unflagged model was hidden from the picker; a regression would again make
+// configured models invisible until someone manually exposed them.
+func TestEligibleModelsIncludesUnflagged(t *testing.T) {
 	cfg := buildTestConfigWithModels(
 		config.Model{ID: "ollama/exposed", ModelName: "exposed", ProviderID: "ollama", Tags: []string{"code"}},
 		config.Model{ID: "ollama/hidden", ModelName: "hidden", ProviderID: "ollama", Tags: []string{"code"}},
@@ -1272,7 +1273,7 @@ func TestEligibleModelsHidesUnexposed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EligibleModels: %v", err)
 	}
-	if len(models) != 1 || models[0].ID != "ollama/exposed" {
-		t.Fatalf("expected only exposed model, got %v", models)
+	if len(models) != 2 || models[0].ID != "ollama/exposed" || models[1].ID != "ollama/hidden" {
+		t.Fatalf("expected both configured models, got %v", models)
 	}
 }

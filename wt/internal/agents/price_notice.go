@@ -48,26 +48,20 @@ func PriceNotice(lastRun string, present bool, now time.Time) string {
 }
 
 // HasOpenRouterPricedModel reports whether any model in cfg takes its price
-// from OpenRouter — what `modelman refresh-prices` refreshes. It mirrors
-// modelman's _is_openrouter_priced (pricing.py): an openrouter model, or a
-// model of a non-native cloud provider. Keyed on the provider's location, not
-// the model's, so ollama cloud models (location "cloud" on the local ollama
-// provider, priced by ollama.com) don't count. A model whose ProviderID has
-// no registry provider doesn't count either (p == nil, location
-// unresolvable) — the Python side skips it silently too. A nil cfg has no
-// models.
+// from OpenRouter — what `modelman refresh-prices` refreshes. It delegates to
+// config.OpenRouterPriced, which mirrors modelman's _is_openrouter_priced
+// (pricing.py): an openrouter model, or a model of a non-native cloud
+// provider. Keyed on the provider's location, not the model's, so ollama
+// cloud models (location "cloud" on the local ollama provider, priced by
+// ollama.com) don't count. A model whose ProviderID has no registry provider
+// doesn't count either (p == nil, location unresolvable) — the Python side
+// skips it silently too. A nil cfg has no models.
 func HasOpenRouterPricedModel(cfg *config.Config) bool {
 	if cfg == nil {
 		return false
 	}
 	for _, m := range cfg.Models {
-		if m.Native {
-			continue
-		}
-		if m.ProviderID == "openrouter" {
-			return true
-		}
-		if p := cfg.ProviderByID(m.ProviderID); p != nil && p.Auth.Type != "native" && p.Location == config.LocationCloud {
+		if cfg.OpenRouterPriced(m) {
 			return true
 		}
 	}

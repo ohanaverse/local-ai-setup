@@ -1,0 +1,83 @@
+# Cross-language contract for the catalog / pricing / routing predicates
+# (#179, #180). Each model exercises one branch; the expected id lists live in
+# catalog-predicates.expected.json, read by:
+#   - wt/internal/config/catalog_predicates_fixture_test.go  (in_catalog, openrouter_priced)
+#   - wt/internal/litellm/catalog_predicates_fixture_test.go (routable_cloud)
+#   - modelman/tests/contracts/test_catalog_predicates_fixture.py (openrouter_priced)
+# A one-sided change to any predicate fails both CI jobs.
+
+[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+[providers.auth]
+type = "api_key"
+base_url = "https://openrouter.ai/api/v1"
+secret_ref = "OPENROUTER_API_KEY"
+
+[[providers]]
+id = "agy"
+name = "Agy"
+location = "cloud"
+[providers.auth]
+type = "native"
+
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+[providers.auth]
+type = "none"
+base_url = "http://localhost:11434"
+
+# A non-native cloud provider with no LiteLLM mapping in wt's policy table.
+[[providers]]
+id = "acme"
+name = "Acme"
+location = "cloud"
+[providers.auth]
+type = "api_key"
+base_url = "https://acme.example/v1"
+secret_ref = "ACME_API_KEY"
+
+[[models]]
+id = "openrouter/vendor-x"
+family = "fixture"
+provider_id = "openrouter"
+model_name = "vendor/x"
+
+[[models]]
+id = "agy/native"
+family = "fixture"
+provider_id = "agy"
+model_name = "native"
+
+# ollama cloud model: cloud location on the LOCAL ollama provider.
+[[models]]
+id = "ollama/glm:cloud"
+family = "fixture"
+provider_id = "ollama"
+model_name = "glm:cloud"
+location = "cloud"
+
+# Inherits "cloud" from the acme provider.
+[[models]]
+id = "acme/model-a"
+family = "fixture"
+provider_id = "acme"
+model_name = "vendor/model-a"
+
+# Dangling provider_id: no [[providers]] entry named "ghost".
+[[models]]
+id = "ghost/model-g"
+family = "fixture"
+provider_id = "ghost"
+model_name = "model-g"
+location = "cloud"
+
+[[models]]
+id = "ollama/local:1"
+family = "fixture"
+provider_id = "ollama"
+model_name = "local:1"
+location = "local"

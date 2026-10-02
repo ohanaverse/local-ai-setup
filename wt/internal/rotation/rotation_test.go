@@ -73,6 +73,10 @@ func TestRecordWritesSingleLineAnd0600(t *testing.T) {
 // model when there is no prior launch.
 func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal},
+			{ID: "claude", Location: config.LocationCloud},
+		},
 		Models: []config.Model{
 			{ID: "ollama/a", ProviderID: "ollama"},
 			{ID: "claude/sonnet", ProviderID: "claude"},
@@ -96,6 +100,10 @@ func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
 // and rotation would be a no-op.
 func TestNextAdvancesAfterLast(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal},
+			{ID: "claude", Location: config.LocationCloud},
+		},
 		Models: []config.Model{
 			{ID: "ollama/a", ProviderID: "ollama"},
 			{ID: "claude/sonnet", ProviderID: "claude"},
@@ -119,6 +127,10 @@ func TestNextAdvancesAfterLast(t *testing.T) {
 // model list back to the first eligible model.
 func TestNextWrapsAround(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal},
+			{ID: "claude", Location: config.LocationCloud},
+		},
 		Models: []config.Model{
 			{ID: "claude/sonnet", ProviderID: "claude"},
 			{ID: "ollama/a", ProviderID: "ollama"},
@@ -142,6 +154,10 @@ func TestNextWrapsAround(t *testing.T) {
 // are skipped when searching after the last launch.
 func TestNextSkipsIneligibleModels(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal},
+			{ID: "claude", Location: config.LocationCloud},
+		},
 		Models: []config.Model{
 			{ID: "ollama/a", ProviderID: "ollama"},
 			{ID: "ollama/b", ProviderID: "ollama"},
@@ -183,6 +199,10 @@ func TestNextReturnsFalseWhenNoModels(t *testing.T) {
 // global list if the saved last model is no longer in the config.
 func TestNextFallsBackToStartWhenLastUnknown(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal},
+			{ID: "claude", Location: config.LocationCloud},
+		},
 		Models: []config.Model{
 			{ID: "claude/sonnet", ProviderID: "claude"},
 			{ID: "claude/opus", ProviderID: "claude"},

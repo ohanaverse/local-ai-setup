@@ -125,7 +125,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
-			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 		},
 		Models: []config.Model{
 			// Two code models in the gemma4 family.
@@ -199,13 +199,16 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 // singleModelConfig returns a config where the claude agent has exactly
 // one eligible code model. Used by the single-model picker-skip tests
 // below; mirrors the catalog-narrowing shape of TestPhaseModelHonorsFilters
-// but with one item, so EligibleModels returns a 1-element slice.
+// but with one item, so EligibleModels returns a 1-element slice. The model
+// is an ollama cloud model (location=cloud on the local ollama provider) so
+// its row is a launch row — a lone start row never triggers the picker-skip
+// shortcut.
 func singleModelConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
-			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:cloud", ModelName: "gemma4:cloud", ProviderID: "ollama", Family: "gemma4", Location: config.LocationCloud, Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"ollama"}},

@@ -821,43 +821,44 @@ func deriveNative(cfg *Config) {
 	}
 }
 
-// IsExposed reports whether m should appear in wt's model catalog.
-//
-// Native models are always exposed (they cannot route through LiteLLM).
-//
-// Local models are always exposed at this Stage-1 check (2026-09-15
-// local-model visibility design); their real visibility is decided
-// downstream by the live model inventory (internal/localmodels) through
-// internal/catalog's row rules — not by the exposed/ready flags in
-// modelman.toml. modelman's start_local_model
-// keeps `exposed` in sync on start so LiteLLM-forced routes still work —
-// see docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md.
-//
-// Cloud (and any model whose location cannot be resolved — a registry
-// data gap, treated conservatively as non-local) requires exposed AND
-// (ready OR cloud location), unchanged from before. The cloud-location
-// check uses ResolveLocation: a model may omit its own `location` and
-// inherit it from the provider.
-func (c *Config) IsExposed(m Model) bool {
+// InCatalog reports whether m appears in wt's model catalog (#179):
+// configured means exposed. Native, local and cloud registry models are all
+// in; the only exclusion is a registry data gap — a provider_id naming no
+// provider, or no location on model or provider — which stays out,
+// fail-closed, even when the model sets its own location.
+func (c *Config) InCatalog(m Model) bool {
 	if m.Native {
 		return true
 	}
-	loc, locErr := c.ResolveLocation(m)
-	if locErr == nil && loc == LocationLocal {
-		return true
-	}
-	st, ok := c.exposed[m.ID]
-	if !ok || !st.Exposed {
+	if c.ProviderByID(m.ProviderID) == nil {
 		return false
 	}
-	if locErr == nil && loc == LocationCloud {
+	_, err := c.ResolveLocation(m)
+	return err == nil
+}
+
+// OpenRouterPriced reports whether m's price comes from OpenRouter — what
+// `modelman refresh-prices` refreshes: an openrouter model, or a model of a
+// non-native cloud provider. Keyed on the provider's location, not the
+// model's, so ollama cloud models don't count. Mirrors modelman's
+// pricing._is_openrouter_priced; both are pinned by
+// docs/contracts/catalog-predicates.sample.toml.
+func (c *Config) OpenRouterPriced(m Model) bool {
+	if m.Native {
+		return false
+	}
+	p := c.ProviderByID(m.ProviderID)
+	if p != nil && p.Auth.Type == "native" {
+		return false
+	}
+	if m.ProviderID == "openrouter" {
 		return true
 	}
-	return st.Ready
+	return p != nil && p.Location == LocationCloud
 }
 
 // ExposedFlag reports modelman's raw `exposed` flag for the model id (legacy
-// litellm_exposed ORed in at load). Unlike IsExposed it never treats local
+// litellm_exposed ORed in at load). Unlike InCatalog it never treats local
 // models as always exposed, so it is what a table mirroring modelman's EXPOSED
 // column should read.
 func (c *Config) ExposedFlag(id string) bool {
@@ -1270,7 +1271,7 @@ func (c *Config) EligibleModelsIn(agentName string, ms []Model, tags, family str
 		if len(familySet) > 0 && !familySet[m.Family] {
 			continue
 		}
-		if !c.IsExposed(m) {
+		if !c.InCatalog(m) {
 			continue
 		}
 		out = append(out, m)

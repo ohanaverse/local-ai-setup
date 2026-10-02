@@ -205,7 +205,7 @@ const (
 
 // smokeTimeout returns the explicit timeout when set (non-zero), otherwise the
 // default for the model's location. A model whose location cannot be resolved
-// is treated as non-local, matching Config.IsExposed.
+// is treated as non-local, matching Config.InCatalog.
 func smokeTimeout(cfg *config.Config, m config.Model, explicit time.Duration) time.Duration {
 	if explicit != 0 {
 		return explicit
