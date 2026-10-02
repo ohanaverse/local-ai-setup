@@ -41,6 +41,38 @@ func TestPickModelEnterSelectsHighlightedModel(t *testing.T) {
 	}
 }
 
+// TestPickStartModelDefaultsToNativeRow pins the disclosed consequence of
+// #172 on the standalone pickers (wt smoke, wt start): newPickModel never
+// calls Select, so the highlighted row is index 0 — the first sorted row —
+// and native-first therefore makes a native model what a bare Enter picks.
+// The cursor has no other default, so a sort change moves this silently: the
+// test is what makes the behavior deliberate rather than incidental.
+func TestPickStartModelDefaultsToNativeRow(t *testing.T) {
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	models := []config.Model{
+		{ID: "openrouter/cheap", ModelName: "cheap", ProviderID: "openrouter", Family: "cheap", Cost: config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}},
+		{ID: "claude/native", ModelName: "native", ProviderID: "claude", Family: "claude", Native: true},
+	}
+	m := newPickModel(nil, models, themes.Default, true)
+
+	if got := m.list.Index(); got != 0 {
+		t.Fatalf("initial cursor = %d, want 0 (no explicit default is set)", got)
+	}
+	it, ok := m.list.Items()[0].(*modelItem)
+	if !ok {
+		t.Fatalf("item 0 is %T, want *modelItem", m.list.Items()[0])
+	}
+	if it.model.ID != "claude/native" {
+		t.Errorf("highlighted row = %q, want claude/native — the native row must open highlighted", it.model.ID)
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if gm := got.(pickModel); gm.selected.ID != "claude/native" {
+		t.Errorf("bare Enter selected %q, want claude/native", gm.selected.ID)
+	}
+}
+
 // TestPickModelEscCancels asserts that Esc cancels the standalone picker
 // without a selection, so a caller can distinguish "user picked nothing"
 // from "user picked the first model" and must not silently launch a default.

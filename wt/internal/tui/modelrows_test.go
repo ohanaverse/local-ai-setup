@@ -85,3 +85,51 @@ func TestSortRowsTwoGroups(t *testing.T) {
 		t.Errorf("order = %s\nwant    %s", got, want)
 	}
 }
+
+// TestSortRowsNativeFirst verifies issue #172: a native model sorts ahead of
+// every other row, even when it would otherwise lose the $0 tie on 7-day
+// usage to a subscription-only cloud model or an idle running local model.
+func TestSortRowsNativeFirst(t *testing.T) {
+	rows := []tableRow{
+		{Row: catalog.Row{Location: config.LocationLocal, Running: true, Model: config.Model{ID: "run-idle"}}},
+		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "sub", Cost: config.ModelCost{SubscriptionPrice: f64(100)}}}},
+		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "native", Native: true}}, counts: usage.UsageCounts{SevenDay: 50}},
+		{Row: catalog.Row{Location: config.LocationLocal, Model: config.Model{ID: "a-off"}}},
+	}
+	sortRows(rows)
+	want := "native,run-idle,sub,a-off"
+	if got := strings.Join(rowIDs(rows), ","); got != want {
+		t.Errorf("order = %s\nwant    %s", got, want)
+	}
+}
+
+// TestSortRowsNativeTieBreak verifies native-first is a partition, not an
+// escape from the ordinary ordering: among the native rows the cost → 7-day
+// usage → id rules still decide. Each native row here has a different cost
+// shape — no cost data, subscription-only $0, and priced — so a regression
+// that dropped the cost comparison among natives, or ordered natives by id,
+// reorders them and fails. (An earlier version gave every native row identical
+// no-data cost, so the cost tier was never exercised and the test passed
+// either way.)
+func TestSortRowsNativeTieBreak(t *testing.T) {
+	native := func(id string, cost config.ModelCost, sevenDay int) tableRow {
+		return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id, Native: true, Cost: cost}}, counts: usage.UsageCounts{SevenDay: sevenDay}}
+	}
+	rows := []tableRow{
+		// Priced below every native row, so it doubles as the native-first
+		// control: cost alone must not lift it above a native.
+		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "cheap", Cost: config.ModelCost{InputPricePerMillion: f64(0.01), OutputPricePerMillion: f64(0.01)}}}},
+		native("n-nodata", config.ModelCost{}, 0),
+		native("n-cheap", config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}, 9),
+		native("n-free-a", config.ModelCost{SubscriptionPrice: f64(50)}, 3),
+		native("n-free-b", config.ModelCost{SubscriptionPrice: f64(50)}, 1),
+	}
+	sortRows(rows)
+	// Natives first. Among them the $0 subscription pair ties on cost and
+	// orders by 7-day usage ascending (b:1, a:3), then the priced native, then
+	// the no-cost-data one; the cheaper non-native row still trails them all.
+	want := "n-free-b,n-free-a,n-cheap,n-nodata,cheap"
+	if got := strings.Join(rowIDs(rows), ","); got != want {
+		t.Errorf("order = %s\nwant    %s", got, want)
+	}
+}

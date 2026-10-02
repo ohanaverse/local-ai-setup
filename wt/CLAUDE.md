@@ -223,10 +223,11 @@ Go port of modelman's start/warmup: `Start(ctx, cfg, Target, Options{AllowReplac
 
 Global rotation: each successful launch records one model id in `~/.config/agent-wt/rotation.state` (atomic write); the picker cursor lands on the model *after* it (`FirstAfter`, shared by the picker and `wt rotate`). Launch paths call `rotation.RecordFor(agent, id)`, which also appends the agent-tagged usage event to `~/.config/agent-wt/usage.jsonl`. Rotation positions the cursor only when a last-launched registry model exists (else first launchable row) and never advances onto a discovered row.
 
+- **The sort order is also the default selection.** `newPickModel` (the standalone `wt smoke`/`wt start` pickers) never calls `Select`, so its highlighted row is index 0; `enterModelPhase`'s no-rotation fallback picks the first actionable row. Native-first (#172) therefore makes a native model what a bare Enter launches there — deliberate, and pinned by `TestPickStartModelDefaultsToNativeRow` / `TestEnterModelPhaseNoRotationDefaultsToNativeRow`. Changing `sortRows` changes what Enter picks; don't add a display-only rule to it without deciding the default too.
 - The last-launched row gets a `> ` prefix — **plain ASCII on purpose**: Unicode geometric shapes are East Asian Ambiguous width and misalign CJK terminals.
 - The leftmost column is the live "in use" count from `refcount.Store.Counts` (2-rune prefix, clamped at 9), before the rotation marker.
 - Columns: FAMILY, MODEL, LOC, STATUS, EXPOSED, RUNNING, COST, 1D, 7D, 30D, SURVEY. `wt smoke`'s picker has no agent context: SURVEY is empty and usage uses model-level `Counts`.
-- Sort: cloud + running local by cost (output then input price; local/subscription-only = $0; no-data last), then 7-day usage; non-running local alphabetical.
+- Sort: native models first (#172); then cloud + running local by cost (output then input price; local/subscription-only = $0; no-data last), then 7-day usage; non-running local alphabetical. Native-first is a *partition*, not an exemption: native rows still fall through to the group rules among themselves.
 - TUI callers fetch the agent's full catalog once (`cfg.ModelsForAgent`), narrow it with `cfg.EligibleModelsIn` (single-traversal filter), and pass it to `enterModelPhase`.
 
 ```bash
