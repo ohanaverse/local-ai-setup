@@ -46,14 +46,7 @@ from .benchmark.isolation import (
     stop_all_local_providers,
     stop_provider,
 )
-from .litellm import (
-    ExposeError,
-    LiteLLMConfigError,
-    apply_unexpose_queue,
-    default_litellm_config_path,
-    expose_model,
-    unexpose_model,
-)
+from .litellm import sync_routes
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
 from .providers.base import LocalModel, Provider, _Runner
@@ -106,7 +99,7 @@ class DiscoveredModelNeedsFamily(LocalControlError):
     """Raised by start_local_model() when `model_id` matches an on-disk,
     unregistered artifact but no `family` was supplied. The CLI catches
     this, prompts the user, and retries with `family` set — nothing is
-    written to registry.toml/modelman.toml/LiteLLM before this is raised.
+    written to registry.toml/modelman.toml before this is raised.
     """
 
     def __init__(self, provider_id: str, variant_id: str, suggested_families: list[str]):
@@ -238,21 +231,12 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     return any(_name_matches(served, model_name) for served in ids)
 
 
-def _clear_stale_running_flag(
-    model_id: str, state_path: Path | None, litellm_path: Path | None = None
-) -> None:
+def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
     """Best-effort: clear ONE model's running flag when it's still True —
     used when a probe finds it not actually serving (stale flag), or after
     a failed start/stop for that specific model. Never touches any other
-    model's flag.
-
-    Also best-effort un-exposes the model when it was exposed: a model
-    modelman no longer believes is running must not stay routable through
-    LiteLLM (the same reasoning as stop_local_model's unexpose). Done
-    OUTSIDE the locked_state transaction below, mirroring
-    _expose_for_start/_unexpose_for_stop's own pattern, so the LiteLLM
-    config write and proxy restart never happen while holding the
-    process-wide state lock.
+    model's flag, and never touches LiteLLM: routes follow live provider
+    state through `wt litellm sync` (#179), which the start/stop paths run.
     """
     try:
         state = load_state(state_path)
@@ -261,25 +245,11 @@ def _clear_stale_running_flag(
     existing = state.models.get(model_id)
     if existing is None or not existing.running:
         return
-    unexpose_ok = True
-    if existing.exposed:
-        try:
-            unexpose_model(state, model_id, litellm_path or default_litellm_config_path())
-        except (LiteLLMConfigError, OSError):
-            unexpose_ok = False
     try:
         with locked_state(state_path) as fresh:
             fresh_existing = fresh.models.get(model_id)
             if fresh_existing is not None and fresh_existing.running:
-                fresh.models[model_id] = replace(
-                    fresh_existing,
-                    running=False,
-                    exposed=(
-                        state.models[model_id].exposed
-                        if (existing.exposed and unexpose_ok)
-                        else fresh_existing.exposed
-                    ),
-                )
+                fresh.models[model_id] = replace(fresh_existing, running=False)
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
 
@@ -579,12 +549,12 @@ def _register_discovered_model(
     family: str,
     registry_path: Path | None,
     state_path: Path | None,
-    litellm_path: Path | None,
 ) -> tuple[ModelEntry, list[str]]:
-    """Write a new registry.toml entry for `match`, mark it ready+exposed
-    in modelman.toml, and add its LiteLLM model_list row. Mutates `registry`
-    and `state` in place (the caller's in-memory copies) so the rest of
-    start_local_model's flow sees the new model immediately.
+    """Write a new registry.toml entry for `match` and mark it ready in
+    modelman.toml. Mutates `registry` and `state` in place (the caller's
+    in-memory copies) so the rest of start_local_model's flow sees the new
+    model immediately. Routing is not this function's job: the start that
+    follows runs one `wt litellm sync` (#179).
     """
     model_id = f"{match.provider_id}/{match.variant_id.replace('/', '--')}"
     entry = ModelEntry(
@@ -607,7 +577,7 @@ def _register_discovered_model(
             # Defense-in-depth against a concurrent registration or a hand-edited
             # registry.toml: the id is derived from (provider, native name), so a
             # collision means this artifact is already registered and appending
-            # would duplicate it in registry.toml AND in LiteLLM's model_list.
+            # would duplicate it in registry.toml.
             # Raising here (inside the lock, before the write) leaves the file
             # untouched — locked_registry only saves on a clean exit.
             if any(m.id == model_id for m in fresh.models):
@@ -621,37 +591,7 @@ def _register_discovered_model(
         state.set(model_id, model_state)
     except OSError as exc:
         raise LocalControlError(f"failed to register {model_id}: {exc}") from exc
-
-    try:
-        warnings = expose_model(
-            registry, state, model_id, litellm_path or default_litellm_config_path()
-        )
-    except ExposeError as exc:
-        # The registry entry and its ready=true state are already persisted at
-        # this point (both are prerequisites for exposing), so this leaves a
-        # registered-but-unexposed model rather than nothing — say so, and say
-        # that a retry reuses it: the entry now resolves by its native name
-        # (_resolve_or_register's second step), so a re-run exposes and starts
-        # it instead of registering a duplicate.
-        raise LocalControlError(
-            f"{model_id} was registered (registry.toml + modelman.toml, ready=true) "
-            f"but could not be exposed to LiteLLM: {exc} — fix the LiteLLM config and "
-            f"re-run `modelman start {match.variant_id}`; it will reuse that entry "
-            "rather than register it again"
-        ) from exc
-    # expose_model() mutates state.models[model_id] in place (sets exposed)
-    # but never persists it - merge just this one key back, mirroring
-    # main.py's `expose` command.
-    try:
-        with locked_state(state_path) as fresh_state:
-            fresh_state.models[model_id] = state.models[model_id]
-    except OSError as exc:
-        raise LocalControlError(
-            f"{model_id} was registered and exposed but the final state merge "
-            f"failed: {exc} — re-run `modelman start {match.variant_id}`; it will "
-            "reuse that entry rather than register it again"
-        ) from exc
-    return entry, warnings
+    return entry, []
 
 
 def _resolve_or_register(
@@ -661,7 +601,6 @@ def _resolve_or_register(
     family: str | None,
     registry_path: Path | None,
     state_path: Path | None,
-    litellm_path: Path | None,
 ) -> tuple[ModelEntry, list[str]]:
     """Resolve `model_id` to a ModelEntry, trying — in order — a registry
     id, an existing model's native provider-side name (so a discovered
@@ -681,7 +620,7 @@ def _resolve_or_register(
     # "Qwen3.8-27B-4bit") while model_name holds the registry's (the full repo
     # id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison missed that
     # model and fell through to the register-a-discovered-model step below,
-    # duplicating an already-registered, already-exposed artifact.
+    # duplicating an already-registered artifact.
     providers_by_id = _provider_by_id(registry)
     native_matches = [
         m
@@ -712,7 +651,7 @@ def _resolve_or_register(
             match.provider_id, match.variant_id, known_families(registry, state)
         )
     return _register_discovered_model(
-        registry, state, discovered[0], family, registry_path, state_path, litellm_path
+        registry, state, discovered[0], family, registry_path, state_path
     )
 
 
@@ -730,10 +669,9 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
     is the only enumeration there is), with _registered_under_name() deciding
     what counts as already-known.
 
-    `modelman start` (no model_id) prints this. Unlike the exposed-only
-    listing this replaces, `downloaded`/`not_downloaded` include every
-    local-artifact registered model regardless of its exposed flag — this
-    is a full local inventory, not just "what can I start right now".
+    `modelman start` (no model_id) prints this. `downloaded`/`not_downloaded`
+    include every local-artifact registered model — this is a full local
+    inventory, not just "what can I start right now".
     """
     local_map, discovery_unqueryable = _provider_local_models(registry)
     providers_by_id = _provider_by_id(registry)
@@ -779,13 +717,12 @@ def running_model_ids(
     registry: Registry,
     state: StateStore,
     state_path: Path | None = None,
-    litellm_path: Path | None = None,
 ) -> list[str]:
     """Every local model flagged running AND confirmed by a live probe —
     the same self-healing rule every other consumer (the TUI indicator,
-    wt's picker) applies. A flagged-but-dead entry is opportunistically
-    cleared (running AND exposed — see _clear_stale_running_flag). Sorted
-    for stable display."""
+    wt's picker) applies. A flagged-but-dead entry's running flag is
+    opportunistically cleared (see _clear_stale_running_flag). Sorted for
+    stable display."""
     providers_by_id = _provider_by_id(registry)
     models_by_id = {m.id: m for m in registry.models}
     verified: list[str] = []
@@ -800,83 +737,8 @@ def running_model_ids(
         if _probe_running(model.provider_id, model.model_name, probe_origin):
             verified.append(model_id)
         else:
-            _clear_stale_running_flag(model_id, state_path, litellm_path)
+            _clear_stale_running_flag(model_id, state_path)
     return sorted(verified)
-
-
-def _expose_for_start(
-    registry: Registry,
-    state: StateStore,
-    model_id: str,
-    litellm_path: Path | None,
-) -> tuple[bool, list[str]]:
-    """Best-effort expose of a model that is (or is about to be) running,
-    so LiteLLM's model_list stays in sync for agents whose route to it is
-    forced through the proxy — see
-    docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md.
-
-    Mutates `state.models[model_id]` in place on success (mirrors
-    `_resolve_or_register`'s own expose_model call above) and returns
-    (True, warnings). Catches ExposeError/LiteLLMConfigError/OSError (the
-    latter covers a plain filesystem failure writing LiteLLM's config,
-    e.g. ENOSPC/EACCES/a read-only config dir) and returns (False,
-    warnings) instead of raising, so an expose failure degrades
-    gracefully rather than blocking an otherwise-successful start —
-    since wt's local-model picker no longer depends on `exposed` at all.
-
-    The caller uses the returned bool, not `state.models[model_id].exposed`
-    directly, to decide whether to persist exposed=True: `state` is read
-    before this call runs (sometimes well before, e.g. across
-    isolate_provider()'s real wall time), so re-reading it afterwards
-    would still reflect that stale snapshot when this function fails
-    before mutating it — silently reverting any exposed/unexpose written
-    by a concurrent process in the meantime.
-    """
-    try:
-        return True, expose_model(
-            registry, state, model_id, litellm_path or default_litellm_config_path()
-        )
-    except (ExposeError, LiteLLMConfigError, OSError) as exc:
-        if isinstance(exc, ExposeError) and "not ready" in str(exc):
-            return False, [
-                f"{model_id} is running but could not be exposed to LiteLLM because it "
-                f"is not yet marked ready: {exc} — run `modelman sync` (or wait for the "
-                f"next reconcile) so readiness catches up, then re-run `modelman start "
-                f"{model_id}` or `modelman expose {model_id}`; re-running `modelman expose "
-                f"{model_id}` right now will hit the same readiness check and fail the "
-                f"same way. Agents whose route to it is forced through LiteLLM won't "
-                f"reach it until this is resolved."
-            ]
-        return False, [
-            f"{model_id} is running but could not be exposed to LiteLLM: {exc} — "
-            f"agents whose route to it is forced through LiteLLM won't reach it "
-            f"until you run `modelman expose {model_id}`"
-        ]
-
-
-def _unexpose_for_stop(
-    state: StateStore,
-    model_id: str,
-    litellm_path: Path | None,
-) -> tuple[bool, list[str]]:
-    """Best-effort unexpose of a model that just stopped (or was found not
-    actually running), so LiteLLM's model_list stops pointing at a dead
-    backend — the counterpart to `_expose_for_start`.
-
-    Mutates `state.models[model_id]` in place on success (mirrors
-    `_expose_for_start`'s own expose_model call) and returns (True,
-    warnings). Catches LiteLLMConfigError/OSError and returns (False,
-    warnings) instead of raising, so a failed unexpose degrades gracefully
-    rather than blocking an otherwise-successful stop — the caller still
-    clears `running`, and `exposed` is left as-is.
-    """
-    try:
-        return True, unexpose_model(state, model_id, litellm_path or default_litellm_config_path())
-    except (LiteLLMConfigError, OSError) as exc:
-        return False, [
-            f"{model_id} was stopped but could not be un-exposed from LiteLLM: {exc} — "
-            f"run `modelman unexpose {model_id}` to finish removing it"
-        ]
 
 
 def start_local_model(
@@ -914,7 +776,7 @@ def start_local_model(
     """
     state = load_state(state_path)
     model, registration_warnings = _resolve_or_register(
-        registry, state, model_id, family, registry_path, state_path, litellm_path
+        registry, state, model_id, family, registry_path, state_path
     )
     resolved_id = model.id
 
@@ -952,8 +814,8 @@ def start_local_model(
     probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
 
     # Re-read rather than reusing the state loaded above: _resolve_or_register()
-    # may have done a real LiteLLM config write that takes non-trivial wall
-    # time, long enough for a concurrent start/stop to change flags meanwhile.
+    # may have registered a discovered model (registry + state writes), and a
+    # concurrent start/stop may have changed flags meanwhile.
     fresh_state = load_state(state_path)
     other_running = sorted(
         mid for mid, s in fresh_state.models.items() if mid != resolved_id and s.running
@@ -962,26 +824,16 @@ def start_local_model(
     already = fresh_state.get(resolved_id).running
     if already:
         if _probe_running(model.provider_id, model.model_name, probe_origin):
-            expose_ok, expose_warnings = _expose_for_start(
-                registry, fresh_state, resolved_id, litellm_path
-            )
-            if expose_ok:
-                try:
-                    with locked_state(state_path) as fresh:
-                        existing = fresh.models.get(resolved_id, ModelState())
-                        if not existing.exposed:
-                            fresh.models[resolved_id] = replace(existing, exposed=True)
-                except OSError as exc:
-                    expose_warnings = expose_warnings + [
-                        f"{resolved_id}'s exposed flag could not be persisted: {exc}"
-                    ]
+            # Re-sync even on the idempotent path: `modelman start <id>` is
+            # the remediation for a running model whose route drifted.
+            sync_warnings = sync_routes(litellm_path=litellm_path)
             return StartResult(
                 model_id=resolved_id,
                 already_running=True,
-                warnings=registration_warnings + expose_warnings,
+                warnings=registration_warnings + sync_warnings,
                 other_running=other_running,
             )
-        _clear_stale_running_flag(resolved_id, state_path, litellm_path)
+        _clear_stale_running_flag(resolved_id, state_path)
 
     if model.provider_id == "ollama":
         # Flag-only: no process action, ollama lazy-loads on request.
@@ -1006,15 +858,15 @@ def start_local_model(
                 raise LocalControlError(
                     f"failed to stop {occupant} before starting {resolved_id}: {exc}"
                 ) from exc
-            _clear_stale_running_flag(occupant, state_path, litellm_path)
+            _clear_stale_running_flag(occupant, state_path)
 
         try:
             result = isolate_provider(model.provider_id, *extra_args, env=env, solo=True)
         except BenchmarkError as exc:
-            _clear_stale_running_flag(resolved_id, state_path, litellm_path)
+            _clear_stale_running_flag(resolved_id, state_path)
             raise LocalControlError(f"failed to start {resolved_id}: {exc}") from exc
         if not result.ok:
-            _clear_stale_running_flag(resolved_id, state_path, litellm_path)
+            _clear_stale_running_flag(resolved_id, state_path)
             raise LocalControlError(
                 f"failed to start {resolved_id}: {result.error or 'unknown error'}"
             )
@@ -1036,17 +888,13 @@ def start_local_model(
             # port, and mtplx's name-checked probe self-heals only on some
             # later read — too late for the warning/indicator this start
             # emits now.
-            _clear_stale_running_flag(occupant, state_path, litellm_path)
+            _clear_stale_running_flag(occupant, state_path)
 
-    expose_ok, expose_warnings = _expose_for_start(registry, fresh_state, resolved_id, litellm_path)
+    sync_warnings = sync_routes(litellm_path=litellm_path)
     try:
         with locked_state(state_path) as fresh:
             existing = fresh.models.get(resolved_id, ModelState())
-            fresh.models[resolved_id] = replace(
-                existing,
-                running=True,
-                exposed=True if expose_ok else existing.exposed,
-            )
+            fresh.models[resolved_id] = replace(existing, running=True)
     except OSError as exc:
         raise LocalControlError(
             f"{resolved_id} started successfully but its running flag could not be "
@@ -1056,7 +904,7 @@ def start_local_model(
         model_id=resolved_id,
         already_running=False,
         direct_url=direct_url,
-        warnings=registration_warnings + expose_warnings,
+        warnings=registration_warnings + sync_warnings,
         other_running=other_running,
     )
 
@@ -1064,15 +912,13 @@ def start_local_model(
 def stop_local_model(
     model_id: str, state_path: Path | None = None, *, litellm_path: Path | None = None
 ) -> StopResult:
-    """Stop exactly one running local model, un-expose it from LiteLLM if
-    it was exposed, and clear its flags. No-op when it isn't running.
-    Raises LocalControlError for an unknown provider id embedded in
-    model_id's prefix.
+    """Stop exactly one running local model, clear its running flag, then
+    run one `wt litellm sync` so LiteLLM's routes follow the new live state
+    (#179). No-op when it isn't running. Raises LocalControlError for an
+    unknown provider id embedded in model_id's prefix.
 
-    A stopped model must not stay routable through LiteLLM — `exposed` is
-    no longer sticky across a stop/start cycle (a fresh start always
-    re-exposes via `_expose_for_start` anyway, so nothing extra is needed
-    on the way back up).
+    The sync runs AFTER the stop and the flag clear: wt probes the
+    providers itself, so the process must already be gone.
     """
     state = load_state(state_path)
     current = state.get(model_id)
@@ -1095,33 +941,20 @@ def stop_local_model(
         except BenchmarkError as exc:
             raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
 
-    unexpose_ok = True
-    warnings: list[str] = []
-    if current.exposed:
-        unexpose_ok, warnings = _unexpose_for_stop(state, model_id, litellm_path)
-
     with locked_state(state_path) as fresh:
         existing = fresh.models.get(model_id)
         if existing is not None and existing.running:
-            fresh.models[model_id] = replace(
-                existing,
-                running=False,
-                exposed=(
-                    state.models[model_id].exposed
-                    if (current.exposed and unexpose_ok)
-                    else existing.exposed
-                ),
-            )
-    return StopResult(stopped_model_id=model_id, warnings=warnings)
+            fresh.models[model_id] = replace(existing, running=False)
+    return StopResult(stopped_model_id=model_id, warnings=sync_routes(litellm_path=litellm_path))
 
 
 def stop_all_local_models(
     state_path: Path | None = None, *, litellm_path: Path | None = None
 ) -> StopAllResult:
-    """Stop every currently-running local model, best-effort un-expose
-    every one that was exposed in a single batched LiteLLM write, and
-    clear all their flags. Returns the sorted list of model ids that were
-    stopped plus any non-fatal warnings (e.g. a failed batch unexpose)."""
+    """Stop every currently-running local model, clear all their running
+    flags, then run ONE `wt litellm sync` for the lot (#179). Returns the
+    sorted list of model ids that were stopped plus any non-fatal warnings
+    (e.g. a failed sync)."""
     state = load_state(state_path)
     running_ids = sorted(mid for mid, s in state.models.items() if s.running)
     if not running_ids:
@@ -1131,35 +964,9 @@ def stop_all_local_models(
     except BenchmarkError as exc:
         raise LocalControlError(f"failed to stop local models: {exc}") from exc
 
-    exposed_ids = [mid for mid in running_ids if state.models[mid].exposed]
-    exposed_id_set = set(exposed_ids)
-    unexpose_ok = True
-    warnings: list[str] = []
-    if exposed_ids:
-        try:
-            warnings = apply_unexpose_queue(
-                state, exposed_ids, litellm_path or default_litellm_config_path()
-            )
-        except (LiteLLMConfigError, OSError) as exc:
-            unexpose_ok = False
-            warnings = [
-                f"{len(exposed_ids)} stopped model(s) could not be un-exposed from "
-                f"LiteLLM ({exc}); they may still be routable through a dead backend "
-                f"until you run `modelman unexpose <id>` for each: "
-                f"{', '.join(exposed_ids)}"
-            ]
-
     with locked_state(state_path) as fresh:
         for mid in running_ids:
             existing = fresh.models.get(mid)
             if existing is not None and existing.running:
-                fresh.models[mid] = replace(
-                    existing,
-                    running=False,
-                    exposed=(
-                        state.models[mid].exposed
-                        if (mid in exposed_id_set and unexpose_ok)
-                        else existing.exposed
-                    ),
-                )
-    return StopAllResult(stopped=running_ids, warnings=warnings)
+                fresh.models[mid] = replace(existing, running=False)
+    return StopAllResult(stopped=running_ids, warnings=sync_routes(litellm_path=litellm_path))

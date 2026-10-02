@@ -2289,11 +2289,9 @@ async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_pat
             timeouts.append(timeout)
             raise wt_bridge.WtBridgeError(f"wt litellm status timed out after {timeout:g}s")
         if args[:1] == ["providers"]:
-            # Task 9's mount-time prefetch also warms provider_cloud_flags()
-            # concurrently with the status read, so a fully-hung wt must
-            # degrade this call too, not just "status" — provider_cloud_flags()
-            # itself catches WtBridgeError and returns {}, so this must not
-            # propagate as an unhandled exception out of the prefetch pool.
+            # Mount no longer reads provider flags (#179), but any later
+            # provider_cloud_flags() read must degrade too, not just "status"
+            # — it catches WtBridgeError and returns {}.
             raise wt_bridge.WtBridgeError("wt litellm providers timed out")
         raise AssertionError(args)
 
@@ -2324,14 +2322,13 @@ async def test_render_litellm_status_tolerates_unmounted_screen(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypatch):
-    # provider_cloud_flags() and litellm_status() must run CONCURRENTLY at
-    # mount, not back-to-back — two cold, ~5s-bounded subprocess reads run
-    # one after another would block the initial paint for up to ~10s. Both
-    # stubs sleep briefly and are timed; concurrent execution keeps the
-    # wall-clock total close to one sleep instead of the sum of both. The
-    # threshold below has slack for CI scheduling jitter — a serialized
-    # run's floor (both sleeps summed) is above it.
+async def test_on_mount_reads_status_without_waiting_on_provider_flags(tmp_path, monkeypatch):
+    # Mount reads wt's status only; it no longer warms provider_cloud_flags()
+    # (#179: nothing on the start path needs it once start syncs instead of
+    # exposing). Both stubs sleep briefly and are timed; the wall-clock total
+    # must stay close to the one status read — a mount that also waited on
+    # the flags read would sum both sleeps, above the threshold (which has
+    # slack for CI scheduling jitter).
     import time as time_mod
 
     from modelman import wt_bridge
@@ -2365,8 +2362,7 @@ async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypa
         await pilot.pause()
         await _open_model_screen(pilot)
     elapsed = time_mod.monotonic() - start
-    assert elapsed < 0.95, f"mount took {elapsed:.2f}s, want the two reads run concurrently (~0.5s)"
-    assert flags_calls, "the mount-time prefetch must warm provider_cloud_flags()"
+    assert elapsed < 0.95, f"mount took {elapsed:.2f}s, want only the status read (~0.5s)"
 
 
 def test_edit_carryover_preserves_time_prices_and_extra():

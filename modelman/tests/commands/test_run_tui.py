@@ -228,6 +228,27 @@ def test_run_queued_ops_syncs_routes_once(tmp_path, monkeypatch, wt_calls):
     assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
 
 
+def test_run_queued_ops_saves_registry_before_syncing(tmp_path, monkeypatch):
+    """wt reads registry.toml itself, so the sync must run only after the
+    queue's registry change is on disk: the deleted model is already gone
+    when the sync is called."""
+    from modelman.registry import load_registry
+
+    entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
+    reg_path, _ = _seed(tmp_path, monkeypatch, models=[entry])
+    seen: list[list[str]] = []
+
+    def recording_sync(**kwargs):
+        seen.append([m.id for m in load_registry(reg_path).models])
+        return []
+
+    monkeypatch.setattr("modelman.main.sync_routes", recording_sync)
+    with patch("modelman.main.ProviderRegistry.get", return_value=MagicMock()):
+        failed = run_queued_ops(QueuedOps(deletes={"ollama/x": model_entry_to_variant(entry)}))
+    assert failed is False
+    assert seen == [[]]
+
+
 def test_run_queued_ops_syncs_once_after_unexpected_apply_exception(
     tmp_path, monkeypatch, wt_calls
 ):
@@ -274,6 +295,25 @@ def test_run_tui_syncs_when_registry_changed_without_queue(tmp_path, monkeypatch
     from modelman.main import run_tui
 
     run_tui()
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+def test_run_tui_registry_edit_plus_queue_syncs_once(tmp_path, monkeypatch, wt_calls):
+    """An add/edit AND an applied queue in one session: run_queued_ops'
+    sync covers both — no second sync from the registry-changed branch."""
+    entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
+    reg_path, _ = _seed(tmp_path, monkeypatch, models=[entry])
+
+    class FakeApp:
+        def run(self):
+            reg_path.write_text(reg_path.read_text() + "\n# edited\n")
+            return QueuedOps(deletes={"ollama/x": model_entry_to_variant(entry)})
+
+    monkeypatch.setattr("modelman.app.ModelmanApp", FakeApp)
+    from modelman.main import run_tui
+
+    with patch("modelman.main.ProviderRegistry.get", return_value=MagicMock()):
+        run_tui()
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 

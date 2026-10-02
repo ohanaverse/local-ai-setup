@@ -594,7 +594,7 @@ def start(
     model_id may be a registry id, an existing model's native
     provider-side name, or the native name of a model a provider has on
     disk but that has no registry.toml entry yet — the last case prompts
-    for a family, then registers, exposes, and starts it in one step.
+    for a family, then registers and starts it in one step.
 
     Omit model_id to print a live inventory: models registered and on
     disk, models registered but missing their artifact, and on-disk

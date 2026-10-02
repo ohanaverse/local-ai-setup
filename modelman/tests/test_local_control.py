@@ -4,20 +4,17 @@ calls are mocked; these tests cover validation, probe-based idempotency,
 stale-marker recovery, and marker mutation — not bin/llm-isolate-provider
 itself (see tests/benchmark/test_isolation.py for that)."""
 
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from modelman.benchmark.isolation import IsolateResult
-from modelman.litellm import ExposeError
 from modelman.local_control import (
     DiscoveredModel,
     DiscoveredModelNeedsFamily,
     InventoryEntry,
     LocalControlError,
-    _clear_stale_running_flag,
     _name_matches,
     _probe_running,
     discover_unregistered_models,
@@ -144,163 +141,86 @@ def test_start_already_running_and_probed_serving_is_idempotent(tmp_path):
     assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
 
 
-def test_start_exposes_previously_unexposed_ready_model(tmp_path):
-    # The motivating bug: a model started via `modelman start` but never
-    # separately exposed showed as running in modelman's own TUI but
-    # never appeared in wt's picker, because wt used to also require
-    # exposed=true for local models. Under the 2026-09-15 design wt no
-    # longer checks `exposed` for local models at all, so the flag's only
-    # remaining job is keeping LiteLLM's model_list in sync for agents
-    # whose route is forced through the proxy — a fresh start of an
-    # already-ready, not-yet-exposed model must expose it too, with no
-    # separate `modelman expose` step required.
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=False))
-    save_state(store, state_path)
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text("model_list: []\n")
-
-    result = start_local_model(
-        _registry(), "ollama/qwen3.8:27b-mlx", state_path, litellm_path=litellm_path
-    )
-
-    assert result.already_running is False
-    state = load_state(state_path)
-    assert state.get("ollama/qwen3.8:27b-mlx").running is True
-    assert state.get("ollama/qwen3.8:27b-mlx").exposed is True
+def test_start_syncs_routes_once_and_writes_no_exposed(tmp_path, wt_calls):
+    """#179: starting a model routes it via one `wt litellm sync`; modelman
+    no longer flips an exposed flag or calls expose."""
+    state_path = _state_path(tmp_path, {})
+    with (
+        patch("modelman.local_control.isolate_provider"),
+        patch("modelman.local_control.stop_provider"),
+        patch("modelman.local_control.stop_all_local_providers"),
+    ):
+        start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+    assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
+    # Interim (Task 11 switches this to `"exposed" not in state_path.read_text()`).
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").exposed is False
 
 
-def test_start_already_running_unexposed_model_gets_exposed(tmp_path):
-    # Re-running `modelman start` on a model that's already running but
-    # was never exposed (drifted state from before this feature, or a
-    # manually-cleared exposed flag on a still-running model) is the
-    # remediation path — it must expose the model without a full
-    # teardown/restart, since the probe already confirms it's healthy.
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=False, running=True))
-    save_state(store, state_path)
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text("model_list: []\n")
+def test_stop_all_syncs_routes_once(tmp_path, wt_calls):
+    """#179: stop --all costs one sync for every model it stopped."""
+    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True, "omlx/model-a": True})
+    with patch("modelman.local_control.stop_all_local_providers"):
+        result = stop_all_local_models(state_path)
+    assert sorted(result.stopped) == ["ollama/qwen3.8:27b-mlx", "omlx/model-a"]
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+def test_start_already_running_model_resyncs_routes(tmp_path, wt_calls):
+    # Re-running `modelman start` on a model that's already running is the
+    # remediation path for a route that drifted: the probe confirms it's
+    # healthy, so there's no teardown/restart — just one `wt litellm sync`.
+    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True})
 
     with patch("modelman.local_control._probe_running", return_value=True):
-        result = start_local_model(
-            _registry(), "ollama/qwen3.8:27b-mlx", state_path, litellm_path=litellm_path
-        )
+        result = start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
 
     assert result.already_running is True
-    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").exposed is True
-
-
-def test_start_succeeds_with_warning_when_expose_fails(tmp_path):
-    # A model that isn't `ready` yet can still be started — expose_model's
-    # ready gate rejects it, but that must degrade to a warning rather
-    # than aborting an otherwise-successful start: wt's local-model
-    # visibility no longer depends on `exposed` at all, only on the
-    # running probe, so a failed expose must not block getting the model
-    # running.
-    state_path = _state_path(tmp_path, {})  # ready defaults to False
-
-    result = start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
-
-    assert result.already_running is False
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
     assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
-    assert any("could not be exposed" in w for w in result.warnings)
 
 
-def test_start_succeeds_with_warning_when_expose_raises_oserror(tmp_path):
-    # Regression test: expose_model()'s underlying LiteLLM config write can
-    # raise a plain OSError (ENOSPC, EACCES, a read-only config dir) rather
-    # than one of the two exception types _expose_for_start used to catch.
-    # Before this fix an uncaught OSError here would propagate out of
-    # start_local_model() on the fresh-start path — AFTER the local model's
-    # process had already been isolate_provider()-started — leaving the
-    # model genuinely running while its `running` flag never got persisted.
-    # It must instead degrade to a warning, same as ExposeError/
-    # LiteLLMConfigError.
-    state_path = _state_path(tmp_path, {})  # ready defaults to False
+def test_start_succeeds_with_warning_when_sync_fails(tmp_path):
+    # A failed `wt litellm sync` must degrade to a warning rather than
+    # abort an otherwise-successful start: the running flag is still
+    # persisted, and the warning names the command that fixes the routes.
+    from modelman import wt_bridge
 
-    with patch(
-        "modelman.local_control.expose_model", side_effect=OSError(28, "No space left on device")
-    ):
+    state_path = _state_path(tmp_path, {})
+
+    with patch.object(wt_bridge, "sync", side_effect=wt_bridge.WtBridgeError("wt not on PATH")):
         result = start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
 
     assert result.already_running is False
     assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
-    assert any("could not be exposed" in w for w in result.warnings)
+    assert any("not synced" in w and "wt litellm sync" in w for w in result.warnings)
 
 
-def test_stop_local_model_unexposes_a_previously_exposed_model(tmp_path):
-    # A stopped model must not stay routable through LiteLLM: stopping
-    # removes its model_list row and clears the exposed flag, so a stale
-    # backend is never left configured. (Superseded the earlier "exposed
-    # is sticky across stop/start" design.)
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=True, running=True))
-    save_state(store, state_path)
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text(
-        "model_list:\n"
-        "  - model_name: ollama/qwen3.8:27b-mlx\n"
-        "    litellm_params:\n"
-        "      model: ollama/qwen3.8:27b-mlx\n"
-    )
+def test_stop_local_model_syncs_once_after_clearing_the_flag(tmp_path):
+    # A stopped model must not stay routable through LiteLLM: stopping runs
+    # one `wt litellm sync`, and only AFTER the process is stopped and the
+    # running flag cleared — wt probes live state, so the sync must see the
+    # model gone.
+    from modelman import wt_bridge
 
-    with patch("modelman.local_control._stop_ollama_model") as mock_stop_ollama:
-        result = stop_local_model("ollama/qwen3.8:27b-mlx", state_path, litellm_path=litellm_path)
+    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True})
+    seen_running: list[bool] = []
+
+    def recording_sync(**kwargs):
+        seen_running.append(load_state(state_path).get("ollama/qwen3.8:27b-mlx").running)
+        return wt_bridge.BridgeResult([], False, ["a sync warning"])
+
+    with (
+        patch("modelman.local_control._stop_ollama_model") as mock_stop_ollama,
+        patch.object(wt_bridge, "sync", side_effect=recording_sync),
+    ):
+        result = stop_local_model("ollama/qwen3.8:27b-mlx", state_path)
     mock_stop_ollama.assert_called_once_with("qwen3.8:27b-mlx")
 
-    state = load_state(state_path)
-    assert state.get("ollama/qwen3.8:27b-mlx").running is False
-    assert state.get("ollama/qwen3.8:27b-mlx").exposed is False
+    assert seen_running == [False]
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is False
     assert result.stopped_model_id == "ollama/qwen3.8:27b-mlx"
-    assert result.warnings == []
-
-
-def test_stop_local_model_preserves_concurrent_expose_when_nothing_to_unexpose(tmp_path):
-    # Same race guard, single-stop path: stopping a model that was never
-    # exposed must not clobber a concurrent expose landing in the
-    # meantime back to the stale False snapshot.
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/a", ModelState(ready=True, exposed=False, running=True))
-    save_state(store, state_path)
-
-    def _load_then_race(path=None):
-        result = load_state(path)
-        with locked_state(state_path) as fresh:
-            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=True)
-        return result
-
-    with (
-        patch("modelman.local_control.load_state", side_effect=_load_then_race),
-        patch("modelman.local_control._stop_ollama_model") as mock_stop_ollama,
-        patch("modelman.local_control.unexpose_model") as mock_unexpose,
-    ):
-        result = stop_local_model("ollama/a", state_path)
-
-    mock_unexpose.assert_not_called()
-    mock_stop_ollama.assert_called_once_with("a")
-    assert result.stopped_model_id == "ollama/a"
-    state = load_state(state_path)
-    assert state.get("ollama/a").running is False
-    assert state.get("ollama/a").exposed is True
-
-
-def test_stop_local_model_skips_unexpose_when_not_exposed(tmp_path):
-    # No point touching LiteLLM's config for a model that was never
-    # exposed — this also means a stop with no litellm_path passed never
-    # falls through to default_litellm_config_path() for the common case.
-    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True})
-
-    with (
-        patch("modelman.local_control._stop_ollama_model"),
-        patch("modelman.local_control.unexpose_model") as mock_unexpose,
-    ):
-        stop_local_model("ollama/qwen3.8:27b-mlx", state_path)
-    mock_unexpose.assert_not_called()
+    assert result.warnings == ["a sync warning"]
 
 
 def test_start_marker_names_dead_model_clears_it_and_restarts(tmp_path):
@@ -888,236 +808,41 @@ def test_running_model_ids_filters_to_probe_verified(tmp_path):
     assert ids == ["ollama/qwen3.8:27b-mlx"]
 
 
-def test_stop_all_local_models_unexposes_each_stopped_model(tmp_path):
-    # `--all` must not leave a stopped model's LiteLLM row behind either —
-    # same expose/running symmetry as a single stop_local_model() call,
-    # just applied to every model the batch stops, in a single batched
-    # config write (see test_stop_all_local_models_unexposes_in_one_batch
-    # for the call-count assertion).
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=True, running=True))
-    store.set("omlx/model-a", ModelState(ready=True, exposed=False, running=True))
-    save_state(store, state_path)
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text(
-        "model_list:\n"
-        "  - model_name: ollama/qwen3.8:27b-mlx\n"
-        "    litellm_params:\n"
-        "      model: ollama/qwen3.8:27b-mlx\n"
-    )
+def test_stop_all_local_models_surfaces_sync_failure_as_warning(tmp_path):
+    # A failed sync must not be silently swallowed: every process still
+    # stops and every running flag still clears, but the caller (main.py's
+    # --all branch) needs a warning to print, mirroring stop_local_model's
+    # StopResult.warnings.
+    from modelman import wt_bridge
 
-    with patch("modelman.local_control.stop_all_local_providers"):
-        result = stop_all_local_models(state_path, litellm_path=litellm_path)
-
-    assert sorted(result.stopped) == ["ollama/qwen3.8:27b-mlx", "omlx/model-a"]
-    assert result.warnings == []
-    state = load_state(state_path)
-    assert state.get("ollama/qwen3.8:27b-mlx").exposed is False
-    assert state.get("omlx/model-a").exposed is False  # was never exposed; stays False
-
-
-def test_stop_all_local_models_unexposes_in_one_batched_call(tmp_path):
-    # Two exposed models being stopped together must go through ONE
-    # apply_unexpose_queue call (one config load/save/restart), not one
-    # unexpose_model() call per model — the efficiency half of the
-    # code-review finding this task fixes.
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
-    store.set("ollama/b", ModelState(ready=True, exposed=True, running=True))
-    save_state(store, state_path)
+    state_path = _state_path(tmp_path, {"ollama/a": True})
 
     with (
         patch("modelman.local_control.stop_all_local_providers"),
-        patch("modelman.local_control.apply_unexpose_queue", return_value=[]) as mock_batch,
-    ):
-        result = stop_all_local_models(state_path)
-
-    mock_batch.assert_called_once()
-    (_, called_ids, _), _ = mock_batch.call_args
-    assert sorted(called_ids) == ["ollama/a", "ollama/b"]
-    assert sorted(result.stopped) == ["ollama/a", "ollama/b"]
-
-
-def test_stop_all_local_models_surfaces_unexpose_failure_as_warning(tmp_path):
-    # A batch unexpose failure (disk full, unwritable config) must not be
-    # silently swallowed: every process still stops and every running
-    # flag still clears, but the caller (main.py's --all branch) needs a
-    # warning to print, mirroring stop_local_model's StopResult.warnings.
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
-    save_state(store, state_path)
-
-    with (
-        patch("modelman.local_control.stop_all_local_providers"),
-        patch(
-            "modelman.local_control.apply_unexpose_queue",
-            side_effect=OSError(28, "No space left on device"),
-        ),
+        patch.object(wt_bridge, "sync", side_effect=wt_bridge.WtBridgeError("wt not on PATH")),
     ):
         result = stop_all_local_models(state_path)
 
     assert result.stopped == ["ollama/a"]
-    assert any("could not be un-exposed" in w for w in result.warnings)
-    state = load_state(state_path)
-    # The process is stopped either way — a failed unexpose must not block it.
-    assert state.get("ollama/a").running is False
+    assert any("not synced" in w for w in result.warnings)
+    # The process is stopped either way — a failed sync must not block it.
+    assert load_state(state_path).get("ollama/a").running is False
 
 
-def test_stop_all_local_models_failed_unexpose_does_not_clobber_concurrent_exposed_write(
-    tmp_path,
-):
-    # Race guard: stop_all_local_models() loads `state` once up front, then
-    # (in this test) a concurrent process flips `exposed` on disk while the
-    # batch unexpose is failing. The flag write at the end must fall back
-    # to the freshly-locked value, not the stale pre-attempt snapshot —
-    # the same guard stop_local_model() already has.
-    from modelman.state import locked_state
-
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
-    save_state(store, state_path)
-
-    def _concurrent_write_then_fail(*args, **kwargs):
-        # Simulate another process (e.g. `modelman unexpose ollama/a`)
-        # racing this stop_all_local_models() call.
-        with locked_state(state_path) as fresh:
-            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=False)
-        raise OSError(28, "No space left on device")
-
-    with (
-        patch("modelman.local_control.stop_all_local_providers"),
-        patch(
-            "modelman.local_control.apply_unexpose_queue",
-            side_effect=_concurrent_write_then_fail,
-        ),
-    ):
-        stop_all_local_models(state_path)
-
-    # Must reflect the concurrent write (False), not the stale pre-attempt
-    # snapshot (True) that stop_all_local_models loaded before the race.
-    assert load_state(state_path).get("ollama/a").exposed is False
-
-
-def test_stop_all_local_models_preserves_concurrent_expose_when_nothing_to_unexpose(tmp_path):
-    # Same race guard, --all path: a model with nothing to unexpose (it
-    # was never exposed) must not have a concurrent expose clobbered
-    # back to the stale False snapshot either.
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/a", ModelState(ready=True, exposed=False, running=True))
-    save_state(store, state_path)
-
-    def _load_then_race(path=None):
-        result = load_state(path)
-        with locked_state(state_path) as fresh:
-            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=True)
-        return result
-
-    with (
-        patch("modelman.local_control.load_state", side_effect=_load_then_race),
-        patch("modelman.local_control.stop_all_local_providers"),
-        patch("modelman.local_control.apply_unexpose_queue") as mock_apply,
-    ):
-        result = stop_all_local_models(state_path)
-
-    mock_apply.assert_not_called()
-    assert result.stopped == ["ollama/a"]
-    state = load_state(state_path)
-    assert state.get("ollama/a").running is False
-    assert state.get("ollama/a").exposed is True
-
-
-def test_running_model_ids_unexposes_a_stale_flagged_model(tmp_path):
-    # A model modelman no longer believes is running (probe fails) must
-    # also stop being routable through LiteLLM — the same self-heal that
-    # already clears `running` now clears `exposed` too, wherever a stale
-    # flag is found (TUI mount reconcile is the main caller of this path).
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=True, running=True))
-    save_state(store, state_path)
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text(
-        "model_list:\n"
-        "  - model_name: ollama/qwen3.8:27b-mlx\n"
-        "    litellm_params:\n"
-        "      model: ollama/qwen3.8:27b-mlx\n"
-    )
+def test_running_model_ids_clears_a_stale_flag_without_touching_litellm(tmp_path, wt_calls):
+    # A flagged model whose probe fails gets its running flag cleared (TUI
+    # mount reconcile is the main caller of this path). Routing is not this
+    # path's job any more (#179): wt's sync probes live state itself.
+    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True})
     registry = _registry()
     state = load_state(state_path)
 
     with patch("modelman.local_control._probe_running", return_value=False):
-        ids = running_model_ids(registry, state, state_path, litellm_path=litellm_path)
+        ids = running_model_ids(registry, state, state_path)
 
     assert ids == []
-    on_disk = load_state(state_path)
-    assert on_disk.get("ollama/qwen3.8:27b-mlx").running is False
-    assert on_disk.get("ollama/qwen3.8:27b-mlx").exposed is False
-
-
-def test_clear_stale_running_flag_failed_unexpose_does_not_clobber_concurrent_write(tmp_path):
-    # Same race guard as stop_all_local_models: if unexpose_model() fails
-    # while this function is clearing a stale flag, the exposed field it
-    # writes back must reflect whatever a concurrent process wrote in the
-    # meantime, not the stale pre-attempt snapshot this function loaded
-    # for itself at the top.
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
-    save_state(store, state_path)
-    litellm_path = tmp_path / "config.yaml"  # missing -> unexpose_model raises
-
-    def _concurrent_write_then_fail(*args, **kwargs):
-        with locked_state(state_path) as fresh:
-            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=False)
-        raise OSError(28, "No space left on device")
-
-    with patch("modelman.local_control.unexpose_model", side_effect=_concurrent_write_then_fail):
-        _clear_stale_running_flag("ollama/a", state_path, litellm_path)
-
-    state = load_state(state_path)
-    assert state.get("ollama/a").running is False
-    # Must reflect the concurrent write, not the stale True snapshot this
-    # function loaded before the race.
-    assert state.get("ollama/a").exposed is False
-
-
-def test_clear_stale_running_flag_preserves_concurrent_expose_when_nothing_to_unexpose(tmp_path):
-    # When the model was already not-exposed at read time, this function
-    # never attempts an unexpose — but the final write used to overwrite
-    # `exposed` unconditionally with the stale pre-attempt snapshot
-    # anyway. A concurrent `modelman expose <id>` landing in the window
-    # between this function's initial load_state() and its own
-    # locked_state() call must survive, not get clobbered back to False.
-    from modelman.local_control import _clear_stale_running_flag
-    from modelman.state import load_state as real_load_state
-    from modelman.state import locked_state
-
-    state_path = tmp_path / "modelman.toml"
-    store = StateStore()
-    store.set("ollama/a", ModelState(ready=True, exposed=False, running=True))
-    save_state(store, state_path)
-
-    def _load_then_race(path=None):
-        result = real_load_state(path)
-        with locked_state(state_path) as fresh:
-            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=True)
-        return result
-
-    with (
-        patch("modelman.local_control.load_state", side_effect=_load_then_race),
-        patch("modelman.local_control.unexpose_model") as mock_unexpose,
-    ):
-        _clear_stale_running_flag("ollama/a", state_path)
-
-    mock_unexpose.assert_not_called()
-    state = load_state(state_path)
-    assert state.get("ollama/a").running is False
-    assert state.get("ollama/a").exposed is True
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is False
+    assert wt_calls == []
 
 
 def test_start_mlx_lm_server_resolves_pairing_args(tmp_path):
@@ -1293,14 +1018,14 @@ def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
     assert load_registry(registry_path).models == registry.models
 
 
-def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_path):
-    # The full discover -> register -> expose -> start pipeline for a
+def test_start_unregistered_name_with_family_registers_and_starts(tmp_path, wt_calls):
+    # The full discover -> register -> start -> sync pipeline for a
     # provider-native name with no registry.toml entry: this is the
     # single most consequential path this branch adds, so it asserts on
     # every artifact it should produce — the registry.toml entry (family/
     # provider/name/source/location), the in-memory registry the caller
-    # keeps using for the rest of the call, the ready+exposed+sized state,
-    # and the running marker.
+    # keeps using for the rest of the call, the ready+sized state, the
+    # running marker, and exactly one route sync.
     registry = _registry()
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
@@ -1354,9 +1079,10 @@ def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_pa
     state_on_disk = load_state(state_path)
     model_state = state_on_disk.get("ollama/llama3.2:3b")
     assert model_state.ready is True
-    assert model_state.exposed is True
     assert model_state.size_bytes == 2_000_000_000
     assert load_state(state_path).get("ollama/llama3.2:3b").running is True
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+    assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
 
 
 def test_start_unregistered_name_registry_write_failure_raises_local_control_error(tmp_path):
@@ -1957,49 +1683,11 @@ def test_inventory_falls_back_to_cached_size_when_provider_reports_none():
     )
 
 
-def test_register_discovered_model_keeps_registry_and_state_when_expose_fails(tmp_path):
-    # expose_model() runs AFTER the registry entry and ready=True state are
-    # persisted, so an ExposeError leaves a registered-but-unexposed model.
-    # That partial state is deliberate (a retry resolves the entry by its
-    # native name instead of registering a duplicate) — this test pins both
-    # the persistence and the error.
-    registry = _registry()
-    registry_path = tmp_path / "registry.toml"
-    save_registry(registry, registry_path)
-    state_path = _state_path(tmp_path)
-    mapping = {
-        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
-    }
-
-    with (
-        _patch_provider_local_models(mapping),
-        patch("modelman.local_control.expose_model", side_effect=ExposeError("no litellm config")),
-        pytest.raises(LocalControlError, match="registered"),
-    ):
-        start_local_model(
-            registry,
-            "llama3.2:3b",
-            state_path,
-            family="discovered",
-            registry_path=registry_path,
-        )
-
-    entry = load_registry(registry_path).model("ollama/llama3.2:3b")
-    assert entry.model_name == "llama3.2:3b"
-    persisted = load_state(state_path).get("ollama/llama3.2:3b")
-    assert persisted.ready is True
-    assert persisted.exposed is False
-    # Nothing was started: the failure happens during resolution.
-    assert load_state(state_path).get("ollama/llama3.2:3b").running is False
-
-
-def test_register_discovered_model_persists_registry_before_exposing(tmp_path):
-    # wt writes the LiteLLM route from registry.toml ON DISK, so a
-    # just-discovered model must be persisted before the expose is
-    # delegated — otherwise wt answers "model not found in registry" and
-    # the auto-register+expose half of `modelman start <native-name>`
-    # silently stops working. Covers both expose call sites on this path
-    # (_register_discovered_model's own, and _expose_for_start's).
+def test_register_discovered_model_persists_registry_before_syncing(tmp_path):
+    # wt builds LiteLLM routes from registry.toml ON DISK, so a
+    # just-discovered model must be persisted before the sync runs —
+    # otherwise wt never sees it and `modelman start <native-name>` leaves
+    # it unrouted.
     from modelman import wt_bridge
 
     registry = _registry()
@@ -2011,15 +1699,13 @@ def test_register_discovered_model_persists_registry_before_exposing(tmp_path):
     }
     seen: list[list[str]] = []
 
-    def recording_expose(ids, **kwargs):
+    def recording_sync(**kwargs):
         seen.append([m.id for m in load_registry(registry_path).models])
-        return wt_bridge.BridgeResult(
-            [wt_bridge.BridgeOutcome(i, "exposed", None) for i in ids], True, []
-        )
+        return wt_bridge.BridgeResult([], True, [])
 
     with (
         _patch_provider_local_models(mapping),
-        patch.object(wt_bridge, "expose", recording_expose),
+        patch.object(wt_bridge, "sync", recording_sync),
     ):
         start_local_model(
             registry,
@@ -2029,8 +1715,8 @@ def test_register_discovered_model_persists_registry_before_exposing(tmp_path):
             registry_path=registry_path,
         )
 
-    assert seen, "the discovered model was never exposed"
-    assert all("ollama/llama3.2:3b" in ids for ids in seen)
+    assert len(seen) == 1, "the start must sync exactly once"
+    assert "ollama/llama3.2:3b" in seen[0]
 
 
 def test_register_discovered_model_refuses_an_id_that_already_exists(tmp_path):

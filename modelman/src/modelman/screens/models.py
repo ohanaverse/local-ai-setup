@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -292,7 +291,7 @@ class ModelScreen(Screen[None]):
             "COST",
             "SIZE",
         )
-        self._prefetch_litellm_state()
+        self._fetch_litellm_status()
         self.reload()
         self._refresh_pending_bar()
         self._render_litellm_status()
@@ -385,19 +384,6 @@ class ModelScreen(Screen[None]):
         """
         self._fetch_litellm_status()
         self._render_litellm_status()
-
-    def _prefetch_litellm_state(self) -> None:
-        """Warm the provider-flags cache and read wt's status CONCURRENTLY
-        instead of back-to-back: each is a subprocess call bounded at ~5s
-        when its cache is cold, and running them one after another could
-        block the initial paint for up to ~10s. Blocks until both are done
-        (still synchronous overall), but the wall-clock cost is the slower
-        of the two, not their sum."""
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            status_future = pool.submit(self._fetch_litellm_status)
-            flags_future = pool.submit(wt_bridge.provider_cloud_flags)
-            status_future.result()
-            flags_future.result()
 
     def _render_litellm_status(self) -> None:
         status = self._litellm_status
