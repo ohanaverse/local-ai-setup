@@ -783,6 +783,63 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	}
 }
 
+// TestLitellmSyncJSONMatchesContract pins `wt litellm sync --json` against the
+// shared fixture's sync block. The result comes from a real litellm.Sync over
+// a config.yaml that exercises every outcome — unrouted, rewritten, adopted,
+// routed and a per-id error — so the action names are pinned where Sync
+// assigns them, not restated by hand. modelman parses this shape with
+// parse_change_result (modelman/tests/contracts/test_litellm_cli_fixture.py).
+func TestLitellmSyncJSONMatchesContract(t *testing.T) {
+	p := litellmEnv(t, `model_list:
+  - model_name: openrouter/old
+    litellm_params: {model: openrouter/old}
+    model_info: {wt_managed: true}
+  - model_name: openrouter/x
+    litellm_params: {model: openrouter/STALE}
+    model_info: {wt_managed: true}
+  - model_name: openrouter/adopt
+    litellm_params: {model: openrouter/adopt}
+`)
+	cfg := litellmCloudTestConfig()
+	for _, id := range []string{"adopt", "new", "bad"} {
+		name := id
+		if id == "bad" {
+			name = ""
+		}
+		cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/" + id, ProviderID: "openrouter", ModelName: name, Location: config.LocationCloud})
+	}
+	res, err := litellm.Sync(cfg, nil, litellm.Options{Path: p, Restart: func() []string { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := reportLitellm(&out, &errOut, res, true, false); !errors.Is(err, errLitellmIDFailed) {
+		t.Fatalf("reportLitellm err = %v, want errLitellmIDFailed", err)
+	}
+	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	block, ok := fixture["sync"]
+	if !ok {
+		t.Fatal("fixture has no sync block")
+	}
+	var got, want any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out.String())
+	}
+	if err := json.Unmarshal(block, &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sync --json =\n%s\nfixture =\n%s", out.String(), block)
+	}
+}
+
 // downProbeWarn is the warning a provider whose server refused the probe
 // connection produces in both sync modes, spelled out once so the dry-run and
 // real-run tests compare the same string.

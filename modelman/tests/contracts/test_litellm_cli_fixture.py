@@ -22,6 +22,22 @@ def test_change_fixture_parses():
     assert res.outcomes[1].error and res.changed and res.warnings
 
 
+def test_sync_fixture_parses():
+    # Pins `wt litellm sync --json`, which modelman's bridge parses with the
+    # same reader as expose/unexpose: every sync action survives the parse, and
+    # a per-id build error arrives as an error, not an action.
+    doc = json.loads(FIXTURE.read_text())
+    res = parse_change_result(json.dumps(doc["sync"]))
+    assert [(o.id, o.action) for o in res.outcomes if not o.error] == [
+        ("openrouter/old", "unrouted"),
+        ("openrouter/x", "rewritten"),
+        ("openrouter/adopt", "adopted"),
+        ("openrouter/new", "routed"),
+    ]
+    assert [o.id for o in res.outcomes if o.error] == ["openrouter/bad"]
+    assert res.changed and res.warnings == []
+
+
 def test_status_fixture_parses():
     # Pins the routing-state shape modelman's TUI and CLI read.
     doc = json.loads(FIXTURE.read_text())
