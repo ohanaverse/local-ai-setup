@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -128,8 +129,10 @@ func TestApplyFileLevelFailures(t *testing.T) {
 }
 
 // TestSyncReconcilesLocalRoutes pins reconciliation: running local models get
-// a route, stopped local models lose theirs, cloud rows and unrelated rows are
-// untouched. This is what repairs the stale-route drift.
+// a route and stopped local models lose theirs, while a row wt does not own
+// (keep/me here) is left alone. That is what repairs the stale-route drift.
+// The fixture's unmarked cloud row (openrouter/x/y) is not left untouched: the
+// reconciling sync adopts and rewrites it, which is why it stays in place.
 func TestSyncReconcilesLocalRoutes(t *testing.T) {
 	o, _, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -186,6 +189,7 @@ func TestModelForAndLocalModels(t *testing.T) {
 // restarts the proxy exactly once, and that a running local model that is not
 // ready in the registry still gets its route (Sync passes SkipReadyGate: the
 // model is verifiably running). Each restart kills in-flight agent requests.
+// Since #179 the configured cloud model is also routed, in the same pass.
 func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
 	o, restarts, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -199,7 +203,7 @@ func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
 		t.Fatalf("err=%v changed=%v restarts=%d, want nil/true/1", err, res.Changed, *restarts)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "mtplx/Youssofal--Q" {
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y,mtplx/Youssofal--Q" {
 		t.Fatalf("routed = %s", got)
 	}
 }
@@ -208,6 +212,8 @@ func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
 // neither removed (existing route survives while not "running") nor added
 // (running but untouched gets no new route). The caller uses this for
 // families whose provider probe failed, where Running cannot be trusted.
+// The configured cloud model, not being local, is still routed — Untouched
+// covers only the local half.
 func TestSyncLeavesUntouchedModelsAlone(t *testing.T) {
 	o, _, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -218,12 +224,16 @@ litellm_settings:
 `)
 	o.Untouched = []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"}
 	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
-	if err != nil || res.Changed {
-		t.Fatalf("err=%v changed=%v, want nothing changed", err, res.Changed)
+	if err != nil || !res.Changed {
+		t.Fatalf("err=%v changed=%v, want the cloud model routed", err, res.Changed)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
-		t.Fatalf("routed = %s", got)
+	got := f.RoutedIDs()
+	if !slices.Contains(got, "ollama/gemma:9b") {
+		t.Fatalf("routed = %v, untouched gemma:9b was removed", got)
+	}
+	if slices.Contains(got, "mtplx/Youssofal--Q") {
+		t.Fatalf("routed = %v, untouched mtplx got a new route", got)
 	}
 }
 
@@ -252,8 +262,8 @@ func TestSyncDecidesUnderTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if ids := f.RoutedIDs(); len(ids) != 0 {
-		t.Fatalf("routed = %v, want the not-running model's route removed", ids)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y" {
+		t.Fatalf("routed = %s, want the not-running model's route removed and the cloud route added", got)
 	}
 }
 
@@ -306,8 +316,8 @@ func TestSyncRecheckKeepsModelsThatStartedMeanwhile(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
-		t.Fatalf("routed = %s, want only the model Recheck found running", got)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b,openrouter/x/y" {
+		t.Fatalf("routed = %s, want the model Recheck found running (plus the cloud route)", got)
 	}
 }
 
@@ -325,8 +335,67 @@ func TestSyncRecheckAlsoAppliesToAddSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
-		t.Fatalf("routed = %s, want only the model Recheck still found running", got)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y,ollama/gemma:9b" {
+		t.Fatalf("routed = %s, want the model Recheck still found running (plus the cloud route)", got)
+	}
+}
+
+// isAdoptSubsetOfAdd reports whether every Adopt id is also in Add — the
+// invariant SyncPlan's doc comment states.
+func isAdoptSubsetOfAdd(p SyncPlan) bool {
+	return !slices.ContainsFunc(p.Adopt, func(id string) bool { return !slices.Contains(p.Add, id) })
+}
+
+// TestPlanSyncAdoptStaysSubsetOfAddWhenRecheckPrunes pins SyncPlan's documented
+// invariant — Adopt is the subset of Add that replaces an unmarked row — when
+// Recheck prunes an id from Add. The under-lock Recheck is a Sync concept
+// (PlanSync forces it off, see TestPlanSyncIgnoresRecheck), so the invariant is
+// exercised against planSync directly, the function both callers share. Both
+// lists are part of the exported plan, and Sync relabels an added id "adopted"
+// by looking it up in Adopt, so an id left in Adopt after being pruned from Add
+// describes a plan wt does not carry out.
+func TestPlanSyncAdoptStaysSubsetOfAddWhenRecheckPrunes(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "ollama/gemma:9b"
+	// The outer probe saw the local model running, so its unmarked row is an
+	// adopt; Recheck, under the lock, finds nothing running, so the add side
+	// drops it.
+	o := Options{Recheck: func() []string { return nil }}
+	plan, _ := planSync(testConfig(), f, []string{id}, o)
+	if slices.Contains(plan.Add, id) || slices.Contains(plan.Adopt, id) {
+		t.Fatalf("plan = %+v, want the pruned id gone from both Add and Adopt", plan)
+	}
+	if !isAdoptSubsetOfAdd(plan) {
+		t.Fatalf("plan = %+v, want every Adopt id also in Add", plan)
+	}
+}
+
+// TestPlanSyncIgnoresRecheck pins that the exported dry run never runs
+// Recheck: PlanSync holds no config.yaml lock (Recheck is Sync's under-the-lock
+// re-verification) and must report exactly the plan built from the caller's
+// original probe. The probe here reports the model running but Recheck would
+// find nothing running — a PlanSync that honored Recheck would both call it
+// (counted) and wrongly prune the add.
+func TestPlanSyncIgnoresRecheck(t *testing.T) {
+	o, _, _ := opts(t, "model_list: []\n")
+	called := 0
+	o.Recheck = func() []string { called++; return nil }
+	const id = "ollama/gemma:9b"
+	plan, err := PlanSync(testConfig(), []string{id}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != 0 {
+		t.Fatalf("PlanSync ran Recheck %d time(s)", called)
+	}
+	if !slices.Contains(plan.Add, id) {
+		t.Fatalf("plan = %+v, want the running model's add kept (Recheck is not PlanSync's to run)", plan)
 	}
 }
 
@@ -397,7 +466,433 @@ func TestSyncRecheckTimesOutInsteadOfHoldingTheLock(t *testing.T) {
 		t.Fatalf("Sync took %s, want it to give up around recheckTimeout (%s)", elapsed, recheckTimeout)
 	}
 	f, _ := Open(p)
-	if ids := f.RoutedIDs(); len(ids) != 0 {
-		t.Fatalf("routed = %v, want the route removed (recheck timed out, pre-recheck plan applied)", ids)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y" {
+		t.Fatalf("routed = %s, want the local route removed (recheck timed out, pre-recheck plan applied)", got)
+	}
+}
+
+// readRows opens path and returns its rows (id + managed).
+func readRows(t *testing.T, p string) []RowInfo {
+	t.Helper()
+	f, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f.Rows()
+}
+
+// TestSyncRoutesEveryCloudModel pins #179's core rule: configured means
+// exposed, so sync adds a marked route for every registry cloud model with no
+// expose step, and skips native models.
+func TestSyncRoutesEveryCloudModel(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: []\n")
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v", got)
+	}
+	if !res.Changed || *restarts != 1 {
+		t.Fatalf("changed=%v restarts=%d", res.Changed, *restarts)
+	}
+}
+
+// TestSyncRemovesMarkedRowOfDeletedModel pins that deleting a cloud model
+// from the registry removes its route: the marked row is wt's and is no
+// longer desired.
+func TestSyncRemovesMarkedRowOfDeletedModel(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/gone
+    litellm_params: {model: openrouter/gone}
+    model_info: {wt_managed: true}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range readRows(t, p) {
+		if r.ID == "openrouter/gone" {
+			t.Fatalf("stale marked row survived: %v", readRows(t, p))
+		}
+	}
+}
+
+// TestSyncNeverTouchesHandWrittenRows pins the safety rule: an unmarked row
+// whose name is not a registry id wt manages — even one shaped like a
+// registry id — is never removed or rewritten.
+func TestSyncNeverTouchesHandWrittenRows(t *testing.T) {
+	const hand = `  - model_name: openrouter/deleted-before-upgrade
+    litellm_params: {model: openrouter/deleted-before-upgrade}
+  - model_name: my-alias
+    litellm_params: {model: openrouter/x/y}
+`
+	o, _, p := opts(t, "model_list:\n"+hand)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	got := readRows(t, p)
+	for _, id := range []string{"openrouter/deleted-before-upgrade", "my-alias"} {
+		if !slices.Contains(got, RowInfo{id, false}) {
+			t.Fatalf("hand-written %s changed or removed: %v", id, got)
+		}
+	}
+}
+
+// TestSyncAdoptsUnmarkedRowOfManagedModel pins the one-time migration: a
+// pre-upgrade wt row (unmarked, named like a registry cloud id) is rewritten
+// with the marker and reported as adopted.
+func TestSyncAdoptsUnmarkedRowOfManagedModel(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y}
+`)
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v", got)
+	}
+	if len(res.Outcomes) != 1 || res.Outcomes[0].Action != "adopted" {
+		t.Fatalf("outcomes = %+v, want one adopted", res.Outcomes)
+	}
+}
+
+// TestSyncAdoptionCarriesUserParams pins the carry rule on adoption: an
+// unmarked row named like a managed id is rewritten with the marker, and the
+// rewrite keeps the old row's user-authored litellm_params keys the built row
+// lacks (a hand-written timeout), while the keys wt owns (api_base) are
+// re-derived from the registry. Before the carry rule, adoption silently
+// dropped every param beyond the two presence-based ones.
+func TestSyncAdoptionCarriesUserParams(t *testing.T) {
+	o, restarts, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_base: "https://custom.example/v1", timeout: 120}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v, want the adopted row marked", got)
+	}
+	var params map[string]any
+	if err := mapGet(f.row("openrouter/x/y"), "litellm_params").Decode(&params); err != nil {
+		t.Fatal(err)
+	}
+	if params["timeout"] != 120 {
+		t.Errorf("timeout = %v, want the user's 120 carried over", params["timeout"])
+	}
+	// The registry owns endpoints: a hand-written api_base is not carried, or
+	// a provider base_url change would never reach config.yaml.
+	if params["api_base"] != "https://openrouter.ai/api/v1" {
+		t.Errorf("api_base = %v, want the registry's", params["api_base"])
+	}
+	// Carried params are compared after the carry, so the next sync is a
+	// no-op instead of rewriting (and restarting) forever.
+	if *restarts != 1 {
+		t.Fatalf("restarts after adoption = %d, want 1", *restarts)
+	}
+	if res, err := Sync(testConfig(), nil, o); err != nil || res.Changed || *restarts != 1 {
+		t.Fatalf("second sync: err=%v changed=%v restarts=%d, want a no-op", err, res.Changed, *restarts)
+	}
+}
+
+// TestSyncCarriesUserButNotWTParams pins the carry rule on every rewrite, not
+// just adoption: a marked row's user-authored key (timeout) is carried, while
+// wt-owned keys are not — a custom api_base on a marked row loses to the
+// registry on the next sync, because a provider base_url change must reach
+// config.yaml (a marked row is wt's to re-derive).
+func TestSyncCarriesUserButNotWTParams(t *testing.T) {
+	const id = "ollama/gemma:9b"
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b, api_base: "http://localhost:9999", timeout: 120}
+    model_info: {wt_managed: true}
+`)
+	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	var params map[string]any
+	if err := mapGet(f.row(id), "litellm_params").Decode(&params); err != nil {
+		t.Fatal(err)
+	}
+	if params["timeout"] != 120 {
+		t.Errorf("timeout = %v, want the user's 120 carried over", params["timeout"])
+	}
+	if params["api_base"] != "http://localhost:11434" {
+		t.Errorf("api_base = %v, want the registry's http://localhost:11434", params["api_base"])
+	}
+}
+
+// TestSyncRemovesLegacyUnmarkedLocalRoute pins that a pre-upgrade route of a
+// stopped REGISTRY local model is still removed, as sync did before #179 —
+// ownership covers unmarked rows named like a managed registry id.
+func TestSyncRemovesLegacyUnmarkedLocalRoute(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range readRows(t, p) {
+		if r.ID == "ollama/gemma:9b" {
+			t.Fatalf("stopped local model kept its route: %v", readRows(t, p))
+		}
+	}
+}
+
+// TestSyncDeduplicatesRepeatedStaleRow pins that two rows sharing one managed id
+// produce one removal, not two. RemoveRow drops every duplicate, so the FILE is
+// right either way, but the plan and the outcomes are built from the raw rows:
+// the same removal was announced twice, in both the text and the JSON output of
+// `wt litellm sync`, and plan.Remove handed a duplicate id to any caller of the
+// exported PlanSync. Duplicate rows are exactly what a hand-edited config.yaml
+// grows, and a report that names the same route twice reads as two stale routes.
+func TestSyncDeduplicatesRepeatedStaleRow(t *testing.T) {
+	const id = "ollama/gemma:9b"
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(plan.Remove, ","); got != id {
+		t.Fatalf("plan.Remove = %s, want the stale id exactly once", got)
+	}
+	// The real sync reports the removal it performs, so the outcomes must be
+	// deduplicated from the same source: both renderers walk res.Outcomes.
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, oc := range res.Outcomes {
+		got = append(got, oc.ID+":"+oc.Action)
+	}
+	if s := strings.Join(got, ","); s != id+":unrouted,openrouter/x/y:routed" {
+		t.Fatalf("outcomes = %s, want one unrouted line for the stale id", s)
+	}
+	for _, r := range readRows(t, p) {
+		if r.ID == id {
+			t.Fatalf("stale row survived: %v", readRows(t, p))
+		}
+	}
+}
+
+// TestSyncPrunesStaleDuplicateOfDesiredModel pins that a duplicate of a
+// DESIRED id (a running local or cloud model) is reconciled. planSync compared
+// only the first row per id and skipped the whole id when that row matched the
+// rebuilt one, and the removal loop skips wanted ids — so a stale duplicate
+// sharing a wanted id survived every sync and LiteLLM load-balanced between
+// the fresh and stale backends. The canonical row comes from a real first
+// sync, so the duplicate copies exactly what wt would save (drop params and
+// pricing included): only its backend model string is stale.
+func TestSyncPrunesStaleDuplicateOfDesiredModel(t *testing.T) {
+	const id = "ollama/gemma:9b"
+	o, restarts, p := opts(t, "model_list: []\n")
+	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	var dupe map[string]any
+	if err := f.row(id).Decode(&dupe); err != nil {
+		t.Fatal(err)
+	}
+	dupe["litellm_params"].(map[string]any)["model"] = "ollama_chat/STALE-GONE"
+	node, err := toNode(dupe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml, err := f.modelList()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml.Content = append(ml.Content, node)
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanSync(testConfig(), []string{id}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Add, []string{id}) || len(plan.Adopt) != 0 || len(plan.Remove) != 0 {
+		t.Fatalf("plan = %+v, want the first row (managed, value-equal) re-planned so the duplicate is pruned", plan)
+	}
+	res, err := Sync(testConfig(), []string{id}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, oc := range res.Outcomes {
+		got = append(got, oc.ID+":"+oc.Action)
+	}
+	if s := strings.Join(got, ","); s != id+":routed" {
+		t.Fatalf("outcomes = %s, want one routed line for the duplicated id", s)
+	}
+	f2, _ := Open(p)
+	rows := readRows(t, p)
+	n := 0
+	for _, r := range rows {
+		if r.ID == id {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("rows = %v, want exactly one %s row (the stale duplicate pruned)", rows, id)
+	}
+	var params map[string]any
+	if err := mapGet(f2.row(id), "litellm_params").Decode(&params); err != nil {
+		t.Fatal(err)
+	}
+	if params["model"] != "ollama_chat/gemma:9b" {
+		t.Fatalf("surviving row model = %v, want the fresh backend, not STALE-GONE", params["model"])
+	}
+	// The pruned sync is finished; the next one must be a clean no-op.
+	before := *restarts
+	if res, err := Sync(testConfig(), []string{id}, o); err != nil || res.Changed || *restarts != before {
+		t.Fatalf("third sync: err=%v changed=%v restarts=%d→%d, want a no-op", err, res.Changed, before, *restarts)
+	}
+}
+
+// TestSyncUnchangedDoesNotRestart pins that a second sync with nothing to do
+// writes nothing and does not bounce the proxy (each bounce drops requests).
+func TestSyncUnchangedDoesNotRestart(t *testing.T) {
+	o, restarts, _ := opts(t, "model_list: []\n")
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	*restarts = 0
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || *restarts != 0 || len(res.Outcomes) != 0 {
+		t.Fatalf("second sync: changed=%v restarts=%d outcomes=%+v", res.Changed, *restarts, res.Outcomes)
+	}
+}
+
+// TestPlanSyncWritesNothing pins `sync --dry-run`: the plan names the add
+// and the removal, and the file is byte-identical afterwards.
+func TestPlanSyncWritesNothing(t *testing.T) {
+	const body = `model_list:
+  - model_name: openrouter/gone
+    litellm_params: {model: openrouter/gone}
+    model_info: {wt_managed: true}
+`
+	o, restarts, p := opts(t, body)
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Add, []string{"openrouter/x/y"}) || !slices.Equal(plan.Remove, []string{"openrouter/gone"}) {
+		t.Fatalf("plan = %+v", plan)
+	}
+	after, _ := os.ReadFile(p)
+	if string(after) != body || *restarts != 0 {
+		t.Fatalf("dry run changed the file or restarted: %q restarts=%d", after, *restarts)
+	}
+}
+
+// TestPlanSyncRejectsNonSequenceModelList pins that a dry run refuses the same
+// config.yaml the real sync refuses: PlanSync returns (and errors.Is sees)
+// ErrInvalid, so `wt litellm sync --dry-run` cannot report a plan for a file
+// the real sync would not touch. Without it a user previews work that then
+// fails — or worse, trusts a preview that never happens.
+func TestPlanSyncRejectsNonSequenceModelList(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: nope\n")
+	if _, err := PlanSync(testConfig(), nil, o); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("PlanSync err = %v, want ErrInvalid", err)
+	}
+	if after, _ := os.ReadFile(p); string(after) != "model_list: nope\n" {
+		t.Fatalf("dry run modified the file:\n%s", after)
+	}
+	if *restarts != 0 {
+		t.Fatalf("dry run restarted the proxy %d times, want 0", *restarts)
+	}
+}
+
+// TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt pins the trap in the fix
+// above: a config.yaml with no model_list at all (or an explicit null) must
+// stay a clean no-op. The plan is empty and neither the dry run nor the real
+// sync creates the key or writes the file — a fix that called modelList() from
+// the plan path would create it, flip File.Changed, and make a no-op sync write
+// config.yaml and restart the proxy, dropping in-flight requests.
+func TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt(t *testing.T) {
+	// litellm_settings is seeded so EnsureSettings cannot add it and be the
+	// thing that changes the file.
+	const settings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	empty := &config.Config{}
+	for _, body := range []string{settings, "model_list:\n" + settings} {
+		o, restarts, p := opts(t, body)
+		plan, err := PlanSync(empty, nil, o)
+		if err != nil {
+			t.Fatalf("PlanSync(%q) err = %v, want nil", body, err)
+		}
+		if len(plan.Add)+len(plan.Adopt)+len(plan.Remove)+len(plan.Errors) != 0 {
+			t.Fatalf("PlanSync(%q) = %+v, want an empty plan", body, plan)
+		}
+		if after, _ := os.ReadFile(p); string(after) != body {
+			t.Fatalf("dry run over %q changed the file:\n%s", body, after)
+		}
+		res, err := Sync(empty, nil, o)
+		if err != nil || res.Changed || *restarts != 0 {
+			t.Fatalf("Sync(%q): err=%v changed=%v restarts=%d, want nil/false/0", body, err, res.Changed, *restarts)
+		}
+		if after, _ := os.ReadFile(p); string(after) != body {
+			t.Fatalf("no-op sync over %q wrote the file:\n%s", body, after)
+		}
+	}
+
+	// A null model_list with work to do is planned, not refused: the real sync
+	// creates the key and routes the cloud model, so the dry run must agree.
+	o, _, _ := opts(t, "model_list:\n")
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil || !slices.Equal(plan.Add, []string{"openrouter/x/y"}) {
+		t.Fatalf("PlanSync(null model_list) = %+v err=%v, want the cloud add", plan, err)
+	}
+}
+
+// TestPlanSyncAndSyncAgreeOnInvalidModelList pins that the dry run and the real
+// sync give the same answer for a config.yaml whose model_list is not a list:
+// both fail with ErrInvalid and neither writes the file or restarts the proxy,
+// so a preview can never promise a plan the real run refuses — nor refuse a
+// file the real run would happily rewrite.
+//
+// Both halves must be covered. With a non-empty plan the write path used to
+// reach SetRow -> modelList, which refused; with an empty plan (an empty or
+// all-native registry) nothing was written but EnsureSettings still appended
+// litellm_settings and saved, so a shape check only on the dry-run side left
+// the two disagreeing in the other direction. The empty half is what keeps that
+// gap closed.
+func TestPlanSyncAndSyncAgreeOnInvalidModelList(t *testing.T) {
+	const body = "model_list: nope\n"
+	for _, c := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{"empty plan", &config.Config{}},
+		{"non-empty plan", testConfig()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			o, restarts, p := opts(t, body)
+			if _, err := PlanSync(c.cfg, nil, o); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("PlanSync err = %v, want ErrInvalid", err)
+			}
+			res, err := Sync(c.cfg, nil, o)
+			if !errors.Is(err, ErrInvalid) || res.Changed || *restarts != 0 {
+				t.Fatalf("Sync err=%v changed=%v restarts=%d, want ErrInvalid/false/0", err, res.Changed, *restarts)
+			}
+			if after, _ := os.ReadFile(p); string(after) != body {
+				t.Fatalf("invalid config was written:\n%s", after)
+			}
+		})
 	}
 }

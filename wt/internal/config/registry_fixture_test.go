@@ -157,8 +157,8 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 	if !native.Native {
 		t.Errorf("native model %q has Native=%v, want true", native.ID, native.Native)
 	}
-	if !cfg.IsExposed(native) {
-		t.Errorf("IsExposed(native model %q) = false, want true", native.ID)
+	if !cfg.InCatalog(native) {
+		t.Errorf("InCatalog(native model %q) = false, want true", native.ID)
 	}
 }
 
@@ -197,8 +197,9 @@ func equalProtocols(a, b []Protocol) bool {
 }
 
 // TestRegistryFixtureProviderLocationInheritance pins issue #46 from the
-// Go side: IsExposed resolves the model's location through the provider,
-// so a flag-on, not-ready model on a location=cloud provider is exposed.
+// Go side: InCatalog resolves the model's location through the provider,
+// so a model on a location=cloud provider is in the catalog even when its
+// own row omits `location`.
 func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
@@ -222,8 +223,8 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 	if inherit.Native {
 		t.Errorf("inherit model %q is native, want non-native", inherit.ID)
 	}
-	if !c.IsExposed(*inherit) {
-		t.Error("IsExposed(inherit model) = false, want true (provider location=cloud must inherit)")
+	if !c.InCatalog(*inherit) {
+		t.Error("InCatalog(inherit model) = false, want true (provider location=cloud must inherit)")
 	}
 }
 

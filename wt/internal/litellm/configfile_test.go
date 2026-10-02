@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -549,6 +550,107 @@ func TestSaveFollowsSymlink(t *testing.T) {
 	for _, id := range g.RoutedIDs() {
 		if id == "keep/me" {
 			t.Fatal("target file was not updated")
+		}
+	}
+}
+
+// TestRowsReportsManaged pins Rows(): file order, and Managed only for rows
+// whose model_info carries wt_managed: true — a hand-written row (no marker,
+// or a non-bool value) is never reported as wt's.
+func TestRowsReportsManaged(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: hand/alias
+    litellm_params: {model: openrouter/x}
+  - model_name: ollama/a:1
+    litellm_params: {model: ollama_chat/a:1}
+    model_info: {wt_managed: true}
+  - model_name: odd/one
+    litellm_params: {model: openai/x}
+    model_info: {wt_managed: "yes"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"hand/alias", false}, {"ollama/a:1", true}, {"odd/one", false}}
+	if got := f.Rows(); !slices.Equal(got, want) {
+		t.Fatalf("Rows() = %v, want %v", got, want)
+	}
+}
+
+// TestRowsToleratesNonSequenceModelList pins that a hand-edited
+// `model_list: nope` (a scalar, not a list) leaves the row readers empty
+// instead of panicking or fabricating a row: `wt litellm list` and `sync` must
+// not crash on a config a user can trivially mistype, and no phantom row may be
+// classified as wt's.
+func TestRowsToleratesNonSequenceModelList(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: nope\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Rows(); len(got) != 0 {
+		t.Fatalf("Rows() = %v, want none for a non-sequence model_list", got)
+	}
+	if got := f.row("x"); got != nil {
+		t.Fatalf("row(%q) = %v, want nil", "x", got)
+	}
+	if got := f.RoutedIDs(); len(got) != 0 {
+		t.Fatalf("RoutedIDs() = %v, want none", got)
+	}
+	// Nothing named x exists, so there is no row to classify — and the guard
+	// must not have invented one.
+	if IsManaged(f.row("x")) {
+		t.Fatal("IsManaged(nil) = true, want false")
+	}
+}
+
+// TestIsManagedToleratesScalarModelInfo pins that a hand-edited row whose
+// model_info is a scalar (`model_info: legacy`) reads as hand-written rather
+// than panicking: one mistyped key must not crash every `wt litellm` command on
+// that file, and the row must not be misclassified as wt's.
+func TestIsManagedToleratesScalarModelInfo(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: a/b
+    litellm_params: {model: x}
+    model_info: legacy
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := f.row("a/b")
+	if row == nil {
+		t.Fatal("row a/b not found")
+	}
+	if IsManaged(row) {
+		t.Fatal("scalar model_info was read as wt-managed")
+	}
+	if got := f.Rows(); !slices.Equal(got, []RowInfo{{"a/b", false}}) {
+		t.Fatalf("Rows() = %v, want the row reported as hand-written", got)
+	}
+}
+
+// TestIsManagedRequiresStrictBool pins that only a literal `wt_managed: true`
+// marks a row as wt's: the string "yes" and the integer 1 that a hand-edited
+// file might use must read as hand-written, or sync could remove a route the
+// user wrote themselves.
+func TestIsManagedRequiresStrictBool(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: str/yes
+    litellm_params: {model: x}
+    model_info: {wt_managed: "yes"}
+  - model_name: int/one
+    litellm_params: {model: x}
+    model_info: {wt_managed: 1}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := f.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("Rows() = %v, want both rows", rows)
+	}
+	for _, r := range rows {
+		if r.Managed {
+			t.Errorf("%s: Managed = true, want false for a non-bool wt_managed", r.ID)
 		}
 	}
 }

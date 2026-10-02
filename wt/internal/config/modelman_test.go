@@ -161,14 +161,11 @@ running = true
 
 // TestLoadModelExposureAcrossNativeLocalCloud asserts the end-to-end wiring
 // of Load(), deriveNative, and modelman exposure across the three location
-// classes (2026-09-15 local-model-visibility design): native models are
-// always exposed at this Stage-1 check; LOCAL models are always exposed
-// here too, regardless of their modelman.toml `exposed`/`ready` flags —
-// their real picker visibility is decided downstream by the live inventory
-// (internal/localmodels) through internal/catalog's row rules, not by this
-// predicate; cloud models
-// still require modelman.toml's `exposed` flag (legacy `litellm_exposed`
-// still read as a fallback).
+// classes (#179 configured-is-exposed): native, local and cloud models whose
+// provider resolves are all in the catalog regardless of their modelman.toml
+// `exposed`/`ready` flags — none of those flags gates catalog membership any
+// more. What a local row can do is decided downstream by the live inventory
+// (internal/localmodels) through internal/catalog's row rules.
 func TestLoadModelExposureAcrossNativeLocalCloud(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -246,14 +243,14 @@ ready = false
 		byID[m.ID] = m
 	}
 
-	if !cfg.IsExposed(byID["agy/native"]) {
-		t.Errorf("agy/native (native provider) must always be exposed")
+	if !cfg.InCatalog(byID["agy/native"]) {
+		t.Errorf("agy/native (native provider) must always be in the catalog")
 	}
-	if !cfg.IsExposed(byID["ollama/exposed"]) {
-		t.Errorf("ollama/exposed (local model) must be exposed (2026-09-15: local models bypass exposed flag)")
+	if !cfg.InCatalog(byID["ollama/exposed"]) {
+		t.Errorf("ollama/exposed (local model) must be in the catalog (configured means exposed, #179)")
 	}
-	if !cfg.IsExposed(byID["ollama/unexposed"]) {
-		t.Errorf("ollama/unexposed (local model, exposed=false) must still be exposed (2026-09-15: local models bypass exposed flag — visibility is governed by the live model inventory (internal/localmodels), not this predicate)")
+	if !cfg.InCatalog(byID["ollama/unexposed"]) {
+		t.Errorf("ollama/unexposed (local model, exposed=false) must still be in the catalog (configured means exposed, #179 — visibility is governed by the live model inventory (internal/localmodels), not this predicate)")
 	}
 }
 
@@ -361,15 +358,13 @@ func TestModelmanPathExpandsTildeInXDG(t *testing.T) {
 	}
 }
 
-// TestIsExposedPredicate implements the exposure rule (2026-09-15 local-
-// model visibility design): native OR local OR (exposed AND (ready OR
-// cloud location)). Local models bypass the exposed/ready check entirely
-// here — their catalog membership is decided by the live model inventory
-// (internal/localmodels), not by these flags; internal/catalog is the
-// policy owner of the row rules. Cloud
-// location may be inherited from the provider even when the model row
-// omits its own `location` key.
-func TestIsExposedPredicate(t *testing.T) {
+// TestInCatalogPredicate implements the catalog-membership rule (#179
+// configured-is-exposed): a model whose provider resolves and whose location
+// resolves (on the model or inherited from the provider) is in the catalog —
+// native, local and cloud alike. The exposed/ready flags in modelman.toml no
+// longer gate it. internal/catalog is the policy owner of the per-row launch
+// rules; this predicate only decides catalog membership.
+func TestInCatalogPredicate(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("MODELMAN_REGISTRY", "")
@@ -499,18 +494,18 @@ exposed = true
 		expected bool
 		reason   string
 	}{
-		{"native-provider/native-model", true, "native models are always exposed"},
-		{"ollama/local-flag-ready", true, "local models are exposed to wt regardless of the exposed/ready flags"},
-		{"ollama/local-flag-not-ready", true, "local models bypass the ready gate — visibility is governed by the live model inventory (internal/localmodels), not this predicate"},
-		{"ollama/local-flag-unexposed", true, "local models bypass the exposed flag entirely — visibility is governed by the live model inventory (internal/localmodels), not this predicate"},
-		{"openrouter/cloud-flag", true, "cloud location exempts from ready gate"},
-		{"openrouter/cloud-inherited", true, "cloud location inherited from provider exempts from ready gate"},
+		{"native-provider/native-model", true, "native models are always in the catalog"},
+		{"ollama/local-flag-ready", true, "local models are in the catalog regardless of the exposed/ready flags"},
+		{"ollama/local-flag-not-ready", true, "the ready flag no longer gates catalog membership — row visibility is governed by the live model inventory (internal/localmodels), not this predicate"},
+		{"ollama/local-flag-unexposed", true, "the exposed flag no longer gates catalog membership (configured means exposed, #179)"},
+		{"openrouter/cloud-flag", true, "a cloud model is in the catalog regardless of the exposed/ready flags"},
+		{"openrouter/cloud-inherited", true, "a cloud location inherited from the provider also puts the model in the catalog"},
 	}
 
 	for _, tt := range tests {
 		m := byID[tt.id]
-		if got := cfg.IsExposed(m); got != tt.expected {
-			t.Errorf("IsExposed(%q) = %v, want %v (%s)", tt.id, got, tt.expected, tt.reason)
+		if got := cfg.InCatalog(m); got != tt.expected {
+			t.Errorf("InCatalog(%q) = %v, want %v (%s)", tt.id, got, tt.expected, tt.reason)
 		}
 	}
 }

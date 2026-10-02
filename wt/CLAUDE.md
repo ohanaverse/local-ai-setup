@@ -181,12 +181,9 @@ wt loads it read-only via `config.Load` (fail-closed: missing/malformed registry
 
 **Read-side schemas are pinned by contract fixtures** at the monorepo root: [../docs/contracts/registry.sample.toml](../docs/contracts/registry.sample.toml) and [../docs/contracts/modelman.sample.toml](../docs/contracts/modelman.sample.toml), loaded by `internal/config` contract tests and modelman's `tests/contracts/` — a schema change must update both sides or both CI jobs fail.
 
-**Exposure predicate.** `IsExposed` decides tag/family/provider catalog membership:
-- Native models (`auth.type = "native"`): always exposed.
-- Local models (location resolves to `"local"`): always exposed; what a row can *do* is decided per row from the live probe (below). Unresolvable location falls through to the cloud check, fail-closed.
-- Cloud (anything not local): `exposed` true (legacy `litellm_exposed` ORed) AND (`ready = true` OR `location = "cloud"`).
+**Catalog membership.** `Config.InCatalog` (`internal/config/config.go`) decides tag/family/provider catalog membership (#179, "configured is exposed"): native models (`auth.type = "native"`), local models (location resolves to `"local"`), and cloud models are all in — modelman's `exposed`/`ready` flags no longer gate wt's lists. The only exclusion is a registry data gap: a `provider_id` naming no provider, or no location on model or provider, stays out even when the model names its own location (fail-closed on `ResolveLocation`).
 
-The picker's EXPOSED column shows `Y` for native and otherwise the raw modelman flag (`Config.ExposedFlag`, no location special-casing). wt never writes modelman's `exposed` flag; for a local model the authoritative "is it routed" answer is `wt litellm list` (`config.yaml` membership). Design: [../docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md](../docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md).
+The picker's EXPOSED column shows `Y` for native and otherwise the raw modelman flag (`Config.ExposedFlag`, no location special-casing). wt never writes modelman's `exposed` flag; for a local model the authoritative "is it routed" answer is `wt litellm list` (`config.yaml` membership). Design: [../docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md](../docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md), which supersedes the predicate design in [../docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md](../docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md).
 
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt bug** — e.g. models referencing `provider_id`s with `providers = []`. Fix with `modelman sync`/`modelman migrate` on that machine (`sync` recreates default provider entries), not a code change here.
 

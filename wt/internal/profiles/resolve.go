@@ -32,7 +32,7 @@ var tierRank = map[string]int{"location": 0, "provider": 1, "model": 2}
 // same-named Env/ConfigContent key; Args and Wrapper are whole-field
 // replacement (see design spec §3). An unresolvable location (registry
 // gap) is treated conservatively as non-local, mirroring
-// Config.IsExposed's own fail-closed treatment.
+// Config.InCatalog's own fail-closed treatment.
 func Resolve(store Store, agent string, cfg *config.Config, m config.Model) ResolvedProfile {
 	type tiered struct {
 		rank int

@@ -8,7 +8,23 @@
     "changed": true,
     "warnings": ["failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"]
   },
-  "list": {"routed": ["ollama/gemma:9b", "openrouter/x/y"]},
+  "list": {
+    "routed": ["ollama/gemma:9b", "openrouter/x/y"],
+    "rows": [
+      {"id": "ollama/gemma:9b", "managed": true},
+      {"id": "openrouter/x/y", "managed": false}
+    ]
+  },
+  "sync_dry_run": {
+    "dry_run": true,
+    "plan": {
+      "add": ["openrouter/x/y"],
+      "adopt": ["ollama/gemma:9b"],
+      "remove": ["openrouter/old"],
+      "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}]
+    },
+    "warnings": []
+  },
   "providers": {"providers": {"ollama": {"cloud": false}, "openrouter": {"cloud": true}}},
   "status": {"enabled": true, "url": "http://localhost:4000", "api_key_set": true}
 }

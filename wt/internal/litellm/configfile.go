@@ -52,10 +52,15 @@ var enforcedSettings = []string{
 	"use_chat_completions_url_for_anthropic_messages",
 }
 
-// preservedParamKeys survive a row replacement when the new row lacks them:
-// they are presence-based (an existing value of any kind marks the row
-// user-managed).
-var preservedParamKeys = []string{"additional_drop_params", "use_chat_completions_api"}
+// wtParamKeys are the litellm_params keys wt itself authors on every row it
+// writes (entry.go's BuildEntry). A row replacement never carries these over
+// from the old row: the registry and provider policy own them, and a change
+// there must reach config.yaml. Every other key on the old row is
+// user-authored (a hand-written timeout, rate limit, ...) and is carried over
+// when the new row lacks it — the presence-based keys additional_drop_params
+// and use_chat_completions_api (EnsureSettings writes them only when absent)
+// fall out of this rule.
+var wtParamKeys = map[string]bool{"model": true, "api_base": true, "api_key": true}
 
 // droppedOllamaChatParams are dropped by default on every fresh ollama_chat/
 // deployment via additional_drop_params: reasoning_effort crashes litellm's
@@ -190,25 +195,118 @@ func rowName(row *yaml.Node) string {
 	return ""
 }
 
+// ManagedKey is the model_info key wt stamps on every row it writes (#179).
+// Sync removes only rows wt owns; the marker is how a row says so.
+const ManagedKey = "wt_managed"
+
+// IsManaged reports whether row carries wt's ownership marker
+// (model_info.wt_managed: true; any other value counts as hand-written).
+func IsManaged(row *yaml.Node) bool {
+	return isTrue(mapGet(mapGet(row, "model_info"), ManagedKey))
+}
+
+// RowInfo is one model_list row's name and whether wt's marker is on it.
+type RowInfo struct {
+	ID      string
+	Managed bool
+}
+
+// modelListSeq returns the model_list sequence, or nil when the key is absent,
+// null, or its value is not a sequence. It never mutates: modelList is the only
+// accessor allowed to create the key, and a read-only caller that created it
+// would flip File.Changed, making a no-op sync write config.yaml and restart
+// the proxy.
+func (f *File) modelListSeq() *yaml.Node {
+	ml := mapGet(f.root(), "model_list")
+	if ml == nil || ml.Kind != yaml.SequenceNode {
+		return nil
+	}
+	return ml
+}
+
+// Rows returns every named model_list mapping row, in file order.
+func (f *File) Rows() []RowInfo {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	var out []RowInfo
+	for _, row := range ml.Content {
+		if id := rowName(row); row.Kind == yaml.MappingNode && id != "" {
+			out = append(out, RowInfo{ID: id, Managed: IsManaged(row)})
+		}
+	}
+	return out
+}
+
+// row returns the first mapping row named id, or nil.
+func (f *File) row(id string) *yaml.Node {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	for _, r := range ml.Content {
+		if r.Kind == yaml.MappingNode && rowName(r) == id {
+			return r
+		}
+	}
+	return nil
+}
+
+// carryUserParams copies the user-authored litellm_params keys — anything wt
+// does not itself set (see wtParamKeys) — from old into row when row lacks
+// them: what SetRow does on replace, factored out so sync can compare a
+// rebuilt row with the one on disk exactly as SetRow would write it. Adoption
+// and rewrites therefore keep hand-written params (a timeout, say) instead of
+// silently dropping them.
+func carryUserParams(old, row *yaml.Node) {
+	oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
+	if oldParams == nil || newParams == nil {
+		return
+	}
+	for i := 0; i+1 < len(oldParams.Content); i += 2 {
+		k := oldParams.Content[i].Value
+		if wtParamKeys[k] {
+			continue
+		}
+		if v := oldParams.Content[i+1]; mapGet(newParams, k) == nil {
+			mapSet(newParams, k, v)
+		}
+	}
+}
+
+// checkModelList reports a model_list whose value is present but is not a
+// sequence. An explicit null reads as absent, the same shape modelList creates,
+// so a bare "model_list:" is accepted here exactly as there. It never creates
+// the key: unlike modelList it is safe to call from a read-only path such as a
+// dry run, where creating it would flip File.Changed and make a no-op sync
+// write config.yaml and restart the proxy.
+func (f *File) checkModelList() error {
+	ml := mapGet(f.root(), "model_list")
+	if ml != nil && !isNull(ml) && ml.Kind != yaml.SequenceNode {
+		return fmt.Errorf("%w: model_list is not a list in %s", ErrInvalid, f.path)
+	}
+	return nil
+}
+
 // modelList returns the model_list sequence, creating it when absent or null.
 // A non-list value is ErrInvalid: never edit what we do not understand.
 func (f *File) modelList() (*yaml.Node, error) {
-	ml := mapGet(f.root(), "model_list")
-	switch {
-	case ml == nil || isNull(ml):
-		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-		mapSet(f.root(), "model_list", seq)
-		return seq, nil
-	case ml.Kind != yaml.SequenceNode:
-		return nil, fmt.Errorf("%w: model_list is not a list in %s", ErrInvalid, f.path)
+	if err := f.checkModelList(); err != nil {
+		return nil, err
 	}
-	return ml, nil
+	if ml := f.modelListSeq(); ml != nil {
+		return ml, nil
+	}
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	mapSet(f.root(), "model_list", seq)
+	return seq, nil
 }
 
 // RoutedIDs returns every model_list row's model_name, in file order.
 func (f *File) RoutedIDs() []string {
-	ml := mapGet(f.root(), "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return nil
 	}
 	var ids []string
@@ -221,7 +319,8 @@ func (f *File) RoutedIDs() []string {
 }
 
 // SetRow adds the row keyed by id, or replaces the existing one in place,
-// carrying over any user-managed presence-based params the new row lacks.
+// carrying over the old row's user-authored params the new row lacks
+// (wtParamKeys — model/api_base/api_key — are wt's and never carried).
 // LiteLLM load-balances across rows sharing a model_name, so a hand-edited
 // file with duplicates would keep routing to the stale copies: the first
 // mapping row is replaced and every later duplicate is dropped (RemoveRow
@@ -241,14 +340,7 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 		if first >= 0 {
 			continue // duplicate of a row already replaced
 		}
-		oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
-		if oldParams != nil && newParams != nil {
-			for _, k := range preservedParamKeys {
-				if v := mapGet(oldParams, k); v != nil && mapGet(newParams, k) == nil {
-					mapSet(newParams, k, v)
-				}
-			}
-		}
+		carryUserParams(old, row)
 		row.HeadComment, row.LineComment, row.FootComment = old.HeadComment, old.LineComment, old.FootComment
 		first = len(kept)
 		kept = append(kept, row)
@@ -263,8 +355,8 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 // RemoveRow deletes the row keyed by id (no-op when absent). Rows that are
 // not mappings are never ours and are left in place.
 func (f *File) RemoveRow(id string) {
-	ml := mapGet(f.root(), "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return
 	}
 	kept := ml.Content[:0]
@@ -316,8 +408,8 @@ func (f *File) EnsureSettings() {
 			}
 		}
 	}
-	ml := mapGet(root, "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return
 	}
 	for _, row := range ml.Content {

@@ -23,7 +23,7 @@ func testConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
-			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 		},
 		Models: []config.Model{
 			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Tags: []string{"code"}},
@@ -714,7 +714,7 @@ func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 	stubUsageStore(t)
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},
@@ -777,7 +777,7 @@ func TestNoOllamaWarnInLitellmMode(t *testing.T) {
 	stubUsageStore(t)
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},

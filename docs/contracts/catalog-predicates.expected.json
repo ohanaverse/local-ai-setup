@@ -1,0 +1,5 @@
+{
+  "in_catalog": ["openrouter/vendor-x", "agy/native", "ollama/glm:cloud", "acme/model-a", "ollama/local:1"],
+  "openrouter_priced": ["openrouter/vendor-x", "acme/model-a"],
+  "routable_cloud": ["openrouter/vendor-x", "ollama/glm:cloud"]
+}

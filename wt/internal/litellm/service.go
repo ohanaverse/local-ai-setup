@@ -3,6 +3,7 @@ package litellm
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -56,6 +57,8 @@ type Options struct {
 	// before it removes routes, and returns the ids running NOW. Ids that
 	// turn out to be running are kept: a start finishing between the caller's
 	// probe and the lock would otherwise have its fresh route removed.
+	// PlanSync (the dry run) forces it off — it holds no lock and must report
+	// exactly the plan built from the original probe.
 	Recheck func() []string
 	// NoRestart writes config.yaml but leaves the proxy alone: the caller owes
 	// (and performs) the restart itself, so several route changes in one
@@ -67,7 +70,8 @@ type Options struct {
 }
 
 // Outcome is one requested id's result. Action is "exposed" or "unexposed"
-// (what was asked for and applied); Err is set when the id was rejected.
+// (expose/unexpose) — or, from Sync, "routed", "adopted" or "unrouted"; Err is
+// set when the id was rejected.
 type Outcome struct {
 	ID     string
 	Action string
@@ -135,20 +139,35 @@ func Check(cfg *config.Config, ids []string, skipReady bool) []Outcome {
 	return out
 }
 
+// plannedAdd is one add from a plan: the id, with its row already built when
+// the plan made one. Sync's plan builds every desired row while comparing it
+// with the row on disk; rebuilding it in the write path would be a second
+// full prepare of every changed row. Apply plans by id only (nil rows).
+type plannedAdd struct {
+	id  string
+	row *yaml.Node
+}
+
 // Apply adds routes for `add` and removes routes for `remove` in one locked
 // read-modify-write and one restart. Per-id validation failures are reported
 // in Outcomes and do not block the rest. A missing/invalid config.yaml
 // returns (Result{}, err) with nothing changed. The file is written, and the
 // proxy restarted, only when the document actually changed.
 func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) {
-	return applyPlanned(cfg, func(*File) ([]string, []string) { return add, remove }, o)
+	return applyPlanned(cfg, func(*File) ([]plannedAdd, []string) {
+		out := make([]plannedAdd, len(add))
+		for i, id := range add {
+			out[i] = plannedAdd{id: id}
+		}
+		return out, remove
+	}, o)
 }
 
 // applyPlanned is Apply with the add/remove decision made by plan against the
 // document as read under the lock, so callers that derive the change from the
 // current routes (Sync) never act on a snapshot another process has since
 // changed.
-func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o Options) (Result, error) {
+func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []string), o Options) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -156,21 +175,32 @@ func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o
 		if err != nil {
 			return err
 		}
+		// Refuse a config we cannot understand before planning or mutating
+		// anything. EnsureSettings would otherwise rewrite such a file whenever
+		// the plan happened to be empty, and a caller must not edit a file it
+		// cannot parse. PlanSync checks this too, so a dry run and a real sync
+		// can never disagree about whether a malformed file is workable.
+		if err := f.checkModelList(); err != nil {
+			return err
+		}
 		add, remove := plan(f)
 		for _, id := range remove {
 			f.RemoveRow(id)
 			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "unexposed"})
 		}
-		for _, id := range add {
-			row, perr := prepare(cfg, id, o.SkipReadyGate)
-			if perr != nil {
-				res.Outcomes = append(res.Outcomes, Outcome{ID: id, Err: perr})
-				continue
+		for _, a := range add {
+			row := a.row
+			if row == nil {
+				var perr error
+				if row, perr = prepare(cfg, a.id, o.SkipReadyGate); perr != nil {
+					res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: perr})
+					continue
+				}
 			}
-			if err := f.SetRow(id, row); err != nil {
+			if err := f.SetRow(a.id, row); err != nil {
 				return err
 			}
-			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "exposed"})
+			res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Action: "exposed"})
 		}
 		f.EnsureSettings()
 		if !f.Changed() {
@@ -195,16 +225,22 @@ func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o
 	return res, nil
 }
 
-// LocalModels lists the registry's non-native local models that have a
-// LiteLLM mapping — the set Sync manages. Cloud and native models are never
-// touched by Sync.
-func LocalModels(cfg *config.Config) []config.Model {
+// routeableModels lists the registry models whose location resolves to loc —
+// one filter for both halves of the set Sync manages. Skips native models and
+// native providers (prepare rejects those the same way), fails closed on a
+// dangling provider_id (ResolveLocation errors), and requires a LiteLLM
+// mapping.
+func routeableModels(cfg *config.Config, loc config.Location) []config.Model {
 	var out []config.Model
 	for _, m := range cfg.Models {
 		if m.Native {
 			continue
 		}
-		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+		p := cfg.ProviderByID(m.ProviderID)
+		if p == nil || p.Auth.Type == "native" {
+			continue
+		}
+		if l, err := cfg.ResolveLocation(m); err != nil || l != loc {
 			continue
 		}
 		if _, ok := PolicyFor(m.ProviderID); !ok {
@@ -213,6 +249,156 @@ func LocalModels(cfg *config.Config) []config.Model {
 		out = append(out, m)
 	}
 	return out
+}
+
+// LocalModels lists the registry's non-native local models that have a
+// LiteLLM mapping — the local half of the set Sync manages (CloudModels is
+// the other).
+func LocalModels(cfg *config.Config) []config.Model {
+	return routeableModels(cfg, config.LocationLocal)
+}
+
+// CloudModels lists the registry cloud models sync routes (#179: configured
+// means exposed) — the cloud half. Pinned by docs/contracts/catalog-predicates.
+func CloudModels(cfg *config.Config) []config.Model {
+	return routeableModels(cfg, config.LocationCloud)
+}
+
+// SyncPlan is what one sync changes. Add holds desired ids whose row is
+// missing or differs (each written with the marker); Adopt is the subset of
+// Add that replaces an unmarked row; Remove holds owned rows no longer
+// desired; Errors holds desired ids whose row could not be built.
+type SyncPlan struct {
+	Add    []string
+	Adopt  []string
+	Remove []string
+	Errors []Outcome
+}
+
+// planSync decides a sync against f. Desired = every CloudModels id plus the
+// running registry local models. A row is wt's to remove when it carries the
+// marker or is named like a managed registry id (cloud or local) — the
+// latter covers rows written before the marker existed. Unmarked rows with
+// any other name are hand-written and never touched. Untouched ids are
+// neither added nor removed; Recheck (see Options) re-verifies local ids.
+// Built rows for plan.Add are returned alongside the plan: Sync's write path
+// reuses them instead of preparing every changed row a second time.
+func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPlan, map[string]*yaml.Node) {
+	local := map[string]bool{}
+	for _, m := range LocalModels(cfg) {
+		local[m.ID] = true
+	}
+	managed := map[string]bool{}
+	var desired []string
+	for _, m := range CloudModels(cfg) {
+		managed[m.ID] = true
+		desired = append(desired, m.ID)
+	}
+	for id := range local {
+		managed[id] = true
+	}
+	for _, m := range LocalModels(cfg) {
+		if slices.Contains(running, m.ID) && !slices.Contains(o.Untouched, m.ID) {
+			desired = append(desired, m.ID)
+		}
+	}
+	var plan SyncPlan
+	built := map[string]*yaml.Node{}
+	want := map[string]bool{}
+	// rowsPerID counts the mapping rows sharing each model_name: LiteLLM
+	// load-balances across duplicates, so a value-equal FIRST row still needs
+	// SetRow when a second row shares the id (SetRow replaces the first row
+	// and drops the rest). Only a single value-equal row is a clean no-op.
+	rowsPerID := map[string]int{}
+	for _, r := range f.Rows() {
+		rowsPerID[r.ID]++
+	}
+	for _, id := range desired {
+		want[id] = true
+		row, err := prepare(cfg, id, true)
+		if err != nil {
+			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: err})
+			continue
+		}
+		old := f.row(id)
+		if old != nil {
+			carryUserParams(old, row)
+			// Compare by value, not bytes: a row read back from disk keeps
+			// quoting styles ('ollama/gemma:9b') a freshly built one lacks,
+			// so byte equality would report every unchanged row as changed.
+			var oldv, newv any
+			if old.Decode(&oldv) == nil && row.Decode(&newv) == nil && reflect.DeepEqual(oldv, newv) && rowsPerID[id] == 1 {
+				continue
+			}
+		}
+		built[id] = row
+		plan.Add = append(plan.Add, id)
+		if old != nil && !IsManaged(old) {
+			plan.Adopt = append(plan.Adopt, id)
+		}
+	}
+	// Iterate rows, not models: a row outlives a registry entry that was deleted
+	// or renamed, so a loop over the model lists would never visit it and would
+	// strand the stale route (TestSyncRemovesMarkedRowOfDeletedModel). Ownership
+	// is read per row — its marker, or `managed` for the unmarked pre-#179 rows
+	// TestSyncRemovesLegacyUnmarkedLocalRoute pins — so a model-shaped rewrite of
+	// this loop loses both clauses.
+	//
+	// seen deduplicates: two rows can share one id and one RemoveRow drops both,
+	// so the id belongs in the plan once. Without it the same removal was
+	// announced twice in the report and handed twice to callers of PlanSync.
+	seen := map[string]bool{}
+	for _, r := range f.Rows() {
+		if want[r.ID] || slices.Contains(o.Untouched, r.ID) || seen[r.ID] {
+			continue
+		}
+		if r.Managed || managed[r.ID] {
+			seen[r.ID] = true
+			plan.Remove = append(plan.Remove, r.ID)
+		}
+	}
+	if o.Recheck != nil {
+		touchesLocal := slices.ContainsFunc(plan.Add, func(id string) bool { return local[id] }) ||
+			slices.ContainsFunc(plan.Remove, func(id string) bool { return local[id] })
+		if touchesLocal {
+			if fresh, ok := runRecheck(o); ok {
+				plan.Remove = slices.DeleteFunc(plan.Remove, func(id string) bool { return local[id] && slices.Contains(fresh, id) })
+				// The same predicate the Add side gets, so Adopt stays the subset
+				// of Add that SyncPlan documents: an id pruned from Add must not
+				// stay in Adopt, or the plan describes an adoption it will not
+				// perform.
+				stoppedAgain := func(id string) bool { return local[id] && !slices.Contains(fresh, id) }
+				plan.Add = slices.DeleteFunc(plan.Add, stoppedAgain)
+				plan.Adopt = slices.DeleteFunc(plan.Adopt, stoppedAgain)
+			}
+		}
+	}
+	return plan, built
+}
+
+// PlanSync reports what Sync would change without writing (`sync --dry-run`).
+// Like Sync it refuses a config.yaml whose model_list is not a list, so the two
+// can never disagree: a dry run neither promises a plan the real sync would not
+// perform nor refuses a file the real sync would rewrite. The refusal lives in
+// checkModelList, which only inspects an existing value — it must not create
+// model_list, or a no-op sync would flip File.Changed and write the file and
+// restart the proxy.
+func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error) {
+	// PlanSync holds no config.yaml lock, and Recheck is defined as Sync's
+	// under-the-lock re-verification; a dry run reports the plan built from
+	// the caller's original probe, or it could not agree with the real sync.
+	// Forced off so the exported dry run cannot run lock-less recheck
+	// semantics however it is called.
+	o.Recheck = nil
+	f, err := Open(o.path())
+	if err != nil {
+		return SyncPlan{}, err
+	}
+	if err := f.checkModelList(); err != nil {
+		return SyncPlan{}, err
+	}
+	plan, _ := planSync(cfg, f, running, o)
+	return plan, nil
 }
 
 // ModelFor finds the registry model for a provider and provider-side name.
@@ -246,40 +432,46 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 	return found, true
 }
 
-// Sync makes the local-model routes match reality: every id in `running`
-// (that is a registry local model) gets a route; every other local model that
-// currently has a route loses it. Cloud and unrelated rows are untouched.
+// Sync reconciles config.yaml with the registry and the running local
+// models (#179): every CloudModels id and every running registry local
+// model gets a marked route; rows wt owns that are no longer desired are
+// removed; hand-written rows are never touched (see planSync). The plan is
+// made under the config.yaml lock. A config.yaml whose model_list is not a
+// list is refused (ErrInvalid) before anything is planned or written, whatever
+// the plan turns out to be — PlanSync checks the same shape, so a dry run and a
+// real sync always agree. Outcome actions: "routed", "adopted", "unrouted";
+// per-id build failures are reported with Err.
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	o.SkipReadyGate = true
-	return applyPlanned(cfg, func(f *File) (add, remove []string) {
-		routed := f.RoutedIDs()
-		for _, m := range LocalModels(cfg) {
-			switch {
-			case slices.Contains(o.Untouched, m.ID):
-			case slices.Contains(running, m.ID):
-				add = append(add, m.ID)
-			case slices.Contains(routed, m.ID):
-				remove = append(remove, m.ID)
-			}
+	var plan SyncPlan
+	res, err := applyPlanned(cfg, func(f *File) ([]plannedAdd, []string) {
+		p, built := planSync(cfg, f, running, o)
+		plan = p
+		// The plan already built every changed row while comparing it with the
+		// row on disk; hand the rows through so the write path does not
+		// prepare each one a second time.
+		add := make([]plannedAdd, 0, len(plan.Add))
+		for _, id := range plan.Add {
+			add = append(add, plannedAdd{id: id, row: built[id]})
 		}
-		// Recheck runs under the lock, right before add/remove are applied:
-		// a model the outer probe saw stopped but that started meanwhile
-		// must keep its route (remove-side), and one the outer probe saw
-		// running but that stopped meanwhile must not get a fresh route for
-		// a dead backend (add-side). Both sides are re-verified together so
-		// one live probe settles the whole plan.
-		if o.Recheck != nil && (len(add) > 0 || len(remove) > 0) {
-			if fresh, ok := runRecheck(o); ok {
-				if len(remove) > 0 {
-					remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
-				}
-				if len(add) > 0 {
-					add = slices.DeleteFunc(add, func(id string) bool { return !slices.Contains(fresh, id) })
-				}
-			}
-		}
-		return add, remove
+		return add, plan.Remove
 	}, o)
+	if err != nil {
+		return res, err
+	}
+	for i := range res.Outcomes {
+		switch res.Outcomes[i].Action {
+		case "exposed":
+			res.Outcomes[i].Action = "routed"
+			if slices.Contains(plan.Adopt, res.Outcomes[i].ID) {
+				res.Outcomes[i].Action = "adopted"
+			}
+		case "unexposed":
+			res.Outcomes[i].Action = "unrouted"
+		}
+	}
+	res.Outcomes = append(res.Outcomes, plan.Errors...)
+	return res, nil
 }
 
 // Providers maps each LiteLLM-mapped provider id to whether it is a cloud
