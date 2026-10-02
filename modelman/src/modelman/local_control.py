@@ -741,6 +741,14 @@ def running_model_ids(
     return sorted(verified)
 
 
+def _with_warnings(message: str, warnings: list[str]) -> str:
+    """`message` plus any sync warnings, for a path that raises instead of
+    returning a result with a `warnings` list."""
+    if not warnings:
+        return message
+    return f"{message} (also: {'; '.join(warnings)})"
+
+
 def start_local_model(
     registry: Registry,
     model_id: str,
@@ -860,15 +868,27 @@ def start_local_model(
                 ) from exc
             _clear_stale_running_flag(occupant, state_path)
 
+        # A failed isolate may follow an occupant teardown (omlx's
+        # stop_provider above, or mtplx/mlx_lm_server's inside isolate), so
+        # routes are synced before the failure is reported: the occupant's
+        # route must not keep pointing at a dead backend.
         try:
             result = isolate_provider(model.provider_id, *extra_args, env=env, solo=True)
         except BenchmarkError as exc:
             _clear_stale_running_flag(resolved_id, state_path)
-            raise LocalControlError(f"failed to start {resolved_id}: {exc}") from exc
+            raise LocalControlError(
+                _with_warnings(
+                    f"failed to start {resolved_id}: {exc}",
+                    sync_routes(litellm_path=litellm_path),
+                )
+            ) from exc
         if not result.ok:
             _clear_stale_running_flag(resolved_id, state_path)
             raise LocalControlError(
-                f"failed to start {resolved_id}: {result.error or 'unknown error'}"
+                _with_warnings(
+                    f"failed to start {resolved_id}: {result.error or 'unknown error'}",
+                    sync_routes(litellm_path=litellm_path),
+                )
             )
         direct_url = result.direct_url or None
 
@@ -897,8 +917,12 @@ def start_local_model(
             fresh.models[resolved_id] = replace(existing, running=True)
     except OSError as exc:
         raise LocalControlError(
-            f"{resolved_id} started successfully but its running flag could not be "
-            f"persisted: {exc} — wt's picker will not see it as running until this succeeds"
+            _with_warnings(
+                f"{resolved_id} started successfully but its running flag could not be "
+                f"persisted: {exc} — wt's picker will not see it as running until this "
+                "succeeds",
+                sync_warnings,
+            )
         ) from exc
     return StartResult(
         model_id=resolved_id,

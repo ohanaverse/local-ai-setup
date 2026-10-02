@@ -2363,6 +2363,7 @@ async def test_on_mount_reads_status_without_waiting_on_provider_flags(tmp_path,
         await _open_model_screen(pilot)
     elapsed = time_mod.monotonic() - start
     assert elapsed < 0.95, f"mount took {elapsed:.2f}s, want only the status read (~0.5s)"
+    assert not flags_calls, "the mount must not read provider flags at all"
 
 
 def test_edit_carryover_preserves_time_prices_and_extra():

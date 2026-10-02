@@ -301,6 +301,81 @@ def test_start_isolate_failure_after_occupant_replaced_leaves_occupant_cleared(t
     assert state.get("omlx/model-b").running is False
 
 
+@pytest.mark.parametrize("fails_by", ["not_ok", "raises"])
+def test_start_isolate_failure_after_occupant_stop_syncs_routes_once(tmp_path, wt_calls, fails_by):
+    # The omlx occupant is torn down BEFORE isolate runs; when the new
+    # model's isolate then fails, routes must still follow live state (the
+    # occupant's route must not keep pointing at a dead backend) — exactly
+    # one sync, and the failure is still raised.
+    from modelman.benchmark.errors import BenchmarkError
+
+    state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider"),
+    ):
+        if fails_by == "raises":
+            mock_isolate.side_effect = BenchmarkError("warmup timed out")
+        else:
+            mock_isolate.return_value = IsolateResult(
+                provider="omlx", model="", direct_url="", ok=False, error="warmup timed out"
+            )
+        with pytest.raises(LocalControlError, match="warmup timed out"):
+            start_local_model(_registry(), "omlx/model-b", state_path)
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+def test_start_isolate_failure_includes_sync_warnings_in_error(tmp_path):
+    # The failure branch raises, so a failed sync's warning travels in the
+    # error text rather than being dropped.
+    from modelman import wt_bridge
+
+    state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider"),
+        patch.object(wt_bridge, "sync", side_effect=wt_bridge.WtBridgeError("wt not on PATH")),
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx", model="", direct_url="", ok=False, error="warmup timed out"
+        )
+        with pytest.raises(LocalControlError, match="warmup timed out") as excinfo:
+            start_local_model(_registry(), "omlx/model-b", state_path)
+    assert "not synced" in str(excinfo.value)
+
+
+def test_start_successful_occupant_replacement_syncs_routes_once(tmp_path, wt_calls):
+    # No double sync on the success path, occupant replacement included.
+    state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider"),
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx", model="model-b", direct_url="http://x", ok=True, error=None
+        )
+        start_local_model(_registry(), "omlx/model-b", state_path)
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+def test_start_running_flag_write_failure_keeps_sync_warnings(tmp_path):
+    # If persisting running=True fails, the sync already ran: its warnings
+    # must appear in the LocalControlError rather than being discarded.
+    from modelman import wt_bridge
+
+    state_path = _state_path(tmp_path, {})
+    with (
+        patch.object(wt_bridge, "sync", side_effect=wt_bridge.WtBridgeError("wt not on PATH")),
+        patch("modelman.local_control.locked_state", side_effect=OSError(28, "No space left")),
+        pytest.raises(LocalControlError, match="could not be") as excinfo,
+    ):
+        start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
+    assert "not synced" in str(excinfo.value)
+
+
 def test_start_isolate_failure_does_not_clear_concurrent_writes(tmp_path):
     # _clear_stale_running_flag only ever touches the ONE id it's given
     # (per-model, not a shared marker) — a concurrent writer's flag on a
@@ -1030,8 +1105,6 @@ def test_start_unregistered_name_with_family_registers_and_starts(tmp_path, wt_c
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
     state_path = _state_path(tmp_path)
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text("model_list: []\n")
     mapping = {
         "ollama": [
             {"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}
@@ -1056,7 +1129,6 @@ def test_start_unregistered_name_with_family_registers_and_starts(tmp_path, wt_c
             state_path,
             family="discovered",
             registry_path=registry_path,
-            litellm_path=litellm_path,
         )
 
     mock_stop.assert_not_called()  # ollama is flag-only, never stop-all'd on start
