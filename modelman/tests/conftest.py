@@ -115,13 +115,19 @@ def _never_call_real_wt(monkeypatch):
 
     Limits of this fake: expose/unexpose always succeed for every id (exit 0,
     changed=True); `list` is a static empty routed set (not stateful across
-    expose calls); on/off/set succeed (bare `set` exits 1 like real wt); there is no partial-failure / exit-1 / file-level-failure
-    case. Tests exercising error paths must override wt_bridge._run."""
+    expose calls); on/off/set succeed (bare `set` exits 1 like real wt);
+    `sync` succeeds with no outcomes and changed=False; there is no
+    partial-failure / exit-1 / file-level-failure case. Tests exercising
+    error paths must override wt_bridge._run. Every argv tail is recorded and
+    yielded (see the `wt_calls` fixture)."""
     import json
 
     from modelman import wt_bridge
 
+    calls: list[list[str]] = []
+
     def fake(args, env=None, timeout=120):
+        calls.append(list(args))
         if args[:1] == ["providers"]:
             out = {
                 "providers": {
@@ -151,6 +157,8 @@ def _never_call_real_wt(monkeypatch):
             )
         elif args[:1] in (["on"], ["off"], ["set"]):
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        elif args[:1] == ["sync"]:
+            out = {"outcomes": [], "changed": False, "warnings": []}
         else:
             ids = [a for a in args[1:] if not a.startswith("--")]
             act = "unexposed" if args[:1] == ["unexpose"] else "exposed"
@@ -163,8 +171,14 @@ def _never_call_real_wt(monkeypatch):
 
     wt_bridge._reset_provider_cache()
     monkeypatch.setattr(wt_bridge, "_run", fake)
-    yield
+    yield calls
     wt_bridge._reset_provider_cache()
+
+
+@pytest.fixture
+def wt_calls(_never_call_real_wt):
+    """argv tails (after `wt litellm`) the autouse fake received this test."""
+    return _never_call_real_wt
 
 
 _real_subprocess_run = subprocess.run

@@ -337,6 +337,42 @@ def _bridge(
         raise LiteLLMConfigError(str(exc)) from None
 
 
+def sync_routes(*, litellm_path: Path | None = None) -> list[str]:
+    """Run `wt litellm sync` once and return warnings to show the user.
+
+    modelman's only LiteLLM write path since #179: every command that changes
+    the registry or local-model state calls this once at the end. It never
+    raises — the registry is the source of truth and the next sync converges —
+    so a failure becomes a warning naming the command that fixes it.
+    """
+    try:
+        result = wt_bridge.sync(litellm_path=litellm_path)
+    except wt_bridge.WtBridgeError as exc:
+        return [f"LiteLLM routes not synced: {exc} — run `wt litellm sync`"]
+    return list(result.warnings) + _grouped_outcome_errors(result)
+
+
+def _grouped_outcome_errors(result: wt_bridge.BridgeResult) -> list[str]:
+    """One warning per distinct per-id error text, in first-seen order.
+
+    wt reports each failed id as `model "<id>": <text>`; a shared cause (e.g.
+    an OpenRouter secret_ref resolving empty) would otherwise repeat once per
+    model on every sync. Strip that prefix, group ids by the remaining text,
+    and name the single id or the count + ids of the group.
+    """
+    groups: dict[str, list[str]] = {}
+    for o in result.outcomes:
+        if not o.error:
+            continue
+        prefix = f'model "{o.id}": '
+        text = o.error[len(prefix) :] if o.error.startswith(prefix) else o.error
+        groups.setdefault(text, []).append(o.id)
+    return [
+        f"{ids[0]}: {text}" if len(ids) == 1 else f"{text} ({len(ids)} models: {', '.join(ids)})"
+        for text, ids in groups.items()
+    ]
+
+
 def _outcome_error(result: wt_bridge.BridgeResult, model_id: str) -> str | None:
     """Why `model_id` was not applied, or None when wt reported it applied.
 

@@ -136,6 +136,8 @@ def _change(args: list[str], litellm_path: Path | None) -> BridgeResult:
     try:
         proc = _run(args, _env(litellm_path))
     except WtBridgeTimeoutError:
+        if args[:1] not in (["expose"], ["unexpose"]):
+            raise
         return _reconcile_after_timeout(args, litellm_path)
     try:
         json.loads(proc.stdout)
@@ -191,6 +193,12 @@ def expose(
 
 def unexpose(ids: list[str], *, litellm_path: Path | None = None) -> BridgeResult:
     return _change(["unexpose", "--json", "--", *ids], litellm_path)
+
+
+def sync(*, litellm_path: Path | None = None) -> BridgeResult:
+    """`wt litellm sync --json`: reconcile config.yaml with the registry's
+    cloud models and the running local models (#179)."""
+    return _change(["sync", "--json"], litellm_path)
 
 
 def routed_ids(*, litellm_path: Path | None = None, timeout: float | None = None) -> list[str]:
