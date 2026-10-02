@@ -27,6 +27,7 @@ import threading
 import tomllib
 from collections.abc import Generator
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,21 @@ def set_price_refresh_last_run(state: StateStore, date: str | None) -> None:
         state.extra.pop(_PRICE_REFRESH_LAST_RUN_KEY, None)
     else:
         state.extra[_PRICE_REFRESH_LAST_RUN_KEY] = date
+
+
+def stamp_price_refresh_today() -> None:
+    """Record today's date as the last price-refresh date, under the state lock.
+
+    The one stamping path for both refresh entry points — the TUI's
+    background worker (app.py) and the CLI's refresh-prices (main.py) — so
+    the two cannot disagree on when a refresh counts as done. Callers must
+    gate on ``RefreshResult.updated > 0`` first: a refresh that updated
+    nothing is not a success worth gating on (see app.py), and stamping one
+    would let ``should_run_price_refresh`` suppress a same-day retry —
+    including the retry that would price a model exposed after the stamp.
+    """
+    with locked_state() as fresh:
+        set_price_refresh_last_run(fresh, date.today().isoformat())
 
 
 def _default_state_path() -> Path:

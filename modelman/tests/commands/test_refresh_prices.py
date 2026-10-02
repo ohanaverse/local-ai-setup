@@ -123,12 +123,32 @@ def test_refresh_prices_leaves_last_run_alone_on_api_error(tmp_path, monkeypatch
     assert _last_run(state_path) is None
 
 
+def test_refresh_prices_no_match_leaves_last_run_alone(tmp_path, monkeypatch):
+    """A fetch that matched nothing updated nothing, so it must not claim
+    pricing is fresh — the TUI's background refresh rule (stamp only when
+    updated > 0). Without this gate, a renamed or dropped OpenRouter id
+    would stamp the day and wt's stale-pricing notice would stay quiet even
+    though no price was ever refreshed."""
+    _, state_path = _seed_registry(tmp_path, monkeypatch)
+    payload = {
+        "data": [
+            {"id": "renamed/other", "pricing": {"prompt": "0.0000025", "completion": "0.00001"}}
+        ]
+    }
+    with patch("modelman.pricing._default_runner", side_effect=_runner(payload)):
+        result = CliRunner().invoke(app, ["refresh-prices"])
+
+    assert result.exit_code == 0
+    assert "No OpenRouter match for openrouter/gpt-4o" in result.output
+    assert _last_run(state_path) is None
+
+
 def test_refresh_prices_ollama_only_registry_is_quiet(tmp_path, monkeypatch):
     """Issue #151: with only ollama cloud models there is nothing to fetch —
-    no warnings, no network call, and the date is stamped (nothing can be
-    stale) so no tool keeps nagging about it."""
-    from datetime import date
-
+    no warnings, no network call. The date is NOT stamped: wt's notice is
+    gated by agents.HasOpenRouterPricedModel already, so stamping would have
+    no consumer, and it would suppress same-day pricing for an OpenRouter
+    model exposed later the same day."""
     registry_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     save_registry(
@@ -157,4 +177,4 @@ def test_refresh_prices_ollama_only_registry_is_quiet(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "warning" not in result.output
-    assert _last_run(state_path) == date.today().isoformat()
+    assert _last_run(state_path) is None

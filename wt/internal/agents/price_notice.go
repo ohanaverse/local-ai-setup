@@ -52,7 +52,10 @@ func PriceNotice(lastRun string, present bool, now time.Time) string {
 // modelman's _is_openrouter_priced (pricing.py): an openrouter model, or a
 // model of a non-native cloud provider. Keyed on the provider's location, not
 // the model's, so ollama cloud models (location "cloud" on the local ollama
-// provider, priced by ollama.com) don't count. A nil cfg has no models.
+// provider, priced by ollama.com) don't count. A model whose ProviderID has
+// no registry provider doesn't count either (p == nil, location
+// unresolvable) — the Python side skips it silently too. A nil cfg has no
+// models.
 func HasOpenRouterPricedModel(cfg *config.Config) bool {
 	if cfg == nil {
 		return false

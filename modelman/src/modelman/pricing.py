@@ -78,6 +78,12 @@ def _is_openrouter_priced(registry: Registry, model: ModelEntry) -> bool:
     by ollama.com (``modelman ollama-catalog sync``), so treating it as a
     candidate warned "No OpenRouter match" for every one (#151).
 
+    A model whose ``provider_id`` has no provider entry is also not a
+    candidate: the provider's location can't be resolved, so such a dangling
+    id is skipped silently rather than warned about. Deliberate — wt's
+    HasOpenRouterPricedModel drops such dangling ids the same way
+    (``p == nil``), so the two stay aligned.
+
     Native providers (auth.type == "native" — the wt agent providers
     sync_agent_providers registers with location="cloud") route straight to
     the agent CLI and are never priced via OpenRouter. They must be excluded

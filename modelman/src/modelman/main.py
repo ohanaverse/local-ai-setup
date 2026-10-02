@@ -536,10 +536,8 @@ def delete_family(
 @app.command()
 def refresh_prices() -> None:
     """Refresh per-token pricing for OpenRouter-priced models from OpenRouter."""
-    from datetime import date
-
     from .pricing import refresh_prices as run_refresh
-    from .state import set_price_refresh_last_run
+    from .state import stamp_price_refresh_today
 
     registry = load_registry()
     result = run_refresh(registry)
@@ -551,12 +549,16 @@ def refresh_prices() -> None:
     except OSError as exc:
         typer.echo(f"error: failed to save registry: {exc}", err=True)
         raise typer.Exit(1) from exc
-    # Stamp the refresh date like the TUI's background refresh does: wt's
-    # stale-pricing notice reads it, and without the stamp it told the user to
-    # run this very command forever (#151). Stamped even with zero
-    # OpenRouter-priced models — nothing can be stale then.
-    with locked_state() as fresh:
-        set_price_refresh_last_run(fresh, date.today().isoformat())
+    # Stamp the refresh date like the TUI's background refresh does (both
+    # call state.stamp_price_refresh_today): wt's stale-pricing notice reads
+    # it, and without the stamp it told the user to run this very command
+    # forever (#151). But only when the refresh actually updated something —
+    # the TUI's rule (app.py): a zero-update refresh is not a success worth
+    # gating on, and stamping it (no OpenRouter-priced candidates, or no
+    # candidate matched) would suppress a same-day retry and the pricing of
+    # a model exposed later the same day.
+    if result.updated > 0:
+        stamp_price_refresh_today()
     for warning in result.warnings:
         typer.echo(f"warning: {warning}", err=True)
     typer.echo(f"Refreshed prices for {result.updated} model(s).")

@@ -77,11 +77,9 @@ class ModelmanApp(App[QueuedOps | None]):
         trip never blocks a main-thread registry save (an add/edit the user
         makes while the API is slow).
         """
-        from datetime import date
-
         from .pricing import apply_prices, fetch_openrouter_pricing, should_run_price_refresh
         from .registry import _default_registry_path, load_registry, locked_registry
-        from .state import StateStore, load_state, locked_state, set_price_refresh_last_run
+        from .state import StateStore, load_state, stamp_price_refresh_today
 
         # Skip when the canonical registry file is absent — load_registry()
         # would fall back to the legacy ~/.config path and locked_registry()
@@ -137,8 +135,7 @@ class ModelmanApp(App[QueuedOps | None]):
             self._price_refresh_skipped_or_failed = True
         else:
             try:
-                with locked_state() as disk_state:
-                    set_price_refresh_last_run(disk_state, date.today().isoformat())
+                stamp_price_refresh_today()
             except Exception as exc:  # noqa: BLE001
                 self.call_from_thread(
                     self.notify,
