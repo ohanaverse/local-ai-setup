@@ -310,11 +310,23 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 			plan.Adopt = append(plan.Adopt, id)
 		}
 	}
+	// Iterate rows, not models: a row outlives a registry entry that was deleted
+	// or renamed, so a loop over the model lists would never visit it and would
+	// strand the stale route (TestSyncRemovesMarkedRowOfDeletedModel). Ownership
+	// is read per row — its marker, or `managed` for the unmarked pre-#179 rows
+	// TestSyncRemovesLegacyUnmarkedLocalRoute pins — so a model-shaped rewrite of
+	// this loop loses both clauses.
+	//
+	// seen deduplicates: two rows can share one id and one RemoveRow drops both,
+	// so the id belongs in the plan once. Without it the same removal was
+	// announced twice in the report and handed twice to callers of PlanSync.
+	seen := map[string]bool{}
 	for _, r := range f.Rows() {
-		if want[r.ID] || slices.Contains(o.Untouched, r.ID) {
+		if want[r.ID] || slices.Contains(o.Untouched, r.ID) || seen[r.ID] {
 			continue
 		}
 		if r.Managed || managed[r.ID] {
+			seen[r.ID] = true
 			plan.Remove = append(plan.Remove, r.ID)
 		}
 	}
@@ -324,7 +336,13 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 		if touchesLocal {
 			if fresh, ok := runRecheck(o); ok {
 				plan.Remove = slices.DeleteFunc(plan.Remove, func(id string) bool { return local[id] && slices.Contains(fresh, id) })
-				plan.Add = slices.DeleteFunc(plan.Add, func(id string) bool { return local[id] && !slices.Contains(fresh, id) })
+				// The same predicate the Add side gets, so Adopt stays the subset
+				// of Add that SyncPlan documents: an id pruned from Add must not
+				// stay in Adopt, or the plan describes an adoption it will not
+				// perform.
+				stoppedAgain := func(id string) bool { return local[id] && !slices.Contains(fresh, id) }
+				plan.Add = slices.DeleteFunc(plan.Add, stoppedAgain)
+				plan.Adopt = slices.DeleteFunc(plan.Adopt, stoppedAgain)
 			}
 		}
 	}

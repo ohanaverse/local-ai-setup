@@ -340,6 +340,43 @@ func TestSyncRecheckAlsoAppliesToAddSet(t *testing.T) {
 	}
 }
 
+// isAdoptSubsetOfAdd reports whether every Adopt id is also in Add — the
+// invariant SyncPlan's doc comment states.
+func isAdoptSubsetOfAdd(p SyncPlan) bool {
+	return !slices.ContainsFunc(p.Adopt, func(id string) bool { return !slices.Contains(p.Add, id) })
+}
+
+// TestPlanSyncAdoptStaysSubsetOfAddWhenRecheckPrunes pins SyncPlan's documented
+// invariant — Adopt is the subset of Add that replaces an unmarked row — when
+// the under-lock Recheck filter drops an id from Add. Both lists are part of the
+// exported plan, and Sync relabels an added id "adopted" by looking it up in
+// Adopt, so an id left in Adopt after being pruned from Add describes a plan wt
+// does not carry out: a caller reports an adoption of a row that is never
+// written. Unreachable from the CLI today (the dry run nulls Recheck, and Sync
+// consults Adopt only for ids that produced an outcome), which is exactly why it
+// is worth pinning: the trap is for the next caller of PlanSync.
+func TestPlanSyncAdoptStaysSubsetOfAddWhenRecheckPrunes(t *testing.T) {
+	o, _, _ := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	const id = "ollama/gemma:9b"
+	// The outer probe saw the local model running, so its unmarked row is an
+	// adopt; Recheck, under the lock, finds nothing running, so the add side
+	// drops it.
+	o.Recheck = func() []string { return nil }
+	plan, err := PlanSync(testConfig(), []string{id}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Add, id) || slices.Contains(plan.Adopt, id) {
+		t.Fatalf("plan = %+v, want the pruned id gone from both Add and Adopt", plan)
+	}
+	if !isAdoptSubsetOfAdd(plan) {
+		t.Fatalf("plan = %+v, want every Adopt id also in Add", plan)
+	}
+}
+
 // TestApplyRejectsEmptyModelName pins that a model with an empty model_name is
 // rejected per id and no route is written: BuildEntry would otherwise emit a
 // bogus "ollama/" row now that wt commands no longer refuse on registry
@@ -513,6 +550,48 @@ func TestSyncRemovesLegacyUnmarkedLocalRoute(t *testing.T) {
 	for _, r := range readRows(t, p) {
 		if r.ID == "ollama/gemma:9b" {
 			t.Fatalf("stopped local model kept its route: %v", readRows(t, p))
+		}
+	}
+}
+
+// TestSyncDeduplicatesRepeatedStaleRow pins that two rows sharing one managed id
+// produce one removal, not two. RemoveRow drops every duplicate, so the FILE is
+// right either way, but the plan and the outcomes are built from the raw rows:
+// the same removal was announced twice, in both the text and the JSON output of
+// `wt litellm sync`, and plan.Remove handed a duplicate id to any caller of the
+// exported PlanSync. Duplicate rows are exactly what a hand-edited config.yaml
+// grows, and a report that names the same route twice reads as two stale routes.
+func TestSyncDeduplicatesRepeatedStaleRow(t *testing.T) {
+	const id = "ollama/gemma:9b"
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(plan.Remove, ","); got != id {
+		t.Fatalf("plan.Remove = %s, want the stale id exactly once", got)
+	}
+	// The real sync reports the removal it performs, so the outcomes must be
+	// deduplicated from the same source: both renderers walk res.Outcomes.
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, oc := range res.Outcomes {
+		got = append(got, oc.ID+":"+oc.Action)
+	}
+	if s := strings.Join(got, ","); s != id+":unrouted,openrouter/x/y:routed" {
+		t.Fatalf("outcomes = %s, want one unrouted line for the stale id", s)
+	}
+	for _, r := range readRows(t, p) {
+		if r.ID == id {
+			t.Fatalf("stale row survived: %v", readRows(t, p))
 		}
 	}
 }
