@@ -254,10 +254,9 @@ func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
 // exists for: a provider stopped outside wt (server refuses connections, so
 // its probe is not StatusOK but positively nothing is running) must lose its
 // stale routes, with no ambiguous "probe did not succeed" warning. Instead it
-// gets the dedicated refused warning in every sync rendering: the local routes
-// were removed, and the family's registry cloud routes were knowingly left in
-// place even though they dial the same dead daemon through the proxy — a
-// failure like that must be reported, not silently swallowed.
+// gets the dedicated refused warning in every sync rendering, because a local
+// route of the family was removed (TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant
+// pins when the warning appears and its cloud clause).
 func TestLitellmSyncRemovesRoutesOfRefusedProvider(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b, additional_drop_params: [reasoning_effort]}\n" +
 		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
@@ -556,6 +555,10 @@ func TestLitellmChangeCommandsWorkOnValidationOnlyError(t *testing.T) {
 	if a.cfgErr == nil || a.loadErr != nil {
 		t.Fatalf("fixture: cfgErr=%v loadErr=%v", a.cfgErr, a.loadErr)
 	}
+	// sync routes the fixture's cloud models too; an unset secret_ref is a
+	// per-id build error (exit 1), which is not what this test is about.
+	t.Setenv("OPENROUTER_API_KEY", "sk-test")
+	t.Setenv("PINNED_CLOUD_API_KEY", "sk-test")
 	const good = "ollama/contract-fixture:local"
 	run := func(args ...string) (string, error) {
 		c := litellmCmd(a)
@@ -780,18 +783,75 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	}
 }
 
+// TestLitellmSyncJSONMatchesContract pins `wt litellm sync --json` against the
+// shared fixture's sync block. The result comes from a real litellm.Sync over
+// a config.yaml that exercises every outcome — unrouted, rewritten, adopted,
+// routed and a per-id error — so the action names are pinned where Sync
+// assigns them, not restated by hand. modelman parses this shape with
+// parse_change_result (modelman/tests/contracts/test_litellm_cli_fixture.py).
+func TestLitellmSyncJSONMatchesContract(t *testing.T) {
+	p := litellmEnv(t, `model_list:
+  - model_name: openrouter/old
+    litellm_params: {model: openrouter/old}
+    model_info: {wt_managed: true}
+  - model_name: openrouter/x
+    litellm_params: {model: openrouter/STALE}
+    model_info: {wt_managed: true}
+  - model_name: openrouter/adopt
+    litellm_params: {model: openrouter/adopt}
+`)
+	cfg := litellmCloudTestConfig()
+	for _, id := range []string{"adopt", "new", "bad"} {
+		name := id
+		if id == "bad" {
+			name = ""
+		}
+		cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/" + id, ProviderID: "openrouter", ModelName: name, Location: config.LocationCloud})
+	}
+	res, err := litellm.Sync(cfg, nil, litellm.Options{Path: p, Restart: func() []string { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := reportLitellm(&out, &errOut, res, true, false); !errors.Is(err, errLitellmIDFailed) {
+		t.Fatalf("reportLitellm err = %v, want errLitellmIDFailed", err)
+	}
+	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	block, ok := fixture["sync"]
+	if !ok {
+		t.Fatal("fixture has no sync block")
+	}
+	var got, want any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out.String())
+	}
+	if err := json.Unmarshal(block, &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sync --json =\n%s\nfixture =\n%s", out.String(), block)
+	}
+}
+
 // downProbeWarn is the warning a provider whose server refused the probe
 // connection produces in both sync modes, spelled out once so the dry-run and
 // real-run tests compare the same string.
-const downProbeWarn = `provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale; its cloud routes were left in place`
+const downProbeWarn = `provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`
 
 // TestLitellmSyncDryRunReportsProbeWarnings pins that sync --dry-run prints the
 // same probe warnings the real sync prints — before, the dry run returned
 // before the warning loop, so it could promise a clean run that then arrived
 // with warnings. It also pins the refused-daemon warning's content and the
 // plan it accompanies: the dead daemon's local routes go (nothing is
-// listening) while its registry cloud routes stay (LiteLLM still serves rows
-// that dial the same dead daemon), and sync reports that in both renderings.
+// listening) while unrelated cloud routes (openrouter/x) are still added, and
+// sync reports that in both renderings.
 func TestLitellmSyncDryRunReportsProbeWarnings(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n"
 	p := litellmEnv(t, body)
@@ -862,11 +922,12 @@ func TestLitellmSyncDryRunReportsProbeWarnings(t *testing.T) {
 	}
 }
 
-// TestLitellmListTextOutput pins list's human-readable output: one
-// "id<TAB>owner" line per row, owner "wt" for a marked row and "hand-written"
-// otherwise. A user reads this to decide which rows are wt's (safe to let sync
-// manage) and which are their own; a wrong owner or a missing tab silently
-// misleads them about which rows wt may rewrite or remove.
+// TestLitellmListTextOutput pins list's human-readable output: one line per
+// row, a wt row as its bare id (so `wt litellm list | grep -x <id>` and the
+// guides' "list of routed ids" still hold) and a hand-written row as
+// "id<TAB>(hand-written)". A user reads the marker to tell which rows are
+// their own; a missing one misleads them about which rows wt may rewrite or
+// remove.
 func TestLitellmListTextOutput(t *testing.T) {
 	litellmEnv(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -879,7 +940,7 @@ func TestLitellmListTextOutput(t *testing.T) {
 	if err := runLitellmList(&out, false); err != nil {
 		t.Fatal(err)
 	}
-	const want = "ollama/gemma:9b\twt\nhand/alias\thand-written\n"
+	const want = "ollama/gemma:9b\nhand/alias\t(hand-written)\n"
 	if got := out.String(); got != want {
 		t.Fatalf("list = %q, want %q", got, want)
 	}
@@ -902,5 +963,51 @@ func TestLitellmListJSONRows(t *testing.T) {
 	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","managed":true},{"id":"hand/alias","managed":false}]}`
 	if got := strings.TrimSpace(out.String()); got != want {
 		t.Fatalf("list = %s\nwant   %s", got, want)
+	}
+}
+
+// TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant pins that a stopped
+// provider (refused probe) warns only when the refusal affects a route: a
+// local route of its family in config.yaml (treated as stale), or a registry
+// cloud model it serves (routed, but failing until it is back). A stopped
+// provider with neither — the everyday state of an unused mtplx — is silent.
+func TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant(t *testing.T) {
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusUnreachable},
+		Down:      map[string]bool{"ollama": true},
+	}
+	cases := []struct {
+		name string
+		body string
+		cfg  func() *config.Config
+		want []string
+	}{
+		{"nothing routed, no cloud models", "model_list: []\n", litellmTestConfig, nil},
+		{"local route present", "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n", litellmTestConfig,
+			[]string{`provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`}},
+		{"ollama cloud model", "model_list: []\n", func() *config.Config {
+			cfg := litellmTestConfig()
+			cfg.Models = append(cfg.Models, config.Model{ID: "ollama/glm:cloud", ProviderID: "ollama", ModelName: "glm:cloud", Location: config.LocationCloud})
+			return cfg
+		}, []string{`provider "ollama" refused the probe connection: nothing is listening there; its cloud models stay routed but fail until it is back up`}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			litellmEnv(t, c.body)
+			stubProbeInventory(t, snap)
+			var out, errOut bytes.Buffer
+			if err := runLitellmSync(&out, &errOut, c.cfg(), true, true); err != nil {
+				t.Fatal(err)
+			}
+			var dry struct {
+				Warnings []string `json:"warnings"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
+				t.Fatalf("not JSON: %v\n%s", err, out.String())
+			}
+			if !slices.Equal(dry.Warnings, c.want) {
+				t.Fatalf("warnings = %q, want %q", dry.Warnings, c.want)
+			}
+		})
 	}
 }

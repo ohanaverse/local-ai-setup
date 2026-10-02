@@ -52,14 +52,16 @@ var enforcedSettings = []string{
 	"use_chat_completions_url_for_anthropic_messages",
 }
 
-// wtParamKeys are the litellm_params keys wt itself authors on every row it
-// writes (entry.go's BuildEntry). A row replacement never carries these over
-// from the old row: the registry and provider policy own them, and a change
-// there must reach config.yaml. Every other key on the old row is
-// user-authored (a hand-written timeout, rate limit, ...) and is carried over
-// when the new row lacks it — the presence-based keys additional_drop_params
-// and use_chat_completions_api (EnsureSettings writes them only when absent)
-// fall out of this rule.
+// wtParamKeys are the litellm_params keys wt itself derives from the registry
+// and provider policy (entry.go's BuildEntry): model unconditionally, api_base
+// only when the provider supplies a base URL, and api_key from whichever the
+// policy names — its secret ref (resolving the provider's credential) or its
+// literal key. A row replacement never carries these over from the old row:
+// the registry and provider policy own them, and a change there must reach
+// config.yaml. Every other key on the old row is user-authored (a hand-written
+// timeout, rate limit, ...) and is carried over when the new row lacks it — the
+// presence-based keys additional_drop_params and use_chat_completions_api
+// (EnsureSettings writes them only when absent) fall out of this rule.
 var wtParamKeys = map[string]bool{"model": true, "api_base": true, "api_key": true}
 
 // droppedOllamaChatParams are dropped by default on every fresh ollama_chat/
@@ -264,13 +266,25 @@ func carryUserParams(old, row *yaml.Node) {
 	if oldParams == nil || newParams == nil {
 		return
 	}
+	if oldParams.Kind != yaml.MappingNode || newParams.Kind != yaml.MappingNode {
+		// A hand-edited litellm_params that is not a mapping ([foo, bar], say)
+		// has no key/value pairs to read: pairing off its Content would invent
+		// param names from its elements. Leave the row to be rewritten from the
+		// registry rather than derive one from a node we cannot interpret.
+		return
+	}
 	for i := 0; i+1 < len(oldParams.Content); i += 2 {
-		k := oldParams.Content[i].Value
-		if wtParamKeys[k] {
+		k := oldParams.Content[i]
+		if k.Kind != yaml.ScalarNode {
+			// A complex key (? {weird: key}: 1) is a mapping node whose Value
+			// is "": carried as-is it would inject a nameless param.
 			continue
 		}
-		if v := oldParams.Content[i+1]; mapGet(newParams, k) == nil {
-			mapSet(newParams, k, v)
+		if wtParamKeys[k.Value] {
+			continue
+		}
+		if v := oldParams.Content[i+1]; mapGet(newParams, k.Value) == nil {
+			mapSet(newParams, k.Value, v)
 		}
 	}
 }
@@ -303,17 +317,12 @@ func (f *File) modelList() (*yaml.Node, error) {
 	return seq, nil
 }
 
-// RoutedIDs returns every model_list row's model_name, in file order.
+// RoutedIDs returns every model_list row's model_name, in file order — the
+// ids of Rows, kept for tests that only compare names.
 func (f *File) RoutedIDs() []string {
-	ml := f.modelListSeq()
-	if ml == nil {
-		return nil
-	}
 	var ids []string
-	for _, row := range ml.Content {
-		if id := rowName(row); id != "" {
-			ids = append(ids, id)
-		}
+	for _, r := range f.Rows() {
+		ids = append(ids, r.ID)
 	}
 	return ids
 }
@@ -352,16 +361,26 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 	return nil
 }
 
-// RemoveRow deletes the row keyed by id (no-op when absent). Rows that are
+// RemoveRow deletes the rows keyed by id (no-op when absent). Rows that are
 // not mappings are never ours and are left in place.
 func (f *File) RemoveRow(id string) {
+	f.removeRows(id, func(*yaml.Node) bool { return true })
+}
+
+// RemoveMarkedRows deletes the rows keyed by id that carry wt's marker,
+// leaving any unmarked (hand-written) row of the same name in place.
+func (f *File) RemoveMarkedRows(id string) {
+	f.removeRows(id, IsManaged)
+}
+
+func (f *File) removeRows(id string, drop func(*yaml.Node) bool) {
 	ml := f.modelListSeq()
 	if ml == nil {
 		return
 	}
 	kept := ml.Content[:0]
 	for _, row := range ml.Content {
-		if row.Kind == yaml.MappingNode && rowName(row) == id {
+		if row.Kind == yaml.MappingNode && rowName(row) == id && drop(row) {
 			continue
 		}
 		kept = append(kept, row)

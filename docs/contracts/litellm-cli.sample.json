@@ -15,11 +15,23 @@
       {"id": "openrouter/x/y", "managed": false}
     ]
   },
+  "sync": {
+    "outcomes": [
+      {"id": "openrouter/old", "action": "unrouted"},
+      {"id": "openrouter/x", "action": "rewritten"},
+      {"id": "openrouter/adopt", "action": "adopted"},
+      {"id": "openrouter/new", "action": "routed"},
+      {"id": "openrouter/bad", "error": "model \"openrouter/bad\": empty model_name"}
+    ],
+    "changed": true,
+    "warnings": []
+  },
   "sync_dry_run": {
     "dry_run": true,
     "plan": {
       "add": ["openrouter/x/y"],
       "adopt": ["ollama/gemma:9b"],
+      "rewrite": [],
       "remove": ["openrouter/old"],
       "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}]
     },

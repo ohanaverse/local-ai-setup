@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -600,14 +601,15 @@ func TestSyncAdoptionCarriesUserParams(t *testing.T) {
 
 // TestSyncCarriesUserButNotWTParams pins the carry rule on every rewrite, not
 // just adoption: a marked row's user-authored key (timeout) is carried, while
-// wt-owned keys are not — a custom api_base on a marked row loses to the
-// registry on the next sync, because a provider base_url change must reach
-// config.yaml (a marked row is wt's to re-derive).
+// all three wt-owned keys are not — a hand-written model, api_base or api_key
+// on a marked row loses to the registry on the next sync, because a changed
+// provider endpoint or mapping (and, for a stale model, the deployment LiteLLM
+// actually dials) must reach config.yaml: a marked row is wt's to re-derive.
 func TestSyncCarriesUserButNotWTParams(t *testing.T) {
 	const id = "ollama/gemma:9b"
 	o, _, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
-    litellm_params: {model: ollama_chat/gemma:9b, api_base: "http://localhost:9999", timeout: 120}
+    litellm_params: {model: ollama_chat/EVIL:1b, api_base: "http://localhost:9999", api_key: sk-hand-written, timeout: 120}
     model_info: {wt_managed: true}
 `)
 	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
@@ -623,6 +625,63 @@ func TestSyncCarriesUserButNotWTParams(t *testing.T) {
 	}
 	if params["api_base"] != "http://localhost:11434" {
 		t.Errorf("api_base = %v, want the registry's http://localhost:11434", params["api_base"])
+	}
+	// The other two wt-authored keys are pinned the same way, but they do
+	// different work. api_key is the half the rule's mutation actually
+	// exercises: dropping it from wtParamKeys let a hand-written key reach the
+	// row, and that survived the whole suite before this assertion existed. The
+	// model pin does not catch that mutation — BuildEntry emits model
+	// unconditionally, so carryUserParams can never find it missing — it is the
+	// backstop for the day BuildEntry stops emitting model unconditionally:
+	// model is the string LiteLLM dials, and a rebuild that carried a stale one
+	// would leave wt believing it owns a row that routes elsewhere.
+	if params["model"] != "ollama_chat/gemma:9b" {
+		t.Errorf("model = %v, want the registry's ollama_chat/gemma:9b", params["model"])
+	}
+	if v, ok := params["api_key"]; ok {
+		t.Errorf("api_key = %v, want none: ollama's policy authors no api_key, so a hand-written one must not be carried", v)
+	}
+}
+
+// TestSyncIgnoresMalformedUserParams pins that a rewrite never derives a
+// garbled row from a litellm_params node it cannot interpret. carryUserParams
+// copies the old row's user-authored params by walking that node's Content as
+// key/value pairs, which is only valid while the node is a mapping whose keys
+// are scalars; a hand-edited sequence ([foo, bar] — every element paired off)
+// or a mapping with a complex key (? {weird: key}: 1 — a key node whose Value
+// is "") is read as params instead. Both inputs are ones LiteLLM itself would
+// reject on load, so this is a data-fidelity guard rather than a
+// reachable-in-practice crash: it keeps wt's rule that a file it cannot
+// interpret is left alone (checkModelList refuses a non-list model_list the
+// same way) instead of silently writing derived garbage.
+func TestSyncIgnoresMalformedUserParams(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"sequence", "model_list:\n  - model_name: openrouter/x/y\n    litellm_params: [foo, bar]\n"},
+		{"complex key", "model_list:\n  - model_name: openrouter/x/y\n    litellm_params:\n      ? {weird: key}\n      : 1\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o, _, p := opts(t, tc.body)
+			if _, err := Sync(testConfig(), nil, o); err != nil {
+				t.Fatal(err)
+			}
+			f, _ := Open(p)
+			params := decode(t, mapGet(f.row("openrouter/x/y"), "litellm_params"))
+			// The rebuilt row is exactly what the registry authors — before the
+			// guard the sequence injected foo:bar and the complex key injected a
+			// "" key, so either leaks a param LiteLLM would choke on.
+			want := map[string]any{
+				"model":    "openrouter/x/y",
+				"api_base": "https://openrouter.ai/api/v1",
+				"api_key":  "sk-test",
+			}
+			if !reflect.DeepEqual(params, want) {
+				t.Fatalf("litellm_params = %v, want the registry's %v with no injected key", params, want)
+			}
+		})
 	}
 }
 
@@ -734,8 +793,8 @@ func TestSyncPrunesStaleDuplicateOfDesiredModel(t *testing.T) {
 	for _, oc := range res.Outcomes {
 		got = append(got, oc.ID+":"+oc.Action)
 	}
-	if s := strings.Join(got, ","); s != id+":routed" {
-		t.Fatalf("outcomes = %s, want one routed line for the duplicated id", s)
+	if s := strings.Join(got, ","); s != id+":rewritten" {
+		t.Fatalf("outcomes = %s, want one rewritten line for the duplicated id", s)
 	}
 	f2, _ := Open(p)
 	rows := readRows(t, p)
@@ -894,5 +953,137 @@ func TestPlanSyncAndSyncAgreeOnInvalidModelList(t *testing.T) {
 				t.Fatalf("invalid config was written:\n%s", after)
 			}
 		})
+	}
+}
+
+// TestSyncKeepsRouteWhenSecretUnresolved pins that a cloud row whose
+// credentials do not resolve in this shell keeps its working api_key: the
+// build failure is reported, and the row is neither rewritten nor removed.
+func TestSyncKeepsRouteWhenSecretUnresolved(t *testing.T) {
+	t.Setenv("WT_TEST_UNSET_KEY", "")
+	cfg := testConfig()
+	cfg.Providers[2].Auth.SecretRef = "WT_TEST_UNSET_KEY"
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_key: sk-old}
+    model_info: {wt_managed: true}
+`)
+	res, err := Sync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(res.Outcomes, func(oc Outcome) bool { return oc.ID == "openrouter/x/y" && oc.Err != nil }) {
+		t.Fatalf("want a build error for openrouter/x/y, got %+v", res.Outcomes)
+	}
+	f, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := f.row("openrouter/x/y")
+	if row == nil {
+		t.Fatal("route removed")
+	}
+	if k := mapGet(mapGet(row, "litellm_params"), "api_key"); k == nil || k.Value != "sk-old" {
+		t.Fatalf("api_key = %v, want sk-old kept", k)
+	}
+}
+
+// TestSyncKeepsRowsOfModelsWithDanglingProvider pins the registry-data-gap
+// guard: a registry model whose provider_id names no provider (e.g.
+// `providers = []`) drops out of CloudModels, but its marked row — with any
+// hand-added params — must survive until the registry is repaired.
+func TestSyncKeepsRowsOfModelsWithDanglingProvider(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers = slices.DeleteFunc(cfg.Providers, func(p config.Provider) bool { return p.ID == "openrouter" })
+	cfg.Models[2].Location = "" // location comes from the (missing) provider
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, timeout: 600}
+    model_info: {wt_managed: true}
+`)
+	if _, err := Sync(cfg, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v, want the gap model's row kept", got)
+	}
+}
+
+// TestSyncStaleRemoveSparesHandWrittenDuplicate pins that removing a stale
+// marked row drops only marked rows of that name: an unmarked hand-written
+// row sharing the name is never wt's to delete.
+func TestSyncStaleRemoveSparesHandWrittenDuplicate(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: foo/x
+    litellm_params: {model: openrouter/foo/x}
+    model_info: {wt_managed: true}
+  - model_name: foo/x
+    litellm_params: {model: openrouter/foo/x-mine}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	got := readRows(t, p)
+	if !slices.Contains(got, RowInfo{"foo/x", false}) || slices.Contains(got, RowInfo{"foo/x", true}) {
+		t.Fatalf("rows = %v, want only the hand-written foo/x", got)
+	}
+}
+
+// TestSyncReportsRewriteSeparately pins that a changed wt row is a rewrite,
+// not a new route: the dry-run plan lists it under Rewrite (a subset of Add,
+// like Adopt) and the real sync reports it as "rewritten".
+func TestSyncReportsRewriteSeparately(t *testing.T) {
+	o, _, _ := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_key: sk-test}
+    model_info: {input_cost_per_token: 9, wt_managed: true}
+`)
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Rewrite, []string{"openrouter/x/y"}) || !slices.Contains(plan.Add, "openrouter/x/y") || len(plan.Adopt) != 0 {
+		t.Fatalf("plan = %+v, want openrouter/x/y as a rewrite only", plan)
+	}
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(res.Outcomes, func(oc Outcome) bool { return oc.ID == "openrouter/x/y" && oc.Action == "rewritten" }) {
+		t.Fatalf("outcomes = %+v, want openrouter/x/y rewritten", res.Outcomes)
+	}
+}
+
+// TestSyncResolvesFailingSecretOncePerProvider pins that a failing exec:
+// secret_ref runs once per sync, not once per cloud model: failures are never
+// cached by config.ResolveSecret, and each run may take the full exec timeout,
+// so per-model resolution turned one broken helper into minutes of stall.
+func TestSyncResolvesFailingSecretOncePerProvider(t *testing.T) {
+	dir := t.TempDir()
+	count := dir + "/count"
+	script := dir + "/fail.sh"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho x >> "+count+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.Providers[2].Auth.SecretRef = "exec:" + script
+	cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/a/b", ProviderID: "openrouter", ModelName: "a/b", Location: config.LocationCloud})
+	o, _, _ := opts(t, "model_list: []\n")
+	res, err := Sync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed []string
+	for _, oc := range res.Outcomes {
+		if oc.Err != nil {
+			failed = append(failed, oc.ID)
+		}
+	}
+	if !slices.Equal(failed, []string{"openrouter/x/y", "openrouter/a/b"}) {
+		t.Fatalf("failed ids = %v, want both openrouter models", failed)
+	}
+	b, _ := os.ReadFile(count)
+	if n := strings.Count(string(b), "x"); n != 1 {
+		t.Fatalf("helper ran %d times, want 1", n)
 	}
 }

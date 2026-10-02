@@ -269,3 +269,20 @@ func TestBuildEntryMarkerWins(t *testing.T) {
 		t.Fatalf("model_info override disowned the row: %v", decode(t, n))
 	}
 }
+
+// TestBuildEntrySecretRefEmptyIsAnError pins that a non-empty secret_ref
+// resolving to "" (an env-name or os.environ/ ref whose variable is unset in
+// this shell) is a BuildEntry error, not an `api_key: ""` row. Sync rebuilds
+// every cloud row, so writing the empty key would replace every working key
+// and fail every cloud route with an auth error.
+func TestBuildEntrySecretRefEmptyIsAnError(t *testing.T) {
+	t.Setenv("WT_TEST_UNSET_KEY", "")
+	cfg := testConfig()
+	for _, ref := range []string{"WT_TEST_UNSET_KEY", "os.environ/WT_TEST_UNSET_KEY"} {
+		p := cfg.Providers[2] // openrouter
+		p.Auth.SecretRef = ref
+		if _, err := BuildEntry(cfg.Models[2], p); err == nil || !strings.Contains(err.Error(), "WT_TEST_UNSET_KEY") {
+			t.Errorf("ref %q: BuildEntry error = %v, want one naming the empty ref", ref, err)
+		}
+	}
+}

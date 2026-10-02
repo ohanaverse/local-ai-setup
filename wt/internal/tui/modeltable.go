@@ -163,12 +163,13 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			route, err := routes[i].route, routes[i].err
 			switch {
 			case r.RefusedByRoute(route, err):
-				// A discovered model is not in LiteLLM's model_list: routing
-				// it through the proxy cannot work, so it is unselectable.
-				// The rule itself lives in catalog.Row.RefusedByRoute, shared
-				// with the non-TUI pin and `wt smoke`.
+				// A discovered or Unmapped model is not in LiteLLM's
+				// model_list: routing it through the proxy cannot work, so it
+				// is unselectable. The rule itself lives in
+				// catalog.Row.RefusedByRoute, shared with the non-TUI pin and
+				// `wt smoke`.
 				it.exception = "(not in LiteLLM)"
-				it.blocked = "discovered model " + r.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (wt litellm off) to use it"
+				it.blocked = r.RouteRefusal(route, err)
 				it.start = false
 			case err != nil:
 				it.exception = "(unavailable)"

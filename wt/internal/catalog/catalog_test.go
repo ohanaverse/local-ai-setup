@@ -321,3 +321,32 @@ func TestBuildMarksDiscoveredModelsPassedViaModels(t *testing.T) {
 		t.Errorf("idle discovered row: Running=%v action=%v, want start", rows[1].Running, rows[1].Action())
 	}
 }
+
+// TestBuildMarksUnmappedCloudRows pins finding 3 of the #179 review: a cloud
+// model whose provider has no LiteLLM mapping is in the catalog (configured
+// means exposed) but sync never routes it, so its row is marked Unmapped and
+// refused through the proxy — with LiteLLM off it stays launchable.
+func TestBuildMarksUnmappedCloudRows(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+			{ID: "acme", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+		},
+	}
+	mapped := config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x"}
+	unmapped := config.Model{ID: "acme/m", ProviderID: "acme", ModelName: "m"}
+	rows := Build(Input{Config: cfg, Models: []config.Model{mapped, unmapped}})
+	if len(rows) != 2 || rows[0].Unmapped || !rows[1].Unmapped {
+		t.Fatalf("rows = %+v, want only acme/m Unmapped", rows)
+	}
+	viaProxy := config.Route{Litellm: true}
+	if !rows[1].RefusedByRoute(viaProxy, nil) || rows[1].RefusedByRoute(config.Route{}, nil) {
+		t.Fatal("unmapped row: want refused via LiteLLM, launchable direct")
+	}
+	if r := rows[1].RouteRefusal(viaProxy, nil); !strings.Contains(r, "acme/m") || !strings.Contains(r, "wt litellm off") {
+		t.Fatalf("RouteRefusal = %q", r)
+	}
+	if rows[0].RouteRefusal(viaProxy, nil) != "" {
+		t.Fatal("mapped cloud row refused")
+	}
+}

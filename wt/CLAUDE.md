@@ -197,7 +197,7 @@ Every model row wt shows or resolves — the TUI picker, `wt start`/`wt smoke`'s
 
 - **launch** — a cloud row, or a local model the probe reports running.
 - **start** — a non-running local row of ollama/omlx/omlx-6bit/mtplx whose status is not `absent` (a pulled ollama model is a start, not a launch).
-- **block** — an `absent` row ("not on disk — pull or download it first") or a provider with no start engine such as `mlx_lm_server` (`modelman start <id>` hint). Separately, a discovered row whose route goes through LiteLLM is refused ("not in LiteLLM") by `renderTable` in the TUI and `pickerBlockedReason` on the non-TUI path, not by `catalog`.
+- **block** — an `absent` row ("not on disk — pull or download it first") or a provider with no start engine such as `mlx_lm_server` (`modelman start <id>` hint). Separately, a row LiteLLM cannot serve — a discovered model, or an `Unmapped` cloud model (its provider has no `PolicyFor` mapping, so sync never routes it) — is refused ("not in LiteLLM") when its route goes through the proxy. The rule and its wording are `catalog.Row.RefusedByRoute`/`RouteRefusal`; `renderTable` (TUI), `pickerBlockedReason` (non-TUI) and `wt smoke` apply it. Direct (LiteLLM off) such rows launch normally.
 
 **Inventory** (`localmodels.Inventory(cfg)`): probes ollama (`/api/tags` + `/api/ps`, cloud `remote_host` entries excluded), omlx/mtplx (model-dir scan + `/v1/models`) and mlx_lm_server (running only) concurrently. Per-family status `ok` / `partial` (the running-state probe failed, so `Running` is untrustworthy) / `unreachable` / `unsupported`. **Never reads modelman's `running` flag.** Probe origins resolve here (`FamilyOrigin`; `FamilyOriginPort` returns origin *and* port from one resolution, so a command-line port and dialed URL cannot disagree) and are shared with `internal/lifecycle`, so both describe the same server. `Entry.ArtifactKnown` distinguishes "confirmed missing" from "could not determine".
 
@@ -298,9 +298,10 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (absent = enabled, zero 
 
 `cmd/wt/litellm.go` + `internal/litellm`. Subcommands (`expose|unexpose|sync|list|providers|status|on|off|set`) and proxy lifecycle: [docs/wt-agents/README.md](docs/wt-agents/README.md#litellm-routes-are-wt-owned). JSON shapes are pinned by [../docs/contracts/litellm-cli.sample.json](../docs/contracts/litellm-cli.sample.json) (modelman parses them — `providers` replaced modelman's own provider table). Gotchas:
 
-- **`sync` trusts only `ok` families.** A family whose probe is `partial` (e.g. omlx/mtplx `/v1/models` failing) is left alone with a warning, and providers with no probe (retired llamacpp) silently; the exception is a server that refuses the connection (`Snapshot.Down`) — its routes are stale and removed.
+- **`sync` reconciles cloud and local rows (#179).** Desired = every `CloudModels` id plus the running registry local models; every row wt writes carries `model_info.wt_managed: true`. Sync removes a row only when it owns it (the marker, or an unmarked row named like a managed registry id — pre-marker rows, adopted on first sync); hand-written rows are never touched, and a marker-only removal spares an unmarked row of the same name. It never removes the row of a registry model with a data gap (dangling `provider_id`, no location), and a cloud row whose build fails (e.g. a `secret_ref` resolving empty) keeps its existing row.
+- **`sync` trusts only `ok` families.** A family whose probe is `partial` (e.g. omlx/mtplx `/v1/models` failing) is left alone with a warning, and providers with no probe (retired llamacpp) silently; the exception is a server that refuses the connection (`Snapshot.Down`) — its local routes are stale and removed. That case warns only when a local route of the family is in `config.yaml` or the family serves registry cloud models.
 - **Commands refuse only on a config *load* failure** (`app.loadErr`, so a default empty config is never acted on). Registry validation gaps (`cfgErr`) don't block: `litellm.Apply` validates each id and reports broken ones per id (exit 1) while applying the healthy ones.
-- `expose` alone takes `--dry-run` and `--skip-ready-gate` (used by modelman after it checked readiness). `status` never prints the api key (JSON `api_key_set`, text last 4 chars).
+- `expose` and `sync` take `--dry-run` (sync's plan: add, adopt, rewrite, remove, errors); `expose` alone takes `--skip-ready-gate` (used by modelman after it checked readiness). `list` prints a wt row as its bare id and a hand-written row as `id<TAB>(hand-written)`; `--json` adds `rows` with `managed`. `status` never prints the api key (JSON `api_key_set`, text last 4 chars).
 - **`config.yaml` handling:** comment-preserving yaml.v3 edits, but sequence indentation is normalized and blank lines dropped on the first wt write. Permission bits preserved; atomic write guarded by flock on `<config>.lock`. Path `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`), default `~/.config/litellm/config.yaml`. Restart via `WT_LITELLM_RESTART_CMD` (legacy `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. The `wt litellm` commands restart and return without waiting; only the lifecycle route hook waits (see [Lifecycle](#lifecycle-internallifecycle)).
 
 ## Guard (Go)
@@ -348,7 +349,7 @@ wt --cwd -A codex                    # current repo root
 claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files
 wt start [<id>] / wt stop [<id>|<provider>]   # local-model lifecycle (routes follow automatically)
-wt litellm list / sync / status      # routed ids, reconcile to running models, routing state
+wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt profile show -A <agent> -M <id>   # dry-run profile resolution
 wt stats                             # survey report
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
