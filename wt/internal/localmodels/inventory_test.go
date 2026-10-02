@@ -275,9 +275,12 @@ func TestInventoryOmlx6bitRowSharesServerAndDirs(t *testing.T) {
 	}
 }
 
-// TestInventoryMlxLMServerRunningNoDiscovery verifies mlx_lm_server is
-// "unsupported" for discovery (a target+draft pairing is not discoverable) yet a
-// registered row reads running when the server serves anything.
+// TestInventoryMlxLMServerRunningNoDiscovery verifies an answering
+// mlx_lm_server is StatusOK (its running state is trustworthy, so `wt litellm
+// sync` routes the serving pairing) and a registered row reads running when the
+// server serves anything, while ArtifactKnown stays false: a target+draft
+// pairing cannot be enumerated, and a true would let the picker read an empty
+// artifact as "not on disk".
 func TestInventoryMlxLMServerRunningNoDiscovery(t *testing.T) {
 	srv := modelsServer(t, "/some/target/path")
 	cfg := &config.Config{
@@ -285,11 +288,51 @@ func TestInventoryMlxLMServerRunningNoDiscovery(t *testing.T) {
 		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
 	}
 	snap := inventory(cfg, testClient)
-	if snap.Providers["mlx_lm_server"] != StatusUnsupported {
-		t.Errorf("status = %q", snap.Providers["mlx_lm_server"])
+	if snap.Providers["mlx_lm_server"] != StatusOK || snap.Down["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v, want ok and not down", snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"])
 	}
-	if len(snap.Entries) != 1 || !snap.Entries[0].Running {
-		t.Errorf("entries = %+v", snap.Entries)
+	if len(snap.Entries) != 1 || !snap.Entries[0].Running || snap.Entries[0].ArtifactKnown {
+		t.Errorf("entries = %+v, want one running entry with ArtifactKnown false", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerRefusedIsDown verifies a stopped mlx_lm_server (its
+// port refuses the connection) marks the family Down with nothing running.
+// Down is what lets `wt litellm sync` remove the stale route of a stopped
+// pairing; without it the route would keep pointing at a dead :8001.
+func TestInventoryMlxLMServerRefusedIsDown(t *testing.T) {
+	gone := modelsServer(t, "x")
+	goneURL := gone.URL
+	gone.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", goneURL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
+	}
+	snap := inventory(cfg, testClient)
+	if !snap.Down["mlx_lm_server"] {
+		t.Errorf("Down = %v, want mlx_lm_server down (connection refused)", snap.Down)
+	}
+	if len(snap.Entries) != 1 || snap.Entries[0].Running || snap.Entries[0].ArtifactKnown {
+		t.Errorf("entries = %+v, want one non-running entry with ArtifactKnown false", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerBadAnswerIsPartial verifies an mlx_lm_server that
+// answers /v1/models unusably (here a 500) is StatusPartial and NOT Down: the
+// server is listening, so its running state is unknown, and sync must leave its
+// routes alone rather than remove a route that may be serving.
+func TestInventoryMlxLMServerBadAnswerIsPartial(t *testing.T) {
+	erroring := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer erroring.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", erroring.URL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || snap.Down["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v, want partial and not down", snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"])
 	}
 }
 

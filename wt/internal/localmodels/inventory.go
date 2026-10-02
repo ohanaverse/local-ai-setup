@@ -20,22 +20,21 @@ import (
 type Status string
 
 const (
-	// StatusOK means discovery succeeded AND the family's live probe answered.
+	// StatusOK means discovery succeeded AND the family's live probe answered
+	// (mlx_lm_server has no discovery: its /v1/models answered).
 	// A stopped omlx/mtplx server therefore does NOT report ok: its failed
 	// /v1/models is partial, whether the cause is a dead server or a bad answer.
 	StatusOK Status = "ok"
 	// StatusPartial means discovery succeeded but live running-state could
 	// not be determined (ollama: /api/tags ok, /api/ps failed; omlx/mtplx:
-	// the model-dir scan succeeded, /v1/models failed). Entries' Running
-	// flags are not trustworthy for this family.
+	// the model-dir scan succeeded, /v1/models failed; mlx_lm_server, which
+	// has no discovery, only running state: /v1/models failed). Entries'
+	// Running flags are not trustworthy for this family.
 	StatusPartial Status = "partial"
 	// StatusUnreachable means discovery itself failed: for ollama, /api/tags
 	// failed (daemon down); for omlx/mtplx, the model-directory scan (or
 	// config.ExpandHome) failed. It is NOT a server-liveness signal.
 	StatusUnreachable Status = "unreachable"
-	// StatusUnsupported marks a provider whose models cannot be discovered
-	// (mlx_lm_server's target+draft pairing); only running-state is probed.
-	StatusUnsupported Status = "unsupported"
 )
 
 // probeTimeout bounds each HTTP probe.
@@ -319,8 +318,17 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 		}
 		s.artifacts = names
 	case "mlx_lm_server":
-		s.status = StatusUnsupported
-		s.loaded = FetchModelIDs(client, origin+"/v1/models")
+		// Running state only: a target+draft pairing cannot be enumerated
+		// (knowsArtifacts stays false), but /v1/models still says whether the
+		// server is serving, with the same trust rules as omlx/mtplx — an
+		// answer is OK, a refused connection is Down (nothing listening), any
+		// other failure is Partial (Running untrustworthy).
+		loaded, err := FetchModelIDsErr(client, origin+"/v1/models")
+		if err != nil {
+			s.status = StatusPartial
+			s.down = refused(err)
+		}
+		s.loaded = loaded
 	}
 	return s
 }

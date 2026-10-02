@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1071,5 +1073,56 @@ func TestDesiredLocalIDsPulledNeedsTrustedProbe(t *testing.T) {
 		if got := desiredLocalIDs(c.snap); !slices.Equal(got, c.want) {
 			t.Errorf("%s: desiredLocalIDs = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// TestSyncRoutesMlxLMServerByProbe pins that `wt litellm sync` owns the
+// mlx_lm_server route lifecycle (#179): wt has no start backend for it and
+// modelman no longer exposes it explicitly, so sync is the only route write.
+// An answering server makes its registered pairing desired and NOT untouched,
+// with no warning (a started pairing gets a route); a refused one makes the
+// family Down, so the pairing is neither desired nor untouched and its stale
+// route is removed. The snapshot comes from a real Inventory round against
+// local httptest servers (never a real provider), because the bug was in the
+// probe's status, which a hand-built snapshot would assume away.
+func TestSyncRoutesMlxLMServerByProbe(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"/some/target/path"}]}`))
+	}))
+	defer up.Close()
+	gone := httptest.NewServer(http.NotFoundHandler())
+	goneURL := gone.URL
+	gone.Close()
+
+	cfgFor := func(base string) *config.Config {
+		return &config.Config{
+			Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: base + "/v1"}}},
+			Models:    []config.Model{{ID: "mlx_lm_server/pair", ProviderID: "mlx_lm_server", ModelName: "pair", Location: config.LocationLocal}},
+		}
+	}
+	routed := map[string]bool{"mlx_lm_server/pair": true}
+
+	cfg := cfgFor(up.URL)
+	snap := localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); !slices.Equal(got, []string{"mlx_lm_server/pair"}) {
+		t.Errorf("answering: desiredLocalIDs = %v, want the running pairing", got)
+	}
+	untouched, warns := syncUntouchedAndWarnings(cfg, snap, routed)
+	if len(untouched) != 0 || len(warns) != 0 {
+		t.Errorf("answering: untouched = %v, warnings = %v; want neither", untouched, warns)
+	}
+
+	cfg = cfgFor(goneURL)
+	snap = localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); len(got) != 0 {
+		t.Errorf("refused: desiredLocalIDs = %v, want none", got)
+	}
+	untouched, warns = syncUntouchedAndWarnings(cfg, snap, routed)
+	if len(untouched) != 0 {
+		t.Errorf("refused: untouched = %v, want none (the stale route must be removable)", untouched)
+	}
+	want := []string{`provider "mlx_lm_server" refused the probe connection: nothing is listening there, so its local routes are treated as stale`}
+	if !slices.Equal(warns, want) {
+		t.Errorf("refused: warnings = %v, want %v", warns, want)
 	}
 }

@@ -225,14 +225,7 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 	}
 	sort.Strings(fams)
 	for _, f := range fams {
-		st := snap.Providers[f]
-		if st == localmodels.StatusUnsupported {
-			// Discovery is unsupported by design (mlx_lm_server); the probe
-			// did not fail, so "did not succeed" would misread as an error.
-			warnings = append(warnings, fmt.Sprintf("provider %q has no model discovery (status %q); its model routes were left unchanged", f, st))
-			continue
-		}
-		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, st))
+		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 	}
 	downs := make([]string, 0, len(snap.Down))
 	for f := range snap.Down {
