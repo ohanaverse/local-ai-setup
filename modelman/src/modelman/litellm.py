@@ -25,10 +25,18 @@ class LiteLLMConfigError(Exception):
 
 
 def default_litellm_config_path() -> Path:
-    """Compute the LiteLLM config path lazily so env overrides work in tests."""
-    return Path(
-        os.environ.get("MODELMAN_LITELLM_CONFIG", "~/.config/litellm/config.yaml")
-    ).expanduser()
+    """The LiteLLM config path, with wt's precedence (`litellm.DefaultPath`).
+
+    `WT_LITELLM_CONFIG`, then the legacy `MODELMAN_LITELLM_CONFIG`, then
+    `~/.config/litellm/config.yaml`; an empty value counts as unset. Computed
+    lazily so env overrides work in tests. It must name the file wt writes:
+    `sync_routes` skips wt when this file is missing.
+    """
+    for key in ("WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG"):
+        value = os.environ.get(key)
+        if value:
+            return Path(value).expanduser()
+    return Path("~/.config/litellm/config.yaml").expanduser()
 
 
 def load_litellm_config(path: Path) -> dict[str, Any]:
@@ -88,7 +96,16 @@ def sync_routes(*, litellm_path: Path | None = None) -> list[str]:
     the registry or local-model state calls this once at the end. It never
     raises — the registry is the source of truth and the next sync converges —
     so a failure becomes a warning naming the command that fixes it.
+
+    With no LiteLLM config.yaml (`litellm_path`, else
+    `default_litellm_config_path()`) there is nothing to route: it returns
+    `[]` without running wt — parity with wt's own route hook, where a missing
+    config.yaml is silent — rather than warn on every write for a user who
+    does not run LiteLLM.
     """
+    path = litellm_path if litellm_path is not None else default_litellm_config_path()
+    if not path.exists():
+        return []
     try:
         result = wt_bridge.sync(litellm_path=litellm_path)
     except wt_bridge.WtBridgeError as exc:

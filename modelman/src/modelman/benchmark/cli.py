@@ -73,11 +73,9 @@ def run_cmd(
         raise typer.Exit(1) from exc
 
     registry = load_registry()
-    state = load_state()
     try:
         run = run_benchmark(
             registry,
-            state,
             workload_obj,
             model_ids=model or None,
             family=family,

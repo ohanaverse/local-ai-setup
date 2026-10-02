@@ -72,3 +72,35 @@ def test_migrate_command_preserves_existing_state_on_rerun(tmp_path, monkeypatch
     assert state.extra["litellm"]["url"] == "http://localhost:4000"
     assert state.extra["litellm"]["api_key"] == "sk-real-key"
     assert state.get("ollama/x").ready is True
+
+
+def test_migrate_command_syncs_routes_once_after_writing(tmp_path, monkeypatch, wt_calls):
+    # migrate rewrites registry.toml wholesale (it is the documented repair
+    # step), and wt routes every registry cloud model, so it must run one
+    # `wt litellm sync` after the save — otherwise repaired models stay
+    # unrouted until some unrelated command syncs (#179).
+    from modelman import wt_bridge
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("providers:\n  ollama:\n    type: ollama\n")
+    family_dir = tmp_path / "families"
+    family_dir.mkdir()
+    registry_path = tmp_path / "registry.toml"
+    monkeypatch.setenv("MODELMAN_CONFIG", str(config_path))
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(family_dir))
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+    monkeypatch.setenv("MODELMAN_WT_CONFIG", str(tmp_path / "no-wt-config.toml"))
+
+    fake = wt_bridge._run
+    registry_on_disk_at_sync: list[bool] = []
+
+    def recording(args, env=None, timeout=120):
+        registry_on_disk_at_sync.append(registry_path.exists())
+        return fake(args, env=env, timeout=timeout)
+
+    monkeypatch.setattr(wt_bridge, "_run", recording)
+
+    assert CliRunner().invoke(app, ["migrate"]).exit_code == 0
+    assert wt_calls == [["sync", "--json"]]
+    assert registry_on_disk_at_sync == [True]

@@ -162,7 +162,7 @@ def test_refresh_prices_ollama_only_registry_is_quiet(tmp_path, monkeypatch):
     no warnings, no network call. The date is NOT stamped: wt's notice is
     gated by agents.HasOpenRouterPricedModel already, so stamping would have
     no consumer, and it would suppress same-day pricing for an OpenRouter
-    model exposed later the same day."""
+    model added later the same day."""
     registry_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     save_registry(

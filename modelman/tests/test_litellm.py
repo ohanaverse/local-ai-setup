@@ -117,3 +117,23 @@ def test_reverse_model_index_skips_non_dict_rows():
     ]
     index = _reverse_model_index(model_list)
     assert index == {"m": "ollama/a"}
+
+
+def test_default_litellm_config_path_matches_wt_precedence(tmp_path, monkeypatch):
+    # Same precedence as wt's litellm.DefaultPath: WT_LITELLM_CONFIG, then the
+    # legacy MODELMAN_LITELLM_CONFIG, then ~/.config/litellm/config.yaml, an
+    # empty value counting as unset. sync_routes gates on this file existing,
+    # so a mismatch would skip (or run) a sync against a file wt never reads.
+    from modelman.litellm import default_litellm_config_path
+
+    monkeypatch.setenv("WT_LITELLM_CONFIG", str(tmp_path / "wt.yaml"))
+    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(tmp_path / "legacy.yaml"))
+    assert default_litellm_config_path() == tmp_path / "wt.yaml"
+
+    monkeypatch.setenv("WT_LITELLM_CONFIG", "")
+    assert default_litellm_config_path() == tmp_path / "legacy.yaml"
+
+    monkeypatch.delenv("WT_LITELLM_CONFIG")
+    monkeypatch.delenv("MODELMAN_LITELLM_CONFIG")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert default_litellm_config_path() == tmp_path / ".config" / "litellm" / "config.yaml"

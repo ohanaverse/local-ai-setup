@@ -316,10 +316,12 @@ def run_queued_ops(queued: QueuedOps) -> bool:
 def _sync_routes_and_warn() -> None:
     """Bring LiteLLM's routes in line with what is now on disk (#179).
 
-    wt reads registry.toml and the live providers itself, so this runs
-    after apply() has saved both — on success and after an unexpected
-    exception (its safety net persisted the completed work), but not after
-    a Ctrl+C: that is a request to stop, and the next sync converges.
+    wt reads registry.toml and the live providers itself, so every caller
+    runs this once, after its writes are saved: run_queued_ops (on success
+    and after an unexpected exception, since its safety net persisted the
+    completed work — but not after a Ctrl+C, a request to stop; the next
+    sync converges), a TUI exit that changed registry.toml, migrate, sync
+    and refresh-prices. Warnings go to stderr; it never fails the command.
     """
     for warning in sync_routes():
         typer.echo(f"warning: {warning}", err=True)
@@ -399,6 +401,8 @@ def migrate(
         f"Migrated {len(result.registry.providers)} providers and "
         f"{len(result.registry.models)} models."
     )
+    # registry.toml was rewritten; route what it now configures (#179).
+    _sync_routes_and_warn()
 
 
 @app.command()
@@ -437,6 +441,9 @@ def sync() -> None:
     typer.echo(
         f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."
     )
+    # The registry save above may have repaired a provider (backfilled
+    # base_url, added entry); route what it now configures (#179).
+    _sync_routes_and_warn()
 
 
 @app.command("delete-family")

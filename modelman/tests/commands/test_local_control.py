@@ -154,7 +154,7 @@ def test_start_command_no_args_lists_registered_downloaded_models(tmp_path, monk
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
     )
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text('[model_state."ollama/x"]\nready = true\nexposed = true\n')
+    state_path.write_text('[model_state."ollama/x"]\nready = true\n')
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
@@ -186,9 +186,7 @@ def test_start_command_no_args_indicates_running_model(tmp_path, monkeypatch):
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
     )
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text(
-        '[model_state."ollama/x"]\nready = true\nexposed = true\nrunning = true\n'
-    )
+    state_path.write_text('[model_state."ollama/x"]\nready = true\nrunning = true\n')
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
@@ -234,7 +232,7 @@ def test_start_command_no_args_shows_three_sections(tmp_path, monkeypatch):
         '[[models]]\nid = "ollama/y"\nfamily = "y"\nprovider_id = "ollama"\nmodel_name = "y"\n'
     )
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text('[model_state."ollama/x"]\nready = true\nexposed = true\n')
+    state_path.write_text('[model_state."ollama/x"]\nready = true\n')
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 

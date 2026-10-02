@@ -19,7 +19,6 @@ from modelman.benchmark.results import BenchmarkRun, TargetResult, write_results
 from modelman.benchmark.workloads import Workload
 from modelman.benchmark.workloads.base import BenchmarkMetrics
 from modelman.registry import DEFAULT_PROVIDER_IDS, Registry, is_model_local
-from modelman.state import StateStore
 
 
 class WorkloadRunSavedButRestoreFailed(BenchmarkError):
@@ -134,7 +133,6 @@ def _run_route(
 
 def run_benchmark(
     registry: Registry,
-    state: StateStore,
     workload: Workload,
     *,
     model_ids: list[str] | None = None,

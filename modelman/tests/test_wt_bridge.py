@@ -259,12 +259,21 @@ def test_msg_cleans_wt_output(stderr, stdout, rc, want):
 
 
 def test_sync_timeout_propagates_as_timeout_error(monkeypatch):
-    # #179: no post-timeout reconcile any more — a timed-out sync surfaces as
-    # WtBridgeTimeoutError (sync_routes turns it into a warning; the next
-    # sync converges), never a guessed success.
+    # #179 deleted the post-timeout reconcile (_change used to catch a
+    # timeout, read `wt litellm list` back and return a guessed result). A
+    # timed-out sync must now surface as WtBridgeTimeoutError — sync_routes
+    # turns it into a warning and the next sync converges — with no `list`
+    # follow-up. `list` answers here, so a revived reconcile would return a
+    # result instead of raising and would show up in `calls`.
+    calls: list[list[str]] = []
+
     def fake_run(args, env=None, timeout=120):
+        calls.append(list(args))
+        if args[:1] == ["list"]:
+            return _cp('{"routed": []}')
         raise wt_bridge.WtBridgeTimeoutError("wt litellm sync timed out after 120s")
 
     monkeypatch.setattr(wt_bridge, "_run", fake_run)
     with pytest.raises(wt_bridge.WtBridgeTimeoutError, match="sync timed out"):
         wt_bridge.sync()
+    assert calls == [["sync", "--json"]]

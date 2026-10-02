@@ -153,8 +153,12 @@ def sync(*, litellm_path: Path | None = None) -> BridgeResult:
 
 
 def routed_ids(*, litellm_path: Path | None = None, timeout: float | None = None) -> list[str]:
-    """`timeout` (seconds) overrides _run's 120s default; the TUI passes a
-    short one at mount so a hung wt cannot freeze the initial paint."""
+    """`wt litellm list --json`: the model ids routed in config.yaml.
+
+    No modelman command calls this since #179 (routes are synced, not read
+    back); it stays as the bridge for wt's `list` verb, whose JSON shape the
+    contract fixture still pins. `timeout` (seconds) overrides _run's 120s
+    default for a caller that must not block on a hung wt."""
     proc = _run(
         ["list", "--json"],
         _env(litellm_path),

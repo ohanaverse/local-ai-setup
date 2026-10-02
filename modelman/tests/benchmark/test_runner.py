@@ -14,7 +14,6 @@ from modelman.benchmark.runner import (
 )
 from modelman.benchmark.workloads.base import WorkloadSpec
 from modelman.registry import DraftSpec, Fetch, ModelEntry, ProviderEntry, Registry
-from modelman.state import StateStore
 
 
 class _FakeWorkload:
@@ -47,7 +46,6 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
         providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
-    state = StateStore()
 
     def _fake_isolate(pid):
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8080"})()
@@ -70,9 +68,7 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
     with pytest.raises(WorkloadRunSavedButRestoreFailed) as excinfo:
-        run_benchmark(
-            registry, state, _FakeWorkload(), model_ids=["ollama/a"], results_dir=tmp_path
-        )
+        run_benchmark(registry, _FakeWorkload(), model_ids=["ollama/a"], results_dir=tmp_path)
 
     exc = excinfo.value
     assert exc.run_dir == tmp_path / exc.run.run_id
@@ -227,7 +223,6 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
             )
         ],
     )
-    state = StateStore()
 
     calls: list[tuple[str, ...]] = []
 
@@ -249,9 +244,7 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
-    run_benchmark(
-        registry, state, _FakeWorkload(), model_ids=["mlx_lm_server/pair"], results_dir=tmp_path
-    )
+    run_benchmark(registry, _FakeWorkload(), model_ids=["mlx_lm_server/pair"], results_dir=tmp_path)
 
     # local_path target normalized; repo-id draft forwarded verbatim (an
     # abspath'ed repo id would be a nonexistent cwd-prefixed path).
@@ -289,7 +282,6 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
             ),
         ],
     )
-    state = StateStore()
 
     calls: list[tuple[str, ...]] = []
 
@@ -313,7 +305,6 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
 
     run_benchmark(
         registry,
-        state,
         _FakeWorkload(),
         model_ids=["mlx_lm_server/pair-1", "mlx_lm_server/pair-2"],
         results_dir=tmp_path,
@@ -344,7 +335,6 @@ def test_run_benchmark_forwards_mtplx_model_name_to_isolate(tmp_path, monkeypatc
             )
         ],
     )
-    state = StateStore()
 
     calls: list[tuple[str, ...]] = []
 
@@ -366,9 +356,7 @@ def test_run_benchmark_forwards_mtplx_model_name_to_isolate(tmp_path, monkeypatc
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
-    run_benchmark(
-        registry, state, _FakeWorkload(), model_ids=["mtplx/org/repo"], results_dir=tmp_path
-    )
+    run_benchmark(registry, _FakeWorkload(), model_ids=["mtplx/org/repo"], results_dir=tmp_path)
 
     assert calls == [("mtplx", "org/repo")]
 
@@ -390,7 +378,6 @@ def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monke
             ),
         ],
     )
-    state = StateStore()
 
     calls: list[tuple[str, ...]] = []
 
@@ -414,7 +401,6 @@ def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monke
 
     run_benchmark(
         registry,
-        state,
         _FakeWorkload(),
         model_ids=["mtplx/org/repo-1", "mtplx/org/repo-2"],
         results_dir=tmp_path,
@@ -442,7 +428,6 @@ def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_p
             )
         ],
     )
-    state = StateStore()
 
     def _unexpected_isolate(*args, **kwargs):
         raise AssertionError("isolate_provider must not be called with an incomplete pairing")
@@ -451,7 +436,7 @@ def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_p
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
 
     run = run_benchmark(
-        registry, state, _FakeWorkload(), model_ids=["mlx_lm_server/broken"], results_dir=tmp_path
+        registry, _FakeWorkload(), model_ids=["mlx_lm_server/broken"], results_dir=tmp_path
     )
 
     assert all(r.error is not None for r in run.results)

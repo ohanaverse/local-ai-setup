@@ -38,6 +38,26 @@ def test_sync_fixture_parses():
     assert res.changed and res.warnings == []
 
 
+def test_sync_fixture_error_grouping_strips_wt_prefix(monkeypatch):
+    # Pins the Python half of wt's `model "<id>": ` per-id error prefix: the
+    # fixture's sync block is produced by a real wt `litellm.Sync` (Go contract
+    # test), and sync_routes strips that prefix when grouping. If wt rewords
+    # the prefix, this fails instead of grouping silently degrading into a
+    # duplicated-prefix warning per model.
+    import subprocess
+
+    from modelman import wt_bridge
+    from modelman.litellm import sync_routes
+
+    doc = json.loads(FIXTURE.read_text())
+
+    def fake(args, env=None, timeout=None):
+        return subprocess.CompletedProcess(args, 1, json.dumps(doc["sync"]), "")
+
+    monkeypatch.setattr(wt_bridge, "_run", fake)
+    assert sync_routes() == ["openrouter/bad: empty model_name"]
+
+
 def test_status_fixture_parses():
     # Pins the routing-state shape modelman's TUI and CLI read.
     doc = json.loads(FIXTURE.read_text())

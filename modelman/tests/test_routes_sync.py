@@ -81,3 +81,24 @@ def test_sync_routes_keeps_distinct_errors_in_first_seen_order(monkeypatch):
         ],
     )
     assert sync_routes() == ["second (2 models: b/1, b/2)", "a/1: first"]
+
+
+def test_sync_routes_skips_wt_without_a_litellm_config(tmp_path, monkeypatch, wt_calls):
+    # A user without LiteLLM has no config.yaml; wt's sync would fail with
+    # "LiteLLM config not found" and every modelman write would warn. Parity
+    # with wt's own route hook: a missing config.yaml is silent, wt not run.
+    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(tmp_path / "missing.yaml"))
+    assert sync_routes() == []
+    assert wt_calls == []
+
+
+def test_sync_routes_skips_wt_for_a_missing_explicit_path(tmp_path, wt_calls):
+    assert sync_routes(litellm_path=tmp_path / "missing.yaml") == []
+    assert wt_calls == []
+
+
+def test_sync_routes_runs_wt_for_an_existing_explicit_path(tmp_path, wt_calls):
+    path = tmp_path / "config.yaml"
+    path.write_text("model_list: []\n")
+    assert sync_routes(litellm_path=path) == []
+    assert wt_calls == [["sync", "--json"]]

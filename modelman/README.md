@@ -42,7 +42,7 @@ on/off state are owned by `wt` (see below):
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
 | `modelman.toml` | Per-machine mutable state: download markers, LiteLLM exposure flags (also read by `wt`, read-only, for the exposure flags) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
-| LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`. wt honors `WT_LITELLM_CONFIG` (legacy alias `MODELMAN_LITELLM_CONFIG`) | `MODELMAN_LITELLM_CONFIG` (usage reader) |
+| LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`, and skips its route sync when the file is missing. Both resolve it the same way: `WT_LITELLM_CONFIG`, then legacy `MODELMAN_LITELLM_CONFIG`, then the default | `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`) |
 | LiteLLM proxy restart | Done by wt after a route change: `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | (wt-owned) |
 
 ### `registry.toml`

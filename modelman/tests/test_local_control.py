@@ -1305,16 +1305,16 @@ def _listing_registry() -> Registry:
         ],
         models=[
             ModelEntry(
-                id="ollama/exposed-model",
+                id="ollama/alpha-model",
                 family="qwen3.8",
                 provider_id="ollama",
-                model_name="exposed-model",
+                model_name="alpha-model",
             ),
             ModelEntry(
-                id="ollama/unexposed-model",
+                id="ollama/zulu-model",
                 family="qwen3.8",
                 provider_id="ollama",
-                model_name="unexposed-model",
+                model_name="zulu-model",
             ),
             ModelEntry(
                 id="ollama/missing-model",
@@ -1336,10 +1336,10 @@ def _listing_registry() -> Registry:
 def _listing_state(running_model: str | None = None) -> StateStore:
     store = StateStore()
     store.set(
-        "ollama/exposed-model",
-        ModelState(ready=True, running=(running_model == "ollama/exposed-model")),
+        "ollama/alpha-model",
+        ModelState(ready=True, running=(running_model == "ollama/alpha-model")),
     )
-    store.set("ollama/unexposed-model", ModelState(ready=True))
+    store.set("ollama/zulu-model", ModelState(ready=True))
     store.set("openrouter/z-ai/glm-5.3-flash", ModelState(ready=False))
     return store
 
@@ -1387,12 +1387,12 @@ def test_inventory_downloaded_bucket_includes_size_and_running_marker():
     # size and running status for a registered, on-disk model — not just
     # whatever modelman.toml happens to have cached.
     registry = _listing_registry()
-    state = _listing_state(running_model="ollama/exposed-model")
+    state = _listing_state(running_model="ollama/alpha-model")
     mapping = {
         "ollama": [
             {
-                "variant_id": "exposed-model",
-                "path": "ollama:exposed-model",
+                "variant_id": "alpha-model",
+                "path": "ollama:alpha-model",
                 "size_bytes": 4_900_000_000,
             },
         ]
@@ -1403,22 +1403,22 @@ def test_inventory_downloaded_bucket_includes_size_and_running_marker():
     ):
         inventory = inventory_local_models(registry, state)
     assert inventory.downloaded == [
-        InventoryEntry(model_id="ollama/exposed-model", running=True, size_bytes=4_900_000_000)
+        InventoryEntry(model_id="ollama/alpha-model", running=True, size_bytes=4_900_000_000)
     ]
 
 
 def test_inventory_not_downloaded_bucket_lists_registered_missing_artifacts():
     # Registered models the live provider reports nothing for must be
-    # listed as missing, regardless of exposed status — this is what tells
+    # listed as missing, whatever their ready or running state — this is what tells
     # a user which registry.toml entries need a real download.
     registry = _listing_registry()
     state = _listing_state()
     with _patch_provider_local_models({"ollama": []}):
         inventory = inventory_local_models(registry, state)
     assert inventory.not_downloaded == [
-        "ollama/exposed-model",
+        "ollama/alpha-model",
         "ollama/missing-model",
-        "ollama/unexposed-model",
+        "ollama/zulu-model",
     ]
 
 
@@ -1431,7 +1431,7 @@ def test_inventory_discovered_bucket_excludes_already_registered():
     state = _listing_state()
     mapping = {
         "ollama": [
-            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 1},
+            {"variant_id": "alpha-model", "path": "ollama:alpha-model", "size_bytes": 1},
             {
                 "variant_id": "brand-new-model",
                 "path": "ollama:brand-new-model",
@@ -1458,7 +1458,7 @@ def test_discover_unregistered_models_excludes_already_registered():
     registry = _listing_registry()
     mapping = {
         "ollama": [
-            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 1},
+            {"variant_id": "alpha-model", "path": "ollama:alpha-model", "size_bytes": 1},
             {
                 "variant_id": "brand-new-model",
                 "path": "ollama:brand-new-model",
@@ -1484,7 +1484,7 @@ def test_discover_unregistered_models_empty_when_nothing_new():
     registry = _listing_registry()
     mapping = {
         "ollama": [
-            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 1},
+            {"variant_id": "alpha-model", "path": "ollama:alpha-model", "size_bytes": 1},
         ]
     }
     with _patch_provider_local_models(mapping):
@@ -1515,9 +1515,9 @@ def test_inventory_tolerates_a_provider_list_local_failure():
         inventory = inventory_local_models(registry, state)
     assert inventory.discovered == []
     assert inventory.not_downloaded == [
-        "ollama/exposed-model",
+        "ollama/alpha-model",
         "ollama/missing-model",
-        "ollama/unexposed-model",
+        "ollama/zulu-model",
     ]
 
 
@@ -1636,7 +1636,7 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
     # it verbatim against model_name (the full repo id), missed, and fell
     # through to auto-registration — writing a SECOND registry.toml entry and
     # a SECOND LiteLLM model_list row for an already-registered, already-
-    # exposed artifact.
+    # routed artifact.
     registry = _omlx_registry(_omlx_model_dir(tmp_path))
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
@@ -1668,7 +1668,7 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
         "omlx", env={"LLM_ISOLATE_OMLX_4BIT_MODEL": "mlx-community/Qwen3.8-27B-4bit"}, solo=True
     )
     # Singular registry entry and an untouched LiteLLM config: nothing was
-    # re-registered or re-exposed.
+    # re-registered or re-routed.
     assert [m.id for m in load_registry(registry_path).models] == [_OMLX_MODEL_ID]
     assert litellm_path.read_text() == "model_list: []\n"
 
@@ -1738,16 +1738,14 @@ def test_inventory_falls_back_to_cached_size_when_provider_reports_none():
     # already cached from an earlier reconcile, not "—".
     registry = _listing_registry()
     state = _listing_state()
-    state.set("ollama/exposed-model", ModelState(ready=True, size_bytes=4_900_000_000))
+    state.set("ollama/alpha-model", ModelState(ready=True, size_bytes=4_900_000_000))
     mapping = {
-        "ollama": [
-            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": None}
-        ]
+        "ollama": [{"variant_id": "alpha-model", "path": "ollama:alpha-model", "size_bytes": None}]
     }
     with _patch_provider_local_models(mapping):
         inventory = inventory_local_models(registry, state)
     assert (
-        InventoryEntry(model_id="ollama/exposed-model", running=False, size_bytes=4_900_000_000)
+        InventoryEntry(model_id="ollama/alpha-model", running=False, size_bytes=4_900_000_000)
         in inventory.downloaded
     )
 
