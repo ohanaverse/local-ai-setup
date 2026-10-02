@@ -253,8 +253,11 @@ func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
 // TestLitellmSyncRemovesRoutesOfRefusedProvider pins the repair case sync
 // exists for: a provider stopped outside wt (server refuses connections, so
 // its probe is not StatusOK but positively nothing is running) must lose its
-// stale routes, with no "probe did not succeed" warning. Unlike an ambiguous
-// probe failure, a refused connection is proof the server is down.
+// stale routes, with no ambiguous "probe did not succeed" warning. Instead it
+// gets the dedicated refused warning in every sync rendering: the local routes
+// were removed, and the family's registry cloud routes were knowingly left in
+// place even though they dial the same dead daemon through the proxy — a
+// failure like that must be reported, not silently swallowed.
 func TestLitellmSyncRemovesRoutesOfRefusedProvider(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b, additional_drop_params: [reasoning_effort]}\n" +
 		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
@@ -275,6 +278,9 @@ func TestLitellmSyncRemovesRoutesOfRefusedProvider(t *testing.T) {
 	}
 	if strings.Contains(errOut.String(), "probe did not succeed") {
 		t.Fatalf("unexpected probe warning for a provider known to be down: %q", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "refused the probe connection") {
+		t.Fatalf("no refused-daemon warning: %q", errOut.String())
 	}
 }
 
@@ -719,7 +725,8 @@ func jsonKeySet(t *testing.T, raw []byte) []string {
 // itself: the block is part of the documented cross-language contract, and
 // without this pin a field added to syncPlanJSON (or to its nested plan) would
 // silently leave the fixture describing a shape wt no longer emits, for
-// whoever reads it next. The fixture is left unchanged.
+// whoever reads it next. A field added to syncPlanJSON must reach the fixture
+// in the same change.
 func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	plan := litellm.SyncPlan{
 		Add:    []string{"openrouter/x/y"},
@@ -728,8 +735,9 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 		Errors: []litellm.Outcome{{ID: "ghost/m", Err: errors.New(`unknown provider "ghost"`)}},
 	}
 	var out, errOut bytes.Buffer
-	// A plan with errors exits 1, like a real sync.
-	if err := reportSyncPlan(&out, &errOut, plan, true); !errors.Is(err, errLitellmIDFailed) {
+	// No probe warnings in this rendering; a plan with errors exits 1, like a
+	// real sync.
+	if err := reportSyncPlan(&out, &errOut, plan, nil, true); !errors.Is(err, errLitellmIDFailed) {
 		t.Fatalf("reportSyncPlan err = %v, want errLitellmIDFailed", err)
 	}
 	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
@@ -769,6 +777,88 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	}
 	if gotKeys, wantKeys := jsonKeySet(t, gotDoc["plan"]), jsonKeySet(t, wantDoc["plan"]); !slices.Equal(gotKeys, wantKeys) {
 		t.Fatalf("plan keys = %v, fixture = %v", gotKeys, wantKeys)
+	}
+}
+
+// downProbeWarn is the warning a provider whose server refused the probe
+// connection produces in both sync modes, spelled out once so the dry-run and
+// real-run tests compare the same string.
+const downProbeWarn = `provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale; its cloud routes were left in place`
+
+// TestLitellmSyncDryRunReportsProbeWarnings pins that sync --dry-run prints the
+// same probe warnings the real sync prints — before, the dry run returned
+// before the warning loop, so it could promise a clean run that then arrived
+// with warnings. It also pins the refused-daemon warning's content and the
+// plan it accompanies: the dead daemon's local routes go (nothing is
+// listening) while its registry cloud routes stay (LiteLLM still serves rows
+// that dial the same dead daemon), and sync reports that in both renderings.
+func TestLitellmSyncDryRunReportsProbeWarnings(t *testing.T) {
+	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n"
+	p := litellmEnv(t, body)
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusUnreachable},
+		Down:      map[string]bool{"ollama": true},
+	}
+	stubProbeInventory(t, snap)
+	var out, errOut bytes.Buffer
+	if err := runLitellmSync(&out, &errOut, litellmCloudTestConfig(), true, true); err != nil {
+		t.Fatal(err)
+	}
+	var dry struct {
+		Warnings []string `json:"warnings"`
+		Plan     struct {
+			Add    []string `json:"add"`
+			Remove []string `json:"remove"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	if !slices.Equal(dry.Warnings, []string{downProbeWarn}) {
+		t.Fatalf("dry-run warnings = %q, want [%q]", dry.Warnings, downProbeWarn)
+	}
+	if !slices.Equal(dry.Plan.Add, []string{"openrouter/x"}) || !slices.Equal(dry.Plan.Remove, []string{"ollama/gemma:9b"}) {
+		t.Fatalf("plan = %+v, want openrouter/x added and the dead daemon's route removed", dry.Plan)
+	}
+	if after, _ := os.ReadFile(p); string(after) != body {
+		t.Fatalf("dry run wrote config.yaml:\n%s", after)
+	}
+	// Text-mode dry run prints the same warning on stderr.
+	out.Reset()
+	errOut.Reset()
+	if err := runLitellmSync(&out, &errOut, litellmCloudTestConfig(), false, true); err != nil {
+		t.Fatal(err)
+	}
+	if errOut.String() != "warning: "+downProbeWarn+"\n" {
+		t.Fatalf("text dry run = %q, want the refused-provider warning", errOut.String())
+	}
+	// The real sync (the seam's stub persists for the recheck probe) reports
+	// exactly the same warnings, appended after its restart warnings, and
+	// performs exactly this plan.
+	out.Reset()
+	errOut.Reset()
+	if err := runLitellmSync(&out, &errOut, litellmCloudTestConfig(), true, false); err != nil {
+		t.Fatal(err)
+	}
+	var real struct {
+		Warnings []string `json:"warnings"`
+		Outcomes []struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+		} `json:"outcomes"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &real); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	if !slices.Equal(real.Warnings, []string{downProbeWarn}) {
+		t.Fatalf("real-sync warnings = %q, want only the refused-provider warning; the dry run must not promise less", real.Warnings)
+	}
+	actions := map[string]string{}
+	for _, o := range real.Outcomes {
+		actions[o.ID] = o.Action
+	}
+	if actions["ollama/gemma:9b"] != "unrouted" || actions["openrouter/x"] != "routed" {
+		t.Fatalf("outcomes = %+v, want gemma unrouted and openrouter/x routed", real.Outcomes)
 	}
 }
 

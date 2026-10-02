@@ -86,12 +86,14 @@ type syncPlanJSON struct {
 		Remove []string             `json:"remove"`
 		Errors []litellmOutcomeJSON `json:"errors"`
 	} `json:"plan"`
+	Warnings []string `json:"warnings"`
 }
 
-// reportSyncPlan prints a dry-run plan; exit status 1 when any desired id
-// could not be built, like a real sync.
-func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, asJSON bool) error {
-	doc := syncPlanJSON{DryRun: true}
+// reportSyncPlan prints a dry-run plan plus the probe warnings the real sync
+// would report, in both renderings; exit status 1 when any desired id could
+// not be built, like a real sync.
+func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []string, asJSON bool) error {
+	doc := syncPlanJSON{DryRun: true, Warnings: append([]string{}, warnings...)}
 	doc.Plan.Add = append([]string{}, plan.Add...)
 	doc.Plan.Adopt = append([]string{}, plan.Adopt...)
 	doc.Plan.Remove = append([]string{}, plan.Remove...)
@@ -116,6 +118,9 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, asJSON bool) e
 		}
 		for _, e := range doc.Plan.Errors {
 			fmt.Fprintf(errOut, "%s: %s\n", e.ID, e.Error)
+		}
+		for _, w := range doc.Warnings {
+			fmt.Fprintf(errOut, "warning: %s\n", w)
 		}
 	}
 	if len(plan.Errors) > 0 {
@@ -155,7 +160,43 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 	// a server that refused the connection: nothing is listening, so nothing
 	// is running, and its routes are stale and must go (the case a provider
 	// stopped outside wt leaves behind).
-	var untouched []string
+	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap)
+	o := litellm.Options{
+		Untouched: untouched,
+		// The probe above predates the config.yaml lock; a start that lands
+		// in between must not lose its route, so removals are re-verified
+		// under the lock.
+		Recheck: func() []string { return runningIDs(probeInventory(cfg)) },
+	}
+	if dryRun {
+		plan, err := litellm.PlanSync(cfg, running, o)
+		if err != nil {
+			return err
+		}
+		return reportSyncPlan(out, errOut, plan, probeWarns, asJSON)
+	}
+	res, err := litellm.Sync(cfg, running, o)
+	if err != nil {
+		return err
+	}
+	res.Warnings = append(res.Warnings, probeWarns...)
+	return reportLitellm(out, errOut, res, asJSON, false)
+}
+
+// syncUntouchedAndWarnings derives both sync modes' view of the provider
+// probes: the ids whose routes must not move (families the probe could not
+// vouch for), and the warnings the run reports. One helper for the real sync
+// and the dry run, so the two always report the same warnings — the dry run
+// used to differ from the real run's output, promising a clean run that then
+// arrived degraded.
+//
+// A family whose server REFUSED the connection gets no untouched entries
+// (nothing is listening, so nothing is running and its local routes are
+// stale), but it does get a warning: sync still routes its registry cloud
+// models, which dial the same refused daemon through config.yaml — so their
+// routes were knowingly left in place and the failure must be reported, not
+// silently swallowed.
+func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot) (untouched, warnings []string) {
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
 		fam := localmodels.Family(m.ProviderID)
@@ -170,26 +211,6 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 			skipped[fam] = true
 		}
 	}
-	o := litellm.Options{
-		Untouched: untouched,
-		// The probe above predates the config.yaml lock; a start that lands
-		// in between must not lose its route, so removals are re-verified
-		// under the lock.
-		Recheck: func() []string { return runningIDs(probeInventory(cfg)) },
-	}
-	if dryRun {
-		// PlanSync itself refuses a recheck: it holds no lock, so a dry run
-		// reports the probe it took.
-		plan, err := litellm.PlanSync(cfg, running, o)
-		if err != nil {
-			return err
-		}
-		return reportSyncPlan(out, errOut, plan, asJSON)
-	}
-	res, err := litellm.Sync(cfg, running, o)
-	if err != nil {
-		return err
-	}
 	fams := make([]string, 0, len(skipped))
 	for f := range skipped {
 		fams = append(fams, f)
@@ -200,12 +221,22 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 		if st == localmodels.StatusUnsupported {
 			// Discovery is unsupported by design (mlx_lm_server); the probe
 			// did not fail, so "did not succeed" would misread as an error.
-			res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q has no model discovery (status %q); its model routes were left unchanged", f, st))
+			warnings = append(warnings, fmt.Sprintf("provider %q has no model discovery (status %q); its model routes were left unchanged", f, st))
 			continue
 		}
-		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, st))
+		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, st))
 	}
-	return reportLitellm(out, errOut, res, asJSON, false)
+	downs := make([]string, 0, len(snap.Down))
+	for f := range snap.Down {
+		if snap.Down[f] {
+			downs = append(downs, f)
+		}
+	}
+	sort.Strings(downs)
+	for _, f := range downs {
+		warnings = append(warnings, fmt.Sprintf("provider %q refused the probe connection: nothing is listening there, so its local routes are treated as stale; its cloud routes were left in place", f))
+	}
+	return untouched, warnings
 }
 
 // runningIDs lists the registered model ids a probe found running.
@@ -362,7 +393,7 @@ func litellmCmd(a *app) *cobra.Command {
 		},
 	}
 	syncC.Flags().BoolVar(&syncJSON, "json", false, "machine-readable output")
-	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan; change nothing (does not report litellm_settings fixes)")
+	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan and the probe warnings the real sync would report; change nothing (does not report litellm_settings fixes)")
 	listC := &cobra.Command{
 		Use: "list", Short: "List routed model ids from config.yaml", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmList(cmd.OutOrStdout(), listJSON) },
