@@ -3347,3 +3347,32 @@ async def test_exposed_column_local_model_wt_unreachable_degrades(tmp_path, monk
         exposed_col = next(key for key, col in table.columns.items() if str(col.label) == "EXPOSED")
         # wt unreachable → cache is None → falls back to "–"
         assert str(table.get_cell(row_key, exposed_col)) == "–"
+
+
+def test_edit_carryover_preserves_time_prices_and_extra():
+    from modelman.registry import Cost, ModelEntry
+    from modelman.screens.models import _carry_over_unedited
+    from modelman.time_pricing import TimePrice, Window
+
+    tp = TimePrice(timezone="UTC", windows=[Window(days=["sun"], start="00:00", end="24:00")])
+    old = ModelEntry(
+        id="ollama/x:cloud",
+        family="x",
+        provider_id="ollama",
+        model_name="x:cloud",
+        cost=Cost(input_price_per_million=1.0, time_prices=[tp], extra={"k": 1}),
+        extra={"catalog_name": "x"},
+    )
+    new = ModelEntry(
+        id="ollama/x:cloud",
+        family="x",
+        provider_id="ollama",
+        model_name="x:cloud",
+        cost=Cost(input_price_per_million=2.0),
+    )
+    _carry_over_unedited(old, new)
+    assert new.extra == {"catalog_name": "x"}
+    assert new.cost is not None
+    assert new.cost.time_prices == [tp]
+    assert new.cost.extra == {"k": 1}
+    assert new.cost.input_price_per_million == 2.0

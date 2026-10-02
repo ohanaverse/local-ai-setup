@@ -718,6 +718,22 @@ def test_load_registry_migrates_legacy_per_token_cost(tmp_path):
     )
 
 
+def test_load_registry_legacy_cost_keeps_time_prices(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "per_token"\nprice_per_million_tokens = 2.5\n'
+        '[[models.cost.time_prices]]\nlabel = "off-peak"\ntimezone = "UTC"\n'
+        "input_price_per_million = 1.0\n"
+        '[[models.cost.time_prices.windows]]\ndays = ["sat"]\nstart = "00:00"\nend = "24:00"\n'
+    )
+    cost = load_registry(path).model("ollama/x").cost
+    assert [tp.label for tp in cost.time_prices] == ["off-peak"]
+    assert "time_prices" not in cost.extra
+
+
 def test_load_registry_migrates_legacy_subscription_cost(tmp_path):
     path = tmp_path / "registry.toml"
     path.write_text(
@@ -1230,3 +1246,69 @@ def test_mtplx_provider_has_default_template():
     assert entry.protocols == ["openai-chat"]
     assert entry.auth.type == "none"
     assert entry.auth.base_url == "http://localhost:8003/v1"
+
+
+def test_cost_time_prices_round_trip(tmp_path):
+    from modelman.registry import load_registry, save_registry
+
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        """
+[[providers]]
+id = "ollama"
+name = "Ollama"
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "ollama/deepseek-v4-pro:cloud"
+family = "deepseek"
+provider_id = "ollama"
+model_name = "deepseek-v4-pro:cloud"
+location = "cloud"
+[models.cost]
+input_price_per_million = 1.32
+output_price_per_million = 3.96
+[[models.cost.time_prices]]
+label = "off-peak"
+timezone = "UTC"
+input_price_per_million = 0.66
+custom = "kept"
+windows = [{ days = ["sat", "sun"], start = "00:00", end = "24:00" }]
+"""
+    )
+    registry = load_registry(path)
+    cost = registry.model("ollama/deepseek-v4-pro:cloud").cost
+    assert cost is not None
+    assert "time_prices" not in cost.extra
+    assert cost.time_prices[0].input_price_per_million == 0.66
+    assert cost.time_prices[0].windows[0].days == ["sat", "sun"]
+
+    save_registry(registry, path)
+    again = load_registry(path).model("ollama/deepseek-v4-pro:cloud").cost
+    assert again is not None
+    assert again.time_prices[0].extra == {"custom": "kept"}
+    assert again.time_prices[0].label == "off-peak"
+
+
+def test_cost_time_prices_invalid_is_registry_error(tmp_path):
+    import pytest
+
+    from modelman.registry import RegistryError, load_registry
+
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        """
+[[models]]
+id = "m"
+family = "f"
+provider_id = "ollama"
+model_name = "m"
+[models.cost]
+[[models.cost.time_prices]]
+timezone = "Nowhere/Nope"
+windows = [{ days = ["sat"], start = "00:00", end = "24:00" }]
+"""
+    )
+    with pytest.raises(RegistryError, match="Model `m` cost .*IANA"):
+        load_registry(path)

@@ -276,3 +276,19 @@ def test_refresh_prices_overwrites_cache_when_api_reports_it():
     refresh_prices(registry, runner=_runner(payload))
 
     assert registry.model("openrouter/gpt-4o").cost.cache_price_per_million == pytest.approx(0.5)
+
+
+def test_merge_api_cost_preserves_time_prices():
+    from modelman.pricing import _merge_api_cost
+    from modelman.registry import Cost
+    from modelman.time_pricing import TimePrice, Window
+
+    tp = TimePrice(
+        timezone="UTC",
+        windows=[Window(days=["sat"], start="00:00", end="24:00")],
+        input_price_per_million=0.1,
+    )
+    existing = Cost(input_price_per_million=1.0, time_prices=[tp])
+    merged = _merge_api_cost(existing, Cost(input_price_per_million=2.0))
+    assert merged.input_price_per_million == 2.0
+    assert merged.time_prices == [tp]

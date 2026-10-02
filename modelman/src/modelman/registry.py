@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
 from .providers.mtplx import MTPLX_V1_BASE
+from .time_pricing import TimePrice, parse_time_prices, time_price_to_dict
 
 if TYPE_CHECKING:
     from .providers.base import VariantSpec
@@ -54,6 +55,9 @@ def _validate_cost(cost: Cost, *, source: str = "Cost") -> None:
         raise ValueError(
             f"{source} subscription_period must be one of {SUBSCRIPTION_PERIODS}, got {cost.subscription_period!r}"
         )
+    for tp in cost.time_prices:
+        if not isinstance(tp, TimePrice):
+            raise ValueError(f"{source} `time_prices` entries must be TimePrice")
 
 
 # Flat cost field names. Used for serialization, dict reconstruction, and
@@ -69,6 +73,10 @@ _COST_FIELDS = {
 # Legacy cost field names. These are migrated to _COST_FIELDS on load and
 # must never leak into `extra` so they cannot survive a save.
 _LEGACY_COST_FIELDS = {"kind", "price_per_million_tokens", "price_per_period", "period"}
+
+# Keys handled explicitly (not flat scalars) that must never land in
+# Cost.extra.
+_COST_STRUCTURED_FIELDS = {"time_prices"}
 
 # Canonical location values used across the TUI and providers.
 LOCATION_LOCAL = "local"
@@ -119,6 +127,7 @@ class Cost:
     output_price_per_million: float | None = None
     subscription_price: float | None = None
     subscription_period: str | None = None
+    time_prices: list[TimePrice] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -467,7 +476,8 @@ def _provider_to_dict(p: ProviderEntry) -> dict[str, Any]:
 
 
 def _cost_to_dict(c: Cost) -> dict[str, Any]:
-    d = {field: getattr(c, field) for field in _COST_FIELDS}
+    d: dict[str, Any] = {field: getattr(c, field) for field in _COST_FIELDS}
+    d["time_prices"] = [time_price_to_dict(tp) for tp in c.time_prices] or None
     return drop_none({**c.extra, **d})
 
 
@@ -484,7 +494,8 @@ def _cost_from_dict(d: dict[str, Any]) -> Cost:
         output_price_per_million=d.get("output_price_per_million"),
         subscription_price=d.get("subscription_price"),
         subscription_period=d.get("subscription_period"),
-        extra=unknown_keys(d, _COST_FIELDS | _LEGACY_COST_FIELDS),
+        time_prices=parse_time_prices(d.get("time_prices")),
+        extra=unknown_keys(d, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS),
     )
 
 
@@ -721,6 +732,13 @@ def _build_cost(model_id: str, **kwargs: Any) -> Cost:
         raise RegistryError(msg) from exc
 
 
+def _time_prices_or_error(model_id: str, raw: Any) -> list[TimePrice]:
+    try:
+        return parse_time_prices(raw)
+    except ValueError as exc:
+        raise RegistryError(f"Model `{model_id}` cost {exc}") from exc
+
+
 def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
     """Validate and construct a Cost from its raw TOML table.
 
@@ -760,7 +778,11 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
         kind = cost_raw["kind"]
         if kind == "free":
             return _build_cost(
-                model_id, extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS)
+                model_id,
+                time_prices=_time_prices_or_error(model_id, cost_raw.get("time_prices")),
+                extra=unknown_keys(
+                    cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS
+                ),
             )
         if kind == "per_token":
             price = _number_or_none("price_per_million_tokens")
@@ -768,14 +790,20 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
                 model_id,
                 input_price_per_million=price,
                 output_price_per_million=price,
-                extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+                time_prices=_time_prices_or_error(model_id, cost_raw.get("time_prices")),
+                extra=unknown_keys(
+                    cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS
+                ),
             )
         if kind == "subscription":
             return _build_cost(
                 model_id,
                 subscription_price=_number_or_none("price_per_period"),
                 subscription_period=_subscription_period_or_none("period"),
-                extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+                time_prices=_time_prices_or_error(model_id, cost_raw.get("time_prices")),
+                extra=unknown_keys(
+                    cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS
+                ),
             )
         raise RegistryError(
             f"Model `{model_id}` cost kind must be free/per_token/subscription, got {kind!r}"
@@ -796,7 +824,8 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
         output_price_per_million=_number_or_none("output_price_per_million"),
         subscription_price=subscription_price,
         subscription_period=subscription_period,
-        extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+        time_prices=_time_prices_or_error(model_id, cost_raw.get("time_prices")),
+        extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS | _COST_STRUCTURED_FIELDS),
     )
 
 

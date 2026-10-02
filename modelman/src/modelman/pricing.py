@@ -117,6 +117,7 @@ def _merge_api_cost(existing: Cost | None, api: Cost) -> Cost:
         cache_price_per_million=cache if cache is not None else existing.cache_price_per_million,
         subscription_price=existing.subscription_price,
         subscription_period=existing.subscription_period,
+        time_prices=list(existing.time_prices),
         extra=dict(existing.extra),
     )
 

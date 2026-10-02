@@ -62,6 +62,14 @@ def test_load_registry_matches_shared_fixture():
     assert cloud_model.cost.output_price_per_million == 1.00
     assert cloud_model.cost.subscription_price == 19.99
     assert cloud_model.cost.subscription_period == "month"
+    (offpeak,) = cloud_model.cost.time_prices
+    assert offpeak.label == "off-peak"
+    assert offpeak.timezone == "UTC"
+    assert offpeak.input_price_per_million == 0.25
+    assert offpeak.cache_price_per_million == 0.125
+    assert offpeak.output_price_per_million == 0.50
+    assert [w.days for w in offpeak.windows][2] == ["sat", "sun"]
+    assert (offpeak.windows[1].start, offpeak.windows[1].end) == ("18:00", "24:00")
     assert cloud_model.native is False
 
     native_model = registry.model("agy/contract-fixture:native")

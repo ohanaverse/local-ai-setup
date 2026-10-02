@@ -89,6 +89,20 @@ def _cost_changed(old: Cost | None, new: Cost | None) -> bool:
     )
 
 
+def _carry_over_unedited(old: ModelEntry, new: ModelEntry) -> None:
+    """Copy fields the edit dialog cannot show back onto the rebuilt entry.
+
+    ModelForm rebuilds Cost/ModelEntry from its inputs, which carry no
+    time-windowed prices, unknown cost keys, or model-level unknown keys
+    (e.g. `catalog_name`, written by `modelman ollama-catalog sync`).
+    Without this, one TUI edit silently strips them.
+    """
+    new.extra = {**old.extra, **new.extra}
+    if old.cost is not None and new.cost is not None:
+        new.cost.time_prices = list(old.cost.time_prices)
+        new.cost.extra = {**old.cost.extra, **new.cost.extra}
+
+
 def _variant_to_model_entry(
     variant: dict, *, family: str, registry: Registry, source: str | None = "curated"
 ) -> ModelEntry:
@@ -1141,6 +1155,7 @@ class ModelScreen(Screen[None]):
         new_entry = _variant_to_model_entry(
             updated, family=old_entry.family, registry=self.registry, source=old_entry.source
         )
+        _carry_over_unedited(old_entry, new_entry)
         if _cost_changed(old_entry.cost, new_entry.cost):
             new_entry.pricing_updated_at = _now_iso()
         else:

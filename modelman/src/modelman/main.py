@@ -33,6 +33,7 @@ from .local_control import (
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
 from .migrate import migrate_wt_gateway_to_litellm
+from .ollama_catalog_cli import ollama_catalog_app
 from .providers.base import VariantSpec
 from .providers.lifecycle.cli import provider_app
 from .providers.registry import ProviderRegistry
@@ -52,6 +53,7 @@ from .usage.cli import usage_app
 app = typer.Typer(help="Manage local LLM model families across providers.")
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(usage_app, name="usage")
+app.add_typer(ollama_catalog_app, name="ollama-catalog")
 app.add_typer(provider_app, name="provider")
 
 litellm_app = typer.Typer(

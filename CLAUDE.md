@@ -16,6 +16,7 @@
 - `uv run --directory modelman modelman provider isolate mlx_lm_server <target> --draft <draft>` — isolate a target+draft speculative-decoding pairing on port 8001; no default pairing exists, target/draft must always be passed (positional `target` + `--draft`, or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`)
 - `uv run --directory modelman modelman provider restore` — bring all providers back up after a benchmark
 - `uv run --directory modelman modelman provider stop <provider>` — stop one provider (e.g. `mtplx`, ~28GB resident); `wt smoke --json` (or non-TTY stdin) skips its exit stop prompt, so the server is left running
+- `uv run --directory modelman modelman ollama-catalog sync [--dry-run]` — sync ollama cloud models + prices (incl. off-peak) from ollama.com/pricing; see the `ollama-catalog` skill in `modelman/.claude/skills/`
 - `bin/mlx-quantize <convert|dynamic-quant|dwq> --model <repo-or-path> [--mlx-path <out-dir>]` — thin wrapper around the omlx-bundled mlx_lm quantization tools; see `docs/guides/10-mlx-lm-quantization.md`
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across the Makefile's `SHELL_SCRIPTS` list (`bin/`, `benchmarks/`, wt shims, `litellm-session-logs/` script)
 - `make lint` — umbrella target (`lint-shell` + `check-links`); lighter than `test-all`
