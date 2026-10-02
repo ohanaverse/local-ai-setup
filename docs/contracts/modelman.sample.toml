@@ -1,42 +1,23 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only (the `exposed` and `ready` flags, to filter the model picker;
-# the `[litellm]` routing table is now wt-owned in wt's config.toml, and wt
-# reads modelman's table below only as a legacy fallback; wt does NOT read the per-model
-# `running` flag — running state comes from wt's live probes of the
-# providers).
+# read-only (the `ready` flag, to filter the model picker; the `[litellm]`
+# routing table is now wt-owned in wt's config.toml, and wt reads
+# modelman's table below only as a legacy fallback; wt does NOT read the
+# per-model `running` flag — running state comes from wt's live probes of
+# the providers).
 #
 # Read by:
 #   - wt/internal/config/modelman_fixture_test.go (Go)
 #   - modelman/tests/contracts/test_modelman_fixture.py (Python)
 #
-# The point of this file is that a schema change on either side (e.g. wt
-# renaming its exposed key, modelman moving model_state) makes
-# both CI jobs fail in the same PR.
+# The point of this file is that a schema change on either side (e.g.
+# modelman moving model_state) makes both CI jobs fail in the same PR.
 #
-# Exposure rule — modelman's own predicate (is_effectively_exposed) is
-# still: native OR (exposed AND (ready OR cloud location)). wt's Stage-1
-# IsExposed check now diverges for LOCAL models as of the 2026-09-15
-# wt-local-model-visibility design
-# (docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md):
-# wt treats every local model as always exposed at this check, regardless
-# of its `exposed`/`ready` flags — what wt offers for a local model comes
-# from its live probes of the providers (STATUS/RUNNING rows), not from
-# this file's flags. Cloud and native models are unchanged: both
-# tools still apply the same rule to them.
-# - Local model with exposed=true, ready=false → NOT exposed per
-#   modelman's own predicate; wt's Stage-1 check treats it as exposed
-#   anyway (local models always pass Stage-1) — wt lists every local
-#   model and decides launch/start/block from its own live probes, not
-#   from this row.
-# - Cloud model with exposed=true (no ready key) → exposed on both sides.
-#
-# The DATA rows below are unaffected by this divergence: the tests that
-# read this fixture (wt/internal/config/modelman_fixture_test.go,
-# modelman/tests/contracts/test_modelman_fixture.py) assert only on the
-# RAW parsed fields (.Exposed/.Ready/.Running), never on the derived
-# IsExposed()/is_effectively_exposed() predicate, so they round-trip
-# correctly regardless of which exposure rule is current.
+# Exposure (#179): what is configured in registry.toml is exposed, so
+# modelman no longer has an `exposed` flag — it ignores `exposed` /
+# `litellm_exposed` on read and drops them on the next save. The rows
+# below that still carry one are legacy keys wt keeps reading until
+# PR 3 of #179 removes its reader.
 #
 # Local-model running state (multi-model local lifecycle design,
 # 2026-09-14): each model_state entry carries its own `running` flag.
@@ -62,6 +43,7 @@ api_key = "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY"
 ready = true
 disk_path = "ollama:contract-fixture:local"
 size_bytes = 2147483648
+# legacy key — modelman ignores it; wt reads it until PR 3 (#179)
 exposed = false
 running = true
 
@@ -69,50 +51,28 @@ running = true
 ready = true
 disk_path = "ollama:contract-fixture:subscription"
 size_bytes = 1073741824
+# legacy key — modelman ignores it; wt reads it until PR 3 (#179)
 exposed = true
 
 # Legacy pre-registry spelling of `ready`. modelman still accepts it
-# (state.py reads ready, falling back to downloaded); wt ignores it —
-# only the exposure flag matters to the picker.
-#
-# Legacy spelling of `exposed` — this entry intentionally uses
-# `litellm_exposed` only; the new `exposed` key is absent so readers
-# must fall back (back-compat read).
+# (state.py reads ready, falling back to downloaded); wt reads it as ready
+# too. This entry intentionally uses `litellm_exposed` only (no `exposed`
+# key) so wt's back-compat fallback stays pinned until PR 3 (#179).
 [model_state."llamacpp/legacy-contract-fixture"]
 downloaded = true
 disk_path = "/hf/cache/legacy-contract-fixture.q4.gguf"
+# legacy key — modelman ignores it; wt reads it until PR 3 (#179)
 litellm_exposed = true
 
 # A model that exists in state but was never downloaded: all defaults.
-# modelman's reader yields ready=False; wt's exposed-set skips it.
+# Both readers yield ready=false (and wt exposed=false).
 [model_state."openrouter/contract-fixture:cloud"]
-# no exposed key; defaults to false
 
-# Local model with flag on but not ready: tests the ready gate for local models.
-# Exposure per modelman's own predicate (is_effectively_exposed): flag=true
-# + ready=false + location=local → NOT exposed. wt's Stage-1 IsExposed
-# check no longer applies this gate to local models at all (2026-09-15
-# design) — it reads this row's raw .Exposed/.Ready fields in the fixture
-# test but does not derive an IsExposed() value from them for a local
-# model; what wt offers for a local model is decided by its own live
-# probes of the provider, never by a flag in this file.
+# Local model that is not ready: both readers must yield ready=false.
 [model_state."ollama/contract-fixture:local-not-ready"]
 ready = false
 disk_path = "ollama:contract-fixture:local-not-ready"
 size_bytes = 1073741824
-exposed = true
-
-# Cloud model with flag on but no ready key: tests the cloud exemption.
-# Exposure: flag=true + location=cloud → exposed (ready gate bypassed).
-[model_state."openrouter/contract-fixture:cloud-exposed"]
-exposed = true
-
-# Provider-inherited cloud location (issue #46): model has no location of
-# its own; the provider's location = "cloud" exempts it from the ready
-# gate. Exposure: flag=true + provider location=cloud → exposed on BOTH
-# sides (wt ResolveLocation and modelman is_cloud_effective).
-[model_state."pinned-cloud/contract-fixture:inherit"]
-exposed = true
 
 # Legacy family display names. Writers no longer create these (display
 # names live in registry.toml [[families]]); entries stay loadable so

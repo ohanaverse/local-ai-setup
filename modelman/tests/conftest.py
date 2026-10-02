@@ -109,17 +109,16 @@ def _never_call_real_wt(monkeypatch):
     """The suite must never run the real `wt` binary: it would rewrite the
     developer's real LiteLLM config.yaml and bounce their live proxy. Every
     bridge call goes through wt_bridge._run; replace it with a fake that
-    applies exposes to nothing and reports the known provider table. The
-    provider cache is reset before and after so no test sees another's table.
-    Tests that assert on the bridge itself monkeypatch _run again.
+    answers the verbs modelman still uses. Tests that assert on the bridge
+    itself monkeypatch _run again.
 
-    Limits of this fake: expose/unexpose always succeed for every id (exit 0,
-    changed=True); `list` is a static empty routed set (not stateful across
-    expose calls); on/off/set succeed (bare `set` exits 1 like real wt);
-    `sync` succeeds with no outcomes and changed=False; there is no
-    partial-failure / exit-1 / file-level-failure case. Tests exercising
-    error paths must override wt_bridge._run. Every argv tail is recorded and
-    yielded (see the `wt_calls` fixture)."""
+    Limits of this fake: `sync` succeeds with no outcomes and changed=False;
+    `list` is a static empty routed set; `status` reports routing off;
+    on/off/set succeed (bare `set` exits 1 like real wt); there is no
+    partial-failure / exit-1 / file-level-failure case. Any other verb
+    (e.g. the expose/unexpose removed in #179) fails the test loudly. Tests
+    exercising error paths must override wt_bridge._run. Every argv tail is
+    recorded and yielded (see the `wt_calls` fixture)."""
     import json
 
     from modelman import wt_bridge
@@ -128,14 +127,7 @@ def _never_call_real_wt(monkeypatch):
 
     def fake(args, env=None, timeout=120):
         calls.append(list(args))
-        if args[:1] == ["providers"]:
-            out = {
-                "providers": {
-                    p: {"cloud": p == "openrouter"}
-                    for p in ("ollama", "omlx", "mlx_lm_server", "mtplx", "llamacpp", "openrouter")
-                }
-            }
-        elif args[:1] == ["list"]:
+        if args[:1] == ["list"]:
             out = {"routed": []}
         elif args[:1] == ["status"]:
             if "--json" in args:
@@ -160,19 +152,11 @@ def _never_call_real_wt(monkeypatch):
         elif args[:1] == ["sync"]:
             out = {"outcomes": [], "changed": False, "warnings": []}
         else:
-            ids = [a for a in args[1:] if not a.startswith("--")]
-            act = "unexposed" if args[:1] == ["unexpose"] else "exposed"
-            out = {
-                "outcomes": [{"id": i, "action": act} for i in ids],
-                "changed": True,
-                "warnings": [],
-            }
+            raise AssertionError(f"unexpected wt litellm call in tests: {args[:1]}")
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(out), stderr="")
 
-    wt_bridge._reset_provider_cache()
     monkeypatch.setattr(wt_bridge, "_run", fake)
-    yield calls
-    wt_bridge._reset_provider_cache()
+    return calls
 
 
 @pytest.fixture

@@ -549,7 +549,7 @@ def _register_discovered_model(
     family: str,
     registry_path: Path | None,
     state_path: Path | None,
-) -> tuple[ModelEntry, list[str]]:
+) -> ModelEntry:
     """Write a new registry.toml entry for `match` and mark it ready in
     modelman.toml. Mutates `registry` and `state` in place (the caller's
     in-memory copies) so the rest of start_local_model's flow sees the new
@@ -591,7 +591,7 @@ def _register_discovered_model(
         state.set(model_id, model_state)
     except OSError as exc:
         raise LocalControlError(f"failed to register {model_id}: {exc}") from exc
-    return entry, []
+    return entry
 
 
 def _resolve_or_register(
@@ -601,7 +601,7 @@ def _resolve_or_register(
     family: str | None,
     registry_path: Path | None,
     state_path: Path | None,
-) -> tuple[ModelEntry, list[str]]:
+) -> ModelEntry:
     """Resolve `model_id` to a ModelEntry, trying — in order — a registry
     id, an existing model's native provider-side name (so a discovered
     model that was auto-registered under `<provider>/<name>` still
@@ -611,7 +611,7 @@ def _resolve_or_register(
     match, or DiscoveredModelNeedsFamily if the third case needs a family.
     """
     try:
-        return registry.model(model_id), []
+        return registry.model(model_id)
     except KeyError:
         pass
 
@@ -629,7 +629,7 @@ def _resolve_or_register(
         and model_has_local_artifact(m, providers_by_id.get(m.provider_id))
     ]
     if len(native_matches) == 1:
-        return native_matches[0], []
+        return native_matches[0]
     if len(native_matches) > 1:
         ids = ", ".join(sorted(m.id for m in native_matches))
         raise LocalControlError(
@@ -783,9 +783,7 @@ def start_local_model(
     message prescribes, and must not no-op on a flag whose process died.
     """
     state = load_state(state_path)
-    model, registration_warnings = _resolve_or_register(
-        registry, state, model_id, family, registry_path, state_path
-    )
+    model = _resolve_or_register(registry, state, model_id, family, registry_path, state_path)
     resolved_id = model.id
 
     provider = _provider_entry(registry, model.provider_id)
@@ -838,7 +836,7 @@ def start_local_model(
             return StartResult(
                 model_id=resolved_id,
                 already_running=True,
-                warnings=registration_warnings + sync_warnings,
+                warnings=sync_warnings,
                 other_running=other_running,
             )
         _clear_stale_running_flag(resolved_id, state_path)
@@ -928,7 +926,7 @@ def start_local_model(
         model_id=resolved_id,
         already_running=False,
         direct_url=direct_url,
-        warnings=registration_warnings + sync_warnings,
+        warnings=sync_warnings,
         other_running=other_running,
     )
 

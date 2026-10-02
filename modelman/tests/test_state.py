@@ -1,5 +1,5 @@
 """modelman.toml — modelman's own per-machine state overlay. Holds only
-per-machine mutable state (downloaded/disk_path/size_bytes/litellm_exposed)
+per-machine mutable state (ready/disk_path/size_bytes/running)
 keyed by registry model id; registry.toml holds everything that describes
 the model itself (see 2026-08-27-shared-model-registry-design.md). The
 file is optional: a fresh install has no state yet, so a missing file
@@ -55,22 +55,6 @@ def test_save_writes_ready_key_not_legacy_downloaded(tmp_path):
     assert "downloaded" not in raw_text
 
 
-def test_legacy_litellm_exposed_key_is_rewritten_as_exposed(tmp_path):
-    """A modelman.toml written by a pre-rename modelman still has
-    litellm_exposed keys. Loading and saving it must produce only the new
-    `exposed` key — otherwise the file accumulates both spellings forever
-    and the two languages' readers can silently disagree on which one wins."""
-    path = tmp_path / "modelman.toml"
-    path.write_text('[model_state."ollama/x"]\nready = true\nlitellm_exposed = true\n')
-    store = load_state(path=path)
-    assert store.models["ollama/x"].exposed is True
-
-    save_state(store, path=path)
-    written = path.read_text()
-    assert "litellm_exposed" not in written
-    assert "exposed = true" in written
-
-
 def test_save_then_load_round_trips_model_state(tmp_path):
     # The whole point of the overlay is persistence across runs; if any
     # field is dropped on save/load, download state silently resets.
@@ -81,7 +65,6 @@ def test_save_then_load_round_trips_model_state(tmp_path):
             ready=True,
             disk_path="/models/qwen3.8-27b-q4.gguf",
             size_bytes=17179869184,
-            exposed=True,
         ),
     )
     path = tmp_path / "modelman.toml"
@@ -93,7 +76,6 @@ def test_save_then_load_round_trips_model_state(tmp_path):
         ready=True,
         disk_path="/models/qwen3.8-27b-q4.gguf",
         size_bytes=17179869184,
-        exposed=True,
     )
 
 
@@ -316,7 +298,7 @@ def test_legacy_litellm_table_round_trips_verbatim(tmp_path):
 
 
 def test_legacy_litellm_table_survives_locked_state_mutation(tmp_path):
-    # An unrelated model_state write (expose/ready) must never touch or blank
+    # An unrelated model_state write (e.g. ready) must never touch or blank
     # the legacy [litellm] table.
     import tomllib
 
@@ -325,10 +307,10 @@ def test_legacy_litellm_table_survives_locked_state_mutation(tmp_path):
     p = tmp_path / "modelman.toml"
     p.write_text(_LEGACY_LITELLM)
     with locked_state(p) as s:
-        s.set("ollama/x", ModelState(ready=True, exposed=True))
+        s.set("ollama/x", ModelState(ready=True))
     doc = tomllib.loads(p.read_text())
     assert doc["litellm"] == tomllib.loads(_LEGACY_LITELLM)["litellm"]
-    assert doc["model_state"]["ollama/x"]["exposed"] is True
+    assert doc["model_state"]["ollama/x"]["ready"] is True
 
 
 def test_absent_litellm_table_stays_absent(tmp_path):
@@ -339,3 +321,17 @@ def test_absent_litellm_table_stays_absent(tmp_path):
     p = tmp_path / "modelman.toml"
     save_state(StateStore(models={"a/b": ModelState(ready=True)}), p)
     assert "litellm" not in tomllib.loads(p.read_text())
+
+
+def test_state_drops_legacy_exposed_keys(tmp_path):
+    """#179: exposed/litellm_exposed are read-ignored and never written back,
+    so they leave modelman.toml on the next save."""
+    p = tmp_path / "modelman.toml"
+    p.write_text(
+        '[model_state."ollama/a:1"]\nready = true\nexposed = true\nlitellm_exposed = true\n'
+    )
+    state = load_state(p)
+    save_state(state, p)
+    text = p.read_text()
+    assert "exposed" not in text
+    assert state.get("ollama/a:1").ready is True

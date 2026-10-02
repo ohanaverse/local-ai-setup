@@ -174,7 +174,7 @@ def test_sync_plan_has_no_expose_section(seeded, monkeypatch, ops):
     from modelman.state import ModelState, locked_state
 
     with locked_state() as state:
-        state.set("ollama/retired:cloud", ModelState(exposed=True))
+        state.set("ollama/retired:cloud", ModelState(ready=True))
     _tags(monkeypatch, [])
     result = CliRunner().invoke(
         app, ["ollama-catalog", "sync", "--dry-run", "--html", str(FIXTURE)]

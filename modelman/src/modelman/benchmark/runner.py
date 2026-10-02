@@ -72,7 +72,6 @@ class Target:
 
 def discover_targets(
     registry: Registry,
-    state: StateStore,
     model_ids: list[str] | None = None,
     family: str | None = None,
 ) -> list[Target]:
@@ -149,7 +148,7 @@ def run_benchmark(
     routes = routes or ["direct", "litellm"]
     results_dir = results_dir or DEFAULT_RESULTS_DIR
 
-    targets = discover_targets(registry, state, model_ids=model_ids, family=family)
+    targets = discover_targets(registry, model_ids=model_ids, family=family)
     if not targets:
         raise BenchmarkError("no benchmark targets found")
 

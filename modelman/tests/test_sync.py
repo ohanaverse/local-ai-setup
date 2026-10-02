@@ -238,23 +238,6 @@ def test_reconcile_skips_non_reconcilable_models():
     assert state.get("openrouter/x").ready is False
 
 
-def test_reconcile_preserves_litellm_exposed():
-    registry = Registry(
-        models=[
-            ModelEntry(
-                id="ollama/a",
-                family="a",
-                provider_id="ollama",
-                model_name="a",
-            ),
-        ]
-    )
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=False, exposed=True))
-    reconcile(registry, state, {"ollama/a": ("ollama:a", 1024)})
-    assert state.get("ollama/a").exposed is True
-
-
 def test_reconcile_handles_modeldir_providers():
     registry = Registry(
         models=[
@@ -651,7 +634,7 @@ def test_reconcile_leaves_cloud_model_state_alone():
         ]
     )
     state = StateStore()
-    state.set("ollama/x:cloud", ModelState(ready=True, exposed=True))
+    state.set("ollama/x:cloud", ModelState(ready=True))
     result = reconcile(registry, state, {})
     assert result.downloaded == [] and result.not_downloaded == []
-    assert state.get("ollama/x:cloud") == ModelState(ready=True, exposed=True)
+    assert state.get("ollama/x:cloud") == ModelState(ready=True)

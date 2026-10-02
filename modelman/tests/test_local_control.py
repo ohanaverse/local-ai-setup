@@ -153,8 +153,7 @@ def test_start_syncs_routes_once_and_writes_no_exposed(tmp_path, wt_calls):
         start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
     assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
-    # Interim (Task 11 switches this to `"exposed" not in state_path.read_text()`).
-    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").exposed is False
+    assert "exposed" not in state_path.read_text()
 
 
 def test_stop_all_syncs_routes_once(tmp_path, wt_calls):
@@ -193,7 +192,7 @@ def test_start_succeeds_with_warning_when_sync_fails(tmp_path):
 
     assert result.already_running is False
     assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
-    assert any("not synced" in w and "wt litellm sync" in w for w in result.warnings)
+    assert any("may not be synced" in w and "wt litellm sync" in w for w in result.warnings)
 
 
 def test_stop_local_model_syncs_once_after_clearing_the_flag(tmp_path):
@@ -343,7 +342,7 @@ def test_start_isolate_failure_includes_sync_warnings_in_error(tmp_path):
         )
         with pytest.raises(LocalControlError, match="warmup timed out") as excinfo:
             start_local_model(_registry(), "omlx/model-b", state_path)
-    assert "not synced" in str(excinfo.value)
+    assert "may not be synced" in str(excinfo.value)
 
 
 def test_start_successful_occupant_replacement_syncs_routes_once(tmp_path, wt_calls):
@@ -373,7 +372,7 @@ def test_start_running_flag_write_failure_keeps_sync_warnings(tmp_path):
         pytest.raises(LocalControlError, match="could not be") as excinfo,
     ):
         start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
-    assert "not synced" in str(excinfo.value)
+    assert "may not be synced" in str(excinfo.value)
 
 
 def test_start_isolate_failure_does_not_clear_concurrent_writes(tmp_path):
@@ -899,7 +898,7 @@ def test_stop_all_local_models_surfaces_sync_failure_as_warning(tmp_path):
         result = stop_all_local_models(state_path)
 
     assert result.stopped == ["ollama/a"]
-    assert any("not synced" in w for w in result.warnings)
+    assert any("may not be synced" in w for w in result.warnings)
     # The process is stopped either way — a failed sync must not block it.
     assert load_state(state_path).get("ollama/a").running is False
 
@@ -1290,8 +1289,8 @@ def test_start_native_name_resolves_existing_registered_model_without_reregister
 
 
 def _listing_registry() -> Registry:
-    """Local models covering all three inventory buckets, plus one exposed
-    cloud model, for inventory_local_models tests."""
+    """Local models covering all three inventory buckets, plus one cloud
+    model, for inventory_local_models tests."""
     return Registry(
         providers=[
             ProviderEntry(
@@ -1338,10 +1337,10 @@ def _listing_state(running_model: str | None = None) -> StateStore:
     store = StateStore()
     store.set(
         "ollama/exposed-model",
-        ModelState(ready=True, exposed=True, running=(running_model == "ollama/exposed-model")),
+        ModelState(ready=True, running=(running_model == "ollama/exposed-model")),
     )
-    store.set("ollama/unexposed-model", ModelState(ready=True, exposed=False))
-    store.set("openrouter/z-ai/glm-5.3-flash", ModelState(ready=False, exposed=True))
+    store.set("ollama/unexposed-model", ModelState(ready=True))
+    store.set("openrouter/z-ai/glm-5.3-flash", ModelState(ready=False))
     return store
 
 
@@ -1739,9 +1738,7 @@ def test_inventory_falls_back_to_cached_size_when_provider_reports_none():
     # already cached from an earlier reconcile, not "—".
     registry = _listing_registry()
     state = _listing_state()
-    state.set(
-        "ollama/exposed-model", ModelState(ready=True, exposed=True, size_bytes=4_900_000_000)
-    )
+    state.set("ollama/exposed-model", ModelState(ready=True, size_bytes=4_900_000_000))
     mapping = {
         "ollama": [
             {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": None}

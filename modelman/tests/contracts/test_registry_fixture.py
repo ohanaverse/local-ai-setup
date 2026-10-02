@@ -1,8 +1,6 @@
 from pathlib import Path
 
-from modelman.litellm import is_effectively_exposed
 from modelman.registry import load_registry
-from modelman.state import ModelState, StateStore
 
 FIXTURE = Path(__file__).resolve().parents[3] / "docs" / "contracts" / "registry.sample.toml"
 
@@ -94,17 +92,3 @@ def test_load_registry_matches_shared_fixture():
     family = registry.family("contract-fixture")
     assert family is not None
     assert family.display_name == "Contract Fixture"
-
-
-def test_fixture_pins_provider_location_inheritance():
-    """Issue #46: a model with no location of its own on a
-    location="cloud" provider must be exposed on the Python side exactly
-    as wt's ResolveLocation-based IsExposed treats it."""
-    registry = load_registry(path=FIXTURE)
-    state = StateStore()
-    state.set(
-        "pinned-cloud/contract-fixture:inherit",
-        ModelState(ready=False, exposed=True),
-    )
-    model = registry.model("pinned-cloud/contract-fixture:inherit")
-    assert is_effectively_exposed(model, state, registry=registry) is True

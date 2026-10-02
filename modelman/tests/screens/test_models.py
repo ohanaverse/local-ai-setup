@@ -2288,11 +2288,6 @@ async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_pat
         if args[:1] == ["status"]:
             timeouts.append(timeout)
             raise wt_bridge.WtBridgeError(f"wt litellm status timed out after {timeout:g}s")
-        if args[:1] == ["providers"]:
-            # Mount no longer reads provider flags (#179), but any later
-            # provider_cloud_flags() read must degrade too, not just "status"
-            # — it catches WtBridgeError and returns {}.
-            raise wt_bridge.WtBridgeError("wt litellm providers timed out")
         raise AssertionError(args)
 
     monkeypatch.setattr(wt_bridge, "_run", hung)
@@ -2319,51 +2314,6 @@ async def test_render_litellm_status_tolerates_unmounted_screen(tmp_path, monkey
         screen.query_one("#litellm-status").remove()
         await pilot.pause()
         screen._render_litellm_status()  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_on_mount_reads_status_without_waiting_on_provider_flags(tmp_path, monkeypatch):
-    # Mount reads wt's status only; it no longer warms provider_cloud_flags()
-    # (#179: nothing on the start path needs it once start syncs instead of
-    # exposing). Both stubs sleep briefly and are timed; the wall-clock total
-    # must stay close to the one status read — a mount that also waited on
-    # the flags read would sum both sleeps, above the threshold (which has
-    # slack for CI scheduling jitter).
-    import time as time_mod
-
-    from modelman import wt_bridge
-
-    a = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[a])
-
-    # The real provider_cloud_flags() caches its result after the first
-    # call (`_provider_cache` in wt_bridge.py), so later reads are cheap.
-    # Mirror that here so the stub measures the mount-time concurrency,
-    # not unrelated later reads.
-    flags_calls = []
-
-    def slow_flags():
-        if flags_calls:
-            return {"ollama": False}
-        flags_calls.append(1)
-        time_mod.sleep(0.5)
-        return {"ollama": False}
-
-    def slow_status(timeout=None):
-        time_mod.sleep(0.5)
-        return wt_bridge.LitellmStatus(True, "http://localhost:4000", True)
-
-    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", slow_flags)
-    monkeypatch.setattr(wt_bridge, "litellm_status", slow_status)
-
-    app = ModelmanApp()
-    start = time_mod.monotonic()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-    elapsed = time_mod.monotonic() - start
-    assert elapsed < 0.95, f"mount took {elapsed:.2f}s, want only the status read (~0.5s)"
-    assert not flags_calls, "the mount must not read provider flags at all"
 
 
 def test_edit_carryover_preserves_time_prices_and_extra():

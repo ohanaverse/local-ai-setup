@@ -382,7 +382,7 @@ def migrate(
     # wt/CLAUDE.md's "unknown provider" note), and result.state is a fresh
     # StateStore that's empty except for whatever this run's legacy
     # family-manifest import produced. Overwriting modelman.toml with it
-    # outright would wipe [litellm] and every other model's ready/exposed
+    # outright would wipe [litellm] and every other model's ready/running
     # state on every repair re-run.
     with locked_state() as state:
         state.models.update(result.state.models)

@@ -39,7 +39,7 @@ def test_migrate_command_preserves_existing_state_on_rerun(tmp_path, monkeypatch
     "unknown provider" note) that users re-run on an already-migrated
     machine. A naive whole-file overwrite of modelman.toml from migrate's
     fresh, mostly-empty StateStore would silently wipe the [litellm] table
-    and every model's ready/exposed state on that second run; this guards
+    and every model's ready state on that second run; this guards
     against that regression by asserting they survive a re-run."""
     config_path = tmp_path / "config.yaml"
     config_path.write_text("providers:\n  ollama:\n    type: ollama\n")
@@ -56,7 +56,7 @@ def test_migrate_command_preserves_existing_state_on_rerun(tmp_path, monkeypatch
     runner = CliRunner()
     assert runner.invoke(app, ["migrate"]).exit_code == 0
 
-    # Simulate the user configuring litellm and exposing a model after the
+    # Simulate the user configuring litellm and readying a model after the
     # first migrate — this is the state a repair re-run must not clobber.
     with locked_state(state_path) as state:
         state.extra["litellm"] = {
@@ -64,7 +64,7 @@ def test_migrate_command_preserves_existing_state_on_rerun(tmp_path, monkeypatch
             "url": "http://localhost:4000",
             "api_key": "sk-real-key",
         }
-        state.set("ollama/x", ModelState(ready=True, exposed=True))
+        state.set("ollama/x", ModelState(ready=True))
 
     assert runner.invoke(app, ["migrate"]).exit_code == 0
 
@@ -72,4 +72,3 @@ def test_migrate_command_preserves_existing_state_on_rerun(tmp_path, monkeypatch
     assert state.extra["litellm"]["url"] == "http://localhost:4000"
     assert state.extra["litellm"]["api_key"] == "sk-real-key"
     assert state.get("ollama/x").ready is True
-    assert state.get("ollama/x").exposed is True

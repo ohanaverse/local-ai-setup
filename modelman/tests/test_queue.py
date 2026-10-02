@@ -50,31 +50,6 @@ def store(tmp_path):
     return tmp_path / "modelman.toml"
 
 
-@pytest.fixture
-def bridge_calls(monkeypatch):
-    """Record every `wt litellm expose|unexpose` the apply delegates as
-    (verb, ids), returning an all-applied result.
-
-    wt owns the config.yaml write since 2026-09-21, so the queue's exposes
-    are asserted through the bridge calls they make rather than through the
-    file contents (those live in wt/internal/litellm's Go tests).
-    """
-    from modelman import wt_bridge
-
-    recorded: list[tuple[str, list[str]]] = []
-
-    def fake(verb, ids):
-        recorded.append((verb, list(ids)))
-        action = "exposed" if verb == "expose" else "unexposed"
-        return wt_bridge.BridgeResult(
-            [wt_bridge.BridgeOutcome(i, action, None) for i in ids], True, []
-        )
-
-    monkeypatch.setattr(wt_bridge, "expose", lambda ids, **kw: fake("expose", ids))
-    monkeypatch.setattr(wt_bridge, "unexpose", lambda ids, **kw: fake("unexpose", ids))
-    return recorded
-
-
 def _registry_with(tmp_path: Path, *entries: ModelEntry) -> tuple[Registry, Path]:
     """Build a Registry with the given ModelEntries and write it to disk."""
     reg = Registry(
@@ -595,47 +570,6 @@ def test_apply_asserts_delete_twin_keys_agree(tmp_path):
         pending.apply()
 
 
-def test_apply_expose_queue_rejects_native_before_reaching_wt(tmp_path, monkeypatch, bridge_calls):
-    """Native ⇒ no LiteLLM policy invariant (#47), queue path: a native
-    model whose provider is (wrongly) mapped in wt's provider table is
-    rejected per item — the flag never flips and wt is never called, so no
-    unroutable row and no proxy bounce. Shares _validate_locally with
-    expose_model, which is pinned in test_litellm.py."""
-    from modelman import wt_bridge
-    from modelman.litellm import apply_expose_queue
-    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
-    from modelman.state import ModelState, StateStore
-
-    model = ModelEntry(
-        id="agy/contract-fixture:native",
-        family="f",
-        provider_id="agy",
-        model_name="contract-fixture:native",
-        native=True,
-    )
-    registry = Registry(
-        providers=[ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native"))],
-        models=[model],
-    )
-    state = StateStore()
-    state.set(model.id, ModelState(ready=True, exposed=False))
-    # A native provider must never actually be mapped; simulate the
-    # hand-edited/stale table so the native guard is the only thing left.
-    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", lambda: {"agy": False})
-
-    outcomes, warnings = apply_expose_queue(
-        registry, state, [(model.id, True)], tmp_path / "config.yaml"
-    )
-
-    assert warnings == []
-    assert bridge_calls == []
-    [(mid, target, error)] = outcomes
-    assert (mid, target) == (model.id, True)
-    assert error is not None and "native" in error
-    # The rejected expose must not flip the flag.
-    assert state.get(model.id).exposed is False
-
-
 # ---------------------------------------------------------------------------
 # moves (family reassignment)
 # ---------------------------------------------------------------------------
@@ -1055,7 +989,7 @@ def test_apply_delete_flag_only_native_model_removes_entry(tmp_path):
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("claude/native", ModelState(ready=True, exposed=False))
+    state.set("claude/native", ModelState(ready=True))
 
     pending = PendingChanges(
         registry=reg,

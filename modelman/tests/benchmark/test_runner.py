@@ -96,9 +96,9 @@ def test_run_saved_but_restore_failed_carries_run_dir_and_run():
 
 
 def test_discover_targets_requires_explicit_selection():
-    """#179: the exposed-models default is gone; benchmarking needs a choice."""
+    """#179: there is no default selection; benchmarking needs a choice."""
     with pytest.raises(ValueError, match="--model"):
-        discover_targets(Registry(), StateStore())
+        discover_targets(Registry())
 
 
 def test_discover_targets_skips_cloud_models_unless_named():
@@ -118,14 +118,13 @@ def test_discover_targets_skips_cloud_models_unless_named():
             ),
         ],
     )
-    state = StateStore()
 
-    assert [t.model_id for t in discover_targets(registry, state, family="f")] == ["ollama/a"]
-    named = discover_targets(registry, state, model_ids=["ollama/c:cloud"])
+    assert [t.model_id for t in discover_targets(registry, family="f")] == ["ollama/a"]
+    named = discover_targets(registry, model_ids=["ollama/c:cloud"])
     assert [t.model_id for t in named] == ["ollama/c:cloud"]
 
 
-def test_discover_targets_by_family_overrides_exposed():
+def test_discover_targets_by_family():
     """--family selects every local model in that family."""
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
@@ -134,8 +133,7 @@ def test_discover_targets_by_family_overrides_exposed():
             ModelEntry(id="ollama/b", family="g", provider_id="ollama", model_name="b"),
         ],
     )
-    state = StateStore()
-    targets = discover_targets(registry, state, family="f")
+    targets = discover_targets(registry, family="f")
     assert [t.model_id for t in targets] == ["ollama/a"]
 
 
@@ -145,8 +143,7 @@ def test_discover_targets_by_model_ids():
         providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
-    state = StateStore()
-    targets = discover_targets(registry, state, model_ids=["ollama/a"])
+    targets = discover_targets(registry, model_ids=["ollama/a"])
     assert [t.model_id for t in targets] == ["ollama/a"]
 
 
@@ -163,8 +160,7 @@ def test_discover_targets_remote_providers_excluded():
             ModelEntry(id="openrouter/a", family="f", provider_id="openrouter", model_name="a")
         ],
     )
-    state = StateStore()
-    targets = discover_targets(registry, state, model_ids=["openrouter/a"])
+    targets = discover_targets(registry, model_ids=["openrouter/a"])
     assert targets == []
 
 
@@ -202,8 +198,7 @@ def test_discover_targets_carries_mlx_lm_server_pairing():
             )
         ],
     )
-    state = StateStore()
-    targets = discover_targets(registry, state, model_ids=["mlx_lm_server/a+draft-b"])
+    targets = discover_targets(registry, model_ids=["mlx_lm_server/a+draft-b"])
     assert len(targets) == 1
     target = targets[0]
     assert target.repo == "org/target"

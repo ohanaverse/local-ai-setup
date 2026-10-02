@@ -2,7 +2,10 @@
 
 wt owns LiteLLM management (config.yaml routes, proxy restart, routing
 state); modelman calls these primitives instead of keeping its own copy of
-the logic. See docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md.
+the logic. Its one route write is `sync` (#179: what is configured is
+routed); the rest read wt's state (`list`, `status`) or toggle routing
+(`on`/`off`/`set`). See
+docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md.
 """
 
 from __future__ import annotations
@@ -11,8 +14,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,8 +27,8 @@ class WtNotFoundError(WtBridgeError):
 
 
 class WtBridgeTimeoutError(WtBridgeError):
-    """wt timed out; a write it was doing (expose/unexpose) may have already
-    applied to config.yaml before the kill."""
+    """wt timed out; a write it was doing (`sync`) may have already applied
+    to config.yaml before the kill."""
 
 
 @dataclass(frozen=True)
@@ -128,17 +129,8 @@ def parse_routed(stdout: str) -> list[str]:
     return [str(x) for x in json.loads(stdout)["routed"]]
 
 
-def parse_providers(stdout: str) -> dict[str, bool]:
-    return {pid: bool(v["cloud"]) for pid, v in json.loads(stdout)["providers"].items()}
-
-
 def _change(args: list[str], litellm_path: Path | None) -> BridgeResult:
-    try:
-        proc = _run(args, _env(litellm_path))
-    except WtBridgeTimeoutError:
-        if args[:1] not in (["expose"], ["unexpose"]):
-            raise
-        return _reconcile_after_timeout(args, litellm_path)
+    proc = _run(args, _env(litellm_path))
     try:
         json.loads(proc.stdout)
     except (ValueError, TypeError):
@@ -152,47 +144,6 @@ def _change(args: list[str], litellm_path: Path | None) -> BridgeResult:
         raise WtBridgeError(
             f"unparseable wt output (exit {proc.returncode}); changes may have been applied"
         ) from None
-
-
-def _reconcile_after_timeout(args: list[str], litellm_path: Path | None) -> BridgeResult:
-    """expose/unexpose timed out: config.yaml may already have been written
-    (and the proxy restarted) before the kill. Read the actual routed set
-    back with a plain `wt litellm list` — unaffected by the timed-out call —
-    instead of assuming nothing applied, so a timeout can't silently leave
-    modelman.toml's exposed flag out of sync with the real route."""
-    action = args[0]
-    ids = args[args.index("--") + 1 :]
-    try:
-        routed = set(routed_ids(litellm_path=litellm_path))
-    except WtBridgeError:
-        raise WtBridgeError(f"wt litellm {action} timed out and its result is unknown") from None
-    applied_action = "exposed" if action == "expose" else "unexposed"
-    outcomes = []
-    for model_id in ids:
-        applied = (model_id in routed) if action == "expose" else (model_id not in routed)
-        outcomes.append(
-            BridgeOutcome(
-                model_id,
-                applied_action if applied else None,
-                None if applied else f"wt litellm {action} timed out before this id applied",
-            )
-        )
-    return BridgeResult(
-        outcomes=outcomes,
-        changed=True,
-        warnings=[f"wt litellm {action} timed out; recovered actual state from config.yaml"],
-    )
-
-
-def expose(
-    ids: list[str], *, litellm_path: Path | None = None, skip_ready_gate: bool = True
-) -> BridgeResult:
-    args = ["expose", "--json"] + (["--skip-ready-gate"] if skip_ready_gate else []) + ["--", *ids]
-    return _change(args, litellm_path)
-
-
-def unexpose(ids: list[str], *, litellm_path: Path | None = None) -> BridgeResult:
-    return _change(["unexpose", "--json", "--", *ids], litellm_path)
 
 
 def sync(*, litellm_path: Path | None = None) -> BridgeResult:
@@ -215,58 +166,8 @@ def routed_ids(*, litellm_path: Path | None = None, timeout: float | None = None
         raise WtBridgeError(_msg(proc, "wt litellm list failed")) from None
 
 
-_PROVIDER_FAILURE_TTL = 30.0
-_PROVIDER_TIMEOUT = 5.0
 # Short bound for the TUI's status read (runs on the UI thread at mount).
 STATUS_TIMEOUT = 5.0
-_provider_cache: dict[str, bool] | None = None
-_provider_failed_at: float | None = None
-_provider_warned = False
-
-
-def _reset_provider_cache() -> None:
-    """Forget the cached provider table, failure window and one-shot warning (tests)."""
-    global _provider_cache, _provider_failed_at, _provider_warned
-    _provider_cache = None
-    _provider_failed_at = None
-    _provider_warned = False
-
-
-def provider_cloud_flags() -> dict[str, bool]:
-    """provider id -> is cloud, for every LiteLLM-mapped provider (wt owns the table).
-
-    Called from TUI render paths, so it never raises: if wt is missing or
-    fails, warn once per process on stderr and return {}. A failure is
-    remembered for _PROVIDER_FAILURE_TTL seconds (no re-spawn per model row),
-    then retried.
-    """
-    global _provider_cache, _provider_failed_at, _provider_warned
-    if _provider_cache is not None:
-        return _provider_cache
-    if (
-        _provider_failed_at is not None
-        and time.monotonic() - _provider_failed_at < _PROVIDER_FAILURE_TTL
-    ):
-        return {}
-    try:
-        proc = _run(["providers", "--json"], timeout=_PROVIDER_TIMEOUT)
-        try:
-            flags = parse_providers(proc.stdout)
-        except (ValueError, KeyError, TypeError, AttributeError):
-            raise WtBridgeError(_msg(proc, "wt litellm providers failed")) from None
-    except WtBridgeError as e:
-        _provider_failed_at = time.monotonic()
-        if not _provider_warned:
-            _provider_warned = True
-            print(
-                f"modelman: cannot read wt's LiteLLM provider table ({e}); "
-                "cloud/mapping checks are degraded",
-                file=sys.stderr,
-            )
-        return {}
-    _provider_failed_at = None
-    _provider_cache = flags
-    return flags
 
 
 def litellm_status(timeout: float | None = None) -> LitellmStatus:
