@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +187,7 @@ func TestModelForAndLocalModels(t *testing.T) {
 // restarts the proxy exactly once, and that a running local model that is not
 // ready in the registry still gets its route (Sync passes SkipReadyGate: the
 // model is verifiably running). Each restart kills in-flight agent requests.
+// Since #179 the configured cloud model is also routed, in the same pass.
 func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
 	o, restarts, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -199,7 +201,7 @@ func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
 		t.Fatalf("err=%v changed=%v restarts=%d, want nil/true/1", err, res.Changed, *restarts)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "mtplx/Youssofal--Q" {
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y,mtplx/Youssofal--Q" {
 		t.Fatalf("routed = %s", got)
 	}
 }
@@ -208,6 +210,8 @@ func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
 // neither removed (existing route survives while not "running") nor added
 // (running but untouched gets no new route). The caller uses this for
 // families whose provider probe failed, where Running cannot be trusted.
+// The configured cloud model, not being local, is still routed — Untouched
+// covers only the local half.
 func TestSyncLeavesUntouchedModelsAlone(t *testing.T) {
 	o, _, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -218,12 +222,16 @@ litellm_settings:
 `)
 	o.Untouched = []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"}
 	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
-	if err != nil || res.Changed {
-		t.Fatalf("err=%v changed=%v, want nothing changed", err, res.Changed)
+	if err != nil || !res.Changed {
+		t.Fatalf("err=%v changed=%v, want the cloud model routed", err, res.Changed)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
-		t.Fatalf("routed = %s", got)
+	got := f.RoutedIDs()
+	if !slices.Contains(got, "ollama/gemma:9b") {
+		t.Fatalf("routed = %v, untouched gemma:9b was removed", got)
+	}
+	if slices.Contains(got, "mtplx/Youssofal--Q") {
+		t.Fatalf("routed = %v, untouched mtplx got a new route", got)
 	}
 }
 
@@ -252,8 +260,8 @@ func TestSyncDecidesUnderTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if ids := f.RoutedIDs(); len(ids) != 0 {
-		t.Fatalf("routed = %v, want the not-running model's route removed", ids)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y" {
+		t.Fatalf("routed = %s, want the not-running model's route removed and the cloud route added", got)
 	}
 }
 
@@ -306,8 +314,8 @@ func TestSyncRecheckKeepsModelsThatStartedMeanwhile(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
-		t.Fatalf("routed = %s, want only the model Recheck found running", got)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b,openrouter/x/y" {
+		t.Fatalf("routed = %s, want the model Recheck found running (plus the cloud route)", got)
 	}
 }
 
@@ -325,8 +333,8 @@ func TestSyncRecheckAlsoAppliesToAddSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
-		t.Fatalf("routed = %s, want only the model Recheck still found running", got)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y,ollama/gemma:9b" {
+		t.Fatalf("routed = %s, want the model Recheck still found running (plus the cloud route)", got)
 	}
 }
 
@@ -397,7 +405,151 @@ func TestSyncRecheckTimesOutInsteadOfHoldingTheLock(t *testing.T) {
 		t.Fatalf("Sync took %s, want it to give up around recheckTimeout (%s)", elapsed, recheckTimeout)
 	}
 	f, _ := Open(p)
-	if ids := f.RoutedIDs(); len(ids) != 0 {
-		t.Fatalf("routed = %v, want the route removed (recheck timed out, pre-recheck plan applied)", ids)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "openrouter/x/y" {
+		t.Fatalf("routed = %s, want the local route removed (recheck timed out, pre-recheck plan applied)", got)
+	}
+}
+
+// readRows opens path and returns its rows (id + managed).
+func readRows(t *testing.T, p string) []RowInfo {
+	t.Helper()
+	f, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f.Rows()
+}
+
+// TestSyncRoutesEveryCloudModel pins #179's core rule: configured means
+// exposed, so sync adds a marked route for every registry cloud model with no
+// expose step, and skips native models.
+func TestSyncRoutesEveryCloudModel(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: []\n")
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v", got)
+	}
+	if !res.Changed || *restarts != 1 {
+		t.Fatalf("changed=%v restarts=%d", res.Changed, *restarts)
+	}
+}
+
+// TestSyncRemovesMarkedRowOfDeletedModel pins that deleting a cloud model
+// from the registry removes its route: the marked row is wt's and is no
+// longer desired.
+func TestSyncRemovesMarkedRowOfDeletedModel(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/gone
+    litellm_params: {model: openrouter/gone}
+    model_info: {wt_managed: true}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range readRows(t, p) {
+		if r.ID == "openrouter/gone" {
+			t.Fatalf("stale marked row survived: %v", readRows(t, p))
+		}
+	}
+}
+
+// TestSyncNeverTouchesHandWrittenRows pins the safety rule: an unmarked row
+// whose name is not a registry id wt manages — even one shaped like a
+// registry id — is never removed or rewritten.
+func TestSyncNeverTouchesHandWrittenRows(t *testing.T) {
+	const hand = `  - model_name: openrouter/deleted-before-upgrade
+    litellm_params: {model: openrouter/deleted-before-upgrade}
+  - model_name: my-alias
+    litellm_params: {model: openrouter/x/y}
+`
+	o, _, p := opts(t, "model_list:\n"+hand)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	got := readRows(t, p)
+	for _, id := range []string{"openrouter/deleted-before-upgrade", "my-alias"} {
+		if !slices.Contains(got, RowInfo{id, false}) {
+			t.Fatalf("hand-written %s changed or removed: %v", id, got)
+		}
+	}
+}
+
+// TestSyncAdoptsUnmarkedRowOfManagedModel pins the one-time migration: a
+// pre-upgrade wt row (unmarked, named like a registry cloud id) is rewritten
+// with the marker and reported as adopted.
+func TestSyncAdoptsUnmarkedRowOfManagedModel(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y}
+`)
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v", got)
+	}
+	if len(res.Outcomes) != 1 || res.Outcomes[0].Action != "adopted" {
+		t.Fatalf("outcomes = %+v, want one adopted", res.Outcomes)
+	}
+}
+
+// TestSyncRemovesLegacyUnmarkedLocalRoute pins that a pre-upgrade route of a
+// stopped REGISTRY local model is still removed, as sync did before #179 —
+// ownership covers unmarked rows named like a managed registry id.
+func TestSyncRemovesLegacyUnmarkedLocalRoute(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range readRows(t, p) {
+		if r.ID == "ollama/gemma:9b" {
+			t.Fatalf("stopped local model kept its route: %v", readRows(t, p))
+		}
+	}
+}
+
+// TestSyncUnchangedDoesNotRestart pins that a second sync with nothing to do
+// writes nothing and does not bounce the proxy (each bounce drops requests).
+func TestSyncUnchangedDoesNotRestart(t *testing.T) {
+	o, restarts, _ := opts(t, "model_list: []\n")
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	*restarts = 0
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || *restarts != 0 || len(res.Outcomes) != 0 {
+		t.Fatalf("second sync: changed=%v restarts=%d outcomes=%+v", res.Changed, *restarts, res.Outcomes)
+	}
+}
+
+// TestPlanSyncWritesNothing pins `sync --dry-run`: the plan names the add
+// and the removal, and the file is byte-identical afterwards.
+func TestPlanSyncWritesNothing(t *testing.T) {
+	const body = `model_list:
+  - model_name: openrouter/gone
+    litellm_params: {model: openrouter/gone}
+    model_info: {wt_managed: true}
+`
+	o, restarts, p := opts(t, body)
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Add, []string{"openrouter/x/y"}) || !slices.Equal(plan.Remove, []string{"openrouter/gone"}) {
+		t.Fatalf("plan = %+v", plan)
+	}
+	after, _ := os.ReadFile(p)
+	if string(after) != body || *restarts != 0 {
+		t.Fatalf("dry run changed the file or restarted: %q restarts=%d", after, *restarts)
 	}
 }
