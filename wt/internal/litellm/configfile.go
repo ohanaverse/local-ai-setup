@@ -206,10 +206,23 @@ type RowInfo struct {
 	Managed bool
 }
 
-// Rows returns every named model_list mapping row, in file order.
-func (f *File) Rows() []RowInfo {
+// modelListSeq returns the model_list sequence, or nil when the key is absent,
+// null, or its value is not a sequence. It never mutates: modelList is the only
+// accessor allowed to create the key, and a read-only caller that created it
+// would flip File.Changed, making a no-op sync write config.yaml and restart
+// the proxy.
+func (f *File) modelListSeq() *yaml.Node {
 	ml := mapGet(f.root(), "model_list")
 	if ml == nil || ml.Kind != yaml.SequenceNode {
+		return nil
+	}
+	return ml
+}
+
+// Rows returns every named model_list mapping row, in file order.
+func (f *File) Rows() []RowInfo {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return nil
 	}
 	var out []RowInfo
@@ -223,8 +236,8 @@ func (f *File) Rows() []RowInfo {
 
 // row returns the first mapping row named id, or nil.
 func (f *File) row(id string) *yaml.Node {
-	ml := mapGet(f.root(), "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return nil
 	}
 	for _, r := range ml.Content {
@@ -268,8 +281,8 @@ func (f *File) modelList() (*yaml.Node, error) {
 
 // RoutedIDs returns every model_list row's model_name, in file order.
 func (f *File) RoutedIDs() []string {
-	ml := mapGet(f.root(), "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return nil
 	}
 	var ids []string
@@ -317,8 +330,8 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 // RemoveRow deletes the row keyed by id (no-op when absent). Rows that are
 // not mappings are never ours and are left in place.
 func (f *File) RemoveRow(id string) {
-	ml := mapGet(f.root(), "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return
 	}
 	kept := ml.Content[:0]
@@ -370,8 +383,8 @@ func (f *File) EnsureSettings() {
 			}
 		}
 	}
-	ml := mapGet(root, "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return
 	}
 	for _, row := range ml.Content {
