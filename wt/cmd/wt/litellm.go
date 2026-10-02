@@ -280,17 +280,22 @@ func routedIDSet() map[string]bool {
 // desiredLocalIDs lists the registered local model ids sync should route:
 // every one a probe found running, plus every registered model of a family
 // whose routes follow its artifact (ollama) that the probe saw pulled, loaded
-// or not — ollama serves a pulled model on request (#179). An unknown artifact
-// (ArtifactKnown false) never counts as pulled. The real sync, its dry run and
-// the under-lock Recheck all call this one function so they cannot drift.
+// or not — ollama serves a pulled model on request (#179). Pulled counts only
+// when the family's probe is fully OK: a partial probe (e.g. /api/ps refused
+// after /api/tags answered — the daemon died) cannot vouch that anything is
+// serving. An unknown artifact (ArtifactKnown false) never counts as pulled.
+// The real sync, its dry run and the under-lock Recheck all call this one
+// function so they cannot drift.
 func desiredLocalIDs(snap localmodels.Snapshot) []string {
 	var desired []string
 	for _, e := range snap.Entries {
 		if !e.Registered {
 			continue
 		}
+		fam := localmodels.Family(e.ProviderID)
 		pulled := e.ArtifactKnown && e.Artifact != "" &&
-			localmodels.RoutesFollowArtifact(localmodels.Family(e.ProviderID))
+			localmodels.RoutesFollowArtifact(fam) &&
+			snap.Providers[fam] == localmodels.StatusOK
 		if e.Running || pulled {
 			desired = append(desired, e.ModelID)
 		}

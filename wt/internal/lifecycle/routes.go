@@ -117,6 +117,8 @@ func routeRemove(ctx context.Context, cfg *config.Config, providerID, modelName 
 	case SingleModel(providerID):
 		remove = familyModelIDs(cfg, providerID)
 	default:
+		// A multi-tenant backend whose routes do not follow artifacts; none
+		// exists today (ollama, the only multi-tenant one, returned above).
 		m, ok := litellm.ModelFor(cfg, providerID, modelName)
 		if !ok {
 			return false

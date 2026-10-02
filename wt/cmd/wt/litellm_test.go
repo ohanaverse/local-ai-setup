@@ -1039,3 +1039,37 @@ func TestDesiredLocalIDsOllamaFollowsPulled(t *testing.T) {
 		t.Fatalf("desiredLocalIDs = %v, want %v", got, want)
 	}
 }
+
+// TestDesiredLocalIDsPulledNeedsTrustedProbe pins that a pulled ollama model
+// counts as desired only when ollama's probe is fully OK. When /api/tags
+// answered but /api/ps was refused (the daemon died between the probes), the
+// family is Down: its routes are stale and sync must remove them. Counting the
+// pulled ids there would keep — or re-add — routes to a server that is not
+// listening, so every request through LiteLLM would fail.
+func TestDesiredLocalIDsPulledNeedsTrustedProbe(t *testing.T) {
+	pulled := localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/pulled:1", ModelName: "pulled:1", Artifact: "pulled:1", ArtifactKnown: true, Registered: true}
+	cases := []struct {
+		name string
+		snap localmodels.Snapshot
+		want []string
+	}{
+		{"partial and down", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"ollama": localmodels.StatusPartial},
+			Down:      map[string]bool{"ollama": true},
+			Entries:   []localmodels.Entry{pulled},
+		}, nil},
+		{"partial, not down", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"ollama": localmodels.StatusPartial},
+			Entries:   []localmodels.Entry{pulled},
+		}, nil},
+		{"ok", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+			Entries:   []localmodels.Entry{pulled},
+		}, []string{"ollama/pulled:1"}},
+	}
+	for _, c := range cases {
+		if got := desiredLocalIDs(c.snap); !slices.Equal(got, c.want) {
+			t.Errorf("%s: desiredLocalIDs = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
