@@ -536,6 +536,74 @@ func TestSyncAdoptsUnmarkedRowOfManagedModel(t *testing.T) {
 	}
 }
 
+// TestSyncAdoptionCarriesUserParams pins the carry rule on adoption: an
+// unmarked row named like a managed id is rewritten with the marker, and the
+// rewrite keeps the old row's user-authored litellm_params keys the built row
+// lacks (a hand-written timeout), while the keys wt owns (api_base) are
+// re-derived from the registry. Before the carry rule, adoption silently
+// dropped every param beyond the two presence-based ones.
+func TestSyncAdoptionCarriesUserParams(t *testing.T) {
+	o, restarts, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_base: "https://custom.example/v1", timeout: 120}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v, want the adopted row marked", got)
+	}
+	var params map[string]any
+	if err := mapGet(f.row("openrouter/x/y"), "litellm_params").Decode(&params); err != nil {
+		t.Fatal(err)
+	}
+	if params["timeout"] != 120 {
+		t.Errorf("timeout = %v, want the user's 120 carried over", params["timeout"])
+	}
+	// The registry owns endpoints: a hand-written api_base is not carried, or
+	// a provider base_url change would never reach config.yaml.
+	if params["api_base"] != "https://openrouter.ai/api/v1" {
+		t.Errorf("api_base = %v, want the registry's", params["api_base"])
+	}
+	// Carried params are compared after the carry, so the next sync is a
+	// no-op instead of rewriting (and restarting) forever.
+	if *restarts != 1 {
+		t.Fatalf("restarts after adoption = %d, want 1", *restarts)
+	}
+	if res, err := Sync(testConfig(), nil, o); err != nil || res.Changed || *restarts != 1 {
+		t.Fatalf("second sync: err=%v changed=%v restarts=%d, want a no-op", err, res.Changed, *restarts)
+	}
+}
+
+// TestSyncCarriesUserButNotWTParams pins the carry rule on every rewrite, not
+// just adoption: a marked row's user-authored key (timeout) is carried, while
+// wt-owned keys are not — a custom api_base on a marked row loses to the
+// registry on the next sync, because a provider base_url change must reach
+// config.yaml (a marked row is wt's to re-derive).
+func TestSyncCarriesUserButNotWTParams(t *testing.T) {
+	const id = "ollama/gemma:9b"
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b, api_base: "http://localhost:9999", timeout: 120}
+    model_info: {wt_managed: true}
+`)
+	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	var params map[string]any
+	if err := mapGet(f.row(id), "litellm_params").Decode(&params); err != nil {
+		t.Fatal(err)
+	}
+	if params["timeout"] != 120 {
+		t.Errorf("timeout = %v, want the user's 120 carried over", params["timeout"])
+	}
+	if params["api_base"] != "http://localhost:11434" {
+		t.Errorf("api_base = %v, want the registry's http://localhost:11434", params["api_base"])
+	}
+}
+
 // TestSyncRemovesLegacyUnmarkedLocalRoute pins that a pre-upgrade route of a
 // stopped REGISTRY local model is still removed, as sync did before #179 —
 // ownership covers unmarked rows named like a managed registry id.

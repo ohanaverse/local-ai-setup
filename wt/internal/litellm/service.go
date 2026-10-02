@@ -296,7 +296,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 		}
 		old := f.row(id)
 		if old != nil {
-			carryPreservedParams(old, row)
+			carryUserParams(old, row)
 			// Compare by value, not bytes: a row read back from disk keeps
 			// quoting styles ('ollama/gemma:9b') a freshly built one lacks,
 			// so byte equality would report every unchanged row as changed.

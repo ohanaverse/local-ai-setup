@@ -52,10 +52,15 @@ var enforcedSettings = []string{
 	"use_chat_completions_url_for_anthropic_messages",
 }
 
-// preservedParamKeys survive a row replacement when the new row lacks them:
-// they are presence-based (an existing value of any kind marks the row
-// user-managed).
-var preservedParamKeys = []string{"additional_drop_params", "use_chat_completions_api"}
+// wtParamKeys are the litellm_params keys wt itself authors on every row it
+// writes (entry.go's BuildEntry). A row replacement never carries these over
+// from the old row: the registry and provider policy own them, and a change
+// there must reach config.yaml. Every other key on the old row is
+// user-authored (a hand-written timeout, rate limit, ...) and is carried over
+// when the new row lacks it — the presence-based keys additional_drop_params
+// and use_chat_completions_api (EnsureSettings writes them only when absent)
+// fall out of this rule.
+var wtParamKeys = map[string]bool{"model": true, "api_base": true, "api_key": true}
 
 // droppedOllamaChatParams are dropped by default on every fresh ollama_chat/
 // deployment via additional_drop_params: reasoning_effort crashes litellm's
@@ -248,17 +253,23 @@ func (f *File) row(id string) *yaml.Node {
 	return nil
 }
 
-// carryPreservedParams copies the user-managed presence-based params
-// (preservedParamKeys) from old into row when row lacks them — what SetRow
-// does on replace, factored out so sync can compare a rebuilt row with the
-// one on disk exactly as SetRow would write it.
-func carryPreservedParams(old, row *yaml.Node) {
+// carryUserParams copies the user-authored litellm_params keys — anything wt
+// does not itself set (see wtParamKeys) — from old into row when row lacks
+// them: what SetRow does on replace, factored out so sync can compare a
+// rebuilt row with the one on disk exactly as SetRow would write it. Adoption
+// and rewrites therefore keep hand-written params (a timeout, say) instead of
+// silently dropping them.
+func carryUserParams(old, row *yaml.Node) {
 	oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
 	if oldParams == nil || newParams == nil {
 		return
 	}
-	for _, k := range preservedParamKeys {
-		if v := mapGet(oldParams, k); v != nil && mapGet(newParams, k) == nil {
+	for i := 0; i+1 < len(oldParams.Content); i += 2 {
+		k := oldParams.Content[i].Value
+		if wtParamKeys[k] {
+			continue
+		}
+		if v := oldParams.Content[i+1]; mapGet(newParams, k) == nil {
 			mapSet(newParams, k, v)
 		}
 	}
@@ -308,7 +319,8 @@ func (f *File) RoutedIDs() []string {
 }
 
 // SetRow adds the row keyed by id, or replaces the existing one in place,
-// carrying over any user-managed presence-based params the new row lacks.
+// carrying over the old row's user-authored params the new row lacks
+// (wtParamKeys — model/api_base/api_key — are wt's and never carried).
 // LiteLLM load-balances across rows sharing a model_name, so a hand-edited
 // file with duplicates would keep routing to the stale copies: the first
 // mapping row is replaced and every later duplicate is dropped (RemoveRow
@@ -328,7 +340,7 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 		if first >= 0 {
 			continue // duplicate of a row already replaced
 		}
-		carryPreservedParams(old, row)
+		carryUserParams(old, row)
 		row.HeadComment, row.LineComment, row.FootComment = old.HeadComment, old.LineComment, old.FootComment
 		first = len(kept)
 		kept = append(kept, row)
