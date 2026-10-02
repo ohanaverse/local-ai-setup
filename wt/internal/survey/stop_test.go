@@ -35,6 +35,11 @@ type stopHarness struct {
 	// ctxSeen is the context the picker handed to the first stop, so a test can
 	// prove it is cancellable — context.Background() has a nil Done channel.
 	ctxSeen context.Context
+	// notOwed makes successful stops report no restart owed (their model had
+	// no route), so a test can prove the loop then skips the settle.
+	notOwed bool
+	// settles counts settle calls: the proxy restarts the stop loop asked for.
+	settles int
 }
 
 func (h *stopHarness) deps() stopDeps {
@@ -47,7 +52,7 @@ func (h *stopHarness) deps() stopDeps {
 			}
 			return out
 		},
-		stop: func(ctx context.Context, _ *config.Config, provider, name string) error {
+		stop: func(ctx context.Context, _ *config.Config, provider, name string) (bool, error) {
 			if h.ctxSeen == nil {
 				h.ctxSeen = ctx
 			}
@@ -55,14 +60,15 @@ func (h *stopHarness) deps() stopDeps {
 			if h.cancel != nil && name == h.cancelOn {
 				h.cancel()
 				if h.cancelFails {
-					return ctx.Err()
+					return false, ctx.Err()
 				}
 			}
 			if name == h.failOn {
-				return errors.New("boom")
+				return false, errors.New("boom")
 			}
-			return nil
+			return !h.notOwed, nil
 		},
+		settle: func(context.Context, *config.Config) { h.settles++ },
 	}
 }
 
@@ -526,5 +532,67 @@ func TestStopEntriesReportsFailures(t *testing.T) {
 	}
 	if len(h.stops) != 2 {
 		t.Errorf("stops = %v, want both attempted", h.stops)
+	}
+}
+
+// TestStopEntriesSettlesOnce pins issue #142: stopping several models asks for
+// ONE proxy restart after the loop, not one per stop. Per-stop restarts fired
+// overlapping `launchctl kickstart -k`s, each killing the proxy the previous
+// one had just brought up.
+func TestStopEntriesSettlesOnce(t *testing.T) {
+	h := &stopHarness{}
+	entries := []localmodels.Entry{
+		runningEntry("ollama", "ollama/a", "a"),
+		runningEntry("ollama", "ollama/b", "b"),
+		runningEntry("ollama", "ollama/c", "c"),
+	}
+	if err := stopEntries(context.Background(), io.Discard, &config.Config{}, h.deps(), entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.stops) != 3 || h.settles != 1 {
+		t.Fatalf("stops = %v, settles = %d, want 3 stops and 1 settle", h.stops, h.settles)
+	}
+}
+
+// TestStopEntriesSettlesAfterFailureAndCancel pins that a loop ending early
+// still settles: the removals already written are in config.yaml, and without
+// the restart the proxy keeps routing to models that are gone.
+func TestStopEntriesSettlesAfterFailureAndCancel(t *testing.T) {
+	entries := []localmodels.Entry{runningEntry("ollama", "ollama/a", "a"), runningEntry("ollama", "ollama/b", "b")}
+
+	failed := &stopHarness{failOn: "b"}
+	if err := stopEntries(context.Background(), io.Discard, &config.Config{}, failed.deps(), entries); err == nil {
+		t.Fatal("want a failure error")
+	}
+	if failed.settles != 1 {
+		t.Errorf("after a failed stop: settles = %d, want 1", failed.settles)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := &stopHarness{cancelOn: "a", cancel: cancel}
+	if err := stopEntries(ctx, io.Discard, &config.Config{}, cancelled.deps(), entries); err == nil {
+		t.Fatal("want a cancelled error")
+	}
+	if len(cancelled.stops) != 1 || cancelled.settles != 1 {
+		t.Errorf("after Ctrl+C: stops = %v, settles = %d, want 1 stop and 1 settle", cancelled.stops, cancelled.settles)
+	}
+}
+
+// TestStopEntriesSkipsSettleWhenNothingOwed pins that stops which changed no
+// route (unrouted models, or every stop failed) cost no proxy restart.
+func TestStopEntriesSkipsSettleWhenNothingOwed(t *testing.T) {
+	entries := []localmodels.Entry{runningEntry("ollama", "ollama/a", "a"), runningEntry("ollama", "ollama/b", "b")}
+
+	unrouted := &stopHarness{notOwed: true}
+	_ = stopEntries(context.Background(), io.Discard, &config.Config{}, unrouted.deps(), entries)
+	if unrouted.settles != 0 {
+		t.Errorf("unrouted models: settles = %d, want 0", unrouted.settles)
+	}
+
+	allFailed := &stopHarness{failOn: "a"}
+	_ = stopEntries(context.Background(), io.Discard, &config.Config{}, allFailed.deps(), entries[:1])
+	if allFailed.settles != 0 {
+		t.Errorf("every stop failed: settles = %d, want 0", allFailed.settles)
 	}
 }

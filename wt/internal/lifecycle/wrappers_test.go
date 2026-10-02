@@ -516,3 +516,92 @@ func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
 		t.Fatalf("restarts = %d after replace-then-fail, want 1", restarts())
 	}
 }
+
+// TestStopModelDeferredBatchRestartsOnce pins issue #142: a multi-select stop
+// writes every route removal with StopModelDeferred (no restart each), then
+// SettleRoutes bounces the proxy exactly once. One restart per stop meant N
+// overlapping `launchctl kickstart -k`s, each killing the proxy the previous
+// one had just brought up and dropping in-flight requests every time.
+func TestStopModelDeferredBatchRestartsOnce(t *testing.T) {
+	const full = `model_list:
+  - model_name: ollama/a:1
+    litellm_params: {model: ollama_chat/a:1, api_base: http://localhost:11434}
+  - model_name: ollama/b:1
+    litellm_params: {model: ollama_chat/b:1, api_base: http://localhost:11434}
+  - model_name: mtplx/Y--Q35
+    litellm_params: {model: openai/Y/Q35, api_base: http://localhost:8003/v1, api_key: not-needed}
+  - model_name: openrouter/z
+    litellm_params: {model: openrouter/z}
+`
+	path, restarts, warn := realRoutes(t, full)
+	var calls []string
+	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+
+	owed := false
+	for _, s := range []struct{ provider, name string }{{"ollama", "a:1"}, {"ollama", "b:1"}, {"mtplx", "Y/Q35"}} {
+		o, err := StopModelDeferred(context.Background(), cfg, s.provider, s.name)
+		if err != nil {
+			t.Fatalf("StopModelDeferred(%s %s): %v", s.provider, s.name, err)
+		}
+		owed = owed || o
+	}
+	WaitPendingRoutes()
+	if !owed {
+		t.Fatal("removals changed config.yaml, so a restart must be owed")
+	}
+	if restarts() != 0 {
+		t.Fatalf("restarts before settle = %d, want 0", restarts())
+	}
+	if got, want := routedIDs(t, path), []string{"openrouter/z"}; !slices.Equal(got, want) {
+		t.Fatalf("routed = %v, want %v (warn %q)", got, want, warn.String())
+	}
+	SettleRoutes(context.Background(), cfg)
+	WaitPendingRoutes()
+	if restarts() != 1 {
+		t.Fatalf("restarts after settle = %d, want 1", restarts())
+	}
+}
+
+// TestStopModelDeferredNothingRoutedOwesNothing pins that a stop whose model
+// had no route leaves no restart owed, so the batch skips the bounce entirely
+// — a stop of an unrouted model must not cost a proxy restart.
+func TestStopModelDeferredNothingRoutedOwesNothing(t *testing.T) {
+	_, restarts, _ := realRoutes(t, "model_list:\n  - model_name: openrouter/z\n    litellm_params: {model: openrouter/z}\n")
+	var calls []string
+	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+	// The first write may still change the file: every write ensures
+	// LiteLLM's launcher-required litellm_settings keys, which this minimal
+	// fixture lacks. Only the second write sees a file in normal form.
+	if _, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1"); err != nil {
+		t.Fatalf("first StopModelDeferred: %v", err)
+	}
+	owed, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1")
+	if err != nil || owed {
+		t.Fatalf("StopModelDeferred = (%v, %v), want (false, nil)", owed, err)
+	}
+	WaitPendingRoutes()
+	if restarts() != 0 {
+		t.Fatalf("restarts = %d, want 0", restarts())
+	}
+}
+
+// TestStopModelDeferredFailedStopWritesNothing pins that a failed provider
+// stop leaves the route alone and owes no restart: the model is still
+// serving, so removing its route would strand it.
+func TestStopModelDeferredFailedStopWritesNothing(t *testing.T) {
+	const full = "model_list:\n  - model_name: ollama/a:1\n    litellm_params: {model: ollama_chat/a:1, api_base: http://localhost:11434}\n"
+	path, _, _ := realRoutes(t, full)
+	var calls []string
+	swapBackend(t, "ollama", wrapBackend{calls: &calls, stopErr: errors.New("boom")})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+	owed, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1")
+	if err == nil || owed {
+		t.Fatalf("StopModelDeferred = (%v, %v), want (false, error)", owed, err)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"ollama/a:1"}) {
+		t.Fatalf("routed = %v, want the route kept", got)
+	}
+}

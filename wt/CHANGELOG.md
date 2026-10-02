@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Stopping several models at once (the post-exit stop picker or `wt stop`)
+  restarts the LiteLLM proxy once at the end instead of once per model (#142).
 - The post-session stale-pricing notice is no longer printed when no model
   takes its price from OpenRouter, e.g. a catalog of only ollama cloud models
   and native agents (#151).

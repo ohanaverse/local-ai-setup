@@ -288,18 +288,40 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 	return b.stop(ctx, e, cfg)
 }
 
-// StopModel stops one running model (modelName is the provider-side name) for
-// the post-exit stop picker. On ollama it unloads just that model; on
-// single-model providers (omlx, mtplx) it stops the provider's sole occupant.
-// The caller must only pass a model live Inventory reported running. After a
-// successful stop the model's LiteLLM route is updated (routes.go).
+// StopModel stops one running model (modelName is the provider-side name). On
+// ollama it unloads just that model; on single-model providers (omlx, mtplx)
+// it stops the provider's sole occupant. The caller must only pass a model
+// live Inventory reported running. After a successful stop the model's
+// LiteLLM route is removed and the proxy restarted (routes.go). It is a batch
+// of one: stopping several models should use StopModelDeferred plus one
+// SettleRoutes instead, as the stop picker does.
 func StopModel(ctx context.Context, cfg *config.Config, providerID, modelName string) error {
-	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
-		return err
+	owed, err := StopModelDeferred(ctx, cfg, providerID, modelName)
+	if owed {
+		SettleRoutes(ctx, cfg)
 	}
-	routeAfterStop(ctx, cfg, providerID, modelName)
-	return nil
+	return err
 }
+
+// StopModelDeferred is StopModel for a batch of stops (issue #142): it stops
+// the model and writes its route removal, but leaves the proxy restart to the
+// caller, which must call SettleRoutes once after the last stop when any call
+// reported restartOwed — including when the batch ends early on Ctrl+C or a
+// failure, since every removal already written still needs that restart. One
+// settling bounce replaces N overlapping restarts, each of which killed the
+// proxy the previous one had just brought up. A failed stop writes nothing.
+func StopModelDeferred(ctx context.Context, cfg *config.Config, providerID, modelName string) (restartOwed bool, err error) {
+	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
+		return false, err
+	}
+	return routeRemove(ctx, cfg, providerID, modelName, restartDeferred), nil
+}
+
+// SettleRoutes restarts the LiteLLM proxy (and waits for it, asynchronously —
+// see WaitPendingRoutes) to apply the route removals a StopModelDeferred batch
+// wrote. It runs detached from ctx, so a batch cut short by Ctrl+C still
+// settles what it wrote.
+func SettleRoutes(ctx context.Context, cfg *config.Config) { bounceRoutes(ctx, cfg) }
 
 // stopModel is StopModel's injectable core, the same shape as stop/start.
 func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, modelName string) error {
