@@ -1,21 +1,31 @@
 ---
 name: ollama-catalog
-description: Sync modelman's ollama cloud models and prices (including off-peak) from https://ollama.com/pricing, and offer to delete pulled cloud models Ollama no longer lists. Use when asked to update/refresh ollama cloud models or ollama pricing, or when the ollama pricing scrape breaks.
+description: Mirror https://ollama.com/pricing into ollama, modelman and LiteLLM — pull and expose cloud models, rm/unregister/unroute ones Ollama no longer lists, and sync prices (including off-peak) into registry.toml and config.yaml. Use when asked to update/refresh ollama cloud models or ollama pricing, or when the ollama pricing scrape breaks.
 ---
 
 # Ollama catalog sync
 
-Keeps `registry.toml`'s ollama cloud entries in line with
-<https://ollama.com/pricing> via `modelman ollama-catalog sync`.
+`modelman ollama-catalog sync` makes three things match
+<https://ollama.com/pricing>: the cloud models in `ollama list`, the
+ollama cloud entries in `registry.toml` along with their prices, and
+LiteLLM's routes in `config.yaml`.
 
+- **Full mirror.** A sync does four things. It adds registry entries for
+  new page models. It `ollama pull`s every page model that isn't pulled.
+  It removes registry entries the page no longer lists, running `ollama rm`
+  first if they're pulled. It also `ollama rm`s pulled cloud stubs that
+  have no registry entry.
+- **LiteLLM mirrors the page.** Every page model is exposed, or
+  re-exposed so that its `config.yaml` row is rebuilt with current prices.
+  wt writes prices only at expose time. A removed entry that was exposed
+  loses its route, and the plan marks these `(exposed — will be unexposed)`.
+  wt restarts the proxy only if `config.yaml` actually changed.
 - **Off-peak prices.** These are stored as a `[[models.cost.time_prices]]`
   row labelled `off-peak`: UTC, weekdays outside 12:00–18:00, and all day
   on weekends.
 - **Real local models are never touched.** `ornith-1.5:35b`, `*-mlx` and
-  similar are left alone. Only pulled cloud stubs (`*:cloud` / `*-cloud`)
-  can be offered for deletion.
-- **Entries missing from the page are only reported.** Registry entries
-  no longer on the page, and not pulled, are listed but never changed.
+  similar are left alone. Only cloud entries and `*:cloud`/`*-cloud` tags
+  are in scope.
 
 Run everything from `modelman/`.
 
@@ -24,41 +34,36 @@ Run everything from `modelman/`.
 1. Snapshot the guide drift surface (root CLAUDE.md rule):
    `git -C .. grep -n "exposed = " docs/guides/ > /tmp/exposed-before.txt`
 2. Dry run: `uv run modelman ollama-catalog sync --dry-run`
-   - Summarize the plan for the user: updates (old → new prices), additions
-     (id + family), delete candidates, and report-only entries.
+   - Summarize the plan for the user: price updates (old → new), registry
+     additions (id + family), pulls, registry removals (call out every
+     `exposed` one), stray `ollama rm`s, and the models that will get a
+     new LiteLLM route ("Not yet exposed").
    - Point out any `warning:` lines, e.g. a subscription disagreement or an
      unrecognized price cell.
    - Ask whether any added model's family should be changed. If so, edit
      `family` in registry.toml after the sync.
-3. Go through each delete candidate with the user, one at a time, before
-   running for real. Deleting a registered model also removes its registry
-   entry and unexposes it.
-4. Real run. Your Bash tool has no TTY, so the CLI's prompts cannot be
-   answered (click reads EOF and aborts). Pass every decision as a flag:
-   - `--yes` applies the registry changes the user approved in the dry
-     run. It never deletes anything.
-   - For deletes, pass `--delete <tag>` once per stub the user chose to
-     delete. Candidates not named are kept. If the user chose none, pass
-     `--no-deletes`.
-   - Example: `uv run modelman ollama-catalog sync --yes --delete old-model:cloud`
-   - Exit 4 with `error: not delete candidates: ...` means the page or
-     `ollama list` changed since the dry run. Nothing was written. Re-run
-     the dry run and ask again.
-5. Re-run the grep from step 1 and `diff` against the snapshot. The sync
-   doesn't change `exposed`, but deletes of exposed models do, so report
-   any drift in the six guides.
-6. New entries are not pulled or exposed. To use one, run
-   `uv run modelman expose ollama/<tag>`, or start it from wt.
+3. Get the user's go-ahead for the whole plan, especially the removals.
+4. Real run: `uv run modelman ollama-catalog sync --yes`. Your Bash tool
+   has no TTY, so the CLI's single confirmation prompt can't be answered
+   (click reads EOF and aborts). Pass `--yes` only once the user has
+   approved the dry-run plan.
+   - Exit 4 means more than half of the ollama cloud entries would be
+     removed. Nothing was written. Check the dry run's page parse with the
+     user, and add `--force` only if they confirm the removals are real.
+5. Re-run the grep from step 1 and `diff` against the snapshot. A sync
+   flips `exposed` both ways (new routes, removals), so report any drift in
+   the six guides.
+6. Check the routes with `wt litellm list`.
 
 ## Exit codes
 
 | Code | Meaning | Do |
 |---|---|---|
-| 0 | done | — |
-| 1 | a delete or the registry save failed | read the error and retry the failed piece |
-| 2 | page fetch failed | check network, retry; or pass `--html <saved page>` |
+| 0 | done (or nothing to do) | — |
+| 1 | a pull, an `ollama rm`, a LiteLLM expose/unexpose, or the registry save failed; the other steps still ran | read the error, then re-run the sync (it only redoes what is still out of sync) |
+| 2 | page fetch failed, or `ollama list` couldn't run; nothing changed | check network / start ollama, retry; or pass `--html <saved page>` |
 | 3 | page shape changed | follow "Repairing the parser" |
-| 4 | invalid request, nothing changed: `--delete` with `--no-deletes`, or a `--delete` tag that is no longer a candidate | fix the flags, or re-run the dry run and ask again |
+| 4 | mass removal refused (> half the cloud entries); nothing changed | verify the parse, then `--force` with the user's OK |
 
 ## Repairing the parser (exit 3)
 

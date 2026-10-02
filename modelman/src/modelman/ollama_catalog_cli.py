@@ -1,9 +1,10 @@
-"""`modelman ollama-catalog` — sync ollama cloud entries with ollama.com/pricing.
+"""`modelman ollama-catalog` — mirror ollama.com/pricing into ollama + modelman.
 
-Exit codes: 0 ok, 1 save/delete failure, 2 page fetch failed, 3 page
-shape changed (raw HTML saved; fix ollama_catalog.parse_pricing), 4 invalid
-request — conflicting flags, or --delete names a tag that is not a delete
-candidate; nothing was changed.
+Exit codes: 0 ok, 1 a pull/rm/registry save failed (other steps still ran),
+2 page fetch failed or `ollama list` unreadable, 3 page shape changed (raw
+HTML saved; fix ollama_catalog.parse_pricing), 4 the plan would remove more
+than half the ollama cloud entries and --force was not given; nothing was
+changed.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import typer
 from .ollama_catalog import (
     CatalogFetchError,
     CatalogParseError,
-    DeleteCandidate,
     apply_sync,
     fetch_pricing_html,
     format_plan,
@@ -27,27 +27,12 @@ from .ollama_catalog import (
 )
 from .queue import QueuedOps
 from .registry import load_registry, locked_registry, model_entry_to_variant
+from .state import load_state
 
 ollama_catalog_app = typer.Typer(
     help="Sync ollama cloud models and prices from ollama.com/pricing.",
     no_args_is_help=True,
 )
-
-
-def _delete(candidate: DeleteCandidate) -> bool:
-    """Delete one pulled cloud stub. Returns True on failure."""
-    if candidate.model_id is None:
-        try:
-            remove_ollama_tag(candidate.tag)
-        except RuntimeError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            return True
-        typer.echo(f"Removed {candidate.tag}.")
-        return False
-    from .main import run_queued_ops  # function-local: main imports this module
-
-    entry = load_registry().model(candidate.model_id)
-    return run_queued_ops(QueuedOps(deletes={entry.id: model_entry_to_variant(entry)}))
 
 
 @ollama_catalog_app.command("sync")
@@ -56,28 +41,20 @@ def sync(
     html: Path | None = typer.Option(  # noqa: B008
         None, "--html", help="Parse a saved pricing page instead of fetching it."
     ),
-    yes: bool = typer.Option(
-        False, "--yes", help="Apply registry changes without confirming (never deletes)."
-    ),
-    delete: list[str] | None = typer.Option(  # noqa: B008
-        None,
-        "--delete",
-        help="Delete this pulled cloud stub without prompting (repeatable). "
-        "When given, delete candidates not named here are kept.",
-    ),
-    no_deletes: bool = typer.Option(
-        False, "--no-deletes", help="Keep every delete candidate without prompting."
+    yes: bool = typer.Option(False, "--yes", help="Apply the plan without confirming."),
+    force: bool = typer.Option(
+        False, "--force", help="Apply even if more than half the cloud entries would be removed."
     ),
 ) -> None:
-    """Add/update ollama cloud entries (incl. off-peak prices) and offer to
-    delete pulled cloud stubs that ollama.com/pricing no longer lists.
+    """Make ollama's pulled cloud models, modelman's ollama cloud entries and
+    LiteLLM's routes match ollama.com/pricing: update prices (incl.
+    off-peak), add/remove registry entries, `ollama pull` what's missing,
+    `ollama rm` what the page no longer lists, and (re)expose every page
+    model so its route carries current prices. Local (non-cloud) models
+    are never touched.
 
-    Deletes are prompted per model (default no) unless --delete/--no-deletes
-    decide them up front — the non-interactive path the ollama-catalog skill
-    uses, since it cannot answer prompts."""
-    if no_deletes and delete:
-        typer.echo("error: --no-deletes and --delete are mutually exclusive", err=True)
-        raise typer.Exit(4)
+    One confirmation covers the whole plan; --yes skips it (the skill's
+    non-interactive path — its Bash tool cannot answer prompts)."""
     if html is not None:
         try:
             text = html.read_text()
@@ -99,51 +76,65 @@ def sync(
         typer.echo(f"raw HTML saved to {saved} — update ollama_catalog.parse_pricing", err=True)
         raise typer.Exit(3) from exc
 
+    # Without it, what to pull and rm is unknowable: refuse rather than
+    # mirror half the plan.
     tags = list_ollama_tags()
     if tags is None:
-        typer.echo("warning: could not run `ollama list`; skipping the delete check", err=True)
+        typer.echo(
+            "error: could not run `ollama list` (is the ollama daemon up?); nothing was changed",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     plan = plan_sync(load_registry(), catalog, tags)
-    typer.echo(format_plan(plan))
+    exposed = {mid for mid, st in load_state().models.items() if st.exposed}
+    typer.echo(format_plan(plan, exposed))
     if dry_run:
         return
-
-    # Checked before any write: a --delete tag that isn't a candidate means
-    # the page or `ollama list` changed since the dry run the user reviewed.
-    stale = sorted(set(delete or []) - {c.tag for c in plan.delete_candidates})
-    if stale:
+    if plan.mass_removal() and not force:
         typer.echo(
-            f"error: not delete candidates: {', '.join(stale)} — the page or `ollama list` "
-            "changed since the dry run; nothing was changed. Re-run with --dry-run.",
+            f"error: {len(plan.removals)} of {plan.cloud_entries} ollama cloud entries would be "
+            "removed — check the page parsed correctly, then re-run with --force. "
+            "Nothing was changed.",
             err=True,
         )
         raise typer.Exit(4)
+    if not (yes or typer.confirm("Apply these changes?", default=True)):
+        return
+
+    # Re-plan against the registry as it is now (the TUI's price-refresh
+    # worker may have written since the plan was printed), and act on that.
+    try:
+        with locked_registry() as fresh:
+            fresh_plan = plan_sync(fresh, catalog, tags)
+            apply_sync(fresh, fresh_plan)
+            deletes = {mid: model_entry_to_variant(fresh.model(mid)) for mid in fresh_plan.removals}
+    except OSError as exc:
+        typer.echo(f"error: failed to save registry: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Updated {len(fresh_plan.updates)} and added {len(fresh_plan.additions)} model(s).")
 
     failed = False
-    if plan.has_registry_changes() and (
-        yes or typer.confirm("Apply these registry changes?", default=True)
-    ):
-        try:
-            with locked_registry() as fresh:
-                fresh_plan = plan_sync(fresh, catalog, tags)
-                apply_sync(fresh, fresh_plan)
-        except OSError as exc:
-            typer.echo(f"error: failed to save registry: {exc}", err=True)
-            raise typer.Exit(1) from exc
-        typer.echo(
-            f"Updated {len(fresh_plan.updates)} and added {len(fresh_plan.additions)} model(s)."
-        )
+    # Routes for every page model, not just new ones: an existing row keeps
+    # the prices it was exposed with until wt rebuilds it. wt restarts the
+    # proxy only when config.yaml changed; removals unexpose via queue.py.
+    ops = QueuedOps(
+        ready=dict.fromkeys(fresh_plan.pulls, True),
+        deletes=deletes,
+        exposes=dict.fromkeys(fresh_plan.routes, True),
+    )
+    if ops.ready or ops.deletes or ops.exposes:
+        from .main import run_queued_ops  # function-local: main imports this module
 
-    for candidate in plan.delete_candidates:
-        if no_deletes:
+        failed = run_queued_ops(ops)
+    for tag in fresh_plan.stray_tags:
+        try:
+            remove_ollama_tag(tag)
+        except RuntimeError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            failed = True
             continue
-        if delete:
-            chosen = candidate.tag in delete
-        else:
-            prompt = f"{candidate.tag} is pulled but no longer on ollama.com/pricing. Delete it?"
-            chosen = typer.confirm(prompt, default=False)
-        if chosen:
-            failed = _delete(candidate) or failed
+        typer.echo(f"Removed {tag}.")
 
     if failed:
         raise typer.Exit(1)

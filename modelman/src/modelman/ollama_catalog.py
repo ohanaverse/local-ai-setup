@@ -261,24 +261,35 @@ class PriceUpdate:
     after: Cost
 
 
-@dataclass(frozen=True)
-class DeleteCandidate:
-    tag: str
-    model_id: str | None  # registry id when the pulled stub is registered
-
-
 @dataclass
 class SyncPlan:
+    """What a sync changes so that `ollama list`'s cloud stubs and the
+    registry's ollama cloud entries both mirror the page."""
+
     catalog_size: int
+    cloud_entries: int = 0  # registry ollama cloud entries before the sync
     updates: list[PriceUpdate] = field(default_factory=list)
     unchanged: list[str] = field(default_factory=list)
     additions: list[ModelEntry] = field(default_factory=list)
-    delete_candidates: list[DeleteCandidate] = field(default_factory=list)
-    unlisted: list[str] = field(default_factory=list)
+    # Registry ids (existing or added) whose tag `ollama list` lacks.
+    pulls: list[str] = field(default_factory=list)
+    # Registry ids of ollama cloud entries the page no longer lists; removed
+    # (and `ollama rm`'d when pulled) whether or not they were pulled.
+    removals: list[str] = field(default_factory=list)
+    # Pulled cloud tags neither on the page nor in the registry.
+    stray_tags: list[str] = field(default_factory=list)
+    # Registry ids of every page model: (re)exposed so each LiteLLM row is
+    # rebuilt with current prices (wt writes prices only at expose time).
+    routes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def has_registry_changes(self) -> bool:
         return bool(self.updates or self.additions)
+
+    def mass_removal(self) -> bool:
+        """More than half the registry's ollama cloud entries would go —
+        more likely a page that parsed wrong than a real catalog change."""
+        return len(self.removals) * 2 > self.cloud_entries
 
 
 def _is_ollama_cloud(m: ModelEntry) -> bool:
@@ -361,10 +372,15 @@ def _shared_subscription(
     return (None, None)
 
 
-def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | None) -> SyncPlan:
+def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str]) -> SyncPlan:
     """Pure: what a sync would change. ``ollama_tags`` is `ollama list`'s
-    NAME column, or None when it could not be read (no delete check)."""
-    plan = SyncPlan(catalog_size=len(catalog.models), warnings=list(catalog.warnings))
+    NAME column."""
+    plan = SyncPlan(
+        catalog_size=len(catalog.models),
+        cloud_entries=sum(1 for m in registry.models if _is_ollama_cloud(m)),
+        warnings=list(catalog.warnings),
+    )
+    pulled = set(ollama_tags)
     matched: set[str] = set()
     now_listed_tags: set[str] = set()
     sub_price, sub_period = _shared_subscription(registry, plan.warnings)
@@ -374,6 +390,7 @@ def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | Non
         entry = _find_entry(registry, cm.name)
         if entry is not None:
             matched.add(entry.id)
+            plan.routes.append(entry.id)
             # Both: the entry's tag and the canonical pulled tag are listed.
             now_listed_tags.update((entry.model_name, cloud_tag(cm.name)))
             after = _with_catalog_prices(entry.cost, cm)
@@ -382,6 +399,8 @@ def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | Non
                 plan.unchanged.append(entry.id)
             else:
                 plan.updates.append(PriceUpdate(entry.id, cm.name, entry.cost, after))
+            if entry.model_name not in pulled:
+                plan.pulls.append(entry.id)
             continue
         tag = cloud_tag(cm.name)
         now_listed_tags.add(tag)
@@ -397,6 +416,7 @@ def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | Non
             plan.warnings.append(f"{new_id} already exists {where}; not adding")
             continue
         ids.add(new_id)
+        plan.routes.append(new_id)
         cost = _with_catalog_prices(
             Cost(subscription_price=sub_price, subscription_period=sub_period), cm
         )
@@ -412,17 +432,16 @@ def plan_sync(registry: Registry, catalog: Catalog, ollama_tags: list[str] | Non
                 extra={CATALOG_NAME_KEY: cm.name},
             )
         )
+        if tag not in pulled:
+            plan.pulls.append(new_id)
 
-    by_tag = {m.model_name: m for m in registry.models if m.provider_id == _OLLAMA}
-    pulled = set(ollama_tags or [])
-    if ollama_tags is not None:
-        for tag in ollama_tags:
-            if is_cloud_tag(tag) and tag not in now_listed_tags:
-                owner = by_tag.get(tag)
-                plan.delete_candidates.append(DeleteCandidate(tag, owner.id if owner else None))
-    for m in registry.models:
-        if _is_ollama_cloud(m) and m.id not in matched and m.model_name not in pulled:
-            plan.unlisted.append(m.id)
+    registered = {m.model_name for m in registry.models if m.provider_id == _OLLAMA}
+    plan.removals = [m.id for m in registry.models if _is_ollama_cloud(m) and m.id not in matched]
+    plan.stray_tags = [
+        t
+        for t in ollama_tags
+        if is_cloud_tag(t) and t not in now_listed_tags and t not in registered
+    ]
     return plan
 
 
@@ -459,27 +478,36 @@ def _fmt(cost: Cost | None) -> str:
     return text
 
 
-def format_plan(plan: SyncPlan) -> str:
+def format_plan(plan: SyncPlan, exposed: set[str] | frozenset[str] = frozenset()) -> str:
+    """``exposed``: registry ids exposed through LiteLLM (state, not
+    registry), so removals that will also be unexposed say so."""
     lines = [
         f"ollama.com/pricing: {plan.catalog_size} models "
         "(prices are input/cached/output per million tokens)"
     ]
-    lines.append(f"Updates ({len(plan.updates)}):")
+    lines.append(f"Price updates ({len(plan.updates)}):")
     lines += [f"  {u.model_id}: {_fmt(u.before)} -> {_fmt(u.after)}" for u in plan.updates]
-    lines.append(f"Additions ({len(plan.additions)}):")
+    lines.append(f"Registry additions ({len(plan.additions)}):")
     lines += [f"  {e.id} [family {e.family}]: {_fmt(e.cost)}" for e in plan.additions]
-    lines.append(f"Unchanged: {len(plan.unchanged)}")
+    lines.append(f"Unchanged prices: {len(plan.unchanged)}")
+    lines.append(f"ollama pull ({len(plan.pulls)}):")
+    lines += [f"  {mid}" for mid in plan.pulls]
     lines.append(
-        f"Pulled but no longer listed — will ask to delete ({len(plan.delete_candidates)}):"
+        f"Registry removals — no longer on ollama.com/pricing; "
+        f"`ollama rm` if pulled ({len(plan.removals)}):"
     )
     lines += [
-        f"  {c.tag}" + (f" ({c.model_id})" if c.model_id else " (not in registry)")
-        for c in plan.delete_candidates
+        f"  {mid}" + (" (exposed — will be unexposed)" if mid in exposed else "")
+        for mid in plan.removals
     ]
+    lines.append(f"ollama rm — pulled, unregistered, off the page ({len(plan.stray_tags)}):")
+    lines += [f"  {tag}" for tag in plan.stray_tags]
+    new_routes = [mid for mid in plan.routes if mid not in exposed]
     lines.append(
-        f"Registry entries no longer on ollama.com/pricing — left as-is ({len(plan.unlisted)}):"
+        f"LiteLLM routes — expose or refresh prices ({len(plan.routes)}; "
+        f"proxy restarts only if config.yaml changes). Not yet exposed ({len(new_routes)}):"
     )
-    lines += [f"  {mid}" for mid in plan.unlisted]
+    lines += [f"  {mid}" for mid in new_routes]
     lines += [f"warning: {w}" for w in plan.warnings]
     return "\n".join(lines)
 

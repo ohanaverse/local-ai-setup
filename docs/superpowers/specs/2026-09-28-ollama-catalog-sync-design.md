@@ -262,3 +262,25 @@ above runs before anything reaches disk.
 - Possibly offer deletion of report-only registry entries (currently
   report-only by decision).
 - Possibly run the price-only half of the sync from `refresh-prices`.
+
+## Amended 2026-10-01: full mirror
+
+The sync above was registry-only: it never pulled, and it only offered to
+delete stubs that were already pulled, so registry entries missing from the
+page were just reported. It now mirrors the page:
+
+- **Pulls**: any page model whose tag isn't in `ollama list` is pulled
+  (`QueuedOps.ready`), including entries added in the same run.
+- **Removals**: every ollama cloud registry entry not on the page is removed
+  (`QueuedOps.deletes`). `ollama rm` runs only if it's pulled, and an
+  exposed entry is unexposed. Pulled cloud tags with no registry entry are
+  `ollama rm`'d.
+- **LiteLLM routes**: every page model is (re)exposed (`QueuedOps.exposes`).
+  wt's `BuildEntry` writes `model_info` cost fields only at expose time, so
+  re-exposing is how changed registry prices reach `config.yaml`. wt
+  restarts the proxy only if the document changed.
+- **One confirmation** (or `--yes`) covers the whole plan. `--delete` and
+  `--no-deletes` are gone.
+- **Safety**: an unreadable `ollama list` exits 2 and changes nothing. A
+  plan that removes more than half the cloud entries exits 4 unless
+  `--force` is given.

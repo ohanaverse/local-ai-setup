@@ -280,7 +280,7 @@ def test_plan_matches_by_catalog_name_after_rename():
     plan = plan_sync(reg, _catalog(_cm("glm-5.3")), ["glm-5.3-renamed:cloud"])
     assert [u.model_id for u in plan.updates] == ["ollama/glm-5.3-renamed:cloud"]
     assert plan.additions == []
-    assert plan.delete_candidates == []
+    assert plan.removals == [] and plan.stray_tags == []
 
 
 def test_plan_additions_family_and_subscription():
@@ -324,31 +324,58 @@ def test_plan_does_not_touch_local_namesake():
     plan = plan_sync(reg, _catalog(_cm("gpt-oss:20b")), ["gpt-oss:20b"])
     assert plan.updates == []
     assert [e.id for e in plan.additions] == ["ollama/gpt-oss:20b-cloud"]
-    assert plan.delete_candidates == []
-    assert plan.unlisted == []
+    assert plan.removals == []
+    assert plan.stray_tags == []
 
 
-def test_plan_delete_candidates_only_pulled_cloud_stubs():
-    from modelman.ollama_catalog import DeleteCandidate, plan_sync
-
-    reg = _registry(_entry("old:cloud"), _entry("gone:cloud"), _entry("keep:cloud"))
-    tags = ["old:cloud", "stray-cloud-only:cloud", "ornith-1.5:35b", "keep:cloud"]
-    plan = plan_sync(reg, _catalog(_cm("keep")), tags)
-    assert plan.delete_candidates == [
-        DeleteCandidate(tag="old:cloud", model_id="ollama/old:cloud"),
-        DeleteCandidate(tag="stray-cloud-only:cloud", model_id=None),
-    ]
-    assert plan.unlisted == ["ollama/gone:cloud"]
-
-
-def test_plan_without_ollama_list():
+def test_plan_pulls_page_models_not_in_ollama_list():
     from modelman.ollama_catalog import plan_sync
 
-    reg = _registry(_entry("old:cloud"), _entry("keep:cloud"))
-    plan = plan_sync(reg, _catalog(_cm("keep")), None)
-    assert plan.delete_candidates == []
-    assert plan.unlisted == ["ollama/old:cloud"]
-    assert [u.model_id for u in plan.updates] == ["ollama/keep:cloud"]
+    reg = _registry(_entry("a:cloud"), _entry("b:cloud"))
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b"), _cm("c")), ["a:cloud"])
+    assert plan.pulls == ["ollama/b:cloud", "ollama/c:cloud"]
+
+
+def test_plan_pulls_entry_tag_when_matched_by_catalog_name():
+    from modelman.ollama_catalog import plan_sync
+
+    renamed = _entry("glm-old:cloud", extra={"catalog_name": "glm-5.3"})
+    plan = plan_sync(_registry(renamed), _catalog(_cm("glm-5.3")), ["glm-old:cloud"])
+    assert plan.pulls == []
+    assert plan.removals == []
+
+
+def test_plan_removes_off_page_cloud_entries_and_stray_stubs():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(
+        _entry("old:cloud"),
+        _entry("gone:cloud"),
+        _entry("keep:cloud"),
+        _entry("ornith-1.5:35b", location="local"),
+    )
+    tags = ["old:cloud", "stray:cloud", "ornith-1.5:35b", "keep:cloud"]
+    plan = plan_sync(reg, _catalog(_cm("keep")), tags)
+    # Pulled or not, an off-page cloud entry goes; local models never do.
+    assert plan.removals == ["ollama/old:cloud", "ollama/gone:cloud"]
+    assert plan.stray_tags == ["stray:cloud"]
+    assert plan.pulls == []
+
+
+def test_plan_mass_removal_guard():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("a:cloud"), _entry("b:cloud"), _entry("c:cloud"))
+    assert not plan_sync(reg, _catalog(_cm("a"), _cm("b")), []).mass_removal()
+    assert plan_sync(reg, _catalog(_cm("a")), []).mass_removal()
+
+
+def test_plan_routes_every_page_model():
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(_entry("a:cloud"), _entry("gone:cloud"), _entry("x:7b", location="local"))
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), [])
+    assert plan.routes == ["ollama/a:cloud", "ollama/b:cloud"]
 
 
 def test_plan_id_collision_with_non_ollama_entry_warns():
@@ -378,10 +405,13 @@ def test_format_plan_mentions_every_section():
     from modelman.ollama_catalog import format_plan, plan_sync
 
     reg = _registry(_entry("a:cloud"), _entry("gone:cloud"), _entry("old:cloud"))
-    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), ["old:cloud"])
-    text = format_plan(plan)
-    for needle in ("ollama/a:cloud", "ollama/b:cloud", "old:cloud", "ollama/gone:cloud"):
+    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), ["old:cloud", "stray:cloud"])
+    text = format_plan(plan, exposed={"ollama/gone:cloud"})
+    for needle in ("ollama/a:cloud", "ollama/b:cloud", "ollama/old:cloud", "stray:cloud"):
         assert needle in text
+    assert "ollama/gone:cloud (exposed — will be unexposed)" in text
+    assert "LiteLLM routes — expose or refresh prices (2;" in text
+    assert "ollama/old:cloud (exposed" not in text
 
 
 def test_list_ollama_tags_parses_and_handles_failure():
@@ -482,7 +512,7 @@ def test_plan_catalog_name_match_keeps_canonical_tag_listed():
     plan = plan_sync(
         reg, _catalog(_cm("gpt-oss:120b")), ["gpt-oss:120b-cloud", "gpt-oss:120b-cloud-custom"]
     )
-    assert plan.delete_candidates == []
+    assert plan.removals == [] and plan.stray_tags == []
 
 
 def test_apply_sync_stamps_utc():

@@ -56,6 +56,18 @@ def seeded(tmp_path, monkeypatch):
     return reg_path
 
 
+@pytest.fixture
+def ops(monkeypatch):
+    """Records the pull/rm work instead of running it."""
+    rec = {"queued": [], "removed": [], "queue_fails": False}
+    monkeypatch.setattr(
+        "modelman.main.run_queued_ops",
+        lambda q: rec["queued"].append(q) or rec["queue_fails"],
+    )
+    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", rec["removed"].append)
+    return rec
+
+
 def _tags(monkeypatch, tags):
     monkeypatch.setattr("modelman.ollama_catalog_cli.list_ollama_tags", lambda: tags)
 
@@ -73,7 +85,7 @@ def test_dry_run_writes_nothing(seeded, monkeypatch):
     assert seeded.read_text() == before
 
 
-def test_sync_applies_updates_and_additions(seeded, monkeypatch):
+def test_sync_applies_updates_and_additions(seeded, monkeypatch, ops):
     from modelman.main import app
     from modelman.registry import load_registry
 
@@ -87,23 +99,67 @@ def test_sync_applies_updates_and_additions(seeded, monkeypatch):
     assert pro.cost.time_prices[0].input_price_per_million == 0.66
     added = reg.model("ollama/gpt-oss:120b-cloud")
     assert added.location == "cloud" and added.extra["catalog_name"] == "gpt-oss:120b"
-    assert reg.model("ollama/retired:cloud")  # report-only, untouched
-    assert "retired:cloud" in result.output
 
 
-def test_sync_confirm_no_leaves_registry(seeded, monkeypatch):
+def test_sync_pulls_missing_and_removes_off_page(seeded, monkeypatch, ops):
+    from modelman.main import app
+
+    _tags(monkeypatch, ["deepseek-v4-pro:cloud", "retired:cloud", "stray:cloud", "qwen3:8b"])
+    result = CliRunner().invoke(app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)])
+    assert result.exit_code == 0, result.output
+    (q,) = ops["queued"]
+    assert "ollama/gpt-oss:120b-cloud" in q.ready  # added this run, then pulled
+    assert "ollama/deepseek-v4-pro:cloud" not in q.ready  # already pulled
+    assert all(q.ready.values())
+    assert list(q.deletes) == ["ollama/retired:cloud"]
+    assert q.deletes["ollama/retired:cloud"]["name"] == "retired:cloud"
+    assert ops["removed"] == ["stray:cloud"]
+
+
+def test_sync_routes_every_page_model(seeded, monkeypatch, ops):
+    """LiteLLM mirrors the page too: every page model (re)exposed so its
+    row carries current prices; removals are left to queue.py's unexpose
+    cascade."""
     from modelman.main import app
 
     _tags(monkeypatch, [])
+    result = CliRunner().invoke(app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)])
+    assert result.exit_code == 0, result.output
+    (q,) = ops["queued"]
+    assert len(q.exposes) == 17 and all(q.exposes.values())
+    assert "ollama/deepseek-v4-pro:cloud" in q.exposes
+    assert "ollama/gpt-oss:120b-cloud" in q.exposes  # added this run
+    assert "ollama/retired:cloud" not in q.exposes
+
+
+def test_sync_marks_exposed_removals(seeded, monkeypatch, ops):
+    from modelman.main import app
+    from modelman.state import ModelState, locked_state
+
+    with locked_state() as state:
+        state.set("ollama/retired:cloud", ModelState(exposed=True))
+    _tags(monkeypatch, [])
+    result = CliRunner().invoke(
+        app, ["ollama-catalog", "sync", "--dry-run", "--html", str(FIXTURE)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "ollama/retired:cloud (exposed — will be unexposed)" in result.output
+
+
+def test_sync_confirm_no_changes_nothing(seeded, monkeypatch, ops):
+    from modelman.main import app
+
+    _tags(monkeypatch, ["stray:cloud"])
     before = seeded.read_text()
     result = CliRunner().invoke(
         app, ["ollama-catalog", "sync", "--html", str(FIXTURE)], input="n\n"
     )
     assert result.exit_code == 0, result.output
     assert seeded.read_text() == before
+    assert ops["queued"] == [] and ops["removed"] == []
 
 
-def test_sync_applies_against_fresh_registry(seeded, monkeypatch):
+def test_sync_applies_against_fresh_registry(seeded, monkeypatch, ops):
     """A model added to registry.toml after the plan was printed (e.g. by
     the TUI's price-refresh worker) must survive the apply."""
     from modelman.main import app
@@ -157,49 +213,19 @@ def test_fetch_failure_exits_2(seeded, monkeypatch):
     assert "offline" in result.output
 
 
-def test_sync_ollama_down_still_updates(seeded, monkeypatch):
+def test_sync_ollama_down_exits_2_and_changes_nothing(seeded, monkeypatch, ops):
     from modelman.main import app
-    from modelman.registry import load_registry
 
     _tags(monkeypatch, None)
+    before = seeded.read_text()
     result = CliRunner().invoke(app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)])
-    assert result.exit_code == 0, result.output
-    assert "ollama list" in result.output  # the skip warning
-    reg = load_registry(seeded)
-    assert reg.model("ollama/deepseek-v4-pro:cloud").cost.input_price_per_million == 1.32
+    assert result.exit_code == 2
+    assert "ollama list" in result.output
+    assert seeded.read_text() == before
+    assert ops["queued"] == [] and ops["removed"] == []
 
 
-def test_yes_never_confirms_deletes(seeded, monkeypatch):
-    from modelman.main import app
-
-    _tags(monkeypatch, ["retired:cloud", "stray:cloud"])
-    queued, removed = [], []
-    monkeypatch.setattr("modelman.main.run_queued_ops", lambda q: queued.append(q) or False)
-    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
-    result = CliRunner().invoke(
-        app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)], input="n\nn\n"
-    )
-    assert result.exit_code == 0, result.output
-    assert queued == [] and removed == []
-
-
-def test_delete_registered_and_unregistered(seeded, monkeypatch):
-    from modelman.main import app
-
-    _tags(monkeypatch, ["retired:cloud", "stray:cloud"])
-    queued, removed = [], []
-    monkeypatch.setattr("modelman.main.run_queued_ops", lambda q: queued.append(q) or False)
-    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
-    result = CliRunner().invoke(
-        app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)], input="y\ny\n"
-    )
-    assert result.exit_code == 0, result.output
-    assert list(queued[0].deletes) == ["ollama/retired:cloud"]
-    assert queued[0].deletes["ollama/retired:cloud"]["name"] == "retired:cloud"
-    assert removed == ["stray:cloud"]
-
-
-def test_delete_failure_exits_1(seeded, monkeypatch):
+def test_stray_rm_failure_exits_1(seeded, monkeypatch, ops):
     from modelman.main import app
 
     _tags(monkeypatch, ["stray:cloud"])
@@ -208,83 +234,58 @@ def test_delete_failure_exits_1(seeded, monkeypatch):
         raise RuntimeError("`ollama rm stray:cloud` failed")
 
     monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", fail)
-    result = CliRunner().invoke(
-        app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)], input="y\n"
-    )
+    result = CliRunner().invoke(app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)])
     assert result.exit_code == 1
     assert "failed" in result.output
 
 
-def test_delete_option_decides_without_prompts(seeded, monkeypatch):
-    """The skill runs the CLI from a non-TTY: --delete names exactly the
-    stubs the user chose, and no delete prompt is shown (stdin is empty)."""
-    from modelman.main import app
-
-    _tags(monkeypatch, ["retired:cloud", "stray:cloud"])
-    queued, removed = [], []
-    monkeypatch.setattr("modelman.main.run_queued_ops", lambda q: queued.append(q) or False)
-    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
-    result = CliRunner().invoke(
-        app,
-        ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE), "--delete", "stray:cloud"],
-    )
-    assert result.exit_code == 0, result.output
-    assert removed == ["stray:cloud"]
-    assert queued == []
-    assert "Delete it?" not in result.output
-
-
-def test_delete_option_for_non_candidate_exits_4_before_writing(seeded, monkeypatch):
-    """A stale --delete means the reviewed dry run no longer matches: refuse
-    before saving any registry change, not after."""
-    from modelman.main import app
-
-    _tags(monkeypatch, ["stray:cloud"])
-    removed = []
-    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
-    before = seeded.read_text()
-    result = CliRunner().invoke(
-        app,
-        [
-            "ollama-catalog",
-            "sync",
-            "--yes",
-            "--html",
-            str(FIXTURE),
-            "--delete",
-            "stray:cloud",
-            "--delete",
-            "gemma4:cloud",
-        ],
-    )
-    assert result.exit_code == 4, result.output
-    assert removed == []
-    assert seeded.read_text() == before
-    assert "gemma4:cloud" in result.output and "not delete candidates" in result.output
-
-
-def test_no_deletes_skips_prompts(seeded, monkeypatch):
-    from modelman.main import app
-
-    _tags(monkeypatch, ["retired:cloud", "stray:cloud"])
-    removed = []
-    monkeypatch.setattr("modelman.ollama_catalog_cli.remove_ollama_tag", removed.append)
-    result = CliRunner().invoke(
-        app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE), "--no-deletes"]
-    )
-    assert result.exit_code == 0, result.output
-    assert removed == []
-    assert "Delete it?" not in result.output
-
-
-def test_no_deletes_conflicts_with_delete(seeded, monkeypatch):
+def test_queued_ops_failure_exits_1(seeded, monkeypatch, ops):
     from modelman.main import app
 
     _tags(monkeypatch, [])
-    before = seeded.read_text()
-    result = CliRunner().invoke(
-        app,
-        ["ollama-catalog", "sync", "--html", str(FIXTURE), "--no-deletes", "--delete", "x:cloud"],
+    ops["queue_fails"] = True
+    result = CliRunner().invoke(app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)])
+    assert result.exit_code == 1
+
+
+@pytest.fixture
+def mostly_retired(seeded):
+    from modelman.registry import ModelEntry, load_registry, save_registry
+
+    reg = load_registry(seeded)
+    reg.models.append(
+        ModelEntry(
+            id="ollama/retired2:cloud",
+            family="retired",
+            provider_id="ollama",
+            model_name="retired2:cloud",
+            location="cloud",
+            source="curated",
+        )
     )
-    assert result.exit_code == 4
-    assert seeded.read_text() == before
+    save_registry(reg, seeded)
+    return seeded
+
+
+def test_mass_removal_exits_4_before_writing(mostly_retired, monkeypatch, ops):
+    from modelman.main import app
+
+    _tags(monkeypatch, [])
+    before = mostly_retired.read_text()
+    result = CliRunner().invoke(app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)])
+    assert result.exit_code == 4, result.output
+    assert "--force" in result.output
+    assert mostly_retired.read_text() == before
+    assert ops["queued"] == []
+
+
+def test_mass_removal_force_applies(mostly_retired, monkeypatch, ops):
+    from modelman.main import app
+
+    _tags(monkeypatch, [])
+    result = CliRunner().invoke(
+        app, ["ollama-catalog", "sync", "--yes", "--force", "--html", str(FIXTURE)]
+    )
+    assert result.exit_code == 0, result.output
+    (q,) = ops["queued"]
+    assert sorted(q.deletes) == ["ollama/retired2:cloud", "ollama/retired:cloud"]
