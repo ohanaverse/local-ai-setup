@@ -15,8 +15,8 @@ provider probes, and their routes are added and removed automatically by
 wt litellm status                 # routing on/off + url + api_key_set
 wt litellm expose <id>...         # add routes (restarts the proxy on change)
 wt litellm unexpose <id>...       # remove routes
-wt litellm sync                   # make local routes match the running models
-wt litellm list                   # routed ids currently in config.yaml
+wt litellm sync [--dry-run]       # route every registry cloud model + the running local models
+wt litellm list                   # routed ids in config.yaml (hand-written rows marked)
 ```
 
 Native models (`claude/native`, `copilot/native`) are always shown and do not

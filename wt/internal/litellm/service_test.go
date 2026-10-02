@@ -793,8 +793,8 @@ func TestSyncPrunesStaleDuplicateOfDesiredModel(t *testing.T) {
 	for _, oc := range res.Outcomes {
 		got = append(got, oc.ID+":"+oc.Action)
 	}
-	if s := strings.Join(got, ","); s != id+":routed" {
-		t.Fatalf("outcomes = %s, want one routed line for the duplicated id", s)
+	if s := strings.Join(got, ","); s != id+":rewritten" {
+		t.Fatalf("outcomes = %s, want one rewritten line for the duplicated id", s)
 	}
 	f2, _ := Open(p)
 	rows := readRows(t, p)
@@ -1026,5 +1026,64 @@ func TestSyncStaleRemoveSparesHandWrittenDuplicate(t *testing.T) {
 	got := readRows(t, p)
 	if !slices.Contains(got, RowInfo{"foo/x", false}) || slices.Contains(got, RowInfo{"foo/x", true}) {
 		t.Fatalf("rows = %v, want only the hand-written foo/x", got)
+	}
+}
+
+// TestSyncReportsRewriteSeparately pins that a changed wt row is a rewrite,
+// not a new route: the dry-run plan lists it under Rewrite (a subset of Add,
+// like Adopt) and the real sync reports it as "rewritten".
+func TestSyncReportsRewriteSeparately(t *testing.T) {
+	o, _, _ := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_key: sk-test}
+    model_info: {input_cost_per_token: 9, wt_managed: true}
+`)
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Rewrite, []string{"openrouter/x/y"}) || !slices.Contains(plan.Add, "openrouter/x/y") || len(plan.Adopt) != 0 {
+		t.Fatalf("plan = %+v, want openrouter/x/y as a rewrite only", plan)
+	}
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(res.Outcomes, func(oc Outcome) bool { return oc.ID == "openrouter/x/y" && oc.Action == "rewritten" }) {
+		t.Fatalf("outcomes = %+v, want openrouter/x/y rewritten", res.Outcomes)
+	}
+}
+
+// TestSyncResolvesFailingSecretOncePerProvider pins that a failing exec:
+// secret_ref runs once per sync, not once per cloud model: failures are never
+// cached by config.ResolveSecret, and each run may take the full exec timeout,
+// so per-model resolution turned one broken helper into minutes of stall.
+func TestSyncResolvesFailingSecretOncePerProvider(t *testing.T) {
+	dir := t.TempDir()
+	count := dir + "/count"
+	script := dir + "/fail.sh"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho x >> "+count+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.Providers[2].Auth.SecretRef = "exec:" + script
+	cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/a/b", ProviderID: "openrouter", ModelName: "a/b", Location: config.LocationCloud})
+	o, _, _ := opts(t, "model_list: []\n")
+	res, err := Sync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed []string
+	for _, oc := range res.Outcomes {
+		if oc.Err != nil {
+			failed = append(failed, oc.ID)
+		}
+	}
+	if !slices.Equal(failed, []string{"openrouter/x/y", "openrouter/a/b"}) {
+		t.Fatalf("failed ids = %v, want both openrouter models", failed)
+	}
+	b, _ := os.ReadFile(count)
+	if n := strings.Count(string(b), "x"); n != 1 {
+		t.Fatalf("helper ran %d times, want 1", n)
 	}
 }

@@ -317,17 +317,12 @@ func (f *File) modelList() (*yaml.Node, error) {
 	return seq, nil
 }
 
-// RoutedIDs returns every model_list row's model_name, in file order.
+// RoutedIDs returns every model_list row's model_name, in file order — the
+// ids of Rows, kept for tests that only compare names.
 func (f *File) RoutedIDs() []string {
-	ml := f.modelListSeq()
-	if ml == nil {
-		return nil
-	}
 	var ids []string
-	for _, row := range ml.Content {
-		if id := rowName(row); id != "" {
-			ids = append(ids, id)
-		}
+	for _, r := range f.Rows() {
+		ids = append(ids, r.ID)
 	}
 	return ids
 }

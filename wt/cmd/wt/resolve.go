@@ -126,7 +126,7 @@ func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) stri
 	route, err := cfg.ResolveRoute(row.Model, agents.ProtocolsFor(agent))
 	switch {
 	case row.RefusedByRoute(route, err):
-		return "discovered model " + row.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (wt litellm off) to use it"
+		return row.RouteRefusal(route, err)
 	case err != nil && row.Action() == catalog.ActionStart:
 		return row.Model.ID + " cannot be launched: " + err.Error()
 	}
@@ -146,7 +146,7 @@ func launchableModels(cfg *config.Config, agent string, rows []catalog.Row) []co
 		if r.Action() != catalog.ActionLaunch {
 			continue
 		}
-		if r.Discovered && pickerBlockedReason(cfg, agent, r) != "" {
+		if (r.Discovered || r.Unmapped) && pickerBlockedReason(cfg, agent, r) != "" {
 			continue
 		}
 		out = append(out, r.Model)

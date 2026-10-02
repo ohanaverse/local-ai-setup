@@ -282,13 +282,15 @@ func CloudModels(cfg *config.Config) []config.Model {
 
 // SyncPlan is what one sync changes. Add holds desired ids whose row is
 // missing or differs (each written with the marker); Adopt is the subset of
-// Add that replaces an unmarked row; Remove holds owned rows no longer
+// Add that replaces an unmarked row, Rewrite the subset that replaces a
+// changed wt row (a price or credential change, not a new route); Remove holds owned rows no longer
 // desired; Errors holds desired ids whose row could not be built.
 type SyncPlan struct {
-	Add    []string
-	Adopt  []string
-	Remove []string
-	Errors []Outcome
+	Add     []string
+	Adopt   []string
+	Rewrite []string
+	Remove  []string
+	Errors  []Outcome
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -303,8 +305,9 @@ type SyncPlan struct {
 // Built rows for plan.Add are returned alongside the plan: Sync's write path
 // reuses them instead of preparing every changed row a second time.
 func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPlan, map[string]*yaml.Node) {
+	localModels := LocalModels(cfg)
 	local := map[string]bool{}
-	for _, m := range LocalModels(cfg) {
+	for _, m := range localModels {
 		local[m.ID] = true
 	}
 	managed := map[string]bool{}
@@ -326,7 +329,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 			gap[m.ID] = true
 		}
 	}
-	for _, m := range LocalModels(cfg) {
+	for _, m := range localModels {
 		if slices.Contains(running, m.ID) && !slices.Contains(o.Untouched, m.ID) {
 			desired = append(desired, m.ID)
 		}
@@ -338,12 +341,22 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	// load-balances across duplicates, so a value-equal FIRST row still needs
 	// SetRow when a second row shares the id (SetRow replaces the first row
 	// and drops the rest). Only a single value-equal row is a clean no-op.
+	rows := f.Rows()
 	rowsPerID := map[string]int{}
-	for _, r := range f.Rows() {
+	for _, r := range rows {
 		rowsPerID[r.ID]++
 	}
+	// credErr resolves each SecretRef provider's credentials once per plan.
+	// A failure is never cached by config.ResolveSecret and an exec: helper
+	// may take its full timeout, so resolving per model multiplied one broken
+	// helper by the provider's model count.
+	credErr := map[string]error{}
 	for _, id := range desired {
 		want[id] = true
+		if err := providerCredErr(cfg, id, credErr); err != nil {
+			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: fmt.Errorf("model %q: %w", id, err)})
+			continue
+		}
 		row, err := prepare(cfg, id, true)
 		if err != nil {
 			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: err})
@@ -362,7 +375,11 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 		}
 		built[id] = row
 		plan.Add = append(plan.Add, id)
-		if old != nil && !IsManaged(old) {
+		switch {
+		case old == nil:
+		case IsManaged(old):
+			plan.Rewrite = append(plan.Rewrite, id)
+		default:
 			plan.Adopt = append(plan.Adopt, id)
 		}
 	}
@@ -382,7 +399,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	// this loop by name and keeps its route, where moving that assignment below
 	// the error branch would let one transient build failure delete a live route.
 	seen := map[string]bool{}
-	for _, r := range f.Rows() {
+	for _, r := range rows {
 		if want[r.ID] || gap[r.ID] || slices.Contains(o.Untouched, r.ID) || seen[r.ID] {
 			continue
 		}
@@ -403,17 +420,41 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 		if touchesLocal {
 			if fresh, ok := runRecheck(o); ok {
 				plan.Remove = slices.DeleteFunc(plan.Remove, func(id string) bool { return local[id] && slices.Contains(fresh, id) })
-				// The same predicate the Add side gets, so Adopt stays the subset
-				// of Add that SyncPlan documents: an id pruned from Add must not
-				// stay in Adopt, or the plan describes an adoption it will not
-				// perform.
+				// The same predicate the Add side gets, so Adopt and Rewrite stay
+				// the subsets of Add that SyncPlan documents: an id pruned from
+				// Add must not stay in either, or the plan describes a change it
+				// will not perform.
 				stoppedAgain := func(id string) bool { return local[id] && !slices.Contains(fresh, id) }
 				plan.Add = slices.DeleteFunc(plan.Add, stoppedAgain)
 				plan.Adopt = slices.DeleteFunc(plan.Adopt, stoppedAgain)
+				plan.Rewrite = slices.DeleteFunc(plan.Rewrite, stoppedAgain)
 			}
 		}
 	}
 	return plan, built
+}
+
+// providerCredErr is id's provider's credential error, resolved at most once
+// per memo; nil for providers whose policy takes no secret_ref (prepare
+// reports any other problem).
+func providerCredErr(cfg *config.Config, id string, memo map[string]error) error {
+	i := config.IndexModelByID(cfg.Models, id)
+	if i < 0 {
+		return nil
+	}
+	p := cfg.ProviderByID(cfg.Models[i].ProviderID)
+	if p == nil {
+		return nil
+	}
+	if pol, ok := PolicyFor(p.ID); !ok || !pol.SecretRef {
+		return nil
+	}
+	err, seen := memo[p.ID]
+	if !seen {
+		_, err = providerAPIKey(*p)
+		memo[p.ID] = err
+	}
+	return err
 }
 
 // PlanSync reports what Sync would change without writing (`sync --dry-run`).
@@ -479,7 +520,8 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // made under the config.yaml lock. A config.yaml whose model_list is not a
 // list is refused (ErrInvalid) before anything is planned or written, whatever
 // the plan turns out to be — PlanSync checks the same shape, so a dry run and a
-// real sync always agree. Outcome actions: "routed", "adopted", "unrouted";
+// real sync always agree. Outcome actions: "routed", "adopted", "rewritten",
+// "unrouted";
 // per-id build failures are reported with Err.
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	o.SkipReadyGate = true
@@ -506,9 +548,13 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	for i := range res.Outcomes {
 		switch res.Outcomes[i].Action {
 		case "exposed":
-			res.Outcomes[i].Action = "routed"
-			if slices.Contains(plan.Adopt, res.Outcomes[i].ID) {
+			switch id := res.Outcomes[i].ID; {
+			case slices.Contains(plan.Adopt, id):
 				res.Outcomes[i].Action = "adopted"
+			case slices.Contains(plan.Rewrite, id):
+				res.Outcomes[i].Action = "rewritten"
+			default:
+				res.Outcomes[i].Action = "routed"
 			}
 		case "unexposed":
 			res.Outcomes[i].Action = "unrouted"

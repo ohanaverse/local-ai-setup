@@ -20,6 +20,7 @@
     "plan": {
       "add": ["openrouter/x/y"],
       "adopt": ["ollama/gemma:9b"],
+      "rewrite": [],
       "remove": ["openrouter/old"],
       "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}]
     },

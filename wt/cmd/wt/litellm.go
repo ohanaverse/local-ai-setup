@@ -81,10 +81,11 @@ func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun boo
 type syncPlanJSON struct {
 	DryRun bool `json:"dry_run"`
 	Plan   struct {
-		Add    []string             `json:"add"`
-		Adopt  []string             `json:"adopt"`
-		Remove []string             `json:"remove"`
-		Errors []litellmOutcomeJSON `json:"errors"`
+		Add     []string             `json:"add"`
+		Adopt   []string             `json:"adopt"`
+		Rewrite []string             `json:"rewrite"`
+		Remove  []string             `json:"remove"`
+		Errors  []litellmOutcomeJSON `json:"errors"`
 	} `json:"plan"`
 	Warnings []string `json:"warnings"`
 }
@@ -96,6 +97,7 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []str
 	doc := syncPlanJSON{DryRun: true, Warnings: append([]string{}, warnings...)}
 	doc.Plan.Add = append([]string{}, plan.Add...)
 	doc.Plan.Adopt = append([]string{}, plan.Adopt...)
+	doc.Plan.Rewrite = append([]string{}, plan.Rewrite...)
 	doc.Plan.Remove = append([]string{}, plan.Remove...)
 	doc.Plan.Errors = []litellmOutcomeJSON{}
 	for _, e := range plan.Errors {
@@ -108,8 +110,11 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []str
 	} else {
 		for _, id := range plan.Add {
 			verb := "route"
-			if slices.Contains(plan.Adopt, id) {
+			switch {
+			case slices.Contains(plan.Adopt, id):
 				verb = "adopt"
+			case slices.Contains(plan.Rewrite, id):
+				verb = "rewrite"
 			}
 			fmt.Fprintf(out, "%s: would %s\n", id, verb)
 		}
@@ -160,7 +165,7 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 	// a server that refused the connection: nothing is listening, so nothing
 	// is running, and its routes are stale and must go (the case a provider
 	// stopped outside wt leaves behind).
-	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap)
+	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap, routedIDSet())
 	o := litellm.Options{
 		Untouched: untouched,
 		// The probe above predates the config.yaml lock; a start that lands
@@ -192,11 +197,13 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 //
 // A family whose server REFUSED the connection gets no untouched entries
 // (nothing is listening, so nothing is running and its local routes are
-// stale), but it does get a warning: sync still routes its registry cloud
-// models, which dial the same refused daemon through config.yaml — so their
-// routes were knowingly left in place and the failure must be reported, not
-// silently swallowed.
-func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot) (untouched, warnings []string) {
+// stale). It gets a warning only when that matters: a local route of the
+// family is in config.yaml (routed holds its ids) and is about to go, or the
+// family serves registry cloud models, which sync still routes though they
+// dial the same refused daemon — a failure that must be reported, not
+// swallowed. A stopped provider with neither is the everyday case and stays
+// silent.
+func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, routed map[string]bool) (untouched, warnings []string) {
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
 		fam := localmodels.Family(m.ProviderID)
@@ -233,10 +240,40 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot) (un
 		}
 	}
 	sort.Strings(downs)
+	inFamily := func(f string, ms []config.Model, keep func(config.Model) bool) bool {
+		return slices.ContainsFunc(ms, func(m config.Model) bool { return localmodels.Family(m.ProviderID) == f && keep(m) })
+	}
 	for _, f := range downs {
-		warnings = append(warnings, fmt.Sprintf("provider %q refused the probe connection: nothing is listening there, so its local routes are treated as stale; its cloud routes were left in place", f))
+		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { return routed[m.ID] })
+		cloud := inFamily(f, litellm.CloudModels(cfg), func(config.Model) bool { return true })
+		if !local && !cloud {
+			continue
+		}
+		msg := fmt.Sprintf("provider %q refused the probe connection: nothing is listening there", f)
+		if local {
+			msg += ", so its local routes are treated as stale"
+		}
+		if cloud {
+			msg += "; its cloud models stay routed but fail until it is back up"
+		}
+		warnings = append(warnings, msg)
 	}
 	return untouched, warnings
+}
+
+// routedIDSet is the set of model_name ids in config.yaml, for the probe
+// warnings. An unreadable file yields an empty set: sync itself then refuses
+// the file with the real error.
+func routedIDSet() map[string]bool {
+	out := map[string]bool{}
+	f, err := litellm.Open(litellm.DefaultPath())
+	if err != nil {
+		return out
+	}
+	for _, r := range f.Rows() {
+		out[r.ID] = true
+	}
+	return out
 }
 
 // runningIDs lists the registered model ids a probe found running.
@@ -269,12 +306,14 @@ func runLitellmList(out io.Writer, asJSON bool) error {
 	if asJSON {
 		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": jrows})
 	}
+	// A wt row prints as its bare id, as list always has, so `grep -x <id>`
+	// keeps working; only a hand-written row carries a marker.
 	for _, r := range rows {
-		owner := "wt"
-		if !r.Managed {
-			owner = "hand-written"
+		if r.Managed {
+			fmt.Fprintln(out, r.ID)
+		} else {
+			fmt.Fprintf(out, "%s\t(hand-written)\n", r.ID)
 		}
-		fmt.Fprintf(out, "%s\t%s\n", r.ID, owner)
 	}
 	return nil
 }

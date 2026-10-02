@@ -106,14 +106,14 @@ func walk(cfg *config.Config, includeStart bool) []Candidate {
 			if act == catalog.ActionBlock || (act == catalog.ActionStart && !includeStart) {
 				continue
 			}
-			// Keep the exact route rules the old loop applied: a discovered row
-			// routed through LiteLLM is refused (smoke must not advertise what a
+			// Keep the exact route rules the old loop applied: a discovered or
+			// Unmapped row routed through LiteLLM is refused (smoke must not advertise what a
 			// real launch refuses); a start row whose route errors is refused
 			// like pickerBlockedReason does. A launch row with a route error
 			// stays eligible (the picker reports it on Enter).
-			if r.Discovered || act == catalog.ActionStart {
+			if r.Discovered || r.Unmapped || act == catalog.ActionStart {
 				route, rerr := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name))
-				if r.Discovered && r.RefusedByRoute(route, rerr) {
+				if r.RefusedByRoute(route, rerr) {
 					continue
 				}
 				if act == catalog.ActionStart && rerr != nil {
