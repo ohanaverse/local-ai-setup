@@ -257,10 +257,12 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 // and skips the remainder. Returns nil, a "N of M stops failed" error, or a
 // "cancelled" error.
 //
-// The stops only write their route removals; one settle after the loop
-// restarts the LiteLLM proxy once for the whole batch (issue #142) — on every
-// exit path, cancel and failure included, since removals already written
-// still need that restart to take effect.
+// The stops only write their route removals; one settle from the deferred tail
+// of the loop restarts the LiteLLM proxy once for the whole batch (issue #142).
+// The defer runs on every exit path, cancel and failure included, but calls the
+// settle only when some stop owed a restart: removals already written still
+// need that restart to take effect, and a batch that wrote nothing must not
+// bounce the proxy at all.
 func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDeps, entries []localmodels.Entry) error {
 	stoppedFamily := map[string]bool{}
 	failed := 0
@@ -307,6 +309,13 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 }
 
 // StopEntries runs stopEntries under its own Ctrl+C/SIGTERM context.
+//
+// The batch's settle starts the proxy restart asynchronously (issue #142), so
+// the caller owes a lifecycle.WaitPendingRoutes() before the process exits — a
+// goroutine does not survive main returning, and a restart killed mid-flight
+// leaves the proxy serving the removed routes — or before it hands the proxy to
+// anything else. Its one caller, `wt stop`, reaches the wait from main's exit
+// path; the picker's own call to stopEntries exits the same way.
 func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) error {
 	ctx, cancel := stopSignalCtx()
 	defer cancel()

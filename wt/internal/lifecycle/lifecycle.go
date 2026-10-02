@@ -288,28 +288,19 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 	return b.stop(ctx, e, cfg)
 }
 
-// StopModel stops one running model (modelName is the provider-side name). On
-// ollama it unloads just that model; on single-model providers (omlx, mtplx)
-// it stops the provider's sole occupant. The caller must only pass a model
-// live Inventory reported running. After a successful stop the model's
-// LiteLLM route is removed and the proxy restarted (routes.go). It is a batch
-// of one: stopping several models should use StopModelDeferred plus one
-// SettleRoutes instead, as the stop picker does.
-func StopModel(ctx context.Context, cfg *config.Config, providerID, modelName string) error {
-	owed, err := StopModelDeferred(ctx, cfg, providerID, modelName)
-	if owed {
-		SettleRoutes(ctx, cfg)
-	}
-	return err
-}
-
-// StopModelDeferred is StopModel for a batch of stops (issue #142): it stops
-// the model and writes its route removal, but leaves the proxy restart to the
-// caller, which must call SettleRoutes once after the last stop when any call
-// reported restartOwed — including when the batch ends early on Ctrl+C or a
-// failure, since every removal already written still needs that restart. One
-// settling bounce replaces N overlapping restarts, each of which killed the
-// proxy the previous one had just brought up. A failed stop writes nothing.
+// StopModelDeferred stops one running model (modelName is the provider-side
+// name) and writes its route removal, leaving the LiteLLM proxy restart to the
+// caller (issue #142). On ollama it unloads just that model; on single-model
+// providers (omlx, mtplx) it stops the provider's sole occupant. The caller
+// must only pass a model live Inventory reported running.
+//
+// restartOwed reports that a removal was written and the proxy therefore still
+// needs its restart: the caller must call SettleRoutes once after the last stop
+// of a batch when any call owed one — including when the batch ends early on
+// Ctrl+C or a failure, since every removal already written still needs that
+// restart. One settling bounce replaces N overlapping restarts, each of which
+// killed the proxy the previous one had just brought up. A failed stop writes
+// nothing and owes nothing.
 func StopModelDeferred(ctx context.Context, cfg *config.Config, providerID, modelName string) (restartOwed bool, err error) {
 	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
 		return false, err
@@ -319,11 +310,14 @@ func StopModelDeferred(ctx context.Context, cfg *config.Config, providerID, mode
 
 // SettleRoutes restarts the LiteLLM proxy (and waits for it, asynchronously —
 // see WaitPendingRoutes) to apply the route removals a StopModelDeferred batch
-// wrote. It runs detached from ctx, so a batch cut short by Ctrl+C still
-// settles what it wrote.
+// wrote. It rewrites nothing: the removals are already in config.yaml, and
+// every caller reaches it because some StopModelDeferred reported restartOwed.
+// It runs detached from ctx, so a batch cut short by Ctrl+C still settles what
+// it wrote.
 func SettleRoutes(ctx context.Context, cfg *config.Config) { bounceRoutes(ctx, cfg) }
 
-// stopModel is StopModel's injectable core, the same shape as stop/start.
+// stopModel is StopModelDeferred's injectable core, the same shape as
+// stop/start.
 func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, modelName string) error {
 	b := e.backends[localmodels.Family(providerID)]
 	if b == nil {
@@ -341,9 +335,10 @@ func Startable(providerID string) bool {
 }
 
 // CanStop reports whether wt has a stop backend for providerID's family, so a
-// picker never offers a model (e.g. one on mlx_lm_server) that StopModel would
-// refuse with *UnsupportedError. Every backend implements both start and
-// stop, so this is Startable under its stop-side name.
+// picker never offers a model (e.g. one on mlx_lm_server) that
+// StopModelDeferred would refuse with *UnsupportedError. Every backend
+// implements both start and stop, so this is Startable under its stop-side
+// name.
 func CanStop(providerID string) bool { return Startable(providerID) }
 
 // SingleModel reports whether providerID's family serves one model per

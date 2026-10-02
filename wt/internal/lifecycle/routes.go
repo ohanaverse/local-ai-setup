@@ -48,15 +48,6 @@ func WaitPendingRoutes() {
 const (
 	// proxyReadyTimeout bounds the wait for the proxy after a route change.
 	proxyReadyTimeout = 30 * time.Second
-	// settleTimeout bounds the SYNCHRONOUS half of bounceRoutes: the
-	// config.yaml write, whose lock wait takes the context bounceRoutes hands
-	// to litellm.Options.Ctx. Without it a contended flock (another wt, or
-	// modelman, holding <config>.lock) blocks this cleanup path forever.
-	// It deliberately does NOT bound the proxy restart: applyAndReport's
-	// goroutine derives context.WithoutCancel(ctx) for itself, which strips
-	// this deadline along with cancellation, so bounceRoutes' defer cancel()
-	// cannot cut the restart short.
-	settleTimeout = 15 * time.Second
 	// proxyAliveTimeout bounds the single probe taken just before a restart.
 	// Short on purpose: it is paid on every restart. It only has to
 	// tell "nothing there" (refused: no wait) from "something there" (any
@@ -138,26 +129,23 @@ func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ loca
 	return routeRemove(ctx, cfg, occ.ProviderID, occ.ModelName, restartDeferred)
 }
 
-// bounceRoutes restarts the proxy (and waits for it) to settle deferred route
-// writes when the start that followed them failed or found nothing to route.
-// It runs on a context detached from ctx, and still needs to even though
-// applyAndReport's async restart detaches again for itself: the common trigger
-// is the user's Ctrl+C, and applyAndReport's SYNCHRONOUS half — the config.yaml
-// write — takes this ctx as litellm.Options.Ctx. An already-cancelled one makes
-// WithLock fail instantly on any lock contention, so the route removal this
-// exists to settle would never be written at all. Detaching twice is harmless.
+// bounceRoutes settles route writes a deferred write already made — when the
+// start that followed them failed or found nothing to route, or when a batch of
+// stops wrote its removals and owed the bounce (StopModelDeferred/SettleRoutes).
+// It restarts the proxy and waits for it; it writes nothing.
 //
-// The detached context is bounded by settleTimeout, which bounds exactly one
-// thing: that synchronous config.yaml write's lock wait. The defer cancel()
-// fires as soon as bounceRoutes returns — before the async restart has even
-// begun — but the restart does not run on this context: applyAndReport's
-// goroutine derives its own context.WithoutCancel(ctx), which strips both the
-// cancellation and the deadline. Deleting the wrapper (as the async change
-// first did) leaves the lock wait unbounded on this cleanup path.
+// That is deliberate. The removals are already in config.yaml — every caller
+// reaches here only after a deferred write succeeded, which is exactly what
+// restartOwed means — so re-entering applyAndReport with an empty change would
+// buy a second locked read and parse of the file it had just written: the one
+// cost the batching change added to a single-model stop, even though it is the
+// batch case (N removals, one bounce) that the change exists for (#142). It
+// also means the settle
+// has no config.yaml write whose lock wait needs bounding: the restart is
+// asynchronous and detached (bounceProxyAsync), so a contended flock cannot
+// hang this path.
 func bounceRoutes(ctx context.Context, cfg *config.Config) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
-	defer cancel()
-	applyAndReport(ctx, cfg, nil, nil, restartForced)
+	bounceProxyAsync(ctx, cfg)
 }
 
 // familyModelIDs lists the LiteLLM-managed local model ids whose provider
@@ -199,9 +187,7 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 		// with NoRestart set, which would put the bounce back on this path.
 		NoRestart: true,
 		// The caller's ctx bounds the config.yaml lock wait too, so a
-		// contended lock cannot outlive a caller that set a deadline —
-		// bounceRoutes passes a settleTimeout-bounded context for exactly
-		// this reason.
+		// contended lock cannot outlive a caller that set a deadline.
 		Ctx: ctx,
 	})
 	if err != nil {
@@ -221,6 +207,17 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 	if !restart {
 		return res.Changed
 	}
+	bounceProxyAsync(ctx, cfg)
+	return res.Changed
+}
+
+// bounceProxyAsync restarts the LiteLLM proxy — and, when one was listening,
+// waits for it to come back — asynchronously, on a goroutine tracked by routeWG
+// / WaitPendingRoutes. It is the restart half shared by every path that decides
+// to bounce: applyAndReport after a route write changed the file (or a forced
+// mode asked for a bounce anyway), and bounceRoutes to settle writes an earlier
+// deferred call already made.
+func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 	url := cfg.LitellmBaseURL()
 	routeWG.Add(1)
 	go func() {
@@ -262,5 +259,4 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 			}
 		}
 	}()
-	return res.Changed
 }
