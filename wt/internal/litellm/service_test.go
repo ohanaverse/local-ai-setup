@@ -626,11 +626,16 @@ func TestSyncCarriesUserButNotWTParams(t *testing.T) {
 	if params["api_base"] != "http://localhost:11434" {
 		t.Errorf("api_base = %v, want the registry's http://localhost:11434", params["api_base"])
 	}
-	// The other two wt-authored keys are pinned the same way, and they need the
-	// pin: a stale model is the string LiteLLM actually dials, so a hand-written
-	// one surviving a rewrite would leave wt believing it owns a row that
-	// routes somewhere else. A mutation that dropped model/api_key from
-	// wtParamKeys survived the whole suite before this assertion existed.
+	// The other two wt-authored keys are pinned the same way, but they do
+	// different work. api_key is the half the rule's mutation actually
+	// exercises: dropping it from wtParamKeys let a hand-written key reach the
+	// row, and that survived the whole suite before this assertion existed. The
+	// model pin does not catch that mutation — BuildEntry emits model
+	// unconditionally, so carryUserParams can never find it missing — it is the
+	// backstop for the day that changes (model made conditional in BuildEntry,
+	// or the carry allowed to overwrite an existing key): model is the string
+	// LiteLLM dials, and a rebuild that carried a stale one would leave wt
+	// believing it owns a row that routes elsewhere.
 	if params["model"] != "ollama_chat/gemma:9b" {
 		t.Errorf("model = %v, want the registry's ollama_chat/gemma:9b", params["model"])
 	}
