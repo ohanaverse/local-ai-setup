@@ -70,8 +70,8 @@ type Options struct {
 }
 
 // Outcome is one requested id's result. Action is "exposed" or "unexposed"
-// (expose/unexpose) — or, from Sync, "routed", "adopted" or "unrouted"; Err is
-// set when the id was rejected.
+// (expose/unexpose) — or, from Sync, "routed", "adopted", "rewritten" or
+// "unrouted"; Err is set when the id was rejected.
 type Outcome struct {
 	ID     string
 	Action string
@@ -521,8 +521,7 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // list is refused (ErrInvalid) before anything is planned or written, whatever
 // the plan turns out to be — PlanSync checks the same shape, so a dry run and a
 // real sync always agree. Outcome actions: "routed", "adopted", "rewritten",
-// "unrouted";
-// per-id build failures are reported with Err.
+// "unrouted"; per-id build failures are reported with Err.
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	o.SkipReadyGate = true
 	var plan SyncPlan

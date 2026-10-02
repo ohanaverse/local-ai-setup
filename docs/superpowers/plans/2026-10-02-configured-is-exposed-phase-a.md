@@ -542,9 +542,9 @@ git commit -m "feat(wt): stamp model_info.wt_managed on every LiteLLM row wt wri
 - Consumes: `IsManaged`, `Rows`, `row`, `carryPreservedParams` (Task 2).
 - Produces:
   - `func CloudModels(cfg *config.Config) []config.Model`
-  - `type SyncPlan struct { Add, Adopt, Remove []string; Errors []Outcome }`
+  - `type SyncPlan struct { Add, Adopt, Rewrite, Remove []string; Errors []Outcome }` (`Rewrite` added in the PR #183 review round)
   - `func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error)` (read-only; dry run)
-  - `Sync(cfg, running, o)` keeps its signature; outcome actions become `"routed"`, `"adopted"`, `"unrouted"`.
+  - `Sync(cfg, running, o)` keeps its signature; outcome actions become `"routed"`, `"adopted"`, `"rewritten"`, `"unrouted"`.
 
 - [ ] **Step 1: Write the routable-cloud fixture test**
 
@@ -943,8 +943,8 @@ git commit -m "feat(wt): wt litellm sync reconciles cloud + running local routes
 **Interfaces:**
 - Consumes: `litellm.PlanSync`, `litellm.SyncPlan`, `File.Rows` (Tasks 2–3).
 - Produces: JSON shapes consumed by modelman in Task 7:
-  - `wt litellm sync --json --dry-run` → `{"dry_run": true, "plan": {"add": [...], "adopt": [...], "remove": [...], "errors": [{"id": "...", "error": "..."}]}}`
-  - `wt litellm sync --json` → unchanged `litellmResultJSON` (actions `routed`/`adopted`/`unrouted`)
+  - `wt litellm sync --json --dry-run` → `{"dry_run": true, "plan": {"add": [...], "adopt": [...], "rewrite": [...], "remove": [...], "errors": [{"id": "...", "error": "..."}]}}`
+  - `wt litellm sync --json` → unchanged `litellmResultJSON` (actions `routed`/`adopted`/`rewritten`/`unrouted`)
   - `wt litellm list --json` → `{"routed": [...ids], "rows": [{"id": "...", "managed": true}]}` (`routed` kept for existing readers)
 
 - [ ] **Step 1: Write the failing tests**
