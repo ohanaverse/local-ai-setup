@@ -555,3 +555,81 @@ func TestPlanSyncWritesNothing(t *testing.T) {
 		t.Fatalf("dry run changed the file or restarted: %q restarts=%d", after, *restarts)
 	}
 }
+
+// TestPlanSyncRejectsNonSequenceModelList pins that a dry run refuses the same
+// config.yaml the real sync refuses: PlanSync returns (and errors.Is sees)
+// ErrInvalid, so `wt litellm sync --dry-run` cannot report a plan for a file
+// the real sync would not touch. Without it a user previews work that then
+// fails — or worse, trusts a preview that never happens.
+func TestPlanSyncRejectsNonSequenceModelList(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: nope\n")
+	if _, err := PlanSync(testConfig(), nil, o); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("PlanSync err = %v, want ErrInvalid", err)
+	}
+	if after, _ := os.ReadFile(p); string(after) != "model_list: nope\n" {
+		t.Fatalf("dry run modified the file:\n%s", after)
+	}
+	if *restarts != 0 {
+		t.Fatalf("dry run restarted the proxy %d times, want 0", *restarts)
+	}
+}
+
+// TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt pins the trap in the fix
+// above: a config.yaml with no model_list at all (or an explicit null) must
+// stay a clean no-op. The plan is empty and neither the dry run nor the real
+// sync creates the key or writes the file — a fix that called modelList() from
+// the plan path would create it, flip File.Changed, and make a no-op sync write
+// config.yaml and restart the proxy, dropping in-flight requests.
+func TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt(t *testing.T) {
+	// litellm_settings is seeded so EnsureSettings cannot add it and be the
+	// thing that changes the file.
+	const settings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	empty := &config.Config{}
+	for _, body := range []string{settings, "model_list:\n" + settings} {
+		o, restarts, p := opts(t, body)
+		plan, err := PlanSync(empty, nil, o)
+		if err != nil {
+			t.Fatalf("PlanSync(%q) err = %v, want nil", body, err)
+		}
+		if len(plan.Add)+len(plan.Adopt)+len(plan.Remove)+len(plan.Errors) != 0 {
+			t.Fatalf("PlanSync(%q) = %+v, want an empty plan", body, plan)
+		}
+		if after, _ := os.ReadFile(p); string(after) != body {
+			t.Fatalf("dry run over %q changed the file:\n%s", body, after)
+		}
+		res, err := Sync(empty, nil, o)
+		if err != nil || res.Changed || *restarts != 0 {
+			t.Fatalf("Sync(%q): err=%v changed=%v restarts=%d, want nil/false/0", body, err, res.Changed, *restarts)
+		}
+		if after, _ := os.ReadFile(p); string(after) != body {
+			t.Fatalf("no-op sync over %q wrote the file:\n%s", body, after)
+		}
+	}
+
+	// A null model_list with work to do is planned, not refused: the real sync
+	// creates the key and routes the cloud model, so the dry run must agree.
+	o, _, _ := opts(t, "model_list:\n")
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil || !slices.Equal(plan.Add, []string{"openrouter/x/y"}) {
+		t.Fatalf("PlanSync(null model_list) = %+v err=%v, want the cloud add", plan, err)
+	}
+}
+
+// TestPlanSyncAndSyncAgreeOnInvalidModelList pins that the dry run and the real
+// sync give the same answer for a config.yaml whose model_list is not a list:
+// both fail with ErrInvalid and neither writes the file, so a preview can never
+// promise a plan the real run refuses.
+func TestPlanSyncAndSyncAgreeOnInvalidModelList(t *testing.T) {
+	const body = "model_list: nope\n"
+	o, restarts, p := opts(t, body)
+	if _, err := PlanSync(testConfig(), nil, o); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("PlanSync err = %v, want ErrInvalid", err)
+	}
+	res, err := Sync(testConfig(), nil, o)
+	if !errors.Is(err, ErrInvalid) || res.Changed || *restarts != 0 {
+		t.Fatalf("Sync err=%v changed=%v restarts=%d, want ErrInvalid/false/0", err, res.Changed, *restarts)
+	}
+	if after, _ := os.ReadFile(p); string(after) != body {
+		t.Fatalf("invalid config was written:\n%s", after)
+	}
+}

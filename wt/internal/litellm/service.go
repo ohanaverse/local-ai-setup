@@ -324,9 +324,16 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 }
 
 // PlanSync reports what Sync would change without writing (`sync --dry-run`).
+// It refuses the same malformed file the real sync refuses, so a dry run never
+// reports a plan the real sync would not perform. checkModelList only inspects
+// an existing value: it must not create model_list, or a no-op sync would flip
+// File.Changed and write the file.
 func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error) {
 	f, err := Open(o.path())
 	if err != nil {
+		return SyncPlan{}, err
+	}
+	if err := f.checkModelList(); err != nil {
 		return SyncPlan{}, err
 	}
 	return planSync(cfg, f, running, o), nil

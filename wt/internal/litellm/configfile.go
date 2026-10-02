@@ -264,19 +264,32 @@ func carryPreservedParams(old, row *yaml.Node) {
 	}
 }
 
+// checkModelList reports a model_list whose value is present but is not a
+// sequence. An explicit null reads as absent, the same shape modelList creates,
+// so a bare "model_list:" is accepted here exactly as there. It never creates
+// the key: unlike modelList it is safe to call from a read-only path such as a
+// dry run, where creating it would flip File.Changed and make a no-op sync
+// write config.yaml and restart the proxy.
+func (f *File) checkModelList() error {
+	ml := mapGet(f.root(), "model_list")
+	if ml != nil && !isNull(ml) && ml.Kind != yaml.SequenceNode {
+		return fmt.Errorf("%w: model_list is not a list in %s", ErrInvalid, f.path)
+	}
+	return nil
+}
+
 // modelList returns the model_list sequence, creating it when absent or null.
 // A non-list value is ErrInvalid: never edit what we do not understand.
 func (f *File) modelList() (*yaml.Node, error) {
-	ml := mapGet(f.root(), "model_list")
-	switch {
-	case ml == nil || isNull(ml):
-		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-		mapSet(f.root(), "model_list", seq)
-		return seq, nil
-	case ml.Kind != yaml.SequenceNode:
-		return nil, fmt.Errorf("%w: model_list is not a list in %s", ErrInvalid, f.path)
+	if err := f.checkModelList(); err != nil {
+		return nil, err
 	}
-	return ml, nil
+	if ml := f.modelListSeq(); ml != nil {
+		return ml, nil
+	}
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	mapSet(f.root(), "model_list", seq)
+	return seq, nil
 }
 
 // RoutedIDs returns every model_list row's model_name, in file order.
