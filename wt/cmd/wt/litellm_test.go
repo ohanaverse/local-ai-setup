@@ -713,10 +713,13 @@ func jsonKeySet(t *testing.T, raw []byte) []string {
 
 // TestLitellmSyncDryRunJSONMatchesContract pins the `sync --dry-run --json`
 // document against the shared cross-language fixture's sync_dry_run block.
-// modelman parses exactly these keys, and the fixture is read by both the Go
-// and Python contract suites, so a field added to syncPlanJSON (or to its
-// nested plan) without updating the fixture would break modelman's dry-run
-// preview silently at runtime. The fixture is left unchanged.
+// That block has no reader yet — modelman's wt_bridge parses only the change,
+// list, providers and status shapes, and nothing calls `wt litellm sync` — so
+// this is not guarding a live consumer. It is guarding the shared fixture
+// itself: the block is part of the documented cross-language contract, and
+// without this pin a field added to syncPlanJSON (or to its nested plan) would
+// silently leave the fixture describing a shape wt no longer emits, for
+// whoever reads it next. The fixture is left unchanged.
 func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	plan := litellm.SyncPlan{
 		Add:    []string{"openrouter/x/y"},

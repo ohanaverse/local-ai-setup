@@ -158,6 +158,14 @@ func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o
 		if err != nil {
 			return err
 		}
+		// Refuse a config we cannot understand before planning or mutating
+		// anything. EnsureSettings would otherwise rewrite such a file whenever
+		// the plan happened to be empty, and a caller must not edit a file it
+		// cannot parse. PlanSync checks this too, so a dry run and a real sync
+		// can never disagree about whether a malformed file is workable.
+		if err := f.checkModelList(); err != nil {
+			return err
+		}
 		add, remove := plan(f)
 		for _, id := range remove {
 			f.RemoveRow(id)
@@ -324,10 +332,12 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 }
 
 // PlanSync reports what Sync would change without writing (`sync --dry-run`).
-// It refuses the same malformed file the real sync refuses, so a dry run never
-// reports a plan the real sync would not perform. checkModelList only inspects
-// an existing value: it must not create model_list, or a no-op sync would flip
-// File.Changed and write the file.
+// Like Sync it refuses a config.yaml whose model_list is not a list, so the two
+// can never disagree: a dry run neither promises a plan the real sync would not
+// perform nor refuses a file the real sync would rewrite. The refusal lives in
+// checkModelList, which only inspects an existing value — it must not create
+// model_list, or a no-op sync would flip File.Changed and write the file and
+// restart the proxy.
 func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error) {
 	f, err := Open(o.path())
 	if err != nil {
@@ -374,8 +384,11 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // models (#179): every CloudModels id and every running registry local
 // model gets a marked route; rows wt owns that are no longer desired are
 // removed; hand-written rows are never touched (see planSync). The plan is
-// made under the config.yaml lock. Outcome actions: "routed", "adopted",
-// "unrouted"; per-id build failures are reported with Err.
+// made under the config.yaml lock. A config.yaml whose model_list is not a
+// list is refused (ErrInvalid) before anything is planned or written, whatever
+// the plan turns out to be — PlanSync checks the same shape, so a dry run and a
+// real sync always agree. Outcome actions: "routed", "adopted", "unrouted";
+// per-id build failures are reported with Err.
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	o.SkipReadyGate = true
 	var plan SyncPlan

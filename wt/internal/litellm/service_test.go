@@ -617,19 +617,37 @@ func TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt(t *testing.T) {
 
 // TestPlanSyncAndSyncAgreeOnInvalidModelList pins that the dry run and the real
 // sync give the same answer for a config.yaml whose model_list is not a list:
-// both fail with ErrInvalid and neither writes the file, so a preview can never
-// promise a plan the real run refuses.
+// both fail with ErrInvalid and neither writes the file or restarts the proxy,
+// so a preview can never promise a plan the real run refuses — nor refuse a
+// file the real run would happily rewrite.
+//
+// Both halves must be covered. With a non-empty plan the write path used to
+// reach SetRow -> modelList, which refused; with an empty plan (an empty or
+// all-native registry) nothing was written but EnsureSettings still appended
+// litellm_settings and saved, so a shape check only on the dry-run side left
+// the two disagreeing in the other direction. The empty half is what keeps that
+// gap closed.
 func TestPlanSyncAndSyncAgreeOnInvalidModelList(t *testing.T) {
 	const body = "model_list: nope\n"
-	o, restarts, p := opts(t, body)
-	if _, err := PlanSync(testConfig(), nil, o); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("PlanSync err = %v, want ErrInvalid", err)
-	}
-	res, err := Sync(testConfig(), nil, o)
-	if !errors.Is(err, ErrInvalid) || res.Changed || *restarts != 0 {
-		t.Fatalf("Sync err=%v changed=%v restarts=%d, want ErrInvalid/false/0", err, res.Changed, *restarts)
-	}
-	if after, _ := os.ReadFile(p); string(after) != body {
-		t.Fatalf("invalid config was written:\n%s", after)
+	for _, c := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{"empty plan", &config.Config{}},
+		{"non-empty plan", testConfig()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			o, restarts, p := opts(t, body)
+			if _, err := PlanSync(c.cfg, nil, o); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("PlanSync err = %v, want ErrInvalid", err)
+			}
+			res, err := Sync(c.cfg, nil, o)
+			if !errors.Is(err, ErrInvalid) || res.Changed || *restarts != 0 {
+				t.Fatalf("Sync err=%v changed=%v restarts=%d, want ErrInvalid/false/0", err, res.Changed, *restarts)
+			}
+			if after, _ := os.ReadFile(p); string(after) != body {
+				t.Fatalf("invalid config was written:\n%s", after)
+			}
+		})
 	}
 }
