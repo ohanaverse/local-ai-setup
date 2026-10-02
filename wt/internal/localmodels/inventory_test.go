@@ -505,6 +505,21 @@ func TestFamilyExported(t *testing.T) {
 	}
 }
 
+// TestRoutesFollowArtifact pins that only ollama's routes follow "pulled"
+// rather than "loaded": ollama lazy-loads a pulled model on request, so its
+// route is servable whether or not it is loaded. Widening this to a
+// single-model family would route a model nobody is serving (requests would
+// fail); narrowing it away from ollama would drop routes every time ollama
+// unloads an idle model.
+func TestRoutesFollowArtifact(t *testing.T) {
+	cases := map[string]bool{"ollama": true, "omlx": false, "omlx-6bit": false, "mtplx": false, "mlx_lm_server": false, "llamacpp": false, "": false}
+	for id, want := range cases {
+		if got := RoutesFollowArtifact(Family(id)); got != want {
+			t.Errorf("RoutesFollowArtifact(Family(%q)) = %v, want %v", id, got, want)
+		}
+	}
+}
+
 // TestInventoryOmlxProbeFailureIsPartial verifies an unanswerable /v1/models
 // leaves the omlx family StatusPartial rather than StatusOK-with-no-models.
 // The lifecycle engine reads that status to decide whether Running can be

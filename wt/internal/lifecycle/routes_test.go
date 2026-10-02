@@ -93,20 +93,22 @@ func TestRouteAfterStartMultiTenantOnlyAdds(t *testing.T) {
 	}
 }
 
-// TestRouteAfterStop pins stop symmetry: stopping an ollama model removes only
-// its route; stopping a single-model provider's model removes routes for every
-// model of that provider (the whole provider went down).
+// TestRouteAfterStop pins what a stop does to routes: stopping a single-model
+// provider's model removes routes for every model of that provider (the whole
+// provider went down), while stopping an ollama model writes nothing — ollama
+// only unloads it, and a pulled model is still served on request, so removing
+// its route would break the next request through LiteLLM (#179).
 func TestRouteAfterStop(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
 	routeAfterStop(context.Background(), routesCfg(), "ollama", "a:1")
+	if len(*calls) != 0 {
+		t.Fatalf("ollama stop wrote routes: %+v", *calls)
+	}
 	routeAfterStop(context.Background(), routesCfg(), "mtplx", "Y/Q35")
-	if len(*calls) != 2 {
+	if len(*calls) != 1 {
 		t.Fatalf("calls = %+v", *calls)
 	}
-	if !slices.Equal((*calls)[0].remove, []string{"ollama/a:1"}) {
-		t.Errorf("ollama stop removed %v", (*calls)[0].remove)
-	}
-	if got := slices.Clone((*calls)[1].remove); !slices.Equal(got, []string{"mtplx/Y--Q35", "mtplx/Y--Q27"}) {
+	if got := slices.Clone((*calls)[0].remove); !slices.Equal(got, []string{"mtplx/Y--Q35", "mtplx/Y--Q27"}) {
 		t.Errorf("mtplx stop removed %v", got)
 	}
 }
@@ -194,7 +196,7 @@ func TestRouteSkipsWaitWhenProxyWasNotRunning(t *testing.T) {
 	// would race on the counters this stub increments.
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	WaitPendingRoutes()
-	routeAfterStop(context.Background(), cfg, "ollama", "a:1")
+	routeAfterStop(context.Background(), cfg, "mtplx", "Y/Q35") // a stop that still writes (an ollama stop writes nothing, #179)
 	WaitPendingRoutes()
 	if probed != 2 || waited != 0 {
 		t.Fatalf("probed=%d (want 2) waited=%d (want 0)", probed, waited)
@@ -330,11 +332,12 @@ func TestRouteProbesProxyOnlyWhenRestarting(t *testing.T) {
 	stubRoutes(t, litellm.Result{Changed: true}, nil)
 	probed := 0
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
-	routeRemove(context.Background(), cfg, "ollama", "a:1", restartDeferred)
+	// mtplx: an ollama stop never writes at all (#179).
+	routeRemove(context.Background(), cfg, "mtplx", "Y/Q35", restartDeferred)
 	WaitPendingRoutes() // nothing should be pending — prove it before re-stubbing
 	stubRoutes(t, litellm.Result{Changed: false}, nil)
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
-	routeAfterStop(context.Background(), cfg, "ollama", "a:1")
+	routeAfterStop(context.Background(), cfg, "mtplx", "Y/Q35")
 	WaitPendingRoutes()
 	if probed != 0 {
 		t.Fatalf("probed %d times without a restart", probed)

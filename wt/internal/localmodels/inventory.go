@@ -102,6 +102,12 @@ func familyOf(providerID string) string {
 // "omlx"); "" when wt has no probe for it.
 func Family(providerID string) string { return familyOf(providerID) }
 
+// RoutesFollowArtifact reports whether a family's LiteLLM routes follow
+// artifact presence rather than running state. True only for ollama: it
+// lazy-loads a model on request (and unloads idle ones), so a pulled model is
+// servable whether or not it is loaded. family is a Family value.
+func RoutesFollowArtifact(family string) bool { return family == "ollama" }
+
 // source is one family's probe result.
 type source struct {
 	family     string

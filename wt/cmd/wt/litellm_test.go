@@ -1011,3 +1011,31 @@ func TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant(t *testing.T) {
 		})
 	}
 }
+
+// TestDesiredLocalIDsOllamaFollowsPulled pins #179's rule for which local
+// registry models sync routes: any running one, plus a registered ollama model
+// that is pulled whether or not it is loaded. ollama lazy-loads on request and
+// unloads idle models, so keying ollama on "loaded" made a flag-only start get
+// no route and made every sync after an idle unload drop a working route.
+// "Pulled" must mean the probe actually saw the artifact (ArtifactKnown), the
+// rule is registry-only, and it must not widen to single-model families, which
+// serve nothing until started.
+func TestDesiredLocalIDsOllamaFollowsPulled(t *testing.T) {
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/pulled:1", ModelName: "pulled:1", Artifact: "pulled:1", ArtifactKnown: true, Registered: true},
+			{ProviderID: "ollama", ModelID: "ollama/unknown:1", ModelName: "unknown:1", Artifact: "unknown:1", ArtifactKnown: false, Registered: true},
+			{ProviderID: "ollama", ModelID: "ollama/notpulled:1", ModelName: "notpulled:1", Artifact: "", ArtifactKnown: true, Registered: true},
+			{ProviderID: "ollama", ModelID: "ollama/discovered:1", ModelName: "discovered:1", Artifact: "discovered:1", ArtifactKnown: true},
+			{ProviderID: "omlx", ModelID: "omlx/idle", ModelName: "idle", Artifact: "idle", ArtifactKnown: true, Registered: true},
+			{ProviderID: "mtplx", ModelID: "mtplx/idle", ModelName: "idle", Artifact: "idle", ArtifactKnown: true, Registered: true},
+			{ProviderID: "mtplx", ModelID: "mtplx/live", ModelName: "live", Artifact: "live", ArtifactKnown: true, Registered: true, Running: true},
+			{ProviderID: "ollama", ModelID: "ollama/loaded:1", ModelName: "loaded:1", Registered: true, Running: true},
+		},
+	}
+	want := []string{"ollama/pulled:1", "mtplx/live", "ollama/loaded:1"}
+	if got := desiredLocalIDs(snap); !slices.Equal(got, want) {
+		t.Fatalf("desiredLocalIDs = %v, want %v", got, want)
+	}
+}
