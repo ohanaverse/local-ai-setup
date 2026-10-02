@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -137,7 +138,7 @@ func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 			{ProviderID: "ollama", ModelID: "ollama/gemma:9b", ModelName: "gemma:9b", Registered: true, Running: true},
 		}})
 	var out, errOut bytes.Buffer
-	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false); err != nil {
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false, false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "model_name: 'ollama/gemma:9b'") {
@@ -153,7 +154,7 @@ func TestLitellmListAndProviders(t *testing.T) {
 	if err := runLitellmList(&out, true); err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(out.String()) != `{"routed":["a/b"]}` {
+	if strings.TrimSpace(out.String()) != `{"routed":["a/b"],"rows":[{"id":"a/b","managed":false}]}` {
 		t.Fatalf("list = %s", out.String())
 	}
 	out.Reset()
@@ -225,7 +226,7 @@ func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
 		},
 	})
 	var out, errOut bytes.Buffer
-	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), true); err != nil {
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), true, false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(p); string(b) != body {
@@ -239,7 +240,7 @@ func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
 		t.Fatalf("stdout = %q (%v), want JSON with changed=false and an ollama warning", out.String(), err)
 	}
 	out.Reset()
-	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false); err != nil {
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false, false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(errOut.String(), "warning") || !strings.Contains(errOut.String(), "ollama") {
@@ -264,7 +265,7 @@ func TestLitellmSyncRemovesRoutesOfRefusedProvider(t *testing.T) {
 		},
 	})
 	var out, errOut bytes.Buffer
-	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false); err != nil {
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false, false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(p); strings.Contains(string(b), "ollama/gemma:9b") {
@@ -287,7 +288,7 @@ func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
 	cfg.Models = append(cfg.Models, config.Model{ID: "llamacpp/m", ProviderID: "llamacpp", ModelName: "m", Location: config.LocationLocal})
 	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
 	var out, errOut bytes.Buffer
-	if err := runLitellmSync(&out, &errOut, cfg, true); err != nil {
+	if err := runLitellmSync(&out, &errOut, cfg, true, false); err != nil {
 		t.Fatal(err)
 	}
 	var doc struct{ Warnings []string }
@@ -649,5 +650,65 @@ func TestLitellmChangeCommandsGateOnLoadErrOnly(t *testing.T) {
 		if b, _ := os.ReadFile(p); string(b) != body {
 			t.Fatalf("%v modified config.yaml", args)
 		}
+	}
+}
+
+// litellmCloudTestConfig is litellmTestConfig plus one openrouter cloud
+// model, the shape sync now routes unconditionally (#179).
+func litellmCloudTestConfig() *config.Config {
+	cfg := litellmTestConfig()
+	cfg.Providers = append(cfg.Providers, config.Provider{
+		ID: "openrouter", Location: config.LocationCloud,
+		Auth: config.AuthConfig{Type: "api_key", SecretRef: "sk-test", BaseURL: "https://openrouter.ai/api/v1"},
+	})
+	cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud})
+	return cfg
+}
+
+// TestLitellmSyncDryRunJSON pins `wt litellm sync --dry-run --json`: the plan
+// is printed in the shape modelman parses and config.yaml is not written.
+func TestLitellmSyncDryRunJSON(t *testing.T) {
+	p := litellmEnv(t, "model_list: []\n")
+	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	before, _ := os.ReadFile(p)
+	var out, errOut bytes.Buffer
+	if err := runLitellmSync(&out, &errOut, litellmCloudTestConfig(), true, true); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		DryRun bool `json:"dry_run"`
+		Plan   struct {
+			Add    []string `json:"add"`
+			Remove []string `json:"remove"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("not JSON: %q", out.String())
+	}
+	if !doc.DryRun || !slices.Equal(doc.Plan.Add, []string{"openrouter/x"}) || len(doc.Plan.Remove) != 0 {
+		t.Fatalf("doc = %+v", doc)
+	}
+	if after, _ := os.ReadFile(p); string(after) != string(before) {
+		t.Fatalf("dry run wrote config.yaml:\n%s", after)
+	}
+}
+
+// TestLitellmListJSONRows pins list's ownership rows next to the legacy
+// "routed" id list modelman already reads.
+func TestLitellmListJSONRows(t *testing.T) {
+	litellmEnv(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+    model_info: {wt_managed: true}
+  - model_name: hand/alias
+    litellm_params: {model: openrouter/x}
+`)
+	var out bytes.Buffer
+	if err := runLitellmList(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","managed":true},{"id":"hand/alias","managed":false}]}`
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Fatalf("list = %s\nwant   %s", got, want)
 	}
 }

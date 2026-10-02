@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -77,6 +78,52 @@ func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun boo
 	return nil
 }
 
+type syncPlanJSON struct {
+	DryRun bool `json:"dry_run"`
+	Plan   struct {
+		Add    []string             `json:"add"`
+		Adopt  []string             `json:"adopt"`
+		Remove []string             `json:"remove"`
+		Errors []litellmOutcomeJSON `json:"errors"`
+	} `json:"plan"`
+}
+
+// reportSyncPlan prints a dry-run plan; exit status 1 when any desired id
+// could not be built, like a real sync.
+func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, asJSON bool) error {
+	doc := syncPlanJSON{DryRun: true}
+	doc.Plan.Add = append([]string{}, plan.Add...)
+	doc.Plan.Adopt = append([]string{}, plan.Adopt...)
+	doc.Plan.Remove = append([]string{}, plan.Remove...)
+	doc.Plan.Errors = []litellmOutcomeJSON{}
+	for _, e := range plan.Errors {
+		doc.Plan.Errors = append(doc.Plan.Errors, litellmOutcomeJSON{ID: e.ID, Error: e.Err.Error()})
+	}
+	if asJSON {
+		if err := json.NewEncoder(out).Encode(doc); err != nil {
+			return err
+		}
+	} else {
+		for _, id := range plan.Add {
+			verb := "route"
+			if slices.Contains(plan.Adopt, id) {
+				verb = "adopt"
+			}
+			fmt.Fprintf(out, "%s: would %s\n", id, verb)
+		}
+		for _, id := range plan.Remove {
+			fmt.Fprintf(out, "%s: would unroute\n", id)
+		}
+		for _, e := range doc.Plan.Errors {
+			fmt.Fprintf(errOut, "%s: %s\n", e.ID, e.Error)
+		}
+	}
+	if len(plan.Errors) > 0 {
+		return errLitellmIDFailed
+	}
+	return nil
+}
+
 func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, ids []string, fl litellmFlags) error {
 	for _, id := range ids {
 		if strings.TrimSpace(id) == "" {
@@ -100,7 +147,7 @@ func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, id
 	return reportLitellm(out, errOut, res, fl.JSON, expose && fl.DryRun)
 }
 
-func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) error {
+func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
 	snap := probeInventory(cfg)
 	running := runningIDs(snap)
 	// Running is untrustworthy for a family whose probe did not fully
@@ -123,13 +170,22 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 			skipped[fam] = true
 		}
 	}
-	res, err := litellm.Sync(cfg, running, litellm.Options{
+	o := litellm.Options{
 		Untouched: untouched,
 		// The probe above predates the config.yaml lock; a start that lands
 		// in between must not lose its route, so removals are re-verified
 		// under the lock.
 		Recheck: func() []string { return runningIDs(probeInventory(cfg)) },
-	})
+	}
+	if dryRun {
+		o.Recheck = nil // a dry run reports the probe it took; no lock, no recheck
+		plan, err := litellm.PlanSync(cfg, running, o)
+		if err != nil {
+			return err
+		}
+		return reportSyncPlan(out, errOut, plan, asJSON)
+	}
+	res, err := litellm.Sync(cfg, running, o)
 	if err != nil {
 		return err
 	}
@@ -167,15 +223,26 @@ func runLitellmList(out io.Writer, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	ids := f.RoutedIDs()
-	if ids == nil {
-		ids = []string{}
+	rows := f.Rows()
+	ids := make([]string, 0, len(rows))
+	type rowJSON struct {
+		ID      string `json:"id"`
+		Managed bool   `json:"managed"`
+	}
+	jrows := make([]rowJSON, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+		jrows = append(jrows, rowJSON{r.ID, r.Managed})
 	}
 	if asJSON {
-		return json.NewEncoder(out).Encode(map[string][]string{"routed": ids})
+		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": jrows})
 	}
-	for _, id := range ids {
-		fmt.Fprintln(out, id)
+	for _, r := range rows {
+		owner := "wt"
+		if !r.Managed {
+			owner = "hand-written"
+		}
+		fmt.Fprintf(out, "%s\t%s\n", r.ID, owner)
 	}
 	return nil
 }
@@ -283,17 +350,18 @@ func litellmCmd(a *app) *cobra.Command {
 		}
 		return cc
 	}
-	var syncJSON, listJSON, provJSON bool
+	var syncJSON, listJSON, provJSON, syncDryRun bool
 	syncC := &cobra.Command{
-		Use: "sync", Short: "Make local-model routes match the running models", Args: cobra.NoArgs, SilenceUsage: true,
+		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running local models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.loadErr != nil {
 				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
 			}
-			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON)
+			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON, syncDryRun)
 		},
 	}
 	syncC.Flags().BoolVar(&syncJSON, "json", false, "machine-readable output")
+	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan; change nothing (does not report litellm_settings fixes)")
 	listC := &cobra.Command{
 		Use: "list", Short: "List routed model ids from config.yaml", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmList(cmd.OutOrStdout(), listJSON) },
