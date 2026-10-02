@@ -4,7 +4,10 @@
 #   - wt/internal/config/catalog_predicates_fixture_test.go  (in_catalog, openrouter_priced)
 #   - wt/internal/litellm/catalog_predicates_fixture_test.go (routable_cloud)
 #   - modelman/tests/contracts/test_catalog_predicates_fixture.py (openrouter_priced)
-# A one-sided change to any predicate fails both CI jobs.
+# A one-sided change to a predicate fails the job that asserts it, and the fixture
+# is shared: openrouter_priced is pinned from both jobs, while in_catalog and
+# routable_cloud are so far read by the Go job only — a one-sided change to those
+# two currently fails one CI job, not both, until the Python side grows them.
 
 [[providers]]
 id = "openrouter"
