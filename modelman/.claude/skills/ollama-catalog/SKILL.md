@@ -23,9 +23,11 @@ LiteLLM's routes in `config.yaml`.
 - **Real cloud tags.** A page name doesn't determine its tag: some models
   publish `<name>:cloud`, others only a sized `<name>:<size>-cloud`. Each
   bare name is resolved from `https://ollama.com/library/<name>/tags`. A
-  model with no cloud tag, or several, is skipped with a `warning:` line;
+  model with no cloud tag, or several, is skipped with a `warning:` line
+  (nothing is added or pulled for it, and nothing with its name is removed);
   ask the user before hand-editing anything for it. An existing entry under
-  the wrong tag is replaced by the correctly tagged one.
+  the wrong tag is replaced by the correctly tagged one (`re-tagged as …`).
+  Names whose registry tag is already pulled aren't looked up again.
 - **Off-peak prices.** These are stored as a `[[models.cost.time_prices]]`
   row labelled `off-peak`: UTC, weekdays outside 12:00–18:00, and all day
   on weekends.
@@ -46,10 +48,15 @@ Run everything from `modelman/`.
    - Ask whether any added model's family should be changed. If so, edit
      `family` in registry.toml after the sync.
 2. Get the user's go-ahead for the whole plan, especially the removals.
-3. Real run: `uv run modelman ollama-catalog sync --yes`. Your Bash tool
-   has no TTY, so the CLI's single confirmation prompt can't be answered
-   (click reads EOF and aborts). Pass `--yes` only once the user has
-   approved the dry-run plan.
+3. Real run: `uv run modelman ollama-catalog sync --yes --approve-removals <digest>`,
+   with the `Removal digest:` the dry run printed (omit the flag if it
+   printed none — the plan deletes nothing). Your Bash tool has no TTY, so
+   the CLI's single confirmation prompt can't be answered (click reads EOF
+   and aborts). Pass `--yes` only once the user has approved the dry-run
+   plan.
+   - Exit 5 means the deletions differ from what was approved: the page or
+     registry changed since the dry run. Nothing was written. Start over
+     from step 1 and show the user the new plan.
    - Exit 4 means more than half of the ollama cloud entries would be
      removed. Nothing was written. Check the dry run's page parse with the
      user, and add `--force` only if they confirm the removals are real.
@@ -61,9 +68,10 @@ Run everything from `modelman/`.
 |---|---|---|
 | 0 | done (or nothing to do) | — |
 | 1 | a pull, an `ollama rm`, a LiteLLM expose/unexpose, or the registry save failed; the other steps still ran | read the error, then re-run the sync (it only redoes what is still out of sync) |
-| 2 | page fetch failed, `ollama list` couldn't run, or no cloud tag resolved (ollama.com/library unreachable); nothing changed | check network / start ollama, retry; or pass `--html <saved page>` |
+| 2 | page fetch failed, `ollama list` couldn't run, or no cloud tag resolved (ollama.com/library unreachable); nothing changed | check network / start ollama, retry. `--html <saved page>` only replaces the pricing-page fetch — the library tag lookups still need ollama.com |
 | 3 | page shape changed | follow "Repairing the parser" |
 | 4 | mass removal refused (> half the cloud entries); nothing changed | verify the parse, then `--force` with the user's OK |
+| 5 | the plan deletes something not approved (no or stale `--approve-removals` digest, or the registry changed mid-run); nothing changed | re-run the dry run, get the user's OK for the new plan, use its digest |
 
 ## Repairing the parser (exit 3)
 

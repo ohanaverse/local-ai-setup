@@ -288,7 +288,19 @@ page were just reported. It now mirrors the page:
   rather than "not found", so `OllamaProvider.delete` treats `ollama rm`'s
   "not found" as already done.
 - **One confirmation** (or `--yes`) covers the whole plan. `--delete` and
-  `--no-deletes` are gone.
+  `--no-deletes` are gone. The confirmation defaults to No when the plan
+  deletes anything.
+- **Approved deletions only** (2026-10-01 review): `--yes` re-fetches the
+  page, so a plan that deletes anything (registry removals or stray
+  `ollama rm`s) needs `--approve-removals <digest>`, the fingerprint a
+  reviewed `--dry-run` printed; a mismatch exits 5 and changes nothing.
+  The locked re-plan may not delete anything the printed plan didn't show
+  (exit 5), and the mass-removal check re-runs against it.
+- **Unresolved tags protect**: a page model whose library lookup failed is
+  still on the page, so entries and pulled `*-cloud` tags sharing its name
+  are neither removed nor `ollama rm`'d. An entry already under the
+  resolved tag wins over a `catalog_name` entry under a guessed tag.
 - **Safety**: an unreadable `ollama list` exits 2 and changes nothing. A
   plan that removes more than half the cloud entries exits 4 unless
-  `--force` is given.
+  `--force` is given; re-tagged entries (removed and re-added under the
+  real tag) don't count. A pull that fails drops that model's expose.

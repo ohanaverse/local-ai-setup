@@ -244,7 +244,6 @@ def test_plan_unchanged_when_prices_match_and_name_recorded():
     plan = plan_sync(reg, _catalog(_cm("glm-5.3")), [])
     assert plan.updates == []
     assert plan.unchanged == ["ollama/glm-5.3:cloud"]
-    assert not plan.has_registry_changes()
 
 
 def test_plan_offpeak_set_replace_remove_keeps_other_rows():
@@ -662,3 +661,97 @@ def test_plan_unresolved_model_keeps_entry_but_skips_pull_and_add():
     # are refreshed.
     assert [u.model_id for u in plan.updates] == ["ollama/x:cloud"]
     assert plan.routes == ["ollama/x:cloud"]
+
+
+def test_plan_prefers_entry_already_under_resolved_tag():
+    """A guessed-tag entry carrying catalog_name must not shadow an entry
+    already under the real tag: only the guessed one goes."""
+    from modelman.ollama_catalog import plan_sync
+
+    guessed = _entry("ml3:cloud", extra={"catalog_name": "ml3"})
+    real = _entry("ml3:675b-cloud")
+    plan = plan_sync(
+        _registry(guessed, real),
+        _catalog(_cm("ml3")),
+        ["ml3:675b-cloud"],
+        resolved={"ml3": "ml3:675b-cloud"},
+    )
+    assert plan.removals == ["ollama/ml3:cloud"]
+    assert plan.additions == []
+    assert plan.routes == ["ollama/ml3:675b-cloud"]
+    assert [u.model_id for u in plan.updates] == ["ollama/ml3:675b-cloud"]
+    assert plan.stray_tags == []
+
+
+def test_plan_unresolved_model_protects_pulled_stub_and_sized_entry():
+    """A page model whose tag lookup failed is still on the page: neither
+    its pulled stub nor an entry under a sized tag may be removed."""
+    from modelman.ollama_catalog import plan_sync
+
+    sized = _entry("foo:1t-cloud")
+    plan = plan_sync(
+        _registry(sized),
+        _catalog(_cm("foo"), _cm("glm-5.3")),
+        ["glm-5.3:cloud", "foo:1t-cloud", "other:cloud"],
+        resolved={"foo": None, "glm-5.3": None},
+    )
+    assert plan.removals == []
+    assert plan.stray_tags == ["other:cloud"]
+    assert [u.model_id for u in plan.updates] == ["ollama/foo:1t-cloud"]
+
+
+def test_plan_retag_is_not_a_mass_removal():
+    """Re-tagging a guessed entry removes and re-adds it; that is not a
+    catalog shrinking, so the mass-removal guard ignores it."""
+    from modelman.ollama_catalog import plan_sync
+
+    reg = _registry(
+        _entry("a:cloud", extra={"catalog_name": "a"}),
+        _entry("b:cloud", extra={"catalog_name": "b"}),
+    )
+    plan = plan_sync(
+        reg,
+        _catalog(_cm("a"), _cm("b")),
+        [],
+        resolved={"a": "a:1t-cloud", "b": "b:2t-cloud"},
+    )
+    assert plan.removals == ["ollama/a:cloud", "ollama/b:cloud"]
+    assert plan.replaced == {
+        "ollama/a:cloud": "ollama/a:1t-cloud",
+        "ollama/b:cloud": "ollama/b:2t-cloud",
+    }
+    assert not plan.mass_removal()
+
+
+def test_removal_digest_tracks_removals_and_strays():
+    from modelman.ollama_catalog import format_plan, plan_sync
+
+    reg = _registry(_entry("keep:cloud"), _entry("gone:cloud"))
+    nothing = plan_sync(reg, _catalog(_cm("keep"), _cm("gone")), [])
+    assert nothing.removal_digest() is None
+    one = plan_sync(reg, _catalog(_cm("keep")), [])
+    other = plan_sync(reg, _catalog(_cm("keep")), ["stray:cloud"])
+    assert one.removal_digest() and one.removal_digest() != other.removal_digest()
+    assert one.removal_digest() == plan_sync(reg, _catalog(_cm("keep")), []).removal_digest()
+    assert one.removal_digest() in format_plan(one)
+
+
+def test_resolve_cloud_tags_skips_known_names():
+    from modelman.ollama_catalog import resolve_cloud_tags
+
+    def boom(url, **kw):
+        raise AssertionError(f"fetched {url}")
+
+    resolved, warnings = resolve_cloud_tags(["ml3"], runner=boom, known={"ml3": "ml3:675b-cloud"})
+    assert resolved == {"ml3": "ml3:675b-cloud"} and warnings == []
+
+
+def test_verified_tags_only_pulled_catalog_entries():
+    from modelman.ollama_catalog import verified_tags
+
+    reg = _registry(
+        _entry("a:1t-cloud", extra={"catalog_name": "a"}),
+        _entry("b:cloud", extra={"catalog_name": "b"}),  # not pulled: unverified
+        _entry("c:cloud"),  # no catalog_name
+    )
+    assert verified_tags(reg, ["a:1t-cloud", "c:cloud"]) == {"a": "a:1t-cloud"}

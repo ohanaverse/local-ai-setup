@@ -2246,6 +2246,40 @@ def test_apply_ready_on_download_failure_does_not_stop_other_steps(tmp_path):
     assert all(m.id != "ollama/y" for m in reloaded.models)
 
 
+def test_apply_skips_expose_of_model_whose_download_failed(tmp_path, bridge_calls):
+    """A route to a model the pull never fetched would only fail every
+    request: the failed download drops its queued expose, others proceed.
+    x is an ollama cloud stub: exempt from the ready gate, so nothing else
+    would stop the expose."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        ModelEntry(
+            id="ollama/x", family="f", provider_id="ollama", model_name="x:cloud", location="cloud"
+        ),
+        _entry(id="ollama/y", family="f", provider="ollama", name="y:7b"),
+    )
+    provider = MagicMock()
+    provider.download.side_effect = RuntimeError("connection refused")
+    provider.artifact_paths.return_value = None
+    events: list[str] = []
+    state = _make_state()
+    state.set("ollama/y", ModelState(ready=True))
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={"ollama": provider},
+        ready=[("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x:cloud"}, True)],
+        exposes=[("ollama/x", True), ("ollama/y", True)],
+    )
+    pending.apply(on_event=events.append)
+
+    assert bridge_calls == [("expose", ["ollama/y"])]
+    assert "download ollama/x: connection refused" in pending.failures
+    assert any(e.startswith("expose:fail|ollama/x|") for e in events)
+
+
 def test_apply_cancelled_mid_ready_loop_skips_remaining_and_does_not_save(tmp_path):
     """A cancel request landing during one ready-loop item's download
     skips every remaining item; already-completed steps stay applied in

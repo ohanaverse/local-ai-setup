@@ -9,9 +9,11 @@ See docs/superpowers/specs/2026-09-28-ollama-catalog-sync-design.md.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -256,8 +258,39 @@ def is_cloud_tag(tag: str) -> bool:
 LIBRARY_TAGS_URL = "https://ollama.com/library/{name}/tags"
 
 
+def verified_tags(registry: Registry, ollama_tags: list[str]) -> dict[str, str]:
+    """Page name -> tag, for catalog entries whose tag `ollama list` shows:
+    a pulled tag exists, so it needn't be looked up again."""
+    pulled = set(ollama_tags)
+    return {
+        name: m.model_name
+        for m in registry.models
+        if m.provider_id == _OLLAMA
+        and (name := m.extra.get(CATALOG_NAME_KEY))
+        and m.model_name in pulled
+    }
+
+
+def _lookup_cloud_tag(name: str, runner: Any) -> tuple[str | None, str | None]:
+    """(tag, warning) for a bare page name from its ollama.com/library page."""
+    try:
+        response = (runner or _default_http_runner)(LIBRARY_TAGS_URL.format(name=name))
+        response.raise_for_status()
+        html = str(response.text)
+    except Exception as exc:  # noqa: BLE001 — any fetch failure skips this model
+        return None, f"{name}: could not read its ollama.com/library tags ({exc}); skipped"
+    tags = set(re.findall(rf'href="/library/{re.escape(name)}:([A-Za-z0-9._-]+)"', html))
+    sized = sorted(t for t in tags if t.endswith("-cloud"))
+    if "cloud" in tags:
+        return f"{name}:cloud", None
+    if len(sized) == 1:
+        return f"{name}:{sized[0]}", None
+    found = f"several cloud tags ({', '.join(sized)})" if sized else "no cloud tag"
+    return None, f"{name}: {found} on ollama.com/library; skipped"
+
+
 def resolve_cloud_tags(
-    names: list[str], runner: Any = None
+    names: list[str], runner: Any = None, known: dict[str, str] | None = None
 ) -> tuple[dict[str, str | None], list[str]]:
     """Page name -> the cloud tag ollama actually publishes, or None.
 
@@ -266,33 +299,29 @@ def resolve_cloud_tags(
     up on its ollama.com/library tags page: `<name>:cloud` wins, else the
     single `<name>:*-cloud` tag. No tag, several, or an unreadable page
     resolves to None (with a warning) — never a guessed tag. A name that
-    already pins a size (`gpt-oss:120b`) maps by cloud_tag() directly.
+    already pins a size (`gpt-oss:120b`) maps by cloud_tag() directly, and
+    one in ``known`` (verified_tags()) keeps its pulled tag; the rest are
+    looked up concurrently.
     """
+    known = known or {}
     resolved: dict[str, str | None] = {}
     warnings: list[str] = []
+    lookups = []
     for name in names:
         if ":" in name:
             resolved[name] = cloud_tag(name)
-            continue
-        try:
-            response = (runner or _default_http_runner)(LIBRARY_TAGS_URL.format(name=name))
-            response.raise_for_status()
-            html = str(response.text)
-        except Exception as exc:  # noqa: BLE001 — any fetch failure skips this model
-            resolved[name] = None
-            warnings.append(f"{name}: could not read its ollama.com/library tags ({exc}); skipped")
-            continue
-        tags = set(re.findall(rf'href="/library/{re.escape(name)}:([A-Za-z0-9._-]+)"', html))
-        sized = sorted(t for t in tags if t.endswith("-cloud"))
-        if "cloud" in tags:
-            resolved[name] = f"{name}:cloud"
-        elif len(sized) == 1:
-            resolved[name] = f"{name}:{sized[0]}"
+        elif name in known:
+            resolved[name] = known[name]
         else:
-            resolved[name] = None
-            found = f"several cloud tags ({', '.join(sized)})" if sized else "no cloud tag"
-            warnings.append(f"{name}: {found} on ollama.com/library; skipped")
-    return resolved, warnings
+            lookups.append(name)
+    if lookups:
+        with ThreadPoolExecutor(max_workers=min(8, len(lookups))) as pool:
+            results = list(pool.map(lambda n: _lookup_cloud_tag(n, runner), lookups))
+        for name, (tag, warning) in zip(lookups, results, strict=True):
+            resolved[name] = tag
+            if warning is not None:
+                warnings.append(warning)
+    return {name: resolved[name] for name in names}, warnings
 
 
 @dataclass
@@ -320,31 +349,58 @@ class SyncPlan:
     removals: list[str] = field(default_factory=list)
     # Pulled cloud tags neither on the page nor in the registry.
     stray_tags: list[str] = field(default_factory=list)
+    # Removed id -> the id it is re-added under: an entry an earlier sync
+    # registered under a guessed tag, re-tagged to the one ollama publishes.
+    replaced: dict[str, str] = field(default_factory=dict)
     # Registry ids of every page model: (re)exposed so each LiteLLM row is
     # rebuilt with current prices (wt writes prices only at expose time).
     routes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
-    def has_registry_changes(self) -> bool:
-        return bool(self.updates or self.additions)
-
     def mass_removal(self) -> bool:
         """More than half the registry's ollama cloud entries would go —
-        more likely a page that parsed wrong than a real catalog change."""
-        return len(self.removals) * 2 > self.cloud_entries
+        more likely a page that parsed wrong than a real catalog change.
+        Re-tagged entries come straight back, so they don't count."""
+        gone = [mid for mid in self.removals if mid not in self.replaced]
+        return len(gone) * 2 > self.cloud_entries
+
+    def removal_digest(self) -> str | None:
+        """Fingerprint of everything the plan deletes (registry removals and
+        stray `ollama rm`s), or None if it deletes nothing. `sync --yes`
+        applies deletions only under the digest the user approved, so a
+        page that changed since the dry run can't delete unreviewed models."""
+        items = sorted(self.removals) + sorted(f"rm {t}" for t in self.stray_tags)
+        if not items:
+            return None
+        return hashlib.sha256("\n".join(items).encode()).hexdigest()[:12]
 
 
 def _is_ollama_cloud(m: ModelEntry) -> bool:
     return m.provider_id == _OLLAMA and (m.location == "cloud" or is_cloud_tag(m.model_name))
 
 
-def _find_entry(registry: Registry, name: str, tag: str) -> ModelEntry | None:
-    for m in registry.models:
-        if m.provider_id == _OLLAMA and m.extra.get(CATALOG_NAME_KEY) == name:
-            return m
-    return next(
-        (m for m in registry.models if m.provider_id == _OLLAMA and m.model_name == tag), None
-    )
+def _stem(tag: str) -> str:
+    return tag.split(":", 1)[0]
+
+
+def _find_entry(registry: Registry, name: str, tag: str | None) -> ModelEntry | None:
+    """The registry entry for page model ``name`` whose cloud tag is ``tag``
+    (None: unknown). An entry already under the tag wins over one carrying
+    the catalog_name, so an entry an earlier sync added under a guessed tag
+    can't shadow it. With the tag unknown, fall back to the guessed tag,
+    then to the only ollama cloud entry with the same name stem."""
+    ollama = [m for m in registry.models if m.provider_id == _OLLAMA]
+    if tag is not None and (hit := next((m for m in ollama if m.model_name == tag), None)):
+        return hit
+    if hit := next((m for m in ollama if m.extra.get(CATALOG_NAME_KEY) == name), None):
+        return hit
+    if tag is not None:
+        return None
+    guess = cloud_tag(name)
+    if hit := next((m for m in ollama if m.model_name == guess), None):
+        return hit
+    kin = [m for m in ollama if _is_ollama_cloud(m) and _stem(m.model_name) == _stem(name)]
+    return kin[0] if len(kin) == 1 else None
 
 
 def _merged(page: PriceTriple, old: Any) -> PriceTriple:
@@ -423,7 +479,8 @@ def plan_sync(
     NAME column. ``resolved`` is resolve_cloud_tags()' map; None means
     "trust cloud_tag()" (no verified tags, so entries are never re-tagged).
     A None tag means the model's cloud tag is unknown: an existing entry
-    still gets its prices, but nothing is added or pulled for it."""
+    still gets its prices, nothing is added or pulled for it, and nothing
+    that may be it (entries or pulled cloud tags with its name) is removed."""
     plan = SyncPlan(
         catalog_size=len(catalog.models),
         cloud_entries=sum(1 for m in registry.models if _is_ollama_cloud(m)),
@@ -437,12 +494,21 @@ def plan_sync(
 
     for cm in catalog.models:
         tag = cloud_tag(cm.name) if resolved is None else resolved.get(cm.name)
-        entry = _find_entry(registry, cm.name, tag or cloud_tag(cm.name))
+        entry = _find_entry(registry, cm.name, tag)
+        retagged = None
         if resolved is not None and tag is not None and entry and entry.model_name != tag:
             # Its tag isn't what ollama publishes (an earlier sync guessed):
             # left unmatched, so it is removed and re-added under the real
             # tag below.
-            entry = None
+            retagged, entry = entry, None
+        if tag is None:
+            # Still on the page, just unresolved: protect whatever may be it.
+            stem = _stem(cm.name)
+            matched.update(
+                m.id for m in registry.models if _is_ollama_cloud(m) and _stem(m.model_name) == stem
+            )
+            now_listed_tags.add(cloud_tag(cm.name))
+            now_listed_tags.update(t for t in ollama_tags if is_cloud_tag(t) and _stem(t) == stem)
         if entry is not None:
             matched.add(entry.id)
             plan.routes.append(entry.id)
@@ -472,6 +538,8 @@ def plan_sync(
             plan.warnings.append(f"{new_id} already exists {where}; not adding")
             continue
         ids.add(new_id)
+        if retagged is not None:
+            plan.replaced[retagged.id] = new_id
         plan.routes.append(new_id)
         cost = _with_catalog_prices(
             Cost(subscription_price=sub_price, subscription_period=sub_period), cm
@@ -553,7 +621,9 @@ def format_plan(plan: SyncPlan, exposed: set[str] | frozenset[str] = frozenset()
         f"`ollama rm` if pulled ({len(plan.removals)}):"
     )
     lines += [
-        f"  {mid}" + (" (exposed — will be unexposed)" if mid in exposed else "")
+        f"  {mid}"
+        + (f" (re-tagged as {plan.replaced[mid]})" if mid in plan.replaced else "")
+        + (" (exposed — will be unexposed)" if mid in exposed else "")
         for mid in plan.removals
     ]
     lines.append(f"ollama rm — pulled, unregistered, off the page ({len(plan.stray_tags)}):")
@@ -564,6 +634,11 @@ def format_plan(plan: SyncPlan, exposed: set[str] | frozenset[str] = frozenset()
         f"proxy restarts only if config.yaml changes). Not yet exposed ({len(new_routes)}):"
     )
     lines += [f"  {mid}" for mid in new_routes]
+    if (digest := plan.removal_digest()) is not None:
+        lines.append(
+            f"Removal digest: {digest} (apply non-interactively with "
+            f"`--yes --approve-removals {digest}`)"
+        )
     lines += [f"warning: {w}" for w in plan.warnings]
     return "\n".join(lines)
 

@@ -364,11 +364,19 @@ def is_local_location(location: str | None) -> bool:
     return location is None or location == "" or location == LOCATION_LOCAL
 
 
-def is_model_local(location: str | None, provider_id: str, registry: Registry) -> bool:
+def is_model_local(
+    location: str | None,
+    provider_id: str,
+    registry: Registry,
+    *,
+    missing_provider_is_local: bool = False,
+) -> bool:
     """Whether a model counts as local: its own `location` override when
     set, else its provider's `location`. A `provider_id` missing from the
     registry is NOT local — mirroring model_has_local_artifact()'s
-    treatment of the same edge case.
+    treatment of the same edge case — unless `missing_provider_is_local`
+    (sync's reconcile and benchmark discovery, which only need to skip
+    explicitly-cloud models such as ollama `:cloud` stubs).
 
     Single definition for a resolution that had drifted into near-
     duplicate inline copies (queue.py's delete loop, its ready-off
@@ -380,7 +388,7 @@ def is_model_local(location: str | None, provider_id: str, registry: Registry) -
     try:
         provider = registry.provider(provider_id)
     except KeyError:
-        return False
+        return missing_provider_is_local
     return is_local_location(provider.location)
 
 
@@ -410,19 +418,6 @@ def model_has_local_artifact(model: ModelEntry, provider: ProviderEntry | None) 
     if provider is not None and provider.location == LOCATION_CLOUD:
         return False
     return provider is not None
-
-
-def has_cloud_location(model: ModelEntry, registry: Registry) -> bool:
-    """True when the model or its provider is located in the cloud (e.g. an
-    ollama `:cloud` stub: local provider, `location = "cloud"`). Unlike
-    is_model_local(), a provider missing from the registry is not cloud —
-    callers here only need to recognize explicitly-cloud entries."""
-    if model.location == LOCATION_CLOUD:
-        return True
-    try:
-        return registry.provider(model.provider_id).location == LOCATION_CLOUD
-    except KeyError:
-        return False
 
 
 def default_provider_entry(provider_id: str) -> ProviderEntry:

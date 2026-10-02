@@ -301,6 +301,14 @@ def test_delete_of_already_absent_model_is_a_noop(provider, mock_runner):
     provider.delete(variant, runner=runner)
 
 
+def test_delete_absent_matches_not_found_case_insensitively(provider, mock_runner):
+    """remove() and is_downloaded() must agree on what "absent" looks like."""
+    runner = mock_runner(returncode=1, stderr='Error: model "old:cloud" Not Found\n')
+    variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "old:cloud"}
+    provider.delete(variant, runner=runner)
+    assert provider.is_downloaded(variant, runner=runner) is False
+
+
 def test_delete_failure_raises(provider, mock_runner):
     runner = mock_runner(returncode=1, stdout="", stderr="no such model")
     variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "missing:7b"}

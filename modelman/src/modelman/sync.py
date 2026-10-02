@@ -24,7 +24,7 @@ from .registry import (
     ModelEntry,
     Registry,
     default_provider_entry,
-    has_cloud_location,
+    is_model_local,
     provider_config,
     sync_agent_providers,
 )
@@ -211,7 +211,9 @@ def reconcile(
     """
     result = SyncResult()
     for m in registry.models:
-        if m.provider_id not in RECONCILABLE_PROVIDERS or has_cloud_location(m, registry):
+        if m.provider_id not in RECONCILABLE_PROVIDERS or not is_model_local(
+            m.location, m.provider_id, registry, missing_provider_is_local=True
+        ):
             continue
         existing = state.get(m.id)
         if m.id in downloaded:
