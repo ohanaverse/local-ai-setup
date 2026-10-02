@@ -205,16 +205,22 @@ func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o
 	return res, nil
 }
 
-// LocalModels lists the registry's non-native local models that have a
-// LiteLLM mapping — the local half of the set Sync manages (CloudModels is
-// the other).
-func LocalModels(cfg *config.Config) []config.Model {
+// routeableModels lists the registry models whose location resolves to loc —
+// one filter for both halves of the set Sync manages. Skips native models and
+// native providers (prepare rejects those the same way), fails closed on a
+// dangling provider_id (ResolveLocation errors), and requires a LiteLLM
+// mapping.
+func routeableModels(cfg *config.Config, loc config.Location) []config.Model {
 	var out []config.Model
 	for _, m := range cfg.Models {
 		if m.Native {
 			continue
 		}
-		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+		p := cfg.ProviderByID(m.ProviderID)
+		if p == nil || p.Auth.Type == "native" {
+			continue
+		}
+		if l, err := cfg.ResolveLocation(m); err != nil || l != loc {
 			continue
 		}
 		if _, ok := PolicyFor(m.ProviderID); !ok {
@@ -225,28 +231,17 @@ func LocalModels(cfg *config.Config) []config.Model {
 	return out
 }
 
+// LocalModels lists the registry's non-native local models that have a
+// LiteLLM mapping — the local half of the set Sync manages (CloudModels is
+// the other).
+func LocalModels(cfg *config.Config) []config.Model {
+	return routeableModels(cfg, config.LocationLocal)
+}
+
 // CloudModels lists the registry cloud models sync routes (#179: configured
-// means exposed): non-native, with a provider entry LiteLLM can map, whose
-// location resolves to cloud. Pinned by docs/contracts/catalog-predicates.
+// means exposed) — the cloud half. Pinned by docs/contracts/catalog-predicates.
 func CloudModels(cfg *config.Config) []config.Model {
-	var out []config.Model
-	for _, m := range cfg.Models {
-		if m.Native {
-			continue
-		}
-		p := cfg.ProviderByID(m.ProviderID)
-		if p == nil || p.Auth.Type == "native" {
-			continue
-		}
-		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationCloud {
-			continue
-		}
-		if _, ok := PolicyFor(m.ProviderID); !ok {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out
+	return routeableModels(cfg, config.LocationCloud)
 }
 
 // SyncPlan is what one sync changes. Add holds desired ids whose row is
