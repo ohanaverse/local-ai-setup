@@ -17,13 +17,14 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
-// This file drives the PUBLIC wrappers (Start, Stop, StopModel) end to end
-// against the REAL litellm.Apply on a temp config.yaml, with fake provider
-// backends and httptest provider servers so the real localmodels.Inventory
-// runs. Everything else in the package tests routeAfterStart/routeAfterStop
-// directly, which leaves the wiring — "does Start actually call the hook?" —
-// unpinned: re-ordering Start to return before the hook, or dropping the hook
-// from StopModel, would keep that suite green.
+// This file drives the PUBLIC wrappers (Start, Stop, StopModelDeferred +
+// SettleRoutes) end to end against the REAL litellm.Apply on a temp
+// config.yaml, with fake provider backends and httptest provider servers so the
+// real localmodels.Inventory runs. Everything else in the package tests
+// routeAfterStart/routeAfterStop directly, which leaves the wiring — "does
+// Start actually call the hook?" — unpinned: re-ordering Start to return before
+// the hook, or dropping the hook from StopModelDeferred, would keep that suite
+// green.
 
 // wrapBackend is a provider backend that records its calls and can be told to
 // fail, so a wrapper test can drive start/stop without a real provider.
@@ -262,12 +263,13 @@ func TestStartWrapperAlreadyRunningStillFixesStaleRoutes(t *testing.T) {
 	}
 }
 
-// TestStopModelWrapperRemovesRoutes pins stop symmetry through the real
-// StopModel: a single-model provider goes down as a whole, so every one of its
-// models loses its route, while an ollama stop removes only the one model —
-// and an unrelated cloud row is never touched. Removing too much would break
-// models the user never stopped; too little leaves dead routes.
-func TestStopModelWrapperRemovesRoutes(t *testing.T) {
+// TestStopRouteRemovalSymmetry pins stop symmetry through the real deferred
+// stop and its settle: a single-model provider goes down as a whole, so every
+// one of its models loses its route, while an ollama stop removes only the one
+// model — and an unrelated cloud row is never touched. Removing too much would
+// break models the user never stopped; too little leaves dead routes. Each
+// stop settles on its own here (a batch of one), so each still costs a restart.
+func TestStopRouteRemovalSymmetry(t *testing.T) {
 	const full = `model_list:
   - model_name: ollama/a:1
     litellm_params: {model: ollama_chat/a:1, api_base: http://localhost:11434}
@@ -286,18 +288,20 @@ func TestStopModelWrapperRemovesRoutes(t *testing.T) {
 	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 
-	if err := StopModel(context.Background(), cfg, "ollama", "a:1"); err != nil {
-		t.Fatalf("StopModel(ollama): %v", err)
+	if owed, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1"); err != nil || !owed {
+		t.Fatalf("StopModelDeferred(ollama) = (%v, %v), want (true, nil)", owed, err)
 	}
+	SettleRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
 	want := []string{"ollama/b:1", "mtplx/Y--Q35", "mtplx/Y--Q27", "openrouter/z"}
 	if got := routedIDs(t, path); !slices.Equal(got, want) {
 		t.Fatalf("after ollama stop routed = %v, want %v (warn %q)", got, want, warn.String())
 	}
 
-	if err := StopModel(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil {
-		t.Fatalf("StopModel(mtplx): %v", err)
+	if owed, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil || !owed {
+		t.Fatalf("StopModelDeferred(mtplx) = (%v, %v), want (true, nil)", owed, err)
 	}
+	SettleRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
 	want = []string{"ollama/b:1", "openrouter/z"}
 	if got := routedIDs(t, path); !slices.Equal(got, want) {
@@ -307,7 +311,7 @@ func TestStopModelWrapperRemovesRoutes(t *testing.T) {
 		t.Fatalf("backend calls = %v", calls)
 	}
 	if restarts() != 2 {
-		t.Fatalf("restarts = %d, want 2 (one per stop)", restarts())
+		t.Fatalf("restarts = %d, want 2 (each stop settles its own batch of one)", restarts())
 	}
 }
 
@@ -438,12 +442,12 @@ func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
 	}
 }
 
-// TestStopModelWrapperRemovesOmlx6bitSibling verifies a stop on the omlx
-// family drops the omlx-6bit variant's route too: one physical oMLX server
-// serves both quantizations, so stopping either takes both down. Before
-// omlx-6bit had a LiteLLM policy its rows were invisible to the family sweep
-// and survived as dead routes.
-func TestStopModelWrapperRemovesOmlx6bitSibling(t *testing.T) {
+// TestStopRemovesOmlx6bitSibling verifies a stop on the omlx family drops the
+// omlx-6bit variant's route too: one physical oMLX server serves both
+// quantizations, so stopping either takes both down. Before omlx-6bit had a
+// LiteLLM policy its rows were invisible to the family sweep and survived as
+// dead routes.
+func TestStopRemovesOmlx6bitSibling(t *testing.T) {
 	const both = `model_list:
   - model_name: omlx/Four
     litellm_params: {model: openai/Four, api_base: http://localhost:8000/v1, api_key: not-needed}
@@ -465,9 +469,10 @@ func TestStopModelWrapperRemovesOmlx6bitSibling(t *testing.T) {
 		},
 	}
 
-	if err := StopModel(context.Background(), cfg, "omlx", "Four"); err != nil {
-		t.Fatalf("StopModel: %v", err)
+	if owed, err := StopModelDeferred(context.Background(), cfg, "omlx", "Four"); err != nil || !owed {
+		t.Fatalf("StopModelDeferred(omlx) = (%v, %v), want (true, nil)", owed, err)
 	}
+	SettleRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
 	if got := routedIDs(t, path); len(got) != 0 {
 		t.Fatalf("routed = %v, want none: one oMLX server serves both variants (warn %q)", got, warn.String())
@@ -514,5 +519,94 @@ func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
 	WaitPendingRoutes()
 	if restarts() != 1 {
 		t.Fatalf("restarts = %d after replace-then-fail, want 1", restarts())
+	}
+}
+
+// TestStopModelDeferredBatchRestartsOnce pins issue #142: a multi-select stop
+// writes every route removal with StopModelDeferred (no restart each), then
+// SettleRoutes bounces the proxy exactly once. One restart per stop meant N
+// overlapping `launchctl kickstart -k`s, each killing the proxy the previous
+// one had just brought up and dropping in-flight requests every time.
+func TestStopModelDeferredBatchRestartsOnce(t *testing.T) {
+	const full = `model_list:
+  - model_name: ollama/a:1
+    litellm_params: {model: ollama_chat/a:1, api_base: http://localhost:11434}
+  - model_name: ollama/b:1
+    litellm_params: {model: ollama_chat/b:1, api_base: http://localhost:11434}
+  - model_name: mtplx/Y--Q35
+    litellm_params: {model: openai/Y/Q35, api_base: http://localhost:8003/v1, api_key: not-needed}
+  - model_name: openrouter/z
+    litellm_params: {model: openrouter/z}
+`
+	path, restarts, warn := realRoutes(t, full)
+	var calls []string
+	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+
+	owed := false
+	for _, s := range []struct{ provider, name string }{{"ollama", "a:1"}, {"ollama", "b:1"}, {"mtplx", "Y/Q35"}} {
+		o, err := StopModelDeferred(context.Background(), cfg, s.provider, s.name)
+		if err != nil {
+			t.Fatalf("StopModelDeferred(%s %s): %v", s.provider, s.name, err)
+		}
+		owed = owed || o
+	}
+	WaitPendingRoutes()
+	if !owed {
+		t.Fatal("removals changed config.yaml, so a restart must be owed")
+	}
+	if restarts() != 0 {
+		t.Fatalf("restarts before settle = %d, want 0", restarts())
+	}
+	if got, want := routedIDs(t, path), []string{"openrouter/z"}; !slices.Equal(got, want) {
+		t.Fatalf("routed = %v, want %v (warn %q)", got, want, warn.String())
+	}
+	SettleRoutes(context.Background(), cfg)
+	WaitPendingRoutes()
+	if restarts() != 1 {
+		t.Fatalf("restarts after settle = %d, want 1", restarts())
+	}
+}
+
+// TestStopModelDeferredNothingRoutedOwesNothing pins that a stop whose model
+// had no route leaves no restart owed, so the batch skips the bounce entirely
+// — a stop of an unrouted model must not cost a proxy restart.
+func TestStopModelDeferredNothingRoutedOwesNothing(t *testing.T) {
+	_, restarts, _ := realRoutes(t, "model_list:\n  - model_name: openrouter/z\n    litellm_params: {model: openrouter/z}\n")
+	var calls []string
+	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+	// The first write may still change the file: every write ensures
+	// LiteLLM's launcher-required litellm_settings keys, which this minimal
+	// fixture lacks. Only the second write sees a file in normal form.
+	if _, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1"); err != nil {
+		t.Fatalf("first StopModelDeferred: %v", err)
+	}
+	owed, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1")
+	if err != nil || owed {
+		t.Fatalf("StopModelDeferred = (%v, %v), want (false, nil)", owed, err)
+	}
+	WaitPendingRoutes()
+	if restarts() != 0 {
+		t.Fatalf("restarts = %d, want 0", restarts())
+	}
+}
+
+// TestStopModelDeferredFailedStopWritesNothing pins that a failed provider
+// stop leaves the route alone and owes no restart: the model is still
+// serving, so removing its route would strand it.
+func TestStopModelDeferredFailedStopWritesNothing(t *testing.T) {
+	const full = "model_list:\n  - model_name: ollama/a:1\n    litellm_params: {model: ollama_chat/a:1, api_base: http://localhost:11434}\n"
+	path, _, _ := realRoutes(t, full)
+	var calls []string
+	swapBackend(t, "ollama", wrapBackend{calls: &calls, stopErr: errors.New("boom")})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+	owed, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1")
+	if err == nil || owed {
+		t.Fatalf("StopModelDeferred = (%v, %v), want (false, error)", owed, err)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"ollama/a:1"}) {
+		t.Fatalf("routed = %v, want the route kept", got)
 	}
 }

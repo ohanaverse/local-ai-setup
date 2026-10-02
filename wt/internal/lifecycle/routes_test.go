@@ -284,18 +284,22 @@ func TestRouteWarnsWhenProxyWaitFailsUncancelled(t *testing.T) {
 // deferred occupant-route removal is owed. Returning early would leave the
 // proxy serving the replaced model's dead route until a manual restart.
 func TestRouteAfterStartUnregisteredSettlesOwedRestart(t *testing.T) {
-	calls, _ := stubRoutes(t, litellm.Result{}, nil)
+	_, _ = stubRoutes(t, litellm.Result{}, nil)
+	restarted := false
+	restartProxy = func(context.Context) []string { restarted = true; return nil }
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, true)
 	// The settling bounce restarts asynchronously: let it finish before the
 	// second stubRoutes below re-points the seams underneath it.
 	WaitPendingRoutes()
-	if len(*calls) != 1 || len((*calls)[0].add) != 0 || len((*calls)[0].remove) != 0 {
-		t.Fatalf("owed restart not settled: calls=%+v", *calls)
+	if !restarted {
+		t.Fatal("owed restart not settled: the proxy was never restarted")
 	}
-	calls, _ = stubRoutes(t, litellm.Result{}, nil)
+	calls, _ := stubRoutes(t, litellm.Result{}, nil)
+	restarted = false
+	restartProxy = func(context.Context) []string { restarted = true; return nil }
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, false)
-	if len(*calls) != 0 {
-		t.Fatalf("nothing owed, yet the proxy was touched: %+v", *calls)
+	if len(*calls) != 0 || restarted {
+		t.Fatalf("nothing owed, yet the proxy was touched: calls=%+v restarted=%v", *calls, restarted)
 	}
 }
 
@@ -420,34 +424,24 @@ func TestWaitPendingRoutesBlocksUntilTheRestartFinishes(t *testing.T) {
 	}
 }
 
-// TestBounceRoutesBoundsTheConfigWriteLockWait pins that the settling bounce
-// hands litellm a context with a deadline. That context is what WithLock waits
-// on for <config>.lock (see TestWithLockHonorsContext, which pins that a
-// bounded context actually makes a contended lock give up): without a deadline
-// here, a lock held by another wt or by modelman would hang this cleanup path
-// — reached after a failed or Ctrl+C'd start — forever. The deadline must not
-// leak into the async restart, which runs on the goroutine's own
-// context.WithoutCancel; TestBounceRoutesSurvivesCancelledContext covers that
-// side.
-func TestBounceRoutesBoundsTheConfigWriteLockWait(t *testing.T) {
-	stubRoutes(t, litellm.Result{}, nil)
-	var applyCtx context.Context
-	applyRoutes = func(_ *config.Config, _, _ []string, o litellm.Options) (litellm.Result, error) {
-		applyCtx = o.Ctx
-		return litellm.Result{}, nil
-	}
-	began := time.Now()
+// TestBounceRoutesLeavesConfigAlone pins that the settling bounce restarts the
+// proxy without re-reading config.yaml. The removal it settles is already on
+// disk — that is what restartOwed means — so re-entering applyAndReport for an
+// empty change bought a second locked read and parse of the file the caller had
+// just written, once per single-model stop (#142). Writing again would also put
+// a lock wait back on this cleanup path, reached after a failed or Ctrl+C'd
+// start, which no longer needs one: the restart is asynchronous and detached.
+func TestBounceRoutesLeavesConfigAlone(t *testing.T) {
+	calls, _ := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	restarted := false
+	restartProxy = func(context.Context) []string { restarted = true; return nil }
 	bounceRoutes(context.Background(), routesCfg())
 	WaitPendingRoutes()
 
-	if applyCtx == nil {
-		t.Fatal("bounceRoutes passed no context to the config.yaml write")
+	if len(*calls) != 0 {
+		t.Fatalf("bounceRoutes wrote config.yaml %d times, want 0: the removal is already written", len(*calls))
 	}
-	dl, ok := applyCtx.Deadline()
-	if !ok {
-		t.Fatal("the config.yaml write's lock wait is unbounded — a contended flock would hang the settling bounce forever")
-	}
-	if budget := dl.Sub(began); budget <= 0 || budget > settleTimeout+time.Second {
-		t.Errorf("lock-wait budget = %v, want (0, %v]", budget, settleTimeout)
+	if !restarted {
+		t.Fatal("bounceRoutes did not restart the proxy")
 	}
 }

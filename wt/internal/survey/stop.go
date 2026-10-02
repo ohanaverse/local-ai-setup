@@ -19,11 +19,15 @@ import (
 )
 
 // stopDeps are the picker's seams: live inventory, the live-session refcount
-// read, and the per-model stop. Tests substitute all three.
+// read, the per-model stop and the batch's single proxy restart. Tests
+// substitute all four.
 type stopDeps struct {
 	inventory func(*config.Config) localmodels.Snapshot
 	counts    func(modelIDs []string) map[string]int
-	stop      func(ctx context.Context, cfg *config.Config, providerID, modelName string) error
+	// stop stops one model and writes its route removal without restarting
+	// the proxy; restartOwed reports that settle must run (issue #142).
+	stop   func(ctx context.Context, cfg *config.Config, providerID, modelName string) (restartOwed bool, err error)
+	settle func(ctx context.Context, cfg *config.Config)
 }
 
 func defaultStopDeps() stopDeps {
@@ -36,7 +40,8 @@ func defaultStopDeps() stopDeps {
 			_ = store.Sweep()
 			return store.Counts(ids)
 		},
-		stop: lifecycle.StopModel,
+		stop:   lifecycle.StopModelDeferred,
+		settle: lifecycle.SettleRoutes,
 	}
 }
 
@@ -251,9 +256,22 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 // one failure never blocks the rest, Ctrl+C (ctx) cancels the stop in flight
 // and skips the remainder. Returns nil, a "N of M stops failed" error, or a
 // "cancelled" error.
+//
+// The stops only write their route removals; one settle from the deferred tail
+// of the loop restarts the LiteLLM proxy once for the whole batch (issue #142).
+// The defer runs on every exit path, cancel and failure included, but calls the
+// settle only when some stop owed a restart: removals already written still
+// need that restart to take effect, and a batch that wrote nothing must not
+// bounce the proxy at all.
 func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDeps, entries []localmodels.Entry) error {
 	stoppedFamily := map[string]bool{}
 	failed := 0
+	restartOwed := false
+	defer func() {
+		if restartOwed {
+			d.settle(ctx, cfg)
+		}
+	}()
 	for _, e := range entries {
 		if ctx.Err() != nil {
 			// Ctrl+C landed while a stop was in flight (or before the first
@@ -269,7 +287,9 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 			fmt.Fprintln(w, "done")
 			continue
 		}
-		if err := d.stop(ctx, cfg, e.ProviderID, e.ModelName); err != nil {
+		owed, err := d.stop(ctx, cfg, e.ProviderID, e.ModelName)
+		restartOwed = restartOwed || owed
+		if err != nil {
 			if ctx.Err() != nil {
 				// Cancelled mid-stop: the provider CLI was killed, not broken.
 				fmt.Fprintln(w, "cancelled")
@@ -289,6 +309,13 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 }
 
 // StopEntries runs stopEntries under its own Ctrl+C/SIGTERM context.
+//
+// The batch's settle starts the proxy restart asynchronously (issue #142), so
+// the caller owes a lifecycle.WaitPendingRoutes() before the process exits — a
+// goroutine does not survive main returning, and a restart killed mid-flight
+// leaves the proxy serving the removed routes — or before it hands the proxy to
+// anything else. Its one caller, `wt stop`, reaches the wait from main's exit
+// path; the picker's own call to stopEntries exits the same way.
 func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) error {
 	ctx, cancel := stopSignalCtx()
 	defer cancel()
