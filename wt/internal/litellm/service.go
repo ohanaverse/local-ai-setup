@@ -57,6 +57,8 @@ type Options struct {
 	// before it removes routes, and returns the ids running NOW. Ids that
 	// turn out to be running are kept: a start finishing between the caller's
 	// probe and the lock would otherwise have its fresh route removed.
+	// PlanSync (the dry run) forces it off — it holds no lock and must report
+	// exactly the plan built from the original probe.
 	Recheck func() []string
 	// NoRestart writes config.yaml but leaves the proxy alone: the caller owes
 	// (and performs) the restart itself, so several route changes in one
@@ -382,6 +384,12 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 // model_list, or a no-op sync would flip File.Changed and write the file and
 // restart the proxy.
 func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error) {
+	// PlanSync holds no config.yaml lock, and Recheck is defined as Sync's
+	// under-the-lock re-verification; a dry run reports the plan built from
+	// the caller's original probe, or it could not agree with the real sync.
+	// Forced off so the exported dry run cannot run lock-less recheck
+	// semantics however it is called.
+	o.Recheck = nil
 	f, err := Open(o.path())
 	if err != nil {
 		return SyncPlan{}, err

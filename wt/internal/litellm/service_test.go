@@ -348,32 +348,54 @@ func isAdoptSubsetOfAdd(p SyncPlan) bool {
 
 // TestPlanSyncAdoptStaysSubsetOfAddWhenRecheckPrunes pins SyncPlan's documented
 // invariant — Adopt is the subset of Add that replaces an unmarked row — when
-// the under-lock Recheck filter drops an id from Add. Both lists are part of the
-// exported plan, and Sync relabels an added id "adopted" by looking it up in
-// Adopt, so an id left in Adopt after being pruned from Add describes a plan wt
-// does not carry out: a caller reports an adoption of a row that is never
-// written. Unreachable from the CLI today (the dry run nulls Recheck, and Sync
-// consults Adopt only for ids that produced an outcome), which is exactly why it
-// is worth pinning: the trap is for the next caller of PlanSync.
+// Recheck prunes an id from Add. The under-lock Recheck is a Sync concept
+// (PlanSync forces it off, see TestPlanSyncIgnoresRecheck), so the invariant is
+// exercised against planSync directly, the function both callers share. Both
+// lists are part of the exported plan, and Sync relabels an added id "adopted"
+// by looking it up in Adopt, so an id left in Adopt after being pruned from Add
+// describes a plan wt does not carry out.
 func TestPlanSyncAdoptStaysSubsetOfAddWhenRecheckPrunes(t *testing.T) {
-	o, _, _ := opts(t, `model_list:
+	f, err := Open(writeConfig(t, `model_list:
   - model_name: ollama/gemma:9b
     litellm_params: {model: ollama_chat/gemma:9b}
-`)
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	const id = "ollama/gemma:9b"
 	// The outer probe saw the local model running, so its unmarked row is an
 	// adopt; Recheck, under the lock, finds nothing running, so the add side
 	// drops it.
-	o.Recheck = func() []string { return nil }
-	plan, err := PlanSync(testConfig(), []string{id}, o)
-	if err != nil {
-		t.Fatal(err)
-	}
+	o := Options{Recheck: func() []string { return nil }}
+	plan, _ := planSync(testConfig(), f, []string{id}, o)
 	if slices.Contains(plan.Add, id) || slices.Contains(plan.Adopt, id) {
 		t.Fatalf("plan = %+v, want the pruned id gone from both Add and Adopt", plan)
 	}
 	if !isAdoptSubsetOfAdd(plan) {
 		t.Fatalf("plan = %+v, want every Adopt id also in Add", plan)
+	}
+}
+
+// TestPlanSyncIgnoresRecheck pins that the exported dry run never runs
+// Recheck: PlanSync holds no config.yaml lock (Recheck is Sync's under-the-lock
+// re-verification) and must report exactly the plan built from the caller's
+// original probe. The probe here reports the model running but Recheck would
+// find nothing running — a PlanSync that honored Recheck would both call it
+// (counted) and wrongly prune the add.
+func TestPlanSyncIgnoresRecheck(t *testing.T) {
+	o, _, _ := opts(t, "model_list: []\n")
+	called := 0
+	o.Recheck = func() []string { called++; return nil }
+	const id = "ollama/gemma:9b"
+	plan, err := PlanSync(testConfig(), []string{id}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != 0 {
+		t.Fatalf("PlanSync ran Recheck %d time(s)", called)
+	}
+	if !slices.Contains(plan.Add, id) {
+		t.Fatalf("plan = %+v, want the running model's add kept (Recheck is not PlanSync's to run)", plan)
 	}
 }
 

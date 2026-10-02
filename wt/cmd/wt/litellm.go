@@ -178,7 +178,8 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 		Recheck: func() []string { return runningIDs(probeInventory(cfg)) },
 	}
 	if dryRun {
-		o.Recheck = nil // a dry run reports the probe it took; no lock, no recheck
+		// PlanSync itself refuses a recheck: it holds no lock, so a dry run
+		// reports the probe it took.
 		plan, err := litellm.PlanSync(cfg, running, o)
 		if err != nil {
 			return err
