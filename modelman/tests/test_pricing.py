@@ -292,3 +292,27 @@ def test_merge_api_cost_preserves_time_prices():
     merged = _merge_api_cost(existing, Cost(input_price_per_million=2.0))
     assert merged.input_price_per_million == 2.0
     assert merged.time_prices == [tp]
+
+
+def test_refresh_prices_ignores_ollama_cloud_models():
+    """Issue #151: an ollama cloud model (``location = "cloud"`` on a local
+    provider) is priced by ollama.com, not OpenRouter. It must not be a refresh
+    candidate — otherwise every one warns "No OpenRouter match" — and its
+    ollama-synced cost must survive the refresh untouched."""
+    ollama_cost = Cost(input_price_per_million=1.0, output_price_per_million=2.0)
+    registry = _make_registry(
+        ModelEntry(
+            id="ollama/glm:cloud",
+            family="x",
+            provider_id="ollama",
+            model_name="glm:cloud",
+            location="cloud",
+            cost=ollama_cost,
+        )
+    )
+    result = refresh_prices(registry, runner=_runner({"data": []}))
+
+    assert result.error is None
+    assert result.updated == 0
+    assert result.warnings == []
+    assert registry.model("ollama/glm:cloud").cost == ollama_cost

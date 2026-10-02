@@ -26,8 +26,8 @@ import (
 // observe whether the call was made without touching the real modelman.toml.
 var emitPriceNotice = realEmitPriceNotice
 
-func realEmitPriceNotice() {
-	agents.PrintPriceNotice()
+func realEmitPriceNotice(cfg *config.Config) {
+	agents.PrintPriceNotice(cfg)
 }
 
 // releaseSession is a seam for tests: production releases this wt process's own
@@ -531,7 +531,7 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	// The reminder is meaningless for command agents (no priced model) —
 	// same convention survey.PromptRun already uses.
 	if m.ID != "" {
-		emitPriceNotice()
+		emitPriceNotice(cfg)
 	}
 	if err != nil {
 		var ee *exec.ExitError

@@ -882,7 +882,7 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
 	called := false
-	emitPriceNotice = func() { called = true }
+	emitPriceNotice = func(*config.Config) { called = true }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {
@@ -912,7 +912,7 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
 	var order []string
-	emitPriceNotice = func() { order = append(order, "notice") }
+	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {
@@ -955,7 +955,7 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
 	called := false
-	emitPriceNotice = func() { called = true }
+	emitPriceNotice = func(*config.Config) { called = true }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {
@@ -998,7 +998,7 @@ func TestRunAgentCmdPostExitOrder(t *testing.T) {
 		// output next to the real summary line.
 		fmt.Fprint(os.Stdout, "PICKER-MARKER\n")
 	}
-	emitPriceNotice = func() { order = append(order, "notice") }
+	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {

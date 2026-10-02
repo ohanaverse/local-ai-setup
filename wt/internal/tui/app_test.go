@@ -1608,7 +1608,7 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 		return ""
 	}
 	noticeCalled := false
-	emitPriceNotice = func() { noticeCalled = true }
+	emitPriceNotice = func(*config.Config) { noticeCalled = true }
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -1655,7 +1655,7 @@ func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
 	called := false
 	runSurvey = func(agent string, m config.Model) string { called = true; return "" }
 	noticeCalled := false
-	emitPriceNotice = func() { noticeCalled = true }
+	emitPriceNotice = func(*config.Config) { noticeCalled = true }
 
 	printPendingSummaryAndSurvey(&config.Config{})
 	if called {
@@ -1684,7 +1684,7 @@ func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.
 	pendingSurveyState = pendingSurvey{agent: "shell", m: config.Model{}}
 	runSurvey = func(agent string, m config.Model) string { return "" }
 	noticeCalled := false
-	emitPriceNotice = func() { noticeCalled = true }
+	emitPriceNotice = func(*config.Config) { noticeCalled = true }
 
 	old := os.Stdout
 	r, w, err := os.Pipe()

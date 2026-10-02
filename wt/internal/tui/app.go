@@ -1304,6 +1304,6 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 	// Command agents never touch a priced model, so the reminder is
 	// meaningless for them — same convention runSurvey already uses.
 	if summary != "" && launched.m.ID != "" {
-		emitPriceNotice()
+		emitPriceNotice(cfg)
 	}
 }

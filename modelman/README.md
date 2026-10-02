@@ -175,7 +175,7 @@ modelman start <model>          # start (and expose) a local model; a discovered
 modelman stop <model-id>        # stop (and un-expose) one local model
 modelman stop --all             # stop every running local model
 modelman provider isolate|stop|stop-all|restore|list   # low-level provider lifecycle (benchmark isolation)
-modelman refresh-prices         # refresh cloud models' per-token prices from OpenRouter
+modelman refresh-prices         # refresh OpenRouter-priced models' per-token prices
 modelman delete-family <name>   # remove an empty family's leftover registry entry
 modelman usage report           # wt launch history joined with LiteLLM spend
 modelman migrate                # one-time import of legacy config (see below)

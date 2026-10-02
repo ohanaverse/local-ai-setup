@@ -10,9 +10,14 @@ import (
 // PrintPriceNotice reads modelman's price_refresh_last_run and prints the
 // stale-pricing notice when pricing is not fresh. It is the shared
 // production emission helper used by both the TUI and non-TUI launch paths.
-// Errors reading or parsing modelman.toml are silently ignored, matching the
-// exposure-flags tolerance model.
-func PrintPriceNotice() {
+// Silent when cfg has no OpenRouter-priced model (#151) — `modelman
+// refresh-prices` would have nothing to refresh. Errors reading or parsing
+// modelman.toml are silently ignored, matching the exposure-flags tolerance
+// model.
+func PrintPriceNotice(cfg *config.Config) {
+	if !HasOpenRouterPricedModel(cfg) {
+		return
+	}
 	last, present := config.PriceRefreshLastRun()
 	if notice := PriceNotice(last, present, time.Now()); notice != "" {
 		fmt.Println(notice)
@@ -40,4 +45,31 @@ func PriceNotice(lastRun string, present bool, now time.Time) string {
 		return fmt.Sprintf("wt: token pricing last refreshed %s — run 'modelman refresh-prices'", lastRun)
 	}
 	return "wt: token pricing has never been refreshed — run 'modelman refresh-prices'"
+}
+
+// HasOpenRouterPricedModel reports whether any model in cfg takes its price
+// from OpenRouter — what `modelman refresh-prices` refreshes. It mirrors
+// modelman's _is_openrouter_priced (pricing.py): an openrouter model, or a
+// model of a non-native cloud provider. Keyed on the provider's location, not
+// the model's, so ollama cloud models (location "cloud" on the local ollama
+// provider, priced by ollama.com) don't count. A model whose ProviderID has
+// no registry provider doesn't count either (p == nil, location
+// unresolvable) — the Python side skips it silently too. A nil cfg has no
+// models.
+func HasOpenRouterPricedModel(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, m := range cfg.Models {
+		if m.Native {
+			continue
+		}
+		if m.ProviderID == "openrouter" {
+			return true
+		}
+		if p := cfg.ProviderByID(m.ProviderID); p != nil && p.Auth.Type != "native" && p.Location == config.LocationCloud {
+			return true
+		}
+	}
+	return false
 }
