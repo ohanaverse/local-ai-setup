@@ -129,8 +129,10 @@ func TestApplyFileLevelFailures(t *testing.T) {
 }
 
 // TestSyncReconcilesLocalRoutes pins reconciliation: running local models get
-// a route, stopped local models lose theirs, cloud rows and unrelated rows are
-// untouched. This is what repairs the stale-route drift.
+// a route and stopped local models lose theirs, while a row wt does not own
+// (keep/me here) is left alone. That is what repairs the stale-route drift.
+// The fixture's unmarked cloud row (openrouter/x/y) is not left untouched: the
+// reconciling sync adopts and rewrites it, which is why it stays in place.
 func TestSyncReconcilesLocalRoutes(t *testing.T) {
 	o, _, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b

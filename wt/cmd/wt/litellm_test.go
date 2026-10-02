@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -690,6 +692,103 @@ func TestLitellmSyncDryRunJSON(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(p); string(after) != string(before) {
 		t.Fatalf("dry run wrote config.yaml:\n%s", after)
+	}
+}
+
+// jsonKeySet returns a JSON object's top-level keys, sorted, or fails the test
+// (helper for the contract pins below).
+func jsonKeySet(t *testing.T, raw []byte) []string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("not a JSON object: %v\n%s", err, raw)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// TestLitellmSyncDryRunJSONMatchesContract pins the `sync --dry-run --json`
+// document against the shared cross-language fixture's sync_dry_run block.
+// modelman parses exactly these keys, and the fixture is read by both the Go
+// and Python contract suites, so a field added to syncPlanJSON (or to its
+// nested plan) without updating the fixture would break modelman's dry-run
+// preview silently at runtime. The fixture is left unchanged.
+func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
+	plan := litellm.SyncPlan{
+		Add:    []string{"openrouter/x/y"},
+		Adopt:  []string{"ollama/gemma:9b"},
+		Remove: []string{"openrouter/old"},
+		Errors: []litellm.Outcome{{ID: "ghost/m", Err: errors.New(`unknown provider "ghost"`)}},
+	}
+	var out, errOut bytes.Buffer
+	// A plan with errors exits 1, like a real sync.
+	if err := reportSyncPlan(&out, &errOut, plan, true); !errors.Is(err, errLitellmIDFailed) {
+		t.Fatalf("reportSyncPlan err = %v, want errLitellmIDFailed", err)
+	}
+	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	block, ok := fixture["sync_dry_run"]
+	if !ok {
+		t.Fatal("fixture has no sync_dry_run block")
+	}
+	var got, want any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out.String())
+	}
+	if err := json.Unmarshal(block, &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sync --dry-run --json =\n%s\nfixture =\n%s", out.String(), block)
+	}
+	// Pin the key sets too, so a field that is added to syncPlanJSON but left
+	// at its zero value (and would otherwise slip past a value comparison only
+	// because the fixture happens not to exercise it) still fails here.
+	if gotKeys, wantKeys := jsonKeySet(t, out.Bytes()), jsonKeySet(t, block); !slices.Equal(gotKeys, wantKeys) {
+		t.Fatalf("root keys = %v, fixture = %v", gotKeys, wantKeys)
+	}
+	var gotDoc, wantDoc map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &gotDoc); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(block, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if gotKeys, wantKeys := jsonKeySet(t, gotDoc["plan"]), jsonKeySet(t, wantDoc["plan"]); !slices.Equal(gotKeys, wantKeys) {
+		t.Fatalf("plan keys = %v, fixture = %v", gotKeys, wantKeys)
+	}
+}
+
+// TestLitellmListTextOutput pins list's human-readable output: one
+// "id<TAB>owner" line per row, owner "wt" for a marked row and "hand-written"
+// otherwise. A user reads this to decide which rows are wt's (safe to let sync
+// manage) and which are their own; a wrong owner or a missing tab silently
+// misleads them about which rows wt may rewrite or remove.
+func TestLitellmListTextOutput(t *testing.T) {
+	litellmEnv(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+    model_info: {wt_managed: true}
+  - model_name: hand/alias
+    litellm_params: {model: openrouter/x}
+`)
+	var out bytes.Buffer
+	if err := runLitellmList(&out, false); err != nil {
+		t.Fatal(err)
+	}
+	const want = "ollama/gemma:9b\twt\nhand/alias\thand-written\n"
+	if got := out.String(); got != want {
+		t.Fatalf("list = %q, want %q", got, want)
 	}
 }
 
