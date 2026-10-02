@@ -226,7 +226,7 @@ Global rotation: each successful launch records one model id in `~/.config/agent
 - The last-launched row gets a `> ` prefix — **plain ASCII on purpose**: Unicode geometric shapes are East Asian Ambiguous width and misalign CJK terminals.
 - The leftmost column is the live "in use" count from `refcount.Store.Counts` (2-rune prefix, clamped at 9), before the rotation marker.
 - Columns: FAMILY, MODEL, LOC, STATUS, EXPOSED, RUNNING, COST, 1D, 7D, 30D, SURVEY. `wt smoke`'s picker has no agent context: SURVEY is empty and usage uses model-level `Counts`.
-- Sort: cloud + running local by cost (output then input price; local/subscription-only = $0; no-data last), then 7-day usage; non-running local alphabetical.
+- Sort: native models first (#172); then cloud + running local by cost (output then input price; local/subscription-only = $0; no-data last), then 7-day usage; non-running local alphabetical.
 - TUI callers fetch the agent's full catalog once (`cfg.ModelsForAgent`), narrow it with `cfg.EligibleModelsIn` (single-traversal filter), and pass it to `enterModelPhase`.
 
 ```bash

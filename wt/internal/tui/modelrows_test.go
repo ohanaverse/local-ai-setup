@@ -85,3 +85,39 @@ func TestSortRowsTwoGroups(t *testing.T) {
 		t.Errorf("order = %s\nwant    %s", got, want)
 	}
 }
+
+// TestSortRowsNativeFirst verifies issue #172: a native model sorts ahead of
+// every other row, even when it would otherwise lose the $0 tie on 7-day
+// usage to a subscription-only cloud model or an idle running local model.
+func TestSortRowsNativeFirst(t *testing.T) {
+	rows := []tableRow{
+		{Row: catalog.Row{Location: config.LocationLocal, Running: true, Model: config.Model{ID: "run-idle"}}},
+		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "sub", Cost: config.ModelCost{SubscriptionPrice: f64(100)}}}},
+		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "native", Native: true}}, counts: usage.UsageCounts{SevenDay: 50}},
+		{Row: catalog.Row{Location: config.LocationLocal, Model: config.Model{ID: "a-off"}}},
+	}
+	sortRows(rows)
+	want := "native,run-idle,sub,a-off"
+	if got := strings.Join(rowIDs(rows), ","); got != want {
+		t.Errorf("order = %s\nwant    %s", got, want)
+	}
+}
+
+// TestSortRowsNativeTieBreak verifies several native rows keep the ordinary
+// cost → 7-day usage → id order among themselves.
+func TestSortRowsNativeTieBreak(t *testing.T) {
+	native := func(id string, sevenDay int) tableRow {
+		return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id, Native: true}}, counts: usage.UsageCounts{SevenDay: sevenDay}}
+	}
+	rows := []tableRow{
+		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "cheap", Cost: config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}}}},
+		native("n-busy", 9),
+		native("n-b", 1),
+		native("n-a", 1),
+	}
+	sortRows(rows)
+	want := "n-a,n-b,n-busy,cheap"
+	if got := strings.Join(rowIDs(rows), ","); got != want {
+		t.Errorf("order = %s\nwant    %s", got, want)
+	}
+}

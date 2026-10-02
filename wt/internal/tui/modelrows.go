@@ -99,13 +99,17 @@ func rowCostKey(r tableRow) costKey {
 	return k
 }
 
-// sortRows orders rows in place: group 1 (cloud + running local) by cost
-// ascending then 7-day usage ascending then id; group 2 (non-running local)
-// alphabetical by id.
+// sortRows orders rows in place: native models first (issue #172), then
+// group 1 (cloud + running local) by cost ascending then 7-day usage
+// ascending then id; group 2 (non-running local) alphabetical by id. Several
+// native rows keep the group-1 order among themselves.
 func sortRows(rows []tableRow) {
 	group1 := func(r tableRow) bool { return r.Location != config.LocationLocal || r.Running }
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
+		if a.Model.Native != b.Model.Native {
+			return a.Model.Native
+		}
 		ga, gb := group1(a), group1(b)
 		if ga != gb {
 			return ga

@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Native models (the agent's own subscription model) now always sort first in
+  the model picker (#172). Before, a native model with no price data sorted
+  as "no data", below every priced cloud model.
 - The model picker is now an aligned table whose header is rendered as the list
   title:
   `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D  30D  SURVEY`
