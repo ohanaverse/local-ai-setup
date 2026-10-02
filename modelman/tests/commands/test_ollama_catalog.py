@@ -70,6 +70,13 @@ def ops(monkeypatch):
 
 def _tags(monkeypatch, tags):
     monkeypatch.setattr("modelman.ollama_catalog_cli.list_ollama_tags", lambda: tags)
+    # Tag resolution hits ollama.com/library; assume the canonical guess.
+    from modelman.ollama_catalog import cloud_tag
+
+    monkeypatch.setattr(
+        "modelman.ollama_catalog_cli.resolve_cloud_tags",
+        lambda names: ({n: cloud_tag(n) for n in names}, []),
+    )
 
 
 def test_dry_run_writes_nothing(seeded, monkeypatch):
@@ -289,3 +296,21 @@ def test_mass_removal_force_applies(mostly_retired, monkeypatch, ops):
     assert result.exit_code == 0, result.output
     (q,) = ops["queued"]
     assert sorted(q.deletes) == ["ollama/retired2:cloud", "ollama/retired:cloud"]
+
+
+def test_no_tag_resolves_exits_2_and_changes_nothing(seeded, monkeypatch, ops):
+    """ollama.com/library unreachable: refuse rather than plan every page
+    model as unknown."""
+    from modelman.main import app
+
+    _tags(monkeypatch, [])
+    monkeypatch.setattr(
+        "modelman.ollama_catalog_cli.resolve_cloud_tags",
+        lambda names: (dict.fromkeys(names), ["x: offline; skipped"]),
+    )
+    before = seeded.read_text()
+    result = CliRunner().invoke(app, ["ollama-catalog", "sync", "--yes", "--html", str(FIXTURE)])
+    assert result.exit_code == 2, result.output
+    assert "could not resolve" in result.output
+    assert seeded.read_text() == before
+    assert ops["queued"] == []

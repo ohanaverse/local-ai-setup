@@ -20,6 +20,12 @@ LiteLLM's routes in `config.yaml`.
   wt writes prices only at expose time. A removed entry that was exposed
   loses its route, and the plan marks these `(exposed — will be unexposed)`.
   wt restarts the proxy only if `config.yaml` actually changed.
+- **Real cloud tags.** A page name doesn't determine its tag: some models
+  publish `<name>:cloud`, others only a sized `<name>:<size>-cloud`. Each
+  bare name is resolved from `https://ollama.com/library/<name>/tags`. A
+  model with no cloud tag, or several, is skipped with a `warning:` line;
+  ask the user before hand-editing anything for it. An existing entry under
+  the wrong tag is replaced by the correctly tagged one.
 - **Off-peak prices.** These are stored as a `[[models.cost.time_prices]]`
   row labelled `off-peak`: UTC, weekdays outside 12:00–18:00, and all day
   on weekends.
@@ -55,7 +61,7 @@ Run everything from `modelman/`.
 |---|---|---|
 | 0 | done (or nothing to do) | — |
 | 1 | a pull, an `ollama rm`, a LiteLLM expose/unexpose, or the registry save failed; the other steps still ran | read the error, then re-run the sync (it only redoes what is still out of sync) |
-| 2 | page fetch failed, or `ollama list` couldn't run; nothing changed | check network / start ollama, retry; or pass `--html <saved page>` |
+| 2 | page fetch failed, `ollama list` couldn't run, or no cloud tag resolved (ollama.com/library unreachable); nothing changed | check network / start ollama, retry; or pass `--html <saved page>` |
 | 3 | page shape changed | follow "Repairing the parser" |
 | 4 | mass removal refused (> half the cloud entries); nothing changed | verify the parse, then `--force` with the user's OK |
 

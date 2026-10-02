@@ -23,6 +23,7 @@ from .ollama_catalog import (
     parse_pricing,
     plan_sync,
     remove_ollama_tag,
+    resolve_cloud_tags,
     save_failed_html,
 )
 from .queue import QueuedOps
@@ -86,7 +87,19 @@ def sync(
         )
         raise typer.Exit(2)
 
-    plan = plan_sync(load_registry(), catalog, tags)
+    resolved, tag_warnings = resolve_cloud_tags([cm.name for cm in catalog.models])
+    if catalog.models and all(t is None for t in resolved.values()):
+        typer.echo(
+            "error: could not resolve a cloud tag for any model on ollama.com/library; "
+            "nothing was changed",
+            err=True,
+        )
+        for w in tag_warnings:
+            typer.echo(f"  {w}", err=True)
+        raise typer.Exit(2)
+
+    plan = plan_sync(load_registry(), catalog, tags, resolved)
+    plan.warnings += tag_warnings
     exposed = {mid for mid, st in load_state().models.items() if st.exposed}
     typer.echo(format_plan(plan, exposed))
     if dry_run:
@@ -106,7 +119,7 @@ def sync(
     # worker may have written since the plan was printed), and act on that.
     try:
         with locked_registry() as fresh:
-            fresh_plan = plan_sync(fresh, catalog, tags)
+            fresh_plan = plan_sync(fresh, catalog, tags, resolved)
             apply_sync(fresh, fresh_plan)
             deletes = {mid: model_entry_to_variant(fresh.model(mid)) for mid in fresh_plan.removals}
     except OSError as exc:

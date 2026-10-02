@@ -213,7 +213,10 @@ class OllamaProvider(Provider):
         r = (runner or _default_runner)(
             ["ollama", "rm", variant["name"]], capture_output=True, text=True
         )
-        if r.returncode != 0:
+        # Already absent is success. is_downloaded() can't always confirm
+        # absence first: `ollama show` on a retired cloud model errors with
+        # "was retired", not "not found", so the delete is attempted anyway.
+        if r.returncode != 0 and "not found" not in (r.stderr or ""):
             raise RuntimeError(f"`ollama rm {variant['name']}` failed (exit {r.returncode})")
 
     def size_of(self, variant: VariantSpec, runner: _Runner | None = None) -> int | None:

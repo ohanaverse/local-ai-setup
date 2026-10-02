@@ -289,6 +289,18 @@ def test_delete_runs_ollama_rm(provider, mock_runner):
     runner.assert_called_with(["ollama", "rm", "glm-5.2:cloud"], capture_output=True, text=True)
 
 
+def test_delete_of_already_absent_model_is_a_noop(provider, mock_runner):
+    """`ollama rm` on a tag that isn't there (e.g. a retired cloud model that
+    was never pulled — `ollama show` can't confirm absence for those) means
+    the goal is already met, so the delete must not fail."""
+    runner = mock_runner(
+        returncode=1,
+        stderr="Warning: unable to stop model 'old:cloud'\nError: model 'old:cloud' not found\n",
+    )
+    variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "old:cloud"}
+    provider.delete(variant, runner=runner)
+
+
 def test_delete_failure_raises(provider, mock_runner):
     runner = mock_runner(returncode=1, stdout="", stderr="no such model")
     variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "missing:7b"}

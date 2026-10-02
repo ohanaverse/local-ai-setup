@@ -279,6 +279,14 @@ page were just reported. It now mirrors the page:
   wt's `BuildEntry` writes `model_info` cost fields only at expose time, so
   re-exposing is how changed registry prices reach `config.yaml`. wt
   restarts the proxy only if the document changed.
+- **Real cloud tags** (found on the first live run): the page name doesn't
+  determine the tag (`mistral-large-3` publishes only `:675b-cloud`).
+  `resolve_cloud_tags` reads `ollama.com/library/<name>/tags`: `:cloud`
+  wins, else the single `*-cloud` tag; none/several/unreadable → skipped
+  with a warning, never guessed. Entries under an unpublished tag are
+  replaced. A retired cloud model's `ollama show` errors with "was retired"
+  rather than "not found", so `OllamaProvider.delete` treats `ollama rm`'s
+  "not found" as already done.
 - **One confirmation** (or `--yes`) covers the whole plan. `--delete` and
   `--no-deletes` are gone.
 - **Safety**: an unreadable `ollama list` exits 2 and changes nothing. A
