@@ -131,11 +131,15 @@ new logic here lives in wt; modelman only deletes code and calls
 - **`docs/contracts/modelman.sample.toml`:** drop the exposure rule and its
   entries; keep one legacy row that still carries `exposed = true`, to prove
   both readers ignore it.
-- **`docs/contracts/registry.sample.toml`:** add rows covering each catalog
-  and pricing branch (closes #180): openrouter model, native cloud provider,
-  ollama cloud model on the local ollama provider, non-native cloud provider,
-  and a model whose `provider_id` has no provider entry. Both sides assert the
-  same expected id lists:
+- **New `docs/contracts/catalog-predicates.sample.toml` +
+  `catalog-predicates.expected.json`** (closes #180; a separate file rather
+  than new rows in `registry.sample.toml`, whose provider/model counts both
+  existing fixture tests assert): rows covering each catalog and pricing
+  branch — openrouter model, native cloud provider, ollama cloud model on
+  the local ollama provider, non-native cloud provider without a LiteLLM
+  mapping, a model whose `provider_id` has no provider entry, and a local
+  model. The expected id lists live once, in the JSON; both sides assert
+  them:
   - catalog members (wt `InCatalog`);
   - OpenRouter-priced ids (modelman `_is_openrouter_priced`, wt
     `HasOpenRouterPricedModel`);
@@ -182,7 +186,8 @@ new logic here lives in wt; modelman only deletes code and calls
    fixtures including #180's rows. Compatible with the current modelman.
 2. modelman: switch to `sync()`; delete the expose machinery; explicit
    benchmark models.
-3. wt: remove `litellm expose|unexpose` and the flag readers.
+3. wt: remove `litellm expose|unexpose`, the flag readers and the picker's
+   EXPOSED column (nothing left to show once the flag is gone).
 4. Docs and guides.
 
 Each PR leaves `make test-all` green. wt's additions land first, so modelman
