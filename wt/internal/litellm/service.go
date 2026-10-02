@@ -347,6 +347,11 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	// seen deduplicates: two rows can share one id and one RemoveRow drops both,
 	// so the id belongs in the plan once. Without it the same removal was
 	// announced twice in the report and handed twice to callers of PlanSync.
+	//
+	// want is filled before prepare runs — deliberately, since `managed` holds
+	// every cloud id: a desired cloud row whose build fails still short-circuits
+	// this loop by name and keeps its route, where moving that assignment below
+	// the error branch would let one transient build failure delete a live route.
 	seen := map[string]bool{}
 	for _, r := range f.Rows() {
 		if want[r.ID] || slices.Contains(o.Untouched, r.ID) || seen[r.ID] {

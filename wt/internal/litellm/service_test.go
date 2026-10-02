@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -600,14 +601,15 @@ func TestSyncAdoptionCarriesUserParams(t *testing.T) {
 
 // TestSyncCarriesUserButNotWTParams pins the carry rule on every rewrite, not
 // just adoption: a marked row's user-authored key (timeout) is carried, while
-// wt-owned keys are not — a custom api_base on a marked row loses to the
-// registry on the next sync, because a provider base_url change must reach
-// config.yaml (a marked row is wt's to re-derive).
+// all three wt-owned keys are not — a hand-written model, api_base or api_key
+// on a marked row loses to the registry on the next sync, because a changed
+// provider endpoint or mapping (and, for a stale model, the deployment LiteLLM
+// actually dials) must reach config.yaml: a marked row is wt's to re-derive.
 func TestSyncCarriesUserButNotWTParams(t *testing.T) {
 	const id = "ollama/gemma:9b"
 	o, _, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
-    litellm_params: {model: ollama_chat/gemma:9b, api_base: "http://localhost:9999", timeout: 120}
+    litellm_params: {model: ollama_chat/EVIL:1b, api_base: "http://localhost:9999", api_key: sk-hand-written, timeout: 120}
     model_info: {wt_managed: true}
 `)
 	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
@@ -623,6 +625,59 @@ func TestSyncCarriesUserButNotWTParams(t *testing.T) {
 	}
 	if params["api_base"] != "http://localhost:11434" {
 		t.Errorf("api_base = %v, want the registry's http://localhost:11434", params["api_base"])
+	}
+	// The other two wt-authored keys are pinned the same way, and they need the
+	// pin: a stale model is the string LiteLLM actually dials, so a hand-written
+	// one surviving a rewrite would leave wt believing it owns a row that
+	// routes somewhere else. A mutation that dropped model/api_key from
+	// wtParamKeys survived the whole suite before this assertion existed.
+	if params["model"] != "ollama_chat/gemma:9b" {
+		t.Errorf("model = %v, want the registry's ollama_chat/gemma:9b", params["model"])
+	}
+	if v, ok := params["api_key"]; ok {
+		t.Errorf("api_key = %v, want none: ollama's policy authors no api_key, so a hand-written one must not be carried", v)
+	}
+}
+
+// TestSyncIgnoresMalformedUserParams pins that a rewrite never derives a
+// garbled row from a litellm_params node it cannot interpret. carryUserParams
+// copies the old row's user-authored params by walking that node's Content as
+// key/value pairs, which is only valid while the node is a mapping whose keys
+// are scalars; a hand-edited sequence ([foo, bar] — every element paired off)
+// or a mapping with a complex key (? {weird: key}: 1 — a key node whose Value
+// is "") is read as params instead. Both inputs are ones LiteLLM itself would
+// reject on load, so this is a data-fidelity guard rather than a
+// reachable-in-practice crash: it keeps wt's rule that a file it cannot
+// interpret is left alone (checkModelList refuses a non-list model_list the
+// same way) instead of silently writing derived garbage.
+func TestSyncIgnoresMalformedUserParams(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"sequence", "model_list:\n  - model_name: openrouter/x/y\n    litellm_params: [foo, bar]\n"},
+		{"complex key", "model_list:\n  - model_name: openrouter/x/y\n    litellm_params:\n      ? {weird: key}\n      : 1\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o, _, p := opts(t, tc.body)
+			if _, err := Sync(testConfig(), nil, o); err != nil {
+				t.Fatal(err)
+			}
+			f, _ := Open(p)
+			params := decode(t, mapGet(f.row("openrouter/x/y"), "litellm_params"))
+			// The rebuilt row is exactly what the registry authors — before the
+			// guard the sequence injected foo:bar and the complex key injected a
+			// "" key, so either leaks a param LiteLLM would choke on.
+			want := map[string]any{
+				"model":    "openrouter/x/y",
+				"api_base": "https://openrouter.ai/api/v1",
+				"api_key":  "sk-test",
+			}
+			if !reflect.DeepEqual(params, want) {
+				t.Fatalf("litellm_params = %v, want the registry's %v with no injected key", params, want)
+			}
+		})
 	}
 }
 

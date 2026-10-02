@@ -52,14 +52,15 @@ var enforcedSettings = []string{
 	"use_chat_completions_url_for_anthropic_messages",
 }
 
-// wtParamKeys are the litellm_params keys wt itself authors on every row it
-// writes (entry.go's BuildEntry). A row replacement never carries these over
-// from the old row: the registry and provider policy own them, and a change
-// there must reach config.yaml. Every other key on the old row is
-// user-authored (a hand-written timeout, rate limit, ...) and is carried over
-// when the new row lacks it — the presence-based keys additional_drop_params
-// and use_chat_completions_api (EnsureSettings writes them only when absent)
-// fall out of this rule.
+// wtParamKeys are the litellm_params keys wt itself derives from the registry
+// and provider policy (entry.go's BuildEntry): model unconditionally, and
+// api_base/api_key only when the provider supplies a base URL or a credential
+// ref. A row replacement never carries these over from the old row: the
+// registry and provider policy own them, and a change there must reach
+// config.yaml. Every other key on the old row is user-authored (a hand-written
+// timeout, rate limit, ...) and is carried over when the new row lacks it — the
+// presence-based keys additional_drop_params and use_chat_completions_api
+// (EnsureSettings writes them only when absent) fall out of this rule.
 var wtParamKeys = map[string]bool{"model": true, "api_base": true, "api_key": true}
 
 // droppedOllamaChatParams are dropped by default on every fresh ollama_chat/
@@ -264,13 +265,25 @@ func carryUserParams(old, row *yaml.Node) {
 	if oldParams == nil || newParams == nil {
 		return
 	}
+	if oldParams.Kind != yaml.MappingNode || newParams.Kind != yaml.MappingNode {
+		// A hand-edited litellm_params that is not a mapping ([foo, bar], say)
+		// has no key/value pairs to read: pairing off its Content would invent
+		// param names from its elements. Leave the row to be rewritten from the
+		// registry rather than derive one from a node we cannot interpret.
+		return
+	}
 	for i := 0; i+1 < len(oldParams.Content); i += 2 {
-		k := oldParams.Content[i].Value
-		if wtParamKeys[k] {
+		k := oldParams.Content[i]
+		if k.Kind != yaml.ScalarNode {
+			// A complex key (? {weird: key}: 1) is a mapping node whose Value
+			// is "": carried as-is it would inject a nameless param.
 			continue
 		}
-		if v := oldParams.Content[i+1]; mapGet(newParams, k) == nil {
-			mapSet(newParams, k, v)
+		if wtParamKeys[k.Value] {
+			continue
+		}
+		if v := oldParams.Content[i+1]; mapGet(newParams, k.Value) == nil {
+			mapSet(newParams, k.Value, v)
 		}
 	}
 }
