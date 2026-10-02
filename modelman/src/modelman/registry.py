@@ -412,6 +412,19 @@ def model_has_local_artifact(model: ModelEntry, provider: ProviderEntry | None) 
     return provider is not None
 
 
+def has_cloud_location(model: ModelEntry, registry: Registry) -> bool:
+    """True when the model or its provider is located in the cloud (e.g. an
+    ollama `:cloud` stub: local provider, `location = "cloud"`). Unlike
+    is_model_local(), a provider missing from the registry is not cloud —
+    callers here only need to recognize explicitly-cloud entries."""
+    if model.location == LOCATION_CLOUD:
+        return True
+    try:
+        return registry.provider(model.provider_id).location == LOCATION_CLOUD
+    except KeyError:
+        return False
+
+
 def default_provider_entry(provider_id: str) -> ProviderEntry:
     """Return a fresh default ProviderEntry for a reconcilable local provider.
 

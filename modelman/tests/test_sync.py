@@ -633,3 +633,25 @@ def test_sync_backfills_missing_protocols(tmp_path):
     openrouter = next(p for p in result.providers if p.id == "openrouter")
     assert openrouter.protocols == ["openai-chat"]
     assert openrouter.auth.base_url is None
+
+
+def test_reconcile_leaves_cloud_model_state_alone():
+    """An ollama cloud stub has no on-disk artifact (`ollama list` SIZE `-`),
+    so reconcile can't observe it: its ready flag (set by `ollama-catalog
+    sync`'s pull) must survive, as the TUI's reconcile_model_state does."""
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="ollama/x:cloud",
+                family="x",
+                provider_id="ollama",
+                model_name="x:cloud",
+                location="cloud",
+            ),
+        ]
+    )
+    state = StateStore()
+    state.set("ollama/x:cloud", ModelState(ready=True, exposed=True))
+    result = reconcile(registry, state, {})
+    assert result.downloaded == [] and result.not_downloaded == []
+    assert state.get("ollama/x:cloud") == ModelState(ready=True, exposed=True)

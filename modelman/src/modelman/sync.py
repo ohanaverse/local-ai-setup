@@ -24,6 +24,7 @@ from .registry import (
     ModelEntry,
     Registry,
     default_provider_entry,
+    has_cloud_location,
     provider_config,
     sync_agent_providers,
 )
@@ -204,11 +205,13 @@ def reconcile(
 
     `downloaded` maps model_id -> (disk_path, size_bytes). Models not in the
     map are marked not downloaded. exposed is preserved (owned by the
-    LiteLLM feature, not sync). Non-reconcilable providers are untouched.
+    LiteLLM feature, not sync). Non-reconcilable providers are untouched,
+    and so are cloud models on them (ollama `:cloud` stubs): they have no
+    on-disk artifact to observe, so their ready flag is left as-is.
     """
     result = SyncResult()
     for m in registry.models:
-        if m.provider_id not in RECONCILABLE_PROVIDERS:
+        if m.provider_id not in RECONCILABLE_PROVIDERS or has_cloud_location(m, registry):
             continue
         existing = state.get(m.id)
         if m.id in downloaded:

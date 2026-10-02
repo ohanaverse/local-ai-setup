@@ -7,10 +7,10 @@
 ## Prerequisites
 
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
-- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks models on local providers (provider in `LOCAL_PROVIDERS`: ollama, omlx, mlx_lm_server, mtplx) with `exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`). Selection is by provider id only: OpenRouter models are never picked, but ollama-hosted `:cloud` models are (their provider is `ollama`). To see which ids the default run would pick, list the exposed ones on local providers:
+- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks models on local providers (provider in `LOCAL_PROVIDERS`: ollama, omlx, mlx_lm_server, mtplx) with `exposed = true` in `~/.config/local-ai/modelman.toml`, skipping cloud-located ones such as ollama `:cloud` models (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`). OpenRouter models are never picked; a `:cloud` model is picked only when named with `--model`. To see which ids the default run would pick:
 
   ```bash
-  python3 -c "import tomllib,os;d=tomllib.load(open(os.path.expanduser('~/.config/local-ai/modelman.toml'),'rb'));[print(k) for k,v in d.get('model_state',{}).items() if v.get('exposed') and k.split('/')[0] in ('ollama','omlx','mlx_lm_server','mtplx')]"
+  python3 -c "import tomllib,os;c=lambda f:tomllib.load(open(os.path.expanduser('~/.config/local-ai/'+f),'rb'));r=c('registry.toml');s=c('modelman.toml').get('model_state',{});loc={p['id']:p.get('location') for p in r.get('providers',[])};[print(m['id']) for m in r.get('models',[]) if m['provider_id'] in ('ollama','omlx','mlx_lm_server','mtplx') and 'cloud' not in (m.get('location'),loc.get(m['provider_id'])) and s.get(m['id'],{}).get('exposed')]"
   ```
 
   (one id per line; the set changes whenever you expose/unexpose, and an id must also still be in `registry.toml`.) If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
@@ -103,7 +103,7 @@ Flag semantics (from `uv run modelman benchmark run --help` and `src/modelman/be
 - `--direct` / `--litellm` — scope to one route; default benchmarks BOTH (direct URL + `http://localhost:4000/v1`), meaning every pass issues two requests per target.
 - `--passes N` (default 1), `--cooldown <seconds>` (default 15.0) — sleep between passes, not between routes.
 - `--results-dir <path>` — default `/Users/keith/.config/local-ai/benchmarks`.
-- Targets come from local providers only (`ollama`, `omlx`, `mlx_lm_server`, `mtplx`; llamacpp retired 2026-09-07): OpenRouter rows are out of scope, but ollama-hosted `:cloud` models count, since their provider is `ollama` (see Prerequisites). Which providers your targets can come from depends on the `[[providers]]` in your registry (`grep -A1 '^\[\[providers\]\]' ~/.config/local-ai/registry.toml`).
+- Targets come from local providers only (`ollama`, `omlx`, `mlx_lm_server`, `mtplx`; llamacpp retired 2026-09-07): OpenRouter rows are out of scope, and cloud-located models (ollama `:cloud`) are skipped unless named with `--model`. Which providers your targets can come from depends on the `[[providers]]` in your registry (`grep -A1 '^\[\[providers\]\]' ~/.config/local-ai/registry.toml`).
 
 ### 3. Multi-pass methodology
 

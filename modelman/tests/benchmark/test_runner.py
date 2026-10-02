@@ -121,6 +121,33 @@ def test_discover_targets_defaults_to_exposed_local_models():
     assert [t.model_id for t in targets] == ["ollama/a"]
 
 
+def test_discover_targets_skips_cloud_models_unless_named():
+    """An ollama-hosted cloud model (local provider, location = "cloud") is
+    not a local benchmark target: the default and --family runs skip it;
+    only an explicit --model selects it."""
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+            ModelEntry(
+                id="ollama/c:cloud",
+                family="f",
+                provider_id="ollama",
+                model_name="c:cloud",
+                location="cloud",
+            ),
+        ],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(exposed=True))
+    state.set("ollama/c:cloud", ModelState(exposed=True))
+
+    assert [t.model_id for t in discover_targets(registry, state)] == ["ollama/a"]
+    assert [t.model_id for t in discover_targets(registry, state, family="f")] == ["ollama/a"]
+    named = discover_targets(registry, state, model_ids=["ollama/c:cloud"])
+    assert [t.model_id for t in named] == ["ollama/c:cloud"]
+
+
 def test_discover_targets_by_family_overrides_exposed():
     """--family selects every model in that family regardless of expose state.
 
