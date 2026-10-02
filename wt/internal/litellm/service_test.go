@@ -664,6 +664,82 @@ func TestSyncDeduplicatesRepeatedStaleRow(t *testing.T) {
 	}
 }
 
+// TestSyncPrunesStaleDuplicateOfDesiredModel pins that a duplicate of a
+// DESIRED id (a running local or cloud model) is reconciled. planSync compared
+// only the first row per id and skipped the whole id when that row matched the
+// rebuilt one, and the removal loop skips wanted ids — so a stale duplicate
+// sharing a wanted id survived every sync and LiteLLM load-balanced between
+// the fresh and stale backends. The canonical row comes from a real first
+// sync, so the duplicate copies exactly what wt would save (drop params and
+// pricing included): only its backend model string is stale.
+func TestSyncPrunesStaleDuplicateOfDesiredModel(t *testing.T) {
+	const id = "ollama/gemma:9b"
+	o, restarts, p := opts(t, "model_list: []\n")
+	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	var dupe map[string]any
+	if err := f.row(id).Decode(&dupe); err != nil {
+		t.Fatal(err)
+	}
+	dupe["litellm_params"].(map[string]any)["model"] = "ollama_chat/STALE-GONE"
+	node, err := toNode(dupe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml, err := f.modelList()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml.Content = append(ml.Content, node)
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanSync(testConfig(), []string{id}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Add, []string{id}) || len(plan.Adopt) != 0 || len(plan.Remove) != 0 {
+		t.Fatalf("plan = %+v, want the first row (managed, value-equal) re-planned so the duplicate is pruned", plan)
+	}
+	res, err := Sync(testConfig(), []string{id}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, oc := range res.Outcomes {
+		got = append(got, oc.ID+":"+oc.Action)
+	}
+	if s := strings.Join(got, ","); s != id+":routed" {
+		t.Fatalf("outcomes = %s, want one routed line for the duplicated id", s)
+	}
+	f2, _ := Open(p)
+	rows := readRows(t, p)
+	n := 0
+	for _, r := range rows {
+		if r.ID == id {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("rows = %v, want exactly one %s row (the stale duplicate pruned)", rows, id)
+	}
+	var params map[string]any
+	if err := mapGet(f2.row(id), "litellm_params").Decode(&params); err != nil {
+		t.Fatal(err)
+	}
+	if params["model"] != "ollama_chat/gemma:9b" {
+		t.Fatalf("surviving row model = %v, want the fresh backend, not STALE-GONE", params["model"])
+	}
+	// The pruned sync is finished; the next one must be a clean no-op.
+	before := *restarts
+	if res, err := Sync(testConfig(), []string{id}, o); err != nil || res.Changed || *restarts != before {
+		t.Fatalf("third sync: err=%v changed=%v restarts=%d→%d, want a no-op", err, res.Changed, before, *restarts)
+	}
+}
+
 // TestSyncUnchangedDoesNotRestart pins that a second sync with nothing to do
 // writes nothing and does not bounce the proxy (each bounce drops requests).
 func TestSyncUnchangedDoesNotRestart(t *testing.T) {

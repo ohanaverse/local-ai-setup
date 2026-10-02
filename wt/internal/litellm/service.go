@@ -287,6 +287,14 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 	}
 	var plan SyncPlan
 	want := map[string]bool{}
+	// rowsPerID counts the mapping rows sharing each model_name: LiteLLM
+	// load-balances across duplicates, so a value-equal FIRST row still needs
+	// SetRow when a second row shares the id (SetRow replaces the first row
+	// and drops the rest). Only a single value-equal row is a clean no-op.
+	rowsPerID := map[string]int{}
+	for _, r := range f.Rows() {
+		rowsPerID[r.ID]++
+	}
 	for _, id := range desired {
 		want[id] = true
 		row, err := prepare(cfg, id, true)
@@ -301,7 +309,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) SyncPlan
 			// quoting styles ('ollama/gemma:9b') a freshly built one lacks,
 			// so byte equality would report every unchanged row as changed.
 			var oldv, newv any
-			if old.Decode(&oldv) == nil && row.Decode(&newv) == nil && reflect.DeepEqual(oldv, newv) {
+			if old.Decode(&oldv) == nil && row.Decode(&newv) == nil && reflect.DeepEqual(oldv, newv) && rowsPerID[id] == 1 {
 				continue
 			}
 		}
