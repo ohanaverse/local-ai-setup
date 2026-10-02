@@ -22,6 +22,7 @@ from typing import Any
 
 import requests
 
+from .providers.ollama import _says_not_found
 from .registry import Cost, ModelEntry, Registry, _cost_to_dict
 from .time_pricing import TimePrice, Window
 
@@ -93,8 +94,18 @@ def offpeak_time_price(p: PriceTriple) -> TimePrice:
     )
 
 
+_HTTP_SESSION: requests.Session | None = None
+
+
 def _default_http_runner(url: str, **kwargs: Any) -> requests.Response:
-    return requests.get(url, timeout=30, **kwargs)
+    """One Session per process: the library tag lookups run 8-wide, and a
+    bare `requests.get` per model re-handshakes TLS for every one of them.
+    Safe to share across those threads — urllib3's pool is thread-safe and
+    `http.cookiejar` (which `Session` mutates on a Set-Cookie) locks."""
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        _HTTP_SESSION = requests.Session()
+    return _HTTP_SESSION.get(url, timeout=30, **kwargs)
 
 
 def fetch_pricing_html(runner: Any = None) -> str:
@@ -260,15 +271,25 @@ LIBRARY_TAGS_URL = "https://ollama.com/library/{name}/tags"
 
 def verified_tags(registry: Registry, ollama_tags: list[str]) -> dict[str, str]:
     """Page name -> tag, for catalog entries whose tag `ollama list` shows:
-    a pulled tag exists, so it needn't be looked up again."""
+    a pulled tag exists, so it needn't be looked up again.
+
+    A name claimed by two pulled entries (an earlier re-tag that saved its
+    addition but was killed before deleting the entry it replaced) is left
+    out — which of the two the page publishes is exactly what the library
+    lookup answers, and answering it from the registry picks one by
+    position. Unanswered, the lookup re-tags instead of removing the entry
+    that is actually current."""
     pulled = set(ollama_tags)
-    return {
-        name: m.model_name
-        for m in registry.models
-        if m.provider_id == _OLLAMA
-        and (name := m.extra.get(CATALOG_NAME_KEY))
-        and m.model_name in pulled
-    }
+    seen: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for m in registry.models:
+        name = m.extra.get(CATALOG_NAME_KEY) if m.provider_id == _OLLAMA else None
+        if not name or m.model_name not in pulled:
+            continue
+        if name in seen and seen[name] != m.model_name:
+            ambiguous.add(name)
+        seen[name] = m.model_name
+    return {n: t for n, t in seen.items() if n not in ambiguous}
 
 
 def _lookup_cloud_tag(name: str, runner: Any) -> tuple[str | None, str | None]:
@@ -541,19 +562,30 @@ def plan_sync(
         if retagged is not None:
             plan.replaced[retagged.id] = new_id
         plan.routes.append(new_id)
+        # A re-tag is the same model under the tag ollama publishes, so build
+        # the new entry off the one it replaces: the hand-set extras, the
+        # `ollama show` model_info and the subscription survive the id change.
+        # (The LiteLLM route name IS the id, so that one cannot.)
         cost = _with_catalog_prices(
-            Cost(subscription_price=sub_price, subscription_period=sub_period), cm
+            retagged.cost
+            if retagged is not None and retagged.cost is not None
+            else Cost(subscription_price=sub_price, subscription_period=sub_period),
+            cm,
         )
         plan.additions.append(
             ModelEntry(
                 id=new_id,
-                family=_family_for(registry, cm.name),
+                family=retagged.family if retagged is not None else _family_for(registry, cm.name),
                 provider_id=_OLLAMA,
                 model_name=tag,
                 location="cloud",
                 source="curated",
                 cost=cost,
-                extra={CATALOG_NAME_KEY: cm.name},
+                model_info=dict(retagged.model_info) if retagged is not None else {},
+                extra={
+                    **(retagged.extra if retagged is not None else {}),
+                    CATALOG_NAME_KEY: cm.name,
+                },
             )
         )
         if tag not in pulled:
@@ -666,8 +698,12 @@ def list_ollama_tags(runner: Any = None) -> list[str] | None:
 
 
 def remove_ollama_tag(tag: str, runner: Any = None) -> None:
+    """`ollama rm`, treating "not found" as already done — the same reading
+    `OllamaProvider.delete` applies, via the same test. A tag that vanished
+    between `ollama list` and here (a concurrent `ollama rm`, the TUI's
+    delete, ollama pruning a retired stub) is gone, not a failure."""
     r = (runner or _default_ollama_runner)(
         ["ollama", "rm", tag], capture_output=True, text=True, timeout=60
     )
-    if r.returncode != 0:
+    if r.returncode != 0 and not _says_not_found(r.stderr):
         raise RuntimeError(f"`ollama rm {tag}` failed (exit {r.returncode}): {r.stderr.strip()}")

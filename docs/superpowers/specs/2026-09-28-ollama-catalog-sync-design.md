@@ -304,3 +304,33 @@ page were just reported. It now mirrors the page:
   plan that removes more than half the cloud entries exits 4 unless
   `--force` is given; re-tagged entries (removed and re-added under the
   real tag) don't count. A pull that fails drops that model's expose.
+
+## Follow-ups from the 2026-10-01 re-review
+
+- **A re-tag carries the entry it replaces.** Removed and re-added is still
+  the same model, so the new entry inherits the old one's family, hand-set
+  `extra` keys, `model_info` and (as the base the page's prices overwrite)
+  its subscription. Only the id cannot follow, and therefore neither can the
+  LiteLLM route name, which is the id: `ollama/foo:cloud` becomes
+  `ollama/foo:675b-cloud`, and spend history keyed on the old route id stays
+  there.
+- **An ambiguous `verified_tags` name is left to the lookup.** Two pulled
+  entries can carry the same `catalog_name` — an earlier re-tag that saved
+  its addition but was killed before the queue deleted the entry it
+  replaced. Answering the name from the registry would pick one of them by
+  position, and picking the stale one makes the sync delete + `ollama rm`
+  the entry that is actually current while re-exposing the deprecated tag.
+  Such a name is now omitted from `verified_tags`, so the library lookup
+  answers it and `_find_entry`'s tag-wins rule matches the right entry; if
+  the lookup fails, the unresolved-tag protection covers both.
+- **`ollama rm`'s "not found" is already done on the stray-tag path too.**
+  `remove_ollama_tag` now applies the same `_says_not_found` test as
+  `OllamaProvider.delete`, rather than failing on any non-zero exit. A tag
+  that vanished between `ollama list` and the rm loop (a concurrent
+  `ollama rm`, the TUI's delete, ollama pruning a retired stub) no longer
+  turns an otherwise-complete sync into `error:` + exit 1.
+- **One `requests.Session` for the lookups.** The library lookups run
+  8-wide; a bare `requests.get` per model re-handshakes TLS for each. Safe
+  to share across those threads (urllib3's pool is thread-safe, and
+  `http.cookiejar` locks), though it is per-process — a sync is a one-shot
+  CLI run, so a retry after a partial failure still starts cold.

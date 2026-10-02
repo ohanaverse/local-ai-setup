@@ -448,6 +448,13 @@ def test_remove_ollama_tag():
     remove_ollama_tag("x:cloud", runner=ok)
     assert calls == [["ollama", "rm", "x:cloud"]]
 
+    def gone(args, **kw):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="Error: model 'x' not found")
+
+    # The reading OllamaProvider.delete applies, via the same test: a tag that
+    # vanished between `ollama list` and here is done, not a failure.
+    remove_ollama_tag("x:cloud", runner=gone)
+
     def fail(args, **kw):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="nope")
 
@@ -651,6 +658,55 @@ def test_plan_replaces_entry_whose_tag_does_not_resolve():
     assert plan.updates == []
 
 
+def test_plan_retag_carries_the_replaced_entries_setup_forward():
+    """A re-tag is the same model under the tag ollama publishes, so the new
+    entry keeps the old one's family, hand-set extras, model_info and
+    subscription — not a fresh default. (The LiteLLM route name is the id,
+    so that one can't come across.)"""
+    from modelman.ollama_catalog import plan_sync
+    from modelman.registry import Cost
+
+    old = _entry(
+        "mistral-large-3:cloud",
+        family="mistral",
+        cost=Cost(
+            input_price_per_million=9.0,
+            subscription_price=7.0,
+            subscription_period="month",
+        ),
+        extra={"catalog_name": "mistral-large-3", "context_length": 131072},
+    )
+    old.model_info = {"supports_function_calling": True}
+    plan = plan_sync(
+        _registry(old),
+        _catalog(_cm("mistral-large-3", 1.0, 0.1, 2.0)),
+        [],
+        resolved={"mistral-large-3": "mistral-large-3:675b-cloud"},
+    )
+    (added,) = plan.additions
+    assert added.family == "mistral"
+    assert added.extra == {"catalog_name": "mistral-large-3", "context_length": 131072}
+    assert added.model_info == {"supports_function_calling": True}
+    assert added.cost is not None
+    assert (added.cost.subscription_price, added.cost.subscription_period) == (7.0, "month")
+    # ... and the page's prices still replace the ones it carried over.
+    assert added.cost.input_price_per_million == 1.0
+
+
+def test_plan_retag_of_an_entry_with_no_cost_takes_the_shared_subscription():
+    from modelman.ollama_catalog import plan_sync
+
+    plan = plan_sync(
+        _registry(_entry("x:cloud", extra={"catalog_name": "x"})),
+        _catalog(_cm("x", 1.0, 0.1, 2.0)),
+        [],
+        resolved={"x": "x:675b-cloud"},
+    )
+    (added,) = plan.additions
+    assert added.extra == {"catalog_name": "x"}
+    assert plan.removals == ["ollama/x:cloud"]
+
+
 def test_plan_unresolved_model_keeps_entry_but_skips_pull_and_add():
     from modelman.ollama_catalog import plan_sync
 
@@ -755,3 +811,19 @@ def test_verified_tags_only_pulled_catalog_entries():
         _entry("c:cloud"),  # no catalog_name
     )
     assert verified_tags(reg, ["a:1t-cloud", "c:cloud"]) == {"a": "a:1t-cloud"}
+
+
+def test_verified_tags_skips_a_name_two_pulled_entries_claim():
+    """An interrupted re-tag leaves the guessed tag and the real one both
+    pulled and both carrying the name. Answering from the registry picks one
+    by position; leaving it unanswered hands it to the library lookup, which
+    resolves the tag the page publishes — so the current entry is the one
+    matched, and the stale one is what gets re-tagged away."""
+    from modelman.ollama_catalog import verified_tags
+
+    reg = _registry(
+        _entry("foo:cloud", extra={"catalog_name": "foo"}),
+        _entry("foo:675b-cloud", extra={"catalog_name": "foo"}),
+        _entry("bar:cloud", extra={"catalog_name": "bar"}),
+    )
+    assert verified_tags(reg, ["foo:cloud", "foo:675b-cloud", "bar:cloud"]) == {"bar": "bar:cloud"}

@@ -163,6 +163,68 @@ def test_sync_marks_exposed_removals(seeded, monkeypatch, ops):
     assert "ollama/retired:cloud (exposed — will be unexposed)" in result.output
 
 
+def test_sync_retags_entry_under_the_published_tag(seeded, monkeypatch, ops):
+    """The one flow that deletes and adds in the same run: the entry an
+    earlier sync filed under a guessed tag goes, the real tag arrives, and
+    the setup the old entry carried rides across with it."""
+    from modelman.main import app
+    from modelman.ollama_catalog import cloud_tag
+    from modelman.registry import Cost, ModelEntry, load_registry, save_registry
+
+    reg = load_registry(seeded)
+    reg.models.append(
+        ModelEntry(
+            id="ollama/mistral-large-3:cloud",
+            family="mistral",
+            provider_id="ollama",
+            model_name="mistral-large-3:cloud",
+            location="cloud",
+            source="curated",
+            cost=Cost(input_price_per_million=9.0),
+            model_info={"supports_function_calling": True},
+            extra={"catalog_name": "mistral-large-3", "context_length": 131072},
+        )
+    )
+    save_registry(reg, seeded)
+    monkeypatch.setattr(
+        "modelman.ollama_catalog_cli.list_ollama_tags", lambda: ["mistral-large-3:cloud"]
+    )
+    # Every page model resolves to the canonical guess but mistral-large-3,
+    # which publishes only a sized tag.
+    monkeypatch.setattr(
+        "modelman.ollama_catalog_cli.resolve_cloud_tags",
+        lambda names, known=None: (
+            {
+                n: "mistral-large-3:675b-cloud" if n == "mistral-large-3" else cloud_tag(n)
+                for n in names
+            },
+            [],
+        ),
+    )
+
+    dry = CliRunner().invoke(app, ["ollama-catalog", "sync", "--dry-run", "--html", str(FIXTURE)])
+    assert dry.exit_code == 0, dry.output
+    assert (
+        "ollama/mistral-large-3:cloud (re-tagged as ollama/mistral-large-3:675b-cloud)"
+        in dry.output
+    )
+
+    result = _sync_yes()
+    assert result.exit_code == 0, result.output
+    (q,) = ops["queued"]
+    assert q.deletes["ollama/mistral-large-3:cloud"]["name"] == "mistral-large-3:cloud"
+    assert q.ready["ollama/mistral-large-3:675b-cloud"] is True
+    assert "ollama/mistral-large-3:675b-cloud" in q.exposes
+    assert "ollama/mistral-large-3:cloud" not in q.exposes
+    # The old tag is already being rm'd through the delete, so it must not be
+    # rm'd a second time as a stray.
+    assert ops["removed"] == []
+    added = load_registry(seeded).model("ollama/mistral-large-3:675b-cloud")
+    assert added.family == "mistral"
+    assert added.extra["context_length"] == 131072
+    assert added.model_info == {"supports_function_calling": True}
+
+
 def test_sync_confirm_no_changes_nothing(seeded, monkeypatch, ops):
     from modelman.main import app
 

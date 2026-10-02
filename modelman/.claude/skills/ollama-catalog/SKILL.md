@@ -26,8 +26,12 @@ LiteLLM's routes in `config.yaml`.
   model with no cloud tag, or several, is skipped with a `warning:` line
   (nothing is added or pulled for it, and nothing with its name is removed);
   ask the user before hand-editing anything for it. An existing entry under
-  the wrong tag is replaced by the correctly tagged one (`re-tagged as …`).
-  Names whose registry tag is already pulled aren't looked up again.
+  the wrong tag is replaced by the correctly tagged one (`re-tagged as …`);
+  the replacement keeps the old entry's family, extras and `model_info`, but
+  its LiteLLM route name changes, because the route name *is* the model id.
+  Names whose registry tag is already pulled aren't looked up again, unless
+  two pulled entries claim the same name — an interrupted re-tag — in which
+  case the lookup decides which one is current.
 - **Off-peak prices.** These are stored as a `[[models.cost.time_prices]]`
   row labelled `off-peak`: UTC, weekdays outside 12:00–18:00, and all day
   on weekends.
