@@ -63,9 +63,11 @@ new logic here lives in wt; modelman only deletes code and calls
 - **Ownership marker:** every row wt writes to LiteLLM's `config.yaml` gets
   `model_info.wt_managed: true` (set in `litellm.BuildEntry`). **wt touches a
   row only when it owns it: the row carries the marker, or its `model_name`
-  equals a managed registry id** — any cloud id with a LiteLLM mapping, or a
-  running local id; the name clause covers rows config.yaml accumulated before
-  the marker existed, which would otherwise strand a stale route forever.
+  equals a managed registry id** — for removal that is any cloud id with a
+  LiteLLM mapping or any local id, running or not; adoption below is narrower,
+  into the desired set (cloud, or a running local). The name clause covers rows
+  config.yaml accumulated before the marker existed, which would otherwise
+  strand a stale route forever.
   Unmarked rows with any other name are hand-written and are never touched —
   not removed, not rewritten.
 - **Adoption (one-time migration):** on the first `wt litellm sync` after
