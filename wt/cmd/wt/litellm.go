@@ -225,6 +225,12 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 	}
 	sort.Strings(fams)
 	for _, f := range fams {
+		if snap.Ambiguous[f] {
+			// The probe answered; it is the served model that cannot be
+			// tied to one registered pairing, not a probe failure.
+			warnings = append(warnings, fmt.Sprintf("provider %q is serving, but no registered model matches what it serves, so wt cannot tell which one is running (status %q); its model routes were left unchanged", f, snap.Providers[f]))
+			continue
+		}
 		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 	}
 	downs := make([]string, 0, len(snap.Down))

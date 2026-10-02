@@ -28,8 +28,10 @@ const (
 	// StatusPartial means discovery succeeded but live running-state could
 	// not be determined (ollama: /api/tags ok, /api/ps failed; omlx/mtplx:
 	// the model-dir scan succeeded, /v1/models failed; mlx_lm_server, which
-	// has no discovery, only running state: /v1/models failed). Entries'
-	// Running flags are not trustworthy for this family.
+	// has no discovery, only running state: /v1/models failed, or it
+	// answered but no registered pairing of several matches — see
+	// Snapshot.Ambiguous). Entries' Running flags are not trustworthy for
+	// this family.
 	StatusPartial Status = "partial"
 	// StatusUnreachable means discovery itself failed: for ollama, /api/tags
 	// failed (daemon down); for omlx/mtplx, the model-directory scan (or
@@ -76,6 +78,11 @@ type Snapshot struct {
 	// serving, so those families' Running flags (all false) can be trusted
 	// even though their Status is not StatusOK.
 	Down map[string]bool
+	// Ambiguous marks families whose server answered but whose running
+	// model could not be identified: mlx_lm_server with two or more
+	// registered pairings, none of which name-matches a served id. Their
+	// Status is StatusPartial; this only lets callers say why.
+	Ambiguous map[string]bool
 }
 
 // Inventory probes every local provider in the registry concurrently and
@@ -373,7 +380,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 	}
 	wg.Wait()
 
-	snap := Snapshot{Providers: map[string]Status{}, Down: map[string]bool{}}
+	snap := Snapshot{Providers: map[string]Status{}, Down: map[string]bool{}, Ambiguous: map[string]bool{}}
 	sources := map[string]*source{}
 	for i, f := range families {
 		sources[f] = results[i]
@@ -407,6 +414,26 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 			e.Running = src.isRunning(name)
 		}
 		snap.Entries = append(snap.Entries, e)
+	}
+	// mlx_lm_server's /v1/models lists HF repo ids and resolved paths, never a
+	// "<target>+draft-<draft>" pairing name, so with several registered
+	// pairings and no name match wt cannot tell which one is serving. OK would
+	// let sync remove the serving pairing's route; Partial leaves the family's
+	// routes alone.
+	if src := sources["mlx_lm_server"]; src != nil && src.status == StatusOK &&
+		src.registered >= 2 && len(src.loaded) > 0 {
+		matched := false
+		for _, e := range snap.Entries {
+			if e.Running && familyOf(e.ProviderID) == "mlx_lm_server" {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			src.status = StatusPartial
+			snap.Providers["mlx_lm_server"] = StatusPartial
+			snap.Ambiguous["mlx_lm_server"] = true
+		}
 	}
 	for _, f := range families {
 		src := sources[f]

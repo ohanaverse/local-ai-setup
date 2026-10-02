@@ -296,6 +296,59 @@ func TestInventoryMlxLMServerRunningNoDiscovery(t *testing.T) {
 	}
 }
 
+// TestInventoryMlxLMServerUnmatchedPairingsArePartial pins the ambiguous
+// mlx_lm_server case: the server answered, two or more pairings are registered
+// with the TUI's "<target>+draft-<draft>" names, and /v1/models lists only HF
+// repo ids / resolved paths, so no pairing can name-match. wt cannot tell which
+// pairing is serving, so the family is Partial (routes left alone) and marked
+// Ambiguous for the warning. Reporting OK there made every sync silently remove
+// the serving pairing's route.
+func TestInventoryMlxLMServerUnmatchedPairingsArePartial(t *testing.T) {
+	srv := modelsServer(t, "mlx-community/Qwen3.8-27B-4bit", "mlx-community/Qwen3.8-0.6B-4bit", "/Users/x/models/q")
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-0.6B-4bit"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-1.7B-4bit"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || snap.Down["mlx_lm_server"] || !snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v ambiguous = %v, want partial, not down, ambiguous",
+			snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	for _, e := range snap.Entries {
+		if e.Running {
+			t.Errorf("entry %s reads running; no pairing matched", e.ModelID)
+		}
+	}
+}
+
+// TestInventoryMlxLMServerMatchedPairingIsOK verifies that with several
+// registered pairings, a served id that name-matches one of them keeps the
+// family OK with exactly that pairing running — the ambiguity rule must not
+// demote a server whose pairing wt can identify.
+func TestInventoryMlxLMServerMatchedPairingIsOK(t *testing.T) {
+	srv := modelsServer(t, "pair-a")
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusOK || snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q ambiguous = %v, want ok", snap.Providers["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	if a, _ := byModelID(snap, "mlx_lm_server/a"); !a.Running {
+		t.Errorf("pair-a not running: %+v", snap.Entries)
+	}
+	if b, _ := byModelID(snap, "mlx_lm_server/b"); b.Running {
+		t.Errorf("pair-b running: %+v", snap.Entries)
+	}
+}
+
 // TestInventoryMlxLMServerRefusedIsDown verifies a stopped mlx_lm_server (its
 // port refuses the connection) marks the family Down with nothing running.
 // Down is what lets `wt litellm sync` remove the stale route of a stopped

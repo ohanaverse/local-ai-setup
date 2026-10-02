@@ -1126,3 +1126,35 @@ func TestSyncRoutesMlxLMServerByProbe(t *testing.T) {
 		t.Errorf("refused: warnings = %v, want %v", warns, want)
 	}
 }
+
+// TestSyncRoutesMlxLMServerAmbiguousLeavesRoutes pins that with two or more
+// registered mlx_lm_server pairings whose "+draft-" names match none of the
+// served ids (mlx_lm.server lists HF repo ids, never the pairing name), sync
+// leaves every pairing's route alone with a warning saying why. wt cannot tell
+// which pairing is serving; treating the family as OK removed the serving
+// pairing's working route on every sync, silently.
+func TestSyncRoutesMlxLMServerAmbiguousLeavesRoutes(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"mlx-community/Qwen3.8-27B-4bit"},{"id":"mlx-community/Qwen3.8-0.6B-4bit"}]}`))
+	}))
+	defer up.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: up.URL + "/v1"}}},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-0.6B-4bit", Location: config.LocationLocal},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-1.7B-4bit", Location: config.LocationLocal},
+		},
+	}
+	snap := localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); len(got) != 0 {
+		t.Errorf("desiredLocalIDs = %v, want none", got)
+	}
+	untouched, warns := syncUntouchedAndWarnings(cfg, snap, map[string]bool{"mlx_lm_server/a": true})
+	if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
+		t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
+	}
+	want := []string{`provider "mlx_lm_server" is serving, but no registered model matches what it serves, so wt cannot tell which one is running (status "partial"); its model routes were left unchanged`}
+	if !slices.Equal(warns, want) {
+		t.Errorf("warnings = %v, want %v", warns, want)
+	}
+}
