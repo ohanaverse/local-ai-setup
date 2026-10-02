@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - **LiteLLM proxy running with Postgres spend logging** — the stack from [01-initial-setup](01-initial-setup.md) / [04-litellm-config](04-litellm-config.md). Spend rows land in the Postgres `LiteLLM_SpendLogs` table; without it, the Requests/tokens/Spend columns and the reconciliation have nothing to read (launch counts still work).
-- **wt launch history exists**: `/Users/keith/.config/agent-wt/usage.jsonl` — wt appends one JSON line per TUI launch (guide 06 §7). First line here:
+- **wt launch history exists**: `/Users/keith/.config/agent-wt/usage.jsonl` — wt appends one JSON line per TUI launch (guide 06 §7). Example line (captured 2026-08-29 — your model ids will differ):
   ```json
   {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
   ```
@@ -21,7 +21,7 @@
 uv run modelman usage report --days 7 | tee /tmp/usage-$(date +%F).md
 ```
 
-Full Markdown report to stdout, saved copy in `/tmp/usage-2026-08-29.md` (same file every day-of-run, overwritten on rerun).
+Full Markdown report to stdout, saved copy in `/tmp/usage-<YYYY-MM-DD>.md` (same file for every run that day, overwritten on rerun).
 
 For a recurring snapshot, tee to a persistent path (e.g. `~/notes/usage-$(date +%F).md`) — `/tmp` is purged by macOS every 3 days.
 
@@ -36,7 +36,7 @@ Check the flags first (they changed here — always `uv run modelman`):
 uv run modelman usage report --help
 ```
 
-Expected (live 2026-08-29, minus uv's unrelated `VIRTUAL_ENV` stderr warning):
+Expected (captured 2026-08-29, minus uv's unrelated `VIRTUAL_ENV` stderr warning):
 
 ```
  Usage: modelman usage report [OPTIONS]
@@ -58,7 +58,7 @@ Run the default 7-day report:
 uv run modelman usage report --days 7
 ```
 
-Real output shape (2026-08-29): all section headings, verbatim rows — one WT-only ollama row, the one matched row, and one LiteLLM-only openrouter row (spend logs contain no keys, nothing redacted):
+Example output (captured 2026-08-29 — your models, rows, and numbers will differ; the point is the shape): all section headings, with three verbatim rows — one WT-only row, one matched row, and one LiteLLM-only row (spend logs contain no keys, nothing redacted):
 
 ```markdown
 # Usage Report — 2026-08-22 to 2026-08-29
@@ -71,13 +71,13 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 | qwen3.8:27b-mlx | ollama/qwen3.8:27b-mlx | 0 / 4 / 5 | 4 | 152 | 630 | $0.0000 |
 | openrouter | openrouter/qwen/qwen3.8-27b | 0 / 0 / 0 | 5 | 517 | 3,135 | $0.0085 |
 
-⋮ — 18 more real rows in between, same shape; 21 total, one per model seen on either side
+⋮ — more rows in between, same shape; one row per model seen on either side
 
 ## Reconciliation
 
 ### WT-only launches
 - ollama/deepseek-v4-flash:cloud — 15 launches in the last 7 days, no LiteLLM spend
-- ⋮ 13 more rows (14 today) ⋮
+- ⋮ more rows ⋮
 
 ### LiteLLM-only spend
 - openrouter/qwen/qwen3.8-27b — $0.0085 spend, 0 wt launches
@@ -90,16 +90,16 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 
 ### 2. Reading the report
 
-- **Summary table** — one row per model found on *either* side (launch history or LiteLLM spend), sorted by family. Launch columns `1d/7d/30d` are fixed buckets from `usage.jsonl`, independent of `--days`. `Requests/tokens/Spend` come from `LiteLLM_SpendLogs` within the `--days` window. A row with both launches and requests = the model actually went through LiteLLM for agent traffic (the `ollama/qwen3.8:27b-mlx` row above). There is **no separate "matched" section** — a match is just a row with both numbers populated.
+- **Summary table** — one row per model found on *either* side (launch history or LiteLLM spend), sorted by family. Launch columns `1d/7d/30d` are fixed buckets from `usage.jsonl`, independent of `--days`. `Requests/tokens/Spend` come from `LiteLLM_SpendLogs` within the `--days` window. A row with both launches and requests = the model actually went through LiteLLM for agent traffic (the second row in the example above). There is **no separate "matched" section** — a match is just a row with both numbers populated.
 - **`## Reconciliation`** has exactly two subsections:
   - `### WT-only launches` — models with launches in the fixed 7-day bucket but zero `LiteLLM_SpendLogs` rows inside the `--days` window.
   - `### LiteLLM-only spend` — models LiteLLM logged spend for with no wt launch.
-- **`## Last wt launch`** — the bare model id from `/Users/keith/.config/agent-wt/rotation.state` (single global slot, written only by the wt TUI launch path — see [06-wt-agents-and-models](06-wt-agents-and-models.md)). Live both read `ollama/glm-5.3-flash:cloud`.
+- **`## Last wt launch`** — the bare model id from `/Users/keith/.config/agent-wt/rotation.state` (single global slot, written only by the wt TUI launch path — see [06-wt-agents-and-models](06-wt-agents-and-models.md)). `cat` that file to confirm it matches the report.
 
 ### 3. Interpreting mismatches
 
 - **Matched rows** (launches > 0 *and* requests > 0): agent traffic flowed through the LiteLLM proxy. Normal state for models exposed via LiteLLM.
-- **WT-only launches**: wt launches with no LiteLLM spend — the agent reached the model's native API directly (ollama `:11434` or its cloud endpoints, oMLX `:8000`) and those requests never log to Postgres. On this box that is *most* rows (all the `ollama/...` ones), not a bug. Spends only reconcile for models that went through LiteLLM.
+- **WT-only launches**: wt launches with no LiteLLM spend — the agent reached the model's native API directly (ollama `:11434` or its cloud endpoints, oMLX `:8000`) and those requests never log to Postgres. When most of your launches go to native endpoints, this section is most of the report — not a bug. Spends only reconcile for models that went through LiteLLM.
 
   After enabling LiteLLM routing (`wt litellm on`), non-native launches
   route through LiteLLM, so matched rows should become the norm. Remaining
@@ -108,11 +108,11 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
   - native models (unmetered subscriptions)
   - traffic that bypassed wt entirely (e.g. direct `curl` to Ollama/oMLX)
 
-- **LiteLLM-only spend**: something used the proxy without a wt launch in the window — ad-hoc `curl`/scripts/other clients. The live `openrouter/qwen/*` rows ($0.0003–$0.0085) are exactly this.
-- **Filters narrow but don't warn.** Live tests (both exit 0):
+- **LiteLLM-only spend**: something used the proxy without a wt launch in the window — ad-hoc `curl`/scripts/other clients. In the 2026-08-29 example above, the `openrouter/...` row ($0.0085, zero launches) was exactly this.
+- **Filters narrow but don't warn.** Observed 2026-08-29 (both exit 0; substitute your own family/model ids):
   - `--family openrouter` → Summary table and reconciliation shrink to that family. `## Last wt launch` is *not* affected by any filter.
   - `--model openrouter/qwen/qwen3.8-27b` → single row.
-  - Zero-match output looks **different** — no tables at all, just:
+  - Zero-match output looks **different** — no tables at all, just (example, 2026-08-29):
     ```markdown
     # Usage Report — 2026-08-22 to 2026-08-29
 
@@ -134,7 +134,7 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
   psql litellm -tAc 'select count(*) from "LiteLLM_SpendLogs"'
   ```
 
-  Expected: `77` rows (live 2026-08-29 — rerun it yourself; the current count grows with every LiteLLM-routed request). Stack setup: [01-initial-setup](01-initial-setup.md), [04-litellm-config](04-litellm-config.md).
+  Expected: a single integer — the number of logged proxy requests. It grows with every LiteLLM-routed request; `0` (or a `relation does not exist` error) means spend logging isn't wired up. Stack setup: [01-initial-setup](01-initial-setup.md), [04-litellm-config](04-litellm-config.md).
 
 ## Verification
 
@@ -145,15 +145,15 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
   uv run modelman usage report --days 7 | head -5
   ```
 
-  Expected (live): `# Usage Report — <from> to <today>`, blank line, `## Summary`, blank line, then the `|`-delimited header row starting `| Family | Model | WT launches (1d/7d/30d) | …`.
-- `--days 1` narrows the spend window (live): header becomes `# Usage Report — 2026-08-28 to 2026-08-29` (from the 7-day range), and rows whose only spend is older drop to `Requests 0` (live: `ollama/qwen3.8:27b-mlx` went 4 requests → 0). Caveat: the WT-only bullet counts stay on their fixed 7-day window and membership may shift — see Gotchas.
+  Expected: `# Usage Report — <from> to <today>`, blank line, `## Summary`, blank line, then the `|`-delimited header row starting `| Family | Model | WT launches (1d/7d/30d) | …`.
+- `--days 1` narrows the spend window: the header range shrinks to yesterday→today, and rows whose only spend is older drop to `Requests 0` (in the 2026-08-29 example, the matched row went 4 requests → 0). Caveat: the WT-only bullet counts stay on their fixed 7-day window and membership may shift — see Gotchas.
 - No mutations: report runs only read `usage.jsonl`, `rotation.state`, and Postgres (the design spec pins the command read-only — Going deeper). `git status` in `/Users/keith/github/ohanaverse/local-ai-setup/modelman` shows nothing after running.
 
 ## Gotchas
 
-- **Only LiteLLM-routed traffic produces spend.** Native/direct launches (ollama cloud, oMLX `:8000`) never appear in LiteLLM spend — they surface as `WT-only launches`. Expect that section to be long on this box.
+- **Only LiteLLM-routed traffic produces spend.** Native/direct launches (ollama cloud, oMLX `:8000`) never appear in LiteLLM spend — they surface as `WT-only launches`. Expect that section to be long if most of your launches are native.
 - **Run modelman from the `modelman/` directory.** `modelman usage report --days 1` from a globally installed binary would fail with `No such command 'usage'`. Always `uv run modelman` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman` (same trap as guide 02 Gotchas).
-- **`--days` doesn't move every window.** It re-scopes the header range and the LiteLLM spend matching; launch columns stay fixed `1d/7d/30d` buckets and WT-only bullet *counts* stay on the fixed 7-day window — but bullet *membership* shifts: a model whose spend falls inside the 7-day default but outside the smaller `--days` window drops out of "matched" and becomes a WT-only bullet (live: `ollama/qwen3.8:27b-mlx` matched at `--days 7`, a WT-only bullet at `--days 1`).
+- **`--days` doesn't move every window.** It re-scopes the header range and the LiteLLM spend matching; launch columns stay fixed `1d/7d/30d` buckets and WT-only bullet *counts* stay on the fixed 7-day window — but bullet *membership* shifts: a model whose spend falls inside the 7-day default but outside the smaller `--days` window drops out of "matched" and becomes a WT-only bullet (observed 2026-08-29: the example's matched row was matched at `--days 7`, a WT-only bullet at `--days 1`).
 - **`rotation.state` is the *last* TUI launch, nothing more** — one global slot; `esc`/canceled prompts never touch it. It is not a usage summary (guide 06).
 - **Point-in-time snapshot.** Every launch appends to `usage.jsonl` and LiteLLM logs to Postgres asynchronously — rerun tomorrow (or in a minute) and numbers shift. There is no live/budget dashboard here.
 - uv prints a one-line `VIRTUAL_ENV=…does not match the project environment path` pyenv warning to stderr on every invocation — unrelated noise, ignore it.

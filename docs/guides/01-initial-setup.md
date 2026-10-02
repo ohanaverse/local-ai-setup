@@ -59,14 +59,14 @@ uv tool install --python 3.11 'litellm[proxy,extra-proxy]'   # extra-proxy: Pris
 mkdir -p ~/.config/litellm
 echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY — on an existing box this wipes the live model_list (see Steps §1)
 
-# 3. Pull a registry model (already pulled here → instant "success")
+# 3. Pull a model — example id; pick one from your registry (an already-pulled model returns "success" instantly)
 ollama pull qwen3.8:27b-mlx
 
 # 4. modelman setup + expose a model to LiteLLM
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 # uv run modelman        # TUI (interactive) — skip in one-shot mode; 'expose' below is non-interactive
-uv run modelman expose ollama/qwen3.8:27b-mlx   # non-interactive expose (delegates to `wt litellm expose`, which writes the model_list entry and restarts the proxy; needs `wt` on PATH)
+uv run modelman expose ollama/qwen3.8:27b-mlx   # example id — use the one you pulled; non-interactive expose (delegates to `wt litellm expose`, which writes the model_list entry and restarts the proxy; needs `wt` on PATH)
 
 # 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the expose — this is only needed if that restart was skipped or failed)
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
@@ -78,17 +78,14 @@ curl -s http://localhost:4000/v1/models \
   | python3 -c 'import json,sys; [print(m["id"]) for m in json.load(sys.stdin)["data"]]'
 ```
 
+Example (illustrative — your ids will differ). One routed id per line; ≥1 line = success:
+
 ```text
 ollama/qwen3.8:27b-mlx
-omlx/mlx-community--Qwen3.8-27B-4bit   # only while it runs — wt writes the route on start
-openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
-openrouter/qwen/qwen3.8-2.4t-a95b
-openrouter/qwen/qwen3.8-max
-ollama/ornith-1.5:35b
-
-# (your registry's ids differ — ≥1 model present = success)
 ```
+
+Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. `wt litellm list` prints the same set from `config.yaml` without needing the master key.
 
 ## Steps
 
@@ -176,7 +173,7 @@ ollama version is 0.33.2
 
 (The `application.com.electron.ollama.*` row only appears while the app window is running; a `-` PID just means launchd doesn't own the process.)
 
-Pull a model and confirm:
+Pull a model and confirm (example id — substitute any model you want):
 
 ```bash
 ollama pull qwen3.8:27b-mlx
@@ -186,32 +183,27 @@ ollama pull qwen3.8:27b-mlx
 success
 ```
 
-(Verified live on an already-pulled model — manifest re-check is instant. A cold pull prints a progress bar first.)
+(If the model is already pulled, the manifest re-check is instant and prints only `success`. A cold pull prints a progress bar first.)
 
 ```bash
-ollama list | head -5
+ollama list
 ```
+
+One row per pulled model: `NAME`, `ID`, `SIZE`, `MODIFIED`. Local models show a size; `:cloud` models show `-` (they are remote, nothing is on disk). Example (illustrative — your models will differ):
 
 ```text
 NAME                 ID               SIZE      MODIFIED
-glm-5.3:cloud        8477dab3e25b     -         22 hours ago
 glm-5.3-flash:cloud  3e780905abc0     -         2 days ago
 qwen3.8:27b-mlx      5642e97495e1     18 GB     2 days ago
-ornith-1.5:35b       9f3b89b25219     22 GB     2 days ago
-ornith-1.5:9b        e5df7dcdd8a2     6.6 GB    2 days ago
 ```
 
-Same registry through the Ollama REST API (read-only):
+Same registry through the Ollama REST API (read-only) — names only:
 
 ```bash
-curl -s http://localhost:11434/api/tags | head -3
+curl -s http://localhost:11434/api/tags | python3 -c 'import json,sys; [print(m["name"]) for m in json.load(sys.stdin)["models"]]'
 ```
 
-```text
-{"models":[{"name":"qwen3.8:27b-mlx","model":"qwen3.8:27b-mlx","modified_at":"2026-08-29T14:58:32.086592327-04:00","size":18174721847,"digest":"5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e","details":{"parent_model":"","format":"safetensors","family":"","families":null,"parameter_size":"","quantization_level":"nvfp4"},"capabilities":["completion","vision","tools","thinking"]},{"name":"glm-5.3:cloud","model":"glm-5.3:cloud","remote_model":"glm-5.3","remote_host":"https://ollama.com","modified_at":"2026-08-28T16:48:46.568542897-04:00","size":293,"digest":"8477dab3e25bb0f93c468af220186f55394262ee5e9f39262af4b60b54a8c4ba","details":{"parent_model":"","format":"","family":"","families":null,"parameter_size":"753B","quantization_level":"FP8","context_length":1048576},"capabilities":["completion","thinking","tools"]},...
-```
-
-(Output is a single JSON line — `head -3` shows it whole in a terminal; elided here after two entries. Verified live 2026-08-29: 23 models, first entry is the `qwen3.8:27b-mlx` pulled above.)
+(The raw response is a single JSON line, `{"models":[{...},...]}`; each entry carries `name`, `size`, `digest`, `details` (format, quantization, parameter size) and `capabilities`. `:cloud` entries add `remote_model`/`remote_host` and report a tiny `size`. Count your models with `ollama list | tail -n +2 | wc -l`.)
 
 ### 3. llama.cpp — RETIRED
 
@@ -238,16 +230,12 @@ omlx          none            keith   # 2026-09-30 rebuild — deliberately NO s
 
 oMLX auto-discovers models in `~/.omlx/models/` (set via `~/.omlx/settings.json`, key `model.model_dirs`). Get a model in with the HF CLI:
 
-<!-- UNVERIFIED — already downloaded on this machine. -->
-
 ```bash
-hf download mlx-community/Qwen3.8-27B-4bit
+hf download mlx-community/Qwen3.8-27B-4bit --local-dir ~/.omlx/models/Qwen3.8-27B-4bit   # example repo — substitute yours
 ls ~/.omlx/models/
 ```
 
-```text
-Qwen3.8-27B-4bit
-```
+`ls` prints one flat directory per model oMLX can serve — the downloaded model's directory should be among them.
 
 Turn off API-key auth for local inference. oMLX 0.7.0's first-run setup (the `:8000/admin` wizard) enables it, and then every request without a key gets `401 API key required`, including wt's warmup (`wt start` retries for up to 10 minutes) and every LiteLLM omlx route (`api_key: not-needed`). Set `auth.allow_unauthenticated_inference` to `true` in `~/.omlx/settings.json`, then `omlx stop` (the next `wt start` restarts it). Verified on the 2026-09-30 rebuild. Then verify the server answers without a key:
 
@@ -255,11 +243,13 @@ Turn off API-key auth for local inference. oMLX 0.7.0's first-run setup (the `:8
 curl -s http://localhost:8000/v1/models | head -c 250
 ```
 
+Example (illustrative — one `data` entry per model in `~/.omlx/models/`; your ids will differ):
+
 ```text
 {"object":"list","data":[{"id":"Qwen3.8-27B-4bit","object":"model","created":1788029848,"owned_by":"omlx","max_model_len":262144}]}
 ```
 
-The `max_model_len` 262144 is the *server setting*; effective context is capped by `sampling.max_context_window` (32768) in `~/.omlx/settings.json`.
+A `401` instead means auth is still on. The `max_model_len` 262144 is the *server setting*; effective context is capped by `sampling.max_context_window` (32768) in `~/.omlx/settings.json`.
 
 Restart oMLX to pick up a new model file (it scans `model_dirs` at startup):
 
@@ -270,11 +260,7 @@ omlx restart
 curl -s http://localhost:8000/v1/models | head -c 250
 ```
 
-```text
-{"object":"list","data":[{"id":"Qwen3.8-27B-4bit","object":"model","created":1788029951,"owned_by":"omlx","max_model_len":262144}]}
-```
-
-(Same JSON list shape as the §4 verify curl above — the restarted server re-announces every model in `~/.omlx/models/`.)
+(Same JSON list shape as the §4 verify curl above — the restarted server re-announces every model in `~/.omlx/models/`, now including the new one.)
 
 ### 5. OpenRouter + Hugging Face auth
 
@@ -480,33 +466,33 @@ curl -s http://localhost:4000/v1/models \
   | python3 -c 'import json,sys; [print(m["id"]) for m in json.load(sys.stdin)["data"]]'
 ```
 
+Example (illustrative — your ids will differ). One routed id per line; ≥1 line = success:
+
 ```text
 ollama/qwen3.8:27b-mlx
-omlx/mlx-community--Qwen3.8-27B-4bit   # only while it runs — wt writes the route on start
-openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
-openrouter/qwen/qwen3.8-2.4t-a95b
-openrouter/qwen/qwen3.8-max
-ollama/ornith-1.5:35b
-
-# (your registry's ids differ — ≥1 model present = success)
 ```
 
-A model must appear in this list **and** in `~/.config/litellm/config.yaml` `model_list` to be routable. Real generation through the proxy:
+Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. `wt litellm list` prints the same set from `config.yaml` without needing the master key.
+
+A model must appear in this list **and** in `~/.config/litellm/config.yaml` `model_list` to be routable. Real generation through the proxy — set `MODEL` to one id from the listing above (a local model must be running; a cloud/OpenRouter id always works if its key is set):
 
 ```bash
+MODEL='<model-id>'   # e.g. ollama/qwen3.8:27b-mlx — copy one from the /v1/models output
 curl -s -m 60 http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"omlx/Qwen3.8-27B-4bit","messages":[{"role":"user","content":"Say hi in 5 words"}],"max_tokens":20}' \
+  -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Say hi in 5 words"}],"max_tokens":20}' \
   | python3 -m json.tool
 ```
+
+Example (illustrative — ids, content and timings will differ):
 
 ```text
 {
     "id": "chatcmpl-1fcc63d6",
     "created": 1788029910,
-    "model": "omlx/Qwen3.8-27B-4bit",
+    "model": "<model-id>",
     "object": "chat.completion",
     "choices": [
         {
@@ -536,13 +522,13 @@ Final check — a `wt` agent launch actually streaming through this proxy:
 <!-- UNVERIFIED — interactive TUI/session, not launched from this session. Run it by hand; expect the claude TUI streaming from the worktree. -->
 
 ```bash
-# from: anywhere
+# from: anywhere — -M takes any id from the /v1/models listing (example shown)
 claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 ```
 
 ## Gotchas
 
-- **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/mlx-community--Qwen3.8-27B-4bit` writes a `model_list` row named after the registry id, with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt's sync never removes ids that aren't in the registry. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory modelman modelman provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
+- **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/<model-id>` (e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`) writes a `model_list` row named after the registry id, with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt's sync never removes ids that aren't in the registry. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory modelman modelman provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
 - **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` or `~/.local/bin/llm-restart`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).

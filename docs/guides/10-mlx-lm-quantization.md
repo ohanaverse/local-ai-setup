@@ -2,8 +2,6 @@
 
 > Use this to: produce your own quantized MLX model with mlx-lm's own tooling and register it in modelman, or serve a target+draft pairing through mlx-lm's generic speculative decoding — both without any training/distillation step.
 
-This guide, like [09-agent-benchmarks](09-agent-benchmarks.md), embeds no `exposed` snapshots — nothing here goes stale when a model is exposed/unexposed.
-
 Two independent features, both built on the same `mlx_lm.*` tooling bundled inside the omlx Homebrew keg:
 
 - **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; you register the output directory as a `local_path` on the `omlx` provider by hand-editing `registry.toml` (the TUI's omlx dialog has no local-path field — see Step 2). modelman deliberately never runs these tools itself — it's register-only.

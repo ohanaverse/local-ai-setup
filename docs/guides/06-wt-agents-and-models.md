@@ -30,7 +30,7 @@
 # from: any git repo, e.g. ~/github/ohanaverse/local-ai-setup
 claude-wt                    # TUI: pick worktree/branch + model (advances rotation)
 claude-wt -W my-feature      # skip worktree picker
-claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything
+claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything (example id — use one of yours)
 ```
 
 `-W` (uppercase) is the real worktree flag — confirmed by `wt --help` (both the installed binary and repo source, which agree).
@@ -84,11 +84,11 @@ Non-interactive pinning and filtering (all verified against live `wt --help` and
 | `-T, --tags a,b` | Keep only models with ANY of these tags (OR within the flag) |
 | `-F, --family f1,f2` | Keep only models whose family matches any listed (OR within the flag) |
 
-Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define the *eligible list*, and the pin must be inside it — otherwise the launch errors ("model \"…\" is not in the eligible list for agent \"…\"") instead of silently ignoring the filters. So `wt -W x -T design -M <some only-code-tagged model>` fails, while a pin that satisfies the filters wins. With no `-M`: one launchable model → that model; several → the rotation cursor decides (§5). Launchable = cloud rows plus local rows the live probe reports running — a non-running local model is a **start** row, never auto-selected; if models matched but none is launchable, the error names the fix ("no cloud or running local model for agent … — start one with `wt -M <id>`"). This is all in `cmd/wt/resolve.go` (`resolveModel`/`resolveModelFromEligible`) and `cmd/wt/launch.go` (source-verified; this machine's catalog tags every legacy model for both code and design, so try it once tags diverge).
+Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define the *eligible list*, and the pin must be inside it — otherwise the launch errors ("model \"…\" is not in the eligible list for agent \"…\"") instead of silently ignoring the filters. So `wt -W x -T design -M <some only-code-tagged model>` fails, while a pin that satisfies the filters wins. With no `-M`: one launchable model → that model; several → the rotation cursor decides (§5). Launchable = cloud rows plus local rows the live probe reports running — a non-running local model is a **start** row, never auto-selected; if models matched but none is launchable, the error names the fix ("no cloud or running local model for agent … — start one with `wt -M <id>`"). This is all in `cmd/wt/resolve.go` (`resolveModel`/`resolveModelFromEligible`) and `cmd/wt/launch.go` (source-verified). The `-T` precedence case only shows up once your models' tags actually differ — compare `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` (untagged models) vs `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (all models).
 
-**Where the models come from:** `~/.config/local-ai/registry.toml` (modelman-owned) and `~/.config/agent-wt/config.toml` (wt-owned) are joined in memory by `internal/config/config.go` `Load()`. Registry providers/models are loaded **last and overwrite anything pre-existing in config.toml — registry.toml is the source of truth**, and wt never writes providers or models back (see §6). Concretely on this machine: registry has 22 models (`grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` → `22`), all `tags = []` so far.
+**Where the models come from:** `~/.config/local-ai/registry.toml` (modelman-owned) and `~/.config/agent-wt/config.toml` (wt-owned) are joined in memory by `internal/config/config.go` `Load()`. Registry providers/models are loaded **last and overwrite anything pre-existing in config.toml — registry.toml is the source of truth**, and wt never writes providers or models back (see §6). To see what wt will load: `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` prints the model count, and `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` how many of those are untagged.
 
-**Stale-binary delta:** the installed 2026-08-27 build predates the merge and still serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`. Its picker therefore misses registry-only entries (`medgemma:27b`, `nomic-embed-text:latest`, `gpt-oss:20b`). Same flags, different catalog — rebuild (Prerequisites) before trusting the picker.
+**Stale-binary delta:** the installed 2026-08-27 build predates the merge and still serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`. Its picker therefore misses registry-only entries (any model added to `registry.toml` but absent from those old `config.toml` blocks). Same flags, different catalog — rebuild (Prerequisites) before trusting the picker.
 
 ### 4. LiteLLM routing mode
 
@@ -128,7 +128,7 @@ Two mechanisms stack on top of the on/off switch:
   `openai-chat`) and registry providers declare the protocols they serve
   (ollama: `["anthropic","openai-chat"]`; default `["openai-chat"]`). With no
   intersection wt routes through LiteLLM even with routing off, printing a
-  stderr notice:
+  stderr notice (example — the model id is whatever you launched):
 
   ```text
   wt: codex requires LiteLLM for ollama/qwen3.8:27b-mlx (no direct protocol overlap with provider "ollama") — routing through the proxy
@@ -153,7 +153,7 @@ In this mode the model name passed to agents is the registry id (e.g.
   wt rotate code        # from: any dir, read-only
   ```
 
-  Observed output: `ollama/kimi-k2.7-code:cloud` — i.e. "the model after the last-launched one, walking the global list filtered to tag `code`". It prints only; it never writes state.
+  Output is a single model id — e.g. `ollama/kimi-k2.7-code:cloud` (example; yours depends on your registry and last launch) — i.e. "the model after the last-launched one, walking the global list filtered to tag `code`". It prints only; it never writes state.
 - `rotation.state` is written by the TUI **launch** path (`Rotation.Record()`), which also appends to `usage.jsonl` (§8). Canceled resume prompts and `esc` leave rotation untouched.
 
 ### 6. `wt config`
@@ -188,7 +188,7 @@ Available Commands:
 
 ### 8. Launch records
 
-Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Record()` → `usage.Store.Record()`). Last pre-existing record on this machine (from a launch run earlier on 2026-08-29 — note that *I did not launch anything during this guide's preparation*):
+Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Record()` → `usage.Store.Record()`). Example record (`tail -1 ~/.config/agent-wt/usage.jsonl` shows your latest; the id will differ):
 
 ```json
 {"model_id":"ollama/glm-5.3-flash:cloud","timestamp":"2026-08-29T18:33:05.297099Z"}
@@ -251,12 +251,12 @@ Live-ran (2026-08-29, all read-only):
 - `wt --version` → `wt 0.1.0`
 - `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide)
 - `wt --check-guard` → `wt: main guard is installed in this repo.`
-- `wt rotate code` → `ollama/kimi-k2.7-code:cloud`, exit 0, no files touched
+- `wt rotate code` → one model id (example: `ollama/kimi-k2.7-code:cloud`), exit 0, no files touched
 - `wt -w foo` → `wt: -w is removed; use -W or --worktree`, exit 1, and `git worktree list` confirmed nothing was created
 - `wt config --help` / `wt config theme --help` → subcommands as listed in §6
-- Registry models present: 22 `[[models]]` entries, all `tags = []`
+- Registry models present: `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` → a non-zero count
 
-Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx` matches that exact `[[models]]` id in `registry.toml`; the join in `internal/config/config.go` makes it eligible for claude/codex/copilot/pi/opencode (it's an ollama provider model), so `claude-wt -W my-feature -M ollama/qwen3.8:27b-mlx` resolves deterministically and skips the model screen.
+Model pin dry explanation (no agent launch required): suppose `ollama/qwen3.8:27b-mlx` (example — substitute any id from your `registry.toml`) is a `[[models]]` id. `-M` matches that exact id; the join in `internal/config/config.go` makes an ollama-provider model eligible for claude/codex/copilot/pi/opencode, so `claude-wt -W my-feature -M <that id>` resolves deterministically and skips the model screen.
 
 <!-- UNVERIFIED — interactive only; I did not launch an agent or drive the TUI during this guide. Specifically: screen-to-screen key feel, resume prompt behavior with a real claude session, `--yolo` argv actually reaching the agent, `theme set` persisting a launch, and a usage.jsonl line appended by *my* launch are code-referenced but not exercised. -->
 
@@ -265,7 +265,7 @@ Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx
 - **Model visibility is changed in modelman, not here.** wt reads `registry.toml` read-only and `wt config` never writes providers/models — add, retag, or retire models via `modelman` ([02-providers-and-models](02-providers-and-models.md)).
 - **`agy-wt` and `shell-wt` have no rotation** (no model layer at all); `--yolo` is a no-op for pi.
 - **codex, copilot, and pi have no session resume** — only claude-wt and opencode-wt offer the resume/fresh prompt.
-- **Tag rotation is currently latent:** every registry model has `tags = []`, so `-T`-less rotation walks the whole list and the header's tag slot shows `code` without meaning a filter is active. Wire tags in modelman first ([03-model-families](03-model-families.md)).
+- **Tag rotation is latent while models are untagged:** a model with `tags = []` is not narrowed by tag, and `-T`-less rotation walks the whole list — the header's tag slot shows `code` without meaning a filter is active. Check `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` (untagged models) vs `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (all models); wire tags in modelman ([03-model-families](03-model-families.md)).
 - **Stale PATH binary:** `/Users/keith/.local/bin/wt` (2026-08-27) reads its model catalog from `config.toml`, missing registry-only models; rebuild with the Prerequisites command. After a rebuild, expect `wt rotate code`'s pair-check behavior to change until tags exist in the registry (also flagged in [03-model-families](03-model-families.md)).
 - **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `/Users/keith/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
 - **`-W` is the real flag.** The `-w` short form was removed and now errors with `-w is removed; use -W or --worktree`.

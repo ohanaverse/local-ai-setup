@@ -23,17 +23,14 @@ LiteLLM's routes in `config.yaml`.
 - **Off-peak prices.** These are stored as a `[[models.cost.time_prices]]`
   row labelled `off-peak`: UTC, weekdays outside 12:00–18:00, and all day
   on weekends.
-- **Real local models are never touched.** `ornith-1.5:35b`, `*-mlx` and
-  similar are left alone. Only cloud entries and `*:cloud`/`*-cloud` tags
-  are in scope.
+- **Real local models are never touched.** Only ollama cloud entries and
+  `*:cloud`/`*-cloud` tags are in scope.
 
 Run everything from `modelman/`.
 
 ## Steps
 
-1. Snapshot the guide drift surface (root CLAUDE.md rule):
-   `git -C .. grep -n "exposed = " docs/guides/ > /tmp/exposed-before.txt`
-2. Dry run: `uv run modelman ollama-catalog sync --dry-run`
+1. Dry run: `uv run modelman ollama-catalog sync --dry-run`
    - Summarize the plan for the user: price updates (old → new), registry
      additions (id + family), pulls, registry removals (call out every
      `exposed` one), stray `ollama rm`s, and the models that will get a
@@ -42,18 +39,15 @@ Run everything from `modelman/`.
      unrecognized price cell.
    - Ask whether any added model's family should be changed. If so, edit
      `family` in registry.toml after the sync.
-3. Get the user's go-ahead for the whole plan, especially the removals.
-4. Real run: `uv run modelman ollama-catalog sync --yes`. Your Bash tool
+2. Get the user's go-ahead for the whole plan, especially the removals.
+3. Real run: `uv run modelman ollama-catalog sync --yes`. Your Bash tool
    has no TTY, so the CLI's single confirmation prompt can't be answered
    (click reads EOF and aborts). Pass `--yes` only once the user has
    approved the dry-run plan.
    - Exit 4 means more than half of the ollama cloud entries would be
      removed. Nothing was written. Check the dry run's page parse with the
      user, and add `--force` only if they confirm the removals are real.
-5. Re-run the grep from step 1 and `diff` against the snapshot. A sync
-   flips `exposed` both ways (new routes, removals), so report any drift in
-   the six guides.
-6. Check the routes with `wt litellm list`.
+4. Check the routes with `wt litellm list`.
 
 ## Exit codes
 
