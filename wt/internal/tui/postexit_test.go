@@ -39,7 +39,7 @@ func TestPostExitOrder(t *testing.T) {
 		// output next to the real summary line.
 		fmt.Fprint(os.Stdout, "PICKER-MARKER\n")
 	}
-	emitPriceNotice = func() { order = append(order, "notice") }
+	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
 
 	old := os.Stdout
 	r, w, err := os.Pipe()

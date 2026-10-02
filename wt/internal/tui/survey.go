@@ -13,8 +13,8 @@ import (
 // observe ordering without touching the real modelman.toml.
 var emitPriceNotice = realEmitPriceNotice
 
-func realEmitPriceNotice() {
-	agents.PrintPriceNotice()
+func realEmitPriceNotice(cfg *config.Config) {
+	agents.PrintPriceNotice(cfg)
 }
 
 // newSurveyStore is a seam for tests: production uses realNewSurveyStore

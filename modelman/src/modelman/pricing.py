@@ -68,20 +68,30 @@ def _cost_from_api_entry(entry: dict[str, Any]) -> Cost | None:
     )
 
 
-def _is_cloud_model(registry: Registry, model: ModelEntry) -> bool:
-    # Native providers (auth.type == "native" — the wt agent providers
-    # sync_agent_providers registers with location="cloud") route straight to
-    # the agent CLI and are never priced via OpenRouter. They must be excluded
-    # even though their provider location says "cloud", or a daily refresh
-    # would warn "No OpenRouter match" for every agent and could overwrite an
-    # agent's native cost if its name collided with a real model id.
+def _is_openrouter_priced(registry: Registry, model: ModelEntry) -> bool:
+    """True when ``model``'s price comes from OpenRouter: an ``openrouter``
+    model, or any model of a non-native cloud *provider* (whose model names
+    may be OpenRouter ids, e.g. ``anthropic/claude-opus``).
+
+    Keyed on the provider's location, not the model's: an ollama cloud model
+    has ``location = "cloud"`` on the local ``ollama`` provider and is priced
+    by ollama.com (``modelman ollama-catalog sync``), so treating it as a
+    candidate warned "No OpenRouter match" for every one (#151).
+
+    Native providers (auth.type == "native" — the wt agent providers
+    sync_agent_providers registers with location="cloud") route straight to
+    the agent CLI and are never priced via OpenRouter. They must be excluded
+    even though their provider location says "cloud", or a daily refresh
+    would warn "No OpenRouter match" for every agent and could overwrite an
+    agent's native cost if its name collided with a real model id.
+    """
     try:
         provider = registry.provider(model.provider_id)
     except KeyError:
         provider = None
     if provider is not None and is_native_provider(provider):
         return False
-    if model.provider_id == "openrouter" or model.location == "cloud":
+    if model.provider_id == "openrouter":
         return True
     return provider is not None and provider.location == "cloud"
 
@@ -123,14 +133,14 @@ def _merge_api_cost(existing: Cost | None, api: Cost) -> Cost:
 
 
 def apply_prices(registry: Registry, api_by_id: dict[str, dict[str, Any]]) -> RefreshResult:
-    """Apply already-fetched OpenRouter pricing to cloud models in
+    """Apply already-fetched OpenRouter pricing to OpenRouter-priced models in
     ``registry``, mutating ``registry.models`` in place.
 
     Split from refresh_prices() so a caller that holds the registry lock
     (locked_registry) can fetch over the network *first*, then load→apply→save
     under the lock without blocking main-thread saves for the fetch duration.
     """
-    candidates = [m for m in registry.models if _is_cloud_model(registry, m)]
+    candidates = [m for m in registry.models if _is_openrouter_priced(registry, m)]
     if not candidates:
         return RefreshResult(updated=0, warnings=[], error=None)
 
@@ -159,11 +169,11 @@ def apply_prices(registry: Registry, api_by_id: dict[str, dict[str, Any]]) -> Re
 
 
 def refresh_prices(registry: Registry, *, runner: _HTTPRunner | None = None) -> RefreshResult:
-    """Fetch current OpenRouter prices and apply them to cloud models in
-    ``registry``. Mutates ``registry.models`` in place. On total API
+    """Fetch current OpenRouter prices and apply them to OpenRouter-priced
+    models in ``registry``. Mutates ``registry.models`` in place. On total API
     failure returns ``error`` and makes no mutations. Per-model errors
     are collected as ``warnings`` and do not block other models."""
-    candidates = [m for m in registry.models if _is_cloud_model(registry, m)]
+    candidates = [m for m in registry.models if _is_openrouter_priced(registry, m)]
     if not candidates:
         return RefreshResult(updated=0, warnings=[], error=None)
 
@@ -182,9 +192,9 @@ def refresh_prices(registry: Registry, *, runner: _HTTPRunner | None = None) -> 
 
 def should_run_price_refresh(state: StateStore, registry: Registry) -> bool:
     """Return True when today's refresh has not run and at least one
-    cloud/openrouter model exists."""
+    OpenRouter-priced model exists (see ``_is_openrouter_priced``)."""
     last = get_price_refresh_last_run(state)
     today = date.today().isoformat()
     if last == today:
         return False
-    return any(_is_cloud_model(registry, m) for m in registry.models)
+    return any(_is_openrouter_priced(registry, m) for m in registry.models)

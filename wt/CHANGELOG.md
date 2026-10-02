@@ -4,6 +4,9 @@
 
 ### Changed
 
+- The post-session stale-pricing notice is no longer printed when no model
+  takes its price from OpenRouter, e.g. a catalog of only ollama cloud models
+  and native agents (#151).
 - Native models (the agent's own subscription model) now always sort first in
   the model picker (#172). Before, a native model with no price data sorted
   as "no data", below every priced cloud model. **This also changes which

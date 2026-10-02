@@ -90,3 +90,26 @@ def test_should_run_after_date_changes():
         ],
     )
     assert should_run_price_refresh(state, registry) is True
+
+
+def test_should_not_run_with_only_ollama_cloud_models():
+    """Issue #151: ollama cloud models (``location = "cloud"`` on the local
+    ollama provider) are not OpenRouter-priced, so with no other cloud model the
+    daily refresh — and its failure alert — must not fire."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")
+            )
+        ],
+        models=[
+            ModelEntry(
+                id="ollama/glm:cloud",
+                family="x",
+                provider_id="ollama",
+                model_name="glm:cloud",
+                location="cloud",
+            )
+        ],
+    )
+    assert should_run_price_refresh(StateStore(), registry) is False

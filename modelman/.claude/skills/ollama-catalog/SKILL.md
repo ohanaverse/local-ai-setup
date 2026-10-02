@@ -65,6 +65,11 @@ Run everything from `modelman/`.
      removed. Nothing was written. Check the dry run's page parse with the
      user, and add `--force` only if they confirm the removals are real.
 4. Check the routes with `wt litellm list`.
+5. Refresh the OpenRouter-priced models too: `uv run modelman refresh-prices`.
+   The sync only covers ollama cloud prices, so this step updates every
+   other price and stamps `price_refresh_last_run`, which clears wt's
+   stale-pricing notice. Pass any `warning:` lines on to the user; a fetch
+   `error:` (exit 1) doesn't undo the sync.
 
 ## Exit codes
 

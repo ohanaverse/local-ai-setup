@@ -535,8 +535,11 @@ def delete_family(
 
 @app.command()
 def refresh_prices() -> None:
-    """Refresh per-token pricing for cloud models from OpenRouter."""
+    """Refresh per-token pricing for OpenRouter-priced models from OpenRouter."""
+    from datetime import date
+
     from .pricing import refresh_prices as run_refresh
+    from .state import set_price_refresh_last_run
 
     registry = load_registry()
     result = run_refresh(registry)
@@ -548,6 +551,12 @@ def refresh_prices() -> None:
     except OSError as exc:
         typer.echo(f"error: failed to save registry: {exc}", err=True)
         raise typer.Exit(1) from exc
+    # Stamp the refresh date like the TUI's background refresh does: wt's
+    # stale-pricing notice reads it, and without the stamp it told the user to
+    # run this very command forever (#151). Stamped even with zero
+    # OpenRouter-priced models — nothing can be stale then.
+    with locked_state() as fresh:
+        set_price_refresh_last_run(fresh, date.today().isoformat())
     for warning in result.warnings:
         typer.echo(f"warning: {warning}", err=True)
     typer.echo(f"Refreshed prices for {result.updated} model(s).")
