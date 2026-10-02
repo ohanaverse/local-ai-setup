@@ -556,6 +556,10 @@ func TestLitellmChangeCommandsWorkOnValidationOnlyError(t *testing.T) {
 	if a.cfgErr == nil || a.loadErr != nil {
 		t.Fatalf("fixture: cfgErr=%v loadErr=%v", a.cfgErr, a.loadErr)
 	}
+	// sync routes the fixture's cloud models too; an unset secret_ref is a
+	// per-id build error (exit 1), which is not what this test is about.
+	t.Setenv("OPENROUTER_API_KEY", "sk-test")
+	t.Setenv("PINNED_CLOUD_API_KEY", "sk-test")
 	const good = "ollama/contract-fixture:local"
 	run := func(args ...string) (string, error) {
 		c := litellmCmd(a)

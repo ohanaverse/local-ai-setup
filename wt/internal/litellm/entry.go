@@ -106,6 +106,12 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("model %q: resolving credentials for provider %q: %w", m.ID, p.ID, err)
 		}
+		// An env-name ref resolves to "" without error when the variable is
+		// unset in this shell. Sync rebuilds every cloud row, so writing that
+		// "" would replace every working key; refuse, and the row is kept.
+		if key == "" && p.Auth.SecretRef != "" {
+			return nil, fmt.Errorf("model %q: secret_ref %q for provider %q resolved empty (variable unset in this shell?)", m.ID, p.Auth.SecretRef, p.ID)
+		}
 		params = append(params, kv{"api_key", key})
 	case pol.APIKey != "":
 		params = append(params, kv{"api_key", pol.APIKey})

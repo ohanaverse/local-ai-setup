@@ -148,18 +148,30 @@ type plannedAdd struct {
 	row *yaml.Node
 }
 
+// plannedRemove is one removal from a plan. markedOnly limits it to rows that
+// carry the marker: a row removed for its marker alone may share its name
+// with a hand-written row, and that one is not wt's to delete.
+type plannedRemove struct {
+	id         string
+	markedOnly bool
+}
+
 // Apply adds routes for `add` and removes routes for `remove` in one locked
 // read-modify-write and one restart. Per-id validation failures are reported
 // in Outcomes and do not block the rest. A missing/invalid config.yaml
 // returns (Result{}, err) with nothing changed. The file is written, and the
 // proxy restarted, only when the document actually changed.
 func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) {
-	return applyPlanned(cfg, func(*File) ([]plannedAdd, []string) {
+	return applyPlanned(cfg, func(*File) ([]plannedAdd, []plannedRemove) {
 		out := make([]plannedAdd, len(add))
 		for i, id := range add {
 			out[i] = plannedAdd{id: id}
 		}
-		return out, remove
+		rm := make([]plannedRemove, len(remove))
+		for i, id := range remove {
+			rm[i] = plannedRemove{id: id}
+		}
+		return out, rm
 	}, o)
 }
 
@@ -167,7 +179,7 @@ func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) 
 // document as read under the lock, so callers that derive the change from the
 // current routes (Sync) never act on a snapshot another process has since
 // changed.
-func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []string), o Options) (Result, error) {
+func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -184,9 +196,13 @@ func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []string),
 			return err
 		}
 		add, remove := plan(f)
-		for _, id := range remove {
-			f.RemoveRow(id)
-			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "unexposed"})
+		for _, r := range remove {
+			if r.markedOnly {
+				f.RemoveMarkedRows(r.id)
+			} else {
+				f.RemoveRow(r.id)
+			}
+			res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unexposed"})
 		}
 		for _, a := range add {
 			row := a.row
@@ -273,6 +289,9 @@ type SyncPlan struct {
 	Adopt  []string
 	Remove []string
 	Errors []Outcome
+	// markedOnly holds the Remove ids owned by marker alone (not named like a
+	// managed registry id): Sync drops only their marked rows.
+	markedOnly map[string]bool
 }
 
 // planSync decides a sync against f. Desired = every CloudModels id plus the
@@ -296,6 +315,16 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	}
 	for id := range local {
 		managed[id] = true
+	}
+	// gap holds registry models dropped from both lists by a data gap (a
+	// provider_id naming no provider, or no location to resolve): their rows
+	// stay until the registry is repaired. Removing them would delete every
+	// route — and its hand-added params — the moment `providers = []` lands.
+	gap := map[string]bool{}
+	for _, m := range cfg.Models {
+		if _, err := cfg.ResolveLocation(m); !m.Native && (cfg.ProviderByID(m.ProviderID) == nil || err != nil) {
+			gap[m.ID] = true
+		}
 	}
 	for _, m := range LocalModels(cfg) {
 		if slices.Contains(running, m.ID) && !slices.Contains(o.Untouched, m.ID) {
@@ -354,12 +383,18 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	// the error branch would let one transient build failure delete a live route.
 	seen := map[string]bool{}
 	for _, r := range f.Rows() {
-		if want[r.ID] || slices.Contains(o.Untouched, r.ID) || seen[r.ID] {
+		if want[r.ID] || gap[r.ID] || slices.Contains(o.Untouched, r.ID) || seen[r.ID] {
 			continue
 		}
 		if r.Managed || managed[r.ID] {
 			seen[r.ID] = true
 			plan.Remove = append(plan.Remove, r.ID)
+			if !managed[r.ID] {
+				if plan.markedOnly == nil {
+					plan.markedOnly = map[string]bool{}
+				}
+				plan.markedOnly[r.ID] = true
+			}
 		}
 	}
 	if o.Recheck != nil {
@@ -449,7 +484,7 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	o.SkipReadyGate = true
 	var plan SyncPlan
-	res, err := applyPlanned(cfg, func(f *File) ([]plannedAdd, []string) {
+	res, err := applyPlanned(cfg, func(f *File) ([]plannedAdd, []plannedRemove) {
 		p, built := planSync(cfg, f, running, o)
 		plan = p
 		// The plan already built every changed row while comparing it with the
@@ -459,7 +494,11 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 		for _, id := range plan.Add {
 			add = append(add, plannedAdd{id: id, row: built[id]})
 		}
-		return add, plan.Remove
+		rm := make([]plannedRemove, 0, len(plan.Remove))
+		for _, id := range plan.Remove {
+			rm = append(rm, plannedRemove{id: id, markedOnly: plan.markedOnly[id]})
+		}
+		return add, rm
 	}, o)
 	if err != nil {
 		return res, err

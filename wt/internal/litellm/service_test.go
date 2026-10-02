@@ -955,3 +955,76 @@ func TestPlanSyncAndSyncAgreeOnInvalidModelList(t *testing.T) {
 		})
 	}
 }
+
+// TestSyncKeepsRouteWhenSecretUnresolved pins that a cloud row whose
+// credentials do not resolve in this shell keeps its working api_key: the
+// build failure is reported, and the row is neither rewritten nor removed.
+func TestSyncKeepsRouteWhenSecretUnresolved(t *testing.T) {
+	t.Setenv("WT_TEST_UNSET_KEY", "")
+	cfg := testConfig()
+	cfg.Providers[2].Auth.SecretRef = "WT_TEST_UNSET_KEY"
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_key: sk-old}
+    model_info: {wt_managed: true}
+`)
+	res, err := Sync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(res.Outcomes, func(oc Outcome) bool { return oc.ID == "openrouter/x/y" && oc.Err != nil }) {
+		t.Fatalf("want a build error for openrouter/x/y, got %+v", res.Outcomes)
+	}
+	f, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := f.row("openrouter/x/y")
+	if row == nil {
+		t.Fatal("route removed")
+	}
+	if k := mapGet(mapGet(row, "litellm_params"), "api_key"); k == nil || k.Value != "sk-old" {
+		t.Fatalf("api_key = %v, want sk-old kept", k)
+	}
+}
+
+// TestSyncKeepsRowsOfModelsWithDanglingProvider pins the registry-data-gap
+// guard: a registry model whose provider_id names no provider (e.g.
+// `providers = []`) drops out of CloudModels, but its marked row — with any
+// hand-added params — must survive until the registry is repaired.
+func TestSyncKeepsRowsOfModelsWithDanglingProvider(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers = slices.DeleteFunc(cfg.Providers, func(p config.Provider) bool { return p.ID == "openrouter" })
+	cfg.Models[2].Location = "" // location comes from the (missing) provider
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, timeout: 600}
+    model_info: {wt_managed: true}
+`)
+	if _, err := Sync(cfg, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v, want the gap model's row kept", got)
+	}
+}
+
+// TestSyncStaleRemoveSparesHandWrittenDuplicate pins that removing a stale
+// marked row drops only marked rows of that name: an unmarked hand-written
+// row sharing the name is never wt's to delete.
+func TestSyncStaleRemoveSparesHandWrittenDuplicate(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: foo/x
+    litellm_params: {model: openrouter/foo/x}
+    model_info: {wt_managed: true}
+  - model_name: foo/x
+    litellm_params: {model: openrouter/foo/x-mine}
+`)
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	got := readRows(t, p)
+	if !slices.Contains(got, RowInfo{"foo/x", false}) || slices.Contains(got, RowInfo{"foo/x", true}) {
+		t.Fatalf("rows = %v, want only the hand-written foo/x", got)
+	}
+}
