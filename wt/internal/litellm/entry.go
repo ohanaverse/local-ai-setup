@@ -2,6 +2,7 @@ package litellm
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -128,6 +129,11 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 			info = append(info, kv{k, m.ModelInfo[k]})
 		}
 	}
+
+	// The ownership marker (#179) is set last so a registry model_info can
+	// never disown a wt row.
+	info = slices.DeleteFunc(info, func(e kv) bool { return e.key == ManagedKey })
+	info = append(info, kv{ManagedKey, true})
 
 	paramsNode, err := mapping(params)
 	if err != nil {

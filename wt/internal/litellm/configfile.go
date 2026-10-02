@@ -190,6 +190,67 @@ func rowName(row *yaml.Node) string {
 	return ""
 }
 
+// ManagedKey is the model_info key wt stamps on every row it writes (#179).
+// Sync removes only rows wt owns; the marker is how a row says so.
+const ManagedKey = "wt_managed"
+
+// IsManaged reports whether row carries wt's ownership marker
+// (model_info.wt_managed: true; any other value counts as hand-written).
+func IsManaged(row *yaml.Node) bool {
+	return isTrue(mapGet(mapGet(row, "model_info"), ManagedKey))
+}
+
+// RowInfo is one model_list row's name and whether wt's marker is on it.
+type RowInfo struct {
+	ID      string
+	Managed bool
+}
+
+// Rows returns every named model_list mapping row, in file order.
+func (f *File) Rows() []RowInfo {
+	ml := mapGet(f.root(), "model_list")
+	if ml == nil || ml.Kind != yaml.SequenceNode {
+		return nil
+	}
+	var out []RowInfo
+	for _, row := range ml.Content {
+		if id := rowName(row); row.Kind == yaml.MappingNode && id != "" {
+			out = append(out, RowInfo{ID: id, Managed: IsManaged(row)})
+		}
+	}
+	return out
+}
+
+// row returns the first mapping row named id, or nil.
+func (f *File) row(id string) *yaml.Node {
+	ml := mapGet(f.root(), "model_list")
+	if ml == nil || ml.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for _, r := range ml.Content {
+		if r.Kind == yaml.MappingNode && rowName(r) == id {
+			return r
+		}
+	}
+	return nil
+}
+
+// carryPreservedParams copies the user-managed presence-based params
+// (preservedParamKeys) from old into row when row lacks them — what SetRow
+// does on replace, factored out so sync can compare a rebuilt row with the
+// one on disk exactly as SetRow would write it.
+func carryPreservedParams(old, row *yaml.Node) {
+	oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
+	if oldParams == nil || newParams == nil {
+		return
+	}
+	for _, k := range preservedParamKeys {
+		if v := mapGet(oldParams, k); v != nil && mapGet(newParams, k) == nil {
+			mapSet(newParams, k, v)
+		}
+	}
+}
+
 // modelList returns the model_list sequence, creating it when absent or null.
 // A non-list value is ErrInvalid: never edit what we do not understand.
 func (f *File) modelList() (*yaml.Node, error) {
@@ -241,14 +302,7 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 		if first >= 0 {
 			continue // duplicate of a row already replaced
 		}
-		oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
-		if oldParams != nil && newParams != nil {
-			for _, k := range preservedParamKeys {
-				if v := mapGet(oldParams, k); v != nil && mapGet(newParams, k) == nil {
-					mapSet(newParams, k, v)
-				}
-			}
-		}
+		carryPreservedParams(old, row)
 		row.HeadComment, row.LineComment, row.FootComment = old.HeadComment, old.LineComment, old.FootComment
 		first = len(kept)
 		kept = append(kept, row)

@@ -69,6 +69,7 @@ func TestBuildEntryCloudRow(t *testing.T) {
 			"cache_creation_input_token_cost": 0.5 / 1_000_000,
 			"cache_read_input_token_cost":     0.5 / 1_000_000,
 			"supports_vision":                 true,
+			"wt_managed":                      true,
 		},
 	}
 	if got := decode(t, node); !reflect.DeepEqual(got, want) {
@@ -233,5 +234,38 @@ func TestOmlx6bitHasAPolicy(t *testing.T) {
 	cfg := &config.Config{Providers: []config.Provider{p}, Models: []config.Model{m}}
 	if locals := LocalModels(cfg); len(locals) != 1 || locals[0].ID != "omlx-6bit/Six" {
 		t.Errorf("LocalModels = %v, want the omlx-6bit model (sync must manage it)", locals)
+	}
+}
+
+// TestBuildEntryStampsMarker pins #179's ownership marker: every row wt
+// builds carries model_info.wt_managed: true, which is what lets sync delete
+// its own stale rows while never touching hand-written ones.
+func TestBuildEntryStampsMarker(t *testing.T) {
+	cfg := testConfig()
+	for _, id := range []string{"ollama/gemma:9b", "openrouter/x/y"} {
+		m := cfg.Models[config.IndexModelByID(cfg.Models, id)]
+		n, err := BuildEntry(m, *cfg.ProviderByID(m.ProviderID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !IsManaged(n) {
+			t.Errorf("%s: row not marked wt_managed: %v", id, decode(t, n))
+		}
+	}
+}
+
+// TestBuildEntryMarkerWins pins that a registry model_info cannot disown a
+// wt row: wt_managed: false in model_info is overridden, or sync would treat
+// its own route as hand-written and strand it forever.
+func TestBuildEntryMarkerWins(t *testing.T) {
+	cfg := testConfig()
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x/y")]
+	m.ModelInfo = map[string]any{ManagedKey: false}
+	n, err := BuildEntry(m, *cfg.ProviderByID(m.ProviderID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsManaged(n) {
+		t.Fatalf("model_info override disowned the row: %v", decode(t, n))
 	}
 }

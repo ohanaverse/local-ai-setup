@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -550,5 +551,28 @@ func TestSaveFollowsSymlink(t *testing.T) {
 		if id == "keep/me" {
 			t.Fatal("target file was not updated")
 		}
+	}
+}
+
+// TestRowsReportsManaged pins Rows(): file order, and Managed only for rows
+// whose model_info carries wt_managed: true — a hand-written row (no marker,
+// or a non-bool value) is never reported as wt's.
+func TestRowsReportsManaged(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: hand/alias
+    litellm_params: {model: openrouter/x}
+  - model_name: ollama/a:1
+    litellm_params: {model: ollama_chat/a:1}
+    model_info: {wt_managed: true}
+  - model_name: odd/one
+    litellm_params: {model: openai/x}
+    model_info: {wt_managed: "yes"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"hand/alias", false}, {"ollama/a:1", true}, {"odd/one", false}}
+	if got := f.Rows(); !slices.Equal(got, want) {
+		t.Fatalf("Rows() = %v, want %v", got, want)
 	}
 }
