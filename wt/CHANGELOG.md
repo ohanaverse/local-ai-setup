@@ -6,15 +6,23 @@
 
 - Native models (the agent's own subscription model) now always sort first in
   the model picker (#172). Before, a native model with no price data sorted
-  as "no data", below every priced cloud model.
+  as "no data", below every priced cloud model. **This also changes which
+  model is selected by default.** The pickers that have no other default
+  (`wt smoke`/`wt start`'s standalone picker, and `wt`'s no-rotation
+  fallback) highlight the first row, so where a native model is present a
+  bare Enter now picks it — launching the agent's own subscription model
+  rather than the cheapest cloud model. Use `-M` to pin a model explicitly,
+  or arrow down; rotation still decides the cursor in `wt` once a launch has
+  been recorded for that agent.
 - The model picker is now an aligned table whose header is rendered as the list
   title:
   `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D  30D  SURVEY`
-  Rows are sorted cost-ascending (output price, then input price; local and
-  subscription-only models count as $0, and a model with no price data sorts
-  last within that group), then by 7-day usage ascending, then by id;
-  non-running local models form a second group sorted by id. The previous
-  compact one-liner
+  The table keeps the two ordering groups described below, now under the
+  native-first rule above: rows sort cost-ascending (output price, then input
+  price; local and subscription-only models count as $0, and a model with no
+  price data sorts last within that group), then by 7-day usage ascending,
+  then by id; non-running local models form a second group sorted by id. The
+  previous compact one-liner
   (`family  <fam-30d>  <provider/model>  <location>  <1d/7d/30d> [tags]`) and
   its family divider header rows are gone — including the per-family 30-day
   count column, so there are no inline `[tags]` either. Navigation indices are

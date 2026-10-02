@@ -164,6 +164,40 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 	}
 }
 
+// TestEnterModelPhaseNoRotationDefaultsToNativeRow pins the disclosed
+// consequence of #172 in the main TUI: the no-rotation fallback selects the
+// first actionable row, and native-first makes that the native row, so a
+// bare wt opened for an agent with a native model starts highlighted on the
+// agent's own subscription model. Rotation state normally decides the cursor;
+// this is the fresh-install / stale-state path, and a sort change moves it
+// silently, so it is asserted rather than assumed.
+func TestEnterModelPhaseNoRotationDefaultsToNativeRow(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+			{ID: "openrouter", Location: config.LocationCloud},
+		},
+		Models: []config.Model{
+			// Deliberately cheaper than nothing: cost alone must not put it
+			// ahead of the native row.
+			{ID: "openrouter/cheap", ProviderID: "openrouter", ModelName: "cheap", Family: "cheap", Tags: []string{"code"},
+				Cost: config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}},
+			{ID: "claude/native", ProviderID: "claude", ModelName: "native", Family: "claude", Native: true, Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"claude", "openrouter"}}},
+	}
+	cfg.ExposeAllForTest()
+	got := flowEnter(t, model{cfg: cfg, width: 80, height: 24}, "claude")
+
+	if got.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", got.phase)
+	}
+	if id := selectedModelID(got); id != "claude/native" {
+		t.Errorf("cursor on %q (index %d), want claude/native — native-first must be the default selection too", id, got.models.Index())
+	}
+}
+
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // TestModelPickerViewHeaderAlignsWithRows renders the real list view and

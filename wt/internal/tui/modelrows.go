@@ -99,10 +99,20 @@ func rowCostKey(r tableRow) costKey {
 	return k
 }
 
-// sortRows orders rows in place: native models first (issue #172), then
-// group 1 (cloud + running local) by cost ascending then 7-day usage
-// ascending then id; group 2 (non-running local) alphabetical by id. Several
-// native rows keep the group-1 order among themselves.
+// sortRows orders rows in place, native models first (#172). A native model
+// carries no per-token price, so plain cost-ascending sank it as "no cost
+// data" below every priced model, when it is in fact the agent's own
+// subscription model. The native/non-native split is the only special case:
+// each half then falls through to the same group rules — group 1 (cloud +
+// running local) by cost ascending then 7-day usage ascending then id; group 2
+// (non-running local) alphabetical by id — so a native row that resolves local
+// and is not running still sorts after the native group-1 rows, by id, not
+// "in group-1 order".
+//
+// This order is also the pickers' default selection: newPickModel never calls
+// Select, so its highlighted row is index 0 (the first sorted row), and
+// enterModelPhase's no-rotation fallback picks the first actionable row. A
+// native model in the list therefore becomes what a bare Enter launches.
 func sortRows(rows []tableRow) {
 	group1 := func(r tableRow) bool { return r.Location != config.LocationLocal || r.Running }
 	sort.SliceStable(rows, func(i, j int) bool {
