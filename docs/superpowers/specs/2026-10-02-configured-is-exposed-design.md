@@ -61,9 +61,13 @@ new logic here lives in wt; modelman only deletes code and calls
 ### A2. Route ownership and reconciliation (wt)
 
 - **Ownership marker:** every row wt writes to LiteLLM's `config.yaml` gets
-  `model_info.wt_managed: true` (set in `litellm.BuildEntry`). **wt deletes
-  only rows that carry the marker.** Unmarked rows are hand-written and are
-  never removed, whatever their name.
+  `model_info.wt_managed: true` (set in `litellm.BuildEntry`). **wt touches a
+  row only when it owns it: the row carries the marker, or its `model_name`
+  equals a managed registry id** — any cloud id with a LiteLLM mapping, or a
+  running local id; the name clause covers rows config.yaml accumulated before
+  the marker existed, which would otherwise strand a stale route forever.
+  Unmarked rows with any other name are hand-written and are never touched —
+  not removed, not rewritten.
 - **Adoption (one-time migration):** on the first `wt litellm sync` after
   upgrade, an unmarked row whose `model_name` equals an id wt should route (a
   registry cloud id, or a running local id) is rewritten with the marker. Every
@@ -77,17 +81,25 @@ new logic here lives in wt; modelman only deletes code and calls
     ones too).
 
   Sync adds missing rows, rewrites rows whose content differs (so updated
-  prices reach `config.yaml`), and removes marked rows outside the set.
-  A marked row is fully owned: hand edits to it (including to an adopted row)
-  are overwritten by the next sync. Customizations belong in the registry
-  entry's `model_info`, which `BuildEntry` already merges in; anything else
-  stays in an unmarked hand-written row under a different `model_name`.
+  prices reach `config.yaml`), and removes owned rows outside the set. wt
+  enforces three `litellm_params` on every sync — `model`, `api_base`,
+  `api_key`, whose values come from the registry and provider policy — and
+  carries over every other key the old row's `litellm_params` set that the new
+  row lacks, so a hand-written timeout, rate limit or header survives adoption
+  and every later sync (the presence-based `additional_drop_params` /
+  `use_chat_completions_api` fall out of the same rule). Registry-level
+  customization belongs in the registry entry (`model_info`, which
+  `BuildEntry` already merges into the row it builds); anything else wt has
+  already marked is overwritten by the next sync.
   Existing rules stay: a family whose probe is `partial` is left alone; a
   refused connection (`Snapshot.Down`) still clears that family's routes; a
   provider with no mapping is reported per id without blocking the rest; one
   proxy restart, only when the file changed.
 - **`wt litellm sync --dry-run`:** new; prints the planned adds, rewrites,
-  removals and adoptions; writes nothing.
+  removals and adoptions, plus the probe warnings the real sync prints
+  (skipped families, refused daemons). It writes nothing and never re-checks
+  the removal set against a fresh probe — that recheck is the real sync's
+  under-the-lock step, so a dry run reports the plan the caller's probe built.
 - **Removed:** `wt litellm expose|unexpose` (and their `--skip-ready-gate` /
   `--dry-run` flags). `wt start`/`wt stop` keep their targeted route writes,
   which now stamp the marker.
@@ -311,7 +323,7 @@ Starts after Phase A merges.
 
 | Risk | Mitigation |
 |---|---|
-| Sync deletes a hand-written route | Deletion requires the marker; adoption only marks rows whose name matches a desired id; dry-run reviewed on the real host before the first write |
+| Sync deletes a hand-written route | Removal ownership is marker OR managed-registry-name (so pre-marker wt rows cannot strand); any other unmarked row is never touched; adoption carries the row's hand-written params, not just its name; dry-run reviewed on the real host before the first write |
 | LiteLLM rejects the unknown `model_info` key | Verified before the first marked write; comment-marker fallback |
 | A one-sided change to a shared rule | Contract fixtures asserted by both CI jobs (#180) |
 | Discovered models lack capability flags an agent needs | Acceptance B-2 with every agent; per-provider defaults in `PolicyFor` if needed |
