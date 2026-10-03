@@ -102,9 +102,17 @@ func lookup(cfg *config.Config, id string) (config.Model, error) {
 }
 
 // prepareModel validates m and builds its row. m is a registry model or a
-// DiscoveredModel; either way its provider must be in the registry (the row
-// dials that provider's base_url) and have a LiteLLM mapping.
+// DiscoveredModel; either way it needs a routable id, and its provider must be
+// in the registry (the row dials that provider's base_url) and have a LiteLLM
+// mapping.
 func prepareModel(cfg *config.Config, m config.Model) (*yaml.Node, error) {
+	// The id is the row's model_name and the only handle a later stop, family
+	// clear or sync has on it. DiscoveredModel yields "/<artifact>" for a
+	// provider with a LiteLLM policy but no probe family (retired llamacpp):
+	// RowFamily could never classify that row, so it is refused, not written.
+	if m.ID == "" || strings.HasPrefix(m.ID, "/") {
+		return nil, fmt.Errorf("model %q (provider %q): no routable id — the provider has no local family", m.ID, m.ProviderID)
+	}
 	p := cfg.ProviderByID(m.ProviderID)
 	if p == nil {
 		return nil, fmt.Errorf("model %q references unknown provider %q", m.ID, m.ProviderID)
@@ -162,6 +170,13 @@ func RowFamily(cfg *config.Config, id string) string {
 	return localmodels.Family(prefix)
 }
 
+// isRegistryID reports whether id names a registry model. A discovered route
+// (no registry entry) never replaces a hand-written row of the same name;
+// registry ids keep Phase A adoption.
+func isRegistryID(cfg *config.Config, id string) bool {
+	return config.IndexModelByID(cfg.Models, id) >= 0
+}
+
 // plannedAdd is one add from a plan: the id and either its built row or the
 // reason it could not be built. Every plan builds its rows while planning, so
 // the write path never prepares a row a second time.
@@ -203,6 +218,69 @@ func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) 
 	}, o)
 }
 
+// Change is one targeted route write — the lifecycle hooks' unit (#179
+// Phase B).
+//   - Add            — models to route: registry overlays or DiscoveredModels.
+//     A DISCOVERED id that already has a hand-written (unmarked) row is
+//     skipped: the user's row serves that name and is never replaced.
+//   - Remove         — ids whose rows go: a registry id's rows whether marked
+//     or not (Phase A ownership), any other id's marked rows only.
+//   - RemoveFamilies — local families (localmodels.Family values) whose
+//     routes all go: every marked row whose RowFamily is the family —
+//     discovered siblings included — plus the family's registry local ids,
+//     marked or legacy-unmarked. Never an unmarked row that is not a registry
+//     id, and never an id in Add.
+type Change struct {
+	Add            []config.Model
+	Remove         []string
+	RemoveFamilies []string
+}
+
+// ApplyChange writes ch in one locked read-modify-write and at most one
+// restart, deciding the family removals against the document as read under
+// the lock (so a route another process just wrote is seen). Per-model build
+// failures are reported in Outcomes and do not block the rest; file-level
+// failures are Apply's.
+func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
+	return applyPlanned(cfg, func(f *File) ([]plannedAdd, []plannedRemove) {
+		adding := map[string]bool{}
+		var add []plannedAdd
+		for _, m := range ch.Add {
+			adding[m.ID] = true
+			if !isRegistryID(cfg, m.ID) && f.hasUnmarkedRow(m.ID) {
+				continue
+			}
+			row, err := prepareModel(cfg, m)
+			add = append(add, plannedAdd{id: m.ID, row: row, err: err})
+		}
+		var rm []plannedRemove
+		seen := map[string]bool{}
+		drop := func(id string, markedOnly bool) {
+			if adding[id] || seen[id] {
+				return
+			}
+			seen[id] = true
+			rm = append(rm, plannedRemove{id: id, markedOnly: markedOnly})
+		}
+		for _, id := range ch.Remove {
+			drop(id, !isRegistryID(cfg, id))
+		}
+		for _, fam := range ch.RemoveFamilies {
+			for _, m := range LocalModels(cfg) {
+				if localmodels.Family(m.ProviderID) == fam {
+					drop(m.ID, false)
+				}
+			}
+			for _, r := range f.Rows() {
+				if r.Managed && RowFamily(cfg, r.ID) == fam {
+					drop(r.ID, true)
+				}
+			}
+		}
+		return add, rm
+	}, o)
+}
+
 // applyPlanned is Apply with the add/remove decision made by plan against the
 // document as read under the lock, so callers that derive the change from the
 // current routes (Sync) never act on a snapshot another process has since
@@ -235,6 +313,13 @@ func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []plannedR
 		for _, a := range add {
 			if a.err != nil {
 				res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: a.err})
+				continue
+			}
+			// A plan owes every add a row or an error. One with neither is a
+			// planner bug; report it against its id rather than hand SetRow a
+			// nil node, which would break the whole document.
+			if a.row == nil {
+				res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: fmt.Errorf("model %q: no row was built", a.id)})
 				continue
 			}
 			if err := f.SetRow(a.id, a.row); err != nil {
