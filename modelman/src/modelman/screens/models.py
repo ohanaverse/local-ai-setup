@@ -19,6 +19,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from .. import wt_bridge
 from ..formatting import format_size
+from ..litellm import sync_routes
 from ..local_control import (
     LocalControlError,
     _provider_local_models,
@@ -361,6 +362,15 @@ class ModelScreen(Screen[None]):
         self.discovered = discover_unregistered_models(self.registry, local_map)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
+        if stale_ids:
+            # A model we believed running is not, so its LiteLLM route points
+            # at a dead backend and only a sync drops it (#179). Nothing else
+            # does: the flag lives in modelman.toml, which the TUI-exit sync
+            # (gated on registry.toml) reads past, and running_model_ids() is
+            # deliberately wt-free. Gated on stale_ids so an ordinary mount —
+            # this worker's common case — never bounces the proxy.
+            for warning in sync_routes():
+                self.app.call_from_thread(self.app.notify, warning, severity="warning")
 
     def _fetch_litellm_status(self) -> None:
         """Blocking read of wt's routing state into `_litellm_status`

@@ -48,6 +48,7 @@ from .benchmark.isolation import (
 )
 from .litellm import sync_routes
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
+from .local_process import http_answers as _http_answers
 from .local_process import http_models_ids as _http_models_ids
 from .providers.base import LocalModel, Provider, _Runner
 from .providers.mtplx import MTPLX_BASE
@@ -231,12 +232,39 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     return any(_name_matches(served, model_name) for served in ids)
 
 
+def _require_ollama_daemon(provider: ProviderEntry | None) -> None:
+    """Raise unless the ollama daemon answers at the origin wt would probe.
+
+    Ollama's start is deliberately flag-only (see _probe_running) — but the
+    one `wt litellm sync` that every start runs makes routing follow LIVE
+    provider state, and a refused ollama probe is the single case wt prunes
+    rather than skips (Snapshot.Down): it reads "nothing is pulled" and drops
+    every configured ollama model's route, the one just reported as started
+    included. Refusing here keeps `modelman start` from claiming a success it
+    cannot deliver and from that destructive sync — the same posture as wt's
+    own lifecycle, which never kickstarts a dead ollama.
+
+    Asks `/api/tags` — the endpoint wt's own ollama probe reads — so the two
+    always describe the same server.
+    """
+    origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
+    base = origin or _DEFAULT_BASE_ORIGIN["ollama"]
+    if not _http_answers(f"{base}/api/tags"):
+        raise LocalControlError(
+            f"the ollama daemon is not answering at {base} — start it "
+            "(the Ollama app, or `ollama serve`) and retry"
+        )
+
+
 def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
     """Best-effort: clear ONE model's running flag when it's still True —
     used when a probe finds it not actually serving (stale flag), or after
     a failed start/stop for that specific model. Never touches any other
     model's flag, and never touches LiteLLM: routes follow live provider
-    state through `wt litellm sync` (#179), which the start/stop paths run.
+    state through `wt litellm sync` (#179), which each caller runs itself —
+    the start/stop paths at every exit, and the TUI's mount reconcile
+    (screens/models.py::_run_reconcile) once per run that cleared a flag.
+    Doing it here would double-sync inside those callers.
     """
     try:
         state = load_state(state_path)
@@ -797,6 +825,12 @@ def start_local_model(
             f"provider {model.provider_id!r} cannot be started/stopped by modelman "
             f"(supported: {sorted(SUPPORTED_PROVIDER_IDS)})"
         )
+
+    # Before the already-running early return below, not just on the fresh-start
+    # branch: the idempotent path runs the same sync, so it would drop the same
+    # routes on a machine whose daemon is not there.
+    if model.provider_id == "ollama":
+        _require_ollama_daemon(provider)
 
     extra_args: tuple[str, ...] = ()
     env: dict[str, str] | None = None

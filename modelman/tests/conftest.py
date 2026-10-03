@@ -76,6 +76,11 @@ def _never_call_real_ollama(monkeypatch):
     # _probe_running/_ollama_loaded_names explicitly.
     monkeypatch.setattr("modelman.local_control._ollama_loaded_names", lambda: [])
     monkeypatch.setattr("modelman.local_control._http_models_ids", lambda url, timeout=2.0: [])
+    # ...and start_local_model's ollama daemon-reachability check, which would
+    # otherwise GET the developer's real localhost:11434 — a daemon that is up
+    # on the dev machine and down in CI, i.e. machine-dependent tests. Stubbed
+    # to "answering"; the tests of the down path patch it to False.
+    monkeypatch.setattr("modelman.local_control._http_answers", lambda url, timeout=2.0: True)
     monkeypatch.setattr(
         "modelman.providers.lifecycle.backends.ollama._loaded_model_names",
         lambda: [],

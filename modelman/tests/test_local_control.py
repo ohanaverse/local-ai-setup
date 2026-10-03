@@ -141,6 +141,42 @@ def test_start_already_running_and_probed_serving_is_idempotent(tmp_path):
     assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
 
 
+def test_start_ollama_refuses_when_the_daemon_is_not_answering(tmp_path, wt_calls):
+    # Ollama's start is deliberately flag-only — no process action; the daemon
+    # lazy-loads on the first request. But every start ends in one
+    # `wt litellm sync`, and wt reads a REFUSED ollama probe as "nothing is
+    # pulled" (Snapshot.Down is the one case it prunes rather than skips), so
+    # it removes the LiteLLM route of every configured ollama model — the one
+    # just reported as started included. Refuse before the flag flip and
+    # before that sync: wt's own lifecycle never kickstarts a dead ollama
+    # either, so a start that cannot serve must not report success.
+    state_path = _state_path(tmp_path, {})
+    with (
+        patch("modelman.local_control._http_answers", return_value=False),
+        pytest.raises(LocalControlError, match="ollama daemon is not answering"),
+    ):
+        start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is False
+    assert wt_calls == []
+
+
+def test_start_ollama_probes_the_configured_origin_not_just_the_default(tmp_path, wt_calls):
+    # The check must ask the origin wt's own probe would ask, or a relocated
+    # ollama (auth.base_url in registry.toml) is reported down while serving.
+    registry = _registry()
+    registry.providers[0].auth = AuthConfig(type="none", base_url="http://127.0.0.1:12345")
+    state_path = _state_path(tmp_path, {})
+    asked: list[str] = []
+
+    def fake_answers(url: str, timeout: float = 2.0) -> bool:
+        asked.append(url)
+        return True
+
+    with patch("modelman.local_control._http_answers", fake_answers):
+        start_local_model(registry, "ollama/qwen3.8:27b-mlx", state_path)
+    assert asked == ["http://127.0.0.1:12345/api/tags"]
+
+
 def test_start_syncs_routes_once_and_writes_no_exposed(tmp_path, wt_calls):
     """#179: starting a model routes it via one `wt litellm sync`; modelman
     no longer flips an exposed flag or calls expose."""

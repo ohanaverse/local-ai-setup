@@ -349,6 +349,85 @@ async def test_reconcile_self_heal_clears_running_for_dead_model(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_reconcile_self_heal_syncs_routes_for_the_dead_model(tmp_path, monkeypatch, wt_calls):
+    """Clearing a stale running flag must reach LiteLLM in the same breath:
+    the route it leaves behind points at a dead backend, and nothing else
+    notices — the flag lives in modelman.toml, which the TUI-exit sync (gated
+    on registry.toml) reads past, and running_model_ids() is deliberately
+    wt-free. Without this, one `wt litellm sync` from any later command was the
+    only thing that could drop the stale route."""
+    from unittest.mock import MagicMock
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
+
+    store = StateStore()
+    store.set("ollama/o35", ModelState(ready=True, running=True))
+    save_state(store, state_path)
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 1024
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr("modelman.local_control._probe_running", lambda *a, **k: False)
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(50):
+            if any(call[:1] == ["sync"] for call in wt_calls):
+                break
+            await pilot.pause()
+
+    assert any(call[:1] == ["sync"] for call in wt_calls), (
+        f"no route sync after clearing a stale running flag: {wt_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_with_nothing_stale_runs_no_sync(tmp_path, monkeypatch, wt_calls):
+    """The reconcile runs on every mount, so the sync above must be gated on
+    actually having found a dead model: a healthy mount must not bounce the
+    LiteLLM proxy."""
+    from unittest.mock import MagicMock
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
+
+    store = StateStore()
+    store.set("ollama/o35", ModelState(ready=True, running=False))
+    save_state(store, state_path)
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 1024
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+    assert not any(call[:1] == ["sync"] for call in wt_calls), (
+        f"a mount with no stale flag still synced: {wt_calls}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_reconcile_does_not_persist_to_disk_on_cancel(tmp_path, monkeypatch):
     """Reconcile is in-memory only until Apply. Cancelling out of the dialog
     (or having no queue at all) must not write modelman.toml."""
