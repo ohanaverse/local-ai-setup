@@ -68,7 +68,7 @@ The suite (~1500 tests; screen tests in `tests/screens/` dominate) runs in ~1.5 
 `self._app_ref` was real once but is gone. #85 (commit `ddceb69`) removed the capture along with its only two readers, and they were two different cases — which is why the note above is the rule and not a blanket ban:
 
 - `_run_apply`'s download-status snapshot ran on `StatusScreen`'s worker thread while `ModelScreen` sat on the stack underneath it: **mounted**, so `self.app` would have worked. Its comment justified the capture with "`Screen.app` raises `NoActiveAppError` when accessed off the main thread"; that diagnosis was wrong — it is the unmounted case, not the threaded one.
-- `_register_deferred_expose`'s closure is the genuine case: it fires when the download finishes, possibly long after `ModelScreen` is gone. Its shape is the one to copy — it captured `registry_path`/`state_path` up front and re-loaded fresh registry/state at run time rather than touching `self`, keeping the app reference solely to post the notification.
+- `_register_deferred_expose`'s closure (removed by #85 too; nothing like it exists in `src/` today) was the genuine case: it fired when the download finished, possibly long after `ModelScreen` was gone. Its shape is still the one to copy for any such deferred callback — it captured `registry_path`/`state_path` up front and re-loaded fresh registry/state at run time rather than touching `self`, keeping the app reference solely to post the notification.
 
 Don't reintroduce the capture for the first case.
 

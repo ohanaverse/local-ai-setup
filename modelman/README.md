@@ -136,7 +136,7 @@ size_bytes = 123456789
 running = false
 ```
 
-There is no `exposed` flag. What is configured in `registry.toml` is what gets
+There is no `exposed` flag (removed in #179). What is configured in `registry.toml` is what gets
 routed: modelman ignores a legacy `exposed`/`litellm_exposed` key on read and
 drops it on the next save, and `wt` derives the actual routes from the registry
 plus live probes. To see what is routed, ask `wt litellm list`.
@@ -216,7 +216,7 @@ The TUI has a single screen:
   model (family Select offers every known family plus a "+ New family…"
   option that reveals a text field for a brand-new one), `e` edit
   (id/provider/location/family all fixed — re-homing a model isn't
-  exposed from this dialog), `d` queue delete (works on any model —
+  offered in this dialog), `d` queue delete (works on any model —
   apply skips the on-disk removal if the artifact is already gone, but
   still cleans registry/state), `r`
   toggle ready (ready-on queues a download/pull, or a flag flip for
@@ -283,7 +283,8 @@ wt litellm sync      # reconcile by hand; modelman runs this itself after a chan
 ```
 
 modelman runs one `wt litellm sync` after anything that can affect routing:
-a queue applied on TUI exit, `modelman sync`, `migrate`, `refresh-prices`,
+a TUI exit that changed `registry.toml` (add/edit write it immediately), a
+queue applied on TUI exit, `modelman sync`, `migrate`, `refresh-prices`,
 `ollama-catalog sync`, every `start`/`stop`, and a TUI mount that found a
 `running` flag gone stale (that model's route pointed at a dead backend, and
 nothing else would drop it). wt restarts the proxy only when `config.yaml`
@@ -291,10 +292,13 @@ actually changed, so a no-op sync costs nothing. Warnings — a provider whose
 probe couldn't be trusted, routes deliberately left alone — are printed to
 stderr and never fail the command.
 
-A hand-written `model_list` entry is never touched by wt, and a route wt wrote
-carries a `model_info.wt_managed` marker; to stop routing a model, remove it
-from `registry.toml` (or, for a local model, stop it) rather than editing
-`config.yaml`.
+A route wt wrote carries a `model_info.wt_managed` marker, and a hand-written
+`model_list` entry (no marker, and a name that is not a registry id) is never
+touched by wt; `wt litellm list` marks those `(hand-written)`. Preview what a
+sync would change with `wt litellm sync --dry-run`. To stop routing a model,
+remove it from `registry.toml` (or, for a local model on a single-model
+provider, stop it — a pulled Ollama model stays routed) rather than editing
+`config.yaml`. Details: `../docs/guides/04-litellm-config.md` §2.
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
 (wt honors `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`). wt's
