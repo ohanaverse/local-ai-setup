@@ -26,6 +26,8 @@ Plans:
 
 ## Phase 3 — LiteLLM exposure
 
+> **Superseded by #179 (2026-10):** the per-model `exposed` flag and the `expose`/`unexpose` commands below are gone — every configured model is routed by wt's reconciling `wt litellm sync` (`docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md` at the repo root). Kept as history.
+
 Toggle `litellm_exposed`; write/remove `model_list` entries in LiteLLM's
 `config.yaml` (keyed by registry model id, using the provider's
 `base_url`). `general_settings` is never touched.

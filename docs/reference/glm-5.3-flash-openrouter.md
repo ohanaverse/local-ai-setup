@@ -345,7 +345,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 ## Related Documentation
 
 - [02-providers-and-models.md](../guides/02-providers-and-models.md) — Provider configuration overview
-- [04-litellm-config.md](../guides/04-litellm-config.md) — LiteLLM exposure and management
+- [04-litellm-config.md](../guides/04-litellm-config.md) — LiteLLM routing (`wt litellm sync`) and management
 - [06-wt-agents-and-models.md](../guides/06-wt-agents-and-models.md) — wt agent model selection
 - [OpenRouter GLM-5.3-Flash page](https://openrouter.ai/z-ai/glm-5.3-flash) — Pricing and benchmarks
 

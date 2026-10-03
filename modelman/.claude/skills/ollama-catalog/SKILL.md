@@ -1,6 +1,6 @@
 ---
 name: ollama-catalog
-description: Mirror https://ollama.com/pricing into ollama, modelman and LiteLLM — pull and expose cloud models, rm/unregister/unroute ones Ollama no longer lists, and sync prices (including off-peak) into registry.toml and config.yaml. Use when asked to update/refresh ollama cloud models or ollama pricing, or when the ollama pricing scrape breaks.
+description: Mirror https://ollama.com/pricing into ollama, modelman and LiteLLM — pull and register cloud models (wt then routes them), rm/unregister/unroute ones Ollama no longer lists, and sync prices (including off-peak) into registry.toml and config.yaml. Use when asked to update/refresh ollama cloud models or ollama pricing, or when the ollama pricing scrape breaks.
 ---
 
 # Ollama catalog sync
@@ -15,11 +15,12 @@ LiteLLM's routes in `config.yaml`.
   It removes registry entries the page no longer lists, running `ollama rm`
   first if they're pulled. It also `ollama rm`s pulled cloud stubs that
   have no registry entry.
-- **LiteLLM mirrors the page.** Every page model is exposed, or
-  re-exposed so that its `config.yaml` row is rebuilt with current prices.
-  wt writes prices only at expose time. A removed entry that was exposed
-  loses its route, and the plan marks these `(exposed — will be unexposed)`.
-  wt restarts the proxy only if `config.yaml` actually changed.
+- **LiteLLM mirrors the registry.** There is no per-model routing step:
+  the sync ends with one `wt litellm sync`, which routes every registry
+  cloud model — so every page model gets a `config.yaml` row, rebuilt with
+  its current prices — and drops the rows of the entries it removed. wt
+  restarts the proxy only if `config.yaml` actually changed. A failed route
+  sync is a `warning:` line, never a failed run; re-run `wt litellm sync`.
 - **Real cloud tags.** A page name doesn't determine its tag: some models
   publish `<name>:cloud`, others only a sized `<name>:<size>-cloud`. Each
   bare name is resolved from `https://ollama.com/library/<name>/tags`. A
@@ -44,9 +45,8 @@ Run everything from `modelman/`.
 
 1. Dry run: `uv run modelman ollama-catalog sync --dry-run`
    - Summarize the plan for the user: price updates (old → new), registry
-     additions (id + family), pulls, registry removals (call out every
-     `exposed` one), stray `ollama rm`s, and the models that will get a
-     new LiteLLM route ("Not yet exposed").
+     additions (id + family — each also gets a LiteLLM route), pulls,
+     registry removals (each also loses its route), and stray `ollama rm`s.
    - Point out any `warning:` lines, e.g. a subscription disagreement or an
      unrecognized price cell.
    - Ask whether any added model's family should be changed. If so, edit
@@ -76,7 +76,7 @@ Run everything from `modelman/`.
 | Code | Meaning | Do |
 |---|---|---|
 | 0 | done (or nothing to do) | — |
-| 1 | a pull, an `ollama rm`, the route sync that closes the queue, or the registry save failed; the other steps still ran | read the error, then re-run the sync (it only redoes what is still out of sync) |
+| 1 | a pull, an `ollama rm`, or the registry save failed; the other steps still ran (a failed route sync is only a `warning:`) | read the error, then re-run the sync (it only redoes what is still out of sync) |
 | 2 | page fetch failed, `ollama list` couldn't run, or no cloud tag resolved (ollama.com/library unreachable); nothing changed | check network / start ollama, retry. `--html <saved page>` only replaces the pricing-page fetch — the library tag lookups still need ollama.com |
 | 3 | page shape changed | follow "Repairing the parser" |
 | 4 | mass removal refused (> half the cloud entries); nothing changed | verify the parse, then `--force` with the user's OK |

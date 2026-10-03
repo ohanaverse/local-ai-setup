@@ -103,9 +103,9 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
 - Proxy: `litellm --config ~/.config/litellm/config.yaml --port 4000`, kept
   alive by `~/Library/LaunchAgents/local.litellm.proxy.plist` (artifact:
   redacted copy — see inventory for the five keys to re-fill).
-- `model_list`: wt (`wt litellm`) writes the routes for exposed ids; the hand-managed rows are the 3
-  omlx variants, the `openrouter/qwen/qwen3.8-*` set, and `ollama/q8` /
-  `ollama/o35`. (The 2 llama.cpp rows were retired — kept in
+- `model_list`: wt (`wt litellm sync`) writes the routes for every configured cloud model and the
+  running (or, for ollama, pulled) local models, each marked `model_info.wt_managed: true`; any other
+  row is hand-managed — `wt litellm list` marks those `(hand-written)`. (The 2 llama.cpp rows were retired — kept in
   [`artifacts/litellm/llamacpp-model-rows.yaml`](artifacts/litellm/llamacpp-model-rows.yaml).)
 - Setup/deep-dive: [01-initial-setup.md](../guides/01-initial-setup.md),
   [04-litellm-config.md](../guides/04-litellm-config.md).

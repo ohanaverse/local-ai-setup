@@ -7,7 +7,7 @@ components — fresh install starts at
 | Component | Role |
 |---|---|
 | Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
-| `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, exposure, benchmarks, usage |
+| `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, download state, benchmarks, usage |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
 ## User guides (docs/guides/)
@@ -19,9 +19,9 @@ The how-to lives in the guides now; this README is just the index. Read
 |---|---|
 | [`00-config-map.md`](docs/guides/00-config-map.md) | which tool owns, writes, reads each config file |
 | [`01-initial-setup.md`](docs/guides/01-initial-setup.md) | fresh-machine install; smoke-test the stack |
-| [`02-providers-and-models.md`](docs/guides/02-providers-and-models.md) | register, download, expose providers and models |
+| [`02-providers-and-models.md`](docs/guides/02-providers-and-models.md) | register and download providers and models — a configured model is routed |
 | [`03-model-families.md`](docs/guides/03-model-families.md) | families, tags, and wt model rotation |
-| [`04-litellm-config.md`](docs/guides/04-litellm-config.md) | audit proxy config, exposure, admin UI |
+| [`04-litellm-config.md`](docs/guides/04-litellm-config.md) | audit proxy config, `wt litellm sync` routing, admin UI |
 | [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated modelman benchmark runs |
 | [`06-wt-agents-and-models.md`](docs/guides/06-wt-agents-and-models.md) | pick worktree/agent/model, then launch |
 | [`07-usage-and-spend.md`](docs/guides/07-usage-and-spend.md) | reconcile wt launches vs LiteLLM spend |

@@ -4,6 +4,24 @@
 
 ### Changed
 
+- `wt litellm sync` reconciles every route, not just the local ones (#179,
+  "configured is exposed"). It routes every registry cloud model whose
+  provider is non-native and has a LiteLLM mapping, plus the running local
+  models (an ollama model counts while it is pulled, loaded or not); rewrites
+  wt rows that drifted from the registry (prices, base URL, credentials); and
+  removes the rows wt owns that are no longer desired. Every row wt writes
+  carries `model_info.wt_managed: true`. wt touches a row only when it carries
+  that marker or is named like a managed registry id (an unmarked row of a
+  desired id is adopted once); hand-written rows are never removed or
+  rewritten. A rebuilt row keeps the old row's hand-added `litellm_params`
+  keys other than `model`/`api_base`/`api_key`. New `--dry-run` prints the
+  plan (add/adopt/rewrite/remove/errors) and the probe warnings and writes
+  nothing. `wt litellm list` prints a hand-written row as
+  `id<TAB>(hand-written)` and its `--json` gains `rows: [{id, managed}]`.
+  A `config.yaml` whose `model_list` is not a list is refused on every
+  writing path.
+- Stopping an ollama model no longer removes its LiteLLM route: a pulled
+  model is still served on request (#179).
 - Stopping several models at once (the post-exit stop picker or `wt stop`)
   restarts the LiteLLM proxy once at the end instead of once per model (#142).
 - The post-session stale-pricing notice is no longer printed when no model
@@ -21,7 +39,7 @@
   been recorded for that agent.
 - The model picker is now an aligned table whose header is rendered as the list
   title:
-  `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D  30D  SURVEY`
+  `FAMILY  MODEL  LOC  STATUS  RUNNING  COST  1D  7D  30D  SURVEY`
   The table keeps the two ordering groups described below, now under the
   native-first rule above: rows sort cost-ascending (output price, then input
   price; local and subscription-only models count as $0, and a model with no
@@ -91,6 +109,16 @@
 
 ### Removed
 
+- `wt litellm expose` and `wt litellm unexpose` (#179), with their
+  `--dry-run`/`--skip-ready-gate` flags. They remain as hidden stubs that exit
+  1 and point to `wt litellm sync`, so a script calling them fails instead of
+  silently doing nothing.
+- The model picker's EXPOSED column (#179). Every configured native, cloud and
+  local model is in the catalog; whether a model is routed is
+  `wt litellm list`.
+- Reading modelman's `exposed` / legacy `litellm_exposed` keys from
+  `modelman.toml` (#179); wt reads only `ready` (and legacy `downloaded`)
+  from `[model_state]`.
 - The `d` keybinding in the model picker has been removed. Tag groups
   are now selected via the `-T` flag instead of an in-picker toggle.
 

@@ -60,7 +60,7 @@ tags = []
 - **Consumers:** `modelman`, plus `wt` (read-only — reads `ready` for the picker's presence column, and the legacy `[litellm]` table as a fallback for routing state wt has not migrated; that read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, the `running` hint (modelman's start/stop intent, confirmed by a live probe whenever `wt` or modelman needs the truth), a legacy `[litellm]` routing table (modelman round-trips it verbatim; wt owns the live copy), and family display names.
 - **Env override:** `MODELMAN_STATE`.
-- **No exposure flag (#179).** What is configured in `registry.toml` is what `wt` routes: cloud models always, a local model while it runs (for ollama, while it is pulled). modelman ignores a legacy `exposed`/`litellm_exposed` key on read and drops it on the next save, so an older file self-cleans. `wt` still reads those keys (its picker's EXPOSED column prints `Y` for native models and otherwise the raw, now-legacy flag) — never write them. The authoritative "is it routed" answer is `wt litellm list`. Routing decisions live in `wt/CLAUDE.md`'s "Local-model resolution" section — this guide does not repeat them.
+- **No exposure flag (#179).** What is configured in `registry.toml` is what `wt` routes: cloud models always, a local model while it runs (for ollama, while it is pulled). A legacy pre-#179 `exposed`/`litellm_exposed` key is ignored by both tools — modelman drops it on the next save, so an older file self-cleans; never write one. The authoritative "is it routed" answer is `wt litellm list`. Routing decisions live in `wt/CLAUDE.md`'s "Local-model resolution" section — this guide does not repeat them.
 
 Count your own entries with:
 
@@ -146,8 +146,8 @@ variants:
 
 ### `~/.config/litellm/config.yaml`
 
-- **Owner:** `wt` (`wt litellm expose|unexpose|sync`, plus the automatic route updates from `wt start`/`wt stop`/the lifecycle hook; `modelman` asks for a sync after its own state changes), you by hand. modelman never writes this file.
-- **Hand-managed entries:** wt writes the routes it manages — every configured cloud model, plus local models while they run (issue #66); rows wt writes carry `model_info: {wt_managed: true}`. Any other `model_list` row (e.g. a hand-written OpenRouter alias or a short-name alias for an Ollama model) is hand-managed and wt leaves it alone. `wt litellm list` prints the routes currently in the file; `grep -c '^  - model_name:' ~/.config/litellm/config.yaml` counts every row, wt-written or not. The 3 hand-written omlx rows were removed 2026-09-30 (#168): an omlx route now exists only while its model runs, written by `wt start` under the registry id. Don't hand-write rows for local models — `wt litellm sync` never removes ids that aren't in the registry. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
+- **Owner:** `wt` (`wt litellm sync` — preview with `--dry-run` — plus the automatic route updates from `wt start`/`wt stop`/the lifecycle hook; `modelman` asks for a sync after its own state changes), you by hand for rows wt does not own. modelman never writes this file.
+- **Hand-managed entries:** wt writes the routes it manages — every configured cloud model, plus local models while they run (an ollama model while it is pulled; issue #66); rows wt writes carry `model_info: {wt_managed: true}`. Any other `model_list` row whose name is not a registry id (e.g. a hand-written OpenRouter alias or a short-name alias for an Ollama model) is hand-managed and wt leaves it alone. `wt litellm list` prints the routes currently in the file, marking rows without wt's marker `(hand-written)` (that includes rows a pre-#179 wt wrote, until the first sync adopts them — [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt*); `grep -c '^  - model_name:' ~/.config/litellm/config.yaml` counts every row, wt-written or not. The 3 hand-written omlx rows were removed 2026-09-30 (#168): an omlx route now exists only while its model runs, written by `wt start` under the registry id. Don't hand-write rows under a registry id — `wt litellm sync` treats such a row as its own (adopts it while the model is desired, removes it when not); see [04-litellm-config](04-litellm-config.md) §2. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
 - **Purpose:** `model_list` (one entry per routed model: Ollama, oMLX, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). wt only touches `model_list` (plus a few launcher-required `litellm_settings` keys); `general_settings`, other sections and comments are preserved (the first wt write normalizes list indentation and drops blank lines).
 - **Env override:** `WT_LITELLM_CONFIG` (legacy alias `MODELMAN_LITELLM_CONFIG`). The proxy restart command is `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`).
@@ -163,12 +163,15 @@ model_list:
       api_base: http://localhost:11434
     model_info:
       supports_function_calling: true
+      wt_managed: true          # ownership marker on every row wt writes (pricing keys omitted here)
 
   - model_name: omlx/<registry-model-id>
     litellm_params:
       model: openai/<served-model-name>
       api_base: http://localhost:8000/v1
       api_key: not-needed
+    model_info:
+      wt_managed: true
 ```
 
 ### `~/.config/agent-wt/config.toml`
@@ -304,7 +307,7 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 ## Gotchas
 
 - **Never hand-edit `registry.toml` to change what `wt` sees.** It is read-only to `wt`; change models through `modelman` (TUI, `sync`) and routes through `wt litellm ...`.
-- **Routing is derived, not stored.** There is no exposure flag to edit: `wt` builds `model_list` from `registry.toml` plus live probes, so the `config.yaml` entry is the only copy that exists and `wt litellm list` is the way to read it. Don't hand-edit a managed row — change the registry (or start/stop the model) and let the sync that follows do the writing.
+- **Routing is derived, not stored.** There is no routing flag to edit (the per-model `exposed` flag went in #179): `wt` builds `model_list` from `registry.toml` plus live probes, so the `config.yaml` entry is the only copy that exists and `wt litellm list` is the way to read it. Don't hand-edit a managed row — change the registry (or start/stop the model) and let the sync that follows do the writing.
 - **`~/.config/agent-wt/config.toml` trap:** the `[[providers]]`/`[[models]]` blocks you see there are stale migration output that `wt` ignores. Only `default_tag` and `[[agents]]` are live; providers/models come from `registry.toml`.
 - **Legacy files are migration inputs, not config:** `~/.config/local-ai/config.yaml`, `~/.config/local-ai/families/*.yaml`, and `~/.config/agent-wt/models.conf` are read only by `modelman migrate` / wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
 - **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist. Redact before pasting either into issues, docs, or chats.

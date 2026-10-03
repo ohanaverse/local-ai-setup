@@ -66,7 +66,7 @@ ollama pull qwen3.8:27b-mlx
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 # uv run modelman        # TUI (interactive) — skip in one-shot mode; 'start' below is non-interactive
-uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled. There is no expose step: a model is routed while it runs, and every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH)
+uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it must be in registry.toml). No routing step: every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH); a pulled ollama model stays routed after a stop
 
 # 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the sync — this is only needed if that restart was skipped or failed)
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
@@ -264,7 +264,7 @@ curl -s http://localhost:8000/v1/models | head -c 250
 
 ### 5. OpenRouter + Hugging Face auth
 
-OpenRouter — an account + key from [openrouter.ai/keys](https://openrouter.ai/keys). LiteLLM reads the variable **`OPENROUTER_API_KEY`** (not `OPENAI_API_KEY`). On this machine it lives in the LiteLLM LaunchAgent plist so the proxy has it after reboots (§7). OpenRouter model entries in `~/.config/litellm/config.yaml` use `model: openrouter/<author>/<slug>` with `api_key: os.environ/OPENROUTER_API_KEY`.
+OpenRouter — an account + key from [openrouter.ai/keys](https://openrouter.ai/keys). LiteLLM reads the variable **`OPENROUTER_API_KEY`** (not `OPENAI_API_KEY`). On this machine it lives in the LiteLLM LaunchAgent plist so the proxy has it after reboots (§7). OpenRouter model entries in `~/.config/litellm/config.yaml` use `model: openrouter/<author>/<slug>`; their `api_key` is the key wt resolved from the provider's `secret_ref` (an `os.environ/NAME` ref is resolved, not written as-is), so it is a literal key on disk — see [04-litellm-config](04-litellm-config.md) §1.
 
 Confirm all secret env keys are present in the plist (values not printed):
 

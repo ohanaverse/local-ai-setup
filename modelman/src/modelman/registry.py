@@ -380,7 +380,7 @@ def is_model_local(
 
     Single definition for a resolution that had drifted into near-
     duplicate inline copies (queue.py's delete loop, its ready-off
-    cascade, and the TUI's EXPOSED/RUNNING columns), each of which
+    cascade, and the TUI's RUNNING column), each of which
     defaulted a missing provider to local via is_local_location(None).
     """
     if location is not None:
