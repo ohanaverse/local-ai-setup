@@ -28,7 +28,6 @@ func opts(t *testing.T, body string) (Options, *int, string) {
 // kills in-flight agent requests.
 func TestApplyRoutesRowsAndRestartsOnce(t *testing.T) {
 	o, restarts, p := opts(t, "model_list: []\n")
-	o.SkipReadyGate = true // gemma is not ready in testConfig; this test is about the write, not the gate
 	res, err := Apply(testConfig(), []string{"ollama/gemma:9b", "openrouter/x/y"}, nil, o)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +50,6 @@ func TestApplyRoutesRowsAndRestartsOnce(t *testing.T) {
 // and does not restart the proxy.
 func TestApplyIsIdempotent(t *testing.T) {
 	o, restarts, _ := opts(t, "model_list: []\n")
-	o.SkipReadyGate = true // otherwise the row is rejected and the test passes vacuously
 	if _, err := Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, o); err != nil {
 		t.Fatal(err)
 	}
@@ -65,14 +63,14 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestApplyGateRejections pins the route gate: unknown model, native
-// provider and a not-ready local model are each reported per id without
-// blocking the valid ids in the same batch, and SkipReadyGate lifts only the
-// ready check.
+// TestApplyGateRejections pins the route gate: an unknown model and a native
+// provider are each reported per id without blocking the valid ids in the
+// same batch, and a local model is routed with no "ready" check at all
+// (#179 Phase B: the live inventory, not modelman's download flag, decides
+// what is routed — a stale flag must never cost a running model its route).
 func TestApplyGateRejections(t *testing.T) {
-	cfg := testConfig()
 	o, _, _ := opts(t, "model_list: []\n")
-	res, err := Apply(cfg, []string{"nope/x", "claude/sonnet", "ollama/gemma:9b", "openrouter/x/y"}, nil, o)
+	res, err := Apply(testConfig(), []string{"nope/x", "claude/sonnet", "ollama/gemma:9b", "openrouter/x/y"}, nil, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,22 +80,8 @@ func TestApplyGateRejections(t *testing.T) {
 			errs[oc.ID] = oc.Err.Error()
 		}
 	}
-	if !strings.Contains(errs["nope/x"], "not found") || !strings.Contains(errs["claude/sonnet"], "native and is not routed") || !strings.Contains(errs["ollama/gemma:9b"], "not ready") {
-		t.Fatalf("errs = %v", errs)
-	}
-	if _, bad := errs["openrouter/x/y"]; bad {
-		t.Fatal("cloud model must be exempt from the ready gate")
-	}
-
-	cfg.SetReadyForTest("ollama/gemma:9b", true)
-	o2, _, _ := opts(t, "model_list: []\n")
-	if r, _ := Apply(cfg, []string{"ollama/gemma:9b"}, nil, o2); r.Outcomes[0].Err != nil {
-		t.Fatalf("ready model rejected: %v", r.Outcomes[0].Err)
-	}
-	o3, _, _ := opts(t, "model_list: []\n")
-	o3.SkipReadyGate = true
-	if r, _ := Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, o3); r.Outcomes[0].Err != nil {
-		t.Fatalf("SkipReadyGate still rejected: %v", r.Outcomes[0].Err)
+	if len(errs) != 2 || !strings.Contains(errs["nope/x"], "not found") || !strings.Contains(errs["claude/sonnet"], "native and is not routed") {
+		t.Fatalf("errs = %v, want only the unknown and the native model rejected", errs)
 	}
 }
 
@@ -125,12 +109,12 @@ func TestApplyRemovesRow(t *testing.T) {
 // TestApplyFileLevelFailures pins that a missing or invalid config.yaml
 // fails the whole call with a typed error and changes nothing.
 func TestApplyFileLevelFailures(t *testing.T) {
-	_, err := Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, Options{Path: t.TempDir() + "/none.yaml", SkipReadyGate: true})
+	_, err := Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, Options{Path: t.TempDir() + "/none.yaml"})
 	if !errors.Is(err, ErrMissing) {
 		t.Fatalf("err = %v, want ErrMissing", err)
 	}
 	p := writeConfig(t, "model_list: nope\n")
-	_, err = Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, Options{Path: p, SkipReadyGate: true})
+	_, err = Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, Options{Path: p})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("err = %v, want ErrInvalid", err)
 	}
@@ -187,19 +171,15 @@ func TestModelForAndLocalModels(t *testing.T) {
 	}
 }
 
-// TestSyncRestartsOnceAndSkipsReadyGate pins that a Sync that changes routes
-// restarts the proxy exactly once, and that a running local model that is not
-// ready in the registry still gets its route (Sync passes SkipReadyGate: the
-// model is verifiably running). Each restart kills in-flight agent requests.
-// Since #179 the configured cloud model is also routed, in the same pass.
-func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
+// TestSyncRestartsOnce pins that a Sync that changes routes restarts the
+// proxy exactly once — each restart kills in-flight agent requests — while
+// routing the running local model and, since #179, the configured cloud
+// model in the same pass.
+func TestSyncRestartsOnce(t *testing.T) {
 	o, restarts, p := opts(t, `model_list:
   - model_name: ollama/gemma:9b
     litellm_params: {model: ollama_chat/gemma:9b}
 `)
-	if testConfig().ReadyFlag("mtplx/Youssofal--Q") {
-		t.Fatal("precondition: mtplx model must be not-ready")
-	}
 	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
 	if err != nil || !res.Changed || *restarts != 1 {
 		t.Fatalf("err=%v changed=%v restarts=%d, want nil/true/1", err, res.Changed, *restarts)
@@ -408,7 +388,6 @@ func TestPlanSyncIgnoresRecheck(t *testing.T) {
 // an empty one there must keep working.
 func TestApplyRejectsEmptyModelName(t *testing.T) {
 	o, restarts, p := opts(t, "model_list: []\n")
-	o.SkipReadyGate = true
 	cfg := &config.Config{
 		Providers: []config.Provider{
 			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},

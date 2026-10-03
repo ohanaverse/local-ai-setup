@@ -34,18 +34,16 @@ func runRecheck(o Options) (fresh []string, ok bool) {
 	}
 }
 
-// Options tunes Apply/Sync.
-//   - Path          — config.yaml; "" means DefaultPath().
-//   - SkipReadyGate — skip the "model must be ready" check (the lifecycle
-//     hook passes it: the model is verifiably running; Sync forces it: its
-//     desired set is already the routeable cloud models plus the running
-//     local ones).
-//   - Restart       — proxy restart hook; nil means Restart. Tests inject.
-//   - Ctx           — bounds the config.yaml lock wait; nil means no bound.
+// Options tunes Apply/ApplyChange/Sync.
+//   - Path    — config.yaml; "" means DefaultPath().
+//   - Restart — proxy restart hook; nil means Restart. Tests inject.
+//   - Ctx     — bounds the config.yaml lock wait; nil means no bound.
+//
+// There is no ready gate (#179 Phase B): a local model is routed because the
+// live inventory found it, never because modelman flagged it downloaded.
 type Options struct {
-	Path          string
-	SkipReadyGate bool
-	Restart       func() []string
+	Path    string
+	Restart func() []string
 	// Ctx bounds the wait for the config.yaml lock (nil = unbounded). The
 	// lifecycle route hook passes its caller's context, so a contended lock
 	// cannot outlive a caller that set a deadline; the CLI leaves it nil, since
@@ -94,22 +92,22 @@ func (o Options) path() string {
 	return DefaultPath()
 }
 
-// isCloud reports whether a model is exempt from the ready gate: its provider
-// policy says cloud, or the model or its provider is located in the cloud.
-func isCloud(m config.Model, p config.Provider, pol Policy) bool {
-	return pol.Cloud || m.Location == config.LocationCloud || p.Location == config.LocationCloud
-}
-
-// prepare validates id against the registry and builds its row.
-func prepare(cfg *config.Config, id string, skipReady bool) (*yaml.Node, error) {
+// lookup finds id's registry model.
+func lookup(cfg *config.Config, id string) (config.Model, error) {
 	i := config.IndexModelByID(cfg.Models, id)
 	if i < 0 {
-		return nil, fmt.Errorf("model %q not found in registry", id)
+		return config.Model{}, fmt.Errorf("model %q not found in registry", id)
 	}
-	m := cfg.Models[i]
+	return cfg.Models[i], nil
+}
+
+// prepareModel validates m and builds its row. m is a registry model or a
+// DiscoveredModel; either way its provider must be in the registry (the row
+// dials that provider's base_url) and have a LiteLLM mapping.
+func prepareModel(cfg *config.Config, m config.Model) (*yaml.Node, error) {
 	p := cfg.ProviderByID(m.ProviderID)
 	if p == nil {
-		return nil, fmt.Errorf("model %q references unknown provider %q", id, m.ProviderID)
+		return nil, fmt.Errorf("model %q references unknown provider %q", m.ID, m.ProviderID)
 	}
 	if m.Native || p.Auth.Type == "native" {
 		return nil, fmt.Errorf("provider %q is native and is not routed through LiteLLM", m.ProviderID)
@@ -122,21 +120,55 @@ func prepare(cfg *config.Config, id string, skipReady bool) (*yaml.Node, error) 
 	// validation errors, so enforce it here. FixedModel providers (llamacpp)
 	// use a fixed LiteLLM model string and ignore model_name.
 	if strings.TrimSpace(m.ModelName) == "" && !pol.FixedModel {
-		return nil, fmt.Errorf("model %q: empty model_name", id)
-	}
-	if !skipReady && !cfg.ReadyFlag(id) && !isCloud(m, *p, pol) {
-		return nil, fmt.Errorf("model %q is not ready", id)
+		return nil, fmt.Errorf("model %q: empty model_name", m.ID)
 	}
 	return BuildEntry(m, *p)
 }
 
-// plannedAdd is one add from a plan: the id, with its row already built when
-// the plan made one. Sync's plan builds every desired row while comparing it
-// with the row on disk; rebuilding it in the write path would be a second
-// full prepare of every changed row. Apply plans by id only (nil rows).
+// DiscoveredModel is the minimal model wt routes for a discovered local
+// artifact that no registry overlay matches (#179 Phase B): its id is the
+// catalog's config.DiscoveredModelID — the same id -M, usage and the picker
+// use — and PolicyFor supplies api_base, the model prefix and the key. It has
+// no cost, so BuildEntry writes the explicit $0 pricing every local row gets.
+func DiscoveredModel(providerID, artifact string) config.Model {
+	return config.Model{
+		ID:         config.DiscoveredModelID(localmodels.Family(providerID), artifact),
+		ProviderID: providerID,
+		ModelName:  artifact,
+		Location:   config.LocationLocal,
+		Source:     config.SourceDiscovered,
+	}
+}
+
+// RowFamily is the local provider family a config.yaml row belongs to, or ""
+// for a cloud or unrecognised row. A registry model answers by its provider
+// when its location resolves local (a registry cloud model — even one on the
+// local ollama provider — is never a local family's row). Any other id is
+// classified by its prefix up to the first "/" when that prefix is a local
+// provider: discovered ids are exactly "<family>/<artifact>", and a row of a
+// deleted local overlay keeps its provider prefix.
+func RowFamily(cfg *config.Config, id string) string {
+	if i := config.IndexModelByID(cfg.Models, id); i >= 0 {
+		m := cfg.Models[i]
+		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+			return ""
+		}
+		return localmodels.Family(m.ProviderID)
+	}
+	prefix, _, ok := strings.Cut(id, "/")
+	if !ok {
+		return ""
+	}
+	return localmodels.Family(prefix)
+}
+
+// plannedAdd is one add from a plan: the id and either its built row or the
+// reason it could not be built. Every plan builds its rows while planning, so
+// the write path never prepares a row a second time.
 type plannedAdd struct {
 	id  string
 	row *yaml.Node
+	err error
 }
 
 // plannedRemove is one removal from a plan. markedOnly limits it to rows that
@@ -157,6 +189,11 @@ func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) 
 		out := make([]plannedAdd, len(add))
 		for i, id := range add {
 			out[i] = plannedAdd{id: id}
+			m, err := lookup(cfg, id)
+			if err == nil {
+				out[i].row, err = prepareModel(cfg, m)
+			}
+			out[i].err = err
 		}
 		rm := make([]plannedRemove, len(remove))
 		for i, id := range remove {
@@ -196,15 +233,11 @@ func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []plannedR
 			res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unrouted"})
 		}
 		for _, a := range add {
-			row := a.row
-			if row == nil {
-				var perr error
-				if row, perr = prepare(cfg, a.id, o.SkipReadyGate); perr != nil {
-					res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: perr})
-					continue
-				}
+			if a.err != nil {
+				res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: a.err})
+				continue
 			}
-			if err := f.SetRow(a.id, row); err != nil {
+			if err := f.SetRow(a.id, a.row); err != nil {
 				return err
 			}
 			res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Action: "routed"})
@@ -234,7 +267,7 @@ func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []plannedR
 
 // routeableModels lists the registry models whose location resolves to loc —
 // one filter for both halves of the set Sync manages. Skips native models and
-// native providers (prepare rejects those the same way), fails closed on a
+// native providers (prepareModel rejects those the same way), fails closed on a
 // dangling provider_id (ResolveLocation errors), and requires a LiteLLM
 // mapping.
 func routeableModels(cfg *config.Config, loc config.Location) []config.Model {
@@ -348,7 +381,11 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: fmt.Errorf("model %q: %w", id, err)})
 			continue
 		}
-		row, err := prepare(cfg, id, true)
+		m, err := lookup(cfg, id)
+		var row *yaml.Node
+		if err == nil {
+			row, err = prepareModel(cfg, m)
+		}
 		if err != nil {
 			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: err})
 			continue
@@ -385,7 +422,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	// so the id belongs in the plan once. Without it the same removal was
 	// announced twice in the report and handed twice to callers of PlanSync.
 	//
-	// want is filled before prepare runs — deliberately, since `managed` holds
+	// want is filled before prepareModel runs — deliberately, since `managed` holds
 	// every cloud id: a desired cloud row whose build fails still short-circuits
 	// this loop by name and keeps its route, where moving that assignment below
 	// the error branch would let one transient build failure delete a live route.
@@ -514,7 +551,6 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // real sync always agree. Outcome actions: "routed", "adopted", "rewritten",
 // "unrouted"; per-id build failures are reported with Err.
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
-	o.SkipReadyGate = true
 	var plan SyncPlan
 	res, err := applyPlanned(cfg, func(f *File) ([]plannedAdd, []plannedRemove) {
 		p, built := planSync(cfg, f, running, o)

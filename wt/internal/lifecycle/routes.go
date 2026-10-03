@@ -190,7 +190,6 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 // through the proxy.
 func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string, mode restartMode) bool {
 	res, err := applyRoutes(cfg, add, remove, litellm.Options{
-		SkipReadyGate: true,
 		// The restart is always deferred here: applyAndReport itself decides
 		// whether to restart, and runs that restart asynchronously, below.
 		// ForceRestart is deliberately not passed — Apply restarts on it even

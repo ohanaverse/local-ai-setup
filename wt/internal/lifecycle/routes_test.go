@@ -44,9 +44,6 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 	var warn bytes.Buffer
 	oa, ow, op, ww, or := applyRoutes, waitProxy, probeProxy, routesWarn, restartProxy
 	applyRoutes = func(_ *config.Config, add, remove []string, o litellm.Options) (litellm.Result, error) {
-		if !o.SkipReadyGate {
-			t.Error("lifecycle hook must skip the ready gate: the model is verifiably running")
-		}
 		if !o.NoRestart {
 			t.Error("applyAndReport must always defer Apply's restart and run it asynchronously itself")
 		}
