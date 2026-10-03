@@ -67,7 +67,7 @@ model_list:
   # ---- Ollama (local) ----                      # ← comment banners are hand-written; wt preserves comments (§1)
   - model_name: ollama/qwen3.8:27b-mlx            # = registry model id (also the client-facing id)
     litellm_params:
-      model: ollama_chat/qwen3.8:27b-mlx          # = provider prefix + model name
+      model: ollama_chat/qwen3.8:27b-mlx          # = provider prefix + registry model_name
       api_base: http://localhost:11434
       additional_drop_params: [reasoning_effort, frequency_penalty, presence_penalty]   # bridge param wt adds to ollama_chat/ rows
     model_info:
@@ -103,7 +103,7 @@ Field provenance (from `wt/internal/litellm/policy.go` — the provider policy t
 | Field | Comes from |
 |---|---|
 | `model_name` | registry model id (`registry.toml` `id`, e.g. `ollama/qwen3.8:27b-mlx`) |
-| `litellm_params.model` | provider prefix + `model_name` — `ollama_chat/` (ollama), `openai/` (omlx, omlx-6bit, mtplx, mlx_lm_server), `openrouter/` |
+| `litellm_params.model` | provider prefix + registry `model_name` — `ollama_chat/` (ollama), `openai/` (omlx, omlx-6bit, mtplx, mlx_lm_server), `openrouter/` |
 | `api_base` | provider `auth.base_url` — `:11434` ollama; the OpenAI-compatible local servers get `<origin>/v1` (e.g. `:8000/v1` omlx); `https://openrouter.ai/api/v1` |
 | `api_key` | ollama: omitted · omlx/mtplx/mlx_lm_server: literal `"not-needed"` · openrouter: the provider's `auth.secret_ref`, **resolved** (an env-var name or `os.environ/NAME`, an `exec:` helper, or a literal key) |
 | `model_info` | per-token pricing derived from the registry's `[models.cost]` (explicit `0` when a price is absent), then the registry model's own `model_info` keys, then `wt_managed: true` — always last, so a registry `model_info` cannot disown a wt row |
@@ -113,7 +113,7 @@ Field provenance (from `wt/internal/litellm/policy.go` — the provider policy t
 What wt manages vs preserves (enforced in code, `wt/internal/litellm`):
 
 - **Owns the rows it wrote, plus a few launcher-required `litellm_settings`.** Every row wt writes carries `model_info.wt_managed: true`. wt touches a row only when it owns it: it carries that marker, or its `model_name` is a registry id wt manages (a cloud or local model with a LiteLLM mapping — this clause adopts rows written before the marker existed). wt value-enforces `litellm_settings.drop_params: true` and `litellm_settings.use_chat_completions_url_for_anthropic_messages: true`, and adds the per-row bridge params (`additional_drop_params` on `ollama_chat/*` rows, `use_chat_completions_api` on loopback `openai/*` rows) when missing — on every row, hand-written ones included.
-- **Never touches a hand-written row** — an unmarked row whose `model_name` is not a managed registry id is not removed and not rewritten (§2).
+- **Never removes or rewrites a hand-written row** — an unmarked row whose `model_name` is not a managed registry id keeps its content apart from the bridge params above (§2).
 - **Preserves everything else** — `general_settings` and unrecognized sections survive every write. Writes are atomic (unique temp file + rename), keep permission bits, and take a flock on `<config>.lock`.
 - **Comments are preserved** (yaml.v3), with one cosmetic caveat: the first wt write normalizes list indentation and drops blank lines. A comment attached to a row wt replaces moves to the new row; a comment next to a row wt removes can be dropped.
 
@@ -161,7 +161,7 @@ A row that already matches is left alone, so a sync that changes nothing writes 
 - A desired row that cannot be built — most often a `secret_ref` that resolves empty (`secret_ref "…" for provider "openrouter" resolved empty (variable unset in this shell?)`), or an empty `model_name` — is reported per id on stderr and **its existing row is kept**; the rest of the sync still applies, and the command exits 1.
 - A `config.yaml` whose `model_list` is present but is not a list is refused before anything is planned or written — the real sync and `--dry-run` exit 1 with `LiteLLM config is invalid: model_list is not a list in …`, and the `wt start`/`wt stop` route updates skip the write with that error as a warning (the start or stop itself still succeeds). A file with no `model_list`, or a bare `model_list:` (null), is fine. A file that is not valid YAML is refused the same way (`wt litellm ...` exits 1 and leaves it untouched).
 
-**Preview first: `--dry-run`.** It prints the plan the real sync would carry out, plus the same probe warnings, and writes nothing. Two differences from a real run: it does not report the `litellm_settings`/bridge-param fixes a write would make, and it does not re-check removals against a fresh probe (the real sync re-verifies local removals under the lock, so a model that finished starting in between keeps its route — the dry run can only over-report removals, never under-report them). Example (illustrative — your ids will differ):
+**Preview first: `--dry-run`.** It prints the plan the real sync would carry out, plus the same probe warnings, and writes nothing. Two differences from a real run: it does not report the `litellm_settings`/bridge-param fixes a write would make, and it does not re-check removals against a fresh probe (the real sync re-verifies local removals under the lock, so a model that finished starting in between keeps its route — the dry run can only over-report changes to local routes, never under-report them). Example (illustrative — your ids will differ):
 
 ```bash
 wt litellm sync --dry-run
@@ -182,6 +182,15 @@ warning: provider "mtplx" probe did not succeed (status "partial"); its model ro
 - **modelman** runs one `wt litellm sync` after anything that can change routing — a TUI exit that changed `registry.toml` (the add/edit dialogs write it immediately), a queue applied on exit, `modelman sync`, `migrate`, `refresh-prices`, `ollama-catalog sync`, every `start`/`stop`, and a TUI mount that found a stale `running` flag. A failed sync is a warning, never a failed command; the next sync converges.
 - **`wt start` / `wt stop`** (and the TUI start flow, `wt smoke`, the stop picker) write targeted route updates — the started model's row, marked like any other (§6 *Automatic routes*).
 - **By hand**: after hand-editing `registry.toml`, or after starting or stopping a server outside wt and modelman.
+
+**Upgrading from a pre-#179 wt.** Rows an older wt wrote carry no marker, so until the first post-upgrade sync `wt litellm list` prints every one of them as `(hand-written)`. That first sync runs without a preview as soon as any `modelman` command changes state (`start`/`stop`, `sync`, a TUI change, `refresh-prices`, …). It routes **every** registry cloud model — including ones you never routed before — adopts each unmarked row named after a registry id (rebuilding `model`/`api_base`/`api_key`/`model_info`, carrying other `litellm_params` per the rule above), and removes unmarked rows named like a registry local model that is not running. Scripts that call `wt litellm expose|unexpose` now exit 1 with a pointer to `wt litellm sync`. So, right after upgrading wt and before any modelman command:
+
+```bash
+cp ~/.config/litellm/config.yaml ~/.config/litellm/config.yaml.pre-179
+wt litellm sync --dry-run   # read every "would adopt" and "would unroute" line before letting a real sync run
+```
+
+If a `would unroute` line names a row you want to keep, rename that row so its `model_name` is not a registry id (it then stays hand-written), or fix the registry; then run `wt litellm sync`.
 
 **Reading the result: `wt litellm list`.** One routed id per line, read straight from `config.yaml`. A wt row prints as its bare id (so `wt litellm list | grep -x '<id>'` works); a hand-written row prints as `<id><TAB>(hand-written)`. Illustrative:
 
@@ -341,7 +350,7 @@ Exit code for `sync` (and `sync --dry-run`) is 0 when every desired row could be
 **Environment variables.** `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`): config.yaml path. `WT_LITELLM_RESTART_CMD` (legacy `MODELMAN_LITELLM_RESTART_CMD`): restart command, else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
 
 **Troubleshooting a `400 Invalid model name`.** The proxy answered but does not have that model.
-1. `wt litellm list` — is the id routed? If not, `wt litellm sync --dry-run` says why: a per-id error (no LiteLLM mapping, a `secret_ref` that resolves empty, …), or the id is simply not in the desired set — not in `registry.toml`, a native model, or a local model that is not running (for ollama: not pulled). Fix that, then `wt litellm sync` (or start the local model).
+1. `wt litellm list` — is the id routed? If not, `wt litellm sync --dry-run`: a per-id error names a row wt could not build (a `secret_ref` that resolves empty, an empty `model_name`). If the id does not appear in the plan at all, it is not in the desired set — not in `registry.toml`, a native model, a provider with no LiteLLM mapping (check `wt litellm providers`), or a local model that is not running (for ollama: not pulled). Fix that, then `wt litellm sync` (or start the local model).
 2. If it is listed, the proxy has a stale model list (it reads `config.yaml` only at start): restart it per §5 and check `~/.litellm.err.log`. wt's own restart may have failed — that surfaces as a warning at the time of the change.
 3. Check routing is actually on: `wt litellm status`.
 4. Neither the modelman TUI nor wt's picker shows a routing column — routing is derived, so there is nothing in `modelman.toml` to display. `wt litellm list` is the only answer to "is it routed?".

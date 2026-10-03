@@ -43,7 +43,7 @@ uv run modelman                                # full TUI: browse the model tabl
 uv run modelman sync                           # reconcile downloaded/disk_path/size_bytes in modelman.toml against providers; never adds models, then syncs the LiteLLM routes
 # ollama/gpt-oss:20b below is an example id — substitute any id from your registry.toml
 uv run modelman start ollama/gpt-oss:20b       # load it; the start's own route sync makes it reachable through LiteLLM
-uv run modelman stop ollama/gpt-oss:20b        # unload it (for a single-model provider, its route goes with it)
+uv run modelman stop ollama/gpt-oss:20b        # unload it (a pulled ollama model stays routed; on a single-model provider the route goes with it)
 wt litellm sync --dry-run                      # read-only: what wt would route/unroute for the current registry
 wt litellm list                                # what is routed right now — the authoritative answer
 ```
@@ -229,7 +229,7 @@ One line per LiteLLM `model_list` entry, each `<line>:  - model_name: <model-id>
 19:  - model_name: openrouter/qwen/qwen3.8-27b
 ```
 
-(A running local model, e.g. an omlx one, adds its wt-written row while it runs; `wt litellm list` prints a row wt did not write with a `(hand-written)` suffix. Never `cat` this file into chat/docs — its `api_key:` values may hold literal keys.)
+(A running local model, e.g. an omlx one, adds its wt-written row while it runs; `wt litellm list` prints a row without wt's marker — including one a pre-#179 wt wrote, see [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* — with a `(hand-written)` suffix. Never `cat` this file into chat/docs — its `api_key:` values may hold literal keys.)
 
 There is deliberately **no second check in `modelman.toml`**. That file records what modelman owns — whether a model is downloaded and whether it is loaded — and nothing about routing:
 
@@ -269,7 +269,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 - **`sync` semantics:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), unconfigured models ignored, no models added, then one `wt litellm sync` so the routes follow whatever it changed; ollama `:cloud` stubs are managed by `modelman ollama-catalog sync`, not `sync`. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
 - **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:91`).
 - **TUI changes apply on exit only.** Adds/edits/deletes/downloads/ready toggles sit in an in-memory queue until you confirm the pending set; deletes run before downloads, then one write of both files and one route sync.
-- **Secrets:** `secret_ref` is copied verbatim into the LiteLLM entry's `api_key`. If a `secret_ref` holds a literal key, the live `config.yaml` will too (e.g. `sk-or-v1-…`) — check and redact before pasting config anywhere.
+- **Secrets:** wt resolves `secret_ref` (Step 2) and writes the resulting key into the LiteLLM entry's `api_key` — whatever form the ref takes, the live `config.yaml` holds the literal key (e.g. `sk-or-v1-…`) — check and redact before pasting config anywhere.
 
 ## Going deeper
 
