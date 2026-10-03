@@ -46,7 +46,7 @@ func smokeFixtureConfig(t *testing.T) *config.Config {
 			{Name: "shell", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	return cfg
 }
 
@@ -556,7 +556,7 @@ func candidatesFixture(t *testing.T) (*config.Config, func()) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	snap := localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
@@ -615,7 +615,7 @@ func TestCandidatesGateStartRowsPerAgent(t *testing.T) {
 			{Name: "codex", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	defer SetSmokeProbeForTest(localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{

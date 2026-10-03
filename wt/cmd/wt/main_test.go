@@ -499,13 +499,11 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		0o644); err != nil {
 		t.Fatalf("write registry: %v", err)
 	}
-	// Expose the ollama model through the LiteLLM gateway so the
-	// auto-launch short-circuit sees it as eligible. The modelman per-model
-	// `running` flag is deliberately left false: wt decides running state
-	// from the live inventory probe (stubbed above), never from
-	// modelman-owned state.
+	// Mark the ollama model ready. The modelman per-model `running` flag is
+	// deliberately left false: wt decides running state from the live
+	// inventory probe (stubbed above), never from modelman-owned state.
 	if err := os.WriteFile(filepath.Join(regDir, "modelman.toml"),
-		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\nready = true\n"),
+		[]byte("[model_state.\"ollama/gemma4:9b\"]\nready = true\n"),
 		0o644); err != nil {
 		t.Fatalf("write modelman state: %v", err)
 	}
@@ -902,7 +900,7 @@ func TestResolveModelForLaunchCloudOnlyResolves(t *testing.T) {
 		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	resolved, m, _, err := resolveModelForLaunch("claude", cfg, "", "", "")
 	if err != nil {

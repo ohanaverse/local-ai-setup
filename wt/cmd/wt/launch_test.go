@@ -207,7 +207,7 @@ func TestLaunchUsesResolveModel(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	// Two models, no -M → resolveModel errors with "multiple models match".
 	// Any ambiguous eligible list errors so callers can route through
@@ -465,7 +465,7 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	// The model must be launchable under live-truth semantics: the stubbed
 	// probe reports it registered and serving, so the row is a launch row
@@ -522,7 +522,7 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 	// Toggle is off, but a URL+key are configured — codex must still force
 	// litellm via the protocol mismatch, not the toggle.
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	// The model must be launchable under live-truth semantics: the stubbed
 	// probe reports it registered and serving, so the row is a launch row
@@ -567,7 +567,7 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	// Two eligible models, no -M → resolveModel errors with "multiple models
 	// match". The defaultModel fallback is gone, so any ambiguous eligible
@@ -627,7 +627,7 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	want := []string{"claude/a", "claude/b", "claude/c"}
 	statePath := filepath.Join(dir, "agent-wt", "rotation.state")
@@ -682,7 +682,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	if err := rotation.New().Record("claude/design-a"); err != nil {
 		t.Fatalf("seed rotation state: %v", err)
@@ -732,7 +732,7 @@ func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
@@ -773,7 +773,7 @@ func TestLaunchFilteredRecordsUsageForAgent(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)

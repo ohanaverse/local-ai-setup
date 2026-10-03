@@ -38,18 +38,17 @@ type Row struct {
 	Model      config.Model
 	Location   config.Location
 	Status     Status
-	Exposed    bool
 	Running    bool
 	Discovered bool
 	// Unmapped marks a cloud row whose provider has no LiteLLM mapping: it
-	// is in the catalog (configured means exposed, #179) but sync never
+	// is in the catalog (every configured model is, #179) but sync never
 	// routes it, so a launch through the proxy would fail with "Invalid
 	// model name". RefusedByRoute refuses it there; direct, it launches.
 	Unmapped bool
 }
 
 // Input gathers everything Build needs. Models is the caller's eligible list
-// (exposed cloud + every configured local model, already filtered by
+// (every catalog model the agent supports, already filtered by
 // agent/-T/-F); Inventory is nil when no local probe ran, in which case no
 // local row is assessed at all: locals read as not running with status ok.
 // When Inventory is set, a local row's status is ok, absent (the probe
@@ -117,7 +116,6 @@ func Build(in Input) []Row {
 		if _, ok := litellm.PolicyFor(m.ProviderID); !ok && !m.Native && loc == config.LocationCloud {
 			r.Unmapped = true
 		}
-		r.Exposed = m.Native || (in.Config != nil && in.Config.ExposedFlag(m.ID))
 		rows = append(rows, r)
 		seen[m.ID] = true
 	}

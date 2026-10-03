@@ -136,7 +136,7 @@ func TestRegistryFixtureCost(t *testing.T) {
 }
 
 // TestRegistryFixtureNativeExposure pins the cross-language rule that a
-// native model is always exposed even without a model_state row. The same
+// native model is always in the catalog even without a model_state row. The same
 // fixture file is read by modelman's contract test.
 func TestRegistryFixtureNativeExposure(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
@@ -148,7 +148,6 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 
 	cfg := &Config{Providers: providers, Models: models}
 	deriveNative(cfg)
-	cfg.SetExposedForTest(map[string]ExposureEntry{})
 
 	native := cfg.Models[2]
 	if native.ID != "agy/contract-fixture:native" {
@@ -209,7 +208,6 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 	}
 	c := &Config{Providers: providers, Models: models}
 	deriveNative(c)
-	c.SetExposedForTest(map[string]ExposureEntry{"pinned-cloud/contract-fixture:inherit": {Exposed: true, Ready: false}})
 
 	var inherit *Model
 	for i := range models {

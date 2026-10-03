@@ -20,7 +20,7 @@ type tableRow struct {
 }
 
 // tableInput gathers everything buildRows needs. models is the agent's
-// eligible list (exposed cloud + every configured local model, already
+// eligible list (every catalog model the agent supports, already
 // filtered by agent/-T/-F); inventory is nil when no local probe ran.
 type tableInput struct {
 	cfg            *config.Config

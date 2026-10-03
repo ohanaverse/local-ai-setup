@@ -22,10 +22,11 @@ func opts(t *testing.T, body string) (Options, *int, string) {
 	return Options{Path: p, Restart: func() []string { n++; return nil }}, &n, p
 }
 
-// TestApplyExposeWritesRowAndRestartsOnce covers the happy path: exposing two
-// models writes both rows in one save and restarts the proxy exactly once.
-// The single restart matters — each one kills in-flight agent requests.
-func TestApplyExposeWritesRowAndRestartsOnce(t *testing.T) {
+// TestApplyRoutesRowsAndRestartsOnce covers the happy path: routing two
+// models writes both rows in one save, reports each as "routed", and
+// restarts the proxy exactly once. The single restart matters — each one
+// kills in-flight agent requests.
+func TestApplyRoutesRowsAndRestartsOnce(t *testing.T) {
 	o, restarts, p := opts(t, "model_list: []\n")
 	o.SkipReadyGate = true // gemma is not ready in testConfig; this test is about the write, not the gate
 	res, err := Apply(testConfig(), []string{"ollama/gemma:9b", "openrouter/x/y"}, nil, o)
@@ -35,13 +36,18 @@ func TestApplyExposeWritesRowAndRestartsOnce(t *testing.T) {
 	if !res.Changed || *restarts != 1 {
 		t.Fatalf("changed=%v restarts=%d, want true/1", res.Changed, *restarts)
 	}
+	for _, oc := range res.Outcomes {
+		if oc.Err != nil || oc.Action != "routed" {
+			t.Errorf("outcome %+v, want action routed", oc)
+		}
+	}
 	f, _ := Open(p)
 	if ids := f.RoutedIDs(); len(ids) != 2 {
 		t.Fatalf("routed = %v", ids)
 	}
 }
 
-// TestApplyIsIdempotent pins that re-exposing an identical row writes nothing
+// TestApplyIsIdempotent pins that re-routing an identical row writes nothing
 // and does not restart the proxy.
 func TestApplyIsIdempotent(t *testing.T) {
 	o, restarts, _ := opts(t, "model_list: []\n")
@@ -55,11 +61,11 @@ func TestApplyIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res.Changed || *restarts != 0 {
-		t.Fatalf("idempotent re-expose: changed=%v restarts=%d", res.Changed, *restarts)
+		t.Fatalf("idempotent re-route: changed=%v restarts=%d", res.Changed, *restarts)
 	}
 }
 
-// TestApplyGateRejections pins the expose gate: unknown model, native
+// TestApplyGateRejections pins the route gate: unknown model, native
 // provider and a not-ready local model are each reported per id without
 // blocking the valid ids in the same batch, and SkipReadyGate lifts only the
 // ready check.
@@ -76,14 +82,14 @@ func TestApplyGateRejections(t *testing.T) {
 			errs[oc.ID] = oc.Err.Error()
 		}
 	}
-	if !strings.Contains(errs["nope/x"], "not found") || !strings.Contains(errs["claude/sonnet"], "native") || !strings.Contains(errs["ollama/gemma:9b"], "not ready") {
+	if !strings.Contains(errs["nope/x"], "not found") || !strings.Contains(errs["claude/sonnet"], "native and is not routed") || !strings.Contains(errs["ollama/gemma:9b"], "not ready") {
 		t.Fatalf("errs = %v", errs)
 	}
 	if _, bad := errs["openrouter/x/y"]; bad {
 		t.Fatal("cloud model must be exempt from the ready gate")
 	}
 
-	cfg.SetExposureForTest("ollama/gemma:9b", config.ExposureEntry{Ready: true})
+	cfg.SetReadyForTest("ollama/gemma:9b", true)
 	o2, _, _ := opts(t, "model_list: []\n")
 	if r, _ := Apply(cfg, []string{"ollama/gemma:9b"}, nil, o2); r.Outcomes[0].Err != nil {
 		t.Fatalf("ready model rejected: %v", r.Outcomes[0].Err)
@@ -95,14 +101,18 @@ func TestApplyGateRejections(t *testing.T) {
 	}
 }
 
-// TestApplyUnexposeRemovesRow covers removal and that removing a stale row
+// TestApplyRemovesRow covers removal and that removing a stale row
 // (present in the file, unknown to the registry) still works — the exact
-// shape of the stale Qwen3.8-27B route that motivated this work.
-func TestApplyUnexposeRemovesRow(t *testing.T) {
+// shape of the stale Qwen3.8-27B route that motivated this work. The
+// removal is reported as "unrouted".
+func TestApplyRemovesRow(t *testing.T) {
 	o, restarts, p := opts(t, baseConfig)
 	res, err := Apply(testConfig(), nil, []string{"keep/me"}, o)
 	if err != nil || !res.Changed || *restarts != 1 {
 		t.Fatalf("err=%v changed=%v restarts=%d", err, res.Changed, *restarts)
+	}
+	if len(res.Outcomes) != 1 || res.Outcomes[0].Action != "unrouted" {
+		t.Fatalf("outcomes = %+v, want one unrouted", res.Outcomes)
 	}
 	f, _ := Open(p)
 	for _, id := range f.RoutedIDs() {
@@ -151,15 +161,6 @@ func TestSyncReconcilesLocalRoutes(t *testing.T) {
 	got := strings.Join(f.RoutedIDs(), ",")
 	if got != "openrouter/x/y,keep/me,mtplx/Youssofal--Q" {
 		t.Fatalf("routed = %s", got)
-	}
-}
-
-// TestCheckIsSideEffectFree pins --dry-run: Check reports per-id validity and
-// never touches the file.
-func TestCheckIsSideEffectFree(t *testing.T) {
-	out := Check(testConfig(), []string{"claude/sonnet", "openrouter/x/y"}, false)
-	if out[0].Err == nil || out[1].Err != nil {
-		t.Fatalf("outcomes = %+v", out)
 	}
 }
 
@@ -240,7 +241,7 @@ litellm_settings:
 
 // TestSyncDecidesUnderTheLock pins that Sync reads the current routes inside
 // the lock: a route added by another process while Sync waits for the lock
-// (a lifecycle hook exposing a just-started model) is seen and handled, not
+// (a lifecycle hook routing a just-started model) is seen and handled, not
 // judged against a stale pre-lock read. The sleep only gives Sync time to
 // reach the lock; a slow scheduler can make the test pass vacuously against
 // the old code, never fail against the fixed code.
@@ -253,7 +254,7 @@ func TestSyncDecidesUnderTheLock(t *testing.T) {
 			done <- err
 		}()
 		time.Sleep(100 * time.Millisecond)
-		// Another process exposes a local model while Sync waits.
+		// Another process routes a local model while Sync waits.
 		return os.WriteFile(p, []byte("model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n"), 0o600)
 	})
 	if err != nil {
@@ -484,7 +485,7 @@ func readRows(t *testing.T, p string) []RowInfo {
 
 // TestSyncRoutesEveryCloudModel pins #179's core rule: configured means
 // exposed, so sync adds a marked route for every registry cloud model with no
-// expose step, and skips native models.
+// opt-in step, and skips native models.
 func TestSyncRoutesEveryCloudModel(t *testing.T) {
 	o, restarts, p := opts(t, "model_list: []\n")
 	res, err := Sync(testConfig(), nil, o)
@@ -496,6 +497,39 @@ func TestSyncRoutesEveryCloudModel(t *testing.T) {
 	}
 	if !res.Changed || *restarts != 1 {
 		t.Fatalf("changed=%v restarts=%d", res.Changed, *restarts)
+	}
+}
+
+// TestSyncSkipsNativeModelOnMappedProvider pins routeableModels' native-model
+// skip on its own. testConfig's native model sits on a native provider that
+// PolicyFor also leaves unmapped, so that gate alone would hide it; here the
+// native models sit on providers that DO have a LiteLLM mapping (openrouter
+// cloud, ollama local, the latter even reported running), so only the
+// m.Native check keeps them out of CloudModels and out of config.yaml. A
+// native model talks to its agent directly; a LiteLLM route for it would
+// advertise a model the proxy cannot serve.
+func TestSyncSkipsNativeModelOnMappedProvider(t *testing.T) {
+	cfg := testConfig()
+	cfg.Models = append(cfg.Models,
+		config.Model{ID: "openrouter/native", ProviderID: "openrouter", ModelName: "native", Location: config.LocationCloud, Native: true},
+		config.Model{ID: "ollama/native", ProviderID: "ollama", ModelName: "native", Location: config.LocationLocal, Native: true},
+	)
+	for _, m := range CloudModels(cfg) {
+		if m.Native {
+			t.Errorf("CloudModels includes native model %q", m.ID)
+		}
+	}
+	for _, m := range LocalModels(cfg) {
+		if m.Native {
+			t.Errorf("LocalModels includes native model %q", m.ID)
+		}
+	}
+	o, _, p := opts(t, "model_list: []\n")
+	if _, err := Sync(cfg, []string{"ollama/native"}, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
+		t.Fatalf("rows = %v, want only the non-native cloud model", got)
 	}
 }
 
@@ -633,8 +667,7 @@ func TestSyncCarriesUserButNotWTParams(t *testing.T) {
 	// model pin does not catch that mutation — BuildEntry emits model
 	// unconditionally, so carryUserParams can never find it missing — it is the
 	// backstop for the day BuildEntry stops emitting model unconditionally:
-	// model is the string LiteLLM dials, and a rebuild that carried a stale one
-	// would leave wt believing it owns a row that routes elsewhere.
+	// model is the string LiteLLM dials.
 	if params["model"] != "ollama_chat/gemma:9b" {
 		t.Errorf("model = %v, want the registry's ollama_chat/gemma:9b", params["model"])
 	}

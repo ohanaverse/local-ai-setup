@@ -21,7 +21,6 @@ func rowsTestCfg() *config.Config {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter", "omlx", "ollama"}}},
 	}
-	cfg.SetExposedForTest(map[string]config.ExposureEntry{"openrouter/cheap": {Exposed: true, Ready: true}})
 	return cfg
 }
 

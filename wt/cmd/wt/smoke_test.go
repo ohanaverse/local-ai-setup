@@ -25,8 +25,8 @@ import (
 )
 
 // smokeFixtureConfig builds a one-agent, two-model config: one model is
-// exposed and running (eligible), the other is registered but never
-// exposed/running (not eligible) — enough to exercise resolveSmokeModel's
+// running (eligible), the other is registered but never running (not
+// eligible) — enough to exercise resolveSmokeModel's
 // three outcomes (eligible / registered-but-ineligible / unknown). Eligibility
 // now reads live inventory rows, so the probe is stubbed with qwen3.8:27b-mlx
 // running — that is what makes it eligible while not-eligible:x, absent from
@@ -58,7 +58,7 @@ func smokeFixtureConfig(t *testing.T) *config.Config {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	return cfg
 }
 

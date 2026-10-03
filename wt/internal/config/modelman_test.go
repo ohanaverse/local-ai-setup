@@ -32,19 +32,19 @@ func writeLitellmState(t *testing.T, dir string, enabled bool, url, apiKey strin
 }
 
 // TestLoadModelmanStateMissingFileReturnsEmptySet asserts that a missing
-// modelman.toml is not an error: every non-native model is simply unexposed
-// until modelman marks it. This is the first-run state before any model has
-// been routed through LiteLLM.
+// modelman.toml is not an error: every model simply reads as not ready
+// until modelman marks it. This is the first-run state before modelman has
+// written any model state.
 func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	exposed, litellm, err := loadModelmanState()
+	state, litellm, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v, want nil", err)
 	}
-	if len(exposed) != 0 {
-		t.Errorf("exposed = %v, want empty map", exposed)
+	if len(state) != 0 {
+		t.Errorf("state = %v, want empty map", state)
 	}
 	if litellm != nil {
 		t.Errorf("litellm = %+v, want nil", litellm)
@@ -54,34 +54,34 @@ func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
 // TestLoadModelmanStateHonorsXDG asserts that loadModelmanState reads from
 // $XDG_CONFIG_HOME/local-ai/modelman.toml, not a hardcoded ~/.config path.
 // Without this guard, a custom XDG location populated by modelman would be
-// ignored and wt would see no exposed models.
+// ignored and wt would see no ready models.
 func TestLoadModelmanStateHonorsXDG(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `
 [model_state]
 
-[model_state.exposed-model]
-exposed = true
+[model_state.ready-model]
+ready = true
 `)
 
-	exposed, _, err := loadModelmanState()
+	state, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
-	st, ok := exposed["exposed-model"]
+	st, ok := state["ready-model"]
 	if !ok {
-		t.Errorf("exposed[exposed-model] missing, want present")
-	} else if !st.Exposed {
-		t.Errorf("exposed[exposed-model].Exposed = false, want true")
+		t.Errorf("state[ready-model] missing, want present")
+	} else if !st.Ready {
+		t.Errorf("state[ready-model].Ready = false, want true")
 	}
-	if len(exposed) != 1 {
-		t.Errorf("len(exposed) = %d, want 1", len(exposed))
+	if len(state) != 1 {
+		t.Errorf("len(state) = %d, want 1", len(state))
 	}
 }
 
 // TestLoadModelmanStateMalformedTOMLError asserts that a malformed
 // modelman.toml surfaces a clear parse error. Hand-edited TOML can contain
-// syntax mistakes, and silent failure would leave every model unexposed.
+// syntax mistakes, and silent failure would leave every model not ready.
 func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `this is not toml {{{`)
@@ -107,23 +107,46 @@ func TestLoadModelmanStateReadsLegacyDownloadedAsReady(t *testing.T) {
 [model_state]
 
 [model_state."legacy-local"]
-litellm_exposed = true
 downloaded = true
 `)
 
-	exposed, _, err := loadModelmanState()
+	state, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
-	st, ok := exposed["legacy-local"]
+	st, ok := state["legacy-local"]
 	if !ok {
-		t.Fatalf("exposed[legacy-local] missing, want present")
-	}
-	if !st.Exposed {
-		t.Errorf("exposed[legacy-local].Exposed = false, want true")
+		t.Fatalf("state[legacy-local] missing, want present")
 	}
 	if !st.Ready {
-		t.Errorf("exposed[legacy-local].Ready = false, want true (via downloaded fallback)")
+		t.Errorf("state[legacy-local].Ready = false, want true (via downloaded fallback)")
+	}
+}
+
+// TestLoadModelmanStateIgnoresExposedKeys verifies wt no longer reads
+// modelman's retired `exposed` / legacy `litellm_exposed` keys (#179:
+// configured is exposed). An old modelman.toml still carrying them must not
+// make a model read as ready, and ModelmanEntry must not grow an Exposed
+// field back — a re-added field would silently read the stale flag again.
+func TestLoadModelmanStateIgnoresExposedKeys(t *testing.T) {
+	dir := t.TempDir()
+	writeModelmanState(t, dir, `
+[model_state."omlx/old"]
+exposed = true
+litellm_exposed = true
+`)
+
+	state, _, err := loadModelmanState()
+	if err != nil {
+		t.Fatalf("loadModelmanState() error = %v", err)
+	}
+	if st := state["omlx/old"]; st.Ready {
+		t.Errorf("state[omlx/old] = %+v, want not ready: exposed keys must not be read", st)
+	}
+	for _, f := range []string{"Exposed", "LitellmExposed"} {
+		if _, ok := reflect.TypeOf(ModelmanEntry{}).FieldByName(f); ok {
+			t.Errorf("ModelmanEntry has a %s field; wt must not read modelman's retired exposed flags", f)
+		}
 	}
 }
 
@@ -137,25 +160,24 @@ func TestLoadModelmanStateIgnoresRunningFlag(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `
 [model_state."omlx/qwen3.8"]
-exposed = true
+ready = true
 running = true
 `)
 
-	exposed, _, err := loadModelmanState()
+	state, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
-	cfg := &Config{}
-	cfg.SetExposedForTest(exposed)
-	if !cfg.ExposedFlag("omlx/qwen3.8") {
-		t.Error("exposed = false, want true: the exposed key must still be read")
+	cfg := &Config{modelman: state}
+	if !cfg.ReadyFlag("omlx/qwen3.8") {
+		t.Error("ready = false, want true: the ready key must still be read")
 	}
 
 	// Structural guard: the parse must not reintroduce a Running field. The
 	// TOML above carries running = true, so a re-added field would silently
 	// read it again — nothing else in the tree would fail.
-	if _, ok := reflect.TypeOf(ExposureEntry{}).FieldByName("Running"); ok {
-		t.Error("ExposureEntry has a Running field; wt must not read modelman's per-model running flag")
+	if _, ok := reflect.TypeOf(ModelmanEntry{}).FieldByName("Running"); ok {
+		t.Error("ModelmanEntry has a Running field; wt must not read modelman's per-model running flag")
 	}
 }
 

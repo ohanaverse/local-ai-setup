@@ -48,17 +48,14 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	// here: wt stopped parsing it when the local-running gate retired —
 	// the key stays in the file (modelman owns it) and is ignored on read
 	// (pinned by TestLoadModelmanStateIgnoresRunningFlag).
-	if !models["ollama/contract-fixture:subscription"].Exposed {
-		t.Error("expected ollama/contract-fixture:subscription to be exposed")
+	// Likewise the legacy `exposed` / `litellm_exposed` keys some rows still
+	// carry are ignored (#179; pinned by TestLoadModelmanStateIgnoresExposedKeys):
+	// ready comes from `ready` (or legacy `downloaded`) alone.
+	if !models["ollama/contract-fixture:local"].Ready || !models["ollama/contract-fixture:subscription"].Ready {
+		t.Error("expected the ready=true fixture entries to read as ready")
 	}
-	if !models["llamacpp/legacy-contract-fixture"].Exposed {
-		t.Error("legacy litellm_exposed-only entry must still read as exposed")
-	}
-	if models["ollama/contract-fixture:local"].Exposed {
-		t.Error("expected ollama/contract-fixture:local to be not exposed")
-	}
-	if models["openrouter/contract-fixture:cloud"].Exposed {
-		t.Error("expected openrouter/contract-fixture:cloud to be not exposed")
+	if models["openrouter/contract-fixture:cloud"].Ready {
+		t.Error("expected openrouter/contract-fixture:cloud (all defaults) to have ready=false")
 	}
 
 	if models["ollama/contract-fixture:local-not-ready"].Ready {

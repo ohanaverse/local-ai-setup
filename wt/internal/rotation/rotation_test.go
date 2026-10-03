@@ -85,7 +85,7 @@ func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	r := NewAt(t.TempDir())
 	got, ok := r.Next(cfg, "claude", "", "")
 	if !ok || got.ID != "claude/sonnet" {
@@ -113,7 +113,7 @@ func TestNextAdvancesAfterLast(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.Record("claude/sonnet")
@@ -140,7 +140,7 @@ func TestNextWrapsAround(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.Record("claude/opus")
@@ -167,7 +167,7 @@ func TestNextSkipsIneligibleModels(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.Record("ollama/b")
@@ -211,7 +211,7 @@ func TestNextFallsBackToStartWhenLastUnknown(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.Record("claude/ghost")

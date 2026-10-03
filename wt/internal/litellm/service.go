@@ -37,8 +37,9 @@ func runRecheck(o Options) (fresh []string, ok bool) {
 // Options tunes Apply/Sync.
 //   - Path          — config.yaml; "" means DefaultPath().
 //   - SkipReadyGate — skip the "model must be ready" check (the lifecycle
-//     hook passes it: the model is verifiably running; modelman passes it
-//     because it applied the gate against its own in-memory state).
+//     hook passes it: the model is verifiably running; Sync forces it: its
+//     desired set is already the routeable cloud models plus the running
+//     local ones).
 //   - Restart       — proxy restart hook; nil means Restart. Tests inject.
 //   - Ctx           — bounds the config.yaml lock wait; nil means no bound.
 type Options struct {
@@ -69,9 +70,9 @@ type Options struct {
 	ForceRestart bool
 }
 
-// Outcome is one requested id's result. Action is "exposed" or "unexposed"
-// (expose/unexpose) — or, from Sync, "routed", "adopted", "rewritten" or
-// "unrouted"; Err is set when the id was rejected.
+// Outcome is one requested id's result. Action is "routed" or "unrouted"
+// (Apply) — Sync further splits "routed" into "adopted" and "rewritten" where
+// its plan says so; Err is set when the id was rejected.
 type Outcome struct {
 	ID     string
 	Action string
@@ -111,7 +112,7 @@ func prepare(cfg *config.Config, id string, skipReady bool) (*yaml.Node, error) 
 		return nil, fmt.Errorf("model %q references unknown provider %q", id, m.ProviderID)
 	}
 	if m.Native || p.Auth.Type == "native" {
-		return nil, fmt.Errorf("provider %q is native and cannot be exposed through LiteLLM", m.ProviderID)
+		return nil, fmt.Errorf("provider %q is native and is not routed through LiteLLM", m.ProviderID)
 	}
 	pol, ok := PolicyFor(p.ID)
 	if !ok {
@@ -127,16 +128,6 @@ func prepare(cfg *config.Config, id string, skipReady bool) (*yaml.Node, error) 
 		return nil, fmt.Errorf("model %q is not ready", id)
 	}
 	return BuildEntry(m, *p)
-}
-
-// Check validates ids without touching any file (`--dry-run`).
-func Check(cfg *config.Config, ids []string, skipReady bool) []Outcome {
-	out := make([]Outcome, 0, len(ids))
-	for _, id := range ids {
-		_, err := prepare(cfg, id, skipReady)
-		out = append(out, Outcome{ID: id, Action: "exposed", Err: err})
-	}
-	return out
 }
 
 // plannedAdd is one add from a plan: the id, with its row already built when
@@ -202,7 +193,7 @@ func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []plannedR
 			} else {
 				f.RemoveRow(r.id)
 			}
-			res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unexposed"})
+			res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unrouted"})
 		}
 		for _, a := range add {
 			row := a.row
@@ -216,7 +207,7 @@ func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []plannedR
 			if err := f.SetRow(a.id, row); err != nil {
 				return err
 			}
-			res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Action: "exposed"})
+			res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Action: "routed"})
 		}
 		f.EnsureSettings()
 		if !f.Changed() {
@@ -545,18 +536,14 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 		return res, err
 	}
 	for i := range res.Outcomes {
-		switch res.Outcomes[i].Action {
-		case "exposed":
-			switch id := res.Outcomes[i].ID; {
-			case slices.Contains(plan.Adopt, id):
-				res.Outcomes[i].Action = "adopted"
-			case slices.Contains(plan.Rewrite, id):
-				res.Outcomes[i].Action = "rewritten"
-			default:
-				res.Outcomes[i].Action = "routed"
-			}
-		case "unexposed":
-			res.Outcomes[i].Action = "unrouted"
+		if res.Outcomes[i].Action != "routed" {
+			continue
+		}
+		switch id := res.Outcomes[i].ID; {
+		case slices.Contains(plan.Adopt, id):
+			res.Outcomes[i].Action = "adopted"
+		case slices.Contains(plan.Rewrite, id):
+			res.Outcomes[i].Action = "rewritten"
 		}
 	}
 	res.Outcomes = append(res.Outcomes, plan.Errors...)

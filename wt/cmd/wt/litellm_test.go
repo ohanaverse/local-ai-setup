@@ -44,93 +44,6 @@ func litellmEnv(t *testing.T, body string) string {
 	return p
 }
 
-// TestLitellmExposeJSONMatchesContract pins the --json shape against the
-// shared cross-language fixture: modelman's bridge parses exactly these keys,
-// so renaming one here without the fixture failing would break modelman
-// silently at runtime.
-func TestLitellmExposeJSONMatchesContract(t *testing.T) {
-	litellmEnv(t, "model_list: []\n")
-	var out, errOut bytes.Buffer
-	err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b", "claude/sonnet"},
-		litellmFlags{JSON: true, SkipReadyGate: true})
-	if err == nil {
-		t.Fatal("want a non-nil error: one id was rejected")
-	}
-	var got map[string]any
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("output is not JSON: %v\n%s", err, out.String())
-	}
-	raw, _ := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
-	var fixture map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	var change map[string]any
-	if err := json.Unmarshal(fixture["change"], &change); err != nil {
-		t.Fatal(err)
-	}
-	for k := range change {
-		if _, ok := got[k]; !ok {
-			t.Errorf("output lacks contract key %q: %v", k, got)
-		}
-	}
-	outcomes := got["outcomes"].([]any)
-	first := outcomes[0].(map[string]any)
-	second := outcomes[1].(map[string]any)
-	if first["action"] != "exposed" || second["error"] == nil || got["changed"] != true {
-		t.Fatalf("got = %v", got)
-	}
-}
-
-// TestLitellmExposeGateAndDryRun pins that the CLI enforces the ready gate by
-// default (a not-ready local model is refused), that --skip-ready-gate lifts
-// it, and that --dry-run validates without writing anything.
-func TestLitellmExposeGateAndDryRun(t *testing.T) {
-	p := litellmEnv(t, "model_list: []\n")
-	var out, errOut bytes.Buffer
-	if err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{}); err == nil ||
-		!strings.Contains(out.String()+errOut.String(), "not ready") {
-		t.Fatalf("not-ready model accepted: err=%v out=%s", err, out.String())
-	}
-	out.Reset()
-	before, _ := os.ReadFile(p)
-	if err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{DryRun: true, SkipReadyGate: true}); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(p); string(b) != string(before) {
-		t.Fatal("--dry-run wrote to config.yaml")
-	}
-}
-
-// TestLitellmDryRunJSONIsDistinguishableFromRealApply pins that --dry-run
-// --json output carries a "dry_run" marker: without it, a script previewing
-// a change with --dry-run cannot tell the output apart from a real apply
-// that happened to change nothing (both show changed:false, action:exposed).
-func TestLitellmDryRunJSONIsDistinguishableFromRealApply(t *testing.T) {
-	// Sandbox WT_LITELLM_CONFIG the same way every other test in this file
-	// does: without it, the real-apply sub-case below would target
-	// DefaultPath() (~/.config/litellm/config.yaml) and could write to a
-	// developer's live proxy config.
-	litellmEnv(t, "model_list: []\n")
-	var out, errOut bytes.Buffer
-	err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{JSON: true, DryRun: true, SkipReadyGate: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), `"dry_run":true`) {
-		t.Fatalf("dry-run JSON = %s, want a dry_run:true marker", out.String())
-	}
-
-	out.Reset()
-	errOut.Reset()
-	if err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{JSON: true, SkipReadyGate: true}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out.String(), `"dry_run"`) {
-		t.Fatalf("real-apply JSON = %s, want no dry_run key at all", out.String())
-	}
-}
-
 // TestLitellmSyncUsesLiveInventory pins that sync derives "running" from the
 // live inventory (never modelman's flag): a running registered model gets a
 // route and an unrouted-but-stopped one keeps none.
@@ -151,7 +64,7 @@ func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 }
 
 // TestLitellmListAndProviders pins the read-only commands' JSON shapes used by
-// modelman's EXPOSED column and its provider policy lookup.
+// modelman's bridge (routed_ids) and its provider policy lookup.
 func TestLitellmListAndProviders(t *testing.T) {
 	litellmEnv(t, "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n")
 	var out bytes.Buffer
@@ -173,15 +86,15 @@ func TestLitellmListAndProviders(t *testing.T) {
 	}
 }
 
-// TestLitellmMutatorsRefuseOnConfigError pins that expose/unexpose/sync refuse
-// when the registry failed to LOAD (a.loadErr), like every sibling command.
-// (Validation-only errors are covered by TestLitellmChangeCommandsWorkOnValidationOnlyError.)
-// Without the guard they act on an empty registry: expose reports "not found"
-// and unexpose/sync still write config.yaml and restart the proxy.
-func TestLitellmMutatorsRefuseOnConfigError(t *testing.T) {
+// TestLitellmSyncRefusesOnConfigError pins that sync refuses when the
+// registry failed to LOAD (a.loadErr), like every sibling command.
+// (Validation-only errors are covered by TestLitellmSyncWorksOnValidationOnlyError.)
+// Without the guard it acts on an empty registry: sync would still write
+// config.yaml and restart the proxy.
+func TestLitellmSyncRefusesOnConfigError(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
-	for _, args := range [][]string{{"expose", "ollama/gemma:9b"}, {"unexpose", "ollama/gemma:9b"}, {"sync"}} {
+	for _, args := range [][]string{{"sync"}} {
 		c := litellmCmd(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")})
 		var out, errOut bytes.Buffer
 		c.SetOut(&out)
@@ -193,24 +106,6 @@ func TestLitellmMutatorsRefuseOnConfigError(t *testing.T) {
 		}
 		if b, _ := os.ReadFile(p); string(b) != body {
 			t.Fatalf("%v modified config.yaml:\n%s", args, b)
-		}
-	}
-}
-
-// TestLitellmRejectsBlankIDs pins that a blank or whitespace-only id is
-// refused before anything is touched: an empty unexpose id would otherwise
-// match (and delete) every row that lacks a model_name.
-func TestLitellmRejectsBlankIDs(t *testing.T) {
-	body := "model_list:\n  - litellm_params: {model: x}\n  - model_name: a/b\n    litellm_params: {model: y}\n"
-	p := litellmEnv(t, body)
-	for _, expose := range []bool{true, false} {
-		var out, errOut bytes.Buffer
-		err := runLitellmChange(&out, &errOut, litellmTestConfig(), expose, []string{"a/b", "  "}, litellmFlags{SkipReadyGate: true})
-		if err == nil || !strings.Contains(err.Error(), "blank") {
-			t.Fatalf("expose=%v err = %v, want blank-id rejection", expose, err)
-		}
-		if b, _ := os.ReadFile(p); string(b) != body {
-			t.Fatalf("expose=%v modified config.yaml:\n%s", expose, b)
 		}
 	}
 }
@@ -462,7 +357,7 @@ func TestLitellmOffWarnsWhenUnconfigured(t *testing.T) {
 // the brief's registration; expected to pass immediately.
 func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 	cfg, path := litellmStateEnv(t)
-	for _, args := range [][]string{{"status"}, {"on"}, {"off"}, {"set", "--url", "http://x"}, {"expose", "x"}, {"unexpose", "x"}, {"sync"}} {
+	for _, args := range [][]string{{"status"}, {"on"}, {"off"}, {"set", "--url", "http://x"}, {"sync"}} {
 		c := litellmCmd(&app{cfg: cfg, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")})
 		c.SetOut(&bytes.Buffer{})
 		c.SetErr(&bytes.Buffer{})
@@ -517,8 +412,8 @@ func validationOnlyApp(t *testing.T) (*app, string) {
 // status/on/off/set depend only on wt's own [litellm] state, not on registry
 // validity: a model referencing an unknown provider (cfgErr set, loadErr nil)
 // must not lock the user out of the only routing control surface, and the
-// change must persist. (expose/unexpose/sync are covered by
-// TestLitellmChangeCommandsWorkOnValidationOnlyError.)
+// change must persist. (sync is covered by
+// TestLitellmSyncWorksOnValidationOnlyError.)
 func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	litellmEnv(t, "model_list: []\n")
 	a, path := validationOnlyApp(t)
@@ -545,13 +440,12 @@ func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	}
 }
 
-// TestLitellmChangeCommandsWorkOnValidationOnlyError pins that expose/unexpose/
-// sync gate only on a config LOAD failure. A registry gap in an unrelated model
-// (unknown provider: cfgErr set, loadErr nil) must not block modelman's
-// expose/unexpose (chicken-and-egg: modelman is what repairs such gaps), while
-// the broken model itself is still reported per id, exit non-zero, without
-// blocking the healthy ids in the same batch.
-func TestLitellmChangeCommandsWorkOnValidationOnlyError(t *testing.T) {
+// TestLitellmSyncWorksOnValidationOnlyError pins that sync gates only on a
+// config LOAD failure. A registry gap in an unrelated model (unknown
+// provider: cfgErr set, loadErr nil) must not block modelman's sync
+// (chicken-and-egg: modelman is what repairs such gaps): the running healthy
+// model is still routed, and the broken model gets no route.
+func TestLitellmSyncWorksOnValidationOnlyError(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
 	a, _ := validationOnlyApp(t)
 	if a.cfgErr == nil || a.loadErr != nil {
@@ -562,97 +456,31 @@ func TestLitellmChangeCommandsWorkOnValidationOnlyError(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "sk-test")
 	t.Setenv("PINNED_CLOUD_API_KEY", "sk-test")
 	const good = "ollama/contract-fixture:local"
-	run := func(args ...string) (string, error) {
-		c := litellmCmd(a)
-		var out bytes.Buffer
-		c.SetOut(&out)
-		c.SetErr(&bytes.Buffer{})
-		c.SetArgs(args)
-		err := c.Execute()
-		return out.String(), err
-	}
-	if _, err := run("expose", good, "--skip-ready-gate"); err != nil {
-		t.Fatalf("expose healthy model refused: %v", err)
-	}
-	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) {
-		t.Fatalf("route not written:\n%s", b)
-	}
-	if _, err := run("unexpose", good); err != nil {
-		t.Fatalf("unexpose refused: %v", err)
-	}
-	if b, _ := os.ReadFile(p); strings.Contains(string(b), good) {
-		t.Fatalf("route not removed:\n%s", b)
-	}
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
 			{ProviderID: "ollama", ModelID: good, ModelName: "contract-fixture:local", Registered: true, Running: true},
 		}})
-	if _, err := run("sync"); err != nil {
+	c := litellmCmd(a)
+	c.SetOut(&bytes.Buffer{})
+	c.SetErr(&bytes.Buffer{})
+	c.SetArgs([]string{"sync"})
+	if err := c.Execute(); err != nil {
 		t.Fatalf("sync refused: %v", err)
 	}
-	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) {
-		t.Fatalf("sync did not route running model:\n%s", b)
-	}
-	if _, err := run("unexpose", good); err != nil {
-		t.Fatal(err)
-	}
-	out, err := run("expose", "ghost/m", good, "--skip-ready-gate", "--json")
-	if err == nil {
-		t.Fatal("want non-nil error: broken model rejected")
-	}
-	var got struct {
-		Outcomes []struct {
-			ID     string `json:"id"`
-			Action string `json:"action"`
-			Error  string `json:"error"`
-		} `json:"outcomes"`
-	}
-	if jerr := json.Unmarshal([]byte(out), &got); jerr != nil || len(got.Outcomes) != 2 {
-		t.Fatalf("output = %s (%v)", out, jerr)
-	}
-	if got.Outcomes[0].Error == "" || got.Outcomes[1].Error != "" || got.Outcomes[1].Action != "exposed" {
-		t.Fatalf("outcomes = %+v", got.Outcomes)
-	}
 	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) || strings.Contains(string(b), "ghost/m") {
-		t.Fatalf("mixed batch: healthy route missing or ghost route written:\n%s", b)
+		t.Fatalf("sync did not route the running model, or wrote a ghost route:\n%s", b)
 	}
 }
 
-// TestLitellmExposeEmptyModelNameUnderValidationError pins that a model with
-// an empty model_name (a registry validation gap) is reported per id in the
-// JSON outcome and writes no route, leaving config.yaml byte-identical, even
-// though expose no longer refuses on validation-only errors.
-func TestLitellmExposeEmptyModelNameUnderValidationError(t *testing.T) {
-	// Seed the settings wt would add so a no-op leaves the bytes untouched.
-	body := "model_list: []\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
-	p := litellmEnv(t, body)
-	a, _ := validationOnlyApp(t)
-	a.cfg.Models = append(a.cfg.Models, config.Model{ID: "ollama/blank", ProviderID: "ollama", Location: config.LocationLocal})
-	c := litellmCmd(a)
-	var out bytes.Buffer
-	c.SetOut(&out)
-	c.SetErr(&bytes.Buffer{})
-	c.SetArgs([]string{"expose", "ollama/blank", "--skip-ready-gate", "--json"})
-	if err := c.Execute(); err == nil {
-		t.Fatal("want non-nil error")
-	}
-	if !strings.Contains(out.String(), "empty model_name") {
-		t.Fatalf("outcome lacks per-id error: %s", out.String())
-	}
-	if b, _ := os.ReadFile(p); string(b) != body {
-		t.Fatalf("config.yaml modified:\n%s", b)
-	}
-}
-
-// TestLitellmChangeCommandsGateOnLoadErrOnly pins that the guard reads
+// TestLitellmSyncGatesOnLoadErrOnly pins that the guard reads
 // a.loadErr and not a.cfgErr by setting only loadErr. In production loadErr
 // implies cfgErr (newApp copies it), so this combination cannot occur there;
 // it exists to pin which field the guard consults.
-func TestLitellmChangeCommandsGateOnLoadErrOnly(t *testing.T) {
+func TestLitellmSyncGatesOnLoadErrOnly(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
-	for _, args := range [][]string{{"expose", "ollama/gemma:9b"}, {"unexpose", "ollama/gemma:9b"}, {"sync"}} {
+	for _, args := range [][]string{{"sync"}} {
 		c := litellmCmd(&app{cfg: &config.Config{}, loadErr: errors.New("bad toml")})
 		c.SetOut(&bytes.Buffer{})
 		c.SetErr(&bytes.Buffer{})
@@ -789,7 +617,9 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 // shared fixture's sync block. The result comes from a real litellm.Sync over
 // a config.yaml that exercises every outcome — unrouted, rewritten, adopted,
 // routed and a per-id error — so the action names are pinned where Sync
-// assigns them, not restated by hand. modelman parses this shape with
+// assigns them, not restated by hand. The injected restart hook fails with
+// restart.go's warning text, so the fixture also carries a non-empty
+// warnings array for modelman to parse. modelman parses this shape with
 // parse_change_result (modelman/tests/contracts/test_litellm_cli_fixture.py).
 func TestLitellmSyncJSONMatchesContract(t *testing.T) {
 	p := litellmEnv(t, `model_list:
@@ -810,12 +640,13 @@ func TestLitellmSyncJSONMatchesContract(t *testing.T) {
 		}
 		cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/" + id, ProviderID: "openrouter", ModelName: name, Location: config.LocationCloud})
 	}
-	res, err := litellm.Sync(cfg, nil, litellm.Options{Path: p, Restart: func() []string { return nil }})
+	const restartWarn = "failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"
+	res, err := litellm.Sync(cfg, nil, litellm.Options{Path: p, Restart: func() []string { return []string{restartWarn} }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	if err := reportLitellm(&out, &errOut, res, true, false); !errors.Is(err, errLitellmIDFailed) {
+	if err := reportLitellm(&out, &errOut, res, true); !errors.Is(err, errLitellmIDFailed) {
 		t.Fatalf("reportLitellm err = %v, want errLitellmIDFailed", err)
 	}
 	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
@@ -1078,7 +909,7 @@ func TestDesiredLocalIDsPulledNeedsTrustedProbe(t *testing.T) {
 
 // TestSyncRoutesMlxLMServerByProbe pins that `wt litellm sync` owns the
 // mlx_lm_server route lifecycle (#179): wt has no start backend for it and
-// modelman no longer exposes it explicitly, so sync is the only route write.
+// modelman no longer routes it explicitly, so sync is the only route write.
 // An answering server makes its registered pairing desired and NOT untouched,
 // with no warning (a started pairing gets a route); a refused one makes the
 // family Down, so the pairing is neither desired nor untouched and its stale

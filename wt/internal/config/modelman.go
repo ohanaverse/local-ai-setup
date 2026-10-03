@@ -17,11 +17,10 @@ type LitellmState struct {
 	APIKey  string `toml:"api_key"`
 }
 
-// ExposureEntry is the decoded-in-memory representation of a single model
-// state entry for wt's exposure predicate.
-type ExposureEntry struct {
-	Exposed bool
-	Ready   bool
+// ModelmanEntry is the decoded-in-memory subset of one modelman.toml
+// [model_state] entry that wt reads: the ready flag (the local route gate).
+type ModelmanEntry struct {
+	Ready bool
 }
 
 // modelmanState mirrors the subset of ~/.config/local-ai/modelman.toml that
@@ -29,33 +28,29 @@ type ExposureEntry struct {
 //
 // `downloaded` is the legacy spelling of `ready` (modelman/state.py still
 // accepts `downloaded` as a read-side fallback for pre-registry files).
-// wt materializes both keys into a single Ready bool so the exposure
-// predicate treats legacy entries consistently with modelman.
-//
-// `litellm_exposed` is the legacy spelling of `exposed`; wt ORs the two so
-// a pre-rename file keeps working.
+// wt materializes both keys into a single Ready bool so the ready gate
+// treats legacy entries consistently with modelman. modelman's retired
+// `exposed`/`litellm_exposed` keys are not read (#179: configured is exposed).
 type modelmanState struct {
 	// price_refresh_last_run is modelman's global "token pricing last
 	// refreshed" date (YYYY-MM-DD), written by `modelman refresh-prices`.
 	// wt reads it post-launch to print a stale-pricing notice.
 	PriceRefreshLastRun string `toml:"price_refresh_last_run"`
 	ModelState          map[string]struct {
-		Exposed        bool `toml:"exposed"`
-		LitellmExposed bool `toml:"litellm_exposed"` // back-compat read
-		Ready          bool `toml:"ready"`
-		Downloaded     bool `toml:"downloaded"`
+		Ready      bool `toml:"ready"`
+		Downloaded bool `toml:"downloaded"`
 	} `toml:"model_state"`
 	Litellm *LitellmState `toml:"litellm"`
 }
 
-// loadModelmanState reads modelman.toml and returns the exposure map and
+// loadModelmanState reads modelman.toml and returns the per-model ready map and
 // the legacy [litellm] routing state (nil when the table is absent). A missing
 // file returns an empty map and nil.
-func loadModelmanState() (map[string]ExposureEntry, *LitellmState, error) {
+func loadModelmanState() (map[string]ModelmanEntry, *LitellmState, error) {
 	path := ModelmanPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return map[string]ExposureEntry{}, nil, nil
+		return map[string]ModelmanEntry{}, nil, nil
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("read modelman.toml: %w", err)
@@ -64,12 +59,9 @@ func loadModelmanState() (map[string]ExposureEntry, *LitellmState, error) {
 	if err := toml.Unmarshal(data, &s); err != nil {
 		return nil, nil, fmt.Errorf("parse modelman.toml: %w", err)
 	}
-	out := make(map[string]ExposureEntry, len(s.ModelState))
+	out := make(map[string]ModelmanEntry, len(s.ModelState))
 	for id, st := range s.ModelState {
-		out[id] = ExposureEntry{
-			Exposed: st.Exposed || st.LitellmExposed,
-			Ready:   st.Ready || st.Downloaded,
-		}
+		out[id] = ModelmanEntry{Ready: st.Ready || st.Downloaded}
 	}
 	return out, s.Litellm, nil
 }

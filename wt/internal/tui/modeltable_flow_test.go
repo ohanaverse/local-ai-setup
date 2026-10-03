@@ -106,7 +106,7 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 		Models:     []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	m := model{cfg: cfg, agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}
 	_, cmd := func() (model, tea.Cmd) {
 		tempStateDir(t)
@@ -126,7 +126,7 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	local.ExposeAllForTest()
+	local.ReadyAllForTest()
 	got := flowEnter(t, model{cfg: local, width: 80, height: 24}, "pi")
 	if got.phase != phaseModel || len(got.models.Items()) != 1 {
 		t.Errorf("phase = %v items = %d, want phaseModel with 1 blocked row", got.phase, len(got.models.Items()))
@@ -147,7 +147,7 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	local.ExposeAllForTest()
+	local.ReadyAllForTest()
 	got := flowEnter(t, model{cfg: local, width: 80, height: 24}, "pi")
 	if got.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel (no route back)", got.phase)
@@ -187,7 +187,7 @@ func TestEnterModelPhaseNoRotationDefaultsToNativeRow(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"claude", "openrouter"}}},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	got := flowEnter(t, model{cfg: cfg, width: 80, height: 24}, "claude")
 
 	if got.phase != phaseModel {

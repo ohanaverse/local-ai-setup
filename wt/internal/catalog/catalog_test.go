@@ -23,7 +23,6 @@ func catalogTestCfg() *config.Config {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter", "omlx", "ollama"}}},
 	}
-	cfg.SetExposedForTest(map[string]config.ExposureEntry{"openrouter/cheap": {Exposed: true, Ready: true}})
 	return cfg
 }
 
@@ -54,14 +53,14 @@ func TestBuildIncludesConfiguredAndDiscoveredLocal(t *testing.T) {
 	if got := strings.Join(rowIDs(rows), ","); got != "openrouter/cheap,omlx/a,omlx/disc" {
 		t.Fatalf("rows = %s", got)
 	}
-	if !rows[0].Exposed || rows[0].Location != config.LocationCloud || rows[0].Status != StatusOK {
+	if rows[0].Location != config.LocationCloud || rows[0].Status != StatusOK {
 		t.Errorf("cloud row = %+v", rows[0])
 	}
 	if !rows[1].Running || rows[1].Status != StatusOK || rows[1].Discovered {
 		t.Errorf("configured local row = %+v", rows[1])
 	}
 	d := rows[2]
-	if !d.Discovered || d.Status != StatusNew || d.Exposed || d.Running || d.Model.ModelName != "disc" || d.Location != config.LocationLocal {
+	if !d.Discovered || d.Status != StatusNew || d.Running || d.Model.ModelName != "disc" || d.Location != config.LocationLocal {
 		t.Errorf("discovered row = %+v", d)
 	}
 }
@@ -91,23 +90,6 @@ func TestBuildMarksAbsentAndRespectsAgentAndFilters(t *testing.T) {
 	in.HideDiscovered = true
 	if got := strings.Join(rowIDs(Build(in)), ","); got != "omlx/gone" {
 		t.Errorf("HideDiscovered rows = %s", got)
-	}
-}
-
-// TestBuildNativeModelIsExposedWithoutFlag pins that a native model
-// (Anthropic-direct, provider auth.type "native") shows EXPOSED without any
-// modelman.toml flag, matching modelman's own EXPOSED column, which reports
-// native rows as exposed unconditionally. A regression here would make wt's
-// picker disagree with modelman for native rows.
-func TestBuildNativeModelIsExposedWithoutFlag(t *testing.T) {
-	cfg := catalogTestCfg()
-	models := []config.Model{{ID: "openrouter/native", ProviderID: "openrouter", ModelName: "native", Native: true}}
-	rows := Build(Input{Config: cfg, Agent: "claude", Models: models})
-	if len(rows) != 1 || !rows[0].Exposed {
-		t.Fatalf("native row = %+v, want exposed=true with no flag set", rows)
-	}
-	if cfg.ExposedFlag("openrouter/native") {
-		t.Fatal("test premise broken: flag must be unset")
 	}
 }
 

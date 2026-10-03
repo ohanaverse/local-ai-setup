@@ -130,7 +130,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	const sep = "  "
 	header := strings.Repeat(" ", rowPrefixWidth) + strings.Join([]string{
 		padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", wS),
-		padRunes("EXPOSED", 7), padRunes("RUNNING", 7), padRunes("COST", costW),
+		padRunes("RUNNING", 7), padRunes("COST", costW),
 		padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
 	}, sep)
 
@@ -142,7 +142,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		}
 		line := strings.Join([]string{
 			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(loc, 5), padRunes(string(r.Status), wS),
-			padRunes(flag(r.Exposed, "Y"), 7), padRunes(flag(r.Running, "run"), 7), padRunes(cost[i], costW),
+			padRunes(flag(r.Running, "run"), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
 		}, sep)
 		// The last padded column would leave trailing spaces; keep them only
