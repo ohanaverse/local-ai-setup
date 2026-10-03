@@ -360,3 +360,24 @@ func TestRecordForAttributesUsageToAgent(t *testing.T) {
 		t.Errorf("claude pair 30d = %d, want 1", got["omlx/Qwen3.8-27B-4bit"].ThirtyDay)
 	}
 }
+
+// TestNextFromEligibleNeverPicksDiscovered pins #179 Phase B's rotation rule:
+// rotation walks the registry's model order, so a discovered (unregistered)
+// model is never auto-selected even when it is launchable — the user can
+// still pick one in the picker or pin it with -M. A discovered model has no
+// overlay family or tags, so rotating onto it would launch a model the user
+// never configured.
+func TestNextFromEligibleNeverPicksDiscovered(t *testing.T) {
+	cfg := &config.Config{Models: []config.Model{
+		{ID: "omlx/registered", ProviderID: "omlx", ModelName: "registered"},
+	}}
+	disc := config.Model{ID: config.DiscoveredModelID("omlx", "stray"), ProviderID: "omlx", ModelName: "stray", Source: config.SourceDiscovered}
+	r := NewAt(t.TempDir())
+	m, ok := r.NextFromEligible([]config.Model{disc, cfg.Models[0]}, cfg)
+	if !ok || m.ID != "omlx/registered" {
+		t.Fatalf("NextFromEligible = (%q, %v), want the registered model", m.ID, ok)
+	}
+	if m, ok := r.NextFromEligible([]config.Model{disc}, cfg); ok {
+		t.Fatalf("NextFromEligible(discovered only) = %q, want no pick", m.ID)
+	}
+}
