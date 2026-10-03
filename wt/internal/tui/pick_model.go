@@ -135,7 +135,8 @@ func PickModel(cfg *config.Config, models []config.Model, theme themes.Theme) (c
 // were already route-checked per agent), so the launch-route rules (a
 // discovered model not in LiteLLM, a route that fails to resolve) do not block
 // or decorate rows.
-// Rows that cannot start at all (not on disk, no start backend) stay blocked.
+// Rows that cannot start at all (no start backend) stay blocked; a model that
+// is not on disk has no row to block.
 func PickStartModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
 	return runPick(newPickModel(cfg, models, theme, true))
 }
