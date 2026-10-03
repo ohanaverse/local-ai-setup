@@ -19,7 +19,6 @@ from modelman.benchmark.results import BenchmarkRun, TargetResult, write_results
 from modelman.benchmark.workloads import Workload
 from modelman.benchmark.workloads.base import BenchmarkMetrics
 from modelman.registry import DEFAULT_PROVIDER_IDS, Registry, is_model_local
-from modelman.state import StateStore
 
 
 class WorkloadRunSavedButRestoreFailed(BenchmarkError):
@@ -39,6 +38,12 @@ class WorkloadRunSavedButRestoreFailed(BenchmarkError):
         super().__init__(message)
         self.run_dir = run_dir
         self.run = run
+
+
+class NoTargetSelection(ValueError):
+    """Neither model ids nor a family was given (#179): a usage error, so the
+    CLI exits 2. A ValueError subclass so the CLI catches exactly this and not
+    an unrelated ValueError escaping a benchmark run."""
 
 
 # Providers `modelman benchmark` can isolate+run locally. Derived from the
@@ -66,11 +71,16 @@ class Target:
 
 def discover_targets(
     registry: Registry,
-    state: StateStore,
     model_ids: list[str] | None = None,
     family: str | None = None,
 ) -> list[Target]:
-    """Return benchmark targets based on registry + state + CLI filters."""
+    """Return benchmark targets based on the registry and the CLI filters.
+
+    There is no default selection (#179): routing no longer says which local
+    models are "in use", so the caller must name models or a family.
+    """
+    if model_ids is None and family is None:
+        raise NoTargetSelection("name models (--model) or pass --family")
     targets: list[Target] = []
     for model in registry.models:
         if model.provider_id not in LOCAL_PROVIDERS:
@@ -84,9 +94,6 @@ def discover_targets(
         if family is not None and model.family != family:
             continue
         if model_ids is not None and model.id not in model_ids:
-            continue
-        if model_ids is None and family is None and not state.get(model.id).exposed:
-            # Default: only exposed local models.
             continue
         targets.append(
             Target(
@@ -126,7 +133,6 @@ def _run_route(
 
 def run_benchmark(
     registry: Registry,
-    state: StateStore,
     workload: Workload,
     *,
     model_ids: list[str] | None = None,
@@ -140,7 +146,7 @@ def run_benchmark(
     routes = routes or ["direct", "litellm"]
     results_dir = results_dir or DEFAULT_RESULTS_DIR
 
-    targets = discover_targets(registry, state, model_ids=model_ids, family=family)
+    targets = discover_targets(registry, model_ids=model_ids, family=family)
     if not targets:
         raise BenchmarkError("no benchmark targets found")
 

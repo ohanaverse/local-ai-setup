@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1009,5 +1011,183 @@ func TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant(t *testing.T) {
 				t.Fatalf("warnings = %q, want %q", dry.Warnings, c.want)
 			}
 		})
+	}
+}
+
+// TestDesiredLocalIDsOllamaFollowsPulled pins #179's rule for which local
+// registry models sync routes: any running one, plus a registered ollama model
+// that is pulled whether or not it is loaded. ollama lazy-loads on request and
+// unloads idle models, so keying ollama on "loaded" made a flag-only start get
+// no route and made every sync after an idle unload drop a working route.
+// "Pulled" must mean the probe actually saw the artifact (ArtifactKnown), the
+// rule is registry-only, and it must not widen to single-model families, which
+// serve nothing until started.
+func TestDesiredLocalIDsOllamaFollowsPulled(t *testing.T) {
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/pulled:1", ModelName: "pulled:1", Artifact: "pulled:1", ArtifactKnown: true, Registered: true},
+			{ProviderID: "ollama", ModelID: "ollama/unknown:1", ModelName: "unknown:1", Artifact: "unknown:1", ArtifactKnown: false, Registered: true},
+			{ProviderID: "ollama", ModelID: "ollama/notpulled:1", ModelName: "notpulled:1", Artifact: "", ArtifactKnown: true, Registered: true},
+			{ProviderID: "ollama", ModelID: "ollama/discovered:1", ModelName: "discovered:1", Artifact: "discovered:1", ArtifactKnown: true},
+			{ProviderID: "omlx", ModelID: "omlx/idle", ModelName: "idle", Artifact: "idle", ArtifactKnown: true, Registered: true},
+			{ProviderID: "mtplx", ModelID: "mtplx/idle", ModelName: "idle", Artifact: "idle", ArtifactKnown: true, Registered: true},
+			{ProviderID: "mtplx", ModelID: "mtplx/live", ModelName: "live", Artifact: "live", ArtifactKnown: true, Registered: true, Running: true},
+			{ProviderID: "ollama", ModelID: "ollama/loaded:1", ModelName: "loaded:1", Registered: true, Running: true},
+		},
+	}
+	want := []string{"ollama/pulled:1", "mtplx/live", "ollama/loaded:1"}
+	if got := desiredLocalIDs(snap); !slices.Equal(got, want) {
+		t.Fatalf("desiredLocalIDs = %v, want %v", got, want)
+	}
+}
+
+// TestDesiredLocalIDsPulledNeedsTrustedProbe pins that a pulled ollama model
+// counts as desired only when ollama's probe is fully OK. When /api/tags
+// answered but /api/ps was refused (the daemon died between the probes), the
+// family is Down: its routes are stale and sync must remove them. Counting the
+// pulled ids there would keep — or re-add — routes to a server that is not
+// listening, so every request through LiteLLM would fail.
+func TestDesiredLocalIDsPulledNeedsTrustedProbe(t *testing.T) {
+	pulled := localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/pulled:1", ModelName: "pulled:1", Artifact: "pulled:1", ArtifactKnown: true, Registered: true}
+	cases := []struct {
+		name string
+		snap localmodels.Snapshot
+		want []string
+	}{
+		{"partial and down", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"ollama": localmodels.StatusPartial},
+			Down:      map[string]bool{"ollama": true},
+			Entries:   []localmodels.Entry{pulled},
+		}, nil},
+		{"partial, not down", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"ollama": localmodels.StatusPartial},
+			Entries:   []localmodels.Entry{pulled},
+		}, nil},
+		{"ok", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+			Entries:   []localmodels.Entry{pulled},
+		}, []string{"ollama/pulled:1"}},
+	}
+	for _, c := range cases {
+		if got := desiredLocalIDs(c.snap); !slices.Equal(got, c.want) {
+			t.Errorf("%s: desiredLocalIDs = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSyncRoutesMlxLMServerByProbe pins that `wt litellm sync` owns the
+// mlx_lm_server route lifecycle (#179): wt has no start backend for it and
+// modelman no longer exposes it explicitly, so sync is the only route write.
+// An answering server makes its registered pairing desired and NOT untouched,
+// with no warning (a started pairing gets a route); a refused one makes the
+// family Down, so the pairing is neither desired nor untouched and its stale
+// route is removed. The snapshot comes from a real Inventory round against
+// local httptest servers (never a real provider), because the bug was in the
+// probe's status, which a hand-built snapshot would assume away.
+func TestSyncRoutesMlxLMServerByProbe(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"/some/target/path"}]}`))
+	}))
+	defer up.Close()
+	gone := httptest.NewServer(http.NotFoundHandler())
+	goneURL := gone.URL
+	gone.Close()
+
+	cfgFor := func(base string) *config.Config {
+		return &config.Config{
+			Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: base + "/v1"}}},
+			Models:    []config.Model{{ID: "mlx_lm_server/pair", ProviderID: "mlx_lm_server", ModelName: "pair", Location: config.LocationLocal}},
+		}
+	}
+	routed := map[string]bool{"mlx_lm_server/pair": true}
+
+	cfg := cfgFor(up.URL)
+	snap := localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); !slices.Equal(got, []string{"mlx_lm_server/pair"}) {
+		t.Errorf("answering: desiredLocalIDs = %v, want the running pairing", got)
+	}
+	untouched, warns := syncUntouchedAndWarnings(cfg, snap, routed)
+	if len(untouched) != 0 || len(warns) != 0 {
+		t.Errorf("answering: untouched = %v, warnings = %v; want neither", untouched, warns)
+	}
+
+	cfg = cfgFor(goneURL)
+	snap = localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); len(got) != 0 {
+		t.Errorf("refused: desiredLocalIDs = %v, want none", got)
+	}
+	untouched, warns = syncUntouchedAndWarnings(cfg, snap, routed)
+	if len(untouched) != 0 {
+		t.Errorf("refused: untouched = %v, want none (the stale route must be removable)", untouched)
+	}
+	want := []string{`provider "mlx_lm_server" refused the probe connection: nothing is listening there, so its local routes are treated as stale`}
+	if !slices.Equal(warns, want) {
+		t.Errorf("refused: warnings = %v, want %v", warns, want)
+	}
+}
+
+// TestSyncRoutesMlxLMServerAmbiguousLeavesRoutes pins that with two or more
+// registered mlx_lm_server pairings whose "+draft-" names match none of the
+// served ids (mlx_lm.server lists HF repo ids, never the pairing name), sync
+// leaves every pairing's route alone with a warning saying why. wt cannot tell
+// which pairing is serving; treating the family as OK removed the serving
+// pairing's working route on every sync, silently.
+func TestSyncRoutesMlxLMServerAmbiguousLeavesRoutes(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"mlx-community/Qwen3.8-27B-4bit"},{"id":"mlx-community/Qwen3.8-0.6B-4bit"}]}`))
+	}))
+	defer up.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: up.URL + "/v1"}}},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-0.6B-4bit", Location: config.LocationLocal},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-1.7B-4bit", Location: config.LocationLocal},
+		},
+	}
+	snap := localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); len(got) != 0 {
+		t.Errorf("desiredLocalIDs = %v, want none", got)
+	}
+	untouched, warns := syncUntouchedAndWarnings(cfg, snap, map[string]bool{"mlx_lm_server/a": true})
+	if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
+		t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
+	}
+	want := []string{`provider "mlx_lm_server" answered, but wt cannot tell which of its registered models it is serving (status "partial"); its model routes were left unchanged`}
+	if !slices.Equal(warns, want) {
+		t.Errorf("warnings = %v, want %v", warns, want)
+	}
+}
+
+// TestSyncRoutesMlxLMServerEmptyAnswerLeavesRoutes pins the same guarantee for
+// an EMPTY /v1/models body: with two registered pairings, "answered and listed
+// nothing" is no more attributable to a pairing than a foreign id is, so sync
+// must leave both routes alone and say so. Reporting OK there removed every
+// registered pairing's route silently — a real server lists the pairing it
+// loaded, so the only ways to get an empty list are a foreign listener on the
+// port or a server still starting up.
+func TestSyncRoutesMlxLMServerEmptyAnswerLeavesRoutes(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer up.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: up.URL + "/v1"}}},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a", Location: config.LocationLocal},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b", Location: config.LocationLocal},
+		},
+	}
+	snap := localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); len(got) != 0 {
+		t.Errorf("desiredLocalIDs = %v, want none", got)
+	}
+	untouched, warns := syncUntouchedAndWarnings(cfg, snap, map[string]bool{"mlx_lm_server/a": true})
+	if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
+		t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
+	}
+	want := []string{`provider "mlx_lm_server" answered, but wt cannot tell which of its registered models it is serving (status "partial"); its model routes were left unchanged`}
+	if !slices.Equal(warns, want) {
+		t.Errorf("warnings = %v, want %v", warns, want)
 	}
 }

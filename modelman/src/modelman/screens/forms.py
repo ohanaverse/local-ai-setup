@@ -554,7 +554,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             # Edit mode keeps this display-only/disabled — provider, model,
             # location, and family are all immutable once a model is added
             # (issue #52); re-homing an existing model to another family is
-            # not exposed here.
+            # not offered here.
             family_options = [(f, f) for f in self._families]
             if not editing:
                 family_options.append((NEW_FAMILY_LABEL, NEW_FAMILY_VALUE))
@@ -1246,14 +1246,12 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
         self,
         ready: list[tuple[str, bool]],
         deletes: list,
-        exposes: list[tuple[str, bool]] | None = None,
         moves: list[tuple[str, str]] | None = None,
         show_price_reminder: bool = False,
     ) -> None:
         super().__init__()
         self._ready = ready
         self._deletes = deletes
-        self._exposes = exposes or []
         self._moves = moves or []
         self._show_price_reminder = show_price_reminder
 
@@ -1263,7 +1261,7 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
         with Vertical():
             yield Label(
                 f"Pending: ready {len(self._ready)} · delete {len(self._deletes)}"
-                f" · move {len(self._moves)} · expose {len(self._exposes)}"
+                f" · move {len(self._moves)}"
             )
             for mid in ready_on:
                 yield Label(f"  ↓ {mid}")
@@ -1273,9 +1271,6 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
                 yield Label(f"  × {v['id']} ({v['provider']})")
             for model_id, target in self._moves:
                 yield Label(f"  → {model_id} → {target}")
-            for model_id, exposed in self._exposes:
-                mark = "Y" if exposed else "–"
-                yield Label(f"  {mark} {model_id}")
             if self._show_price_reminder:
                 yield Label(
                     "token pricing may be stale — run `modelman refresh-prices`.",

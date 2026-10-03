@@ -80,7 +80,9 @@ new logic here lives in wt; modelman only deletes code and calls
   - every registry cloud model whose provider is non-native and has a LiteLLM
     mapping (`PolicyFor`), plus
   - every running local model (Phase A: registry ones; Phase B: discovered
-    ones too).
+    ones too). For ollama, "running" means pulled: ollama lazy-loads on
+    request, so a pulled registry ollama model is desired whether or not it is
+    loaded, and stopping one unloads it without removing its route.
 
   Sync adds missing rows, rewrites rows whose content differs (so updated
   prices reach `config.yaml`), and removes owned rows outside the set. wt

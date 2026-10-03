@@ -89,51 +89,48 @@ def test_stop_command_clears_marker(tmp_path, monkeypatch):
     assert load_state(path=state_path).get("ollama/x").running is False
 
 
-def test_stop_command_single_model_prints_unexpose_warning(tmp_path, monkeypatch):
-    # `modelman stop <id>` must surface a failed un-expose the same way
-    # `modelman start` already surfaces a failed expose - a stopped model
-    # whose LiteLLM row could not be removed needs a visible warning, not a
-    # silent partial failure.
+def test_stop_command_single_model_prints_sync_warning(tmp_path, monkeypatch, wt_calls):
+    # `modelman stop <id>` runs one `wt litellm sync` and must surface a
+    # failed sync as a visible warning, not a silent partial failure — a
+    # stopped model whose route could not be removed needs the user told.
+    from modelman import wt_bridge
+
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text(
-        '[model_state."ollama/x"]\nready = true\nexposed = true\nrunning = true\n'
-    )
+    state_path.write_text('[model_state."ollama/x"]\nready = true\nrunning = true\n')
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
     with (
         patch("modelman.local_control._stop_ollama_model"),
-        patch("modelman.local_control.unexpose_model", side_effect=OSError(28, "No space left")),
+        patch.object(wt_bridge, "sync", side_effect=wt_bridge.WtBridgeError("wt not on PATH")),
     ):
         result = runner.invoke(app, ["stop", "ollama/x"])
     assert result.exit_code == 0, result.stdout
     assert "warning:" in result.output
-    assert "could not be un-exposed" in result.output
+    assert "wt litellm sync" in result.output
+    assert load_state(path=state_path).get("ollama/x").running is False
+    assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
 
 
-def test_stop_command_all_prints_unexpose_warning(tmp_path, monkeypatch):
-    # `modelman stop --all` must surface a failed batch un-expose the same
-    # way the single-model path already does (see
-    # test_stop_command_single_model_prints_unexpose_warning) — this was
-    # previously silently dropped.
+def test_stop_command_all_prints_sync_warning(tmp_path, monkeypatch, wt_calls):
+    # `modelman stop --all` surfaces a failed sync the same way the
+    # single-model path does (see test_stop_command_single_model_prints_sync_warning).
+    from modelman import wt_bridge
+
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text(
-        '[model_state."ollama/x"]\nready = true\nexposed = true\nrunning = true\n'
-    )
+    state_path.write_text('[model_state."ollama/x"]\nready = true\nrunning = true\n')
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
     with (
         patch("modelman.local_control.stop_all_local_providers"),
-        patch(
-            "modelman.local_control.apply_unexpose_queue",
-            side_effect=OSError(28, "No space left"),
-        ),
+        patch.object(wt_bridge, "sync", side_effect=wt_bridge.WtBridgeError("wt not on PATH")),
     ):
         result = runner.invoke(app, ["stop", "--all"])
     assert result.exit_code == 0, result.stdout
     assert "warning:" in result.output
-    assert "could not be un-exposed" in result.output
-    # The process still stops even though the unexpose failed.
+    assert "wt litellm sync" in result.output
+    # The process still stops even though the sync failed.
     assert load_state(path=state_path).get("ollama/x").running is False
+    assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
 
 
 def test_stop_command_noop_message_when_nothing_running(tmp_path, monkeypatch):
@@ -157,7 +154,7 @@ def test_start_command_no_args_lists_registered_downloaded_models(tmp_path, monk
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
     )
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text('[model_state."ollama/x"]\nready = true\nexposed = true\n')
+    state_path.write_text('[model_state."ollama/x"]\nready = true\n')
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
@@ -189,9 +186,7 @@ def test_start_command_no_args_indicates_running_model(tmp_path, monkeypatch):
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
     )
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text(
-        '[model_state."ollama/x"]\nready = true\nexposed = true\nrunning = true\n'
-    )
+    state_path.write_text('[model_state."ollama/x"]\nready = true\nrunning = true\n')
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
@@ -237,7 +232,7 @@ def test_start_command_no_args_shows_three_sections(tmp_path, monkeypatch):
         '[[models]]\nid = "ollama/y"\nfamily = "y"\nprovider_id = "ollama"\nmodel_name = "y"\n'
     )
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text('[model_state."ollama/x"]\nready = true\nexposed = true\n')
+    state_path.write_text('[model_state."ollama/x"]\nready = true\n')
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 

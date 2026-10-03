@@ -72,3 +72,48 @@ def test_sync_command_reports_error_when_registry_save_fails(tmp_path, monkeypat
             result = runner.invoke(app, ["sync"])
         assert result.exit_code == 1
         assert "failed to save registry" in result.output
+
+
+def test_sync_command_syncs_routes_once_after_saving_registry(tmp_path, monkeypatch, wt_calls):
+    # `modelman sync` saves registry.toml after backfill_provider_defaults
+    # (which can fill an auth.base_url or add a provider entry), so it must
+    # run one `wt litellm sync` after that save, or a repaired provider's
+    # models stay unrouted or stale until an unrelated command syncs (#179).
+    from modelman import main, wt_bridge
+
+    _seed_registry(tmp_path, monkeypatch)
+    order: list[str] = []
+    real_save = main.save_registry
+    fake = wt_bridge._run
+
+    def saving(*args, **kwargs):
+        order.append("save")
+        return real_save(*args, **kwargs)
+
+    def recording(args, env=None, timeout=120):
+        order.append("sync")
+        return fake(args, env=env, timeout=timeout)
+
+    monkeypatch.setattr(main, "save_registry", saving)
+    monkeypatch.setattr(wt_bridge, "_run", recording)
+    with patch("modelman.main.run_sync") as run_sync:
+        run_sync.return_value = SyncResult()
+        assert CliRunner().invoke(app, ["sync"]).exit_code == 0
+    assert wt_calls == [["sync", "--json"]]
+    assert order == ["save", "sync"]
+
+
+def test_sync_command_does_not_sync_routes_when_nothing_was_written(
+    tmp_path, monkeypatch, wt_calls
+):
+    # A provider scan failure exits before any write, so there is nothing new
+    # to route; a failed registry save likewise leaves registry.toml as it was.
+    _seed_registry(tmp_path, monkeypatch)
+    runner = CliRunner()
+    with patch("modelman.main.run_sync", side_effect=SyncError("boom")):
+        assert runner.invoke(app, ["sync"]).exit_code == 1
+    with patch("modelman.main.run_sync") as run_sync:
+        run_sync.return_value = SyncResult()
+        with patch("modelman.main.save_registry", side_effect=OSError("read-only")):
+            assert runner.invoke(app, ["sync"]).exit_code == 1
+    assert wt_calls == []

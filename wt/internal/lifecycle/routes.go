@@ -98,17 +98,27 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model
 // provider's model takes the whole provider down, so every one of its models
-// loses its route. modelName may be "" for a provider-wide stop.
+// loses its route. Stopping an ollama model only unloads it, so its route
+// stays (see routeRemove). modelName may be "" for a provider-wide stop.
 func routeAfterStop(ctx context.Context, cfg *config.Config, providerID, modelName string) {
 	routeRemove(ctx, cfg, providerID, modelName, restartIfChanged)
 }
 
+// routeRemove writes a stop's route removal and reports whether config.yaml
+// changed. For a family whose routes follow its artifact (ollama) it writes
+// nothing and returns false: stopping unloads the model, but a pulled model is
+// still served on request, so its route stays (#179).
 func routeRemove(ctx context.Context, cfg *config.Config, providerID, modelName string, mode restartMode) bool {
+	if localmodels.RoutesFollowArtifact(localmodels.Family(providerID)) {
+		return false
+	}
 	var remove []string
 	switch {
 	case SingleModel(providerID):
 		remove = familyModelIDs(cfg, providerID)
 	default:
+		// A multi-tenant backend whose routes do not follow artifacts; none
+		// exists today (ollama, the only multi-tenant one, returned above).
 		m, ok := litellm.ModelFor(cfg, providerID, modelName)
 		if !ok {
 			return false

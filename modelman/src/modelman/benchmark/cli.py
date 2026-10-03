@@ -13,6 +13,7 @@ from modelman.benchmark.eval.cli import eval_app
 from modelman.benchmark.results import BenchmarkRun
 from modelman.benchmark.runner import (
     DEFAULT_RESULTS_DIR,
+    NoTargetSelection,
     WorkloadRunSavedButRestoreFailed,
     run_benchmark,
 )
@@ -72,11 +73,9 @@ def run_cmd(
         raise typer.Exit(1) from exc
 
     registry = load_registry()
-    state = load_state()
     try:
         run = run_benchmark(
             registry,
-            state,
             workload_obj,
             model_ids=model or None,
             family=family,
@@ -92,6 +91,9 @@ def run_cmd(
     except BenchmarkError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
+    except NoTargetSelection as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
 
     _record_latest(run, results_dir or DEFAULT_RESULTS_DIR)
 

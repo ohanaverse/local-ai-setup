@@ -11,6 +11,7 @@ dependency on either.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
@@ -48,3 +49,20 @@ def http_models_ids(url: str, timeout: float = 2.0) -> list[str]:
     return [
         item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)
     ]
+
+
+def http_answers(url: str, timeout: float = 2.0) -> bool:
+    """Whether `url` answered at all: any HTTP status counts as an answer, a
+    refused connection / unresolvable host / timeout does not.
+
+    The three-state sibling of http_models_ids(), whose [] cannot tell "the
+    server answered and has nothing" from "the server was never reached"."
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — localhost probe
+            resp.read()
+    except urllib.error.HTTPError:
+        return True  # an error status is still the server answering
+    except (OSError, ValueError):
+        return False
+    return True

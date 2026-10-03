@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import typer
@@ -14,13 +15,7 @@ from . import (
 from .benchmark.cli import benchmark_app
 from .config import default_config_path
 from .formatting import format_size
-from .litellm import (
-    ExposeError,
-    LiteLLMConfigError,
-    default_litellm_config_path,
-    expose_model,
-    unexpose_model,
-)
+from .litellm import sync_routes
 from .local_control import (
     DiscoveredModelNeedsFamily,
     LocalControlError,
@@ -160,17 +155,6 @@ def print_event(tag: str) -> None:
         typer.echo(f"  done: moved {parts[2]} -> {parts[3]}")
     elif verb == "move:fail":
         typer.echo(f"  FAILED: move {parts[2]}: {parts[3]}")
-    elif verb in ("expose:start", "unexpose:start"):
-        action = "Exposing" if verb == "expose:start" else "Unexposing"
-        typer.echo(f"{action} {parts[2]}...")
-    elif verb in ("expose:done", "unexpose:done"):
-        action = "exposed" if verb == "expose:done" else "unexposed"
-        typer.echo(f"  done: {action} {parts[2]}")
-    elif verb in ("expose:fail", "unexpose:fail"):
-        action = verb.split(":")[0]
-        typer.echo(f"  FAILED: {action} {parts[2]}: {parts[3]}")
-    elif verb == "expose:warning":
-        typer.echo(f"  warning: {parts[1]}")
     elif verb == "save:done":
         typer.echo("Saved.")
     elif verb == "save:fail":
@@ -200,7 +184,7 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     Builds a PendingChanges the same way ModelScreen._run_apply used to,
     but against a Registry/StateStore just loaded from disk: adds/edits
     already persisted immediately while the TUI was open, while queued
-    deletes/moves/ready/exposes have not. Returns True iff the run
+    deletes/moves/ready have not. Returns True iff the run
     should exit non-zero (failures, or a Ctrl+C cancellation).
     """
     registry = load_registry()
@@ -269,8 +253,6 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         ready=ready_items,
         deletes=list(queued.deletes.items()),
         moves=list(queued.moves.items()),
-        exposes=list(queued.exposes.items()),
-        litellm_path=default_litellm_config_path(),
     )
     total = (
         len(pending.ready)
@@ -278,33 +260,18 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         + len(provider_ready_failures)
         + len(pending.deletes)
         + len(pending.moves)
-        + len(pending.exposes)
     )
     completed = 0
-    # Ids already counted in the `exposes` term above. apply() can append
-    # cascaded unexposes to PendingChanges.exposes mid-run (deleting, or
-    # clearing the ready flag of, a model that's exposed but has no
-    # explicit expose/unexpose queued — see queue.py's deletes loop and
-    # ready loop) — each cascade must grow `total` too, the first time its
-    # start tag is seen, or the "N of M" summary and the Ctrl+C remaining
-    # count both undercount real work.
-    counted_expose_ids = set(queued.exposes)
     done_verbs = {
         "delete:done",
         "download:done",
         "ready:done",
         "move:done",
-        "expose:done",
-        "unexpose:done",
     }
 
     def on_event(tag: str) -> None:
-        nonlocal completed, total
-        parts = tag.split("|")
-        verb = parts[0]
-        if verb in ("expose:start", "unexpose:start") and parts[1] not in counted_expose_ids:
-            total += 1
-            counted_expose_ids.add(parts[1])
+        nonlocal completed
+        verb = tag.split("|")[0]
         print_event(tag)
         if verb in done_verbs:
             completed += 1
@@ -312,7 +279,7 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     # A model id queued while the TUI was open but missing from a
     # freshly-loaded registry (deleted out-of-band, or a hand-edited
     # registry.toml) must not take down the whole run — every other op
-    # (deletes/moves/exposes) already degrades to a per-item failure on
+    # (deletes/moves) already degrades to a per-item failure on
     # a missing id with a live event, via queue.py's own emit() calls;
     # ready needs the same treatment, done here since its lookup happens
     # before PendingChanges even exists.
@@ -339,9 +306,25 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         # other failure instead of crashing with a raw traceback (mirrors
         # the deleted StatusScreen's equivalent except Exception).
         pending.failures.append(f"unexpected error: {exc}")
+        _sync_routes_and_warn()
         return print_error_summary(pending.failures, total)
 
+    _sync_routes_and_warn()
     return print_error_summary(pending.failures, total)
+
+
+def _sync_routes_and_warn() -> None:
+    """Bring LiteLLM's routes in line with what is now on disk (#179).
+
+    wt reads registry.toml and the live providers itself, so every caller
+    runs this once, after its writes are saved: run_queued_ops (on success
+    and after an unexpected exception, since its safety net persisted the
+    completed work — but not after a Ctrl+C, a request to stop; the next
+    sync converges), a TUI exit that changed registry.toml, migrate, sync
+    and refresh-prices. Warnings go to stderr; it never fails the command.
+    """
+    for warning in sync_routes():
+        typer.echo(f"warning: {warning}", err=True)
 
 
 def run_tui() -> None:
@@ -349,15 +332,27 @@ def run_tui() -> None:
     Apply, run them against fresh on-disk state now that the TUI has
     closed — provider progress and lifecycle events print straight to
     stdout instead of a StatusScreen."""
-    # Imported lazily so non-TUI subcommands (expose, sync, benchmark,
+    # Imported lazily so non-TUI subcommands (sync, benchmark,
     # usage, migrate) don't pay the Textual import cost at CLI startup.
     from .app import ModelmanApp
 
+    before = _file_digest(_default_registry_path())
     queued = ModelmanApp().run()
     if queued is None:
+        # Add/edit write registry.toml immediately and queue nothing; route
+        # what they changed (#179). run_queued_ops syncs on its own.
+        if _file_digest(_default_registry_path()) != before:
+            _sync_routes_and_warn()
         return
     if run_queued_ops(queued):
         raise typer.Exit(1)
+
+
+def _file_digest(path: Path) -> bytes | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).digest()
+    except OSError:
+        return None
 
 
 @app.callback(invoke_without_command=True)
@@ -389,7 +384,7 @@ def migrate(
     # wt/CLAUDE.md's "unknown provider" note), and result.state is a fresh
     # StateStore that's empty except for whatever this run's legacy
     # family-manifest import produced. Overwriting modelman.toml with it
-    # outright would wipe [litellm] and every other model's ready/exposed
+    # outright would wipe [litellm] and every other model's ready/running
     # state on every repair re-run.
     with locked_state() as state:
         state.models.update(result.state.models)
@@ -406,6 +401,8 @@ def migrate(
         f"Migrated {len(result.registry.providers)} providers and "
         f"{len(result.registry.models)} models."
     )
+    # registry.toml was rewritten; route what it now configures (#179).
+    _sync_routes_and_warn()
 
 
 @app.command()
@@ -444,50 +441,9 @@ def sync() -> None:
     typer.echo(
         f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."
     )
-
-
-@app.command()
-def expose(
-    model_id: str = typer.Argument(..., help="Registry model id to expose"),
-) -> None:
-    """Expose a model through LiteLLM (writes a model_list entry)."""
-    registry = load_registry()
-    state = load_state()
-    try:
-        warnings = expose_model(registry, state, model_id, default_litellm_config_path())
-    except (ExposeError, LiteLLMConfigError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1) from exc
-    # Merge only the one model row this command reconciled: expose_model can
-    # spend up to the LiteLLM-restart timeout inside its config write, and a
-    # whole-file overwrite from the pre-restart snapshot would revert
-    # [local].running_model (or anything else) written concurrently.
-    with locked_state() as fresh:
-        if model_id in state.models:
-            fresh.models[model_id] = state.models[model_id]
-    typer.echo(f"Exposed {model_id} through LiteLLM.")
-    for warning in warnings:
-        typer.echo(f"warning: {warning}", err=True)
-
-
-@app.command()
-def unexpose(
-    model_id: str = typer.Argument(..., help="Registry model id to stop exposing"),
-) -> None:
-    """Remove a model's LiteLLM model_list entry."""
-    state = load_state()
-    try:
-        warnings = unexpose_model(state, model_id, default_litellm_config_path())
-    except (ExposeError, LiteLLMConfigError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1) from exc
-    # See expose above: merge only this command's model row.
-    with locked_state() as fresh:
-        if model_id in state.models:
-            fresh.models[model_id] = state.models[model_id]
-    typer.echo(f"Unexposed {model_id}.")
-    for warning in warnings:
-        typer.echo(f"warning: {warning}", err=True)
+    # The registry save above may have repaired a provider (backfilled
+    # base_url, added entry); route what it now configures (#179).
+    _sync_routes_and_warn()
 
 
 @app.command("delete-family")
@@ -526,8 +482,8 @@ def delete_family(
             typer.echo(f"error: failed to save registry: {exc}", err=True)
             raise typer.Exit(1) from exc
     if had_legacy:
-        # Merge-only write (see expose/unexpose above): don't overwrite
-        # modelman.toml wholesale from a snapshot that may be stale by now.
+        # Merge-only write: don't overwrite modelman.toml wholesale from a
+        # snapshot that may be stale by now.
         with locked_state() as fresh:
             fresh.forget_family(name)
     typer.echo(f"Deleted family '{name}'.")
@@ -556,12 +512,15 @@ def refresh_prices() -> None:
     # the TUI's rule (app.py): a zero-update refresh is not a success worth
     # gating on, and stamping it (no OpenRouter-priced candidates, or no
     # candidate matched) would suppress a same-day retry and the pricing of
-    # a model exposed later the same day.
+    # a model added later the same day.
     if result.updated > 0:
         stamp_price_refresh_today()
     for warning in result.warnings:
         typer.echo(f"warning: {warning}", err=True)
     typer.echo(f"Refreshed prices for {result.updated} model(s).")
+    # wt writes a route's prices from the registry, so new prices reach
+    # LiteLLM only through a sync (#179).
+    _sync_routes_and_warn()
 
 
 def _echo_inventory_caveats(inventory: LocalModelInventory) -> None:
@@ -594,7 +553,7 @@ def start(
     model_id may be a registry id, an existing model's native
     provider-side name, or the native name of a model a provider has on
     disk but that has no registry.toml entry yet — the last case prompts
-    for a family, then registers, exposes, and starts it in one step.
+    for a family, then registers and starts it in one step.
 
     Omit model_id to print a live inventory: models registered and on
     disk, models registered but missing their artifact, and on-disk

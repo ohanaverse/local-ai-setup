@@ -373,9 +373,6 @@ class SyncPlan:
     # Removed id -> the id it is re-added under: an entry an earlier sync
     # registered under a guessed tag, re-tagged to the one ollama publishes.
     replaced: dict[str, str] = field(default_factory=dict)
-    # Registry ids of every page model: (re)exposed so each LiteLLM row is
-    # rebuilt with current prices (wt writes prices only at expose time).
-    routes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def mass_removal(self) -> bool:
@@ -532,7 +529,6 @@ def plan_sync(
             now_listed_tags.update(t for t in ollama_tags if is_cloud_tag(t) and _stem(t) == stem)
         if entry is not None:
             matched.add(entry.id)
-            plan.routes.append(entry.id)
             # Both: the entry's tag and the canonical pulled tag are listed.
             now_listed_tags.update(t for t in (entry.model_name, tag) if t is not None)
             after = _with_catalog_prices(entry.cost, cm)
@@ -561,7 +557,6 @@ def plan_sync(
         ids.add(new_id)
         if retagged is not None:
             plan.replaced[retagged.id] = new_id
-        plan.routes.append(new_id)
         # A re-tag is the same model under the tag ollama publishes, so build
         # the new entry off the one it replaces: the hand-set extras, the
         # `ollama show` model_info and the subscription survive the id change.
@@ -634,9 +629,7 @@ def _fmt(cost: Cost | None) -> str:
     return text
 
 
-def format_plan(plan: SyncPlan, exposed: set[str] | frozenset[str] = frozenset()) -> str:
-    """``exposed``: registry ids exposed through LiteLLM (state, not
-    registry), so removals that will also be unexposed say so."""
+def format_plan(plan: SyncPlan) -> str:
     lines = [
         f"ollama.com/pricing: {plan.catalog_size} models "
         "(prices are input/cached/output per million tokens)"
@@ -653,19 +646,11 @@ def format_plan(plan: SyncPlan, exposed: set[str] | frozenset[str] = frozenset()
         f"`ollama rm` if pulled ({len(plan.removals)}):"
     )
     lines += [
-        f"  {mid}"
-        + (f" (re-tagged as {plan.replaced[mid]})" if mid in plan.replaced else "")
-        + (" (exposed — will be unexposed)" if mid in exposed else "")
+        f"  {mid}" + (f" (re-tagged as {plan.replaced[mid]})" if mid in plan.replaced else "")
         for mid in plan.removals
     ]
     lines.append(f"ollama rm — pulled, unregistered, off the page ({len(plan.stray_tags)}):")
     lines += [f"  {tag}" for tag in plan.stray_tags]
-    new_routes = [mid for mid in plan.routes if mid not in exposed]
-    lines.append(
-        f"LiteLLM routes — expose or refresh prices ({len(plan.routes)}; "
-        f"proxy restarts only if config.yaml changes). Not yet exposed ({len(new_routes)}):"
-    )
-    lines += [f"  {mid}" for mid in new_routes]
     if (digest := plan.removal_digest()) is not None:
         lines.append(
             f"Removal digest: {digest} (apply non-interactively with "

@@ -4,18 +4,16 @@ A terminal UI and CLI for managing LLM models across providers (Ollama,
 oMLX, MTPLX, mlx_lm_server, OpenRouter, and native agent providers like
 `claude`, `codex`; the llama.cpp provider is retired — see
 `../docs/reference/provider-artifacts.md`). Models and providers live in a
-shared `registry.toml`; per-machine state (ready markers, LiteLLM exposure,
-running hints) lives in `modelman.toml`. The TUI shows every model in one
-table, queues changes (delete/ready/expose) that are applied on exit, and
-starts/stops local models.
+shared `registry.toml`; per-machine state (ready markers, running hints) lives
+in `modelman.toml`. The TUI shows every model in one table, queues changes
+(delete/ready/move) that are applied on exit, and starts/stops local models.
 
 **Requires `wt` on PATH.** LiteLLM management is owned by the `wt` launcher
-(since 2026-09-21): modelman applies its own ready/exposure gates and then
-delegates to `wt litellm ...` — it no longer edits LiteLLM's `config.yaml` or
-restarts the proxy itself. Install `wt` with `make install` from the repo root
-(that installs both components). Without `wt`, the expose/unexpose and
-`modelman litellm ...` commands fail with a clear error before changing any
-state.
+(since 2026-09-21): modelman never edits LiteLLM's `config.yaml` or restarts
+the proxy itself — it asks `wt` to reconcile the routes, via `wt litellm ...`.
+Install `wt` with `make install` from the repo root (that installs both
+components). Without `wt`, route syncs and the `modelman litellm ...` commands
+fail with a clear error before changing any state.
 
 ## Install
 
@@ -40,9 +38,9 @@ on/off state are owned by `wt` (see below):
 | File / setting | Purpose | Env override |
 |----------------|---------|------------|
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
-| `modelman.toml` | Per-machine mutable state: download markers, LiteLLM exposure flags (also read by `wt`, read-only, for the exposure flags) | `MODELMAN_STATE` |
+| `modelman.toml` | Per-machine mutable state: download markers and the `running` hint (also read by `wt`, read-only) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
-| LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`. wt honors `WT_LITELLM_CONFIG` (legacy alias `MODELMAN_LITELLM_CONFIG`) | `MODELMAN_LITELLM_CONFIG` (usage reader) |
+| LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`, and skips its route sync when the file is missing. Both resolve it the same way: `WT_LITELLM_CONFIG`, then legacy `MODELMAN_LITELLM_CONFIG`, then the default | `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`) |
 | LiteLLM proxy restart | Done by wt after a route change: `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | (wt-owned) |
 
 ### `registry.toml`
@@ -91,7 +89,7 @@ quantizations = ["Q4_K_M"]
 ```
 
 `model_info` is freeform and copied into LiteLLM's `model_list` entry when
-the model is exposed. For Ollama models it is auto-populated on add by
+`wt` routes the model. For Ollama models it is auto-populated on add by
 running `ollama show <name>` and translating known capabilities (e.g.
 `tools` → `supports_function_calling: true`).
 
@@ -135,9 +133,13 @@ save. `usage_tier` has been removed; use the pricing fields directly.
 ready = true
 disk_path = "ollama:ornith:35b"
 size_bytes = 123456789
-exposed = false
 running = false
 ```
+
+There is no `exposed` flag. What is configured in `registry.toml` is what gets
+routed: modelman ignores a legacy `exposed`/`litellm_exposed` key on read and
+drops it on the next save, and `wt` derives the actual routes from the registry
+plus live probes. To see what is routed, ask `wt litellm list`.
 
 `ready` is the provider-agnostic readiness flag. For reconcilable providers
 (Ollama, oMLX, MTPLX, mlx_lm_server; llama.cpp was retired 2026-09-07) it means "the model is present on this machine".
@@ -166,13 +168,11 @@ This file is optional — a fresh install starts with an empty store.
 
 ```bash
 modelman                        # open the TUI (model list)
-modelman sync                   # reconcile configured models against providers
-modelman expose <model-id>      # expose a model through LiteLLM (delegates to `wt litellm expose`)
-modelman unexpose <model-id>    # remove a model's LiteLLM exposure (delegates to `wt litellm unexpose`)
+modelman sync                   # reconcile configured models against providers, then sync LiteLLM routes
 modelman litellm status|on|off|set   # passthroughs to `wt litellm ...`
 modelman start                  # list local models: registered+on-disk, registered-but-missing, discovered
-modelman start <model>          # start (and expose) a local model; a discovered artifact is registered first
-modelman stop <model-id>        # stop (and un-expose) one local model
+modelman start <model>          # start (and route) a local model; a discovered artifact is registered first
+modelman stop <model-id>        # stop one local model (and drop its route)
 modelman stop --all             # stop every running local model
 modelman provider isolate|stop|stop-all|restore|list   # low-level provider lifecycle (benchmark isolation)
 modelman refresh-prices         # refresh OpenRouter-priced models' per-token prices
@@ -196,12 +196,12 @@ The TUI has a single screen:
 - **Model screen** — the app's only/root screen: a single table of every
   model across every family, sorted family · location (local before
   cloud) · provider · model name (columns: family · provider · model ·
-  loc · status ✓/○/↓/↑/✗/→/+ · exposed · running · cost · size). An on-disk
+  loc · status ✓/○/↓/↑/✗/→/+ · running · cost · size). An on-disk
   artifact with no `registry.toml` entry shows up as an extra row with
   status `+`; pressing `enter`/`e` on it opens a registration dialog
   (Provider/Model prefilled and locked) instead of the normal edit
   dialog, so you just pick a family to register it. LOC is an icon
-  (↗ cloud / ▤ local / `—` when unknown), EXPOSED shows `Y`/`–`, and
+  (↗ cloud / ▤ local / `—` when unknown), and
   RUNNING shows `●` for a local model modelman started (verified by a
   live probe when the TUI opens) and `-` otherwise; COST
   renders per-token input/cache/output prices per million tokens as
@@ -223,10 +223,9 @@ The TUI has a single screen:
   cloud/native providers and MTPLX, which manages its own cache;
   ready-off queues removal of the on-disk artifact; pressing `r` again
   cancels the queued change),
-  `x` toggle exposed (cascades a ready=True queue first if the model
-  isn't ready yet), `s` start/stop a ready local model (always asks for
-  confirmation; runs immediately, not queued, and also exposes/un-exposes
-  it), `l` toggle LiteLLM routing on/off, `enter` edit,
+  `s` start/stop a ready local model (always asks for
+  confirmation; runs immediately, not queued, and syncs the LiteLLM routes
+  afterwards), `l` toggle LiteLLM routing on/off, `enter` edit,
   `escape` shows the apply/discard/cancel dialog if anything is queued,
   otherwise quits the app (if a start/stop or other background task is
   still running, you are offered "Keep waiting" or "Force quit"). Reconcile runs automatically on mount — there
@@ -242,17 +241,18 @@ The TUI has a single screen:
   both price and period are required when subscription pricing is
   enabled.
 
-All model changes (adds, edits, deletes, ready toggles, exposure toggles,
-moves) are queued in memory — nothing downloads or writes to disk while
+All model changes (adds, edits, deletes, ready toggles, moves) are queued in
+memory — nothing downloads or writes to disk while
 the TUI is open (add/edit are the one exception: registry.toml is
 persisted immediately, so a discarded session doesn't lose a
 concurrently-typed edit). `Escape`/`Ctrl+Q` with a pending queue shows a
 confirmation dialog listing the pending set; `Apply` or `Discard` both
 exit the app. On Apply, `main.py` runs the queue in the plain terminal
 after the TUI closes: **deletes, then moves, then ready changes
-(downloads/clears/flag flips), then exposure changes**, printing
+(downloads/clears/flag flips)**, printing
 provider progress and a thin lifecycle line per operation to stdout,
-then writes `registry.toml` + `modelman.toml` once. A failed operation
+then writes `registry.toml` + `modelman.toml` once and runs one
+`wt litellm sync`, so the routes follow whatever the queue changed. A failed operation
 is reported in an error summary at the end and the process exits
 non-zero. `Ctrl+C` mid-run stops the queue: every step that had already
 finished (deletes, moves, completed downloads and ready flips) is saved to
@@ -260,8 +260,8 @@ finished (deletes, moves, completed downloads and ready flips) is saved to
 removed, the remaining steps are skipped, and modelman prints
 `Cancelled: N steps completed, M remaining skipped.` and exits non-zero. A
 delete for a not-on-disk model is legal: the on-disk removal is
-skipped, but the registry/state cleanup, lifecycle events, and any
-cascade-unexpose still run.
+skipped, but the registry/state cleanup, lifecycle events, and the
+closing route sync still run.
 
 All dialogs share a layout convention: the cancel/default button is
 rightmost, the primary action is to its left, and pressing `Escape`
@@ -269,34 +269,32 @@ cancels (this works even when an Input is focused). Destructive prompts
 (`ConfirmModal`, `ConfirmExitDialog`) focus the safe button on open so a
 reflexive `Enter` is never destructive.
 
-### Expose models through LiteLLM
+### LiteLLM routes
 
-A downloaded model (or any cloud model) can be exposed to LiteLLM. modelman
-checks its own gates (model/provider exist, not native, provider mapped, ready
-or cloud) against its in-memory state, then delegates to
-`wt litellm expose --json --skip-ready-gate`; **wt** writes the `model_list`
-entry into LiteLLM's `config.yaml` and restarts the proxy. modelman flips the
-model's `exposed` flag in `modelman.toml` only after wt reports success.
+There is no expose/unexpose step. **What is configured is what is routed**
+(#179): `wt` reads `registry.toml` and the live providers and keeps
+`config.yaml` in step — cloud models always, a local model while it runs or,
+for Ollama, while it is pulled. modelman changes state and then asks wt to
+reconcile:
 
 ```bash
-modelman expose <model-id>    # add the model_list entry (via wt)
-modelman unexpose <model-id>  # remove it (via wt)
+wt litellm list      # what is routed right now — the authoritative answer
+wt litellm sync      # reconcile by hand; modelman runs this itself after a change
 ```
 
-In the TUI, press `x` on a model row to queue an exposure toggle; it
-applies after you exit via Apply, alongside every other queued change (a
-not-ready model is downloaded/pulled first, in the terminal, once the
-TUI has closed). The EXPOSED column shows `Y` when exposed (or queued
-to expose) and `–` otherwise. A mixed queue of exposes and unexposes can cost
-up to two proxy restarts (one per direction).
+modelman runs one `wt litellm sync` after anything that can affect routing:
+a queue applied on TUI exit, `modelman sync`, `migrate`, `refresh-prices`,
+`ollama-catalog sync`, every `start`/`stop`, and a TUI mount that found a
+`running` flag gone stale (that model's route pointed at a dead backend, and
+nothing else would drop it). wt restarts the proxy only when `config.yaml`
+actually changed, so a no-op sync costs nothing. Warnings — a provider whose
+probe couldn't be trusted, routes deliberately left alone — are printed to
+stderr and never fail the command.
 
-**Local models and the EXPOSED column.** `wt start`/`wt stop` add and remove a
-local model's route automatically, without touching modelman's `exposed` flag.
-So for a local model the column shows `Y` if *either* wt currently routes it
-(`wt litellm list`, read when the TUI opens and after each `s` start/stop) *or*
-modelman's flag says exposed. If wt can't be reached, only the flag is used.
-The `exposed` value in `modelman.toml` itself can still be stale for local
-models; `wt litellm list` is the authoritative answer.
+A hand-written `model_list` entry is never touched by wt, and a route wt wrote
+carries a `model_info.wt_managed` marker; to stop routing a model, remove it
+from `registry.toml` (or, for a local model, stop it) rather than editing
+`config.yaml`.
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
 (wt honors `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`). wt's
@@ -379,8 +377,8 @@ make clean       # remove caches
 - `src/modelman/screens/` — `models.py` (single table of every model across every family, sorted family/location/provider/name, cursor-preserving reload, alphabetical dropdowns, delete-any-model), `forms.py` (modals on a shared `ModelmanModal` base with consistent button order, Escape-to-cancel, and safe-default focus on destructive dialogs — `ModelForm`'s add-mode family Select includes a "+ New family…" option).
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
-- `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save. Deletes check `provider.is_downloaded()` first: when the artifact is already gone (e.g. queued from the TUI on a not-ready row, or removed by hand), the provider's `delete()` is skipped but registry/state cleanup, lifecycle events, and the cascade-unexpose still run. A raising `is_downloaded()` is treated conservatively — the artifact delete is attempted and real failures surface normally.
-- `src/modelman/litellm.py` — modelman's side of LiteLLM exposure: its own gates and display predicates, read-only `config.yaml` helpers for `modelman usage`, and the thin `expose_model`/`unexpose_model`/`apply_expose_queue` functions that delegate the writes to `wt litellm ...`. All `model_list` construction, the config write, the owned-settings pass and the proxy restart live in `wt/internal/litellm`.
+- `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, failures are collected, then a single save. It touches no LiteLLM route: the caller's `wt litellm sync` afterwards is what drops a removed model's route. Deletes check `provider.is_downloaded()` first: when the artifact is already gone (e.g. queued from the TUI on a not-ready row, or removed by hand), the provider's `delete()` is skipped but registry/state cleanup and lifecycle events still run. A raising `is_downloaded()` is treated conservatively — the artifact delete is attempted and real failures surface normally.
+- `src/modelman/litellm.py` — modelman's only route-write path is `sync_routes()`, which asks wt to reconcile and returns its warnings (skipping wt when no LiteLLM config file exists). Everything else here reads: read-only `config.yaml` helpers for `modelman usage`. All `model_list` construction, the config write, the owned-settings pass and the proxy restart live in `wt/internal/litellm`.
 - `src/modelman/wt_bridge.py` — the subprocess wrapper around `wt litellm ...` (JSON parsing, error mapping).
 - `src/modelman/sync.py` — reconciles configured models against provider state.
 - `src/modelman/migrate.py` — one-time import of legacy config into the registry/state.

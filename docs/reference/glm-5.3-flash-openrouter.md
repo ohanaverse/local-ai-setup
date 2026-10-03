@@ -52,9 +52,11 @@ supports_vision = true
 
 **2. `~/.config/local-ai/modelman.toml`** — Model state tracking
 
-Exposure (the `exposed` flag; legacy name `litellm_exposed`) is set by
-`modelman expose` or the TUI `x` toggle, which delegate the `config.yaml` write
-to `wt litellm expose`; the TUI `l` key is the separate LiteLLM *routing*
+Routing (not a stored flag) is what decides whether a local model appears in
+the proxy's `model_list`: wt derives it from `registry.toml` plus live probes,
+so a cloud model is routed whenever it is configured, with no toggle to flip
+(#179). `wt litellm list` is the answer to "is it routed?"; `wt litellm expose`
+writes a row by hand, and the TUI `l` key is the separate LiteLLM *routing*
 on/off toggle (`wt litellm on|off`). See guide 04 for the workflow. No TOML to copy here —
 the state file is machine state, not a config to hand-edit.
 

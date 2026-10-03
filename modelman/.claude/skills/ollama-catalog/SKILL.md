@@ -76,7 +76,7 @@ Run everything from `modelman/`.
 | Code | Meaning | Do |
 |---|---|---|
 | 0 | done (or nothing to do) | — |
-| 1 | a pull, an `ollama rm`, a LiteLLM expose/unexpose, or the registry save failed; the other steps still ran | read the error, then re-run the sync (it only redoes what is still out of sync) |
+| 1 | a pull, an `ollama rm`, the route sync that closes the queue, or the registry save failed; the other steps still ran | read the error, then re-run the sync (it only redoes what is still out of sync) |
 | 2 | page fetch failed, `ollama list` couldn't run, or no cloud tag resolved (ollama.com/library unreachable); nothing changed | check network / start ollama, retry. `--html <saved page>` only replaces the pricing-page fetch — the library tag lookups still need ollama.com |
 | 3 | page shape changed | follow "Repairing the parser" |
 | 4 | mass removal refused (> half the cloud entries); nothing changed | verify the parse, then `--force` with the user's OK |

@@ -7,9 +7,11 @@ FIXTURE = Path(__file__).resolve().parents[3] / "docs" / "contracts" / "modelman
 
 def test_load_state_matches_shared_fixture():
     """Pins modelman's read of the shared docs/contracts/modelman.sample.toml
-    fixture: both languages must decode `exposed`, the one legacy
-    `litellm_exposed`-only entry, and the new `[litellm]` table identically,
-    or a schema drift between modelman and wt ships silently."""
+    fixture: both languages must decode `ready` (including the legacy
+    `downloaded` spelling) and the `[litellm]` table identically, or a schema
+    drift between modelman and wt ships silently. #179: the legacy
+    `exposed`/`litellm_exposed` keys some rows still carry (wt reads them
+    until PR 3) load without error and are ignored by modelman."""
     state = load_state(path=FIXTURE)
 
     # Fully-populated model entry: every field modelman writes round-trips.
@@ -17,38 +19,33 @@ def test_load_state_matches_shared_fixture():
     assert local.ready is True
     assert local.disk_path == "ollama:contract-fixture:local"
     assert local.size_bytes == 2147483648
-    assert local.exposed is False
 
     sub = state.get("ollama/contract-fixture:subscription")
-    assert sub.exposed is True
     assert sub.ready is True
 
     # Legacy spelling: `downloaded` must still be accepted as `ready`
-    # (pre-registry files keep working; wt only reads the exposure flag).
-    # Legacy `litellm_exposed` only (no `exposed` key) must read as exposed.
+    # (pre-registry files keep working).
     legacy = state.get("llamacpp/legacy-contract-fixture")
     assert legacy.ready is True
     assert legacy.disk_path == "/hf/cache/legacy-contract-fixture.q4.gguf"
-    assert legacy.exposed is True
+
+    # #179: modelman has no exposure flag at all — the legacy keys are
+    # neither a field nor preserved as unknown extras (so the next save
+    # drops them).
+    for row in (local, sub, legacy):
+        assert not hasattr(row, "exposed")
+        assert "exposed" not in row.extra and "litellm_exposed" not in row.extra
 
     # Bare entry with no keys: all defaults, not an error.
     cloud = state.get("openrouter/contract-fixture:cloud")
     assert cloud.ready is False
     assert cloud.disk_path is None
     assert cloud.size_bytes is None
-    assert cloud.exposed is False
 
-    # New case: local model with flag on but ready off
+    # Local model that is not ready.
     local_not_ready = state.get("ollama/contract-fixture:local-not-ready")
-    assert local_not_ready is not None
+    assert "ollama/contract-fixture:local-not-ready" in state.models
     assert local_not_ready.ready is False
-    assert local_not_ready.exposed is True
-
-    # New case: cloud model with flag on (no ready key)
-    cloud_exposed = state.get("openrouter/contract-fixture:cloud-exposed")
-    assert cloud_exposed is not None
-    assert cloud_exposed.ready is False  # defaults to false
-    assert cloud_exposed.exposed is True
 
     # Legacy families table stays loadable (display names moved to
     # registry.toml [[families]], but old entries must not break loads).

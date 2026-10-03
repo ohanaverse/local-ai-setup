@@ -159,28 +159,29 @@ func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, id
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
 	snap := probeInventory(cfg)
-	running := runningIDs(snap)
-	// Running is untrustworthy for a family whose probe did not fully
-	// succeed; leave its models' routes exactly as they are. The exception is
-	// a server that refused the connection: nothing is listening, so nothing
-	// is running, and its routes are stale and must go (the case a provider
-	// stopped outside wt leaves behind).
+	// The local models to route: running ones, plus pulled registry ollama
+	// models (desiredLocalIDs). That set is untrustworthy for a family whose
+	// probe did not fully succeed; leave its models' routes exactly as they
+	// are. The exception is a server that refused the connection: nothing is
+	// listening, so nothing is running, and its routes are stale and must go
+	// (the case a provider stopped outside wt leaves behind).
+	desired := desiredLocalIDs(snap)
 	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap, routedIDSet())
 	o := litellm.Options{
 		Untouched: untouched,
 		// The probe above predates the config.yaml lock; a start that lands
 		// in between must not lose its route, so removals are re-verified
 		// under the lock.
-		Recheck: func() []string { return runningIDs(probeInventory(cfg)) },
+		Recheck: func() []string { return desiredLocalIDs(probeInventory(cfg)) },
 	}
 	if dryRun {
-		plan, err := litellm.PlanSync(cfg, running, o)
+		plan, err := litellm.PlanSync(cfg, desired, o)
 		if err != nil {
 			return err
 		}
 		return reportSyncPlan(out, errOut, plan, probeWarns, asJSON)
 	}
-	res, err := litellm.Sync(cfg, running, o)
+	res, err := litellm.Sync(cfg, desired, o)
 	if err != nil {
 		return err
 	}
@@ -224,14 +225,15 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 	}
 	sort.Strings(fams)
 	for _, f := range fams {
-		st := snap.Providers[f]
-		if st == localmodels.StatusUnsupported {
-			// Discovery is unsupported by design (mlx_lm_server); the probe
-			// did not fail, so "did not succeed" would misread as an error.
-			warnings = append(warnings, fmt.Sprintf("provider %q has no model discovery (status %q); its model routes were left unchanged", f, st))
+		if snap.Ambiguous[f] {
+			// The probe answered; it is the served model that cannot be
+			// tied to one registered pairing, not a probe failure. Worded for
+			// both shapes (a foreign id, and an empty list): "is serving"
+			// would be a lie in the second.
+			warnings = append(warnings, fmt.Sprintf("provider %q answered, but wt cannot tell which of its registered models it is serving (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 			continue
 		}
-		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, st))
+		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 	}
 	downs := make([]string, 0, len(snap.Down))
 	for f := range snap.Down {
@@ -276,15 +278,30 @@ func routedIDSet() map[string]bool {
 	return out
 }
 
-// runningIDs lists the registered model ids a probe found running.
-func runningIDs(snap localmodels.Snapshot) []string {
-	var running []string
+// desiredLocalIDs lists the registered local model ids sync should route:
+// every one a probe found running, plus every registered model of a family
+// whose routes follow its artifact (ollama) that the probe saw pulled, loaded
+// or not — ollama serves a pulled model on request (#179). Pulled counts only
+// when the family's probe is fully OK: a partial probe (e.g. /api/ps refused
+// after /api/tags answered — the daemon died) cannot vouch that anything is
+// serving. An unknown artifact (ArtifactKnown false) never counts as pulled.
+// The real sync, its dry run and the under-lock Recheck all call this one
+// function so they cannot drift.
+func desiredLocalIDs(snap localmodels.Snapshot) []string {
+	var desired []string
 	for _, e := range snap.Entries {
-		if e.Running && e.Registered {
-			running = append(running, e.ModelID)
+		if !e.Registered {
+			continue
+		}
+		fam := localmodels.Family(e.ProviderID)
+		pulled := e.ArtifactKnown && e.Artifact != "" &&
+			localmodels.RoutesFollowArtifact(fam) &&
+			snap.Providers[fam] == localmodels.StatusOK
+		if e.Running || pulled {
+			desired = append(desired, e.ModelID)
 		}
 	}
-	return running
+	return desired
 }
 
 func runLitellmList(out io.Writer, asJSON bool) error {
@@ -423,7 +440,7 @@ func litellmCmd(a *app) *cobra.Command {
 	}
 	var syncJSON, listJSON, provJSON, syncDryRun bool
 	syncC := &cobra.Command{
-		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running local models", Args: cobra.NoArgs, SilenceUsage: true,
+		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.loadErr != nil {
 				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)

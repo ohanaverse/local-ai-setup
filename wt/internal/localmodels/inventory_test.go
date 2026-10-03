@@ -275,9 +275,12 @@ func TestInventoryOmlx6bitRowSharesServerAndDirs(t *testing.T) {
 	}
 }
 
-// TestInventoryMlxLMServerRunningNoDiscovery verifies mlx_lm_server is
-// "unsupported" for discovery (a target+draft pairing is not discoverable) yet a
-// registered row reads running when the server serves anything.
+// TestInventoryMlxLMServerRunningNoDiscovery verifies an answering
+// mlx_lm_server is StatusOK (its running state is trustworthy, so `wt litellm
+// sync` routes the serving pairing) and a registered row reads running when the
+// server serves anything, while ArtifactKnown stays false: a target+draft
+// pairing cannot be enumerated, and a true would let the picker read an empty
+// artifact as "not on disk".
 func TestInventoryMlxLMServerRunningNoDiscovery(t *testing.T) {
 	srv := modelsServer(t, "/some/target/path")
 	cfg := &config.Config{
@@ -285,11 +288,131 @@ func TestInventoryMlxLMServerRunningNoDiscovery(t *testing.T) {
 		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
 	}
 	snap := inventory(cfg, testClient)
-	if snap.Providers["mlx_lm_server"] != StatusUnsupported {
-		t.Errorf("status = %q", snap.Providers["mlx_lm_server"])
+	if snap.Providers["mlx_lm_server"] != StatusOK || snap.Down["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v, want ok and not down", snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"])
 	}
-	if len(snap.Entries) != 1 || !snap.Entries[0].Running {
-		t.Errorf("entries = %+v", snap.Entries)
+	if len(snap.Entries) != 1 || !snap.Entries[0].Running || snap.Entries[0].ArtifactKnown {
+		t.Errorf("entries = %+v, want one running entry with ArtifactKnown false", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerUnmatchedPairingsArePartial pins the ambiguous
+// mlx_lm_server case: the server answered, two or more pairings are registered
+// with the TUI's "<target>+draft-<draft>" names, and /v1/models lists only HF
+// repo ids / resolved paths, so no pairing can name-match. wt cannot tell which
+// pairing is serving, so the family is Partial (routes left alone) and marked
+// Ambiguous for the warning. Reporting OK there made every sync silently remove
+// the serving pairing's route.
+func TestInventoryMlxLMServerUnmatchedPairingsArePartial(t *testing.T) {
+	srv := modelsServer(t, "mlx-community/Qwen3.8-27B-4bit", "mlx-community/Qwen3.8-0.6B-4bit", "/Users/x/models/q")
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-0.6B-4bit"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-1.7B-4bit"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || snap.Down["mlx_lm_server"] || !snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v ambiguous = %v, want partial, not down, ambiguous",
+			snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	for _, e := range snap.Entries {
+		if e.Running {
+			t.Errorf("entry %s reads running; no pairing matched", e.ModelID)
+		}
+	}
+}
+
+// TestInventoryMlxLMServerEmptyAnswerWithSeveralPairingsIsAmbiguous pins the
+// other half of the ambiguity rule: an empty /v1/models body is no more
+// attributable to a registered pairing than a non-empty one, so it must not be
+// the one shape that lets sync prune. A real mlx_lm_server lists its loaded
+// pairing, so an empty answer means either a foreign listener on that port or a
+// server that has not finished loading — in both cases reporting OK let every
+// sync remove the route of every registered pairing, silently, since only a
+// non-OK family gets the "routes left unchanged" warning.
+func TestInventoryMlxLMServerEmptyAnswerWithSeveralPairingsIsAmbiguous(t *testing.T) {
+	srv := modelsServer(t) // answers {"data":[]}
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || !snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q ambiguous = %v, want partial and ambiguous",
+			snap.Providers["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	if snap.Down["mlx_lm_server"] {
+		t.Errorf("an answering server is not down")
+	}
+}
+
+// TestInventoryMlxLMServerMatchedPairingIsOK verifies that with several
+// registered pairings, a served id that name-matches one of them keeps the
+// family OK with exactly that pairing running — the ambiguity rule must not
+// demote a server whose pairing wt can identify.
+func TestInventoryMlxLMServerMatchedPairingIsOK(t *testing.T) {
+	srv := modelsServer(t, "pair-a")
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusOK || snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q ambiguous = %v, want ok", snap.Providers["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	if a, _ := byModelID(snap, "mlx_lm_server/a"); !a.Running {
+		t.Errorf("pair-a not running: %+v", snap.Entries)
+	}
+	if b, _ := byModelID(snap, "mlx_lm_server/b"); b.Running {
+		t.Errorf("pair-b running: %+v", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerRefusedIsDown verifies a stopped mlx_lm_server (its
+// port refuses the connection) marks the family Down with nothing running.
+// Down is what lets `wt litellm sync` remove the stale route of a stopped
+// pairing; without it the route would keep pointing at a dead :8001.
+func TestInventoryMlxLMServerRefusedIsDown(t *testing.T) {
+	gone := modelsServer(t, "x")
+	goneURL := gone.URL
+	gone.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", goneURL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
+	}
+	snap := inventory(cfg, testClient)
+	if !snap.Down["mlx_lm_server"] {
+		t.Errorf("Down = %v, want mlx_lm_server down (connection refused)", snap.Down)
+	}
+	if len(snap.Entries) != 1 || snap.Entries[0].Running || snap.Entries[0].ArtifactKnown {
+		t.Errorf("entries = %+v, want one non-running entry with ArtifactKnown false", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerBadAnswerIsPartial verifies an mlx_lm_server that
+// answers /v1/models unusably (here a 500) is StatusPartial and NOT Down: the
+// server is listening, so its running state is unknown, and sync must leave its
+// routes alone rather than remove a route that may be serving.
+func TestInventoryMlxLMServerBadAnswerIsPartial(t *testing.T) {
+	erroring := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer erroring.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", erroring.URL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || snap.Down["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v, want partial and not down", snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"])
 	}
 }
 
@@ -501,6 +624,21 @@ func TestFamilyExported(t *testing.T) {
 	for id, want := range cases {
 		if got := Family(id); got != want {
 			t.Errorf("Family(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// TestRoutesFollowArtifact pins that only ollama's routes follow "pulled"
+// rather than "loaded": ollama lazy-loads a pulled model on request, so its
+// route is servable whether or not it is loaded. Widening this to a
+// single-model family would route a model nobody is serving (requests would
+// fail); narrowing it away from ollama would drop routes every time ollama
+// unloads an idle model.
+func TestRoutesFollowArtifact(t *testing.T) {
+	cases := map[string]bool{"ollama": true, "omlx": false, "omlx-6bit": false, "mtplx": false, "mlx_lm_server": false, "llamacpp": false, "": false}
+	for id, want := range cases {
+		if got := RoutesFollowArtifact(Family(id)); got != want {
+			t.Errorf("RoutesFollowArtifact(Family(%q)) = %v, want %v", id, got, want)
 		}
 	}
 }

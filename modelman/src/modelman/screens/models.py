@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,12 +19,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from .. import wt_bridge
 from ..formatting import format_size
-from ..litellm import (
-    is_effectively_exposed,
-    passes_ready_gate,
-    provider_policy,
-    provider_table_available,
-)
+from ..litellm import sync_routes
 from ..local_control import (
     LocalControlError,
     _provider_local_models,
@@ -163,8 +157,8 @@ def _variant_to_model_entry(
         draft=draft,
         quantization=variant.get("quantization"),
         # native is derived (never serialized) — re-derive it here so an
-        # in-session add/edit doesn't reset the flag and flip the EXPOSED
-        # column until the next disk reload. Mirrors _derive_native.
+        # in-session add/edit doesn't reset the flag until the next disk
+        # reload. Mirrors _derive_native.
         native=is_native_provider(provider),
     )
 
@@ -227,7 +221,6 @@ class ModelScreen(Screen[None]):
         Binding("enter", "select_row", "Edit", priority=True),
         ("l", "toggle_litellm", "LiteLLM"),
         ("r", "toggle_ready", "Toggle ready"),
-        ("x", "toggle_expose", "Toggle exposed"),
         ("s", "toggle_running", "Start/stop"),
     ]
 
@@ -246,10 +239,6 @@ class ModelScreen(Screen[None]):
         # Last `wt litellm status` (None = wt unreachable); refreshed only on
         # mount and after a toggle so keystrokes never spawn wt.
         self._litellm_status: wt_bridge.LitellmStatus | None = None
-        # Cached routed model ids from `wt litellm list` (populated on mount;
-        # used by the EXPOSED column for local models whose exposed flag in
-        # modelman.toml is stale — wt owns the actual routes in config.yaml).
-        self._routed_ids_cache: list[str] | None = None
         # Provider of the last model added or edited this session; used to
         # default the Add dialog's provider dropdown.
         self._last_provider_used: str | None = None
@@ -257,17 +246,6 @@ class ModelScreen(Screen[None]):
         # queued_ready values are bools: True to ready, False to clear.
         self.queued_ready: dict[str, bool] = {}
         self.queued_deletes: dict[str, VariantSpec] = {}
-        # model_id -> target exposed state (True to expose, False to unexpose).
-        self.queued_exposes: dict[str, bool] = {}
-        # Ids whose queued_ready=True entry exists *only* because
-        # action_toggle_expose cascaded it in (the model wasn't ready and
-        # had no queued_ready entry of its own yet). Cancelling either half
-        # of such a pair must cancel the other half too, or apply() ends up
-        # running a download the user un-queued or an expose that fails
-        # with "model is not ready". A ready entry the user set explicitly
-        # (via 'r', or already present before the cascade) is never marked
-        # here, so undoing it never touches an independently-queued expose.
-        self._ready_cascade_for_expose: set[str] = set()
         # On-disk artifacts an in-scope local provider reports with no
         # matching registry.toml entry (populated by the on-mount
         # discovery worker — see _run_reconcile). Rendered as extra
@@ -310,12 +288,11 @@ class ModelScreen(Screen[None]):
             "MODEL",
             "LOC",
             "STATUS",
-            "EXPOSED",
             "RUNNING",
             "COST",
             "SIZE",
         )
-        self._prefetch_litellm_state()
+        self._fetch_litellm_status()
         self.reload()
         self._refresh_pending_bar()
         self._render_litellm_status()
@@ -372,32 +349,28 @@ class ModelScreen(Screen[None]):
         # are: a model flagged running whose process actually died (crash,
         # manual kill outside modelman) must not keep showing RUNNING=●
         # forever. running_model_ids() re-probes every flagged model and
-        # clears any stale flag (and best-effort un-exposes it) as a side
-        # effect; anything it doesn't return is not verified running, so
-        # it gets cleared here too — exposed is re-read from disk since
-        # running_model_ids() already wrote the post-unexpose value there.
+        # clears any stale flag as a side effect; anything it doesn't
+        # return is not verified running, so it gets cleared here too.
         verified = set(running_model_ids(self.registry, self.state, self.state_path))
         stale_ids = [
             model_id
             for model_id, model_state in self.state.models.items()
             if model_state.running and model_id not in verified
         ]
-        if stale_ids:
-            # running_model_ids() already best-effort un-exposed each of
-            # these on disk (_clear_stale_running_flag) — pull that fresh
-            # value in rather than leaving self.state's in-memory copy at
-            # its stale pre-reconcile exposed value, which would render a
-            # wrong "Y" in the EXPOSED column for the rest of the session.
-            fresh_state = load_state(self.state_path)
-            for model_id in stale_ids:
-                model_state = self.state.models[model_id]
-                fresh_exposed = fresh_state.models.get(model_id, model_state).exposed
-                self.state.models[model_id] = replace(
-                    model_state, running=False, exposed=fresh_exposed
-                )
+        for model_id in stale_ids:
+            self.state.models[model_id] = replace(self.state.models[model_id], running=False)
         self.discovered = discover_unregistered_models(self.registry, local_map)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
+        if stale_ids:
+            # A model we believed running is not, so its LiteLLM route points
+            # at a dead backend and only a sync drops it (#179). Nothing else
+            # does: the flag lives in modelman.toml, which the TUI-exit sync
+            # (gated on registry.toml) reads past, and running_model_ids() is
+            # deliberately wt-free. Gated on stale_ids so an ordinary mount —
+            # this worker's common case — never bounces the proxy.
+            for warning in sync_routes():
+                self.app.call_from_thread(self.app.notify, warning, severity="warning")
 
     def _fetch_litellm_status(self) -> None:
         """Blocking read of wt's routing state into `_litellm_status`
@@ -421,37 +394,6 @@ class ModelScreen(Screen[None]):
         """
         self._fetch_litellm_status()
         self._render_litellm_status()
-
-    def _prefetch_litellm_state(self) -> None:
-        """Warm the provider-flags cache, read wt's status, and load the
-        routed-ids cache all CONCURRENTLY instead of back-to-back: each is
-        a subprocess call bounded at ~5s when its cache is cold, and
-        running them one after another could block the initial paint for
-        up to ~15s. Blocks until all three are done (still synchronous
-        overall), but the wall-clock cost is the slowest of the three, not
-        their sum."""
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            status_future = pool.submit(self._fetch_litellm_status)
-            flags_future = pool.submit(wt_bridge.provider_cloud_flags)
-            routed_future = pool.submit(self._load_routed_ids_cache)
-            status_future.result()
-            flags_future.result()
-            routed_future.result()
-
-    def _load_routed_ids_cache(self) -> None:
-        """Populate `_routed_ids_cache` from `wt litellm list --json`.
-
-        Called on mount (as part of `_prefetch_litellm_state`, so it never
-        blocks the initial paint beyond `wt_bridge.STATUS_TIMEOUT`) so the
-        EXPOSED column for local models reads wt's live routing state
-        instead of the stale modelman.toml flag (issue #145). Never
-        raises: an unreachable wt leaves the cache as None and the column
-        falls back to "–".
-        """
-        try:
-            self._routed_ids_cache = wt_bridge.routed_ids(timeout=wt_bridge.STATUS_TIMEOUT)
-        except wt_bridge.WtBridgeError:
-            self._routed_ids_cache = None
 
     def _render_litellm_status(self) -> None:
         status = self._litellm_status
@@ -532,42 +474,7 @@ class ModelScreen(Screen[None]):
                     status = "[green]✓[/green]"
                 else:
                     status = "[dim]○[/dim]"
-                # Use the queued expose value as the override for projected state.
-                exposed_override = self.queued_exposes.get(m.id)
-                # Use the projected ready value for the EXPOSED column preview.
-                ready_override = self._projected_ready(m.id)
-                # Effective exposure = the (queued or persisted) flag AND the
-                # *projected* ready value — the same gate `_validate_locally`
-                # applies at apply time, so the column shows what the model
-                # will be after apply, not what it was before the queue.
-                # Native rows are the one exception: the column shows Y
-                # unconditionally while the apply gate still rejects them
-                # ("no LiteLLM mapping") — that split is deliberate.
-                #
-                # For LOCAL models, wt owns the actual routes in config.yaml
-                # (Phase 4, issues #140-#144) so the modelman.toml exposed
-                # flag can be stale relative to wt's live routing state —
-                # e.g. a model started with `wt start` is genuinely routed
-                # even though modelman's flag is still False. The column is
-                # therefore Y if EITHER source says so: wt's live routes
-                # (for a local model with no queued change this session) OR
-                # the persisted-or-queued flag/ready projection (needed so
-                # 'r'/'x' still give immediate feedback before apply, since
-                # wt has no way to know about an unapplied queued change).
-                # This was previously written as a nested ternary that is
-                # logically identical to the explicit `or` below but reads
-                # as if the second branch were unreachable once the first
-                # is False — written out plainly to avoid that trap.
                 is_local = is_model_local(m.location, m.provider_id, self.registry)
-                locally_routed = is_local and self._is_locally_routed(m.id)
-                flag_exposed = is_effectively_exposed(
-                    m,
-                    self.state,
-                    self.registry,
-                    exposed_override=exposed_override,
-                    ready_override=ready_override,
-                )
-                exposed_str = "Y" if locally_routed or flag_exposed else "–"
                 running_str = "●" if (is_local and self.state.get(m.id).running) else "-"
                 mt.add_row(
                     m.family,
@@ -575,7 +482,6 @@ class ModelScreen(Screen[None]):
                     m.model_name,
                     _format_location(m.location),
                     status,
-                    exposed_str,
                     running_str,
                     _format_per_token(m.cost),
                     size_str,
@@ -592,7 +498,6 @@ class ModelScreen(Screen[None]):
                     d.variant_id,
                     _format_location(LOCATION_LOCAL),
                     "[cyan]+[/cyan]",
-                    "–",
                     "-",
                     "-",
                     format_size(d.size_bytes) if d.size_bytes is not None else "—",
@@ -611,51 +516,6 @@ class ModelScreen(Screen[None]):
         any location."""
         return self.state.get(model_id).ready
 
-    def _projected_ready(self, model_id: str) -> bool:
-        """The ready value this model will have after apply(): the queued
-        target if one exists, otherwise the persisted flag."""
-        if model_id in self.queued_ready:
-            return self.queued_ready[model_id]
-        return self.state.get(model_id).ready
-
-    def _is_locally_routed(self, model_id: str) -> bool:
-        """Whether a local model is currently routed through LiteLLM.
-
-        For LOCAL models, wt owns the actual routes in config.yaml (since
-        Phase 4, issues #140-#144) and the `exposed` flag in modelman.toml
-        is stale. This reads wt's live routing state from the on-mount
-        cache instead. Returns False when wt is unreachable (cache is None)
-        — the column shows "–" which is the safe default.
-        """
-        if self._routed_ids_cache is None:
-            return False
-        return model_id in self._routed_ids_cache
-
-    def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
-        """Single invariant: expose depends on ready. A queued expose=True
-        cannot survive a model whose projected ready is False — apply()
-        enforces the same rule at the gate (_validate_locally rejects the
-        expose with 'model is not ready'); this keeps the queue consistent
-        with it instead of leaving a doomed entry for apply() to fail on.
-        Cloud rows are exempt, matching _validate_locally (via
-        passes_ready_gate). Drops the expose with a notification rather
-        than silently overwriting the user's request."""
-        if self.queued_exposes.get(mid) is True and not passes_ready_gate(
-            entry,
-            self.state,
-            self.registry,
-            ready_override=self._projected_ready(mid),
-        ):
-            self.queued_exposes.pop(mid, None)
-            self.app.notify(f"Expose cancelled: {mid} will not be ready")
-
-    def _cancel_ready_cascade(self, mid: str) -> None:
-        """Undo an expose-triggered ready cascade: drop the queued
-        ready-on. Shared by the repeated-'x'-keypress cancel path and
-        discard."""
-        self.queued_ready.pop(mid, None)
-        self._ready_cascade_for_expose.discard(mid)
-
     def _refresh_pending_bar(self) -> None:
         try:
             bar = self.query_one("#pending-bar", Static)
@@ -663,7 +523,7 @@ class ModelScreen(Screen[None]):
             return  # screen already popped (see _load_models)
         bar.update(
             f"Pending: ready {len(self.queued_ready)} · delete {len(self.queued_deletes)}"
-            f" · move {len(self.queued_moves)} · expose {len(self.queued_exposes)}"
+            f" · move {len(self.queued_moves)}"
         )
 
     def action_toggle_ready(self) -> None:
@@ -680,77 +540,15 @@ class ModelScreen(Screen[None]):
             # disk once any queued flip is dropped. Cancel it instead of
             # re-queuing a no-op.
             self.queued_ready.pop(mid, None)
-            if mid in self._ready_cascade_for_expose:
-                # This readiness was only queued because a prior 'x' press
-                # cascaded it in for an expose; cancel that expose with it.
-                self.queued_exposes.pop(mid, None)
-                self._ready_cascade_for_expose.discard(mid)
-            # The invariant covers every other case: a user-queued expose
-            # stranded by this cancel is dropped (with a notification).
-            self._enforce_expose_ready_rule(mid, entry)
             self.app.notify(f"Model already {'ready' if target else 'not ready'}")
             self._refresh_pending_bar()
             self.reload()
             return
 
         # Every ready-on/off is queued now — apply() (post-exit) owns the
-        # consequences, including a mapped provider's real download. The
-        # invariant below drops any queued expose the new ready value
-        # makes impossible, so the screen queue can never strand one.
+        # consequences, including a mapped provider's real download.
         self.queued_ready[mid] = target
-        self._enforce_expose_ready_rule(mid, entry)
         self._last_provider_used = entry.provider_id
-        self._refresh_pending_bar()
-        self.reload()
-
-    def action_toggle_expose(self) -> None:
-        entry = self._current_entry()
-        if entry is None:
-            return
-        mid = entry.id
-        persisted_exposed = self.state.get(mid).exposed
-        displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
-        target = not displayed_exposed
-        # Only EXPOSE needs a mapping; un-expose must stay possible even when
-        # wt is unreachable (the provider table is then degraded to {}).
-        if target and provider_policy(entry.provider_id) is None:
-            if not provider_table_available():
-                self.app.notify("wt is unavailable — cannot expose (install wt)")
-            else:
-                self.app.notify("Provider has no LiteLLM mapping — cannot expose")
-            return
-        if target == persisted_exposed:
-            # Repeated keypress: cancel the queued expose toggle.
-            self.queued_exposes.pop(mid, None)
-            if mid in self._ready_cascade_for_expose:
-                # The download was only queued to serve this expose; the
-                # user never asked for it independently.
-                self._cancel_ready_cascade(mid)
-            self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
-            self._refresh_pending_bar()
-            self.reload()
-            return
-        if target and not passes_ready_gate(
-            entry,
-            self.state,
-            self.registry,
-            ready_override=self._projected_ready(mid),
-        ):
-            # Exposing requires ready — the same gate _validate_locally
-            # applies at apply time. If the user has a ready toggle queued
-            # that leaves the model not-ready, refuse rather than overwrite
-            # their request; otherwise cascade a ready=True queue in for
-            # either a mapped or flag-only provider — nothing runs until
-            # Apply, at which point apply() runs the ready loop before the
-            # expose loop, so the order works.
-            if mid in self.queued_ready:
-                self.app.notify(
-                    "Model is queued to be made not ready — cancel that before exposing"
-                )
-                return
-            self.queued_ready[mid] = True
-            self._ready_cascade_for_expose.add(mid)
-        self.queued_exposes[mid] = target
         self._refresh_pending_bar()
         self.reload()
 
@@ -785,7 +583,7 @@ class ModelScreen(Screen[None]):
         currently_running = self.state.get(mid).running
 
         if currently_running:
-            message = f"Stop {mid}? This will also un-expose it from LiteLLM."
+            message = f"Stop {mid}?"
             self.app.push_screen(ConfirmModal(message), lambda ok: self._on_stop_confirmed(mid, ok))
             return
 
@@ -810,8 +608,8 @@ class ModelScreen(Screen[None]):
                 f"Start {mid} anyway?"
             )
         else:
-            # Starting is disruptive/slow too (a warmup, an expose+proxy
-            # restart) — every start is confirmed, not just a replacement.
+            # Starting is disruptive/slow too (a warmup, a proxy restart)
+            # — every start is confirmed, not just a replacement.
             message = f"Start {mid}?"
         self.app.push_screen(ConfirmModal(message), lambda ok: self._on_start_confirmed(mid, ok))
 
@@ -840,8 +638,7 @@ class ModelScreen(Screen[None]):
         )
 
     def _resync_running_flags(self) -> None:
-        """Merge just the `running`/`exposed` flags from disk back onto
-        self.state.
+        """Merge just the `running` flag from disk back onto self.state.
 
         local_control owns those flags and writes them to modelman.toml
         from these workers, so they have to be re-read — but a full
@@ -850,8 +647,7 @@ class ModelScreen(Screen[None]):
         `size_bytes`, none of which is persisted until the pending-changes
         queue is applied on exit), silently reverting the READY/SIZE/path
         columns after the first `s` press. Hence this targeted
-        resync of only those flags. `exposed` is included alongside `running` because start/stop
-        now flip it too (auto-expose on start, auto-unexpose on stop).
+        resync of only that flag.
         """
         fresh = load_state(self.state_path)
         for model_id, fresh_state in fresh.models.items():
@@ -859,9 +655,7 @@ class ModelScreen(Screen[None]):
             if current is None:
                 self.state.models[model_id] = fresh_state
             else:
-                self.state.models[model_id] = replace(
-                    current, running=fresh_state.running, exposed=fresh_state.exposed
-                )
+                self.state.models[model_id] = replace(current, running=fresh_state.running)
 
     def _do_start(self, model_id: str) -> None:
         try:
@@ -872,7 +666,6 @@ class ModelScreen(Screen[None]):
             )
             return
         self._resync_running_flags()
-        self._load_routed_ids_cache()
         message = (
             f"{model_id} is already running." if result.already_running else f"Started {model_id}."
         )
@@ -890,7 +683,6 @@ class ModelScreen(Screen[None]):
             )
             return
         self._resync_running_flags()
-        self._load_routed_ids_cache()
         message = (
             f"Stopped {model_id}." if result.stopped_model_id else f"{model_id} was not running."
         )
@@ -1051,10 +843,7 @@ class ModelScreen(Screen[None]):
         # every other queued mutation on this screen, apply() never sees
         # this in-memory `self.state` — run_queued_ops() (main.py) always
         # rebuilds `state` fresh from modelman.toml after the TUI process
-        # exits. A queued expose evaluates `_projected_ready` against this
-        # in-memory copy, so it would wrongly read "ready" for the rest of
-        # THIS session, but apply() would see the on-disk state (still not
-        # ready) and reject the expose with "model is not ready". Mirrors
+        # exits, so an in-memory-only ready flag would be lost. Mirrors
         # the CLI's equivalent path (local_control.py's
         # _register_discovered_model), which writes through locked_state
         # for the same reason.
@@ -1074,8 +863,8 @@ class ModelScreen(Screen[None]):
             return
         mid = entry.id
         # "d" queues only the registry removal. apply()'s deletes loop already
-        # removes the on-disk file, drops the registry/state rows, and cascades
-        # the unexpose — queueing ready=False/expose=False here would double-
+        # removes the on-disk file and drops the registry/state rows (the exit
+        # sync then drops its route) — queueing ready=False here would double-
         # delete the file and, on cancel, leave orphaned queues that still
         # destroy the model. A second "d" toggles the delete back off.
         spec = model_entry_to_variant(entry)
@@ -1182,22 +971,15 @@ class ModelScreen(Screen[None]):
 
     def has_pending_changes(self) -> bool:
         """True when this screen holds any unapplied queued mutation
-        (ready/delete/move/expose). Used by action_back's exit-confirm
+        (ready/delete/move). Used by action_back's exit-confirm
         gate and ModelmanApp.request_quit()'s ctrl+q guard, so a queue
         pending here blocks both Escape and quit the same way."""
-        return bool(
-            self.queued_ready or self.queued_deletes or self.queued_moves or self.queued_exposes
-        )
+        return bool(self.queued_ready or self.queued_deletes or self.queued_moves)
 
     def _pending_change_count(self) -> int:
-        """Total queued mutations across ready/delete/move/expose, for the
+        """Total queued mutations across ready/delete/move, for the
         force-quit dialog's data-loss warning."""
-        return (
-            len(self.queued_ready)
-            + len(self.queued_deletes)
-            + len(self.queued_moves)
-            + len(self.queued_exposes)
-        )
+        return len(self.queued_ready) + len(self.queued_deletes) + len(self.queued_moves)
 
     def _running_worker_descriptions(self) -> list[str]:
         """Descriptions of every currently-RUNNING app-level worker
@@ -1232,7 +1014,6 @@ class ModelScreen(Screen[None]):
             ConfirmExitDialog(
                 ready=list(self.queued_ready.items()),
                 deletes=list(self.queued_deletes.values()),
-                exposes=list(self.queued_exposes.items()),
                 moves=list(self.queued_moves.items()),
                 show_price_reminder=show_reminder,
             ),
@@ -1288,7 +1069,6 @@ class ModelScreen(Screen[None]):
                     ready=dict(self.queued_ready),
                     deletes=dict(self.queued_deletes),
                     moves=dict(self.queued_moves),
-                    exposes=dict(self.queued_exposes),
                 )
             )
             return
@@ -1302,8 +1082,6 @@ class ModelScreen(Screen[None]):
             self.queued_ready.clear()
             self.queued_deletes.clear()
             self.queued_moves.clear()
-            self.queued_exposes.clear()
-            self._ready_cascade_for_expose.clear()
             self.app.exit(None)
             return
         # "cancel" or None: stay on the model screen, queue preserved.

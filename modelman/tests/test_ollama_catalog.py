@@ -369,14 +369,6 @@ def test_plan_mass_removal_guard():
     assert plan_sync(reg, _catalog(_cm("a")), []).mass_removal()
 
 
-def test_plan_routes_every_page_model():
-    from modelman.ollama_catalog import plan_sync
-
-    reg = _registry(_entry("a:cloud"), _entry("gone:cloud"), _entry("x:7b", location="local"))
-    plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), [])
-    assert plan.routes == ["ollama/a:cloud", "ollama/b:cloud"]
-
-
 def test_plan_id_collision_with_non_ollama_entry_warns():
     from modelman.ollama_catalog import plan_sync
     from modelman.registry import ModelEntry
@@ -405,12 +397,13 @@ def test_format_plan_mentions_every_section():
 
     reg = _registry(_entry("a:cloud"), _entry("gone:cloud"), _entry("old:cloud"))
     plan = plan_sync(reg, _catalog(_cm("a"), _cm("b")), ["old:cloud", "stray:cloud"])
-    text = format_plan(plan, exposed={"ollama/gone:cloud"})
-    for needle in ("ollama/a:cloud", "ollama/b:cloud", "ollama/old:cloud", "stray:cloud"):
+    text = format_plan(plan)
+    for needle in ("ollama/a:cloud", "ollama/b:cloud", "ollama/gone:cloud", "stray:cloud"):
         assert needle in text
-    assert "ollama/gone:cloud (exposed — will be unexposed)" in text
-    assert "LiteLLM routes — expose or refresh prices (2;" in text
-    assert "ollama/old:cloud (exposed" not in text
+    # #179: one `wt litellm sync` routes every model; no expose section.
+    assert "Not yet exposed" not in text
+    assert "LiteLLM routes" not in text
+    assert "exposed" not in text
 
 
 def test_list_ollama_tags_parses_and_handles_failure():
@@ -637,7 +630,7 @@ def test_plan_uses_resolved_tag_for_additions_and_pulls():
     (added,) = plan.additions
     assert added.id == "ollama/mistral-large-3:675b-cloud"
     assert added.model_name == "mistral-large-3:675b-cloud"
-    assert plan.pulls == plan.routes == ["ollama/mistral-large-3:675b-cloud"]
+    assert plan.pulls == ["ollama/mistral-large-3:675b-cloud"]
 
 
 def test_plan_replaces_entry_whose_tag_does_not_resolve():
@@ -713,10 +706,9 @@ def test_plan_unresolved_model_keeps_entry_but_skips_pull_and_add():
     reg = _registry(_entry("x:cloud", extra={"catalog_name": "x"}))
     plan = plan_sync(reg, _catalog(_cm("x", 5.0), _cm("y")), [], resolved={"x": None, "y": None})
     assert plan.removals == [] and plan.additions == [] and plan.pulls == []
-    # Its price is still known from the page, so the existing entry and route
-    # are refreshed.
+    # Its price is still known from the page, so the existing entry is
+    # refreshed.
     assert [u.model_id for u in plan.updates] == ["ollama/x:cloud"]
-    assert plan.routes == ["ollama/x:cloud"]
 
 
 def test_plan_prefers_entry_already_under_resolved_tag():
@@ -734,7 +726,6 @@ def test_plan_prefers_entry_already_under_resolved_tag():
     )
     assert plan.removals == ["ollama/ml3:cloud"]
     assert plan.additions == []
-    assert plan.routes == ["ollama/ml3:675b-cloud"]
     assert [u.model_id for u in plan.updates] == ["ollama/ml3:675b-cloud"]
     assert plan.stray_tags == []
 

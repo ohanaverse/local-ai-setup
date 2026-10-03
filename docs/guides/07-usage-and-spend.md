@@ -98,7 +98,7 @@ Example output (captured 2026-08-29 — your models, rows, and numbers will diff
 
 ### 3. Interpreting mismatches
 
-- **Matched rows** (launches > 0 *and* requests > 0): agent traffic flowed through the LiteLLM proxy. Normal state for models exposed via LiteLLM.
+- **Matched rows** (launches > 0 *and* requests > 0): agent traffic flowed through the LiteLLM proxy. Normal state for models routed via LiteLLM.
 - **WT-only launches**: wt launches with no LiteLLM spend — the agent reached the model's native API directly (ollama `:11434` or its cloud endpoints, oMLX `:8000`) and those requests never log to Postgres. When most of your launches go to native endpoints, this section is most of the report — not a bug. Spends only reconcile for models that went through LiteLLM.
 
   After enabling LiteLLM routing (`wt litellm on`), non-native launches

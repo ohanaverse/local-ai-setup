@@ -204,8 +204,7 @@ def reconcile(
     """Update downloaded/disk_path/size_bytes for configured reconcilable models.
 
     `downloaded` maps model_id -> (disk_path, size_bytes). Models not in the
-    map are marked not downloaded. exposed is preserved (owned by the
-    LiteLLM feature, not sync). Non-reconcilable providers are untouched,
+    map are marked not downloaded. Non-reconcilable providers are untouched,
     and so are cloud models on them (ollama `:cloud` stubs): they have no
     on-disk artifact to observe, so their ready flag is left as-is.
     """
@@ -215,7 +214,6 @@ def reconcile(
             m.location, m.provider_id, registry, missing_provider_is_local=True
         ):
             continue
-        existing = state.get(m.id)
         if m.id in downloaded:
             disk_path, size = downloaded[m.id]
             state.set(
@@ -224,7 +222,6 @@ def reconcile(
                     ready=True,
                     disk_path=disk_path,
                     size_bytes=size,
-                    exposed=existing.exposed,
                 ),
             )
             result.downloaded.append(m.id)
@@ -235,7 +232,6 @@ def reconcile(
                     ready=False,
                     disk_path=None,
                     size_bytes=None,
-                    exposed=existing.exposed,
                 ),
             )
             result.not_downloaded.append(m.id)

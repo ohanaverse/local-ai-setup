@@ -115,14 +115,14 @@ wt-owned: `wt litellm expose|unexpose|sync|list` write `config.yaml`, and
 
 Two mechanisms stack on top of the on/off switch:
 
-- **Exposure filter (cloud models).** For cloud models wt only shows those
-  with `exposed = true` in `modelman.toml` — independent of whether routing is
-  on or off (the readiness/cloud rule behind the flag is in
-  [00-config-map](00-config-map.md)). Native models (`claude/native`,
-  `copilot/native`) are always shown. Local models are listed from live
-  provider probes regardless of that flag; a local model whose route goes
-  through LiteLLM needs a `config.yaml` route, which `wt start` (or
-  `wt litellm sync`) adds — check `wt litellm list`.
+- **The EXPOSED column is a leftover display, not a filter.** wt renders `Y` in
+  it only for native models (`claude/native`, `copilot/native`); for everything
+  else it prints modelman's raw legacy `exposed` key, which modelman stopped
+  writing in #179 — so it reads blank for every model you have touched since.
+  **Nothing is hidden by it**: wt lists a model regardless of the column. What
+  actually decides whether a model is reachable through LiteLLM is its
+  `config.yaml` route — `wt litellm list` shows the set, and for a local model
+  `wt start` (or `wt litellm sync`) adds it.
 - **Protocol forcing (can override `off`).** Agents declare wire protocols
   (claude: `anthropic`; codex: `openai-responses`; copilot/opencode/pi:
   `openai-chat`) and registry providers declare the protocols they serve

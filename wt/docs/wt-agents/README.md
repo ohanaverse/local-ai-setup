@@ -49,7 +49,9 @@ gui/$(id -u)/local.litellm.proxy`. The `wt litellm` commands restart and return
 automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI start flow
 and stop picker then wait up to 30s for `/health/liveliness`, when a LiteLLM
 URL is configured and a pre-probe before the restart was not refused.
-`modelman expose|unexpose` delegate to the same commands (no wait).
+`modelman` no longer exposes models itself (#179): it changes its own state and
+then runs one `wt litellm sync`, which is what makes a start/stop/registry
+change show up in `config.yaml` (no wait).
 If a model was added by hand or the restart failed, restart the proxy
 manually:
 

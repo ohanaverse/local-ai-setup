@@ -43,18 +43,21 @@ def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedP
 
 @pytest.fixture(autouse=True)
 def _default_litellm_config(monkeypatch, tmp_path):
-    """start_local_model's auto-expose (2026-09-15 local-model visibility
-    design) resolves an unset litellm_path via default_litellm_config_path(),
-    which would otherwise read/write the developer's real
-    ~/.config/litellm/config.yaml whenever a test starts a ready, non-cloud
-    local model without passing its own litellm_path. Point the default at
-    a scratch file instead; tests that pass litellm_path explicitly are
-    unaffected — that argument always wins over this env-var default.
+    """Point default_litellm_config_path() at a scratch config.yaml.
+
+    Two readers resolve an unset litellm_path through it: `modelman usage`,
+    and `sync_routes`, which skips wt entirely when that file is missing.
+    Seeding an existing scratch file keeps every write path's sync observable
+    through `wt_calls` and keeps tests off the developer's real
+    ~/.config/litellm/config.yaml. WT_LITELLM_CONFIG is cleared because it
+    outranks MODELMAN_LITELLM_CONFIG (wt's precedence). Tests that pass
+    litellm_path explicitly are unaffected — that argument always wins.
     """
     scratch_dir = tmp_path / "_default_litellm_config"
     scratch_dir.mkdir()
     path = scratch_dir / "config.yaml"
     path.write_text("model_list: []\n")
+    monkeypatch.delenv("WT_LITELLM_CONFIG", raising=False)
     monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(path))
 
 
@@ -73,6 +76,11 @@ def _never_call_real_ollama(monkeypatch):
     # _probe_running/_ollama_loaded_names explicitly.
     monkeypatch.setattr("modelman.local_control._ollama_loaded_names", lambda: [])
     monkeypatch.setattr("modelman.local_control._http_models_ids", lambda url, timeout=2.0: [])
+    # ...and start_local_model's ollama daemon-reachability check, which would
+    # otherwise GET the developer's real localhost:11434 — a daemon that is up
+    # on the dev machine and down in CI, i.e. machine-dependent tests. Stubbed
+    # to "answering"; the tests of the down path patch it to False.
+    monkeypatch.setattr("modelman.local_control._http_answers", lambda url, timeout=2.0: True)
     monkeypatch.setattr(
         "modelman.providers.lifecycle.backends.ollama._loaded_model_names",
         lambda: [],
@@ -109,27 +117,25 @@ def _never_call_real_wt(monkeypatch):
     """The suite must never run the real `wt` binary: it would rewrite the
     developer's real LiteLLM config.yaml and bounce their live proxy. Every
     bridge call goes through wt_bridge._run; replace it with a fake that
-    applies exposes to nothing and reports the known provider table. The
-    provider cache is reset before and after so no test sees another's table.
-    Tests that assert on the bridge itself monkeypatch _run again.
+    answers the verbs modelman still uses. Tests that assert on the bridge
+    itself monkeypatch _run again.
 
-    Limits of this fake: expose/unexpose always succeed for every id (exit 0,
-    changed=True); `list` is a static empty routed set (not stateful across
-    expose calls); on/off/set succeed (bare `set` exits 1 like real wt); there is no partial-failure / exit-1 / file-level-failure
-    case. Tests exercising error paths must override wt_bridge._run."""
+    Limits of this fake: `sync` succeeds with no outcomes and changed=False;
+    `list` is a static empty routed set; `status` reports routing off;
+    on/off/set succeed (bare `set` exits 1 like real wt); there is no
+    partial-failure / exit-1 / file-level-failure case. Any other verb
+    (e.g. the expose/unexpose removed in #179) fails the test loudly. Tests
+    exercising error paths must override wt_bridge._run. Every argv tail is
+    recorded and yielded (see the `wt_calls` fixture)."""
     import json
 
     from modelman import wt_bridge
 
+    calls: list[list[str]] = []
+
     def fake(args, env=None, timeout=120):
-        if args[:1] == ["providers"]:
-            out = {
-                "providers": {
-                    p: {"cloud": p == "openrouter"}
-                    for p in ("ollama", "omlx", "mlx_lm_server", "mtplx", "llamacpp", "openrouter")
-                }
-            }
-        elif args[:1] == ["list"]:
+        calls.append(list(args))
+        if args[:1] == ["list"]:
             out = {"routed": []}
         elif args[:1] == ["status"]:
             if "--json" in args:
@@ -151,20 +157,20 @@ def _never_call_real_wt(monkeypatch):
             )
         elif args[:1] in (["on"], ["off"], ["set"]):
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        elif args[:1] == ["sync"]:
+            out = {"outcomes": [], "changed": False, "warnings": []}
         else:
-            ids = [a for a in args[1:] if not a.startswith("--")]
-            act = "unexposed" if args[:1] == ["unexpose"] else "exposed"
-            out = {
-                "outcomes": [{"id": i, "action": act} for i in ids],
-                "changed": True,
-                "warnings": [],
-            }
+            raise AssertionError(f"unexpected wt litellm call in tests: {args[:1]}")
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(out), stderr="")
 
-    wt_bridge._reset_provider_cache()
     monkeypatch.setattr(wt_bridge, "_run", fake)
-    yield
-    wt_bridge._reset_provider_cache()
+    return calls
+
+
+@pytest.fixture
+def wt_calls(_never_call_real_wt):
+    """argv tails (after `wt litellm`) the autouse fake received this test."""
+    return _never_call_real_wt
 
 
 _real_subprocess_run = subprocess.run

@@ -38,7 +38,6 @@ from modelman.state import (
     load_state,
     save_state,
 )
-from tests.conftest import write_litellm_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -49,31 +48,6 @@ from tests.conftest import write_litellm_config
 def store(tmp_path):
     """StateStore rooted at tmp_path/modelman.toml."""
     return tmp_path / "modelman.toml"
-
-
-@pytest.fixture
-def bridge_calls(monkeypatch):
-    """Record every `wt litellm expose|unexpose` the apply delegates as
-    (verb, ids), returning an all-applied result.
-
-    wt owns the config.yaml write since 2026-09-21, so the queue's exposes
-    are asserted through the bridge calls they make rather than through the
-    file contents (those live in wt/internal/litellm's Go tests).
-    """
-    from modelman import wt_bridge
-
-    recorded: list[tuple[str, list[str]]] = []
-
-    def fake(verb, ids):
-        recorded.append((verb, list(ids)))
-        action = "exposed" if verb == "expose" else "unexposed"
-        return wt_bridge.BridgeResult(
-            [wt_bridge.BridgeOutcome(i, action, None) for i in ids], True, []
-        )
-
-    monkeypatch.setattr(wt_bridge, "expose", lambda ids, **kw: fake("expose", ids))
-    monkeypatch.setattr(wt_bridge, "unexpose", lambda ids, **kw: fake("unexpose", ids))
-    return recorded
 
 
 def _registry_with(tmp_path: Path, *entries: ModelEntry) -> tuple[Registry, Path]:
@@ -452,51 +426,6 @@ def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
     assert len(delete_failures) == 1  # one failure, not two
 
 
-def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path, bridge_calls):
-    """Deleting a model that is exposed through LiteLLM must also queue its
-    un-expose — otherwise LiteLLM keeps routing requests to a model whose
-    file no longer exists (500s) and the stale row persists forever, since
-    sync doesn't own the exposed flag."""
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, exposed=True))
-    save_state(state, state_path)
-    write_litellm_config(
-        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
-        litellm_path,
-    )
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={"ollama": MagicMock()},
-        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
-        litellm_path=litellm_path,
-    )
-    pending.apply()
-
-    assert bridge_calls == [("unexpose", ["ollama/a"])]
-    # The model is gone from registry and state, with no failure recorded.
-    assert pending.failures == []
-    assert all(m.id != "ollama/a" for m in load_registry(registry_path).models)
-    assert "ollama/a" not in load_state(state_path).models
-
-
 def test_apply_delete_not_downloaded_skips_provider_call(tmp_path):
     """When the artifact is already gone, delete still removes registry/state
     and emits lifecycle events, but does not call provider.delete()."""
@@ -606,245 +535,6 @@ def test_apply_delete_is_downloaded_exception_failure_recorded(tmp_path):
     assert "ollama/a" in load_state(state_path).models
 
 
-def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path, bridge_calls):
-    """A queued delete wins over a queued expose toggle for the same
-    model: the expose is dropped, so wt is never asked to route a model
-    this apply just removed. (When the model WAS exposed, the delete step
-    also queues the un-expose — see
-    test_apply_delete_of_exposed_model_removes_litellm_entry.)"""
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True))
-    save_state(state, state_path)
-    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={"ollama": MagicMock()},
-        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
-        # The user queued expose-then-delete; exposing a deleted model
-        # would fail, so the delete step replaces it with an unexpose.
-        exposes=[("ollama/a", True)],
-        litellm_path=litellm_path,
-    )
-    pending.apply()
-
-    assert pending.failures == []
-    # For local models (ollama), the delete step always queues an unexpose
-    # even when the exposed flag is false — wt may have routed the model
-    # independently of modelman's flag (issue #145).
-    assert bridge_calls == [("unexpose", ["ollama/a"])]
-
-
-def test_apply_batches_litellm_route_calls(tmp_path, bridge_calls):
-    """Applying N queued exposes must reach wt ONCE for the whole batch,
-    not once per model — per-model calls would spawn wt, rewrite
-    config.yaml and bounce the proxy N times."""
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
-            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
-        ],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True))
-    state.set("ollama/b", ModelState(ready=True))
-    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={},
-        exposes=[("ollama/a", True), ("ollama/b", True)],
-        litellm_path=litellm_path,
-    )
-    pending.apply()
-
-    assert bridge_calls == [("expose", ["ollama/a", "ollama/b"])]
-    assert state.get("ollama/a").exposed is True
-    assert state.get("ollama/b").exposed is True
-
-
-def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path, bridge_calls):
-    """A per-model validation failure (not ready) must not block the
-    other queued exposes, and must not prevent the config save."""
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
-            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
-        ],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True))
-    # ollama/b is NOT downloaded — its expose must fail per-item.
-    state.set("ollama/b", ModelState(ready=False))
-    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={},
-        exposes=[("ollama/a", True), ("ollama/b", True)],
-        litellm_path=litellm_path,
-    )
-    pending.apply()
-
-    # Only the valid id reaches wt; the rejected one never leaves modelman.
-    assert bridge_calls == [("expose", ["ollama/a"])]
-    assert state.get("ollama/a").exposed is True
-    # The failed item got no flag flip and is reported with its reason.
-    assert state.get("ollama/b").exposed is False
-    assert any("ollama/b" in f and "not ready" in f for f in pending.failures)
-
-
-def test_apply_saves_registry_before_delegating_exposes(tmp_path, monkeypatch):
-    """wt writes LiteLLM routes from registry.toml ON DISK, but apply()
-    saved the registry only in _persist() at the very end — after the
-    expose step. A model this apply() itself added or edited would reach
-    wt through a registry file that did not describe it yet and come back
-    "model not found in registry". Pins that the registry is persisted
-    before the bridge call, so an expose in the same batch can see it."""
-    from modelman import wt_bridge
-
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    save_registry(registry, registry_path)
-    # Added to the in-memory registry only — exactly the state apply() is in
-    # when the TUI queued an expose for a model it also created.
-    registry.models.append(
-        ModelEntry(id="ollama/new", family="f", provider_id="ollama", model_name="new")
-    )
-    state = StateStore()
-    state.set("ollama/new", ModelState(ready=True))
-
-    seen: dict[str, list[str]] = {}
-
-    def fake_expose(ids, *, litellm_path=None, skip_ready_gate=True):
-        seen["on_disk"] = [m.id for m in load_registry(registry_path).models]
-        return wt_bridge.BridgeResult(
-            [wt_bridge.BridgeOutcome(i, "exposed", None) for i in ids], True, []
-        )
-
-    monkeypatch.setattr(wt_bridge, "expose", fake_expose)
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={},
-        exposes=[("ollama/new", True)],
-        litellm_path=tmp_path / "config.yaml",
-    )
-    pending.apply()
-
-    assert seen["on_disk"] == ["ollama/a", "ollama/new"]
-    assert pending.failures == []
-    assert state.get("ollama/new").exposed is True
-
-
-def test_apply_reports_expose_batch_failed_when_registry_save_fails(tmp_path, monkeypatch):
-    """If the pre-expose registry save fails, wt would act on a stale
-    registry — so the whole expose batch is reported failed (per-model
-    `expose:fail` events, same shape as a config-level failure) and the
-    bridge is never called."""
-    from modelman import queue as queue_mod
-    from modelman import wt_bridge
-
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True))
-
-    called: list[str] = []
-    monkeypatch.setattr(wt_bridge, "expose", lambda ids, **kw: called.append("expose"))
-
-    def boom(reg, path=None):
-        raise OSError("read-only fs")
-
-    monkeypatch.setattr(queue_mod, "save_registry", boom)
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={},
-        exposes=[("ollama/a", True)],
-        litellm_path=tmp_path / "config.yaml",
-    )
-    events: list[str] = []
-    pending.apply(on_event=events.append)
-
-    assert called == []
-    assert any(e.startswith("expose:fail|ollama/a") for e in events)
-    assert any("expose batch" in f for f in pending.failures)
-    assert state.get("ollama/a").exposed is False
-
-
 def test_apply_asserts_ready_twin_keys_agree(tmp_path):
     """A queued (model_id, variant) pair must have matching ids — otherwise
     a future caller in Tasks 2-4 could desync them silently and emit the
@@ -878,117 +568,6 @@ def test_apply_asserts_delete_twin_keys_agree(tmp_path):
     )
     with pytest.raises(AssertionError, match="wrong-id"):
         pending.apply()
-
-
-def test_apply_runs_expose_changes(tmp_path, bridge_calls):
-    """A queued expose reaches wt and flips the flag — the end-to-end pin
-    for apply()'s expose step (wt writes the row, modelman owns the flag)."""
-    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry, save_registry
-    from modelman.state import ModelState, StateStore, save_state
-
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True))
-    save_state(state, state_path)
-    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={},
-        exposes=[("ollama/a", True)],
-        litellm_path=litellm_path,
-    )
-    pending.apply()
-    assert state.get("ollama/a").exposed is True
-    assert bridge_calls == [("expose", ["ollama/a"])]
-
-
-def test_apply_cascade_ready_before_exposing(tmp_path):
-    """The toggle-expose cascade relies on apply() running the ready loop
-    before the expose loop so a model's ready flip lands before its
-    LiteLLM model_list entry is written. Pinned here with a flag-only
-    ready-on so the assertion doesn't depend on a real provider call."""
-    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    litellm_path = tmp_path / "litellm.yaml"
-    litellm_path.write_text("model_list: []\n")
-
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        registry_path=reg_path,
-        state_path=state_path,
-        providers=providers,
-        # Flag-only: no provider entry for this id, so the ready loop
-        # flips the state flag without a provider call (and without the
-        # ready-on-must-go-through-DownloadManager assertion).
-        ready=[("unmapped/a", _variant(id="unmapped/a", provider="unmapped", name="f:a"), True)],
-        exposes=[("unmapped/a", True)],
-        litellm_path=litellm_path,
-    )
-    events: list[str] = []
-    pending.apply(on_event=events.append)
-
-    ready_done = next(i for i, e in enumerate(events) if e.startswith("ready:done"))
-    expose_start = next(i for i, e in enumerate(events) if e.startswith("expose:start"))
-    assert ready_done < expose_start
-    assert state.models["unmapped/a"].ready is True
-
-
-def test_apply_expose_queue_rejects_native_before_reaching_wt(tmp_path, monkeypatch, bridge_calls):
-    """Native ⇒ no LiteLLM policy invariant (#47), queue path: a native
-    model whose provider is (wrongly) mapped in wt's provider table is
-    rejected per item — the flag never flips and wt is never called, so no
-    unroutable row and no proxy bounce. Shares _validate_locally with
-    expose_model, which is pinned in test_litellm.py."""
-    from modelman import wt_bridge
-    from modelman.litellm import apply_expose_queue
-    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
-    from modelman.state import ModelState, StateStore
-
-    model = ModelEntry(
-        id="agy/contract-fixture:native",
-        family="f",
-        provider_id="agy",
-        model_name="contract-fixture:native",
-        native=True,
-    )
-    registry = Registry(
-        providers=[ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native"))],
-        models=[model],
-    )
-    state = StateStore()
-    state.set(model.id, ModelState(ready=True, exposed=False))
-    # A native provider must never actually be mapped; simulate the
-    # hand-edited/stale table so the native guard is the only thing left.
-    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", lambda: {"agy": False})
-
-    outcomes, warnings = apply_expose_queue(
-        registry, state, [(model.id, True)], tmp_path / "config.yaml"
-    )
-
-    assert warnings == []
-    assert bridge_calls == []
-    [(mid, target, error)] = outcomes
-    assert (mid, target) == (model.id, True)
-    assert error is not None and "native" in error
-    # The rejected expose must not flip the flag.
-    assert state.get(model.id).exposed is False
 
 
 # ---------------------------------------------------------------------------
@@ -1410,7 +989,7 @@ def test_apply_delete_flag_only_native_model_removes_entry(tmp_path):
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("claude/native", ModelState(ready=True, exposed=False))
+    state.set("claude/native", ModelState(ready=True))
 
     pending = PendingChanges(
         registry=reg,
@@ -1427,7 +1006,7 @@ def test_apply_delete_flag_only_native_model_removes_entry(tmp_path):
     assert "claude/native" not in load_state(state_path).models
 
 
-def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path):
+def test_apply_ready_false_flag_only_clears_flag(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     native_model = ModelEntry(
@@ -1443,7 +1022,7 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("claude/native", ModelState(ready=True, exposed=True))
+    state.set("claude/native", ModelState(ready=True))
 
     pending = PendingChanges(
         registry=reg,
@@ -1458,8 +1037,6 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     pending.apply()
 
     assert state.get("claude/native").ready is False
-    # Cascade: was exposed, so an unexpose must have been queued and run.
-    assert state.get("claude/native").exposed is False
 
 
 def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
@@ -1701,8 +1278,8 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     """Ready-off on an entry whose artifact directory is shared with another
     registry entry must not remove the file. Regression: the ready-off loop
     called provider.delete() unconditionally, rmtree'ing the directory the
-    other entry's weights live in. State still clears and the unexpose
-    cascade still runs — only the file survives."""
+    other entry's weights live in. State still clears — only the file
+    survives."""
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     a = ModelEntry(
@@ -1725,13 +1302,7 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("omlx/a", ModelState(ready=True, exposed=True))
-    # The unexpose cascade routes through wt (which owns the config.yaml
-    # write), so seed a config file for the path it is handed.
-    litellm_path = tmp_path / "config.yaml"
-    write_litellm_config(
-        {"model_list": [{"model_name": "omlx/a"}], "general_settings": {}}, litellm_path
-    )
+    state.set("omlx/a", ModelState(ready=True))
 
     omlx = MagicMock()
     omlx.name = "omlx"
@@ -1748,13 +1319,11 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
         ready=[
             ("omlx/a", _variant(id="omlx/a", provider="omlx", name="a", repo="org1/qwen"), False)
         ],
-        litellm_path=litellm_path,
     )
     pending.apply()
 
     assert omlx.delete.call_count == 0
     assert state.get("omlx/a").ready is False  # state cleared
-    assert state.get("omlx/a").exposed is False  # cascade still ran
     assert any("shared with omlx/b" in f for f in pending.failures)
     # Ready-off never removes registry rows — the entry survives.
     assert any(m.id == "omlx/a" for m in reg.models)
@@ -1853,18 +1422,11 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
     """Ready-off on a stale-ready model (artifact removed outside modelman,
     reconcile hasn't run since) must clear cleanly, not fail. Regression:
     the ready-off branch lacked the deletes loop's is_downloaded() guard,
-    so `ollama rm` on an absent tag raised, state.ready stayed stale-True,
-    and the unexpose cascade was skipped via continue — leaving a route in
-    config.yaml to a model whose file is gone."""
+    so `ollama rm` on an absent tag raised and state.ready stayed
+    stale-True."""
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    state.set("ollama/a", ModelState(ready=True, exposed=True))
+    state.set("ollama/a", ModelState(ready=True))
     providers["ollama"].is_downloaded.return_value = False  # artifact already gone
-    # The unexpose cascade routes through wt (which owns the config.yaml
-    # write), so seed a config file for the path it is handed.
-    litellm_path = tmp_path / "config.yaml"
-    write_litellm_config(
-        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}}, litellm_path
-    )
 
     pending = PendingChanges(
         registry=reg,
@@ -1873,13 +1435,11 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
         state_path=state_path,
         providers=providers,
         ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
-        litellm_path=litellm_path,
     )
     pending.apply()
 
     assert providers["ollama"].delete.call_count == 0  # no rm on a gone model
     assert state.get("ollama/a").ready is False  # stale flag cleared
-    assert state.get("ollama/a").exposed is False  # cascade ran
     assert pending.failures == []
 
 
@@ -2213,7 +1773,7 @@ def test_apply_ready_on_download_propagates_typeerror_from_inside_provider(tmp_p
 
 def test_apply_ready_on_download_failure_does_not_stop_other_steps(tmp_path):
     """A download failure records into self.failures and the run
-    continues with the remaining deletes/moves/exposes."""
+    continues with the remaining deletes/moves."""
     reg, reg_path = _registry_with(
         tmp_path,
         _entry(id="ollama/x", family="f", provider="ollama", name="x:7b"),
@@ -2244,40 +1804,6 @@ def test_apply_ready_on_download_failure_does_not_stop_other_steps(tmp_path):
     provider.delete.assert_called_once()
     reloaded = load_registry(reg_path)
     assert all(m.id != "ollama/y" for m in reloaded.models)
-
-
-def test_apply_skips_expose_of_model_whose_download_failed(tmp_path, bridge_calls):
-    """A route to a model the pull never fetched would only fail every
-    request: the failed download drops its queued expose, others proceed.
-    x is an ollama cloud stub: exempt from the ready gate, so nothing else
-    would stop the expose."""
-    reg, reg_path = _registry_with(
-        tmp_path,
-        ModelEntry(
-            id="ollama/x", family="f", provider_id="ollama", model_name="x:cloud", location="cloud"
-        ),
-        _entry(id="ollama/y", family="f", provider="ollama", name="y:7b"),
-    )
-    provider = MagicMock()
-    provider.download.side_effect = RuntimeError("connection refused")
-    provider.artifact_paths.return_value = None
-    events: list[str] = []
-    state = _make_state()
-    state.set("ollama/y", ModelState(ready=True))
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        registry_path=reg_path,
-        state_path=tmp_path / "modelman.toml",
-        providers={"ollama": provider},
-        ready=[("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x:cloud"}, True)],
-        exposes=[("ollama/x", True), ("ollama/y", True)],
-    )
-    pending.apply(on_event=events.append)
-
-    assert bridge_calls == [("expose", ["ollama/y"])]
-    assert "download ollama/x: connection refused" in pending.failures
-    assert any(e.startswith("expose:fail|ollama/x|") for e in events)
 
 
 def test_apply_cancelled_mid_ready_loop_skips_remaining_and_does_not_save(tmp_path):
@@ -2358,106 +1884,3 @@ def test_apply_persists_prior_deletes_when_download_raises_keyboardinterrupt(tmp
     provider.delete.assert_called_once()  # the delete really ran
     reloaded = load_registry(reg_path)
     assert all(m.id != "ollama/a" for m in reloaded.models)  # and is persisted
-
-
-# ---------------------------------------------------------------------------
-# Issue #145 — local models: delete/ready-off cascade always unexposes
-# ---------------------------------------------------------------------------
-
-
-def test_apply_delete_local_model_always_unexposes(tmp_path, bridge_calls):
-    """Deleting a LOCAL model must always queue an unexpose, even when
-    modelman.toml's exposed flag is False.
-
-    Since Phase 4 (wt owns LiteLLM management), wt's `wt start`/`wt stop`
-    add and remove config.yaml routes without touching modelman's exposed
-    flag. A local model started with `wt start` is genuinely routed through
-    LiteLLM even if modelman.toml shows exposed=False. If modelman deletes
-    it without unexposing, the route is left stranded in config.yaml
-    (issue #145).
-
-    This test uses ollama (a local provider) with exposed=False to verify
-    the unexpose is still queued."""
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    # exposed=False — the stale flag that the old code relied on.
-    state.set("ollama/a", ModelState(ready=True, exposed=False))
-    save_state(state, state_path)
-    write_litellm_config(
-        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
-        litellm_path,
-    )
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={"ollama": MagicMock()},
-        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
-        litellm_path=litellm_path,
-    )
-    pending.apply()
-
-    # The unexpose is queued even though exposed=False — wt will clean up
-    # any route it may have added independently.
-    assert bridge_calls == [("unexpose", ["ollama/a"])]
-    assert pending.failures == []
-
-
-def test_apply_ready_off_local_model_always_unexposes(tmp_path, bridge_calls):
-    """Turning ready=False for a LOCAL model must always queue an unexpose,
-    even when modelman.toml's exposed flag is False.
-
-    Same rationale as test_apply_delete_local_model_always_unexposes:
-    wt may have routed the model independently of modelman's flag, and
-    a ready-off should clean up that route (issue #145)."""
-    registry_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    save_registry(registry, registry_path)
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, exposed=False))
-    write_litellm_config(
-        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
-        litellm_path,
-    )
-
-    pending = PendingChanges(
-        registry=registry,
-        state=state,
-        registry_path=registry_path,
-        state_path=state_path,
-        providers={"ollama": MagicMock()},
-        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
-        litellm_path=litellm_path,
-    )
-    pending.apply()
-
-    # The unexpose is queued even though exposed=False.
-    assert bridge_calls == [("unexpose", ["ollama/a"])]
-    assert pending.failures == []
-    assert state.get("ollama/a").ready is False

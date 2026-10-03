@@ -1,7 +1,9 @@
 """modelman.toml — modelman's per-machine mutable state overlay.
 
 Owner: modelman (the only writer). wt reads this file read-only — the
-`exposed` and `ready` flags, to filter its model picker. A `[litellm]`
+`ready` flag, to filter its model picker. The legacy per-model exposure
+keys are read-ignored and dropped on the next save (#179: what is
+configured in registry.toml is what gets routed). A `[litellm]`
 table here is only a legacy read-only fallback wt copies once (wt owns the
 routing state); modelman round-trips it verbatim and never edits it. wt does NOT read the per-model `running` flag: running
 state comes from wt's own live probes of the providers (see
@@ -56,7 +58,7 @@ def stamp_price_refresh_today() -> None:
     gate on ``RefreshResult.updated > 0`` first: a refresh that updated
     nothing is not a success worth gating on (see app.py), and stamping one
     would let ``should_run_price_refresh`` suppress a same-day retry —
-    including the retry that would price a model exposed after the stamp.
+    including the retry that would price a model added after the stamp.
     """
     with locked_state() as fresh:
         set_price_refresh_last_run(fresh, date.today().isoformat())
@@ -81,7 +83,6 @@ class ModelState:
     ready: bool = False
     disk_path: str | None = None
     size_bytes: int | None = None
-    exposed: bool = False  # was litellm_exposed
     running: bool = False
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -124,7 +125,6 @@ def load_state(path: Path | None = None) -> StateStore:
             ready=entry.get("ready", entry.get("downloaded", False)),
             disk_path=entry.get("disk_path"),
             size_bytes=entry.get("size_bytes"),
-            exposed=entry.get("exposed", entry.get("litellm_exposed", False)),
             running=entry.get("running", False),
             extra=unknown_keys(
                 entry,
@@ -133,6 +133,8 @@ def load_state(path: Path | None = None) -> StateStore:
                     "downloaded",
                     "disk_path",
                     "size_bytes",
+                    # Legacy exposure keys (#179): listed so they are
+                    # dropped, not preserved as unknown extras.
                     "exposed",
                     "litellm_exposed",
                     "running",
@@ -165,7 +167,6 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
                     "ready": s.ready,
                     "disk_path": s.disk_path,
                     "size_bytes": s.size_bytes,
-                    "exposed": s.exposed,
                     "running": s.running,
                 }
             )

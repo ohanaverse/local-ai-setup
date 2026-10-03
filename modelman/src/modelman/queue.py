@@ -15,14 +15,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .litellm import apply_expose_queue
 from .providers._progress import DownloadCancelled, human_bytes
 from .providers.registry import ProviderRegistry
 from .registry import (
     FamilyEntry,
     ModelEntry,
     find_shared_artifact_owner,
-    is_model_local,
     save_registry,
 )
 from .state import locked_state
@@ -151,7 +149,6 @@ class QueuedOps:
     ready: dict[str, bool] = field(default_factory=dict)
     deletes: dict[str, VariantSpec] = field(default_factory=dict)
     moves: dict[str, str] = field(default_factory=dict)
-    exposes: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -169,14 +166,11 @@ class PendingChanges:
     # removes the on-disk artifact recorded in state.disk_path.
     ready: list[tuple[str, VariantSpec, bool]] = field(default_factory=list)
     deletes: list[tuple[str, VariantSpec]] = field(default_factory=list)
-    # (model_id, target_exposed) pairs applied after downloads, before save.
-    exposes: list[tuple[str, bool]] = field(default_factory=list)
     # (model_id, new_family) pairs. Pure registry metadata: applies right
     # after deletes (a same-apply delete wins; its queued move is moot),
     # needs no provider interaction. A move-only queue still triggers the
     # final save.
     moves: list[tuple[str, str]] = field(default_factory=list)
-    litellm_path: Path = field(default_factory=Path)
     failures: list[str] = field(default_factory=list)
     cancelled: bool = False
     # Populated during apply(); used by _persist() (called at the normal
@@ -349,8 +343,8 @@ class PendingChanges:
         on_event: EventFn | None = None,
         on_progress: EventFn | None = None,
     ) -> None:
-        """Apply deletes first, then moves, then downloads, then exposes,
-        then save registry+state once.
+        """Apply deletes first, then moves, then downloads, then save
+        registry+state once.
 
         On failure of any single step, capture it in self.failures and continue
         with the remaining steps. If `on_event` is provided, it is called for
@@ -374,7 +368,7 @@ class PendingChanges:
                 return True
             return False
 
-        if not self.ready and not self.deletes and not self.exposes and not self.moves:
+        if not self.ready and not self.deletes and not self.moves:
             # Empty-queue fast path. Today's only call site is main.py's
             # run_queued_ops, which always has at least one queued item
             # (the TUI only returns a QueuedOps via Apply when the queue is
@@ -420,25 +414,6 @@ class PendingChanges:
                     recorded_families.add(model_entry.family)
                 # Remove from in-memory registry.
                 self.registry.models = [m for m in self.registry.models if m.id != model_id]
-                # If the model was exposed through LiteLLM, queue an unexpose
-                # so config.yaml doesn't keep routing to a model whose file
-                # is gone.
-                #
-                # For LOCAL models, the `exposed` flag in modelman.toml is
-                # stale (wt owns the actual routes in config.yaml since #140-
-                # #144). A local model started via `wt start` is genuinely
-                # routed through LiteLLM even if modelman.toml's flag is
-                # false. So for local models we always queue the unexpose
-                # — `wt litellm unexpose` is a safe no-op if the model was
-                # never routed. For non-local models the persisted flag is
-                # still authoritative.
-                was_exposed = self.state.get(model_id).exposed
-                is_local = model_entry is not None and is_model_local(
-                    model_entry.location, model_entry.provider_id, self.registry
-                )
-                self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
-                if was_exposed or is_local:
-                    self.exposes.append((model_id, False))
                 # Clear any state entry so modelman.toml doesn't carry a
                 # stale downloaded=True after the user removed the file.
                 self.state.models.pop(model_id, None)
@@ -581,11 +556,6 @@ class PendingChanges:
                         reason = _reason(exc)
                         self.failures.append(f"download {model_id}: {exc}")
                         emit(f"download:fail|{model_id}|{label}|{reason}")
-                        # A route to a model that was never fetched would
-                        # only fail every request: drop its queued expose.
-                        if (model_id, True) in self.exposes:
-                            self.exposes.remove((model_id, True))
-                            emit(f"expose:fail|{model_id}|{model_id}|download failed")
                         continue
                     except BaseException:
                         # KeyboardInterrupt (Ctrl+C during the post-exit
@@ -616,7 +586,7 @@ class PendingChanges:
                     emit(f"delete:start|{model_id}|{label}")
                     # Mirror the deletes loop's guard: a stale-ready model whose
                     # artifact is already gone must clear cleanly, not fail and
-                    # strand state.ready=True with the unexpose cascade skipped.
+                    # strand state.ready=True.
                     if self._remove_artifact_if_present(
                         model_id, variant, label, provider, "clear", emit
                     ):
@@ -627,71 +597,9 @@ class PendingChanges:
                         ready=False,
                         done_tag=f"delete:done|{model_id}|{label}",
                     )
-                # Cascade: turning ready off (either branch) drops the model's
-                # exposure — mirrors the full-delete step's was_exposed rule.
-                # Flag-only providers have no LiteLLM config row, so just flip
-                # the state flag directly instead of routing through the
-                # config writer.
-                #
-                # For LOCAL models, the `exposed` flag in modelman.toml is
-                # stale (wt owns the routes); always queue the unexpose.
-                if not target and (
-                    self.state.get(model_id).exposed
-                    or is_model_local(variant.get("location"), provider_id, self.registry)
-                ):
-                    self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
-                    if provider is None:
-                        self.state.set(model_id, replace(self.state.get(model_id), exposed=False))
-                        self._touched_model_ids.add(model_id)
-                    else:
-                        self.exposes.append((model_id, False))
 
             if aborted():
                 return
-
-            if self.exposes:
-                # One `wt litellm` call per direction for the whole queue:
-                # per-model expose_model calls would spawn wt (and bounce the
-                # proxy) once per model.
-                for model_id, exposed in self.exposes:
-                    verb = "expose" if exposed else "unexpose"
-                    emit(f"{verb}:start|{model_id}|{model_id}")
-                try:
-                    # wt owns the LiteLLM route write and reads registry.toml
-                    # from DISK, so anything this apply() added or edited must
-                    # be persisted BEFORE the bridge call — _persist() at the
-                    # end of apply() would be too late and wt would answer
-                    # "model not found in registry". _persist() still saves
-                    # again afterwards (a no-op for the registry, and it also
-                    # merges the state rows).
-                    save_registry(self.registry, self.registry_path)
-                    outcomes, warnings = apply_expose_queue(
-                        self.registry, self.state, self.exposes, self.litellm_path
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    # Registry-save failure (wt would act on a stale registry)
-                    # or a config-level failure (wt missing, unreadable
-                    # config.yaml): nothing in the queue applied.
-                    reason = _reason(exc)
-                    self.failures.append(f"expose batch: {exc}")
-                    for model_id, exposed in self.exposes:
-                        verb = "expose" if exposed else "unexpose"
-                        emit(f"{verb}:fail|{model_id}|{model_id}|{reason}")
-                else:
-                    for model_id, exposed, error in outcomes:
-                        verb = "expose" if exposed else "unexpose"
-                        if error is None:
-                            emit(f"{verb}:done|{model_id}|{model_id}")
-                        else:
-                            self.failures.append(f"{verb} {model_id}: {error}")
-                            emit(f"{verb}:fail|{model_id}|{model_id}|{error}")
-                    # Proxy-restart notices (command unset or failed) are
-                    # non-fatal; surface them through the event channel so the
-                    # TUI renders them on the UI thread rather than a worker
-                    # thread writing to stderr.
-                    for warning in warnings:
-                        emit(f"expose:warning|{_sanitize(warning)}")
-                    self._touched_model_ids.update(mid for mid, _ in self.exposes)
         except BaseException:
             # A real exception (including a genuine Ctrl+C KeyboardInterrupt
             # raised inside a blocking provider call, see the download

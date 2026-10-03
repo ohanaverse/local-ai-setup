@@ -51,3 +51,23 @@ def test_run_records_latest_even_when_restore_failed(tmp_path):
         assert "llamacpp down" in result.output
         assert mock_save.called
         assert state.extra["benchmarks"]["last_run_dir"] == str(run_dir)
+
+
+def test_run_without_model_or_family_exits_2():
+    """#179: no exposed-models default — `benchmark run` with neither --model
+    nor --family is a usage error (exit 2, the runner's message), and nothing
+    is isolated."""
+    from modelman.registry import Registry
+    from modelman.state import StateStore
+
+    def _no_isolate(*_args, **_kwargs):
+        raise AssertionError("nothing may be isolated without a selection")
+
+    with (
+        patch("modelman.benchmark.cli.load_registry", return_value=Registry()),
+        patch("modelman.benchmark.cli.load_state", return_value=StateStore()),
+        patch("modelman.benchmark.runner.isolate_provider", _no_isolate),
+    ):
+        result = CliRunner().invoke(app, ["benchmark", "run"])
+    assert result.exit_code == 2, result.output
+    assert "error: name models (--model) or pass --family" in result.output

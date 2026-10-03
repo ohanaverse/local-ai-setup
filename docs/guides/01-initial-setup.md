@@ -62,13 +62,13 @@ echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY —
 # 3. Pull a model — example id; pick one from your registry (an already-pulled model returns "success" instantly)
 ollama pull qwen3.8:27b-mlx
 
-# 4. modelman setup + expose a model to LiteLLM
+# 4. modelman setup + start a model (which routes it through LiteLLM)
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
-# uv run modelman        # TUI (interactive) — skip in one-shot mode; 'expose' below is non-interactive
-uv run modelman expose ollama/qwen3.8:27b-mlx   # example id — use the one you pulled; non-interactive expose (delegates to `wt litellm expose`, which writes the model_list entry and restarts the proxy; needs `wt` on PATH)
+# uv run modelman        # TUI (interactive) — skip in one-shot mode; 'start' below is non-interactive
+uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled. There is no expose step: a model is routed while it runs, and every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH)
 
-# 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the expose — this is only needed if that restart was skipped or failed)
+# 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the sync — this is only needed if that restart was skipped or failed)
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
 
 # 6. Smoke curls
@@ -538,8 +538,8 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
   ```bash
   # from: ~/github/ohanaverse/local-ai-setup/modelman
   uv run modelman          # bare = TUI
-  uv run modelman expose <model-id>
-  uv run modelman sync
+  uv run modelman sync     # reconcile ready/running state, then one route sync
+  uv run modelman start <model-id>   # ...and a start routes it while it runs
   ```
 
 - **`echo "model_list: []"` beats `touch`** for the initial LiteLLM config — an empty file fails to start.
@@ -556,4 +556,4 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
 - oMLX backend reference: [`../reference/oMLX%20Download%20and%20Run.md`](../reference/oMLX%20Download%20and%20Run.md)
 - Hugging Face downloads (`hf download`, cache layout): [`../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md`](../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md)
-- Next in this set — register/expose models via modelman: [02-providers-and-models](02-providers-and-models.md)
+- Next in this set — register models via modelman: [02-providers-and-models](02-providers-and-models.md)
