@@ -52,9 +52,14 @@ const (
 
 // Entry is one local model: registered (Registered) or discovered.
 type Entry struct {
-	ProviderID string // registry provider id (omlx-6bit rows keep theirs); the family id for discovered entries
+	ProviderID string // registry provider id (omlx-6bit rows keep theirs); for discovered entries the family's registry provider id (familyProviderID), so the id resolves in the registry
 	Artifact   string // pulled/on-disk name in the provider's spelling; "" for a registered model not found on disk
-	ModelID    string // registry id when registered, else config.DiscoveredModelID(ProviderID, Artifact)
+	// ModelID: the registry id when registered, else the FAMILY-prefixed
+	// config.DiscoveredModelID(family, Artifact) — the id `wt litellm sync`,
+	// the lifecycle route hook, -M, usage and the picker all key on, so it
+	// must not depend on which provider row of the family the registry
+	// happens to define (litellm.DiscoveredModel derives it the same way).
+	ModelID    string
 	ModelName  string // provider-side name: the registry model_name when registered, else the artifact name
 	Registered bool
 	Running    bool // serving right now (live probe only)
@@ -91,21 +96,41 @@ func Inventory(cfg *config.Config) Snapshot {
 	return inventory(cfg, &http.Client{Timeout: probeTimeout})
 }
 
+// familyIDs is the ONE table of probe families and the registry provider ids
+// that belong to each; familyOf, Families and familyProviderIDs are all
+// derived from it, so a new family (or a second provider id sharing one, as
+// omlx-6bit shares omlx's single server) is added in exactly one place and can
+// never be visible to one accessor and not another.
+var familyIDs = map[string][]string{
+	"mlx_lm_server": {"mlx_lm_server"},
+	"mtplx":         {"mtplx"},
+	"ollama":        {"ollama"},
+	"omlx":          {"omlx", "omlx-6bit"},
+}
+
 // familyOf maps a registry provider id to its probe family; "" when wt has no
 // probe for it (e.g. retired llamacpp). omlx and omlx-6bit are ONE physical
 // server, so they share the "omlx" family.
 func familyOf(providerID string) string {
-	switch providerID {
-	case "ollama", "omlx", "mtplx", "mlx_lm_server":
-		return providerID
-	case "omlx-6bit":
-		return "omlx"
+	for family, ids := range familyIDs {
+		for _, id := range ids {
+			if id == providerID {
+				return family
+			}
+		}
 	}
 	return ""
 }
 
 // Families lists every probe family wt knows, sorted.
-func Families() []string { return []string{"mlx_lm_server", "mtplx", "ollama", "omlx"} }
+func Families() []string {
+	out := make([]string, 0, len(familyIDs))
+	for f := range familyIDs {
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // Family maps a registry provider id to its probe family ("omlx-6bit" shares
 // "omlx"); "" when wt has no probe for it.
@@ -193,11 +218,21 @@ func familyOrigin(cfg *config.Config, family string) string {
 }
 
 // familyProviderIDs lists the registry provider ids that belong to a family.
-func familyProviderIDs(family string) []string {
-	if family == "omlx" {
-		return []string{"omlx", "omlx-6bit"}
+func familyProviderIDs(family string) []string { return familyIDs[family] }
+
+// familyProviderID is the provider id a family's DISCOVERED entries are named
+// after: the first provider row of the family the registry actually defines
+// ("omlx-6bit" on a registry with no plain "omlx" row), falling back to the
+// family name itself. A discovered entry's provider id must resolve in the
+// registry — config.ResolveRoute and litellm.prepareModel both reject an
+// unknown provider — and the family name is only a provider id by convention.
+func familyProviderID(cfg *config.Config, family string) string {
+	for _, id := range familyProviderIDs(family) {
+		if cfg.ProviderByID(id) != nil {
+			return id
+		}
 	}
-	return []string{family}
+	return family
 }
 
 // FamilyOrigin is the probe origin for a family and whether it came from the
@@ -457,7 +492,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				continue
 			}
 			snap.Entries = append(snap.Entries, Entry{
-				ProviderID:    f,
+				ProviderID:    familyProviderID(cfg, f),
 				Artifact:      a,
 				ModelID:       config.DiscoveredModelID(f, a),
 				ModelName:     a,
