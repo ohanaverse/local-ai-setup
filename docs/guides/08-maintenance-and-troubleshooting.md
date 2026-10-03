@@ -118,7 +118,7 @@ ollama/qwen3.8:27b-mlx
 openrouter/qwen/qwen3.8-27b
 ```
 
-Local-model routes (ollama/omlx/mtplx/mlx_lm_server) appear only while that model runs — wt writes the route on start and removes it on stop. Present in this list but not routeable? Skip to step 5 (backend down). Absent? Continue.
+Local-model routes appear only while that model runs — wt writes the route on start and, for omlx/mtplx/mlx_lm_server, removes it on stop. **ollama is the exception**: a pulled ollama model stays routed whether or not it is loaded (stopping it only unloads it; ollama loads it again on the next request). Present in this list but not routeable? Skip to step 5 (backend down). Absent? Continue.
 
 **Step 2 — does `model_list` in config.yaml carry it?** config.yaml is what the proxy routes from:
 
@@ -153,26 +153,28 @@ size_bytes = 19327352832
 running = true
 ```
 
-No block at all means modelman has no state for that id yet (`modelman sync` reconciles it). Note there is **no `exposed` field any more** (#179): routing is not recorded in `modelman.toml` at all, so this file can never tell you whether a model is on `:4000` — `config.yaml` is the only record, and `wt litellm list` reads it back. What the block *does* tell you is whether the model can be started, which is what the route depends on:
+No block at all means modelman has no state for that id yet (`modelman sync` reconciles it). Note that routing is not recorded in `modelman.toml` at all (the pre-#179 `exposed` field is gone), so this file can never tell you whether a model is on `:4000` — `config.yaml` is the only record, and `wt litellm list` reads it back. What the block *does* tell you is whether the model can be started, which is what the route depends on:
 
-- **Local model** (ollama/omlx/mtplx/mlx_lm_server): its route exists only while it runs, so a `ready = true` model with no route is simply a stopped model. Start it — the route appears: `uv run modelman start <model-id>` (needs the `wt` binary on PATH; for ollama the daemon must be answering, and `start` refuses rather than guess otherwise). A model *missing from wt's picker* is a different question: run `wt -A <agent>` and read the STATUS/RUNNING columns — wt probes ollama/omlx/mtplx live, and shows a non-running local model as a start row. `exposed`/`ready` play no role there, and modelman.toml's `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section).
-- **Cloud model** (openrouter, or `location = "cloud"`): it has no `ready` gate — wt routes a cloud model whenever `registry.toml` configures it, so a missing route means wt's last sync refused it. `wt litellm expose <model-id> --dry-run` names the reason (usually a provider with no LiteLLM mapping — `provider '<id>' has no LiteLLM mapping`).
+- **Local model** (omlx/mtplx/mlx_lm_server): its route exists only while it runs, so a `ready = true` model with no route is simply a stopped model. Start it — the route appears: `uv run modelman start <model-id>` (needs the `wt` binary on PATH; for ollama the daemon must be answering, and `start` refuses rather than guess otherwise). A model *missing from wt's picker* is a different question: run `wt -A <agent>` and read the STATUS/RUNNING columns — wt probes ollama/omlx/mtplx live, and shows a non-running local model as a start row. `ready` plays no role there, and modelman.toml's `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section).
+- **Ollama model**: routed while it is *pulled* — `ollama list` must show it (and the daemon must be answering, or `wt litellm sync` leaves ollama's routes alone with a warning; a daemon that refuses the connection gets its local routes removed). A pulled ollama model with no route usually means no sync has run since the pull: run `wt litellm sync`.
+- **Cloud model** (openrouter, or `location = "cloud"`): it has no `ready` gate — wt routes a cloud model whenever `registry.toml` configures it, so a missing route means no sync has run since it was added (a hand-edit of `registry.toml`) or the last sync could not build its row. `wt litellm sync --dry-run` tells the two apart: `<model-id>: would route` for the first, a per-id error for the second (`provider "<id>" has no LiteLLM mapping`, or a `secret_ref` that `resolved empty`).
 
-**Step 4 — give it a route.** There is no `modelman expose` command any more (#179); the two ways to put a model on the proxy are a start and an explicit expose:
+**Step 4 — give it a route.** There is no per-model routing command (`modelman expose` and `wt litellm expose` were removed in #179). A route comes from the registry plus the model's live state, so the two moves are a start and a sync:
 
 ```bash
 # from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman start <model-id>        # local model: load it, and its route follows (preferred)
-wt litellm expose <model-id>            # any model: write the row without loading it
+uv run modelman start <model-id>        # local model: load it; the sync every start ends with writes its route
+wt litellm sync --dry-run               # any model: what the next sync would route, and any per-id error
+wt litellm sync                         # write it (restarts the proxy only if config.yaml changed)
 ```
 
 ```text
 Started <model-id>.
 ```
 
-`wt litellm expose` writes the `model_list` row and restarts the proxy; it checks readiness itself (`--dry-run` validates only, `--skip-ready-gate` bypasses for a caller that already checked). Note that a local model route added by `expose` is dropped again by the next `wt litellm sync` while the model isn't running — so for a local model, starting it is the durable fix.
+A model that is not in `registry.toml` cannot be routed by wt at all — add it first (guide 02). For a local model, starting it is the durable fix: the next sync removes a stopped omlx/mtplx/mlx_lm_server model's route again.
 
-Bad ids refuse instead — an `error: …` line on stderr, exit 1 (live-verified error paths: guide 02 §7, guide 04 §2) — meaning the id from Steps 1–3 never existed; fix the id, not the config.
+Bad ids refuse instead — an `error: …` line on stderr, exit 1 (error paths: guide 04 §2) — meaning the id from Steps 1–3 never existed; fix the id, not the config.
 
 **Step 5 — backend port actually up?** The `api_base` in the model's row points at a backend; probe the one that owns your model (both ran live, 2026-08-29):
 
@@ -205,7 +207,7 @@ Example (illustrative — an ollama-served row):
 
 OpenAI-compatible local backends (omlx, omlx-6bit, mtplx, mlx_lm_server) must have `api_base` ending in `/v1`, because LiteLLM's `openai/` provider appends only `/chat/completions`. Without it, oMLX answers `404 {'detail': 'Not Found'}` even though the model is loaded and `wt start`'s warmup passed. wt has written `<origin>/v1` since #168 (PR #173); a row written by an older wt is repaired by `wt litellm sync`.
 
-(omlx rows use `http://localhost:8000`, OpenRouter rows no `api_base` — key from plist env instead.)
+(OpenRouter rows use `api_base: https://openrouter.ai/api/v1` and carry the key resolved from the provider's `secret_ref` — guide 04 §1.)
 
 **Step 7 — config.yaml still valid YAML?** A hand-edit typo keeps the proxy in a crash loop (it re-reads only at start):
 
@@ -213,7 +215,7 @@ OpenAI-compatible local backends (omlx, omlx-6bit, mtplx, mlx_lm_server) must ha
 python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
-Output is one line, `model_list entries: <N>`. A traceback instead means a parse error → fix by hand or rebuild the row via `wt litellm expose` (wt does atomic, comment-preserving writes, guide 04 §1). `<N>` is however many rows `config.yaml` carries — compare it with the number of ids Step 1's authenticated `/v1/models` call returns (pipe that command into `wc -l`); after a restart (Step 8) the two should match.
+Output is one line, `model_list entries: <N>`. A traceback instead means a parse error → fix it by hand (wt refuses to write a file it cannot parse, so `wt litellm sync` cannot repair it); once it parses, `wt litellm sync` rebuilds any wt row you deleted (wt does atomic, comment-preserving writes, guide 04 §1). `<N>` is however many rows `config.yaml` carries — compare it with the number of ids Step 1's authenticated `/v1/models` call returns (pipe that command into `wc -l`); after a restart (Step 8) the two should match.
 
 **Step 8 — restart, then re-check Step 1.** The proxy reads config.yaml only at start:
 
@@ -227,13 +229,13 @@ kickstart OK
 
 Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; the port refused connections and answered `401` again after **7 s**. Guides 01/04 measured 9–15 s on earlier runs — plan for a ~10–20 s dead window and confirm with the Step 1 curl rather than assuming. Everything else uses the mechanics in the §1 table.
 
-**Step 9 — local route dropped by `wt litellm sync`? Start the model; `modelman sync` does not re-add it.** (Observed 2026-09-30, rebuild session.) `wt litellm sync` skips the ready gate entirely and routes exactly the local models that are *running* at that moment — every other local model loses its route (sync prints a `<model-id>: unexposed` line for each). "Running" is a live probe: for Ollama, the model must appear in `/api/ps`, i.e. be loaded (`wt/internal/litellm/service.go` `Sync`, `wt/internal/localmodels/sources.go`). Downloading the artifact + `modelman sync` flips `ready = true` in `modelman.toml` but doesn't touch `config.yaml`. The durable fix is to start the model:
+**Step 9 — local route dropped by `wt litellm sync`? Start the model; `modelman sync` does not re-add it.** (Observed 2026-09-30, rebuild session; updated for #179.) `wt litellm sync` skips the ready gate entirely and routes exactly the local models that are *running* at that moment — plus, for ollama, every registry model that is *pulled* — and every other local model wt owns a row for loses it (sync prints a `<model-id>: unrouted` line for each; preview with `wt litellm sync --dry-run`). "Running" is a live probe (`wt/internal/localmodels/sources.go`); "pulled" is ollama's `/api/tags`, with the daemon fully answering (`wt/cmd/wt/litellm.go` `desiredLocalIDs`). Downloading an omlx/mtplx artifact + `modelman sync` flips `ready = true` in `modelman.toml` but does not route it. The durable fix is to start the model:
 
 ```bash
 wt start <model-id>   # lifecycle route hook adds the route on the start transition
 ```
 
-(`wt litellm expose <model-id>` also adds the route without loading the model, but the next `wt litellm sync` removes it again while the model isn't loaded. Nothing in `modelman.toml` records routing, so there is no flag that could disagree with sync.)
+(Nothing in `modelman.toml` records routing, so there is no flag that could disagree with sync.)
 
 ### 3. Log triage
 
@@ -465,6 +467,6 @@ Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth
 ## Going deeper
 
 - Full install, plist templates, and the secret-redaction rules (plist `EnvironmentVariables`, config.yaml `api_key`s): [01-initial-setup](01-initial-setup.md)
-- config.yaml anatomy, `wt litellm` exposure mechanics, and the same kickstart with measured recovery: [04-litellm-config](04-litellm-config.md)
+- config.yaml anatomy, how `wt litellm sync` decides the routes, and the same kickstart with measured recovery: [04-litellm-config](04-litellm-config.md)
 - Benchmark isolation/restore contracts behind §5, and what a clean restore guarantees: [05-benchmarks](05-benchmarks.md)
 - The actual source of truth for everything §1 asserts (start-at-load, keep-alive, log paths, env keys): `~/Library/LaunchAgents/` — read the plist before guessing about any service

@@ -5,7 +5,7 @@
 Two independent features, both built on the same `mlx_lm.*` tooling bundled inside the omlx Homebrew keg:
 
 - **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; you register the output directory as a `local_path` on the `omlx` provider by hand-editing `registry.toml` (the TUI's omlx dialog has no local-path field — see Step 2). modelman deliberately never runs these tools itself — it's register-only.
-- **`mlx_lm_server` speculative decoding** — a target model + a same-tokenizer draft model served together via `mlx_lm.server --draft-model`, isolated and exposed through LiteLLM like any other local provider, with **zero `wt` code changes** (`wt`'s Go decoder already ignores fields it doesn't know about).
+- **`mlx_lm_server` speculative decoding** — a target model + a same-tokenizer draft model served together via `mlx_lm.server --draft-model`, isolated and routed through LiteLLM like any other local provider, with **zero `wt` code changes** (`wt`'s Go decoder already ignores fields it doesn't know about).
 
 ## Prerequisites
 
@@ -60,7 +60,7 @@ location = "local"
 local_path = "/tmp/some-model-4bit"   # absolute path to Step 1's output directory
 ```
 
-Then `modelman sync` (or just reopen the TUI) to pick up the new entry, and `modelman start <id>` to load it — there is no expose step: a local model is routed while it runs, and the start's own `wt litellm sync` writes the route. From there it's usable through `wt` and `modelman benchmark` exactly like any other omlx model.
+Then `modelman sync` (or just reopen the TUI) to pick up the new entry, and `modelman start <id>` to load it — there is no separate routing step: a local model is routed while it runs, and the start's own `wt litellm sync` writes the route. From there it's usable through `wt` and `modelman benchmark` exactly like any other omlx model.
 
 ### 3. Register a target+draft pairing (feature 2)
 

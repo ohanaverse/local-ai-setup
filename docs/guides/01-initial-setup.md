@@ -66,7 +66,7 @@ ollama pull qwen3.8:27b-mlx
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 # uv run modelman        # TUI (interactive) — skip in one-shot mode; 'start' below is non-interactive
-uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled. There is no expose step: a model is routed while it runs, and every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH)
+uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it must be in registry.toml). No routing step: every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH); a pulled ollama model stays routed after a stop
 
 # 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the sync — this is only needed if that restart was skipped or failed)
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy

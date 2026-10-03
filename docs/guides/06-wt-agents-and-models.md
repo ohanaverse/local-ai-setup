@@ -65,7 +65,7 @@ Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the a
   tag   : code
   ```
 
-  The tag slot shows the **first** tag of the effective set — under `-T code,design` it reads `tag   : code` while the list holds the union of both tags — and falls back to `default_tag = "code"` (see §6) when no `-T` was given; `-T` narrows the list itself to models carrying any of its tags. Models are one table row each, with the header rendered as the list title: `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D  30D  SURVEY`. Native models (the agent's own subscription model) always sort first; the remaining rows are sorted cost-ascending (output price, then input price; local and subscription-only models count as $0, and a model with no price data sorts last within that group), then by 7-day usage ascending, then by id; non-running local models form a second group, sorted by id. STATUS is `ok`, `absent` (the provider answered and does not have the model), `unknown` (the probe could not tell — a failed local probe, a model it has no entry for, or a non-running `mlx_lm_server` row), or `new` (discovered, not in the registry); RUNNING is `run` while a model is serving. Note that the list is **not** filtered by `default_tag` — only an explicit `-T`/`-F` narrows it, and only those hide discovered (unregistered) rows. After `/`, typing a family name (or any part of a model ID) narrows the list. The cursor starts on the rotation's next model (see §5); when the agent has no rotation state yet — a first launch, or a state file naming a model no longer in the list — it falls to the first row, which under native-first is the **native** model. So where a native model is configured, a reflexive `enter` picks the agent's own subscription model rather than the cheapest cloud model; use `-M` to pin a choice explicitly. The same first-row default applies to the standalone pickers `wt smoke` and `wt start` use when no model id is given.
+  The tag slot shows the **first** tag of the effective set — under `-T code,design` it reads `tag   : code` while the list holds the union of both tags — and falls back to `default_tag = "code"` (see §6) when no `-T` was given; `-T` narrows the list itself to models carrying any of its tags. Models are one table row each, with the header rendered as the list title: `FAMILY  MODEL  LOC  STATUS  RUNNING  COST  1D  7D  30D  SURVEY`. Native models (the agent's own subscription model) always sort first; the remaining rows are sorted cost-ascending (output price, then input price; local and subscription-only models count as $0, and a model with no price data sorts last within that group), then by 7-day usage ascending, then by id; non-running local models form a second group, sorted by id. STATUS is `ok`, `absent` (the provider answered and does not have the model), `unknown` (the probe could not tell — a failed local probe, a model it has no entry for, or a non-running `mlx_lm_server` row), or `new` (discovered, not in the registry); RUNNING is `run` while a model is serving. Note that the list is **not** filtered by `default_tag` — only an explicit `-T`/`-F` narrows it, and only those hide discovered (unregistered) rows. After `/`, typing a family name (or any part of a model ID) narrows the list. The cursor starts on the rotation's next model (see §5); when the agent has no rotation state yet — a first launch, or a state file naming a model no longer in the list — it falls to the first row, which under native-first is the **native** model. So where a native model is configured, a reflexive `enter` picks the agent's own subscription model rather than the cheapest cloud model; use `-M` to pin a choice explicitly. The same first-row default applies to the standalone pickers `wt smoke` and `wt start` use when no model id is given.
 - **On the model screen:** `j`/`k`/arrows navigate (with wrap-around), `enter` launches a cloud/already-running row and **starts** a non-running local one (below), `q` quits, `esc` pops back. Footer reads `[↑/↓] navigate   [enter] launch or start   [q] quit`.
 - **Starting a non-running local model:** `enter` runs it through `internal/lifecycle` instead of launching straight away. A progress screen names the stage — `stopping the running model` → `starting the server` → `waiting for the model to load` → `warming the model` — with elapsed time; `esc`, `q` or `ctrl+c` cancels on the first press and the engine tears down whatever it spawned. Once that teardown is draining, `esc`/`q` are ignored (leaving mid-teardown can orphan a half-started mtplx server, which holds its port) and only `ctrl+c` quits wt. If another model is already serving a single-model provider, the picker asks `Replace and start` / `Cancel` — Cancel is the default — and confirming re-issues the start with replacement allowed. On success wt goes on to launch the agent (resume prompt; the ollama availability check is skipped, since the model just loaded); on failure the picker returns with the engine's message and a freshly probed table, so a row the failed attempt changed is not shown stale.
 - **Rows that cannot start** say why instead of starting: `<id> is not on disk — pull or download it first` (starting it would just wait out the warmup timeout), a local provider wt has no lifecycle backend for (`local model "<id>" is not running — start it with modelman start <id>`), or a discovered row whose route goes through LiteLLM (`not in LiteLLM`).
@@ -109,20 +109,22 @@ wt litellm set --url http://localhost:4000 --api-key sk-…   # proxy URL/key wt
 This is a routing-policy-only toggle: it writes `enabled`/`url`/`api_key`
 into `[litellm]` and never starts, stops, or restarts the proxy (that stays
 the LaunchAgent job — guide 04 §5). Route management is separate and also
-wt-owned: `wt litellm expose|unexpose|sync|list` write `config.yaml`, and
+wt-owned: `wt litellm sync` writes `config.yaml` (every configured cloud
+model, plus the running local models — an ollama model while it is pulled;
+`--dry-run` previews it), `wt litellm list` reads it back, and
 `wt start`/`wt stop` add and remove local-model routes automatically (see
-[04-litellm-config](04-litellm-config.md) §6).
+[04-litellm-config](04-litellm-config.md) §2 and §6).
 
 Two mechanisms stack on top of the on/off switch:
 
-- **The EXPOSED column is a leftover display, not a filter.** wt renders `Y` in
-  it only for native models (`claude/native`, `copilot/native`); for everything
-  else it prints modelman's raw legacy `exposed` key, which modelman stopped
-  writing in #179 — so it reads blank for every model you have touched since.
-  **Nothing is hidden by it**: wt lists a model regardless of the column. What
-  actually decides whether a model is reachable through LiteLLM is its
-  `config.yaml` route — `wt litellm list` shows the set, and for a local model
-  `wt start` (or `wt litellm sync`) adds it.
+- **Every configured model is listed; the route is what makes it reachable.**
+  The picker has no routing column and hides nothing for want of a route
+  (#179): every native, cloud and local registry model the agent supports is
+  in the list (a row that cannot be used says why instead). What
+  decides whether a model is reachable through LiteLLM is its `config.yaml`
+  route — `wt litellm list` shows the set; a cloud model is routed by
+  `wt litellm sync` as soon as it is in the registry, and a local model by
+  `wt start` (or the sync after `modelman start`).
 - **Protocol forcing (can override `off`).** Agents declare wire protocols
   (claude: `anthropic`; codex: `openai-responses`; copilot/opencode/pi:
   `openai-chat`) and registry providers declare the protocols they serve
