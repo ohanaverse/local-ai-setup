@@ -105,7 +105,7 @@ Field provenance (from `wt/internal/litellm/policy.go` — the provider policy t
 | `model_name` | registry model id (`registry.toml` `id`, e.g. `ollama/qwen3.8:27b-mlx`) |
 | `litellm_params.model` | provider prefix + registry `model_name` — `ollama_chat/` (ollama), `openai/` (omlx, omlx-6bit, mtplx, mlx_lm_server), `openrouter/` |
 | `api_base` | provider `auth.base_url` — `:11434` ollama; the OpenAI-compatible local servers get `<origin>/v1` (e.g. `:8000/v1` omlx); `https://openrouter.ai/api/v1` |
-| `api_key` | ollama: omitted · omlx/mtplx/mlx_lm_server: literal `"not-needed"` · openrouter: the provider's `auth.secret_ref`, **resolved** (an env-var name or `os.environ/NAME`, an `exec:` helper, or a literal key) |
+| `api_key` | ollama: omitted · omlx/omlx-6bit/mtplx/mlx_lm_server: literal `"not-needed"` · openrouter: the provider's `auth.secret_ref`, **resolved** (an env-var name or `os.environ/NAME`, an `exec:` helper, or a literal key) |
 | `model_info` | per-token pricing derived from the registry's `[models.cost]` (explicit `0` when a price is absent), then the registry model's own `model_info` keys, then `wt_managed: true` — always last, so a registry `model_info` cannot disown a wt row |
 
 `general_settings` (block above) is the Postgres/Redis wiring: `database_url` points at the `litellm` database (trust auth, no password on the local socket — the plist additionally carries `DATABASE_URL` + `LITELLM_SALT_KEY` for the proxy process). There is **no** `master_key` in config.yaml on this machine — auth comes from the plist env `LITELLM_MASTER_KEY`.
@@ -161,7 +161,7 @@ A row that already matches is left alone, so a sync that changes nothing writes 
 - A desired row that cannot be built — most often a `secret_ref` that resolves empty (`secret_ref "…" for provider "openrouter" resolved empty (variable unset in this shell?)`), or an empty `model_name` — is reported per id on stderr and **its existing row is kept**; the rest of the sync still applies, and the command exits 1.
 - A `config.yaml` whose `model_list` is present but is not a list is refused before anything is planned or written — the real sync and `--dry-run` exit 1 with `LiteLLM config is invalid: model_list is not a list in …`, and the `wt start`/`wt stop` route updates skip the write with that error as a warning (the start or stop itself still succeeds). A file with no `model_list`, or a bare `model_list:` (null), is fine. A file that is not valid YAML is refused the same way (`wt litellm ...` exits 1 and leaves it untouched).
 
-**Preview first: `--dry-run`.** It prints the plan the real sync would carry out, plus the same probe warnings, and writes nothing. Two differences from a real run: it does not report the `litellm_settings`/bridge-param fixes a write would make, and it does not re-check removals against a fresh probe (the real sync re-verifies local removals under the lock, so a model that finished starting in between keeps its route — the dry run can only over-report changes to local routes, never under-report them). Example (illustrative — your ids will differ):
+**Preview first: `--dry-run`.** It prints the plan the real sync would carry out, plus the same probe warnings, and writes nothing. Two differences from a real run: it does not report the `litellm_settings`/bridge-param fixes a write would make, and it does not re-check removals against a fresh probe (the real sync re-verifies local removals under the lock, so a model that finished starting in between keeps its route and a `would unroute` line is not a commitment). Either way the plan is only as fresh as the probes it was built from, so a model that starts or stops between the two runs can still move the other way. Example (illustrative — your ids will differ):
 
 ```bash
 wt litellm sync --dry-run
@@ -229,10 +229,12 @@ cp /Users/keith/.config/litellm/config.yaml /Users/keith/.config/litellm/config.
 $EDITOR /Users/keith/.config/litellm/config.yaml
 python3 -c "import yaml; yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml')); print('YAML OK')"
 wt litellm sync --dry-run   # would the next sync adopt, rewrite or remove what you just wrote?
+launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"   # LiteLLM re-reads config.yaml only at start, and wt bounces it only when its own sync changed the file — so a row wt left alone needs this to take effect
 ```
 
 ```text
 YAML OK
+kickstart OK
 ```
 
 (Exit 0 with `YAML OK`. On a syntax error: a `yaml.YAMLError` traceback and exit 1; fix before restarting or the proxy dies on start — the plist's `StandardErrorPath` `~/.litellm.err.log` shows why. wt likewise refuses to write a config it cannot parse and leaves the file untouched; an unreadable config makes `wt litellm ...` exit 1 with an error. If the dry run lists your edited id as `would adopt` / `would unroute`, its `model_name` collides with a registry id — rename the row or change the registry instead.)
@@ -324,7 +326,7 @@ wt owns all LiteLLM management. Commands:
 
 | Command | What it does |
 |---|---|
-| `wt litellm sync [--json] [--dry-run]` | Reconcile `model_list` with the registry and the live providers (§2): route every registry cloud model and every running local model (an ollama model when pulled), adopt unmarked rows named like those ids, rewrite wt rows that drifted from the registry, remove rows wt owns that are no longer desired; hand-written rows are never touched. A local family whose probe did not fully succeed is left alone (with a warning), and so are models whose provider has no probe (retired llamacpp; no warning); a server that *refuses the connection* has its local routes removed. Restarts the proxy only when the file changed. `--dry-run` prints the plan and the probe warnings and writes nothing (it does not report `litellm_settings` fixes) |
+| `wt litellm sync [--json] [--dry-run]` | Reconcile `model_list` with the registry and the live providers (§2): route every registry cloud model and every running local model (an ollama model when pulled), adopt unmarked rows named like those ids, rewrite wt rows that drifted from the registry, remove rows wt owns that are no longer desired; a hand-written row (no marker, and a `model_name` that is not a registry id) is never removed or rewritten — it does still get the §1 bridge params. A local family whose probe did not fully succeed is left alone (with a warning), and so are models whose provider has no probe (retired llamacpp; no warning); a server that *refuses the connection* has its local routes removed. Restarts the proxy only when the file changed. `--dry-run` prints the plan and the probe warnings and writes nothing (it does not report `litellm_settings` fixes) |
 | `wt litellm list [--json]` | Routed ids currently in `config.yaml`, one per line; a hand-written row is printed as `<id><TAB>(hand-written)` — **the authoritative answer to "is this model routed?"** |
 | `wt litellm providers [--json]` | Providers with a LiteLLM mapping (and whether each is cloud) |
 | `wt litellm status [--json]` | Routing state: enabled, url, whether an api key is set (never printed) |
@@ -343,7 +345,7 @@ Exit code for `sync` (and `sync --dry-run`) is 0 when every desired row could be
 | `providers --json` | `{"providers":{"<id>":{"cloud":bool}}}` |
 | `status --json` | `{"enabled":bool,"url":"...","api_key_set":bool}` |
 
-**Automatic routes.** `wt start`, `wt stop`, the TUI start flow, `wt smoke` and the stop picker update routes after a successful start/stop (progress stage "updating LiteLLM routes"): the started model's row is added, with the marker (omlx, mtplx and mlx_lm_server serve one model per process, so their sibling routes are removed), and stopping a single-model provider's model removes that provider's routes — a failed replacement removes the old occupant's route too. **Stopping an ollama model only unloads it**: a pulled model is still served on request, so its route stays. LiteLLM problems only warn; a missing `config.yaml` is silent. Run `wt litellm sync` after starting or stopping a server outside wt.
+**Automatic routes.** `wt start`, `wt stop`, the TUI start flow, `wt smoke` and the stop picker update routes after a successful start/stop (progress stage "updating LiteLLM routes"): the started model's row is added, with the marker (omlx and mtplx serve one model per process, so their sibling routes are removed), and stopping a single-model provider's model removes that provider's routes — a failed replacement removes the old occupant's route too. wt has no lifecycle backend for `mlx_lm_server` at all (`wt/CLAUDE.md`, "Local-model resolution"), so that family's routes move only when `modelman` starts or stops a pairing and its sync runs. **Stopping an ollama model only unloads it**: a pulled model is still served on request, so its route stays. LiteLLM problems only warn; a missing `config.yaml` is silent. Run `wt litellm sync` after starting or stopping a server outside wt.
 
 **Routing state ownership.** The `[litellm]` table (`enabled`/`url`/`api_key`) lives in wt's `~/.config/agent-wt/config.toml` (0600 when a key is stored), copied once from modelman.toml's legacy `[litellm]` on first load. `modelman litellm status|on|off|set` pass through to these commands. config.toml writes are whole-file last-writer-wins: an open `wt config` editor session and `wt litellm on|off|set` overwrite each other (issue #143).
 

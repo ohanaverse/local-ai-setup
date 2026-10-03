@@ -232,7 +232,8 @@ Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; th
 **Step 9 — omlx/mtplx/mlx_lm_server route dropped by `wt litellm sync`? Start the model; `modelman sync` does not re-add it.** (Observed 2026-09-30, rebuild session; updated for #179.) `wt litellm sync` skips the ready gate entirely and routes exactly the local models that are *running* at that moment — plus, for ollama, every registry model that is *pulled* — and every other local model wt owns a row for loses it (sync prints a `<model-id>: unrouted` line for each; preview with `wt litellm sync --dry-run`). "Running" is a live probe (`wt/internal/localmodels/sources.go`); "pulled" is ollama's `/api/tags`, with the daemon fully answering (`wt/cmd/wt/litellm.go` `desiredLocalIDs`). Downloading an omlx/mtplx artifact + `modelman sync` flips `ready = true` in `modelman.toml` but does not route it. The durable fix is to start the model:
 
 ```bash
-wt start <model-id>   # lifecycle route hook adds the route on the start transition
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
+uv run modelman start <model-id>   # any local provider; for omlx/mtplx `wt start <model-id>` does the same via its lifecycle route hook (wt has no backend for mlx_lm_server, so use modelman for that one)
 ```
 
 (Nothing in `modelman.toml` records routing, so there is no flag that could disagree with sync.)
