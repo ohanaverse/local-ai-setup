@@ -1259,21 +1259,22 @@ func buildTestConfigWithModels(models ...config.Model) *config.Config {
 }
 
 // TestEligibleModelsIncludesUnflagged asserts that cfg.EligibleModels returns
-// every model whose provider resolves — the litellm_exposed flag no longer
-// gates catalog membership (#179: configured means exposed). Before #179 an
-// unflagged model was hidden from the picker; a regression would again make
-// configured models invisible until someone manually exposed them.
+// every model whose provider resolves — no modelman.toml flag gates catalog
+// membership (#179: configured means exposed); a model modelman has not
+// marked ready is listed too. Before #179 an unflagged model was hidden from
+// the picker; a regression would again make configured models invisible
+// until someone flagged them.
 func TestEligibleModelsIncludesUnflagged(t *testing.T) {
 	cfg := buildTestConfigWithModels(
-		config.Model{ID: "ollama/exposed", ModelName: "exposed", ProviderID: "ollama", Tags: []string{"code"}},
-		config.Model{ID: "ollama/hidden", ModelName: "hidden", ProviderID: "ollama", Tags: []string{"code"}},
+		config.Model{ID: "ollama/flagged", ModelName: "flagged", ProviderID: "ollama", Tags: []string{"code"}},
+		config.Model{ID: "ollama/unflagged", ModelName: "unflagged", ProviderID: "ollama", Tags: []string{"code"}},
 	)
-	cfg.SetExposedForTest(map[string]config.ExposureEntry{"ollama/exposed": {Exposed: true, Ready: true}})
+	cfg.SetReadyForTest("ollama/flagged", true)
 	models, err := cfg.EligibleModels("claude", "code", "")
 	if err != nil {
 		t.Fatalf("EligibleModels: %v", err)
 	}
-	if len(models) != 2 || models[0].ID != "ollama/exposed" || models[1].ID != "ollama/hidden" {
+	if len(models) != 2 || models[0].ID != "ollama/flagged" || models[1].ID != "ollama/unflagged" {
 		t.Fatalf("expected both configured models, got %v", models)
 	}
 }

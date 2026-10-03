@@ -48,7 +48,7 @@ the live probe reports running) or a start row (an idle local model wt can
 start). Blocked rows — not on disk, no lifecycle backend, not in LiteLLM —
 are excluded; passing one by id names the row's reason (not on disk, no
 lifecycle backend) as `wt start` does, while other ineligible ids (for
-example an unexposed cloud model) get a generic "cannot be smoke-tested"
+example a model no agent supports) get a generic "cannot be smoke-tested"
 message
 (`smoke.Candidates` walks the same `catalog` rows a real launch consults).
 An idle pick is started first through the shared start driver, honouring

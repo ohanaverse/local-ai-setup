@@ -1161,10 +1161,10 @@ func TestLitellmDirectByDefault(t *testing.T) {
 }
 
 // TestInCatalogNativeAlways asserts that native models are always in the
-// catalog, even when the exposure set is empty. Native providers cannot route
+// catalog, even with no modelman state at all. Native providers cannot route
 // through LiteLLM, so hiding them would make the agent unusable.
 func TestInCatalogNativeAlways(t *testing.T) {
-	cfg := &Config{exposed: map[string]ExposureEntry{}}
+	cfg := &Config{modelman: map[string]ModelmanEntry{}}
 	m := Model{ID: "claude/native", ProviderID: "claude", Native: true}
 	if !cfg.InCatalog(m) {
 		t.Fatalf("native model must be in the catalog")
@@ -1172,14 +1172,14 @@ func TestInCatalogNativeAlways(t *testing.T) {
 }
 
 // TestInCatalogNonNativeAlwaysIncluded asserts that a non-native cloud model
-// is in the catalog whenever its provider resolves — the exposed/ready flags
-// no longer gate inclusion (#179: configured means exposed). Before #179 a
+// is in the catalog whenever its provider resolves — modelman's per-model
+// state no longer gates inclusion (#179: configured means exposed). Before #179 a
 // cloud model with no modelman.toml state row was hidden; a regression here
 // would again make wt advertise only models someone had manually exposed.
 func TestInCatalogNonNativeAlwaysIncluded(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{{ID: "cloudprov", Location: LocationCloud}},
-		exposed:   map[string]ExposureEntry{"cloudprov/flagged": {Exposed: true, Ready: true}},
+		modelman:  map[string]ModelmanEntry{"cloudprov/flagged": {Ready: true}},
 	}
 	flagged := Model{ID: "cloudprov/flagged", ProviderID: "cloudprov"}
 	unflagged := Model{ID: "cloudprov/unflagged", ProviderID: "cloudprov"}
@@ -1250,27 +1250,6 @@ func TestDiscoveredModelID(t *testing.T) {
 	}
 	if got := DiscoveredModelID("mtplx", "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"); got != "mtplx/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality" {
 		t.Errorf("got %q", got)
-	}
-}
-
-// TestExposedFlagIsRawModelmanFlag verifies ExposedFlag reports modelman.toml's
-// raw exposed flag — false for a local model with no flag even though
-// InCatalog treats every local model as in the catalog. The selector's EXPOSED
-// column must mirror modelman, not wt's catalog-membership predicate.
-func TestExposedFlagIsRawModelmanFlag(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{{ID: "omlx", Location: LocationLocal}},
-		Models:    []Model{{ID: "omlx/a", ProviderID: "omlx"}, {ID: "omlx/b", ProviderID: "omlx"}},
-	}
-	cfg.SetExposedForTest(map[string]ExposureEntry{"omlx/a": {Exposed: true}})
-	if !cfg.ExposedFlag("omlx/a") {
-		t.Error("omlx/a: want exposed")
-	}
-	if cfg.ExposedFlag("omlx/b") || cfg.ExposedFlag("missing") {
-		t.Error("unflagged/missing ids must not read as exposed")
-	}
-	if !cfg.InCatalog(cfg.Models[1]) {
-		t.Fatal("precondition: InCatalog treats local models as in the catalog")
 	}
 }
 

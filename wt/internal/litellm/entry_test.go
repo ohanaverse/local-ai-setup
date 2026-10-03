@@ -154,7 +154,7 @@ func TestBuildEntryRejectsUnmappedProvider(t *testing.T) {
 // TestBuildEntryUnencodableModelInfoReturnsError pins that a model_info value
 // yaml.Node.Encode cannot marshal (a hand-edited registry.toml decoded into a
 // weird shape) surfaces as a per-model error from BuildEntry instead of
-// panicking and crashing the whole wt process on expose/unexpose/sync/start.
+// panicking and crashing the whole wt process on sync/start.
 func TestBuildEntryUnencodableModelInfoReturnsError(t *testing.T) {
 	cfg := testConfig()
 	m := cfg.Models[2] // openrouter/x/y

@@ -26,10 +26,6 @@ func TestEligibleModels(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 			{Name: "pi", SupportedProviders: []string{"ollama", "claude"}},
 		},
-		exposed: map[string]ExposureEntry{
-			"ollama/gemma4:9b": {Exposed: true, Ready: true},
-			"ollama/llama3":    {Exposed: true, Ready: true},
-		},
 	}
 	deriveNative(cfg)
 
@@ -98,10 +94,6 @@ func TestEligibleModelsInMatchesEligibleModels(t *testing.T) {
 		Agents: []Agent{
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 			{Name: "pi", SupportedProviders: []string{"ollama", "claude"}},
-		},
-		exposed: map[string]ExposureEntry{
-			"ollama/gemma4:9b": {Exposed: true, Ready: true},
-			"ollama/llama3":    {Exposed: true, Ready: true},
 		},
 	}
 	deriveNative(cfg)

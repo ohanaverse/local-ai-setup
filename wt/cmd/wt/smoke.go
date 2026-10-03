@@ -260,12 +260,12 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 		}
 		if config.IndexModelByID(cfg.Models, modelID) >= 0 {
 			return smokeTarget{}, fmt.Errorf(
-				"model %q cannot be smoke-tested right now (not exposed, not on disk, or no agent supports it — check `wt litellm status`; a local model must exist on disk)", modelID)
+				"model %q cannot be smoke-tested right now (not in the catalog, not on disk, or no agent supports it — check `wt litellm status`; a local model must exist on disk)", modelID)
 		}
 		return smokeTarget{}, fmt.Errorf("unknown model %q", modelID)
 	}
 	if len(cands) == 0 {
-		return smokeTarget{}, fmt.Errorf("no models are available for any agent — expose a cloud model or pull a local one")
+		return smokeTarget{}, fmt.Errorf("no models are available for any agent — add a cloud model to the registry or pull a local one")
 	}
 	if !stdinTTY() {
 		return smokeTarget{}, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")

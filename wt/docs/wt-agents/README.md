@@ -6,15 +6,14 @@ Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims i
 
 `wt` owns everything LiteLLM-side: the `~/.config/litellm/config.yaml` routes
 (`model_list` rows and the settings wt enforces), the proxy restart, and the
-routing on/off switch. Cloud and native models are shown by the picker per the
-exposure rules in the root `CLAUDE.md`; local models are listed from live
+routing on/off switch. Every configured cloud and native model is in the
+picker (#179; see the root `CLAUDE.md`'s *Routing is derived, not stored*);
+local models are listed from live
 provider probes, and their routes are added and removed automatically by
 `wt start` / `wt stop` (and the TUI start flow and `wt smoke`).
 
 ```bash
 wt litellm status                 # routing on/off + url + api_key_set
-wt litellm expose <id>...         # add routes (restarts the proxy on change)
-wt litellm unexpose <id>...       # remove routes
 wt litellm sync [--dry-run]       # route every registry cloud model + the running local models
 wt litellm list                   # routed ids in config.yaml (hand-written rows marked)
 ```
@@ -40,16 +39,16 @@ stops, or restarts the proxy; the proxy-process lifecycle below is a separate
 concern. (`~/.config/local-ai/modelman.toml`'s `[litellm]` table is only a
 legacy read-only fallback, migrated into wt's config once.)
 
-**wt owns reconciliation.** `wt litellm expose|unexpose|sync` (and the
+**wt owns reconciliation.** `wt litellm sync` (and the
 automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
 restart the proxy after a change, via `WT_LITELLM_RESTART_CMD` (legacy alias
 `MODELMAN_LITELLM_RESTART_CMD`) or, when unset, `launchctl kickstart -k
-gui/$(id -u)/local.litellm.proxy`. The `wt litellm` commands restart and return
+gui/$(id -u)/local.litellm.proxy`. `wt litellm sync` restarts and returns
 (the proxy may need a few seconds before the new route is live); only the
 automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI start flow
 and stop picker then wait up to 30s for `/health/liveliness`, when a LiteLLM
 URL is configured and a pre-probe before the restart was not refused.
-`modelman` no longer exposes models itself (#179): it changes its own state and
+`modelman` no longer routes models itself (#179): it changes its own state and
 then runs one `wt litellm sync`, which is what makes a start/stop/registry
 change show up in `config.yaml` (no wait).
 If a model was added by hand or the restart failed, restart the proxy

@@ -15,7 +15,7 @@ import (
 func tableTestRows() []tableRow {
 	return []tableRow{
 		{Row: catalog.Row{Model: config.Model{ID: "openrouter/cheap", Family: "kimi", Cost: config.ModelCost{InputPricePerMillion: f64(0.5), OutputPricePerMillion: f64(2)}},
-			Location: config.LocationCloud, Status: catalog.StatusOK, Exposed: true}, counts: usage.UsageCounts{OneDay: 1, SevenDay: 12, ThirtyDay: 340}},
+			Location: config.LocationCloud, Status: catalog.StatusOK}, counts: usage.UsageCounts{OneDay: 1, SevenDay: 12, ThirtyDay: 340}},
 		{Row: catalog.Row{Model: config.Model{ID: "omlx/Qwen3.8-27B-4bit", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusOK, Running: true}},
 		{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx"}, Location: config.LocationLocal, Status: catalog.StatusNew, Discovered: true}},
 		{Row: catalog.Row{Model: config.Model{ID: "omlx/gone", ProviderID: "omlx", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusAbsent}},
@@ -24,20 +24,25 @@ func tableTestRows() []tableRow {
 
 // TestRenderTableHeaderAndCells verifies the header carries every column
 // name in order and each row renders the specified ASCII cells: LOC
-// cloud/local, STATUS ok/new/absent, EXPOSED Y/-, RUNNING run/-, discovered
-// rows with family "-" and cost "-".
+// cloud/local, STATUS ok/new/absent, RUNNING run/-, discovered
+// rows with family "-" and cost "-". The header must not carry the EXPOSED
+// column removed by #179 (configured is exposed — there is no flag to show).
 func TestRenderTableHeaderAndCells(t *testing.T) {
 	tbl := renderTable(tableTestRows(), nil, "", nil, "")
 	last := -1
-	for _, h := range []string{"FAMILY", "MODEL", "LOC", "STATUS", "EXPOSED", "RUNNING", "COST", "1D", "7D", "30D", "SURVEY"} {
+	for _, h := range []string{"FAMILY", "MODEL", "LOC", "STATUS", "RUNNING", "COST", "1D", "7D", "30D", "SURVEY"} {
 		i := strings.Index(tbl.header, h)
 		if i <= last {
 			t.Fatalf("header %q: column %q out of order or missing", tbl.header, h)
 		}
 		last = i
 	}
+	// #179: no exposed flag is left to show, so the EXPOSED column is gone.
+	if strings.Contains(tbl.header, "EXPOSED") {
+		t.Errorf("header %q still carries the removed EXPOSED column", tbl.header)
+	}
 	cloud, run, disc, absent := tbl.items[0].line, tbl.items[1].line, tbl.items[2].line, tbl.items[3].line
-	for _, want := range []string{"kimi", "openrouter/cheap", "cloud", "ok", "Y", "0.5000", "12", "340"} {
+	for _, want := range []string{"kimi", "openrouter/cheap", "cloud", "ok", "0.5000", "12", "340"} {
 		if !strings.Contains(cloud, want) {
 			t.Errorf("cloud line %q missing %q", cloud, want)
 		}
@@ -68,9 +73,6 @@ func TestRenderTableColumnsAlign(t *testing.T) {
 	}
 	if got := string(line(1)[col("RUNNING") : col("RUNNING")+3]); got != "run" {
 		t.Errorf("RUNNING cell = %q", got)
-	}
-	if got := string(line(0)[col("EXPOSED")]); got != "Y" {
-		t.Errorf("EXPOSED cell = %q", got)
 	}
 	if got := string(line(3)[col("STATUS") : col("STATUS")+6]); got != "absent" {
 		t.Errorf("STATUS cell = %q", got)

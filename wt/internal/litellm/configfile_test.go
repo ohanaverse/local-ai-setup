@@ -96,7 +96,7 @@ func TestSetRowAddsAndReplacesPreservingComments(t *testing.T) {
 }
 
 // TestSetRowPreservesUserManagedParams pins the presence-based rule: when a
-// row is re-exposed, a user-set additional_drop_params list (an extended list
+// row is re-routed, a user-set additional_drop_params list (an extended list
 // or a deliberate empty one) and use_chat_completions_api must not be reset to
 // defaults, or a deliberate opt-out would silently flip back on every start.
 func TestSetRowPreservesUserManagedParams(t *testing.T) {
@@ -121,7 +121,7 @@ func TestSetRowPreservesUserManagedParams(t *testing.T) {
 // model_name appears more than once leaves exactly one row (in the first
 // row's position). LiteLLM load-balances across same-named rows, so a
 // surviving stale duplicate would keep sending half the requests to the old
-// backend after an expose.
+// backend after a re-route.
 func TestSetRowCollapsesDuplicateRows(t *testing.T) {
 	// The extra row must sit inside model_list, so splice it before general_settings.
 	dup := strings.Replace(baseConfig, "general_settings:", `  - model_name: ollama/old:1
@@ -219,7 +219,7 @@ litellm_settings:
 // gpt-oss:20b) that translation can produce a value ollama's sampler rejects
 // ("penalty_repeat must be finite and greater than 0") even when the caller
 // sent 0 — copilot CLI always sends both params, so every copilot request
-// against an affected model 500s. Without this, a fresh expose of any such
+// against an affected model 500s. Without this, a fresh route of any such
 // model silently reintroduces the crash.
 func TestEnsureSettingsDropsFrequencyAndPresencePenaltyOnFreshOllamaChatRows(t *testing.T) {
 	f, _ := Open(writeConfig(t, `model_list:

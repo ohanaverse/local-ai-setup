@@ -10,20 +10,12 @@ import (
 	"io"
 	"slices"
 	"sort"
-	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
 )
-
-// litellmFlags carries the change subcommands' flags.
-type litellmFlags struct {
-	JSON          bool
-	DryRun        bool
-	SkipReadyGate bool
-}
 
 type litellmOutcomeJSON struct {
 	ID     string `json:"id"`
@@ -35,7 +27,6 @@ type litellmResultJSON struct {
 	Outcomes []litellmOutcomeJSON `json:"outcomes"`
 	Changed  bool                 `json:"changed"`
 	Warnings []string             `json:"warnings"`
-	DryRun   bool                 `json:"dry_run,omitempty"`
 }
 
 var errLitellmIDFailed = errors.New("one or more models could not be applied")
@@ -43,9 +34,9 @@ var errLitellmIDFailed = errors.New("one or more models could not be applied")
 // reportLitellm prints a Result (text or JSON) and returns errLitellmIDFailed
 // when any id was rejected, so the process exits 1 while the per-id detail is
 // still printed for callers that parse it.
-func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun bool) error {
+func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON bool) error {
 	failed := false
-	doc := litellmResultJSON{Outcomes: []litellmOutcomeJSON{}, Changed: res.Changed, Warnings: append([]string{}, res.Warnings...), DryRun: dryRun}
+	doc := litellmResultJSON{Outcomes: []litellmOutcomeJSON{}, Changed: res.Changed, Warnings: append([]string{}, res.Warnings...)}
 	for _, o := range res.Outcomes {
 		j := litellmOutcomeJSON{ID: o.ID, Action: o.Action}
 		if o.Err != nil {
@@ -59,12 +50,9 @@ func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun boo
 		}
 	} else {
 		for _, j := range doc.Outcomes {
-			switch {
-			case j.Error != "":
+			if j.Error != "" {
 				fmt.Fprintf(errOut, "%s: %s\n", j.ID, j.Error)
-			case dryRun:
-				fmt.Fprintf(out, "%s: would %s\n", j.ID, j.Action)
-			default:
+			} else {
 				fmt.Fprintf(out, "%s: %s\n", j.ID, j.Action)
 			}
 		}
@@ -134,29 +122,6 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []str
 	return nil
 }
 
-func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, ids []string, fl litellmFlags) error {
-	for _, id := range ids {
-		if strings.TrimSpace(id) == "" {
-			return errors.New("blank model id: refusing to touch config.yaml")
-		}
-	}
-	o := litellm.Options{SkipReadyGate: fl.SkipReadyGate}
-	var res litellm.Result
-	var err error
-	switch {
-	case expose && fl.DryRun:
-		res.Outcomes = litellm.Check(cfg, ids, fl.SkipReadyGate)
-	case expose:
-		res, err = litellm.Apply(cfg, ids, nil, o)
-	default:
-		res, err = litellm.Apply(cfg, nil, ids, o)
-	}
-	if err != nil {
-		return err
-	}
-	return reportLitellm(out, errOut, res, fl.JSON, expose && fl.DryRun)
-}
-
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
 	snap := probeInventory(cfg)
 	// The local models to route: running ones, plus pulled registry ollama
@@ -186,7 +151,7 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 		return err
 	}
 	res.Warnings = append(res.Warnings, probeWarns...)
-	return reportLitellm(out, errOut, res, asJSON, false)
+	return reportLitellm(out, errOut, res, asJSON)
 }
 
 // syncUntouchedAndWarnings derives both sync modes' view of the provider
@@ -418,26 +383,6 @@ func litellmCmd(a *app) *cobra.Command {
 		Use:   "litellm",
 		Short: "Manage LiteLLM routes and routing state for registry models",
 	}
-	change := func(use, short string, expose bool) *cobra.Command {
-		var fl litellmFlags
-		cc := &cobra.Command{
-			Use: use, Short: short, Args: cobra.MinimumNArgs(1), SilenceUsage: true,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				// Gate on a load failure only (cfg would be an empty default);
-				// registry validation gaps are reported per id by litellm.Apply.
-				if a.loadErr != nil {
-					return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
-				}
-				return runLitellmChange(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, expose, args, fl)
-			},
-		}
-		cc.Flags().BoolVar(&fl.JSON, "json", false, "machine-readable output")
-		if expose {
-			cc.Flags().BoolVar(&fl.DryRun, "dry-run", false, "validate only; change nothing")
-			cc.Flags().BoolVar(&fl.SkipReadyGate, "skip-ready-gate", false, "caller already verified readiness (used by modelman)")
-		}
-		return cc
-	}
 	var syncJSON, listJSON, provJSON, syncDryRun bool
 	syncC := &cobra.Command{
 		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
@@ -510,9 +455,32 @@ func litellmCmd(a *app) *cobra.Command {
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")
 	c.AddCommand(
-		change("expose <model-id>...", "Add LiteLLM routes and restart the proxy once", true),
-		change("unexpose <model-id>...", "Remove LiteLLM routes and restart the proxy once", false),
 		syncC, listC, provC, statusC, onC, offC, setC,
+		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 	)
 	return c
+}
+
+// removedCmdAnnotation marks a hidden stub that only reports a removed
+// command; its value names the issue that removed it.
+const removedCmdAnnotation = "wt-removed"
+
+// removedLitellmCmd is a hidden stub for a subcommand #179 removed. Without
+// it cobra prints the parent's help and exits 0 for the unknown name, so a
+// script running `wt litellm expose X && ...` would "succeed" having written
+// nothing. Flag parsing is off so legacy flags (--json, --dry-run,
+// --skip-ready-gate) reach the same pointer to sync instead of "unknown flag".
+// The removedCmdAnnotation marks the Hidden as deliberate for
+// TestNoWtCommandIsHidden.
+func removedLitellmCmd(name string) *cobra.Command {
+	return &cobra.Command{
+		Use: name, Hidden: true, DisableFlagParsing: true, SilenceUsage: true,
+		Annotations: map[string]string{removedCmdAnnotation: "#179"},
+		RunE: func(*cobra.Command, []string) error {
+			// Mirrors sync's own wording: a pulled ollama model is routed
+			// whether or not it is loaded, so "running" alone understates
+			// what sync does.
+			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt litellm sync`", name)
+		},
+	}
 }

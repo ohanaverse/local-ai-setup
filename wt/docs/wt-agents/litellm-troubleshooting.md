@@ -279,8 +279,9 @@ satisfies `EnsureSettings`'s "has this key at all" guard and is left exactly
 as-is on every future write — it will keep crashing under copilot until one
 of:
 
-- `wt litellm unexpose <id> && wt litellm expose <id>` (drops and re-adds
-  the row fresh, picking up the wider default), or
+- deleting that row from `config.yaml` by hand and running `wt litellm sync`
+  (which re-adds it fresh, picking up the wider default, as long as the
+  model is a cloud model or a running local one), or
 - a hand edit of that row's `additional_drop_params` to add
   `frequency_penalty`/`presence_penalty`, then restart the proxy
   (`wt litellm sync`, or the `launchctl kickstart` fallback in the Ops
@@ -384,7 +385,7 @@ single deployment, not global, so it applies cleanly to mtplx/omlx/
 mlx_lm_server without touching a hypothetical future deployment that *does*
 serve `/v1/responses` natively (that row would just carry an explicit
 `use_chat_completions_api: false`, which wt's `internal/litellm` (formerly modelman's
-`set_exposed`/`ensure_litellm_settings`, removed 2026-09-21) preserves on re-expose). Verified via a direct `/v1/responses` curl probe
+`set_exposed`/`ensure_litellm_settings`, removed 2026-09-21) preserves when it rewrites the row). Verified via a direct `/v1/responses` curl probe
 against mtplx (200, was 404→429) and `wt smoke <model> --only codex` (green).
 
 ### agy / shell
@@ -398,7 +399,7 @@ wt.
 - The proxy loads `~/.config/litellm/config.yaml` **only at startup** — after
   editing it, restart the proxy (locally: `kill <pid>` +
   `nohup litellm --config ~/.config/litellm/config.yaml --port 4000
-  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt litellm expose|unexpose|sync` restart the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
+  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt litellm sync` restarts the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
   [README · LiteLLM proxy lifecycle](README.md#litellm-proxy-lifecycle)).
 - The litellm key for probes lives in `[litellm].api_key`
   (wt's `~/.config/agent-wt/config.toml`; `wt litellm status --json` shows only `api_key_set`) and is also in pi's models.json.

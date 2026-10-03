@@ -1,13 +1,5 @@
 {
   "_comment": "Shared fixture for cross-language contract tests of `wt litellm ... --json`. Read by wt/cmd/wt/litellm_test.go (Go) and modelman/tests/contracts/test_litellm_cli_fixture.py (Python). A schema change on either side fails both CI jobs in the same PR.",
-  "change": {
-    "outcomes": [
-      {"id": "ollama/gemma:9b", "action": "exposed"},
-      {"id": "claude/sonnet", "error": "provider \"claude\" is native and cannot be exposed through LiteLLM"}
-    ],
-    "changed": true,
-    "warnings": ["failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"]
-  },
   "list": {
     "routed": ["ollama/gemma:9b", "openrouter/x/y"],
     "rows": [
@@ -24,7 +16,7 @@
       {"id": "openrouter/bad", "error": "model \"openrouter/bad\": empty model_name"}
     ],
     "changed": true,
-    "warnings": []
+    "warnings": ["failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"]
   },
   "sync_dry_run": {
     "dry_run": true,

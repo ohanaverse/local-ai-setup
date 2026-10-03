@@ -38,7 +38,7 @@ func TestRefreshTableReprobesAndKeepsCursor(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 
 	probes := 0
 	old := runInventory
@@ -104,7 +104,7 @@ func refreshTestCfg() *config.Config {
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
+	cfg.ReadyAllForTest()
 	return cfg
 }
 

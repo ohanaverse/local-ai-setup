@@ -15,9 +15,9 @@
 #
 # Exposure (#179): what is configured in registry.toml is exposed, so
 # modelman no longer has an `exposed` flag — it ignores `exposed` /
-# `litellm_exposed` on read and drops them on the next save. The rows
-# below that still carry one are legacy keys wt keeps reading until
-# PR 3 of #179 removes its reader.
+# `litellm_exposed` on read and drops them on the next save. wt does not
+# read them either. The rows below that still carry one pin that both
+# readers load such a pre-#179 file and ignore the keys.
 #
 # Local-model running state (multi-model local lifecycle design,
 # 2026-09-14): each model_state entry carries its own `running` flag.
@@ -43,7 +43,7 @@ api_key = "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY"
 ready = true
 disk_path = "ollama:contract-fixture:local"
 size_bytes = 2147483648
-# legacy key — modelman ignores it; wt reads it until PR 3 (#179)
+# legacy key (#179) — both readers ignore it
 exposed = false
 running = true
 
@@ -51,21 +51,21 @@ running = true
 ready = true
 disk_path = "ollama:contract-fixture:subscription"
 size_bytes = 1073741824
-# legacy key — modelman ignores it; wt reads it until PR 3 (#179)
+# legacy key (#179) — both readers ignore it
 exposed = true
 
 # Legacy pre-registry spelling of `ready`. modelman still accepts it
 # (state.py reads ready, falling back to downloaded); wt reads it as ready
-# too. This entry intentionally uses `litellm_exposed` only (no `exposed`
-# key) so wt's back-compat fallback stays pinned until PR 3 (#179).
+# too. This entry carries the older `litellm_exposed` spelling (no
+# `exposed` key), which both readers ignore (#179).
 [model_state."llamacpp/legacy-contract-fixture"]
 downloaded = true
 disk_path = "/hf/cache/legacy-contract-fixture.q4.gguf"
-# legacy key — modelman ignores it; wt reads it until PR 3 (#179)
+# legacy key (#179) — both readers ignore it
 litellm_exposed = true
 
 # A model that exists in state but was never downloaded: all defaults.
-# Both readers yield ready=false (and wt exposed=false).
+# Both readers yield ready=false.
 [model_state."openrouter/contract-fixture:cloud"]
 
 # Local model that is not ready: both readers must yield ready=false.
