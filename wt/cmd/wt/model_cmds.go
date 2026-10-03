@@ -226,6 +226,13 @@ func startCmd(a *app) *cobra.Command {
 // localRows builds catalog rows for every configured and detected local model
 // from one live inventory snapshot — screen 1's row set.
 func localRows(cfg *config.Config) []catalog.Row {
+	rows, _ := localRowsSnap(cfg)
+	return rows
+}
+
+// localRowsSnap is localRows plus the snapshot the rows were built from, for
+// callers that must explain an id with no row (catalog.MissingReason).
+func localRowsSnap(cfg *config.Config) ([]catalog.Row, localmodels.Snapshot) {
 	snap := probeInventory(cfg)
 	var models []config.Model
 	for _, m := range cfg.Models {
@@ -233,12 +240,12 @@ func localRows(cfg *config.Config) []catalog.Row {
 			models = append(models, m)
 		}
 	}
-	return catalog.Build(catalog.Input{Config: cfg, Models: models, Inventory: &snap})
+	return catalog.Build(catalog.Input{Config: cfg, Models: models, Inventory: &snap}), snap
 }
 
 // runStart implements `wt start`. Argument errors return before any side effect.
 func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, replace bool) error {
-	rows := localRows(cfg)
+	rows, snap := localRowsSnap(cfg)
 	if id == "" {
 		if !stdinTTY() {
 			return fmt.Errorf("wt start needs a TTY to list models; pass a model id directly (wt start <provider>/<name>)")
@@ -261,6 +268,9 @@ func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, 
 	}
 	row, ok := catalog.Find(rows, id)
 	if !ok {
+		if reason := catalog.MissingReason(&snap, id); reason != "" {
+			return errors.New(reason)
+		}
 		if config.IndexModelByID(cfg.Models, id) >= 0 {
 			return fmt.Errorf("%q is not a local model — wt start only starts local models", id)
 		}

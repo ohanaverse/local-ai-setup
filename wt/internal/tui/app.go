@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
@@ -870,6 +871,9 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	if m.pinnedModel != "" {
 		idx, ok := idIndex[m.pinnedModel]
 		if !ok {
+			if reason := catalog.MissingReason(snap, m.pinnedModel); reason != "" {
+				return routeBack(reason)
+			}
 			return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
 		}
 		it := tbl.items[idx]

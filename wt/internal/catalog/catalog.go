@@ -140,6 +140,33 @@ func Build(in Input) []Row {
 	return rows
 }
 
+// MissingReason is the message for a pin of a registry local model that has
+// no row (#179 Phase B: local rows come only from the inventory): "<id> is
+// not on disk" when the probe confirmed its artifact is missing, or the
+// `modelman start` hint for a non-running mlx_lm_server pairing, which wt can
+// neither discover nor start. It is "" for any id the snapshot cannot vouch
+// for — a model with a row, an unknown artifact, a discovered or unknown id,
+// or a nil snapshot (no probe ran) — so the caller keeps its own wording.
+// `wt -M` (both paths), `wt start` and `wt smoke` consult it only when
+// catalog.Find misses.
+func MissingReason(snap *localmodels.Snapshot, id string) string {
+	if snap == nil {
+		return ""
+	}
+	for _, e := range snap.Entries {
+		if !e.Registered || e.ModelID != id || e.Running {
+			continue
+		}
+		switch {
+		case localmodels.Family(e.ProviderID) == "mlx_lm_server":
+			return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", id, id)
+		case e.ArtifactKnown && e.Artifact == "":
+			return fmt.Sprintf("%s is not on disk — pull or download it first", id)
+		}
+	}
+	return ""
+}
+
 // Find returns the row for id, discovered rows included — a -M pin names a
 // model, not necessarily a registry entry.
 func Find(rows []Row, id string) (Row, bool) {

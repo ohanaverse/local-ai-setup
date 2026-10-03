@@ -332,3 +332,36 @@ func TestBuildMarksUnmappedCloudRows(t *testing.T) {
 		t.Fatal("mapped cloud row refused")
 	}
 }
+
+// TestMissingReason verifies the message a pin of a hidden registry model
+// gets (#179 Phase B): an overlay the probe confirmed is not on disk says so,
+// a non-running mlx_lm_server pairing names `modelman start`, and everything
+// that has a row — or that the probe could not vouch for — gets "" so the
+// caller falls back to its generic wording. Without it, `wt -M <absent-id>`
+// would say "not in the eligible list" and send the user hunting for a
+// filter or agent problem instead of a download.
+func TestMissingReason(t *testing.T) {
+	snap := &localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true, ArtifactKnown: true},
+		{ProviderID: "omlx", ModelID: "omlx/here", Artifact: "here", Registered: true, ArtifactKnown: true},
+		{ProviderID: "ollama", ModelID: "ollama/unknown", Registered: true},
+		{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/p", Registered: true},
+		{ProviderID: "omlx", ModelID: "omlx/disc", Artifact: "disc", ArtifactKnown: true},
+	}}
+	cases := map[string]string{
+		"omlx/gone":       "omlx/gone is not on disk — pull or download it first",
+		"mlx_lm_server/p": "local model \"mlx_lm_server/p\" is not running — start it with `modelman start mlx_lm_server/p`",
+		"omlx/here":       "",
+		"ollama/unknown":  "",
+		"omlx/disc":       "",
+		"nope/x":          "",
+	}
+	for id, want := range cases {
+		if got := MissingReason(snap, id); got != want {
+			t.Errorf("MissingReason(%s) = %q, want %q", id, got, want)
+		}
+	}
+	if got := MissingReason(nil, "omlx/gone"); got != "" {
+		t.Errorf("MissingReason(nil snapshot) = %q, want empty (no probe ran)", got)
+	}
+}

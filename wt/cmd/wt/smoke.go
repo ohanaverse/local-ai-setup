@@ -253,9 +253,14 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 				return smokeTarget{Row: c.Row, Agents: c.Agents}, nil
 			}
 		}
-		// A blocked local row (not on disk, no start backend) is not a candidate,
-		// so name its real reason as `wt start` does rather than guessing.
-		if row, ok := catalog.Find(localRows(cfg), modelID); ok && row.Action() == catalog.ActionBlock {
+		// A registry local model with no row (not on disk, or a stopped
+		// mlx_lm_server pairing) or a blocked local row is not a candidate, so
+		// name its real reason as `wt start` does rather than guessing.
+		rows, snap := localRowsSnap(cfg)
+		if reason := catalog.MissingReason(&snap, modelID); reason != "" {
+			return smokeTarget{}, errors.New(reason)
+		}
+		if row, ok := catalog.Find(rows, modelID); ok && row.Action() == catalog.ActionBlock {
 			return smokeTarget{}, errors.New(row.BlockReason())
 		}
 		if config.IndexModelByID(cfg.Models, modelID) >= 0 {

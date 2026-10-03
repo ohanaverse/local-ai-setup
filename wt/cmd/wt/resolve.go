@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -78,6 +79,9 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	if pinned != "" {
 		row, ok := catalog.Find(rows, pinned)
 		if !ok {
+			if reason := catalog.MissingReason(&snap, pinned); reason != "" {
+				return config.Model{}, launchable, errors.New(reason)
+			}
 			return config.Model{}, launchable, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
 		}
 		// The picker's route switch decides a row's fate wherever it appears —
