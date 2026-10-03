@@ -106,12 +106,13 @@ func walk(cfg *config.Config, includeStart bool) []Candidate {
 			if act == catalog.ActionBlock || (act == catalog.ActionStart && !includeStart) {
 				continue
 			}
-			// Keep the exact route rules the old loop applied: a discovered or
-			// Unmapped row routed through LiteLLM is refused (smoke must not advertise what a
-			// real launch refuses); a start row whose route errors is refused
-			// like pickerBlockedReason does. A launch row with a route error
-			// stays eligible (the picker reports it on Enter).
-			if r.Discovered || r.Unmapped || act == catalog.ActionStart {
+			// The picker's route rules: an Unmapped row routed through
+			// LiteLLM is refused (smoke must not advertise what a real launch
+			// refuses); a start row whose route errors is refused like
+			// pickerBlockedReason does. A launch row with a route error stays
+			// eligible (the picker reports it on Enter). A discovered row is
+			// never refused (#179 Phase B: wt routes it).
+			if r.Unmapped || act == catalog.ActionStart {
 				route, rerr := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name))
 				if r.RefusedByRoute(route, rerr) {
 					continue
@@ -142,9 +143,10 @@ func walk(cfg *config.Config, includeStart bool) []Candidate {
 // deduped, id-sorted union of eligible models (AllEligibleModels' answer)
 // and, per model id, the sorted list of eligible agents (EligibleAgents'
 // answer). A model is eligible when selecting it would launch: a cloud row,
-// or a local row the probe reports as running — plus discovered running
-// rows, which a -M pin can launch — minus discovered rows routed through
-// LiteLLM, which the picker makes unselectable and the CLI refuses. Because
+// or a local row the probe reports as running — discovered running rows
+// included, which a -M pin can launch — minus Unmapped cloud rows routed
+// through LiteLLM, which the picker makes unselectable and the CLI refuses.
+// Because
 // the rows are the same ones a real launch consults, wt smoke cannot
 // advertise a model a real `wt -A <agent> -M <id>` launch would refuse. It
 // never starts or stops anything itself; `Candidates` plus the caller's start

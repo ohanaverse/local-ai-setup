@@ -311,28 +311,31 @@ func TestFindReportsDiscoveredRows(t *testing.T) {
 	}
 }
 
-// TestRefusedByRoute verifies the one route-refusal rule: only a discovered
-// row whose route resolved AND goes through LiteLLM (routed or forced) is
-// refused. Registered rows are never refused, and a route error is not a
-// refusal (the picker reports it on Enter instead). The picker, the non-TUI
-// -M pin and `wt smoke` all call this, so a change here moves all three.
+// TestRefusedByRoute verifies the one route-refusal rule: only an Unmapped
+// cloud row whose route resolved AND goes through LiteLLM (routed or forced)
+// is refused. A discovered row is never refused (#179 Phase B: wt routes it
+// under its discovered id), and a route error is not a refusal (the picker
+// reports it on Enter instead). The picker, the non-TUI -M pin and `wt smoke`
+// all call this, so a change here moves all three.
 func TestRefusedByRoute(t *testing.T) {
 	direct, viaProxy, forced := config.Route{}, config.Route{Litellm: true}, config.Route{Forced: true}
 	cases := []struct {
-		name       string
-		discovered bool
-		route      config.Route
-		err        error
-		want       bool
+		name  string
+		row   Row
+		route config.Route
+		err   error
+		want  bool
 	}{
-		{"discovered via litellm", true, viaProxy, nil, true},
-		{"discovered forced", true, forced, nil, true},
-		{"discovered direct", true, direct, nil, false},
-		{"discovered with route error", true, viaProxy, errors.New("no route"), false},
-		{"registered via litellm", false, viaProxy, nil, false},
+		{"discovered via litellm", Row{Discovered: true}, viaProxy, nil, false},
+		{"discovered forced", Row{Discovered: true}, forced, nil, false},
+		{"unmapped via litellm", Row{Unmapped: true}, viaProxy, nil, true},
+		{"unmapped forced", Row{Unmapped: true}, forced, nil, true},
+		{"unmapped direct", Row{Unmapped: true}, direct, nil, false},
+		{"unmapped with route error", Row{Unmapped: true}, viaProxy, errors.New("no route"), false},
+		{"registered via litellm", Row{}, viaProxy, nil, false},
 	}
 	for _, c := range cases {
-		if got := (Row{Discovered: c.discovered}).RefusedByRoute(c.route, c.err); got != c.want {
+		if got := c.row.RefusedByRoute(c.route, c.err); got != c.want {
 			t.Errorf("%s: RefusedByRoute = %v, want %v", c.name, got, c.want)
 		}
 	}
