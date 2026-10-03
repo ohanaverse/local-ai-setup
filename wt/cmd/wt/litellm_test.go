@@ -350,6 +350,45 @@ func TestLitellmOffWarnsWhenUnconfigured(t *testing.T) {
 	}
 }
 
+// TestLitellmRemovedExposeCommandsFailAndPointToSync pins the hidden stubs
+// for the subcommands #179 removed: `wt litellm expose|unexpose` must exit
+// non-zero and name `wt litellm sync`, with or without a legacy flag, and
+// must not be advertised in help. Without the stubs cobra prints the parent's
+// help and exits 0, so a script chaining `wt litellm expose X && ...` would
+// report success while writing nothing.
+func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
+	p := litellmEnv(t, "model_list: []\n")
+	for _, args := range [][]string{
+		{"expose", "openrouter/x"},
+		{"expose", "openrouter/x", "--json", "--skip-ready-gate", "--dry-run"},
+		{"unexpose", "openrouter/x"},
+		{"unexpose", "openrouter/x", "--json"},
+	} {
+		c := litellmCmd(&app{cfg: litellmTestConfig()})
+		c.SetOut(&bytes.Buffer{})
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs(args)
+		err := c.Execute()
+		if err == nil || !strings.Contains(err.Error(), "wt litellm sync") || !strings.Contains(err.Error(), "removed") {
+			t.Errorf("%v: err = %v, want a removal error pointing to `wt litellm sync`", args, err)
+		}
+	}
+	if b, _ := os.ReadFile(p); string(b) != "model_list: []\n" {
+		t.Fatalf("removed commands modified config.yaml:\n%s", b)
+	}
+	var help bytes.Buffer
+	c := litellmCmd(&app{cfg: litellmTestConfig()})
+	c.SetOut(&help)
+	c.SetErr(&bytes.Buffer{})
+	c.SetArgs([]string{"--help"})
+	if err := c.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(help.String(), "sync") || strings.Contains(help.String(), "expose") {
+		t.Fatalf("help must list sync and hide expose/unexpose:\n%s", help.String())
+	}
+}
+
 // TestLitellmStateCommandsRefuseOnConfigError pins that status/on/off/set
 // refuse when the config failed to LOAD (a.loadErr; a default cfg would
 // overwrite the user's config.toml on Save) and write nothing, and that

@@ -652,11 +652,11 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
-// from provider auth types, and applies the already-loaded modelman
-// per-model ready state and legacy [litellm] table (mstate, legacy). Callers must already have
-// loaded config.toml, registry.toml, and modelman.toml (loadModelmanState) —
-// finalizeCfg no longer reads modelman.toml itself, so Load calls it exactly
-// once instead of once per finalizeCfg call.
+// from provider auth types, and applies the already-loaded modelman per-model
+// ready state and legacy [litellm] table (mstate, legacy). Callers must
+// already have loaded config.toml, registry.toml, and modelman.toml
+// (loadModelmanState) — finalizeCfg no longer reads modelman.toml itself, so
+// Load calls it exactly once instead of once per finalizeCfg call.
 func finalizeCfg(cfg *Config, providers []Provider, models []Model, mstate map[string]ModelmanEntry, legacy *LitellmState) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)

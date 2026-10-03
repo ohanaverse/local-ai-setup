@@ -6,8 +6,9 @@ Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims i
 
 `wt` owns everything LiteLLM-side: the `~/.config/litellm/config.yaml` routes
 (`model_list` rows and the settings wt enforces), the proxy restart, and the
-routing on/off switch. Cloud and native models are shown by the picker per the
-exposure rules in the root `CLAUDE.md`; local models are listed from live
+routing on/off switch. Every configured cloud and native model is in the
+picker (#179; see the root `CLAUDE.md`'s *Routing is derived, not stored*);
+local models are listed from live
 provider probes, and their routes are added and removed automatically by
 `wt start` / `wt stop` (and the TUI start flow and `wt smoke`).
 

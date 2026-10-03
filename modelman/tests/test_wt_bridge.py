@@ -45,7 +45,7 @@ def test_sync_builds_argv_and_parses_partial_batch_json(calls):
     state["out"] = _cp(
         json.dumps(
             {
-                "outcomes": [{"id": "a", "action": "exposed"}, {"id": "b", "error": "nope"}],
+                "outcomes": [{"id": "a", "action": "routed"}, {"id": "b", "error": "nope"}],
                 "changed": True,
                 "warnings": ["w"],
             }
@@ -55,7 +55,7 @@ def test_sync_builds_argv_and_parses_partial_batch_json(calls):
     res = wt_bridge.sync()
     assert seen[0][0] == ["wt", "litellm", "sync", "--json"]
     assert [(o.id, o.action, o.error) for o in res.outcomes] == [
-        ("a", "exposed", None),
+        ("a", "routed", None),
         ("b", None, "nope"),
     ]
     assert res.changed and res.warnings == ["w"]

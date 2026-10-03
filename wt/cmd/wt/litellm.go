@@ -456,6 +456,28 @@ func litellmCmd(a *app) *cobra.Command {
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")
 	c.AddCommand(
 		syncC, listC, provC, statusC, onC, offC, setC,
+		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 	)
 	return c
+}
+
+// removedCmdAnnotation marks a hidden stub that only reports a removed
+// command; its value names the issue that removed it.
+const removedCmdAnnotation = "wt-removed"
+
+// removedLitellmCmd is a hidden stub for a subcommand #179 removed. Without
+// it cobra prints the parent's help and exits 0 for the unknown name, so a
+// script running `wt litellm expose X && ...` would "succeed" having written
+// nothing. Flag parsing is off so legacy flags (--json, --dry-run,
+// --skip-ready-gate) reach the same pointer to sync instead of "unknown flag".
+// The removedCmdAnnotation marks the Hidden as deliberate for
+// TestNoWtCommandIsHidden.
+func removedLitellmCmd(name string) *cobra.Command {
+	return &cobra.Command{
+		Use: name, Hidden: true, DisableFlagParsing: true, SilenceUsage: true,
+		Annotations: map[string]string{removedCmdAnnotation: "#179"},
+		RunE: func(*cobra.Command, []string) error {
+			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running local models are routed automatically — run `wt litellm sync`", name)
+		},
+	}
 }

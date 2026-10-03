@@ -939,7 +939,9 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 // A hidden command is undiscoverable — absent from both help and shell
 // completion — so this guards every present and future command against an
 // accidental Hidden: true. Cobra's own "__"-prefixed shell-completion
-// plumbing is hidden by design and skipped.
+// plumbing is hidden by design and skipped, as are stubs carrying
+// removedCmdAnnotation (a removed command that only says what replaced it,
+// e.g. `wt litellm expose` after #179) — those must stay out of help.
 func TestNoWtCommandIsHidden(t *testing.T) {
 	root := rootCmd()
 	if len(root.Commands()) == 0 {
@@ -949,6 +951,9 @@ func TestNoWtCommandIsHidden(t *testing.T) {
 	walk = func(c *cobra.Command) {
 		for _, child := range c.Commands() {
 			if strings.HasPrefix(child.Name(), "__") {
+				continue
+			}
+			if _, removed := child.Annotations[removedCmdAnnotation]; removed {
 				continue
 			}
 			if child.Hidden {
