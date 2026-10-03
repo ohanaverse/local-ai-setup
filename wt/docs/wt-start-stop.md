@@ -15,15 +15,18 @@ wt stop <target> --yes           # skip the in-use confirmation
 ## `wt start [model]`
 
 - `model` — `<provider>/<name>`, as with `-M`. Omitted: the screen-1 model
-  picker over every configured and detected local model, running ones
-  included (needs a TTY).
+  picker over every local model the live inventory finds — on disk or
+  running, with or without a registry entry (needs a TTY).
 - Idle model: started through the same driver as `wt -M` (progress on
   stderr, Ctrl+C cancels). If the provider's single slot is occupied wt
   asks before replacing the running model; `--replace` skips the question.
 - Already running: does nothing, exits 0 (`wt: <id> is already running`).
-- Cannot start (not on disk, no lifecycle backend): exits 1 with the
-  reason. In the picker these rows are unselectable and show the
-  reason as a notice.
+- Not on disk (a registry entry whose artifact is missing): not listed;
+  `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
+  first`.
+- No lifecycle backend (mlx_lm_server): exits 1 with the `modelman start`
+  hint; in the picker such a row is unselectable and shows the reason as a
+  notice.
 - Cloud or unknown id: exits 1.
 
 ## `wt stop [model|provider]`

@@ -19,7 +19,6 @@ type Status string
 
 const (
 	StatusOK      Status = "ok"      // on disk (local) or simply available (cloud)
-	StatusAbsent  Status = "absent"  // the provider answered and does not have this model
 	StatusUnknown Status = "unknown" // local model whose presence the probe could not determine
 	StatusNew     Status = "new"     // discovered, unregistered
 )
@@ -51,9 +50,15 @@ type Row struct {
 // (every catalog model the agent supports, already filtered by
 // agent/-T/-F); Inventory is nil when no local probe ran, in which case no
 // local row is assessed at all: locals read as not running with status ok.
-// When Inventory is set, a local row's status is ok, absent (the probe
-// answered and found no artifact), unknown (it could not tell), or new
-// (discovered, unregistered).
+// When Inventory is set, local rows come only from it (#179 Phase B): a
+// registry local model gets a row only when its inventory entry is running,
+// on disk, or of a family whose discovery failed (status unknown — a flaky
+// probe must not hide a pulled model); a model confirmed missing from disk,
+// a non-running mlx_lm_server pairing, and a model with no inventory entry
+// get none. A local row's status is ok, unknown, or new (discovered,
+// unregistered). HideDiscovered drops discovered rows; callers set it
+// whenever -T/-F is active, since a discovered row has no family or tags a
+// filter could match.
 type Input struct {
 	Config         *config.Config
 	Agent          string
@@ -96,21 +101,18 @@ func Build(in Input) []Row {
 			r.Status, r.Running, r.Discovered = StatusNew, de.Running, true
 		} else if loc == config.LocationLocal && in.Inventory != nil {
 			e, ok := byID[m.ID]
-			switch {
-			case !ok:
-				// No registered entry: the probe skipped this model (an
-				// unresolvable location) or its family has no probe at all.
-				// Nothing was discovered about it, so presence is unknown.
+			if !ok || !listed(e) {
+				// The hidden registry id still shadows a discovered entry
+				// spelling the same id (provider/artifact): surfacing that
+				// artifact under a registry id would let rotation, usage and
+				// profiles — all keyed by id — resolve it to the registry
+				// model, whose model_name is a different, missing artifact.
+				seen[m.ID] = true
+				continue
+			}
+			r.Running = e.Running
+			if !e.Running && !e.ArtifactKnown {
 				r.Status = StatusUnknown
-			case e.Running:
-				// Serving right now, so nothing about the row is missing.
-				// Checked before the artifact tests because a running
-				// mlx_lm_server row never has a resolved artifact.
-				r.Running = true
-			case !e.ArtifactKnown:
-				r.Status = StatusUnknown
-			case e.Artifact == "":
-				r.Status = StatusAbsent
 			}
 		}
 		if _, ok := litellm.PolicyFor(m.ProviderID); !ok && !m.Native && loc == config.LocationCloud {
@@ -140,6 +142,59 @@ func Build(in Input) []Row {
 	return rows
 }
 
+// listed reports whether a registered inventory entry gets a row: it is
+// serving, or its artifact is on disk, or discovery could not tell (unknown,
+// not missing) — except for a running-only family (localmodels.RunningOnly:
+// mlx_lm_server), whose models can never be discovered, so only a serving one
+// is listed.
+func listed(e localmodels.Entry) bool {
+	switch {
+	case e.Running, e.Artifact != "":
+		return true
+	case !e.ArtifactKnown:
+		return !localmodels.RunningOnly(e.ProviderID)
+	}
+	return false
+}
+
+// MissingReason is the message for a pin of a registry local model that has
+// no row (#179 Phase B: local rows come only from the inventory): "<id> is
+// not on disk" when the probe confirmed its artifact is missing, or the
+// `modelman start` hint for a non-running model of a running-only family
+// (localmodels.RunningOnly: an mlx_lm_server pairing), which wt can neither
+// discover nor start. It is "" for any id the snapshot cannot vouch
+// for — a model with a row, an unknown artifact, a discovered or unknown id,
+// or a nil snapshot (no probe ran) — so the caller keeps its own wording.
+// `wt start`, `wt smoke` and `wt -M` (both paths) consult it only when
+// catalog.Find misses; `wt -M` additionally only for a pin in the agent's
+// eligible list, so a pin the agent cannot use at all is never told to pull.
+func MissingReason(snap *localmodels.Snapshot, id string) string {
+	if snap == nil {
+		return ""
+	}
+	for _, e := range snap.Entries {
+		if !e.Registered || e.ModelID != id || e.Running {
+			continue
+		}
+		switch {
+		case localmodels.RunningOnly(e.ProviderID):
+			return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", id, id)
+		case e.ArtifactKnown && e.Artifact == "":
+			return fmt.Sprintf("%s is not on disk — pull or download it first", id)
+		}
+	}
+	return ""
+}
+
+// NoRowsReason is the message for an agent whose eligible list is non-empty
+// but builds zero rows: every eligible model is a registry local model with no
+// row (confirmed not on disk, a stopped mlx_lm_server pairing, or no inventory
+// entry). `wt` (non-TUI) and the TUI picker share it so both name the real
+// cause instead of a -T/-F mismatch; pinning one with -M gets MissingReason.
+func NoRowsReason(agent string) string {
+	return fmt.Sprintf("no matching model for agent %q is in the cloud, running, or on disk — registry local models that are neither on disk nor running are hidden (pull or download one, or pin it with -M to see why)", agent)
+}
+
 // Find returns the row for id, discovered rows included — a -M pin names a
 // model, not necessarily a registry entry.
 func Find(rows []Row, id string) (Row, bool) {
@@ -157,8 +212,8 @@ func Find(rows []Row, id string) (Row, bool) {
 func startable(providerID string) bool { return lifecycle.Startable(providerID) }
 
 // Action reports what selecting r does. A non-running local row is startable
-// when its provider has a lifecycle backend and the model is not known to be
-// missing from disk.
+// when its provider has a lifecycle backend (a model missing from disk has no
+// row at all).
 func (r Row) Action() Action {
 	if r.Location != config.LocationLocal || r.Running {
 		return ActionLaunch
@@ -166,21 +221,14 @@ func (r Row) Action() Action {
 	if !startable(r.Model.ProviderID) {
 		return ActionBlock
 	}
-	if r.Status == StatusAbsent {
-		return ActionBlock
-	}
 	return ActionStart
 }
 
 // BlockReason is the status line for an ActionBlock row ("" otherwise): a
-// model missing from disk needs pulling; a provider wt cannot start needs
-// modelman.
+// provider wt cannot start needs modelman.
 func (r Row) BlockReason() string {
 	if r.Action() != ActionBlock {
 		return ""
-	}
-	if startable(r.Model.ProviderID) {
-		return fmt.Sprintf("%s is not on disk — pull or download it first", r.Model.ID)
 	}
 	return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", r.Model.ID, r.Model.ID)
 }

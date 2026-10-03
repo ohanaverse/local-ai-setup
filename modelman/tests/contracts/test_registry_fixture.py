@@ -13,7 +13,7 @@ def test_load_registry_matches_shared_fixture():
     """
     registry = load_registry(path=FIXTURE)
 
-    assert len(registry.providers) == 5
+    assert len(registry.providers) == 6
     ollama = registry.provider("ollama")
     assert ollama.protocols == ["anthropic", "openai-chat"]
     assert ollama.auth.type == "none"
@@ -45,7 +45,7 @@ def test_load_registry_matches_shared_fixture():
     assert mlx.auth.base_url == "http://localhost:8001/v1"
     assert mlx.location == "local"
 
-    assert len(registry.models) == 5
+    assert len(registry.models) == 7
 
     free_model = registry.model("ollama/contract-fixture:local")
     assert free_model.cost is None
@@ -89,6 +89,20 @@ def test_load_registry_matches_shared_fixture():
     assert pair.draft is not None
     assert pair.draft.repo == "org/contract-fixture-draft"
 
+    # #179 Phase B local overlays: a "--"-style id whose model_name is the
+    # repo form (wt matches it to the discovered artifact through model_name),
+    # and an overlay that is not on disk — still a valid, parsed entry that
+    # modelman lists as downloadable while wt's catalog shows no row for it
+    # (wt/internal/catalog/registry_fixture_test.go).
+    mtplx = registry.provider("mtplx")
+    assert mtplx.location == "local"
+    assert mtplx.auth.base_url == "http://localhost:8003/v1"
+    dashed = registry.model("mtplx/org--contract-fixture-dashed")
+    assert dashed.provider_id == "mtplx"
+    assert dashed.model_name == "org/contract-fixture-dashed"
+    absent = registry.model("ollama/contract-fixture:absent")
+    assert absent.provider_id == "ollama"
+    assert absent.model_name == "contract-fixture:absent"
     family = registry.family("contract-fixture")
     assert family is not None
     assert family.display_name == "Contract Fixture"

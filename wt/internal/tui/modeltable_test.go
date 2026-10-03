@@ -18,13 +18,13 @@ func tableTestRows() []tableRow {
 			Location: config.LocationCloud, Status: catalog.StatusOK}, counts: usage.UsageCounts{OneDay: 1, SevenDay: 12, ThirtyDay: 340}},
 		{Row: catalog.Row{Model: config.Model{ID: "omlx/Qwen3.8-27B-4bit", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusOK, Running: true}},
 		{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx"}, Location: config.LocationLocal, Status: catalog.StatusNew, Discovered: true}},
-		{Row: catalog.Row{Model: config.Model{ID: "omlx/gone", ProviderID: "omlx", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusAbsent}},
+		{Row: catalog.Row{Model: config.Model{ID: "mlx_lm_server/pair", ProviderID: "mlx_lm_server", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusUnknown}},
 	}
 }
 
 // TestRenderTableHeaderAndCells verifies the header carries every column
 // name in order and each row renders the specified ASCII cells: LOC
-// cloud/local, STATUS ok/new/absent, RUNNING run/-, discovered
+// cloud/local, STATUS ok/new/unknown, RUNNING run/-, discovered
 // rows with family "-" and cost "-". The header must not carry the EXPOSED
 // column removed by #179 (configured is exposed — there is no flag to show).
 func TestRenderTableHeaderAndCells(t *testing.T) {
@@ -41,7 +41,7 @@ func TestRenderTableHeaderAndCells(t *testing.T) {
 	if strings.Contains(tbl.header, "EXPOSED") {
 		t.Errorf("header %q still carries the removed EXPOSED column", tbl.header)
 	}
-	cloud, run, disc, absent := tbl.items[0].line, tbl.items[1].line, tbl.items[2].line, tbl.items[3].line
+	cloud, run, disc, unknown := tbl.items[0].line, tbl.items[1].line, tbl.items[2].line, tbl.items[3].line
 	for _, want := range []string{"kimi", "openrouter/cheap", "cloud", "ok", "0.5000", "12", "340"} {
 		if !strings.Contains(cloud, want) {
 			t.Errorf("cloud line %q missing %q", cloud, want)
@@ -53,8 +53,8 @@ func TestRenderTableHeaderAndCells(t *testing.T) {
 	if !strings.HasPrefix(disc, "-") || !strings.Contains(disc, "new") {
 		t.Errorf("discovered line = %q (want family '-' and status new)", disc)
 	}
-	if !strings.Contains(absent, "absent") {
-		t.Errorf("absent line = %q", absent)
+	if !strings.Contains(unknown, "unknown") {
+		t.Errorf("unknown line = %q", unknown)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestRenderTableColumnsAlign(t *testing.T) {
 	if got := string(line(1)[col("RUNNING") : col("RUNNING")+3]); got != "run" {
 		t.Errorf("RUNNING cell = %q", got)
 	}
-	if got := string(line(3)[col("STATUS") : col("STATUS")+6]); got != "absent" {
+	if got := string(line(3)[col("STATUS") : col("STATUS")+7]); got != "unknown" {
 		t.Errorf("STATUS cell = %q", got)
 	}
 }
@@ -94,8 +94,9 @@ func TestRenderTableSurveySegmentTrailing(t *testing.T) {
 }
 
 // TestRenderTableBlockedAndMarkers verifies a non-running omlx row is a
-// start row, an absent row is blocked with the not-on-disk reason, only the
-// last-launched row is marked, and the in-use ref count is picked up.
+// start row, a provider wt cannot start is blocked with the modelman start
+// reason, only the last-launched row is marked, and the in-use ref count is
+// picked up.
 func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	tbl := renderTable(tableTestRows(), nil, "", map[string]int{"openrouter/cheap": 2}, "omlx/Qwen3.8-27B-4bit")
 	if tbl.items[0].blocked != "" || tbl.items[1].blocked != "" {
@@ -105,10 +106,10 @@ func TestRenderTableBlockedAndMarkers(t *testing.T) {
 		t.Errorf("discovered non-running omlx row: start = %v blocked = %q, want a start row with no hint", tbl.items[2].start, tbl.items[2].blocked)
 	}
 	if tbl.items[3].blocked == "" || tbl.items[3].start {
-		t.Errorf("absent omlx row: start = %v blocked = %q, want blocked and not startable", tbl.items[3].start, tbl.items[3].blocked)
+		t.Errorf("mlx_lm_server row: start = %v blocked = %q, want blocked and not startable", tbl.items[3].start, tbl.items[3].blocked)
 	}
-	if !strings.Contains(tbl.items[3].blocked, "not on disk") {
-		t.Errorf("absent row blocked = %q, want the not-on-disk reason", tbl.items[3].blocked)
+	if !strings.Contains(tbl.items[3].blocked, "modelman start mlx_lm_server/pair") {
+		t.Errorf("mlx_lm_server row blocked = %q, want the modelman start reason", tbl.items[3].blocked)
 	}
 	if !tbl.items[1].marked || tbl.items[0].marked {
 		t.Error("only the last-launched row is marked")

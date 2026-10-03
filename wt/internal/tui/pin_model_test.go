@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -215,5 +216,68 @@ func TestPinOnDiscoveredLocalStartsIt(t *testing.T) {
 	}
 	if !got.start.item.start {
 		t.Error("a pinned non-running discovered model must be a start row")
+	}
+}
+
+// offDiskOmlxSnapshot is the probe's answer when the fixture's only local
+// model is confirmed missing from disk, so it has no picker row.
+func offDiskOmlxSnapshot() localmodels.Snapshot {
+	return localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/qwen3.8", ModelName: "qwen3.8", Registered: true, ArtifactKnown: true},
+		},
+	}
+}
+
+// TestAllOffDiskEligibleRoutesBack verifies an eligible list whose every model
+// is a local one with no row (here: -F narrows to the one local model, which
+// is not on disk) routes back to the agent picker with catalog.NoRowsReason
+// instead of opening an empty "No items." table whose Enter does nothing.
+// Since #179 Phase B a non-empty eligible list can build zero rows, so the
+// callers' len(models)==0 guards no longer cover this case.
+func TestAllOffDiskEligibleRoutesBack(t *testing.T) {
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, offDiskOmlxSnapshot())
+	cfg := modelTestConfig()
+	m := model{cfg: cfg, agent: "claude", activeFamily: "qwen3.8", selectedPath: t.TempDir(), width: 80, height: 24}
+	models, err := cfg.EligibleModels("claude", "", "qwen3.8")
+	if err != nil || len(models) != 1 {
+		t.Fatalf("eligible = %v, %v; want the one local model", models, err)
+	}
+
+	got, _ := m.enterModelPhase("claude", models, "code")
+
+	if got.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (no empty table)", got.phase)
+	}
+	if want := catalog.NoRowsReason("claude"); got.status != want {
+		t.Errorf("status = %q, want %q", got.status, want)
+	}
+}
+
+// TestPinFilteredOutOfEligibleIsNotToldToPull verifies a -M pin that -F
+// removed from the agent's eligible list gets the "not in the eligible list"
+// wording even though the probe says it is not on disk. Telling the user to
+// pull it would be wrong: after pulling, the same pin would still be refused
+// as ineligible, so MissingReason applies only to a pin in the eligible list.
+func TestPinFilteredOutOfEligibleIsNotToldToPull(t *testing.T) {
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, offDiskOmlxSnapshot())
+	cfg := modelTestConfig()
+	m := model{cfg: cfg, agent: "claude", activeFamily: "opus", pinnedModel: "omlx/qwen3.8", selectedPath: t.TempDir(), width: 80, height: 24}
+	models, _ := cfg.EligibleModels("claude", "", "opus")
+
+	got, _ := m.enterModelPhase("claude", models, "code")
+
+	if got.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent", got.phase)
+	}
+	if !strings.Contains(got.status, "not in the eligible list") || strings.Contains(got.status, "not on disk") {
+		t.Errorf("status = %q, want the eligibility wording, not the pull hint", got.status)
 	}
 }

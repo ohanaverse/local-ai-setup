@@ -23,11 +23,12 @@ import (
 // its own native provider, and shell is deliberately included as an Agent
 // entry (with a provider it would otherwise match) to prove EligibleAgents
 // excludes it via IsCommand rather than relying on it being absent from
-// config.toml. The probe is stubbed to an empty snapshot, so the local
-// model reads as not-running unless a test says otherwise.
+// config.toml. The probe is stubbed to smokeIdleSnapshot — the local model is
+// on disk but not running, so it has a start row (#179 Phase B: an empty
+// snapshot would give it no row at all) — unless a test says otherwise.
 func smokeFixtureConfig(t *testing.T) *config.Config {
 	t.Helper()
-	stubSmokeProbe(t, localmodels.Snapshot{})
+	stubSmokeProbe(t, smokeIdleSnapshot())
 	cfg := &config.Config{
 		Providers: []config.Provider{
 			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
@@ -48,6 +49,17 @@ func smokeFixtureConfig(t *testing.T) *config.Config {
 	}
 	cfg.ReadyAllForTest()
 	return cfg
+}
+
+// smokeIdleSnapshot is the live-probe answer that makes the fixture's ollama
+// model an idle start row: on disk, not running.
+func smokeIdleSnapshot() localmodels.Snapshot {
+	return localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "qwen3.8:27b-mlx", ModelID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", Registered: true, ArtifactKnown: true},
+		},
+	}
 }
 
 // smokeRunningSnapshot is the live-probe answer that makes the fixture's
@@ -145,7 +157,15 @@ func TestAllEligibleModelsUnionsAcrossAgents(t *testing.T) {
 // smoke must never advertise a model a launch would refuse — the whole point
 // of moving eligibility onto live rows.
 func TestEligibilityExcludesIdleLocalModels(t *testing.T) {
-	cfg := smokeFixtureConfig(t) // fixture probes an empty snapshot: nothing is running
+	cfg := smokeFixtureConfig(t) // fixture probes smokeIdleSnapshot: on disk, not running
+	// LiteLLM routing lets the idle start row resolve a route, so it is a
+	// real candidate. Guard against a vacuous pass: the idle model must be a
+	// Candidates entry (it is startable), so its absence from Eligibility
+	// below is the idle rule, not a missing row.
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
+	if !slices.ContainsFunc(Candidates(cfg), func(c Candidate) bool { return c.Row.Model.ID == "ollama/qwen3.8:27b-mlx" }) {
+		t.Fatal("fixture's idle local model has no candidate row; the exclusion check would pass vacuously")
+	}
 	models, _ := Eligibility(cfg)
 	for _, m := range models {
 		if m.ID == "ollama/qwen3.8:27b-mlx" {

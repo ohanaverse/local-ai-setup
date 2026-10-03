@@ -41,10 +41,11 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // configured, "(not in LiteLLM)" for a discovered (registry-less) row whose route
 // would go through LiteLLM, which also sets blocked, "(unavailable)" for any other route resolution failure).
 // blocked, when non-empty, is the hint the agent flow's model phase shows on
-// Enter instead of launching or starting: a local model that is not on disk,
-// a local provider wt has no lifecycle backend for, or a discovered row whose
-// route would go through LiteLLM (see catalog.Row Action/BlockReason). A non-running
-// local model is deliberately NOT one of these — it is a start row. Every
+// Enter instead of launching or starting: a local provider wt has no lifecycle
+// backend for, or a discovered row whose route would go through LiteLLM (see
+// catalog.Row Action/BlockReason). A non-running local model is deliberately
+// NOT one of these — it is a start row — and a local model that is not on disk
+// is not one either: it has no row at all. Every
 // picker honors it: the agent flow shows it on Enter, and the standalone
 // PickModel/PickStartModel (wt smoke, wt start) refuse to select a blocked
 // row and show it as a notice instead.

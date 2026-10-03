@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -10,7 +11,7 @@ import (
 )
 
 // probeInventory is a test seam: production probes the live local-model
-// inventory. cmd/wt's TestMain stubs it to an empty snapshot so no test dials
+// inventory. cmd/wt's TestMain stubs it to localmodels.OnDiskSnapshotForTest so no test dials
 // the developer's real ollama/omlx/mtplx servers, and tests that need a
 // verdict stub it with their own snapshot.
 var probeInventory = localmodels.Inventory
@@ -39,10 +40,13 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 //   - command agent → errCommandAgent, nil launchable
 //   - pinned != "" → the pin's row decides: launch → return it; start →
 //     start it through startForLaunch, then return it; block → error carrying
-//     the row's block reason. A pin absent from the rows → "not in the
-//     eligible list".
+//     the row's block reason. A pin absent from the rows →
+//     catalog.MissingReason when the pin is in the eligible list and the
+//     probe can say why it has no row (not on disk, a stopped mlx_lm_server
+//     pairing), else "not in the eligible list".
 //   - no pin, empty launchable → error (pin-the-model wording when rows
-//     existed, generic "no models match" when none did)
+//     existed; catalog.NoRowsReason when models were eligible but none has a
+//     row; generic "no models match" when nothing was eligible)
 //   - no pin, one launchable → return it
 //   - no pin, several launchable → "multiple models match"
 //
@@ -78,6 +82,14 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	if pinned != "" {
 		row, ok := catalog.Find(rows, pinned)
 		if !ok {
+			// MissingReason only for a pin the agent could use: one outside
+			// the eligible list (unsupported provider, filtered by -T/-F)
+			// would be told to pull, then refused as ineligible after.
+			if config.IndexModelByID(eligible, pinned) >= 0 {
+				if reason := catalog.MissingReason(&snap, pinned); reason != "" {
+					return config.Model{}, launchable, errors.New(reason)
+				}
+			}
 			return config.Model{}, launchable, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
 		}
 		// The picker's route switch decides a row's fate wherever it appears —
@@ -101,6 +113,11 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	}
 
 	if len(launchable) == 0 {
+		if len(rows) == 0 && len(eligible) > 0 {
+			// Every eligible model is a local one with no row (#179 Phase B):
+			// the filters matched, the models just are not on disk or running.
+			return config.Model{}, nil, errors.New(catalog.NoRowsReason(agent))
+		}
 		if len(rows) == 0 {
 			return config.Model{}, nil, fmt.Errorf("no models match agent %q with tags %q and family %q", agent, tags, family)
 		}

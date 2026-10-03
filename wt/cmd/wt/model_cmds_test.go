@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -209,6 +210,9 @@ func startFixture(t *testing.T) (*config.Config, *startRequest) {
 			{ProviderID: "ollama", Artifact: "a:1", ModelID: "ollama/a:1", ModelName: "a:1", Registered: true, Running: true, ArtifactKnown: true},
 			{ProviderID: "ollama", Artifact: "b:1", ModelID: "ollama/b:1", ModelName: "b:1", Registered: true, ArtifactKnown: true},
 			{ProviderID: "omlx", Artifact: "", ModelID: "omlx/c", ModelName: "c", Registered: true, ArtifactKnown: true},
+			// A stopped mlx_lm_server pairing (its model is added to cfg only
+			// by TestStartInvalidArgErrors): no row, wt cannot start it.
+			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/p", ModelName: "p", Registered: true},
 		},
 	})
 	return modelCmdConfig(), stubStartDriver(t, nil)
@@ -239,12 +243,22 @@ func TestStartIdleModelStartsIt(t *testing.T) {
 	}
 }
 
-// TestStartInvalidArgErrors verifies unknown ids, cloud ids, and blocked models
-// exit with an error naming the problem and never start anything.
+// TestStartInvalidArgErrors verifies unknown ids, cloud ids, and registry
+// local models with no row exit with an error naming the problem and never
+// start anything. The two hidden models (omlx/c not on disk, a stopped
+// mlx_lm_server pairing) get their reason only through catalog.MissingReason
+// — the "modelman start" hint for the pairing, since wt cannot start it.
 func TestStartInvalidArgErrors(t *testing.T) {
 	cfg, req := startFixture(t)
-	cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud})
-	cases := map[string]string{"ollama/nope:9": "unknown model", "openrouter/x": "not a local model", "omlx/c": "not on disk"}
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}})
+	cfg.Models = append(cfg.Models,
+		config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud},
+		config.Model{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Location: config.LocationLocal},
+	)
+	cases := map[string]string{
+		"ollama/nope:9": "unknown model", "openrouter/x": "not a local model", "omlx/c": "not on disk",
+		"mlx_lm_server/p": "modelman start mlx_lm_server/p",
+	}
 	for arg, want := range cases {
 		err := runStart(io.Discard, cfg, themes.Theme{}, arg, false)
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -297,8 +311,8 @@ func TestStartNoArgUsesPickerAndRunningPickIsNoOp(t *testing.T) {
 	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err != nil || !req.called {
 		t.Fatalf("idle pick: err = %v called = %v, want a start", err, req.called)
 	}
-	if len(offered) != 3 {
-		t.Errorf("picker offered %v, want all three local models (running, idle, blocked)", offered)
+	if !slices.Equal(offered, []string{"ollama/a:1", "ollama/b:1"}) {
+		t.Errorf("picker offered %v, want the running and idle models only (omlx/c is not on disk, so it has no row)", offered)
 	}
 
 	*req = startRequest{}

@@ -75,7 +75,7 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 // process. Tests that need local rows call stubInventory; tests that exercise
 // the start flow call stubStartModel.
 func TestMain(m *testing.M) {
-	runInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	runInventory = localmodels.OnDiskSnapshotForTest
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
 	}

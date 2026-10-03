@@ -6,6 +6,10 @@ package catalog
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,58 +69,93 @@ func TestBuildIncludesConfiguredAndDiscoveredLocal(t *testing.T) {
 	}
 }
 
-// TestBuildMarksAbsentAndRespectsAgentAndFilters verifies: a configured local
-// model with no artifact reads "absent"; discovered models from a provider
-// the agent does not support are skipped (agent supported_providers stays a
-// hard constraint); HideDiscovered (-T/-F) drops discovered rows; a
-// discovered id equal to an existing row id is dropped (registry row wins).
-func TestBuildMarksAbsentAndRespectsAgentAndFilters(t *testing.T) {
+// TestBuildHidesLocalModelsNotOnDisk verifies #179 Phase B's row rule: a
+// registry local model gets a row only from its inventory entry. An overlay
+// the probe confirmed is not on disk, and one with no inventory entry at all
+// (e.g. its location could not be resolved), both get no row — the picker
+// lists what exists, not what is configured. Agent supported_providers stays a hard constraint
+// for discovered rows, HideDiscovered (-T/-F) drops them, and a discovered id
+// equal to a registry row's id is dropped (the registry row wins).
+func TestBuildHidesLocalModelsNotOnDisk(t *testing.T) {
 	cfg := catalogTestCfg()
-	models := []config.Model{{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone"}}
-	inv := &localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true, ArtifactKnown: true},
-		{ProviderID: "mtplx", ModelID: "mtplx/x", Artifact: "x"},      // claude does not support mtplx
-		{ProviderID: "ollama", ModelID: "omlx/gone", Artifact: "dup"}, // id collision with a row
-		{ProviderID: "ollama", ModelID: "ollama/ok", Artifact: "ok"},
-	}}
+	models := []config.Model{
+		{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone"},
+		{ID: "omlx/here", ProviderID: "omlx", ModelName: "here"},
+		{ID: "omlx/unprobed", ProviderID: "omlx", ModelName: "unprobed"},
+	}
+	inv := &localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", ModelID: "omlx/here", Artifact: "here", Registered: true, ArtifactKnown: true},
+			{ProviderID: "mtplx", ModelID: "mtplx/x", Artifact: "x", ArtifactKnown: true},      // claude does not support mtplx
+			{ProviderID: "ollama", ModelID: "omlx/here", Artifact: "dup", ArtifactKnown: true}, // id collision with a row
+			{ProviderID: "ollama", ModelID: "ollama/ok", Artifact: "ok", ArtifactKnown: true},
+		},
+	}
 	in := Input{Config: cfg, Agent: "claude", Models: models, Inventory: inv}
 	rows := Build(in)
-	if got := strings.Join(rowIDs(rows), ","); got != "omlx/gone,ollama/ok" {
-		t.Fatalf("rows = %s", got)
+	if got := strings.Join(rowIDs(rows), ","); got != "omlx/here,ollama/ok" {
+		t.Fatalf("rows = %s, want only the on-disk overlay and the discovered model", got)
 	}
-	if rows[0].Status != StatusAbsent {
-		t.Errorf("Status = %q, want absent", rows[0].Status)
+	if rows[0].Status != StatusOK || rows[0].Running || rows[0].Action() != ActionStart {
+		t.Errorf("on-disk idle row = %+v, want status ok, startable", rows[0])
 	}
 	in.HideDiscovered = true
-	if got := strings.Join(rowIDs(Build(in)), ","); got != "omlx/gone" {
+	if got := strings.Join(rowIDs(Build(in)), ","); got != "omlx/here" {
 		t.Errorf("HideDiscovered rows = %s", got)
 	}
 }
 
-// TestBuildUnknownLocalStatus verifies the three-way artifact rule: a probe
-// that answered and found nothing reads "absent" (and the row is blocked: the
-// engine would wait out its warmup on a model that is not there), a probe that
-// could not tell reads "unknown" (and stays startable — a transient daemon
-// hiccup must not make the picker refuse to start a model that is actually
-// pulled), and a row serving right now never reads absent even when its
-// artifact could not be resolved (mlx_lm_server, whose target+draft pairing is
-// not discoverable).
+// TestBuildHiddenRegistryIDShadowsDiscovered verifies a registry local model
+// with no row still shadows a discovered artifact spelling the same id (the
+// registry's model_name is a different artifact that is not on disk, while an
+// unregistered artifact named like the id's suffix is). Listing that artifact
+// under the registry id would make a -M pin launch it instead of reporting
+// "not on disk", and non-TUI rotation — which returns the registry model for
+// an id — would launch the missing model_name.
+func TestBuildHiddenRegistryIDShadowsDiscovered(t *testing.T) {
+	cfg := catalogTestCfg()
+	models := []config.Model{{ID: "ollama/foo", ProviderID: "ollama", ModelName: "bar"}}
+	inv := &localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/foo", ModelName: "bar", Registered: true, ArtifactKnown: true},
+			{ProviderID: "ollama", ModelID: config.DiscoveredModelID("ollama", "foo"), ModelName: "foo", Artifact: "foo", Running: true, ArtifactKnown: true},
+		},
+	}
+	rows := Build(Input{Config: cfg, Agent: "claude", Models: models, Inventory: inv})
+	if len(rows) != 0 {
+		t.Fatalf("rows = %v, want none (the hidden registry id shadows the same-id discovered artifact)", rowIDs(rows))
+	}
+	if got := MissingReason(inv, "ollama/foo"); !strings.Contains(got, "is not on disk") {
+		t.Errorf("MissingReason = %q, want the not-on-disk reason for the pin", got)
+	}
+}
+
+// TestBuildUnknownLocalStatus verifies a flaky probe never hides a model: a
+// family whose discovery failed (ollama unreachable, ArtifactKnown false)
+// still lists its registry models, as "unknown" and startable — hiding every
+// pulled model whenever the daemon hiccups would empty the picker. A running
+// row reads ok even though its artifact could not be resolved
+// (mlx_lm_server), while a NON-running mlx_lm_server pairing is hidden:
+// mlx_lm_server is "running only", wt can neither discover nor start it.
 func TestBuildUnknownLocalStatus(t *testing.T) {
 	cfg := catalogTestCfg()
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mlx_lm_server", Location: config.LocationLocal})
 	models := []config.Model{
 		{ID: "ollama/unknown", ProviderID: "ollama", ModelName: "unknown", Location: config.LocationLocal},
-		{ID: "omlx/nope", ProviderID: "omlx", ModelName: "nope", Location: config.LocationLocal},
 		{ID: "mlx_lm_server/serving", ProviderID: "mlx_lm_server", ModelName: "serving", Location: config.LocationLocal},
+		{ID: "mlx_lm_server/idle", ProviderID: "mlx_lm_server", ModelName: "idle", Location: config.LocationLocal},
 	}
 	inv := &localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{
-			"ollama": localmodels.StatusUnreachable, "omlx": localmodels.StatusOK,
+			"ollama": localmodels.StatusUnreachable, "mlx_lm_server": localmodels.StatusOK,
 		},
 		Entries: []localmodels.Entry{
 			{ProviderID: "ollama", ModelID: "ollama/unknown", Registered: true},
-			{ProviderID: "omlx", ModelID: "omlx/nope", Registered: true, ArtifactKnown: true},
 			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/serving", Registered: true, Running: true},
+			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/idle", Registered: true},
 		},
 	}
 	rows := Build(Input{Config: cfg, Agent: "claude", Models: models, Inventory: inv})
@@ -124,34 +163,65 @@ func TestBuildUnknownLocalStatus(t *testing.T) {
 	for _, r := range rows {
 		byID[r.Model.ID] = r
 	}
-	if got := byID["ollama/unknown"].Status; got != StatusUnknown {
-		t.Errorf("unreachable ollama status = %q, want unknown", got)
+	if r, ok := byID["ollama/unknown"]; !ok || r.Status != StatusUnknown || r.Action() != ActionStart {
+		t.Errorf("unreachable ollama row = %+v (present %v), want status unknown and startable (fail open)", r, ok)
 	}
-	if got := byID["ollama/unknown"].Action(); got != ActionStart {
-		t.Errorf("unreachable ollama action = %v, want ActionStart (fail open)", got)
+	if r, ok := byID["mlx_lm_server/serving"]; !ok || r.Status != StatusOK || !r.Running {
+		t.Errorf("running mlx_lm_server row = %+v (present %v), want ok and running", r, ok)
 	}
-	if got := byID["omlx/nope"].Status; got != StatusAbsent {
-		t.Errorf("answered omlx status = %q, want absent", got)
-	}
-	if got := byID["omlx/nope"].Action(); got != ActionBlock {
-		t.Errorf("an absent non-running omlx row must be blocked, got action %v", got)
-	}
-	if got := byID["mlx_lm_server/serving"].Status; got != StatusOK {
-		t.Errorf("running mlx_lm_server status = %q, want ok", got)
+	if _, ok := byID["mlx_lm_server/idle"]; ok {
+		t.Error("a non-running mlx_lm_server pairing must have no row")
 	}
 }
 
-// TestBuildLocalModelMissingFromSnapshot verifies a local registry model with
-// no inventory entry at all (an unresolvable location, or a family wt has no
-// probe for) reads "unknown" rather than "absent": nothing was discovered
-// about it, so calling it missing would be a guess.
-func TestBuildLocalModelMissingFromSnapshot(t *testing.T) {
-	cfg := catalogTestCfg()
-	models := []config.Model{{ID: "omlx/unprobed", ProviderID: "omlx", ModelName: "unprobed", Location: config.LocationLocal}}
-	inv := &localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK}}
-	rows := Build(Input{Config: cfg, Agent: "claude", Models: models, Inventory: inv})
-	if rows[0].Status != StatusUnknown {
-		t.Errorf("Status = %q, want unknown", rows[0].Status)
+// TestBuildOverlayMatchedAgainstRealInventory runs a real inventory round
+// (temp model directories, refused live probes — never a real server) and
+// pins overlay matching end to end: a discovered artifact matching a registry
+// entry's model_name takes that entry's id, family and tags — both for an id
+// that spells the repo's "/" as "--" and for one shaped provider/model_name —
+// an overlay whose artifact is missing gets no row, and an unmatched artifact
+// becomes a discovered row under config.DiscoveredModelID with
+// Source=discovered and no family. Stats and rotation are keyed on these ids,
+// so a matching regression silently forks a model's history.
+func TestBuildOverlayMatchedAgainstRealInventory(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	refused := gone.URL
+	gone.Close()
+	omlxDir, mtplxDir := t.TempDir(), t.TempDir()
+	for _, d := range []string{
+		filepath.Join(omlxDir, "Qwen3.8-9B-4bit"),
+		filepath.Join(omlxDir, "stray-model"),
+		filepath.Join(mtplxDir, "mlx-community--Qwen3.8-27B-4bit"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, ModelDir: omlxDir, Auth: config.AuthConfig{Type: "none", BaseURL: refused}},
+			{ID: "mtplx", Location: config.LocationLocal, ModelDir: mtplxDir, Auth: config.AuthConfig{Type: "none", BaseURL: refused}},
+		},
+		Models: []config.Model{
+			{ID: "omlx/Qwen3.8-9B-4bit", ProviderID: "omlx", ModelName: "Qwen3.8-9B-4bit", Family: "qwen", Tags: []string{"code"}},
+			{ID: "mtplx/mlx-community--Qwen3.8-27B-4bit", ProviderID: "mtplx", ModelName: "mlx-community/Qwen3.8-27B-4bit", Family: "qwen", Tags: []string{"code"}},
+			{ID: "omlx/absent-4bit", ProviderID: "omlx", ModelName: "absent-4bit", Family: "qwen", Tags: []string{"code"}},
+		},
+	}
+	snap := localmodels.Inventory(cfg)
+	rows := Build(Input{Config: cfg, Models: cfg.Models, Inventory: &snap})
+	want := "omlx/Qwen3.8-9B-4bit,mtplx/mlx-community--Qwen3.8-27B-4bit," + config.DiscoveredModelID("omlx", "stray-model")
+	if got := strings.Join(rowIDs(rows), ","); got != want {
+		t.Fatalf("rows = %s, want %s", got, want)
+	}
+	for _, r := range rows[:2] {
+		if r.Discovered || r.Model.Family != "qwen" || !r.Model.HasTag("code") || r.Status != StatusOK {
+			t.Errorf("matched overlay row %s = %+v, want the registry family/tags, status ok", r.Model.ID, r)
+		}
+	}
+	d := rows[2]
+	if !d.Discovered || d.Model.Source != config.SourceDiscovered || d.Model.Family != "" || d.Status != StatusNew {
+		t.Errorf("unmatched row = %+v, want discovered, Source=discovered, no family, status new", d)
 	}
 }
 
@@ -178,8 +248,8 @@ func TestBuildWithoutInventoryKeepsLocalRowsStartable(t *testing.T) {
 // TestRowActionRules verifies what selecting a row does per row kind: cloud
 // and running local rows launch; a non-running local row of a provider wt can
 // start (ollama, omlx, mtplx) starts — including a pulled ollama model, a
-// discovered row and an unknown-presence row; an absent row and a provider
-// with no start engine (mlx_lm_server) are blocked. Getting this wrong either
+// discovered row and an unknown-presence row; a provider with no start
+// engine (mlx_lm_server) is blocked. Getting this wrong either
 // launches a dead model or hides one wt could have started.
 func TestRowActionRules(t *testing.T) {
 	local := func(provider string, status Status, running, discovered bool) Row {
@@ -196,8 +266,6 @@ func TestRowActionRules(t *testing.T) {
 		{"idle mtplx discovered", local("mtplx", StatusNew, false, true), ActionStart},
 		{"idle ollama pulled", local("ollama", StatusOK, false, false), ActionStart},
 		{"idle ollama unknown presence", local("ollama", StatusUnknown, false, false), ActionStart},
-		{"absent omlx", local("omlx", StatusAbsent, false, false), ActionBlock},
-		{"absent ollama", local("ollama", StatusAbsent, false, false), ActionBlock},
 		{"mlx_lm_server has no start engine", local("mlx_lm_server", StatusOK, false, false), ActionBlock},
 		{"omlx-6bit shares omlx's engine", local("omlx-6bit", StatusOK, false, false), ActionStart},
 	}
@@ -209,13 +277,9 @@ func TestRowActionRules(t *testing.T) {
 }
 
 // TestBlockReasonNamesTheFix verifies the status text for a blocked row names
-// what to do: pull/download for an absent model, `modelman start <id>` for a
-// provider wt cannot start, and "" for rows that are not blocked.
+// what to do — `modelman start <id>` for a provider wt cannot start — and is
+// "" for rows that are not blocked.
 func TestBlockReasonNamesTheFix(t *testing.T) {
-	absent := Row{Location: config.LocationLocal, Status: StatusAbsent, Model: config.Model{ID: "omlx/a", ProviderID: "omlx"}}
-	if h := absent.BlockReason(); !strings.Contains(h, "omlx/a") || !strings.Contains(h, "not on disk") {
-		t.Errorf("absent reason = %q", h)
-	}
 	mlx := Row{Location: config.LocationLocal, Status: StatusOK, Model: config.Model{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server"}}
 	if h := mlx.BlockReason(); !strings.Contains(h, "modelman start mlx_lm_server/p") {
 		t.Errorf("mlx_lm_server reason = %q", h)
@@ -330,5 +394,40 @@ func TestBuildMarksUnmappedCloudRows(t *testing.T) {
 	}
 	if rows[0].RouteRefusal(viaProxy, nil) != "" {
 		t.Fatal("mapped cloud row refused")
+	}
+}
+
+// TestMissingReason verifies the message a pin of a hidden registry model
+// gets (#179 Phase B): an overlay the probe confirmed is not on disk says so,
+// a non-running mlx_lm_server pairing names `modelman start`, and everything
+// that has a row — or that the probe could not vouch for — gets "" so the
+// caller falls back to its generic wording. Without it, `wt -M <absent-id>`
+// would say "not in the eligible list" and send the user hunting for a
+// filter or agent problem instead of a download.
+func TestMissingReason(t *testing.T) {
+	snap := &localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true, ArtifactKnown: true},
+		{ProviderID: "omlx", ModelID: "omlx/here", Artifact: "here", Registered: true, ArtifactKnown: true},
+		{ProviderID: "ollama", ModelID: "ollama/unknown", Registered: true},
+		{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/p", Registered: true},
+		{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/run", Registered: true, Running: true},
+		{ProviderID: "omlx", ModelID: "omlx/disc", Artifact: "disc", ArtifactKnown: true},
+	}}
+	cases := map[string]string{
+		"omlx/gone":         "omlx/gone is not on disk — pull or download it first",
+		"mlx_lm_server/p":   "local model \"mlx_lm_server/p\" is not running — start it with `modelman start mlx_lm_server/p`",
+		"omlx/here":         "",
+		"mlx_lm_server/run": "",
+		"ollama/unknown":    "",
+		"omlx/disc":         "",
+		"nope/x":            "",
+	}
+	for id, want := range cases {
+		if got := MissingReason(snap, id); got != want {
+			t.Errorf("MissingReason(%s) = %q, want %q", id, got, want)
+		}
+	}
+	if got := MissingReason(nil, "omlx/gone"); got != "" {
+		t.Errorf("MissingReason(nil snapshot) = %q, want empty (no probe ran)", got)
 	}
 }

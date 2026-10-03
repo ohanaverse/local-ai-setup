@@ -21,8 +21,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Fatalf("loadRegistry() error: %v", err)
 	}
 
-	if len(providers) != 5 {
-		t.Fatalf("got %d providers, want 5", len(providers))
+	if len(providers) != 6 {
+		t.Fatalf("got %d providers, want 6", len(providers))
 	}
 	ollama, openrouter, agy := providers[0], providers[1], providers[2]
 	if ollama.ID != "ollama" || ollama.Auth.Type != "none" || ollama.Auth.BaseURL != "http://localhost:11434" {
@@ -54,8 +54,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("mlx_lm_server provider decoded wrong: %+v", mlx)
 	}
 
-	if len(models) != 5 {
-		t.Fatalf("got %d models, want 5", len(models))
+	if len(models) != 7 {
+		t.Fatalf("got %d models, want 7", len(models))
 	}
 	cloud := models[1]
 	if cloud.ID != "openrouter/contract-fixture:cloud" || cloud.Location != "cloud" || cloud.ProviderID != "openrouter" {
@@ -73,6 +73,21 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	pair := models[4]
 	if pair.ID != "mlx_lm_server/contract-fixture:pair" || pair.ProviderID != "mlx_lm_server" {
 		t.Errorf("mlx_lm_server pairing model decoded wrong: %+v", pair)
+	}
+
+	// #179 Phase B overlay rows: a "--"-style local id whose model_name is
+	// the repo form, and an overlay that is not on disk. Both must decode
+	// like any local model; the catalog test proves which one gets a row.
+	mtplx := providers[5]
+	if mtplx.ID != "mtplx" || mtplx.Location != LocationLocal || mtplx.Auth.BaseURL != "http://localhost:8003/v1" {
+		t.Errorf("mtplx provider decoded wrong: %+v", mtplx)
+	}
+	dashed, absent := models[5], models[6]
+	if dashed.ID != "mtplx/org--contract-fixture-dashed" || dashed.ModelName != "org/contract-fixture-dashed" || dashed.ProviderID != "mtplx" {
+		t.Errorf("dashed overlay decoded wrong: %+v", dashed)
+	}
+	if absent.ID != "ollama/contract-fixture:absent" || absent.ModelName != "contract-fixture:absent" || absent.ProviderID != "ollama" {
+		t.Errorf("absent overlay decoded wrong: %+v", absent)
 	}
 }
 

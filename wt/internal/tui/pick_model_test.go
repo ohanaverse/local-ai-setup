@@ -272,7 +272,7 @@ func TestPickModelEnterOnBlockedRowDoesNotSelect(t *testing.T) {
 // TestPickStartModelIgnoresLaunchRoutes verifies the start-only picker does
 // not apply launch-route rules: with LiteLLM on, a discovered row (not in the
 // proxy's model_list) and a start row whose route cannot resolve stay
-// selectable start rows, a row that is not on disk stays blocked, and plain
+// selectable start rows, a model that is not on disk has no row, and plain
 // PickModel behaviour (route blocking) is unchanged. Without this, `wt start`'s
 // picker would refuse models that `wt start <id>` starts fine.
 func TestPickStartModelIgnoresLaunchRoutes(t *testing.T) {
@@ -288,7 +288,7 @@ func TestPickStartModelIgnoresLaunchRoutes(t *testing.T) {
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true}) // unconfigured: routes error
 	models := []config.Model{
-		{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal},
+		{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal, Source: config.SourceDiscovered},
 		{ID: "omlx/idle", ProviderID: "omlx", ModelName: "idle", Location: config.LocationLocal},
 		{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Location: config.LocationLocal},
 	}
@@ -307,8 +307,8 @@ func TestPickStartModelIgnoresLaunchRoutes(t *testing.T) {
 			t.Errorf("start-only %s: %+v, want a selectable start row", id, it)
 		}
 	}
-	if it := start["omlx/gone"]; it == nil || it.blocked == "" || !strings.Contains(it.blocked, "not on disk") {
-		t.Errorf("start-only omlx/gone: %+v, want still blocked (not on disk)", it)
+	if it, ok := start["omlx/gone"]; ok {
+		t.Errorf("start-only omlx/gone: %+v, want no row (not on disk)", it)
 	}
 
 	plain := byID(newPickModel(cfg, models, themes.Default, false))

@@ -21,7 +21,7 @@ import (
 // hook rewrite the real config.yaml). Tests that need a probe result call
 // stubProbeInventory; tests that exercise a start call stubStartDriver.
 func TestMain(m *testing.M) {
-	probeInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	probeInventory = localmodels.OnDiskSnapshotForTest
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests
 	// that need to exercise the not-installed path stub this explicitly.
