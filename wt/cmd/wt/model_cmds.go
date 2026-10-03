@@ -202,8 +202,8 @@ func startCmd(a *app) *cobra.Command {
 		Use:   "start [model]",
 		Short: "Start a local model",
 		Long: "Start a local model (<provider>/<name>, as with -M). With no argument, shows\n" +
-			"the full model picker over every configured and detected local model,\n" +
-			"running ones included (requires a TTY); picking a running model does nothing.\n\n" +
+			"the full model picker over every local model that is on disk or running,\n" +
+			"registered or detected (requires a TTY); picking a running model does nothing.\n\n" +
 			"If the provider's single slot is occupied, asks before replacing the running\n" +
 			"model; --replace skips the question.",
 		Example: "  wt start ollama/qwen3.8:27b-mlx\n  wt start",
@@ -223,8 +223,9 @@ func startCmd(a *app) *cobra.Command {
 	return cmd
 }
 
-// localRows builds catalog rows for every configured and detected local model
-// from one live inventory snapshot — screen 1's row set.
+// localRows builds catalog rows for every local model the live inventory
+// lists (registry models on disk or running, plus detected ones) from one
+// snapshot — screen 1's row set.
 func localRows(cfg *config.Config) []catalog.Row {
 	rows, _ := localRowsSnap(cfg)
 	return rows

@@ -102,6 +102,12 @@ func Build(in Input) []Row {
 		} else if loc == config.LocationLocal && in.Inventory != nil {
 			e, ok := byID[m.ID]
 			if !ok || !listed(e) {
+				// The hidden registry id still shadows a discovered entry
+				// spelling the same id (provider/artifact): surfacing that
+				// artifact under a registry id would let rotation, usage and
+				// profiles — all keyed by id — resolve it to the registry
+				// model, whose model_name is a different, missing artifact.
+				seen[m.ID] = true
 				continue
 			}
 			r.Running = e.Running
@@ -184,7 +190,7 @@ func MissingReason(snap *localmodels.Snapshot, id string) string {
 // entry). `wt` (non-TUI) and the TUI picker share it so both name the real
 // cause instead of a -T/-F mismatch; pinning one with -M gets MissingReason.
 func NoRowsReason(agent string) string {
-	return fmt.Sprintf("no model for agent %q is in the cloud, running, or on disk — registry local models that are neither on disk nor running are hidden (pull or download one, or pin it with -M to see why)", agent)
+	return fmt.Sprintf("no matching model for agent %q is in the cloud, running, or on disk — registry local models that are neither on disk nor running are hidden (pull or download one, or pin it with -M to see why)", agent)
 }
 
 // Find returns the row for id, discovered rows included — a -M pin names a

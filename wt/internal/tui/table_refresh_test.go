@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
@@ -266,5 +267,35 @@ func TestStaleTableRefreshIsDropped(t *testing.T) {
 
 	if indexOfID(next.(model), "other/stale") >= 0 {
 		t.Errorf("stale refresh replaced the table: %v", itemIDs(next.(model)))
+	}
+}
+
+// TestRefreshTableWithNoRowsRoutesBack verifies a refresh whose re-probe
+// leaves no row at all (the only listed model went off disk between the first
+// probe and the one after a failed start) routes back to the agent picker
+// with a reason. Since #179 Phase B a model that is neither on disk nor
+// running has no row, so without this the user is stranded on a "No items."
+// picker whose Enter does nothing.
+func TestRefreshTableWithNoRowsRoutesBack(t *testing.T) {
+	stubInventory(t, refreshTestSnapshot())
+	got := flowEnter(t, model{cfg: refreshTestCfg(), agent: "pi", width: 80, height: 24}, "pi")
+	if got.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel before the refresh", got.phase)
+	}
+	// Later probes confirm neither model is on disk.
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/qwen-a", Registered: true, ArtifactKnown: true},
+		{ProviderID: "omlx", ModelID: "omlx/qwen-b", Registered: true, ArtifactKnown: true},
+	}})
+
+	got, cmd := got.refreshTable()
+	next, _ := got.Update(cmd())
+	after := next.(model)
+
+	if after.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (no empty table)", after.phase)
+	}
+	if want := catalog.NoRowsReason("pi"); after.status != want {
+		t.Errorf("status = %q, want %q", after.status, want)
 	}
 }

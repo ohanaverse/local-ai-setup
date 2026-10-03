@@ -107,6 +107,32 @@ func TestBuildHidesLocalModelsNotOnDisk(t *testing.T) {
 	}
 }
 
+// TestBuildHiddenRegistryIDShadowsDiscovered verifies a registry local model
+// with no row still shadows a discovered artifact spelling the same id (the
+// registry's model_name is a different artifact that is not on disk, while an
+// unregistered artifact named like the id's suffix is). Listing that artifact
+// under the registry id would make a -M pin launch it instead of reporting
+// "not on disk", and non-TUI rotation — which returns the registry model for
+// an id — would launch the missing model_name.
+func TestBuildHiddenRegistryIDShadowsDiscovered(t *testing.T) {
+	cfg := catalogTestCfg()
+	models := []config.Model{{ID: "ollama/foo", ProviderID: "ollama", ModelName: "bar"}}
+	inv := &localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/foo", ModelName: "bar", Registered: true, ArtifactKnown: true},
+			{ProviderID: "ollama", ModelID: config.DiscoveredModelID("ollama", "foo"), ModelName: "foo", Artifact: "foo", Running: true, ArtifactKnown: true},
+		},
+	}
+	rows := Build(Input{Config: cfg, Agent: "claude", Models: models, Inventory: inv})
+	if len(rows) != 0 {
+		t.Fatalf("rows = %v, want none (the hidden registry id shadows the same-id discovered artifact)", rowIDs(rows))
+	}
+	if got := MissingReason(inv, "ollama/foo"); !strings.Contains(got, "is not on disk") {
+		t.Errorf("MissingReason = %q, want the not-on-disk reason for the pin", got)
+	}
+}
+
 // TestBuildUnknownLocalStatus verifies a flaky probe never hides a model: a
 // family whose discovery failed (ollama unreachable, ArtifactKnown false)
 // still lists its registry models, as "unknown" and startable — hiding every

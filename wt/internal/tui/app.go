@@ -191,6 +191,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase != phaseModel || msg.gen != m.refreshGen {
 			return m, nil
 		}
+		if len(msg.items) == 0 {
+			// The re-probe left no row at all (#179 Phase B: the model a
+			// failed start was for is no longer on disk or running). Route
+			// back like enterModelPhase's empty table does instead of
+			// stranding the user on a "No items." picker; the status the
+			// failed start left, if any, already says what happened.
+			status := m.status
+			if status == "" {
+				status = catalog.NoRowsReason(m.agent)
+			}
+			return m.routeBackToAgent(status)
+		}
 		return m, m.applyRefreshedTable(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -826,16 +838,9 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
-	routeBack := func(status string) (model, tea.Cmd) {
-		m.status = status
-		m.pinnedModel = ""
-		items := buildAgentList(m.cfg)
-		m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
-		m.agentList.Title = "Pick an agent or command"
-		m.agentList.SetShowStatusBar(false)
-		m.phase = phaseAgent
-		return m, nil
-	}
+	// A closure, not a method value: it must see the m.tableModels/m.models
+	// assignments made below before it is called.
+	routeBack := func(status string) (model, tea.Cmd) { return m.routeBackToAgent(status) }
 
 	m.tableModels = models
 	m.refreshGen++
@@ -948,6 +953,20 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
+	return m, nil
+}
+
+// routeBackToAgent leaves the model phase for the agent picker with status as
+// the reason, clearing any -M pin so re-entry validates fresh. Shared by
+// enterModelPhase's route-backs and a table refresh that left no rows.
+func (m model) routeBackToAgent(status string) (model, tea.Cmd) {
+	m.status = status
+	m.pinnedModel = ""
+	items := buildAgentList(m.cfg)
+	m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
+	m.agentList.Title = "Pick an agent or command"
+	m.agentList.SetShowStatusBar(false)
+	m.phase = phaseAgent
 	return m, nil
 }
 
