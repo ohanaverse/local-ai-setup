@@ -137,44 +137,40 @@ Output is one `<line>:  - model_name: <id>` row per routed model. Example (illus
 
 Present here but absent from `:4000`? config.yaml changed since the proxy last started → jump to step 7 (restart). Absent here too? Continue.
 
-**Step 3 — is it exposed in modelman's state?** Check the per-model exposure flag:
+**Step 3 — is the model runnable at all?** Check modelman's state for the id:
 
 ```bash
 grep -A5 '^\[model_state."<model-id>"\]' /Users/keith/.config/local-ai/modelman.toml
 ```
 
-Example shape (illustrative — a downloaded local model; your id, path and size will differ):
+Example shape (illustrative — a downloaded, running local model; your id, path and size will differ):
 
 ```text
 [model_state."ollama/qwen3.8:27b-mlx"]
 ready = true
 disk_path = "ollama:qwen3.8:27b-mlx"
 size_bytes = 19327352832
-exposed = true
+running = true
 ```
 
-No block at all means modelman has no state for that id yet (`exposed` absent = `false`). For local models the flag isn't the routing truth, since `wt start`/`wt stop` write and remove their `config.yaml` routes; `config.yaml` is what the proxy serves. **This is a LiteLLM-exposure debug flow, not necessarily a "why doesn't wt show my model" one** — as of the 2026-09-15 local-model-visibility design (`docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`), `exposed` is no longer the truth for what wt shows for LOCAL models at all:
+No block at all means modelman has no state for that id yet (`modelman sync` reconciles it). Note there is **no `exposed` field any more** (#179): routing is not recorded in `modelman.toml` at all, so this file can never tell you whether a model is on `:4000` — `config.yaml` is the only record, and `wt litellm list` reads it back. What the block *does* tell you is whether the model can be started, which is what the route depends on:
 
-- **Model missing from wt's picker, and it's a LOCAL model** (ollama/omlx/mtplx/mlx_lm_server): don't look at `exposed`/`ready` here — run `wt -A <agent>` and read the STATUS/RUNNING columns; wt probes ollama/omlx/mtplx live and shows what is actually up. Every configured local model appears as a row: running → launchable; non-running ollama/omlx/mtplx → a start row (Enter starts it); `absent` (the provider answered and does not have the model) or a no-engine provider like `mlx_lm_server` → blocked with the reason. A model missing from the list entirely is neither in `registry.toml` nor discovered on disk — or its provider isn't in that agent's `supported_providers`; try another agent. `exposed`/`ready` play no role for local models in wt, and modelman.toml's per-model `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section). A local model that *is* running but gets `400 Invalid model name` on `:4000` lacks a `config.yaml` route: `wt litellm list` shows what is routed, `wt start`/`wt stop` keep routes current automatically, and `wt litellm sync` repairs them after a server was started or stopped outside wt (modelman's EXPOSED column for a local model is the stale `exposed` flag, not the route).
-- **Model missing from wt's picker, and it's a CLOUD model** (openrouter, or `location = "cloud"`): `exposed` is still the relevant flag — continue with the flow below (independent of whether LiteLLM routing is active; `wt litellm on`/`off` never changes exposure). A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
+- **Local model** (ollama/omlx/mtplx/mlx_lm_server): its route exists only while it runs, so a `ready = true` model with no route is simply a stopped model. Start it — the route appears: `uv run modelman start <model-id>` (needs the `wt` binary on PATH; for ollama the daemon must be answering, and `start` refuses rather than guess otherwise). A model *missing from wt's picker* is a different question: run `wt -A <agent>` and read the STATUS/RUNNING columns — wt probes ollama/omlx/mtplx live, and shows a non-running local model as a start row. `exposed`/`ready` play no role there, and modelman.toml's `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section).
+- **Cloud model** (openrouter, or `location = "cloud"`): it has no `ready` gate — wt routes a cloud model whenever `registry.toml` configures it, so a missing route means wt's last sync refused it. `wt litellm expose <model-id> --dry-run` names the reason (usually a provider with no LiteLLM mapping — `provider '<id>' has no LiteLLM mapping`).
 
-- **`ready = false` alongside the flag** → mid-cascade: the user pressed `x` on a not-ready model in the TUI, which queues `exposed = true` AND `ready = true` (a download). The flag is set, but the apply step hasn't run yet, so `config.yaml` has no row. **Do not re-expose** — apply the pending changes from the TUI (or `modelman apply` if exposed via CLI), and the row appears. Re-exposing now is a redundant op that bounces the proxy without fixing the gap.
-- **`ready = true` alongside the flag** (or the model is a cloud model — `provider_id` in `openrouter`, or `location = "cloud"` for an ollama model, where `ready` is permanently false) → genuine drift: modelman expects the row, and it was lost. → step 4 (re-expose replaces the row by id).
-
-(Drift is a known guide 04 gotcha.)
-
-**Step 4 — not exposed anywhere: expose it.** modelman applies its gates, then `wt` writes the `model_list` row and restarts the proxy, and modelman flips the flag (local models must be downloaded first; `wt` must be on PATH; `wt litellm expose <id>` is the direct equivalent):
-
-<!-- UNVERIFIED — mutating; not run in this session (would rewrite the live config.yaml + modelman.toml). Success line from live-verified source (guide 04 §2, guide 02 §7). -->
+**Step 4 — give it a route.** There is no `modelman expose` command any more (#179); the two ways to put a model on the proxy are a start and an explicit expose:
 
 ```bash
 # from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman expose <model-id>
+uv run modelman start <model-id>        # local model: load it, and its route follows (preferred)
+wt litellm expose <model-id>            # any model: write the row without loading it
 ```
 
 ```text
-Exposed <model-id> through LiteLLM.
+Started <model-id>.
 ```
+
+`wt litellm expose` writes the `model_list` row and restarts the proxy; it checks readiness itself (`--dry-run` validates only, `--skip-ready-gate` bypasses for a caller that already checked). Note that a local model route added by `expose` is dropped again by the next `wt litellm sync` while the model isn't running — so for a local model, starting it is the durable fix.
 
 Bad ids refuse instead — an `error: …` line on stderr, exit 1 (live-verified error paths: guide 02 §7, guide 04 §2) — meaning the id from Steps 1–3 never existed; fix the id, not the config.
 
@@ -217,7 +213,7 @@ OpenAI-compatible local backends (omlx, omlx-6bit, mtplx, mlx_lm_server) must ha
 python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
-Output is one line, `model_list entries: <N>`. A traceback instead means a parse error → fix by hand or rebuild the row via `wt litellm expose` / `modelman expose` (wt does atomic, comment-preserving writes, guide 04 §1). `<N>` is however many rows `config.yaml` carries — compare it with the number of ids Step 1's authenticated `/v1/models` call returns (pipe that command into `wc -l`); after a restart (Step 8) the two should match.
+Output is one line, `model_list entries: <N>`. A traceback instead means a parse error → fix by hand or rebuild the row via `wt litellm expose` (wt does atomic, comment-preserving writes, guide 04 §1). `<N>` is however many rows `config.yaml` carries — compare it with the number of ids Step 1's authenticated `/v1/models` call returns (pipe that command into `wc -l`); after a restart (Step 8) the two should match.
 
 **Step 8 — restart, then re-check Step 1.** The proxy reads config.yaml only at start:
 
@@ -237,7 +233,7 @@ Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; th
 wt start <model-id>   # lifecycle route hook adds the route on the start transition
 ```
 
-(`wt litellm expose <model-id>` also adds the route without loading the model, but the next `wt litellm sync` removes it again while the model isn't loaded. Note `modelman`'s persistent exposure flag is never cleared by sync.)
+(`wt litellm expose <model-id>` also adds the route without loading the model, but the next `wt litellm sync` removes it again while the model isn't loaded. Nothing in `modelman.toml` records routing, so there is no flag that could disagree with sync.)
 
 ### 3. Log triage
 

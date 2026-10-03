@@ -60,7 +60,7 @@ location = "local"
 local_path = "/tmp/some-model-4bit"   # absolute path to Step 1's output directory
 ```
 
-Then `modelman sync` (or just reopen the TUI) to pick up the new entry, `modelman expose <id>` it, and it's usable through `wt` and `modelman benchmark` exactly like any other omlx model.
+Then `modelman sync` (or just reopen the TUI) to pick up the new entry, and `modelman start <id>` to load it — there is no expose step: a local model is routed while it runs, and the start's own `wt litellm sync` writes the route. From there it's usable through `wt` and `modelman benchmark` exactly like any other omlx model.
 
 ### 3. Register a target+draft pairing (feature 2)
 
@@ -74,9 +74,9 @@ uv run --directory modelman modelman provider isolate mlx_lm_server <target> --d
 
 Unlike ollama/omlx, **`mlx_lm_server` has no baked-in default pairing** — you must always pass the target and draft explicitly (`<target>` positional + `--draft <draft>` — note `--draft` is a flag, not a second positional, since the port from the old bash isolation helper — or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`). This isolates on port 8001, backgrounded with a pidfile at `/tmp/local-ai-setup-mlx-lm-server.pid` (log at `/tmp/local-ai-setup-mlx-lm-server.log`) — not a LaunchAgent, since a plist would bake in one fixed pairing and defeat sweeping many pairings per session.
 
-### 5. Expose and use it
+### 5. Route and use it
 
-`modelman expose <id>` makes the pairing show up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `modelman benchmark run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
+The isolated pairing is live on port 8001; `wt litellm sync` (or the `modelman start` you'd use for a registered pairing) then adds its route, so it shows up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `modelman benchmark run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
 
 ## Verification
 
