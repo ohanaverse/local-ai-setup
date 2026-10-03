@@ -601,7 +601,7 @@ func jsonKeySet(t *testing.T, raw []byte) []string {
 // in the same change.
 func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	plan := litellm.SyncPlan{
-		Add:    []string{"openrouter/x/y"},
+		Add:    []string{"openrouter/x/y", "ollama/llama3.2:3b"},
 		Adopt:  []string{"ollama/gemma:9b"},
 		Remove: []string{"openrouter/old"},
 		Errors: []litellm.Outcome{{ID: "ghost/m", Err: errors.New(`unknown provider "ghost"`)}},
@@ -655,8 +655,9 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 // TestLitellmSyncJSONMatchesContract pins `wt litellm sync --json` against the
 // shared fixture's sync block. The result comes from a real litellm.Sync over
 // a config.yaml that exercises every outcome — unrouted, rewritten, adopted,
-// routed and a per-id error — so the action names are pinned where Sync
-// assigns them, not restated by hand. The injected restart hook fails with
+// routed (a cloud model, and since #179 Phase B a discovered local model under
+// its discovered id, written marked) and a per-id error — so the action names
+// are pinned where Sync assigns them, not restated by hand. The injected restart hook fails with
 // restart.go's warning text, so the fixture also carries a non-empty
 // warnings array for modelman to parse. modelman parses this shape with
 // parse_change_result (modelman/tests/contracts/test_litellm_cli_fixture.py).
@@ -680,9 +681,17 @@ func TestLitellmSyncJSONMatchesContract(t *testing.T) {
 		cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/" + id, ProviderID: "openrouter", ModelName: name, Location: config.LocationCloud})
 	}
 	const restartWarn = "failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"
-	res, err := litellm.Sync(cfg, nil, litellm.Options{Path: p, Restart: func() []string { return []string{restartWarn} }})
+	local := []config.Model{litellm.DiscoveredModel("ollama", "llama3.2:3b")}
+	res, err := litellm.Sync(cfg, local, litellm.Options{Path: p, Restart: func() []string { return []string{restartWarn} }})
 	if err != nil {
 		t.Fatal(err)
+	}
+	f, err := litellm.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.Rows(), litellm.RowInfo{ID: "ollama/llama3.2:3b", Managed: true}) {
+		t.Fatalf("rows = %v, want the discovered route written marked", f.Rows())
 	}
 	var out, errOut bytes.Buffer
 	if err := reportLitellm(&out, &errOut, res, true); !errors.Is(err, errLitellmIDFailed) {
