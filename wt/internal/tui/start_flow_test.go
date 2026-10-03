@@ -712,46 +712,22 @@ func TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold(t *testing.T) {
 	}
 }
 
-// TestEndToEndAbsentRowIsBlocked verifies an absent omlx row carries the
-// "not on disk" hint, is not a start row, and Enter shows the status without
-// calling the engine — starting a model that is not there would just wait
-// out the warmup timeout.
-func TestEndToEndAbsentRowIsBlocked(t *testing.T) {
+// TestEndToEndAbsentRowIsHidden verifies a registered omlx model the probe
+// confirmed is not on disk gets no picker row at all (#179 Phase B: local rows
+// come only from the inventory), so it can neither be started nor selected —
+// starting a model that is not there would just wait out the warmup timeout.
+func TestEndToEndAbsentRowIsHidden(t *testing.T) {
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true},
 	}})
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		t.Error("startModel must not be called for an absent row")
+		t.Error("startModel must not be called for an absent model")
 		return errors.New("must not start")
 	})
 
 	got := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
-	idx := indexOfID(got, "omlx/qwen3.8")
-	if idx < 0 {
-		t.Fatalf("no omlx row in %v", itemIDs(got))
-	}
-	it := got.models.Items()[idx].(*modelItem)
-	if it.start {
-		t.Error("absent row must not be a start row")
-	}
-	if !strings.Contains(it.blocked, "not on disk") {
-		t.Errorf("blocked = %q, want the not-on-disk reason", it.blocked)
-	}
-
-	got.models.Select(idx)
-	next, _ := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got = next.(model)
-	if got.phase != phaseModel {
-		t.Errorf("phase = %v, want phaseModel (stays on the picker)", got.phase)
-	}
-	if !strings.Contains(got.status, "not on disk") {
-		t.Errorf("status = %q, want the not-on-disk reason", got.status)
-	}
-	// A blocked row never begins a start, so there is no call to wait for:
-	// asserting the state a start would have produced makes "no start was
-	// begun" a property of the picker rather than of timing.
-	if got.start != nil {
-		t.Error("a blocked row must not leave a start in flight")
+	if idx := indexOfID(got, "omlx/qwen3.8"); idx >= 0 {
+		t.Fatalf("absent omlx/qwen3.8 has a row at %d in %v, want none", idx, itemIDs(got))
 	}
 	if calls.len() != 0 {
 		t.Errorf("startModel calls = %d, want 0", calls.len())

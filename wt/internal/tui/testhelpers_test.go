@@ -75,7 +75,7 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 // process. Tests that need local rows call stubInventory; tests that exercise
 // the start flow call stubStartModel.
 func TestMain(m *testing.M) {
-	runInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	runInventory = onDiskSnapshot
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
 	}
@@ -138,4 +138,25 @@ func selectedModelID(m model) string {
 		return ""
 	}
 	return it.model.ID
+}
+
+// onDiskSnapshot is the default inventory stub: every registry local model
+// is on disk (artifact = its model_name) and nothing is running, with every
+// family's probe OK. Since #179 Phase B a local row comes only from the
+// inventory, so an empty snapshot would hide every configured local model.
+func onDiskSnapshot(cfg *config.Config) localmodels.Snapshot {
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{}}
+	for _, m := range cfg.Models {
+		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+			continue
+		}
+		if fam := localmodels.Family(m.ProviderID); fam != "" {
+			snap.Providers[fam] = localmodels.StatusOK
+		}
+		snap.Entries = append(snap.Entries, localmodels.Entry{
+			ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName,
+			Artifact: m.ModelName, Registered: true, ArtifactKnown: true,
+		})
+	}
+	return snap
 }

@@ -107,9 +107,11 @@ func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 }
 
 // TestResolveSmokeModelPinnedBlockedNamesReason asserts a pinned local model
-// that is blocked (registered, but the provider answered and it is not on disk)
-// gets that row's real BlockReason — the same wording `wt start` gives — rather
-// than the generic three-guess message, so the user learns what to fix.
+// the provider answered is not on disk (registered, so it has no row) gets
+// catalog.MissingReason's pull/download wording — the same `wt start` gives —
+// rather than the generic three-guess message, so the user learns what to fix.
+// The generic message also mentions "not on disk", so the assertion keys on
+// MissingReason's own "pull or download" phrase.
 func TestResolveSmokeModelPinnedBlockedNamesReason(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	stubProbeInventory(t, localmodels.Snapshot{
@@ -119,8 +121,8 @@ func TestResolveSmokeModelPinnedBlockedNamesReason(t *testing.T) {
 		},
 	})
 	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/gone:x")
-	if err == nil || !strings.Contains(err.Error(), "not on disk") {
-		t.Fatalf("err = %v, want the row's not-on-disk block reason", err)
+	if err == nil || !strings.Contains(err.Error(), "pull or download it first") {
+		t.Fatalf("err = %v, want MissingReason's not-on-disk reason", err)
 	}
 }
 

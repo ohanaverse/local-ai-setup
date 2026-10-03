@@ -269,7 +269,7 @@ func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
 func TestResolveModelAllLocalGivesPinMessage(t *testing.T) {
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true}},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/qwen3.8", ModelName: "qwen3.8", Artifact: "qwen3.8", Registered: true, ArtifactKnown: true}},
 	})
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
@@ -304,6 +304,7 @@ func TestResolveModelFiltersHideDiscoveredRows(t *testing.T) {
 		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
 			{ProviderID: "mtplx", ModelID: disc, Artifact: "stray", ModelName: "stray", Running: true},
+			{ProviderID: "mtplx", ModelID: "mtplx/registered", Artifact: "registered", ModelName: "registered", Registered: true, ArtifactKnown: true},
 		},
 	})
 	cfg := &config.Config{

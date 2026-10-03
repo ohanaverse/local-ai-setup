@@ -21,7 +21,7 @@ import (
 // hook rewrite the real config.yaml). Tests that need a probe result call
 // stubProbeInventory; tests that exercise a start call stubStartDriver.
 func TestMain(m *testing.M) {
-	probeInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	probeInventory = onDiskSnapshot
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests
 	// that need to exercise the not-installed path stub this explicitly.
@@ -78,4 +78,25 @@ func stubStartDriver(t *testing.T, err error) *startRequest {
 	}
 	t.Cleanup(func() { startModel = old })
 	return req
+}
+
+// onDiskSnapshot is the default inventory stub: every registry local model
+// is on disk (artifact = its model_name) and nothing is running, with every
+// family's probe OK. Since #179 Phase B a local row comes only from the
+// inventory, so an empty snapshot would hide every configured local model.
+func onDiskSnapshot(cfg *config.Config) localmodels.Snapshot {
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{}}
+	for _, m := range cfg.Models {
+		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+			continue
+		}
+		if fam := localmodels.Family(m.ProviderID); fam != "" {
+			snap.Providers[fam] = localmodels.StatusOK
+		}
+		snap.Entries = append(snap.Entries, localmodels.Entry{
+			ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName,
+			Artifact: m.ModelName, Registered: true, ArtifactKnown: true,
+		})
+	}
+	return snap
 }

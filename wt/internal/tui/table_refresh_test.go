@@ -46,10 +46,14 @@ func TestRefreshTableReprobesAndKeepsCursor(t *testing.T) {
 		probes++
 		if probes == 1 {
 			return localmodels.Snapshot{Entries: []localmodels.Entry{
-				{ProviderID: "omlx", Artifact: "a", ModelID: "omlx/a", Registered: true, Running: true},
+				{ProviderID: "omlx", Artifact: "a", ModelID: "omlx/a", Registered: true, Running: true, ArtifactKnown: true},
+				{ProviderID: "omlx", Artifact: "b", ModelID: "omlx/b", Registered: true, ArtifactKnown: true},
 			}}
 		}
-		return localmodels.Snapshot{}
+		return localmodels.Snapshot{Entries: []localmodels.Entry{
+			{ProviderID: "omlx", Artifact: "a", ModelID: "omlx/a", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", Artifact: "b", ModelID: "omlx/b", Registered: true, ArtifactKnown: true},
+		}}
 	}
 	t.Cleanup(func() { runInventory = old })
 
