@@ -104,6 +104,9 @@ func familyOf(providerID string) string {
 	return ""
 }
 
+// Families lists every probe family wt knows, sorted.
+func Families() []string { return []string{"mlx_lm_server", "mtplx", "ollama", "omlx"} }
+
 // Family maps a registry provider id to its probe family ("omlx-6bit" shares
 // "omlx"); "" when wt has no probe for it.
 func Family(providerID string) string { return familyOf(providerID) }

@@ -289,3 +289,206 @@ litellm_settings:
 		t.Fatalf("empty family cleared routes: res=%+v restarts=%d\n%s", res, *restarts, b)
 	}
 }
+
+// TestSyncRoutesDiscoveredModels pins sync's Phase B desired set: a
+// discovered local model the caller found running (or pulled) gets a marked
+// route under its discovered id — two-slash mtplx ids included — and loses it
+// once it is no longer found, because the marked row is wt's.
+func TestSyncRoutesDiscoveredModels(t *testing.T) {
+	o, _, p := opts(t, "model_list: []\n")
+	cfg := discoveredCfg()
+	local := []config.Model{DiscoveredModel("ollama", "llama3.2:3b"), DiscoveredModel("mtplx", "mlx-community/Qwen3.8-27B-4bit")}
+	if _, err := Sync(cfg, local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"openrouter/x/y", true}, {"ollama/glm:cloud", true}, {"ollama/llama3.2:3b", true}, {"mtplx/mlx-community/Qwen3.8-27B-4bit", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	if _, err := Sync(cfg, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, want[:2]) {
+		t.Fatalf("rows after the models went away = %v, want only the cloud routes", got)
+	}
+}
+
+// TestSyncLeavesHandWrittenDiscoveredName pins Review Focus 1 on the sync
+// path: the reference host's hand-written "ollama/llama3.2:3b" row is named
+// exactly like the discovered id of the pulled model, yet sync neither plans
+// nor performs an add or adoption for it, and keeps it when the model is gone
+// — the row is the user's, not wt's.
+func TestSyncLeavesHandWrittenDiscoveredName(t *testing.T) {
+	o, _, p := opts(t, handWrittenLlama)
+	cfg := discoveredCfg()
+	local := []config.Model{DiscoveredModel("ollama", "llama3.2:3b")}
+	plan, err := PlanSync(cfg, local, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Add, "ollama/llama3.2:3b") || slices.Contains(plan.Remove, "ollama/llama3.2:3b") {
+		t.Fatalf("plan = %+v, want the hand-written row left alone", plan)
+	}
+	for _, l := range [][]config.Model{local, nil} {
+		if _, err := Sync(cfg, l, o); err != nil {
+			t.Fatal(err)
+		}
+		if got := readRows(t, p); !slices.Contains(got, RowInfo{"ollama/llama3.2:3b", false}) {
+			t.Fatalf("rows = %v, want the hand-written row kept unmarked", got)
+		}
+	}
+}
+
+// TestSyncSkipsUntouchedFamilies pins UntouchedFamilies: while a family's
+// probe cannot vouch for it, sync neither removes its discovered routes nor
+// adds new ones — a flaky probe must never wipe routes it cannot see — while
+// a trusted family's stale discovered row still goes, and a registry cloud
+// model on the untrusted family's provider is still routed (it is not that
+// family's row).
+func TestSyncSkipsUntouchedFamilies(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: omlx/stray-model
+    litellm_params: {model: openai/stray-model, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: mtplx/org/gone
+    litellm_params: {model: openai/org/gone, api_base: http://localhost:8003/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`)
+	o.UntouchedFamilies = []string{"omlx", "ollama"}
+	local := []config.Model{DiscoveredModel("omlx", "new-model")}
+	if _, err := Sync(discoveredCfg(), local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"omlx/stray-model", true}, {"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+}
+
+// TestSyncRecheckCoversDiscoveredIDs pins that the under-lock Recheck guards
+// discovered routes exactly like registry ones: a discovered model that
+// stopped before the lock gets no fresh route, and a discovered model that
+// started meanwhile keeps the marked row the stale probe would have removed.
+func TestSyncRecheckCoversDiscoveredIDs(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: omlx/started-meanwhile
+    litellm_params: {model: openai/started-meanwhile, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`)
+	o.Recheck = func() []string { return []string{"omlx/started-meanwhile"} }
+	local := []config.Model{DiscoveredModel("omlx", "stopped-meanwhile")}
+	if _, err := Sync(discoveredCfg(), local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"omlx/started-meanwhile", true}, {"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+}
+
+// TestSyncDeletedOverlayKeepsTheModelRouted pins spec B3's "deleting a local
+// overlay entry does not change routing": once its registry entry is gone, a
+// running model is found as discovered and keeps a marked route under its
+// discovered id. For an overlay whose id was provider/model_name the route
+// name does not even change; for a legacy "--"-style id the old marked row
+// goes and the model is routed under its discovered id (the documented stats
+// split for such ids). Only a stop removes a local route.
+func TestSyncDeletedOverlayKeepsTheModelRouted(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/llama3.2:3b
+    litellm_params: {model: ollama_chat/llama3.2:3b}
+    model_info: {wt_managed: true}
+  - model_name: mtplx/org--deleted
+    litellm_params: {model: openai/org/deleted}
+    model_info: {wt_managed: true}
+`)
+	local := []config.Model{DiscoveredModel("ollama", "llama3.2:3b"), DiscoveredModel("mtplx", "org/deleted")}
+	if _, err := Sync(discoveredCfg(), local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"ollama/llama3.2:3b", true}, {"openrouter/x/y", true}, {"ollama/glm:cloud", true}, {"mtplx/org/deleted", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+}
+
+// TestSyncUntouchedFamilyFreezesRegistryRoutesToo pins that UntouchedFamilies
+// covers a family's REGISTRY rows exactly like its discovered ones, with or
+// without the per-id Untouched list: a registry model the stale probe calls
+// running gets no new route, one it calls stopped keeps its marked row, and a
+// marked row that differs from what wt would build is not rewritten — the
+// file is byte-identical and the proxy is not restarted. The dry run reports
+// the same empty plan the real sync performs.
+func TestSyncUntouchedFamilyFreezesRegistryRoutesToo(t *testing.T) {
+	const body = `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_base: https://openrouter.ai/api/v1, api_key: sk-test}
+    model_info: {supports_vision: true, input_cost_per_token: 0.25, output_cost_per_token: 2e-06, cache_read_input_token_cost: 5e-07, cache_creation_input_token_cost: 5e-07, wt_managed: true}
+  - model_name: ollama/glm:cloud
+    litellm_params: {model: ollama_chat/glm:cloud, api_base: http://localhost:11434, additional_drop_params: [reasoning_effort]}
+    model_info: {wt_managed: true}
+  - model_name: mtplx/Youssofal--Q
+    litellm_params: {model: openai/stale-name, api_base: http://localhost:9999/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	cfg := discoveredCfg()
+	// Settle the cloud rows first so the frozen run below has nothing else to
+	// change; mtplx is frozen here too, so its stale row survives the settle.
+	o, restarts, p := opts(t, body)
+	o.UntouchedFamilies = []string{"mtplx", "omlx"}
+	if _, err := Sync(cfg, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*restarts = 0
+	for _, local := range [][]config.Model{nil, localFor(cfg, "omlx-6bit/Six", "mtplx/Youssofal--Q")} {
+		plan, err := PlanSync(cfg, local, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Add)+len(plan.Remove)+len(plan.Errors) != 0 {
+			t.Fatalf("plan = %+v, want nothing planned for frozen families", plan)
+		}
+		res, err := Sync(cfg, local, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Changed || *restarts != 0 || string(after) != string(before) {
+			t.Fatalf("changed=%v restarts=%d, want the file untouched:\n%s", res.Changed, *restarts, after)
+		}
+	}
+	if got := readRows(t, p); !slices.Contains(got, RowInfo{"mtplx/Youssofal--Q", true}) || slices.Contains(got, RowInfo{"omlx-6bit/Six", true}) {
+		t.Fatalf("rows = %v, want the stale mtplx row kept and no omlx-6bit row added", got)
+	}
+}
+
+// TestSyncEmptyUntouchedFamilyFreezesNothing pins that an empty string in
+// UntouchedFamilies names no family. RowFamily is "" for every cloud and
+// hand-aliased row, so honouring it would freeze them all: the marked row of
+// a deleted cloud model would never be removed while any caller passed a
+// provider with no probe family.
+func TestSyncEmptyUntouchedFamilyFreezesNothing(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/deleted
+    litellm_params: {model: openrouter/deleted}
+    model_info: {wt_managed: true}
+`)
+	o.UntouchedFamilies = []string{""}
+	if _, err := Sync(discoveredCfg(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want the deleted cloud model's row removed: %v", got, want)
+	}
+}

@@ -52,6 +52,12 @@ type Options struct {
 	// Untouched lists model ids Sync must neither add nor remove (their
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
+	// UntouchedFamilies lists local provider families (localmodels.Family
+	// values) whose probe could not vouch for their state. Sync neither adds,
+	// removes nor rewrites a row whose RowFamily is one of them — discovered
+	// routes included, which Untouched (registry ids only) cannot name.
+	// An empty entry names no family and is ignored.
+	UntouchedFamilies []string
 	// Recheck, when set, is called by Sync under the config.yaml lock just
 	// before it removes routes, and returns the ids running NOW. Ids that
 	// turn out to be running are kept: a start finishing between the caller's
@@ -412,28 +418,47 @@ type SyncPlan struct {
 	markedOnly map[string]bool
 }
 
-// planSync decides a sync against f. Desired = every CloudModels id plus the
-// running registry local models. A row is wt's to remove when it carries the
-// marker or is named like a managed registry id (cloud or local) — the
-// latter covers rows written before the marker existed. Unmarked rows with
-// any other name are hand-written and never touched. Untouched ids are
-// neither added nor removed; Recheck (see Options) re-verifies local ids.
-// Built rows for plan.Add are returned alongside the plan: Sync's write path
-// reuses them instead of preparing every changed row a second time.
-func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPlan, map[string]*yaml.Node) {
+// planSync decides a sync against f. Desired = every CloudModels id plus
+// the caller's local models (#179 Phase B: running or pulled, registered or
+// discovered). A row is wt's to remove when it carries the marker or is named
+// like a managed registry id (cloud or local) — the latter covers rows
+// written before the marker existed. Unmarked rows with any other name are
+// hand-written and never touched, and a desired DISCOVERED id that already
+// has a hand-written row is left to it (no add, no adoption). Untouched ids,
+// and every row whose RowFamily is in UntouchedFamilies, are neither added,
+// rewritten nor removed; Recheck (see Options) re-verifies local ids. Built
+// rows for plan.Add are returned alongside the plan: Sync's write path reuses
+// them instead of preparing every changed row a second time.
+//
+// Accepted cost of UntouchedFamilies: a marked row of a DELETED cloud model
+// whose id starts with a local family prefix (e.g. "ollama/x:cloud") reads as
+// that family's row, so it stays while the family is untrusted and goes on
+// the next sync whose probe is healthy.
+func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (SyncPlan, map[string]*yaml.Node) {
 	localModels := LocalModels(cfg)
-	local := map[string]bool{}
-	for _, m := range localModels {
-		local[m.ID] = true
+	untouchedFam := map[string]bool{}
+	for _, fam := range o.UntouchedFamilies {
+		// RowFamily is "" for every cloud and hand-aliased row: an empty
+		// entry would freeze all of them, so it names no family.
+		if fam != "" {
+			untouchedFam[fam] = true
+		}
+	}
+	frozen := func(id string) bool {
+		return slices.Contains(o.Untouched, id) || untouchedFam[RowFamily(cfg, id)]
 	}
 	managed := map[string]bool{}
-	var desired []string
+	var desired []config.Model
 	for _, m := range CloudModels(cfg) {
 		managed[m.ID] = true
-		desired = append(desired, m.ID)
+		desired = append(desired, m)
 	}
-	for id := range local {
-		managed[id] = true
+	// local is every id Recheck may prune: registry local ids, the desired
+	// local ids (discovered ones included) and every row of a local family.
+	local := map[string]bool{}
+	for _, m := range localModels {
+		managed[m.ID] = true
+		local[m.ID] = true
 	}
 	// gap holds registry models dropped from both lists by a data gap (a
 	// provider_id naming no provider, or no location to resolve): their rows
@@ -445,9 +470,31 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 			gap[m.ID] = true
 		}
 	}
+	wantLocal := map[string]bool{}
+	for _, m := range localIn {
+		wantLocal[m.ID] = true
+	}
+	// Registry local models keep registry order; discovered ones follow in
+	// the caller's order.
 	for _, m := range localModels {
-		if slices.Contains(running, m.ID) && !slices.Contains(o.Untouched, m.ID) {
-			desired = append(desired, m.ID)
+		if wantLocal[m.ID] && !frozen(m.ID) {
+			desired = append(desired, m)
+			local[m.ID] = true
+		}
+	}
+	for _, m := range localIn {
+		if isRegistryID(cfg, m.ID) || frozen(m.ID) {
+			continue
+		}
+		local[m.ID] = true
+		if f.hasUnmarkedRow(m.ID) {
+			continue // a hand-written row already serves this name
+		}
+		desired = append(desired, m)
+	}
+	for _, r := range f.Rows() {
+		if RowFamily(cfg, r.ID) != "" {
+			local[r.ID] = true
 		}
 	}
 	var plan SyncPlan
@@ -467,17 +514,14 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	// may take its full timeout, so resolving per model multiplied one broken
 	// helper by the provider's model count.
 	credErr := map[string]error{}
-	for _, id := range desired {
+	for _, m := range desired {
+		id := m.ID
 		want[id] = true
 		if err := providerCredErr(cfg, id, credErr); err != nil {
 			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: fmt.Errorf("model %q: %w", id, err)})
 			continue
 		}
-		m, err := lookup(cfg, id)
-		var row *yaml.Node
-		if err == nil {
-			row, err = prepareModel(cfg, m)
-		}
+		row, err := prepareModel(cfg, m)
 		if err != nil {
 			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: err})
 			continue
@@ -520,7 +564,7 @@ func planSync(cfg *config.Config, f *File, running []string, o Options) (SyncPla
 	// the error branch would let one transient build failure delete a live route.
 	seen := map[string]bool{}
 	for _, r := range rows {
-		if want[r.ID] || gap[r.ID] || slices.Contains(o.Untouched, r.ID) || seen[r.ID] {
+		if want[r.ID] || gap[r.ID] || frozen(r.ID) || seen[r.ID] {
 			continue
 		}
 		if r.Managed || managed[r.ID] {
@@ -584,7 +628,7 @@ func providerCredErr(cfg *config.Config, id string, memo map[string]error) error
 // checkModelList, which only inspects an existing value — it must not create
 // model_list, or a no-op sync would flip File.Changed and write the file and
 // restart the proxy.
-func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error) {
+func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, error) {
 	// PlanSync holds no config.yaml lock, and Recheck is defined as Sync's
 	// under-the-lock re-verification; a dry run reports the plan built from
 	// the caller's original probe, or it could not agree with the real sync.
@@ -598,7 +642,7 @@ func PlanSync(cfg *config.Config, running []string, o Options) (SyncPlan, error)
 	if err := f.checkModelList(); err != nil {
 		return SyncPlan{}, err
 	}
-	plan, _ := planSync(cfg, f, running, o)
+	plan, _ := planSync(cfg, f, local, o)
 	return plan, nil
 }
 
@@ -633,19 +677,20 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 	return found, true
 }
 
-// Sync reconciles config.yaml with the registry and the running local
-// models (#179): every CloudModels id and every running registry local
-// model gets a marked route; rows wt owns that are no longer desired are
-// removed; hand-written rows are never touched (see planSync). The plan is
-// made under the config.yaml lock. A config.yaml whose model_list is not a
-// list is refused (ErrInvalid) before anything is planned or written, whatever
-// the plan turns out to be — PlanSync checks the same shape, so a dry run and a
-// real sync always agree. Outcome actions: "routed", "adopted", "rewritten",
-// "unrouted"; per-id build failures are reported with Err.
-func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
+// Sync reconciles config.yaml with the registry and the local models the
+// caller found (#179): every CloudModels id and every model in local —
+// registry overlay or DiscoveredModel — gets a marked route; rows wt owns
+// that are no longer desired are removed; hand-written rows are never touched
+// (see planSync). The plan is made under the config.yaml lock. A config.yaml
+// whose model_list is not a list is refused (ErrInvalid) before anything is
+// planned or written, whatever the plan turns out to be — PlanSync checks the
+// same shape, so a dry run and a real sync always agree. Outcome actions:
+// "routed", "adopted", "rewritten", "unrouted"; per-id build failures are
+// reported with Err.
+func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	var plan SyncPlan
 	res, err := applyPlanned(cfg, func(f *File) ([]plannedAdd, []plannedRemove) {
-		p, built := planSync(cfg, f, running, o)
+		p, built := planSync(cfg, f, local, o)
 		plan = p
 		// The plan already built every changed row while comparing it with the
 		// row on disk; hand the rows through so the write path does not

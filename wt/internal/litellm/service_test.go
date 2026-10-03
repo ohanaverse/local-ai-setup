@@ -13,6 +13,18 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
+// localFor returns cfg's registry models named by ids — the shape Sync and
+// PlanSync take for the local models a probe found running (or pulled).
+func localFor(cfg *config.Config, ids ...string) []config.Model {
+	var out []config.Model
+	for _, id := range ids {
+		if i := config.IndexModelByID(cfg.Models, id); i >= 0 {
+			out = append(out, cfg.Models[i])
+		}
+	}
+	return out
+}
+
 // opts returns Options with a counting fake restart so no test can bounce a
 // real proxy, and the config path pointed at a temp file.
 func opts(t *testing.T, body string) (Options, *int, string) {
@@ -137,7 +149,7 @@ func TestSyncReconcilesLocalRoutes(t *testing.T) {
   - model_name: keep/me
     litellm_params: {model: openai/gpt-4o}
 `)
-	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
+	res, err := Sync(testConfig(), localFor(testConfig(), "mtplx/Youssofal--Q"), o)
 	if err != nil || !res.Changed {
 		t.Fatalf("err=%v changed=%v", err, res.Changed)
 	}
@@ -180,7 +192,7 @@ func TestSyncRestartsOnce(t *testing.T) {
   - model_name: ollama/gemma:9b
     litellm_params: {model: ollama_chat/gemma:9b}
 `)
-	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
+	res, err := Sync(testConfig(), localFor(testConfig(), "mtplx/Youssofal--Q"), o)
 	if err != nil || !res.Changed || *restarts != 1 {
 		t.Fatalf("err=%v changed=%v restarts=%d, want nil/true/1", err, res.Changed, *restarts)
 	}
@@ -205,7 +217,7 @@ litellm_settings:
   use_chat_completions_url_for_anthropic_messages: true
 `)
 	o.Untouched = []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"}
-	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
+	res, err := Sync(testConfig(), localFor(testConfig(), "mtplx/Youssofal--Q"), o)
 	if err != nil || !res.Changed {
 		t.Fatalf("err=%v changed=%v, want the cloud model routed", err, res.Changed)
 	}
@@ -313,7 +325,7 @@ func TestSyncRecheckAlsoAppliesToAddSet(t *testing.T) {
 	// Outer probe says both are running; Recheck (under the lock) finds only
 	// one still running.
 	o.Recheck = func() []string { return []string{"ollama/gemma:9b"} }
-	if _, err := Sync(testConfig(), []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"}, o); err != nil {
+	if _, err := Sync(testConfig(), localFor(testConfig(), "ollama/gemma:9b", "mtplx/Youssofal--Q"), o); err != nil {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
@@ -349,7 +361,7 @@ func TestPlanSyncAdoptStaysSubsetOfAddWhenRecheckPrunes(t *testing.T) {
 	// adopt; Recheck, under the lock, finds nothing running, so the add side
 	// drops it.
 	o := Options{Recheck: func() []string { return nil }}
-	plan, _ := planSync(testConfig(), f, []string{id}, o)
+	plan, _ := planSync(testConfig(), f, localFor(testConfig(), id), o)
 	if slices.Contains(plan.Add, id) || slices.Contains(plan.Adopt, id) {
 		t.Fatalf("plan = %+v, want the pruned id gone from both Add and Adopt", plan)
 	}
@@ -369,7 +381,7 @@ func TestPlanSyncIgnoresRecheck(t *testing.T) {
 	called := 0
 	o.Recheck = func() []string { called++; return nil }
 	const id = "ollama/gemma:9b"
-	plan, err := PlanSync(testConfig(), []string{id}, o)
+	plan, err := PlanSync(testConfig(), localFor(testConfig(), id), o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +516,7 @@ func TestSyncSkipsNativeModelOnMappedProvider(t *testing.T) {
 		}
 	}
 	o, _, p := opts(t, "model_list: []\n")
-	if _, err := Sync(cfg, []string{"ollama/native"}, o); err != nil {
+	if _, err := Sync(cfg, localFor(cfg, "ollama/native"), o); err != nil {
 		t.Fatal(err)
 	}
 	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"openrouter/x/y", true}}) {
@@ -625,7 +637,7 @@ func TestSyncCarriesUserButNotWTParams(t *testing.T) {
     litellm_params: {model: ollama_chat/EVIL:1b, api_base: "http://localhost:9999", api_key: sk-hand-written, timeout: 120}
     model_info: {wt_managed: true}
 `)
-	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
+	if _, err := Sync(testConfig(), localFor(testConfig(), id), o); err != nil {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
@@ -768,7 +780,7 @@ func TestSyncDeduplicatesRepeatedStaleRow(t *testing.T) {
 func TestSyncPrunesStaleDuplicateOfDesiredModel(t *testing.T) {
 	const id = "ollama/gemma:9b"
 	o, restarts, p := opts(t, "model_list: []\n")
-	if _, err := Sync(testConfig(), []string{id}, o); err != nil {
+	if _, err := Sync(testConfig(), localFor(testConfig(), id), o); err != nil {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
@@ -790,14 +802,14 @@ func TestSyncPrunesStaleDuplicateOfDesiredModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := PlanSync(testConfig(), []string{id}, o)
+	plan, err := PlanSync(testConfig(), localFor(testConfig(), id), o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(plan.Add, []string{id}) || len(plan.Adopt) != 0 || len(plan.Remove) != 0 {
 		t.Fatalf("plan = %+v, want the first row (managed, value-equal) re-planned so the duplicate is pruned", plan)
 	}
-	res, err := Sync(testConfig(), []string{id}, o)
+	res, err := Sync(testConfig(), localFor(testConfig(), id), o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +840,7 @@ func TestSyncPrunesStaleDuplicateOfDesiredModel(t *testing.T) {
 	}
 	// The pruned sync is finished; the next one must be a clean no-op.
 	before := *restarts
-	if res, err := Sync(testConfig(), []string{id}, o); err != nil || res.Changed || *restarts != before {
+	if res, err := Sync(testConfig(), localFor(testConfig(), id), o); err != nil || res.Changed || *restarts != before {
 		t.Fatalf("third sync: err=%v changed=%v restarts=%d→%d, want a no-op", err, res.Changed, before, *restarts)
 	}
 }
