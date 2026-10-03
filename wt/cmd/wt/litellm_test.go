@@ -1259,7 +1259,9 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 // with no key in Snapshot.Providers was never probed (the registry has no
 // local provider row or local model for it): nothing is in doubt about it, so
 // it is NOT frozen — freezing it kept its leftover routes forever, since no
-// later probe could ever vouch for a family the inventory never asks.
+// later probe could ever vouch for a family the inventory never asks. The
+// exception — an unprobed family the registry references unresolvably — is
+// pinned end to end by TestLitellmSyncKeepsRoutesOfRegistryGapFamily.
 func TestUntrustedFamilies(t *testing.T) {
 	snap := localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{
@@ -1267,11 +1269,11 @@ func TestUntrustedFamilies(t *testing.T) {
 		},
 		Down: map[string]bool{"mtplx": true},
 	}
-	if got := untrustedFamilies(snap); !slices.Equal(got, []string{"omlx"}) {
+	if got := untrustedFamilies(&config.Config{}, snap); !slices.Equal(got, []string{"omlx"}) {
 		t.Fatalf("untrustedFamilies = %v, want [omlx] (mlx_lm_server was never probed, mtplx refused)", got)
 	}
 	snap.Providers["mlx_lm_server"] = localmodels.StatusUnreachable
-	if got := untrustedFamilies(snap); !slices.Equal(got, []string{"mlx_lm_server", "omlx"}) {
+	if got := untrustedFamilies(&config.Config{}, snap); !slices.Equal(got, []string{"mlx_lm_server", "omlx"}) {
 		t.Fatalf("untrustedFamilies = %v, want [mlx_lm_server omlx] once mlx_lm_server's probe ran and failed", got)
 	}
 }
@@ -1325,6 +1327,118 @@ litellm_settings:
 	}
 	if got := f.Rows(); !slices.Equal(got, []litellm.RowInfo{{ID: "mtplx/org/by-hand"}}) {
 		t.Fatalf("rows = %v, want only the hand-written mtplx/org/by-hand", got)
+	}
+}
+
+// TestLitellmSyncKeepsRoutesOfRegistryGapFamily pins that a family the
+// inventory could not probe because of a registry data gap stays frozen. The
+// registry still names omlx — a provider row with no location, or (after
+// `providers = []` landed) a model whose provider is gone — so nothing was
+// probed and Snapshot.Providers has no omlx key, yet that says nothing about
+// whether the server is up. A live marked discovered route (omlx/org/live)
+// must be kept, exactly as planSync keeps the gap model's own row
+// (omlx/reg), with a warning that names the real cause, identical in the dry
+// run and the real run, and with no proxy restart. Treating the gap as
+// "never probed, so stale" removed a serving model's route silently.
+func TestLitellmSyncKeepsRoutesOfRegistryGapFamily(t *testing.T) {
+	const want = `provider "omlx" could not be probed (its registry entry has no resolvable location); its model routes were left unchanged`
+	const body = `model_list:
+  - model_name: omlx/org/live
+    litellm_params: {model: openai/org/live, api_base: http://localhost:8000/v1, api_key: not-needed, use_chat_completions_api: true}
+    model_info: {wt_managed: true}
+  - model_name: omlx/reg
+    litellm_params: {model: openai/reg, api_base: http://localhost:8000/v1, api_key: not-needed, use_chat_completions_api: true}
+    model_info: {wt_managed: true}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	reg := config.Model{ID: "omlx/reg", ProviderID: "omlx", ModelName: "reg"}
+	noLocation := litellmTestConfig()
+	noLocation.Providers = append(noLocation.Providers, config.Provider{ID: "omlx", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
+	noLocation.Models = append(noLocation.Models, reg)
+	noProviders := litellmTestConfig()
+	noProviders.Providers = nil
+	noProviders.Models = append(noProviders.Models, reg)
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+	}{{"provider row without a location", noLocation}, {"providers empty", noProviders}} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := litellmEnv(t, body)
+			restarts := filepath.Join(t.TempDir(), "restarts")
+			t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
+			stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+			var out, errOut bytes.Buffer
+			if err := runLitellmSync(&out, &errOut, tc.cfg, true, true); err != nil {
+				t.Fatalf("dry run: %v (stderr %q)", err, errOut.String())
+			}
+			var dry syncPlanJSON
+			if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
+				t.Fatalf("dry run: not JSON: %q", out.String())
+			}
+			if len(dry.Plan.Add)+len(dry.Plan.Remove) != 0 || !slices.Equal(dry.Warnings, []string{want}) {
+				t.Errorf("dry run: add %v remove %v warnings %q; want no change and only %q", dry.Plan.Add, dry.Plan.Remove, dry.Warnings, want)
+			}
+			out.Reset()
+			if err := runLitellmSync(&out, &errOut, tc.cfg, true, false); err != nil {
+				t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
+			}
+			var real litellmResultJSON
+			if err := json.Unmarshal(out.Bytes(), &real); err != nil {
+				t.Fatalf("sync: not JSON: %q", out.String())
+			}
+			if real.Changed || !slices.Equal(real.Warnings, dry.Warnings) {
+				t.Errorf("sync: changed=%v warnings %q; want unchanged and the dry run's warnings %q", real.Changed, real.Warnings, dry.Warnings)
+			}
+			if b, err := os.ReadFile(restarts); err == nil {
+				t.Errorf("sync restarted the proxy: %q", b)
+			}
+			f, err := litellm.Open(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, wantRows := f.Rows(), []litellm.RowInfo{{ID: "omlx/org/live", Managed: true}, {ID: "omlx/reg", Managed: true}}; !slices.Equal(got, wantRows) {
+				t.Errorf("rows = %v, want %v", got, wantRows)
+			}
+		})
+	}
+}
+
+// TestLitellmSyncRemovesRoutesOfNonLocalFamily pins the other side of the
+// registry-gap rule: a family the registry references only as explicitly
+// non-local — an omlx provider row with location "cloud" and no local model —
+// was not probed for a reason that is not a data gap, so it is not frozen.
+// Its leftover marked route is removed without a warning; freezing it would
+// strand that route forever, since no probe will ever run for the family.
+func TestLitellmSyncRemovesRoutesOfNonLocalFamily(t *testing.T) {
+	p := litellmEnv(t, `model_list:
+  - model_name: omlx/org/gone
+    litellm_params: {model: openai/org/gone, api_base: http://localhost:8000/v1, api_key: not-needed, use_chat_completions_api: true}
+    model_info: {wt_managed: true}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`)
+	cfg := litellmTestConfig()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "omlx", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "none", BaseURL: "http://remote:8000"}})
+	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	for _, dryRun := range []bool{true, false} {
+		var out, errOut bytes.Buffer
+		if err := runLitellmSync(&out, &errOut, cfg, true, dryRun); err != nil {
+			t.Fatalf("dryRun=%v: %v (stderr %q)", dryRun, err, errOut.String())
+		}
+		var doc struct{ Warnings []string }
+		if err := json.Unmarshal(out.Bytes(), &doc); err != nil || len(doc.Warnings) != 0 {
+			t.Errorf("dryRun=%v: stdout %q (%v), want no warnings", dryRun, out.String(), err)
+		}
+	}
+	f, err := litellm.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Rows(); len(got) != 0 {
+		t.Fatalf("rows = %v, want the stale omlx route removed", got)
 	}
 }
 

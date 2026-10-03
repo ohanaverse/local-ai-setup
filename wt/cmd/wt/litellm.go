@@ -135,7 +135,7 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap, routedIDSet())
 	o := litellm.Options{
 		Untouched:         untouched,
-		UntouchedFamilies: untrustedFamilies(snap),
+		UntouchedFamilies: untrustedFamilies(cfg, snap),
 		// The probe above predates the config.yaml lock; a start that lands
 		// in between must not lose its route, so removals are re-verified
 		// under the lock.
@@ -177,7 +177,8 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 // (untrustedFamilies) that has no registry local model — only discovered
 // routes (#179 Phase B) — gets the same "probe did not succeed" warning when
 // config.yaml holds a marked row of the family, so its frozen routes are
-// never left unchanged silently.
+// never left unchanged silently. A family frozen without a probe (a registry
+// data gap, gapFamily) is warned about in its own words: it has no status.
 func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, routed map[string]bool) (untouched, warnings []string) {
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
@@ -195,7 +196,7 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 	}
 	// Every untrusted family with a registry local model is in skipped
 	// already; the rest are frozen only for their discovered rows.
-	for _, f := range untrustedFamilies(snap) {
+	for _, f := range untrustedFamilies(cfg, snap) {
 		for id, managed := range routed {
 			if !skipped[f] && managed && litellm.RowFamily(cfg, id) == f {
 				skipped[f] = true
@@ -214,6 +215,12 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 			// both shapes (a foreign id, and an empty list): "is serving"
 			// would be a lie in the second.
 			warnings = append(warnings, fmt.Sprintf("provider %q answered, but wt cannot tell which of its registered models it is serving (status %q); its model routes were left unchanged", f, snap.Providers[f]))
+			continue
+		}
+		if _, probed := snap.Providers[f]; !probed && gapFamily(cfg, f) {
+			// Never probed, so there is no status to report: the registry
+			// names the family but cannot say it is local (gapFamily).
+			warnings = append(warnings, fmt.Sprintf("provider %q could not be probed (its registry entry has no resolvable location); its model routes were left unchanged", f))
 			continue
 		}
 		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
@@ -319,18 +326,23 @@ func desiredLocalModels(cfg *config.Config, snap localmodels.Snapshot) []config.
 
 // untrustedFamilies lists the local provider families whose routes sync must
 // leave exactly as they are: every family whose probe RAN and came back
-// neither OK nor Down (refused). A family with no key in snap.Providers was
-// never probed — the inventory probes a family only when the registry has a
-// local provider row or a local model for it — so nothing about it is in
-// doubt and it is not frozen: no later probe could ever vouch for it, and its
-// leftover marked rows would otherwise be kept (and warned about) forever.
-// Unlike syncUntouchedAndWarnings' per-id list, a family covers the rows of
-// discovered models too, which carry no registry id.
-func untrustedFamilies(snap localmodels.Snapshot) []string {
+// neither OK nor Down (refused), plus every family that could not be probed
+// because of a registry data gap (gapFamily). A family with no key in
+// snap.Providers was never probed — the inventory probes a family only when
+// the registry has a local provider row or a local model for it. When the
+// registry does not reference the family unresolvably either, nothing about
+// it is in doubt and it is not frozen: no later probe could ever vouch for
+// it, and its leftover marked rows would otherwise be kept (and warned
+// about) forever. Unlike syncUntouchedAndWarnings' per-id list, a family
+// covers the rows of discovered models too, which carry no registry id.
+func untrustedFamilies(cfg *config.Config, snap localmodels.Snapshot) []string {
 	var fams []string
 	for _, f := range localmodels.Families() {
 		status, probed := snap.Providers[f]
 		if !probed {
+			if gapFamily(cfg, f) {
+				fams = append(fams, f)
+			}
 			continue
 		}
 		if status != localmodels.StatusOK && !snap.Down[f] {
@@ -338,6 +350,27 @@ func untrustedFamilies(snap localmodels.Snapshot) []string {
 		}
 	}
 	return fams
+}
+
+// gapFamily reports whether the registry references family f unresolvably:
+// a provider row of the family with no location, or a model of the family
+// that litellm.RegistryGap drops (its provider is missing, or no location
+// resolves). The inventory skips such a family — not because it is unused,
+// but because the registry cannot say it is local — so its server may well
+// be serving, and its routes stay frozen like the gap models' own rows.
+// A family the registry references only as explicitly non-local is no gap.
+func gapFamily(cfg *config.Config, f string) bool {
+	for _, p := range cfg.Providers {
+		if localmodels.Family(p.ID) == f && p.Location == "" {
+			return true
+		}
+	}
+	for _, m := range cfg.Models {
+		if localmodels.Family(m.ProviderID) == f && litellm.RegistryGap(cfg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func runLitellmList(out io.Writer, asJSON bool) error {

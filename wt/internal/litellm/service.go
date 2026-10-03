@@ -53,11 +53,13 @@ type Options struct {
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
 	// UntouchedFamilies lists local provider families (localmodels.Family
-	// values) whose probe ran and could not vouch for their state (neither OK
-	// nor refused). Sync neither adds, removes nor rewrites a row whose
-	// RowFamily is one of them — discovered routes included, which Untouched
-	// (registry ids only) cannot name. A family that was never probed (the
-	// registry has no local provider row or local model for it) does not
+	// values) whose state nothing can vouch for: the probe ran and was
+	// neither OK nor refused, or it could not run because the registry
+	// references the family unresolvably (a data gap). Sync neither adds,
+	// removes nor rewrites a row whose RowFamily is one of them — discovered
+	// routes included, which Untouched (registry ids only) cannot name. A
+	// family never probed because the registry has no local provider row or
+	// local model for it, and does not reference it unresolvably, does not
 	// belong here: its leftover marked rows are stale and sync removes them.
 	// An empty entry names no family and is ignored.
 	UntouchedFamilies []string
@@ -180,6 +182,19 @@ func RowFamily(cfg *config.Config, id string) string {
 		return ""
 	}
 	return localmodels.Family(prefix)
+}
+
+// RegistryGap reports whether registry model m is dropped from every list
+// sync manages by a data gap rather than by choice: a non-native model whose
+// provider_id names no provider, or with no location to resolve. Sync keeps
+// such a model's row until the registry is repaired (planSync), and the sync
+// command keeps the model's whole family frozen on the same predicate.
+func RegistryGap(cfg *config.Config, m config.Model) bool {
+	if m.Native {
+		return false
+	}
+	_, err := cfg.ResolveLocation(m)
+	return cfg.ProviderByID(m.ProviderID) == nil || err != nil
 }
 
 // isRegistryID reports whether id names a registry model. A discovered route
@@ -472,7 +487,7 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 	// route — and its hand-added params — the moment `providers = []` lands.
 	gap := map[string]bool{}
 	for _, m := range cfg.Models {
-		if _, err := cfg.ResolveLocation(m); !m.Native && (cfg.ProviderByID(m.ProviderID) == nil || err != nil) {
+		if RegistryGap(cfg, m) {
 			gap[m.ID] = true
 		}
 	}
