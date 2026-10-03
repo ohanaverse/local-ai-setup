@@ -266,6 +266,13 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			drop(id, !isRegistryID(cfg, id))
 		}
 		for _, fam := range ch.RemoveFamilies {
+			// "" is not a family: localmodels.Family and RowFamily both answer
+			// "" for anything outside the local families (cloud providers and
+			// rows, retired llamacpp), so matching it would remove every marked
+			// cloud route and every family-less registry local row.
+			if fam == "" {
+				continue
+			}
 			for _, m := range LocalModels(cfg) {
 				if localmodels.Family(m.ProviderID) == fam {
 					drop(m.ID, false)

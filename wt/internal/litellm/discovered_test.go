@@ -255,3 +255,37 @@ func TestApplyPlannedNeverWritesNilRow(t *testing.T) {
 		t.Fatalf("rows = %v restarts=%d, want only the built row written", got, *restarts)
 	}
 }
+
+// TestApplyChangeIgnoresEmptyFamily pins that an empty RemoveFamilies entry
+// clears nothing. localmodels.Family is "" for every provider without a
+// probe family (cloud providers, retired llamacpp) and RowFamily is "" for
+// every cloud row, so an unguarded "" would match — and delete — every marked
+// cloud route plus the registry local models on family-less providers: a
+// caller passing Family(m.ProviderID) for such a model would wipe all cloud
+// routing on one start or stop.
+func TestApplyChangeIgnoresEmptyFamily(t *testing.T) {
+	cfg := discoveredCfg()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "llamacpp", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080"}})
+	cfg.Models = append(cfg.Models, config.Model{ID: "llamacpp/local", ProviderID: "llamacpp", ModelName: "local", Location: config.LocationLocal})
+	const body = `model_list:
+  - model_name: ollama/glm:cloud
+    litellm_params: {model: ollama_chat/glm:cloud, additional_drop_params: [reasoning_effort]}
+    model_info: {wt_managed: true}
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y}
+    model_info: {wt_managed: true}
+  - model_name: llamacpp/local
+    litellm_params: {model: openai/local-model}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	o, restarts, p := opts(t, body)
+	res, err := ApplyChange(cfg, Change{RemoveFamilies: []string{""}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != body || res.Changed || *restarts != 0 || len(res.Outcomes) != 0 {
+		t.Fatalf("empty family cleared routes: res=%+v restarts=%d\n%s", res, *restarts, b)
+	}
+}
