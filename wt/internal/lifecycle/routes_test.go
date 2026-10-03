@@ -402,6 +402,40 @@ func TestRouteAfterStartDiscoveredSettlesOwedRestart(t *testing.T) {
 	}
 }
 
+// TestApplyAndReportSettlesOwedRestartOnFailedWrite pins that a file-level
+// write failure (the config.yaml lock wait cancelled, a save error) does not
+// swallow a restart an earlier deferred write owes: under restartForced the
+// replaced occupant's route removal is already in config.yaml, so the proxy
+// is still bounced exactly once — otherwise it keeps serving the dead
+// occupant's route until a manual restart. The other modes owe nothing, and a
+// failed write changed nothing, so they must not bounce.
+func TestApplyAndReportSettlesOwedRestartOnFailedWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode restartMode
+		want int32
+	}{
+		{"forced", restartForced, 1},
+		{"if-changed", restartIfChanged, 0},
+		{"deferred", restartDeferred, 0},
+	} {
+		_, warn := stubRoutes(t, litellm.Result{}, errors.New("lock wait cancelled"))
+		var restarts atomic.Int32
+		restartProxy = func(context.Context) []string { restarts.Add(1); return nil }
+		ch := litellm.Change{Add: []config.Model{litellm.DiscoveredModel("mtplx", "org/new")}}
+		if changed := applyAndReport(context.Background(), routesCfg(), ch, tc.mode); changed {
+			t.Errorf("%s: a failed write reported a change", tc.name)
+		}
+		WaitPendingRoutes()
+		if got := restarts.Load(); got != tc.want {
+			t.Errorf("%s: restarts = %d, want %d", tc.name, got, tc.want)
+		}
+		if !bytes.Contains(warn.Bytes(), []byte("lock wait cancelled")) {
+			t.Errorf("%s: the write failure was not reported: %q", tc.name, warn.String())
+		}
+	}
+}
+
 // TestBounceRoutesSurvivesCancelledContext pins that the settling restart after
 // a failed start runs on a live context even when the caller's is already
 // cancelled (Ctrl+C mid-start). A restart on the cancelled ctx would be killed

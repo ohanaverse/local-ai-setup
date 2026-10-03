@@ -480,8 +480,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// A start row: run the model through the lifecycle engine
 					// instead of launching. start and blocked are mutually
 					// exclusive — renderTable sets exactly one per row, and its
-					// discovered-row case clears start before setting blocked —
-					// so this order is a guard, not a precedence rule.
+					// route-refusal and route-error cases clear start when they
+					// set blocked — so this order is a guard, not a precedence
+					// rule.
 					// --replace is the -M pin's permission, not a blanket
 					// one: any other start row still gets the dialog.
 					return m.beginStart(highlighted, m.allowReplace && highlighted.model.ID == m.pinnedModel)

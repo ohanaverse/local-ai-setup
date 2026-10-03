@@ -93,10 +93,12 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 			return config.Model{}, launchable, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
 		}
 		// The picker's route switch decides a row's fate wherever it appears —
-		// launch, start, or block — not just on the start path: a discovered
-		// model the table shows as unselectable must refuse a pin too, and it
-		// must do so BEFORE startModel runs, which under --replace may stop a
-		// running occupant for a launch that then fails at ResolveRoute.
+		// launch, start, or block — not just on the start path: a row the
+		// table shows as unselectable (an Unmapped cloud model routed through
+		// the proxy, or a start row whose route cannot resolve) must refuse a
+		// pin too, and it must do so BEFORE startModel runs, which under
+		// --replace may stop a running occupant for a launch that then fails
+		// at ResolveRoute.
 		if reason := pickerBlockedReason(cfg, agent, row); reason != "" {
 			return config.Model{}, launchable, fmt.Errorf("%s", reason)
 		}

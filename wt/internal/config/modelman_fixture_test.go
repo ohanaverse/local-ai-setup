@@ -13,10 +13,13 @@ import (
 const fixturePriceRefreshDate = "2026-09-14"
 
 // TestLoadModelmanStateMatchesSharedFixture pins wt's read of the shared
-// docs/contracts/modelman.sample.toml fixture to the same field names and
-// values modelman's Python test asserts — a schema drift between the two
-// readers would otherwise ship silently since each side's CI only runs its
-// own language's tests.
+// docs/contracts/modelman.sample.toml fixture. wt reads far less of it than
+// modelman's Python test does: only the legacy [litellm] table and the
+// top-level price_refresh_last_run are pinned here, by the same field names
+// and values, and the [model_state] rows the Python side asserts on are
+// merely tolerated (the file must load with them present). A drift in those
+// two shared pieces would otherwise ship silently since each side's CI only
+// runs its own language's tests.
 func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

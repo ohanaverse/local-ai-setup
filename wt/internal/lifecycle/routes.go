@@ -79,6 +79,16 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 	if restartOwed {
 		mode = restartForced
 	}
+	applyAndReport(ctx, cfg, StartRouteChange(cfg, t), mode)
+}
+
+// StartRouteChange is the route change routeAfterStart writes for a started
+// target: the model to route (registry overlay, else discovered) and, for a
+// single-model provider, its family to clear. It is exported so the id the
+// start hook writes can be pinned against the id `wt litellm sync` desires
+// for the same model (cmd/wt) — if the two derivations drift, every sync
+// after a start removes the hook's route and adds its own.
+func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
 	m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName)
 	if !ok {
 		m = litellm.DiscoveredModel(t.ProviderID, t.ModelName)
@@ -87,7 +97,7 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 	if SingleModel(t.ProviderID) {
 		ch.RemoveFamilies = []string{localmodels.Family(t.ProviderID)}
 	}
-	applyAndReport(ctx, cfg, ch, mode)
+	return ch
 }
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model
@@ -183,6 +193,13 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 	if err != nil {
 		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
 			fmt.Fprintf(routesWarn, "wt: LiteLLM route not updated: %v\n", err)
+		}
+		// This write failed, but restartForced means an earlier deferred
+		// write (the replaced occupant's route removal) is already in
+		// config.yaml and still owes its restart: settle it, or the proxy
+		// keeps serving the dead occupant's route.
+		if mode == restartForced {
+			bounceProxyAsync(ctx, cfg)
 		}
 		return false
 	}

@@ -53,15 +53,21 @@ type Options struct {
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
 	// UntouchedFamilies lists local provider families (localmodels.Family
-	// values) whose probe could not vouch for their state. Sync neither adds,
-	// removes nor rewrites a row whose RowFamily is one of them — discovered
-	// routes included, which Untouched (registry ids only) cannot name.
+	// values) whose probe ran and could not vouch for their state (neither OK
+	// nor refused). Sync neither adds, removes nor rewrites a row whose
+	// RowFamily is one of them — discovered routes included, which Untouched
+	// (registry ids only) cannot name. A family that was never probed (the
+	// registry has no local provider row or local model for it) does not
+	// belong here: its leftover marked rows are stale and sync removes them.
 	// An empty entry names no family and is ignored.
 	UntouchedFamilies []string
-	// Recheck, when set, is called by Sync under the config.yaml lock just
-	// before it removes routes, and returns the ids running NOW. Ids that
-	// turn out to be running are kept: a start finishing between the caller's
-	// probe and the lock would otherwise have its fresh route removed.
+	// Recheck, when set, is called by Sync under the config.yaml lock when
+	// its plan touches a local route, and returns the local ids desired NOW —
+	// running or pulled, registered or discovered. It prunes both sides of
+	// the plan: a Remove id that is desired after all is kept (a start
+	// finishing between the caller's probe and the lock would otherwise have
+	// its fresh route removed), and an Add id — with its Adopt/Rewrite entry —
+	// that is no longer desired is not written.
 	// PlanSync (the dry run) forces it off — it holds no lock and must report
 	// exactly the plan built from the original probe.
 	Recheck func() []string
@@ -74,9 +80,9 @@ type Options struct {
 	ForceRestart bool
 }
 
-// Outcome is one requested id's result. Action is "routed" or "unrouted"
-// (Apply) — Sync further splits "routed" into "adopted" and "rewritten" where
-// its plan says so; Err is set when the id was rejected.
+// Outcome is one id's result. Action is "routed" or "unrouted" (Apply and
+// ApplyChange) — Sync further splits "routed" into "adopted" and "rewritten"
+// where its plan says so; Err is set when the id was rejected.
 type Outcome struct {
 	ID     string
 	Action string
@@ -206,7 +212,7 @@ type plannedRemove struct {
 // returns (Result{}, err) with nothing changed. The file is written, and the
 // proxy restarted, only when the document actually changed.
 func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) {
-	return applyPlanned(cfg, func(*File) ([]plannedAdd, []plannedRemove) {
+	return applyPlanned(func(*File) ([]plannedAdd, []plannedRemove) {
 		out := make([]plannedAdd, len(add))
 		for i, id := range add {
 			out[i] = plannedAdd{id: id}
@@ -248,7 +254,7 @@ type Change struct {
 // failures are reported in Outcomes and do not block the rest; file-level
 // failures are Apply's.
 func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
-	return applyPlanned(cfg, func(f *File) ([]plannedAdd, []plannedRemove) {
+	return applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove) {
 		adding := map[string]bool{}
 		var add []plannedAdd
 		for _, m := range ch.Add {
@@ -298,7 +304,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 // document as read under the lock, so callers that derive the change from the
 // current routes (Sync) never act on a snapshot another process has since
 // changed.
-func applyPlanned(cfg *config.Config, plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (Result, error) {
+func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -470,8 +476,18 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 			gap[m.ID] = true
 		}
 	}
+	// A registry local id is wanted only when the caller hands in the registry
+	// model itself. A discovered model whose id merely spells a registry id
+	// (an unregistered artifact "foo" beside the registry model "ollama/foo",
+	// which serves another model_name) is dropped: the registry model owns
+	// the id, and routing it on the artifact's word would point the route at
+	// a model that may not be on disk.
 	wantLocal := map[string]bool{}
 	for _, m := range localIn {
+		if i := config.IndexModelByID(cfg.Models, m.ID); i >= 0 &&
+			(cfg.Models[i].ProviderID != m.ProviderID || cfg.Models[i].ModelName != m.ModelName) {
+			continue
+		}
 		wantLocal[m.ID] = true
 	}
 	// Registry local models keep registry order; discovered ones follow in
@@ -689,7 +705,7 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // reported with Err.
 func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	var plan SyncPlan
-	res, err := applyPlanned(cfg, func(f *File) ([]plannedAdd, []plannedRemove) {
+	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove) {
 		p, built := planSync(cfg, f, local, o)
 		plan = p
 		// The plan already built every changed row while comparing it with the

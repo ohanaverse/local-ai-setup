@@ -139,7 +139,7 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 		// The probe above predates the config.yaml lock; a start that lands
 		// in between must not lose its route, so removals are re-verified
 		// under the lock.
-		Recheck: func() []string { return desiredLocalIDs(probeInventory(cfg)) },
+		Recheck: func() []string { return desiredLocalIDs(cfg, probeInventory(cfg)) },
 	}
 	if dryRun {
 		plan, err := litellm.PlanSync(cfg, desired, o)
@@ -270,18 +270,27 @@ func routedIDSet() map[string]bool {
 // vouch that anything is serving. An unknown artifact (ArtifactKnown false)
 // never counts as pulled. The real sync, its dry run and the under-lock
 // Recheck all call this one function so they cannot drift.
-func desiredLocalIDs(snap localmodels.Snapshot) []string {
+func desiredLocalIDs(cfg *config.Config, snap localmodels.Snapshot) []string {
 	var desired []string
-	for _, e := range desiredLocalEntries(snap) {
+	for _, e := range desiredLocalEntries(cfg, snap) {
 		desired = append(desired, e.ModelID)
 	}
 	return desired
 }
 
 // desiredLocalEntries is desiredLocalIDs' rule, returning the entries.
-func desiredLocalEntries(snap localmodels.Snapshot) []localmodels.Entry {
+//
+// A discovered entry whose id is a registry id is dropped: the registry model
+// owns that id and is desired only by its own (Registered) entry. Otherwise an
+// unregistered pulled artifact "foo" would make the registry model
+// "ollama/foo" — which serves some other model_name, not pulled — desired, and
+// sync would route the id to a model that is not on disk.
+func desiredLocalEntries(cfg *config.Config, snap localmodels.Snapshot) []localmodels.Entry {
 	var desired []localmodels.Entry
 	for _, e := range snap.Entries {
+		if !e.Registered && config.IndexModelByID(cfg.Models, e.ModelID) >= 0 {
+			continue
+		}
 		fam := localmodels.Family(e.ProviderID)
 		pulled := e.ArtifactKnown && e.Artifact != "" &&
 			localmodels.RoutesFollowArtifact(fam) &&
@@ -298,7 +307,7 @@ func desiredLocalEntries(snap localmodels.Snapshot) []localmodels.Entry {
 // the entry's discovered id.
 func desiredLocalModels(cfg *config.Config, snap localmodels.Snapshot) []config.Model {
 	var out []config.Model
-	for _, e := range desiredLocalEntries(snap) {
+	for _, e := range desiredLocalEntries(cfg, snap) {
 		if i := config.IndexModelByID(cfg.Models, e.ModelID); e.Registered && i >= 0 {
 			out = append(out, cfg.Models[i])
 			continue
@@ -309,14 +318,22 @@ func desiredLocalModels(cfg *config.Config, snap localmodels.Snapshot) []config.
 }
 
 // untrustedFamilies lists the local provider families whose routes sync must
-// leave exactly as they are: every family wt can probe whose probe is
-// neither OK nor Down (refused) — including one that was not probed at all.
+// leave exactly as they are: every family whose probe RAN and came back
+// neither OK nor Down (refused). A family with no key in snap.Providers was
+// never probed — the inventory probes a family only when the registry has a
+// local provider row or a local model for it — so nothing about it is in
+// doubt and it is not frozen: no later probe could ever vouch for it, and its
+// leftover marked rows would otherwise be kept (and warned about) forever.
 // Unlike syncUntouchedAndWarnings' per-id list, a family covers the rows of
 // discovered models too, which carry no registry id.
 func untrustedFamilies(snap localmodels.Snapshot) []string {
 	var fams []string
 	for _, f := range localmodels.Families() {
-		if snap.Providers[f] != localmodels.StatusOK && !snap.Down[f] {
+		status, probed := snap.Providers[f]
+		if !probed {
+			continue
+		}
+		if status != localmodels.StatusOK && !snap.Down[f] {
 			fams = append(fams, f)
 		}
 	}

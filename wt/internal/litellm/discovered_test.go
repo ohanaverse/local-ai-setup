@@ -242,7 +242,7 @@ func TestApplyPlannedNeverWritesNilRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := applyPlanned(cfg, func(*File) ([]plannedAdd, []plannedRemove) {
+	res, err := applyPlanned(func(*File) ([]plannedAdd, []plannedRemove) {
 		return []plannedAdd{{id: "omlx/no-row"}, {id: cfg.Models[0].ID, row: good}}, nil
 	}, o)
 	if err != nil {
@@ -490,5 +490,52 @@ func TestSyncEmptyUntouchedFamilyFreezesNothing(t *testing.T) {
 	want := []RowInfo{{"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
 	if got := readRows(t, p); !slices.Equal(got, want) {
 		t.Fatalf("rows = %v, want the deleted cloud model's row removed: %v", got, want)
+	}
+}
+
+// TestSyncDiscoveredIDNeverStandsInForARegistryModel pins that a discovered
+// artifact whose id happens to spell a registry local id does not make that
+// registry model desired. The registry model "ollama/foo" serves model_name
+// "bar" and is not pulled; an unregistered pulled artifact "foo" has the
+// discovered id "ollama/foo" too. The registry model owns the id and is
+// desired only by its own inventory entry, so the colliding discovered entry
+// is dropped: sync writes no "ollama/foo → ollama_chat/bar" route — a route
+// to a model that is not on disk — in the dry run and the real run alike,
+// and removes one left over from before. The registry model itself, handed
+// in, is still routed.
+func TestSyncDiscoveredIDNeverStandsInForARegistryModel(t *testing.T) {
+	cfg := discoveredCfg()
+	cfg.Models = append(cfg.Models, config.Model{ID: "ollama/foo", ProviderID: "ollama", ModelName: "bar", Location: config.LocationLocal})
+	cloud := []RowInfo{{"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	collide := []config.Model{DiscoveredModel("ollama", "foo")}
+
+	o, _, p := opts(t, "model_list: []\n")
+	plan, err := PlanSync(cfg, collide, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Add, "ollama/foo") {
+		t.Fatalf("dry run plans to add %v: the registry model is not pulled", plan.Add)
+	}
+	if _, err := Sync(cfg, collide, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, cloud) {
+		t.Fatalf("rows = %v, want only the cloud routes %v", got, cloud)
+	}
+
+	// The registry model's own entry still routes it; once only the colliding
+	// artifact is left, that route goes.
+	if _, err := Sync(cfg, localFor(cfg, "ollama/foo"), o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, append(slices.Clone(cloud), RowInfo{"ollama/foo", true})) {
+		t.Fatalf("rows = %v, want the registry model routed", got)
+	}
+	if _, err := Sync(cfg, collide, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, cloud) {
+		t.Fatalf("rows = %v, want the stale ollama/foo route removed", got)
 	}
 }
