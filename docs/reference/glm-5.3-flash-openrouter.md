@@ -55,9 +55,10 @@ supports_vision = true
 Routing (not a stored flag) is what decides whether a local model appears in
 the proxy's `model_list`: wt derives it from `registry.toml` plus live probes,
 so a cloud model is routed whenever it is configured, with no toggle to flip
-(#179). `wt litellm list` is the answer to "is it routed?"; `wt litellm expose`
-writes a row by hand, and the TUI `l` key is the separate LiteLLM *routing*
-on/off toggle (`wt litellm on|off`). See guide 04 for the workflow. No TOML to copy here —
+(#179). `wt litellm list` is the answer to "is it routed?"; there is no
+hand-write command any more (`wt litellm expose`/`unexpose` went with the flag),
+and the TUI `l` key is the separate LiteLLM *routing* on/off toggle
+(`wt litellm on|off`). See guide 04 for the workflow. No TOML to copy here —
 the state file is machine state, not a config to hand-edit.
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration
@@ -119,7 +120,7 @@ wt --cwd -A pi -M openrouter/z-ai/glm-5.3-flash -- -p "Your prompt"
 ```bash
 cd ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman
-# Model appears in list with EXPOSED flag
+# Model appears in the list (no exposure column — check `wt litellm list`)
 ```
 
 ## Model Characteristics
@@ -273,8 +274,8 @@ cd ~/github/ohanaverse/local-ai-setup
 # Check model is in registry
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/local-ai/registry.toml
 
-# Check model is exposed
-grep "openrouter/z-ai/glm-5.3-flash" ~/.config/local-ai/modelman.toml
+# Check model is routed (modelman.toml stores no routing state)
+wt litellm list | grep "openrouter/z-ai/glm-5.3-flash"
 
 # Check LiteLLM config
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/litellm/config.yaml
@@ -414,7 +415,7 @@ For GLM-5.3-Flash via OpenRouter:
 ### Success Criteria
 
 - ✅ Model configured in registry
-- ✅ Model exposed through LiteLLM
+- ✅ Model routed through LiteLLM
 - ✅ Model available in wt picker
 - ✅ At least 2 agents pass automated smoke tests (copilot, pi)
 - ✅ Manual testing confirms model works with all agents
