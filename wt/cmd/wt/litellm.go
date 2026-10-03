@@ -477,7 +477,10 @@ func removedLitellmCmd(name string) *cobra.Command {
 		Use: name, Hidden: true, DisableFlagParsing: true, SilenceUsage: true,
 		Annotations: map[string]string{removedCmdAnnotation: "#179"},
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running local models are routed automatically — run `wt litellm sync`", name)
+			// Mirrors sync's own wording: a pulled ollama model is routed
+			// whether or not it is loaded, so "running" alone understates
+			// what sync does.
+			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt litellm sync`", name)
 		},
 	}
 }
