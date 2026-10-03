@@ -324,6 +324,33 @@ func TestInventoryMlxLMServerUnmatchedPairingsArePartial(t *testing.T) {
 	}
 }
 
+// TestInventoryMlxLMServerEmptyAnswerWithSeveralPairingsIsAmbiguous pins the
+// other half of the ambiguity rule: an empty /v1/models body is no more
+// attributable to a registered pairing than a non-empty one, so it must not be
+// the one shape that lets sync prune. A real mlx_lm_server lists its loaded
+// pairing, so an empty answer means either a foreign listener on that port or a
+// server that has not finished loading — in both cases reporting OK let every
+// sync remove the route of every registered pairing, silently, since only a
+// non-OK family gets the "routes left unchanged" warning.
+func TestInventoryMlxLMServerEmptyAnswerWithSeveralPairingsIsAmbiguous(t *testing.T) {
+	srv := modelsServer(t) // answers {"data":[]}
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || !snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q ambiguous = %v, want partial and ambiguous",
+			snap.Providers["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	if snap.Down["mlx_lm_server"] {
+		t.Errorf("an answering server is not down")
+	}
+}
+
 // TestInventoryMlxLMServerMatchedPairingIsOK verifies that with several
 // registered pairings, a served id that name-matches one of them keeps the
 // family OK with exactly that pairing running — the ambiguity rule must not

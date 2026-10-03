@@ -1153,7 +1153,40 @@ func TestSyncRoutesMlxLMServerAmbiguousLeavesRoutes(t *testing.T) {
 	if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
 		t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
 	}
-	want := []string{`provider "mlx_lm_server" is serving, but no registered model matches what it serves, so wt cannot tell which one is running (status "partial"); its model routes were left unchanged`}
+	want := []string{`provider "mlx_lm_server" answered, but wt cannot tell which of its registered models it is serving (status "partial"); its model routes were left unchanged`}
+	if !slices.Equal(warns, want) {
+		t.Errorf("warnings = %v, want %v", warns, want)
+	}
+}
+
+// TestSyncRoutesMlxLMServerEmptyAnswerLeavesRoutes pins the same guarantee for
+// an EMPTY /v1/models body: with two registered pairings, "answered and listed
+// nothing" is no more attributable to a pairing than a foreign id is, so sync
+// must leave both routes alone and say so. Reporting OK there removed every
+// registered pairing's route silently — a real server lists the pairing it
+// loaded, so the only ways to get an empty list are a foreign listener on the
+// port or a server still starting up.
+func TestSyncRoutesMlxLMServerEmptyAnswerLeavesRoutes(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer up.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: up.URL + "/v1"}}},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a", Location: config.LocationLocal},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b", Location: config.LocationLocal},
+		},
+	}
+	snap := localmodels.Inventory(cfg)
+	if got := desiredLocalIDs(snap); len(got) != 0 {
+		t.Errorf("desiredLocalIDs = %v, want none", got)
+	}
+	untouched, warns := syncUntouchedAndWarnings(cfg, snap, map[string]bool{"mlx_lm_server/a": true})
+	if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
+		t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
+	}
+	want := []string{`provider "mlx_lm_server" answered, but wt cannot tell which of its registered models it is serving (status "partial"); its model routes were left unchanged`}
 	if !slices.Equal(warns, want) {
 		t.Errorf("warnings = %v, want %v", warns, want)
 	}

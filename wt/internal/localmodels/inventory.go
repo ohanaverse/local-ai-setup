@@ -419,9 +419,13 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 	// "<target>+draft-<draft>" pairing name, so with several registered
 	// pairings and no name match wt cannot tell which one is serving. OK would
 	// let sync remove the serving pairing's route; Partial leaves the family's
-	// routes alone.
+	// routes alone. An EMPTY answer counts as unattributable too, not as
+	// "nothing is running": a live server lists the pairing it just loaded, so
+	// empty means a foreign listener on the port or one still loading, and OK
+	// there made sync drop every registered pairing's route with no warning
+	// (only a non-OK family reports "routes left unchanged").
 	if src := sources["mlx_lm_server"]; src != nil && src.status == StatusOK &&
-		src.registered >= 2 && len(src.loaded) > 0 {
+		src.registered >= 2 {
 		matched := false
 		for _, e := range snap.Entries {
 			if e.Running && familyOf(e.ProviderID) == "mlx_lm_server" {
