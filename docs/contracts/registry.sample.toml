@@ -1,7 +1,12 @@
 # Shared fixture for cross-language contract tests. Exercises every schema
 # variant modelman writes and wt reads: all three provider auth types
 # (none, api_key, native), full per-token + subscription pricing, model_info,
-# a per-model location override, and a free model.
+# a per-model location override, and a free model. Since #179 Phase B it also
+# pins local overlay matching: a local registry entry is an overlay matched to
+# a discovered model by provider family + model_name, never by id — so an id
+# spelling "/" as "--" matches exactly like one shaped provider/model_name, and
+# an overlay whose artifact is not on disk is parsed by both sides but gets no
+# row in wt's catalog.
 #
 # `base_url` is an origin (scheme://host:port) — no wire-protocol suffix.
 # Readers normalize (`base_origin`/`BaseOrigin`) before use; drivers append
@@ -65,6 +70,16 @@ location = "local"
 [providers.auth]
 type = "none"
 base_url = "http://localhost:8001/v1"
+
+# mtplx: a single-model local server whose on-disk artifacts are
+# "<org>--<model>" directories, discovered as "org/model".
+[[providers]]
+id = "mtplx"
+name = "MTPLX"
+location = "local"
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8003/v1"
 
 [[families]]
 name = "contract-fixture"
@@ -138,3 +153,22 @@ tags = ["code"]
 repo = "org/contract-fixture-target"
 [models.draft]
 repo = "org/contract-fixture-draft"
+
+# Local overlay whose id spells the repo's "/" as "--" (the legacy shape two
+# reference-host ids use). It matches the discovered artifact
+# "org/contract-fixture-dashed" through model_name, not through its id.
+[[models]]
+id = "mtplx/org--contract-fixture-dashed"
+family = "contract-fixture"
+provider_id = "mtplx"
+model_name = "org/contract-fixture-dashed"
+tags = ["code"]
+
+# Local overlay that is not on disk: still a valid registry entry (modelman
+# lists it as downloadable), but wt's catalog has no row for it.
+[[models]]
+id = "ollama/contract-fixture:absent"
+family = "contract-fixture"
+provider_id = "ollama"
+model_name = "contract-fixture:absent"
+tags = ["code"]
