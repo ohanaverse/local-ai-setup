@@ -11,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 func routesCfg() *config.Config {
@@ -28,7 +29,9 @@ func routesCfg() *config.Config {
 	}
 }
 
-type routeCall struct{ add, remove []string }
+// routeCall is one recorded route write: the added ids, the explicit
+// removals and the families whose routes all go.
+type routeCall struct{ add, remove, families []string }
 
 // stubRoutes replaces the litellm seams for one test and returns the recorded
 // calls and the warning buffer.
@@ -43,14 +46,18 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 	var calls []routeCall
 	var warn bytes.Buffer
 	oa, ow, op, ww, or := applyRoutes, waitProxy, probeProxy, routesWarn, restartProxy
-	applyRoutes = func(_ *config.Config, add, remove []string, o litellm.Options) (litellm.Result, error) {
+	applyRoutes = func(_ *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
 		if !o.NoRestart {
-			t.Error("applyAndReport must always defer Apply's restart and run it asynchronously itself")
+			t.Error("applyAndReport must always defer ApplyChange's restart and run it asynchronously itself")
 		}
 		if o.ForceRestart {
-			t.Error("ForceRestart would make Apply restart despite NoRestart, putting the bounce back on the caller's path")
+			t.Error("ForceRestart would make ApplyChange restart despite NoRestart, putting the bounce back on the caller's path")
 		}
-		calls = append(calls, routeCall{add, remove})
+		var add []string
+		for _, m := range ch.Add {
+			add = append(add, m.ID)
+		}
+		calls = append(calls, routeCall{add, ch.Remove, ch.RemoveFamilies})
 		return res, err
 	}
 	restartProxy = func(context.Context) []string { return nil }
@@ -67,15 +74,20 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 }
 
 // TestRouteAfterStartSingleModelReplacesSiblings pins the bug fix: starting a
-// single-model provider's model (mtplx) adds ITS route and removes routes of
-// the provider's other models, since starting it stopped whatever ran before.
-// Without the removal a replaced model keeps a dead route.
+// single-model provider's model (mtplx) adds ITS route and removes every
+// other route of the provider's family, since starting it stopped whatever
+// ran before. Since #179 Phase B the removal is the whole family (marked rows
+// of discovered siblings included), not a registry-derived id list that
+// missed them. Without it a replaced model keeps a dead route.
 func TestRouteAfterStartSingleModelReplacesSiblings(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, false)
-	want := routeCall{add: []string{"mtplx/Y--Q35"}, remove: []string{"mtplx/Y--Q27"}}
-	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, want.add) || !slices.Equal((*calls)[0].remove, want.remove) {
-		t.Fatalf("calls = %+v, want %+v", *calls, want)
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %+v, want one", *calls)
+	}
+	c := (*calls)[0]
+	if !slices.Equal(c.add, []string{"mtplx/Y--Q35"}) || len(c.remove) != 0 || !slices.Equal(c.families, []string{"mtplx"}) {
+		t.Fatalf("call = %+v, want add [mtplx/Y--Q35] and the mtplx family removed", c)
 	}
 }
 
@@ -85,13 +97,103 @@ func TestRouteAfterStartSingleModelReplacesSiblings(t *testing.T) {
 func TestRouteAfterStartMultiTenantOnlyAdds(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"}, false)
-	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, []string{"ollama/a:1"}) || len((*calls)[0].remove) != 0 {
+	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, []string{"ollama/a:1"}) || len((*calls)[0].remove) != 0 || len((*calls)[0].families) != 0 {
 		t.Fatalf("calls = %+v", *calls)
 	}
 }
 
+// TestRouteAfterStartRoutesDiscoveredModel pins #179 Phase B: starting a model
+// with no registry overlay routes it under its discovered id — the id the
+// picker, -M and usage use — instead of warning "not in the registry" and
+// leaving every LiteLLM-forced agent (codex) unable to reach it. A two-slash
+// mtplx artifact keeps both slashes in its id.
+func TestRouteAfterStartRoutesDiscoveredModel(t *testing.T) {
+	calls, warn := stubRoutes(t, litellm.Result{}, nil)
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "llama3.2:3b"}, false)
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "mlx-community/Qwen3.8-27B-4bit"}, false)
+	if len(*calls) != 2 || warn.Len() != 0 {
+		t.Fatalf("calls = %+v warn = %q, want two writes and no warning", *calls, warn.String())
+	}
+	if got := (*calls)[0]; !slices.Equal(got.add, []string{"ollama/llama3.2:3b"}) || len(got.families) != 0 {
+		t.Errorf("ollama discovered start = %+v, want add [ollama/llama3.2:3b] only", got)
+	}
+	if got := (*calls)[1]; !slices.Equal(got.add, []string{"mtplx/mlx-community/Qwen3.8-27B-4bit"}) || !slices.Equal(got.families, []string{"mtplx"}) {
+		t.Errorf("mtplx discovered start = %+v, want the two-slash id added and the mtplx family removed", got)
+	}
+}
+
+// TestRouteAfterStartOmlx6bitClearsOmlxFamily pins the omlx/omlx-6bit
+// spelling split: a registry omlx-6bit model and a discovered artifact (whose
+// id is always spelled "omlx/<artifact>") share one physical server, so
+// starting the 6-bit model must remove the whole "omlx" family — the family
+// name, never the provider id "omlx-6bit", which no discovered row carries.
+func TestRouteAfterStartOmlx6bitClearsOmlxFamily(t *testing.T) {
+	calls, _ := stubRoutes(t, litellm.Result{}, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx-6bit", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+		Models:    []config.Model{{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal}},
+	}
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "omlx-6bit", ModelName: "Six"}, false)
+	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, []string{"omlx-6bit/Six"}) || !slices.Equal((*calls)[0].families, []string{"omlx"}) {
+		t.Fatalf("calls = %+v, want add [omlx-6bit/Six] and the omlx family removed", *calls)
+	}
+}
+
+// TestRouteHooksRequestOnlyRealFamilies pins what the hooks may put in
+// Change.RemoveFamilies: only a real, non-empty localmodels.Family value.
+// ApplyChange matches families by name, so a raw provider id ("omlx-6bit")
+// would be a silent no-op that leaves the replaced model's dead route behind,
+// and "" is the family of every provider wt has no probe for — a hook that
+// asked to clear it would be asking to clear routes it cannot name. So an
+// omlx-6bit start or stop clears "omlx", and a family-less provider
+// (retired llamacpp) requests no family removal at all, registered or not.
+func TestRouteHooksRequestOnlyRealFamilies(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "omlx-6bit", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+			{ID: "llamacpp", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal},
+			{ID: "llamacpp/G", ProviderID: "llamacpp", ModelName: "G", Location: config.LocationLocal},
+		},
+	}
+	for _, tc := range []struct {
+		provider, model string
+		want            []string // RemoveFamilies of both the start and the stop
+	}{
+		{"omlx-6bit", "Six", []string{"omlx"}},
+		{"omlx-6bit", "unregistered", []string{"omlx"}},
+		{"omlx", "unregistered", []string{"omlx"}},
+		{"mtplx", "org/unregistered", []string{"mtplx"}},
+		{"ollama", "unregistered:1", nil},
+		{"llamacpp", "G", nil},
+		{"llamacpp", "unregistered", nil},
+		{"no-such-provider", "x", nil},
+	} {
+		calls, _ := stubRoutes(t, litellm.Result{}, nil)
+		routeAfterStart(context.Background(), cfg, Target{ProviderID: tc.provider, ModelName: tc.model}, false)
+		routeAfterStop(context.Background(), cfg, tc.provider, tc.model)
+		routeAfterStop(context.Background(), cfg, tc.provider, "") // a provider-wide stop
+		if len(*calls) == 0 {
+			t.Errorf("%s/%s: no route write recorded for the start", tc.provider, tc.model)
+			continue
+		}
+		for i, c := range *calls {
+			if !slices.Equal(c.families, tc.want) {
+				t.Errorf("%s/%s call %d: families = %q, want %q", tc.provider, tc.model, i, c.families, tc.want)
+			}
+			for _, f := range c.families {
+				if f == "" || f != localmodels.Family(tc.provider) {
+					t.Errorf("%s/%s call %d: family %q is not the provider's non-empty localmodels.Family (%q)", tc.provider, tc.model, i, f, localmodels.Family(tc.provider))
+				}
+			}
+		}
+	}
+}
+
 // TestRouteAfterStop pins what a stop does to routes: stopping a single-model
-// provider's model removes routes for every model of that provider (the whole
+// provider's model removes every route of that provider's family (the whole
 // provider went down), while stopping an ollama model writes nothing — ollama
 // only unloads it, and a pulled model is still served on request, so removing
 // its route would break the next request through LiteLLM (#179).
@@ -105,15 +207,15 @@ func TestRouteAfterStop(t *testing.T) {
 	if len(*calls) != 1 {
 		t.Fatalf("calls = %+v", *calls)
 	}
-	if got := slices.Clone((*calls)[0].remove); !slices.Equal(got, []string{"mtplx/Y--Q35", "mtplx/Y--Q27"}) {
-		t.Errorf("mtplx stop removed %v", got)
+	if c := (*calls)[0]; len(c.add) != 0 || len(c.remove) != 0 || !slices.Equal(c.families, []string{"mtplx"}) {
+		t.Errorf("mtplx stop = %+v, want only the mtplx family removed", c)
 	}
 }
 
 // TestRouteNeverFailsTheCaller pins the failure contract: a LiteLLM error is a
-// stderr warning, a missing config.yaml is silent (LiteLLM not set up), and
-// unregistered models warn once. Failing a successful start over a missing
-// route would strand a running model.
+// stderr warning and a missing config.yaml is silent (LiteLLM not set up).
+// Failing a successful start over a missing route would strand a running
+// model.
 func TestRouteNeverFailsTheCaller(t *testing.T) {
 	_, warn := stubRoutes(t, litellm.Result{}, errors.New("boom"))
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"}, false)
@@ -125,12 +227,6 @@ func TestRouteNeverFailsTheCaller(t *testing.T) {
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if warn.Len() != 0 {
 		t.Fatalf("missing config.yaml must be silent, got %q", warn.String())
-	}
-
-	calls, warn := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, false)
-	if len(*calls) != 0 || !bytes.Contains(warn.Bytes(), []byte("not in the registry")) {
-		t.Fatalf("unregistered: calls=%v warn=%q", *calls, warn.String())
 	}
 }
 
@@ -278,27 +374,31 @@ func TestRouteWarnsWhenProxyWaitFailsUncancelled(t *testing.T) {
 	}
 }
 
-// TestRouteAfterStartUnregisteredSettlesOwedRestart pins that a start of a
-// model missing from the registry still bounces the proxy when an earlier
-// deferred occupant-route removal is owed. Returning early would leave the
-// proxy serving the replaced model's dead route until a manual restart.
-func TestRouteAfterStartUnregisteredSettlesOwedRestart(t *testing.T) {
-	_, _ = stubRoutes(t, litellm.Result{}, nil)
+// TestRouteAfterStartDiscoveredSettlesOwedRestart pins that a start of a
+// model with no registry overlay still bounces the proxy when an earlier
+// deferred occupant-route removal is owed, even when its own route write
+// changed nothing (e.g. a hand-written row already serves its name) — and
+// that with nothing owed an unchanged write does not bounce. Skipping the
+// owed bounce would leave the proxy serving the replaced model's dead route
+// until a manual restart.
+func TestRouteAfterStartDiscoveredSettlesOwedRestart(t *testing.T) {
+	calls, _ := stubRoutes(t, litellm.Result{}, nil)
 	restarted := false
 	restartProxy = func(context.Context) []string { restarted = true; return nil }
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, true)
 	// The settling bounce restarts asynchronously: let it finish before the
 	// second stubRoutes below re-points the seams underneath it.
 	WaitPendingRoutes()
-	if !restarted {
-		t.Fatal("owed restart not settled: the proxy was never restarted")
+	if len(*calls) != 1 || !restarted {
+		t.Fatalf("owed restart: calls=%+v restarted=%v, want one write and a bounce", *calls, restarted)
 	}
-	calls, _ := stubRoutes(t, litellm.Result{}, nil)
+	calls, _ = stubRoutes(t, litellm.Result{}, nil)
 	restarted = false
 	restartProxy = func(context.Context) []string { restarted = true; return nil }
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, false)
-	if len(*calls) != 0 || restarted {
-		t.Fatalf("nothing owed, yet the proxy was touched: calls=%+v restarted=%v", *calls, restarted)
+	WaitPendingRoutes()
+	if len(*calls) != 1 || restarted {
+		t.Fatalf("nothing owed: calls=%+v restarted=%v, want one write and no bounce", *calls, restarted)
 	}
 }
 
@@ -362,7 +462,7 @@ func TestApplyAndReportRestartsAsynchronously(t *testing.T) {
 
 	done := make(chan bool, 1)
 	go func() {
-		done <- applyAndReport(context.Background(), routesCfg(), []string{"ollama/a:1"}, nil, restartIfChanged)
+		done <- applyAndReport(context.Background(), routesCfg(), litellm.Change{Add: routesCfg().Models[:1]}, restartIfChanged)
 	}()
 
 	select {
@@ -400,7 +500,7 @@ func TestWaitPendingRoutesBlocksUntilTheRestartFinishes(t *testing.T) {
 		return nil
 	}
 
-	applyAndReport(context.Background(), routesCfg(), []string{"ollama/a:1"}, nil, restartIfChanged)
+	applyAndReport(context.Background(), routesCfg(), litellm.Change{Add: routesCfg().Models[:1]}, restartIfChanged)
 	if restartFinished.Load() {
 		t.Fatal("precondition: the restart finished before it was released")
 	}

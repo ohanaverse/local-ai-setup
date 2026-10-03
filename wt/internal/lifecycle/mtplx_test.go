@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 		return
 	}
 	// No test may reach the real config.yaml or proxy through the public wrappers.
-	applyRoutes = func(*config.Config, []string, []string, litellm.Options) (litellm.Result, error) {
+	applyRoutes = func(*config.Config, litellm.Change, litellm.Options) (litellm.Result, error) {
 		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
 	}
 	probeProxy = func(context.Context, string, time.Duration) bool { return false }

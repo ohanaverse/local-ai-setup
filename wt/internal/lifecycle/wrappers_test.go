@@ -18,7 +18,7 @@ import (
 )
 
 // This file drives the PUBLIC wrappers (Start, Stop, StopModelDeferred +
-// SettleRoutes) end to end against the REAL litellm.Apply on a temp
+// SettleRoutes) end to end against the REAL litellm.ApplyChange on a temp
 // config.yaml, with fake provider backends and httptest provider servers so the
 // real localmodels.Inventory runs. Everything else in the package tests
 // routeAfterStart/routeAfterStop directly, which leaves the wiring — "does
@@ -68,7 +68,7 @@ func swapBackend(t *testing.T, family string, b backend) {
 	})
 }
 
-// realRoutes points the route hook at the REAL litellm.Apply over a temp
+// realRoutes points the route hook at the REAL litellm.ApplyChange over a temp
 // config.yaml and a harmless restart command (the package TestMain hard-fails
 // applyRoutes by default). It returns the config path, a restart counter and
 // the captured warning stream.
@@ -89,7 +89,7 @@ func realRoutes(t *testing.T, yaml string) (cfgPath string, restarts func() int,
 	t.Setenv("WT_LITELLM_RESTART_CMD", "printf x >> "+marks)
 	var buf strings.Builder
 	oa, ow, op, ww := applyRoutes, waitProxy, probeProxy, routesWarn
-	applyRoutes = litellm.Apply
+	applyRoutes = litellm.ApplyChange
 	waitProxy = func(context.Context, string, time.Duration) error { return nil }
 	probeProxy = func(context.Context, string, time.Duration) bool { return false }
 	routesWarn = &buf
@@ -182,7 +182,7 @@ litellm_settings:
 `
 
 // TestStartWrapperAddsRouteOnSuccess drives the real public Start with a fake
-// backend and the real litellm.Apply: a successful start must leave the
+// backend and the real litellm.ApplyChange: a successful start must leave the
 // model's row in config.yaml and bounce the proxy once. Without this, Start
 // could return before its route hook and every routeAfterStart test would
 // still pass while started models had no route — the bug this phase fixes.
@@ -413,7 +413,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 
 // TestStartWrapperRestartSurvivesCancelledCaller is the end-to-end half of
 // TestRouteRestartSurvivesCallerCancelAfterReturn: it drives the real public
-// Start with the real litellm.Apply AND the real RestartContext (counting
+// Start with the real litellm.ApplyChange AND the real RestartContext (counting
 // actual restart-command executions, not stubbed ones) against a caller whose
 // context is already cancelled.
 //
@@ -616,5 +616,73 @@ func TestStopModelDeferredFailedStopWritesNothing(t *testing.T) {
 	}
 	if got := routedIDs(t, path); !slices.Equal(got, []string{"mtplx/Y--Q35"}) {
 		t.Fatalf("routed = %v, want the route kept", got)
+	}
+}
+
+// TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten drives a real stop
+// through the real litellm.ApplyChange (#179 Phase B): stopping the omlx-6bit
+// registry model takes the one oMLX server down, so every marked route of the
+// omlx family goes — the 6-bit model's own row and a discovered sibling's
+// "omlx/<artifact>" row the registry never named — while an unmarked
+// hand-written row that merely shares the family prefix survives, as do
+// other families' rows.
+func TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten(t *testing.T) {
+	const rows = `model_list:
+  - model_name: omlx-6bit/Six
+    litellm_params: {model: openai/Six, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: omlx/stray-model
+    litellm_params: {model: openai/stray-model, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: omlx/my-hand-row
+    litellm_params: {model: openai/my-hand-row, api_base: http://localhost:8000/v1, api_key: not-needed}
+  - model_name: mtplx/org/other
+    litellm_params: {model: openai/org/other, api_base: http://localhost:8003/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`
+	path, _, warn := realRoutes(t, rows)
+	var calls []string
+	swapBackend(t, "omlx", wrapBackend{single: true, calls: &calls})
+	srv := openaiSrv(t, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "omlx-6bit", Location: config.LocationLocal, ModelDir: t.TempDir(), Auth: config.AuthConfig{Type: "none", BaseURL: srv + "/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal},
+		},
+	}
+
+	if owed, err := StopModelDeferred(context.Background(), cfg, "omlx-6bit", "Six"); err != nil || !owed {
+		t.Fatalf("StopModelDeferred(omlx-6bit) = (%v, %v), want (true, nil)", owed, err)
+	}
+	SettleRoutes(context.Background(), cfg)
+	WaitPendingRoutes()
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"omlx/my-hand-row", "mtplx/org/other"}) {
+		t.Fatalf("routed = %v, want only the hand-written omlx row and the mtplx row (warn %q)", got, warn.String())
+	}
+}
+
+// TestStartWrapperRoutesDiscoveredModel drives the real public Start for a
+// pulled ollama model with no registry overlay through the real
+// litellm.ApplyChange: the route lands under its discovered id, marked as
+// wt's, so a LiteLLM-forced agent can reach it (#179 Phase B). Before, the
+// hook warned "not in the registry" and wrote nothing.
+func TestStartWrapperRoutesDiscoveredModel(t *testing.T) {
+	path, _, warn := realRoutes(t, "model_list: []\n")
+	var calls []string
+	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, []string{"llama3.2:3b"}, nil), openaiSrv(t, nil))
+
+	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "llama3.2:3b"}, Options{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	WaitPendingRoutes()
+	f, err := litellm.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Rows(); !slices.Equal(got, []litellm.RowInfo{{ID: "ollama/llama3.2:3b", Managed: true}}) {
+		t.Fatalf("rows = %v, want the discovered id, marked (warn %q)", got, warn.String())
 	}
 }
