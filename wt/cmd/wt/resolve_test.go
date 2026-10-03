@@ -31,7 +31,6 @@ func TestResolveModel(t *testing.T) {
 			{Name: "pi", SupportedProviders: []string{"claude", "ollama"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 
 	// resolveModel errors on an ambiguous LAUNCHABLE list rather than
 	// falling back to any single model. launch.go calls resolveModel and
@@ -93,7 +92,6 @@ func TestResolveModelReturnsLaunchable(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	m, launchable, err := resolveModel("claude", cfg, "", "", "")
 	if err == nil {
@@ -125,7 +123,6 @@ func TestResolveModelRunningLocalModelIsLaunchable(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	m, _, err := resolveModel("pi", cfg, "", "", "")
 	if err != nil || m.ID != "omlx/qwen3.8" {
@@ -157,7 +154,6 @@ func TestResolveModelPinOnIdleLocalStartsIt(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	m, _, err := resolveModel("pi", cfg, "", "", "omlx/qwen3.8")
 	if err != nil || m.ID != "omlx/qwen3.8" {
@@ -193,7 +189,6 @@ func TestResolveModelPinOnDiscoveredLocalStartsIt(t *testing.T) {
 		Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mtplx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	m, _, err := resolveModel("pi", cfg, "", "", disc)
 	if err != nil || m.ID != disc {
@@ -221,7 +216,6 @@ func TestResolveModelPinOnAbsentLocalReportsReason(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	_, launchable, err := resolveModel("pi", cfg, "", "", "omlx/gone")
 	if err == nil || !strings.Contains(err.Error(), "not on disk") {
@@ -254,7 +248,6 @@ func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
 		Models:    []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mlx_lm_server"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	_, _, err := resolveModel("pi", cfg, "", "", "mlx_lm_server/p")
 	if err == nil || !strings.Contains(err.Error(), "modelman start mlx_lm_server/p") {
@@ -277,7 +270,6 @@ func TestResolveModelAllLocalGivesPinMessage(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	_, launchable, err := resolveModel("pi", cfg, "", "", "")
 	if err == nil {
@@ -313,7 +305,6 @@ func TestResolveModelFiltersHideDiscoveredRows(t *testing.T) {
 		Models:    []config.Model{{ID: "mtplx/registered", ProviderID: "mtplx", ModelName: "registered", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mtplx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	m, launchable, err := resolveModel("pi", cfg, "code", "", "")
 	if err == nil {
@@ -344,7 +335,6 @@ func TestResolveModelPinOnDiscoveredUnderLitellmRefuses(t *testing.T) {
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 
 	_, _, err := resolveModel("pi", cfg, "", "", disc)
@@ -378,7 +368,6 @@ func TestResolveModelPinOnUnresolvableRouteRefuses(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 	// No SetLitellmForTest: the claude driver speaks only Anthropic, omlx
 	// only OpenAI chat, so ResolveRoute forces LiteLLM and finds it
 	// unconfigured — the same error renderTable blocks the row on.
@@ -413,7 +402,6 @@ func TestResolveModelPinOnRunningDiscoveredUnderLitellmRefuses(t *testing.T) {
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 
 	_, _, err := resolveModel("pi", cfg, "", "", disc)
@@ -443,7 +431,6 @@ func TestResolveModelRotationSkipsDiscoveredUnderLitellm(t *testing.T) {
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 
 	m, launchable, err := resolveModel("pi", cfg, "", "", "")
@@ -478,7 +465,6 @@ func TestResolveModelPinOnRunningDiscoveredLaunches(t *testing.T) {
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 	// No SetLitellmForTest: LiteLLM routing is off, so the route dials omlx
 	// directly through BaseURL and the picker leaves the row selectable.
 
@@ -515,7 +501,6 @@ func TestResolveModelStartFailurePropagates(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	m, launchable, err := resolveModel("pi", cfg, "", "", "omlx/q")
 	if !errors.Is(err, boom) {
@@ -550,7 +535,6 @@ func TestResolveModelReplaceFlagReachesDriver(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	allowReplace = true
 	t.Cleanup(func() { allowReplace = false })
@@ -573,7 +557,6 @@ func TestResolveModelNoMatchKeepsGenericMessage(t *testing.T) {
 		Models:    []config.Model{{ID: "ollama/code", ProviderID: "ollama", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	_, _, err := resolveModel("pi", cfg, "design", "", "") // -T filter matches nothing
 	if err == nil || !strings.Contains(err.Error(), "no models match") {
@@ -601,7 +584,6 @@ func offDiskResolveFixture(t *testing.T) *config.Config {
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ReadyAllForTest()
 	return cfg
 }
 

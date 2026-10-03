@@ -499,10 +499,9 @@ type Config struct {
 	Models     []Model    `toml:"models"`
 	Agents     []Agent    `toml:"agents"`
 	// LitellmTable is the wt-owned persisted [litellm] routing state.
-	LitellmTable    *LitellmState            `toml:"litellm,omitempty"`
-	migratedLitellm bool                     `toml:"-"`
-	litellm         LitellmState             `toml:"-"` // runtime copy of LitellmTable (or the legacy fallback)
-	modelman        map[string]ModelmanEntry `toml:"-"` // from modelman.toml
+	LitellmTable    *LitellmState `toml:"litellm,omitempty"`
+	migratedLitellm bool          `toml:"-"`
+	litellm         LitellmState  `toml:"-"` // runtime copy of LitellmTable (or the legacy fallback)
 	// wt decides which local models are running from the live inventory
 	// (internal/localmodels), never from modelman's per-model `running` flag.
 	// The flag-parsing fields that used to live here were removed when the
@@ -568,11 +567,11 @@ func Load() (*Config, error) {
 		if err != nil {
 			return cfgOrNilOnMissingRegistry(cfg, err), err
 		}
-		mstate, legacy, err := loadModelmanState()
+		legacy, err := loadModelmanState()
 		if err != nil {
 			return nil, err
 		}
-		return finalizeCfg(cfg, providers, models, mstate, legacy)
+		return finalizeCfg(cfg, providers, models, legacy)
 	}
 
 	providers, models, err := loadRegistry()
@@ -602,7 +601,7 @@ func Load() (*Config, error) {
 		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
 	}
 
-	mstate, legacy, err := loadModelmanState()
+	legacy, err := loadModelmanState()
 	if err != nil {
 		return nil, err
 	}
@@ -611,7 +610,7 @@ func Load() (*Config, error) {
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	c, err := finalizeCfg(fresh, providers, models, mstate, legacy)
+	c, err := finalizeCfg(fresh, providers, models, legacy)
 	if err != nil {
 		return nil, err
 	}
@@ -652,15 +651,13 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
-// from provider auth types, and applies the already-loaded modelman per-model
-// ready state and legacy [litellm] table (mstate, legacy). Callers must
-// already have loaded config.toml, registry.toml, and modelman.toml
-// (loadModelmanState) — finalizeCfg no longer reads modelman.toml itself, so
-// Load calls it exactly once instead of once per finalizeCfg call.
-func finalizeCfg(cfg *Config, providers []Provider, models []Model, mstate map[string]ModelmanEntry, legacy *LitellmState) (*Config, error) {
+// from provider auth types, and applies the already-loaded legacy [litellm]
+// table (legacy). Callers must already have loaded config.toml,
+// registry.toml, and modelman.toml (loadModelmanState) — finalizeCfg never
+// reads modelman.toml itself, so Load reads it exactly once.
+func finalizeCfg(cfg *Config, providers []Provider, models []Model, legacy *LitellmState) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	cfg.modelman = mstate
 	switch {
 	case cfg.LitellmTable != nil:
 		cfg.litellm = *cfg.LitellmTable
@@ -857,24 +854,6 @@ func (c *Config) OpenRouterPriced(m Model) bool {
 	return p != nil && p.Location == LocationCloud
 }
 
-// ReadyFlag reports modelman's `ready` flag for the model id (legacy
-// `downloaded` ORed in at load). LiteLLM's route ready gate uses it: non-cloud
-// models must be ready before they may be routed.
-func (c *Config) ReadyFlag(id string) bool {
-	st, ok := c.modelman[id]
-	return ok && st.Ready
-}
-
-// SetReadyForTest overrides one model's modelman ready state. Production
-// wiring goes through finalizeCfg (loadModelmanState); tests in other
-// packages cannot set the unexported map directly.
-func (c *Config) SetReadyForTest(id string, ready bool) {
-	if c.modelman == nil {
-		c.modelman = map[string]ModelmanEntry{}
-	}
-	c.modelman[id] = ModelmanEntry{Ready: ready}
-}
-
 // AgentSupportsProvider reports whether the named agent lists providerID in
 // supported_providers. An unknown agent supports nothing.
 func (c *Config) AgentSupportsProvider(agentName, providerID string) bool {
@@ -888,15 +867,6 @@ func (c *Config) AgentSupportsProvider(agentName, providerID string) bool {
 		}
 	}
 	return false
-}
-
-// ReadyAllForTest marks every non-native model in cfg as ready. Tests only.
-func (c *Config) ReadyAllForTest() {
-	for _, m := range c.Models {
-		if !m.Native {
-			c.SetReadyForTest(m.ID, true)
-		}
-	}
 }
 
 // ProviderByID returns the provider with the given id, or nil if not found.

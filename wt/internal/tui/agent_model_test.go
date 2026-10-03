@@ -1269,7 +1269,6 @@ func TestEligibleModelsIncludesUnflagged(t *testing.T) {
 		config.Model{ID: "ollama/flagged", ModelName: "flagged", ProviderID: "ollama", Tags: []string{"code"}},
 		config.Model{ID: "ollama/unflagged", ModelName: "unflagged", ProviderID: "ollama", Tags: []string{"code"}},
 	)
-	cfg.SetReadyForTest("ollama/flagged", true)
 	models, err := cfg.EligibleModels("claude", "code", "")
 	if err != nil {
 		t.Fatalf("EligibleModels: %v", err)

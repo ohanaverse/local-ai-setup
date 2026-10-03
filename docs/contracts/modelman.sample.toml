@@ -1,10 +1,11 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only (the `ready` flag, to filter the model picker; the `[litellm]`
-# routing table is now wt-owned in wt's config.toml, and wt reads
-# modelman's table below only as a legacy fallback; wt does NOT read the
-# per-model `running` flag — running state comes from wt's live probes of
-# the providers).
+# read-only. Since #179 Phase B wt reads only two things here: the global
+# `price_refresh_last_run` date and the `[litellm]` table below (a legacy
+# fallback — the routing table is wt-owned in wt's config.toml). wt reads
+# NO per-model [model_state] key: `ready`/`downloaded` (download state),
+# `running` and the retired `exposed` flags are modelman's alone; wt takes
+# local presence and running state from its live probes of the providers.
 #
 # Read by:
 #   - wt/internal/config/modelman_fixture_test.go (Go)
@@ -55,8 +56,8 @@ size_bytes = 1073741824
 exposed = true
 
 # Legacy pre-registry spelling of `ready`. modelman still accepts it
-# (state.py reads ready, falling back to downloaded); wt reads it as ready
-# too. This entry carries the older `litellm_exposed` spelling (no
+# (state.py reads ready, falling back to downloaded); wt ignores it like
+# every per-model key. This entry carries the older `litellm_exposed` spelling (no
 # `exposed` key), which both readers ignore (#179).
 [model_state."llamacpp/legacy-contract-fixture"]
 downloaded = true
@@ -65,10 +66,10 @@ disk_path = "/hf/cache/legacy-contract-fixture.q4.gguf"
 litellm_exposed = true
 
 # A model that exists in state but was never downloaded: all defaults.
-# Both readers yield ready=false.
+# modelman yields ready=false.
 [model_state."openrouter/contract-fixture:cloud"]
 
-# Local model that is not ready: both readers must yield ready=false.
+# Local model that is not ready: modelman must yield ready=false.
 [model_state."ollama/contract-fixture:local-not-ready"]
 ready = false
 disk_path = "ollama:contract-fixture:local-not-ready"

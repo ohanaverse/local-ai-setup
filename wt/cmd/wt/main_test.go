@@ -900,7 +900,6 @@ func TestResolveModelForLaunchCloudOnlyResolves(t *testing.T) {
 		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
 	}
-	cfg.ReadyAllForTest()
 
 	resolved, m, _, err := resolveModelForLaunch("claude", cfg, "", "", "")
 	if err != nil {

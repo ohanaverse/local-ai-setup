@@ -31,20 +31,16 @@ func writeLitellmState(t *testing.T, dir string, enabled bool, url, apiKey strin
 	return LitellmState{Enabled: enabled, URL: url, APIKey: apiKey}
 }
 
-// TestLoadModelmanStateMissingFileReturnsEmptySet asserts that a missing
-// modelman.toml is not an error: every model simply reads as not ready
-// until modelman marks it. This is the first-run state before modelman has
-// written any model state.
-func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
+// TestLoadModelmanStateMissingFile asserts that a missing modelman.toml is
+// not an error: there is simply no legacy [litellm] table to fall back to.
+// This is the first-run state before modelman has written anything.
+func TestLoadModelmanStateMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	state, litellm, err := loadModelmanState()
+	litellm, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v, want nil", err)
-	}
-	if len(state) != 0 {
-		t.Errorf("state = %v, want empty map", state)
 	}
 	if litellm != nil {
 		t.Errorf("litellm = %+v, want nil", litellm)
@@ -54,39 +50,28 @@ func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
 // TestLoadModelmanStateHonorsXDG asserts that loadModelmanState reads from
 // $XDG_CONFIG_HOME/local-ai/modelman.toml, not a hardcoded ~/.config path.
 // Without this guard, a custom XDG location populated by modelman would be
-// ignored and wt would see no ready models.
+// ignored and the legacy [litellm] fallback would never be found.
 func TestLoadModelmanStateHonorsXDG(t *testing.T) {
 	dir := t.TempDir()
-	writeModelmanState(t, dir, `
-[model_state]
+	want := writeLitellmState(t, dir, true, "http://localhost:4000", "sk-xdg")
 
-[model_state.ready-model]
-ready = true
-`)
-
-	state, _, err := loadModelmanState()
+	litellm, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
-	st, ok := state["ready-model"]
-	if !ok {
-		t.Errorf("state[ready-model] missing, want present")
-	} else if !st.Ready {
-		t.Errorf("state[ready-model].Ready = false, want true")
-	}
-	if len(state) != 1 {
-		t.Errorf("len(state) = %d, want 1", len(state))
+	if litellm == nil || *litellm != want {
+		t.Errorf("litellm = %+v, want %+v", litellm, want)
 	}
 }
 
 // TestLoadModelmanStateMalformedTOMLError asserts that a malformed
 // modelman.toml surfaces a clear parse error. Hand-edited TOML can contain
-// syntax mistakes, and silent failure would leave every model not ready.
+// syntax mistakes, and silent failure would hide the legacy routing state.
 func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `this is not toml {{{`)
 
-	_, _, err := loadModelmanState()
+	_, err := loadModelmanState()
 	if err == nil {
 		t.Fatal("expected error for malformed modelman.toml, got nil")
 	}
@@ -95,89 +80,33 @@ func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 	}
 }
 
-// TestLoadModelmanStateReadsLegacyDownloadedAsReady asserts that a legacy
-// modelman.toml entry using `downloaded = true` without a `ready` key is
-// treated as ready, matching modelman/state.py's fallback
-// `entry.get("ready", entry.get("downloaded", False))`. Dropping this fallback
-// would hide legacy local models from wt's picker even though modelman still
-// considers them ready.
-func TestLoadModelmanStateReadsLegacyDownloadedAsReady(t *testing.T) {
-	dir := t.TempDir()
-	writeModelmanState(t, dir, `
-[model_state]
-
-[model_state."legacy-local"]
-downloaded = true
-`)
-
-	state, _, err := loadModelmanState()
-	if err != nil {
-		t.Fatalf("loadModelmanState() error = %v", err)
+// TestModelmanStateReadsNoPerModelState pins #179 Phase B's boundary: wt
+// reads only modelman.toml's legacy [litellm] table and the global
+// price_refresh_last_run — no [model_state] field at all, so neither
+// `ready`/`downloaded`, `running` nor the retired `exposed` flags can creep
+// back into a routing or picker decision. Local presence and running state
+// come from wt's live inventory. A file carrying every per-model key still
+// loads.
+func TestModelmanStateReadsNoPerModelState(t *testing.T) {
+	typ := reflect.TypeOf(modelmanState{})
+	var fields []string
+	for i := 0; i < typ.NumField(); i++ {
+		fields = append(fields, typ.Field(i).Name)
 	}
-	st, ok := state["legacy-local"]
-	if !ok {
-		t.Fatalf("state[legacy-local] missing, want present")
+	if want := []string{"PriceRefreshLastRun", "Litellm"}; !reflect.DeepEqual(fields, want) {
+		t.Fatalf("modelmanState fields = %v, want exactly %v", fields, want)
 	}
-	if !st.Ready {
-		t.Errorf("state[legacy-local].Ready = false, want true (via downloaded fallback)")
-	}
-}
-
-// TestLoadModelmanStateIgnoresExposedKeys verifies wt no longer reads
-// modelman's retired `exposed` / legacy `litellm_exposed` keys (#179:
-// configured is exposed). An old modelman.toml still carrying them must not
-// make a model read as ready, and ModelmanEntry must not grow an Exposed
-// field back — a re-added field would silently read the stale flag again.
-func TestLoadModelmanStateIgnoresExposedKeys(t *testing.T) {
-	dir := t.TempDir()
-	writeModelmanState(t, dir, `
-[model_state."omlx/old"]
-exposed = true
-litellm_exposed = true
-`)
-
-	state, _, err := loadModelmanState()
-	if err != nil {
-		t.Fatalf("loadModelmanState() error = %v", err)
-	}
-	if st := state["omlx/old"]; st.Ready {
-		t.Errorf("state[omlx/old] = %+v, want not ready: exposed keys must not be read", st)
-	}
-	for _, f := range []string{"Exposed", "LitellmExposed"} {
-		if _, ok := reflect.TypeOf(ModelmanEntry{}).FieldByName(f); ok {
-			t.Errorf("ModelmanEntry has a %s field; wt must not read modelman's retired exposed flags", f)
-		}
-	}
-}
-
-// TestLoadModelmanStateIgnoresRunningFlag verifies modelman.toml's per-model
-// `running` key no longer affects what wt loads: the file still carries it
-// (modelman owns it), but wt decides running state from the live inventory.
-// It matters because reading the flag was the mechanism by which a crashed or
-// externally-stopped model could be shown as available — the drift this
-// sub-project removes.
-func TestLoadModelmanStateIgnoresRunningFlag(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `
 [model_state."omlx/qwen3.8"]
 ready = true
+downloaded = true
 running = true
+exposed = true
+litellm_exposed = true
 `)
-
-	state, _, err := loadModelmanState()
-	if err != nil {
-		t.Fatalf("loadModelmanState() error = %v", err)
-	}
-	cfg := &Config{modelman: state}
-	if !cfg.ReadyFlag("omlx/qwen3.8") {
-		t.Error("ready = false, want true: the ready key must still be read")
-	}
-
-	// Structural guard: the parse must not reintroduce a Running field. The
-	// TOML above carries running = true, so a re-added field would silently
-	// read it again — nothing else in the tree would fail.
-	if _, ok := reflect.TypeOf(ModelmanEntry{}).FieldByName("Running"); ok {
-		t.Error("ModelmanEntry has a Running field; wt must not read modelman's per-model running flag")
+	if _, err := loadModelmanState(); err != nil {
+		t.Fatalf("loadModelmanState() error = %v, want per-model keys ignored", err)
 	}
 }
 
@@ -468,9 +397,9 @@ tags = ["code"]
 
 	// Native model: always exposed regardless of flag
 	// Local model with flag+ready: exposed (unchanged)
-	// Local model with flag+not-ready: exposed too (2026-09-15: local
-	//   models bypass the ready gate — visibility is governed by the live
-	//   model inventory (internal/localmodels), not these flags)
+	// Local model with flag+not-ready: exposed too (wt reads no per-model
+	//   modelman state — visibility is governed by the live model inventory
+	//   (internal/localmodels), not these flags)
 	// Local model with exposed=false: exposed too (bypasses the exposed
 	//   flag itself, not just ready)
 	// Cloud model with flag (no ready key): exposed
