@@ -141,7 +141,6 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 
 	// Build a model in phaseAgent (where phaseAgent Enter fires).
 	// The picker list is built from buildAgentList so Enter advances
@@ -214,7 +213,6 @@ func singleModelConfig() *config.Config {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 	return cfg
 }
 

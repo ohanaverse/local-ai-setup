@@ -13,10 +13,13 @@ import (
 const fixturePriceRefreshDate = "2026-09-14"
 
 // TestLoadModelmanStateMatchesSharedFixture pins wt's read of the shared
-// docs/contracts/modelman.sample.toml fixture to the same field names and
-// values modelman's Python test asserts — a schema drift between the two
-// readers would otherwise ship silently since each side's CI only runs its
-// own language's tests.
+// docs/contracts/modelman.sample.toml fixture. wt reads far less of it than
+// modelman's Python test does: only the legacy [litellm] table and the
+// top-level price_refresh_last_run are pinned here, by the same field names
+// and values, and the [model_state] rows the Python side asserts on are
+// merely tolerated (the file must load with them present). A drift in those
+// two shared pieces would otherwise ship silently since each side's CI only
+// runs its own language's tests.
 func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -39,32 +42,17 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	models, litellm, err := loadModelmanState()
+	litellm, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error: %v", err)
 	}
 
-	// The fixture's per-model `running` key is deliberately NOT asserted
-	// here: wt stopped parsing it when the local-running gate retired —
-	// the key stays in the file (modelman owns it) and is ignored on read
-	// (pinned by TestLoadModelmanStateIgnoresRunningFlag).
-	// Likewise the legacy `exposed` / `litellm_exposed` keys some rows still
-	// carry are ignored (#179; pinned by TestLoadModelmanStateIgnoresExposedKeys):
-	// ready comes from `ready` (or legacy `downloaded`) alone.
-	if !models["ollama/contract-fixture:local"].Ready || !models["ollama/contract-fixture:subscription"].Ready {
-		t.Error("expected the ready=true fixture entries to read as ready")
-	}
-	if models["openrouter/contract-fixture:cloud"].Ready {
-		t.Error("expected openrouter/contract-fixture:cloud (all defaults) to have ready=false")
-	}
-
-	if models["ollama/contract-fixture:local-not-ready"].Ready {
-		t.Error("expected ollama/contract-fixture:local-not-ready to have ready=false")
-	}
-
-	if got := models["llamacpp/legacy-contract-fixture"].Ready; !got {
-		t.Error("legacy `downloaded` entry must still read as ready")
-	}
+	// The fixture's [model_state] rows (ready/downloaded, running, the
+	// legacy exposed keys) are deliberately NOT read: since #179 Phase B wt
+	// takes local presence and running state from its live inventory, and
+	// reads only the legacy [litellm] table and price_refresh_last_run
+	// (pinned by TestModelmanStateReadsNoPerModelState). The file must still
+	// load with them present.
 
 	if litellm == nil {
 		t.Fatal("fixture [litellm] table not decoded")

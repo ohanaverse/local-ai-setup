@@ -38,11 +38,11 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // appends a per-row deviation note in Title() (e.g. "(via proxy)" for a
 // row protocol negotiation forces through LiteLLM, "(litellm required)" for
 // a row that needs litellm but wt's [litellm] url/api_key aren't
-// configured, "(not in LiteLLM)" for a discovered (registry-less) row whose route
+// configured, "(not in LiteLLM)" for an Unmapped cloud row whose route
 // would go through LiteLLM, which also sets blocked, "(unavailable)" for any other route resolution failure).
 // blocked, when non-empty, is the hint the agent flow's model phase shows on
 // Enter instead of launching or starting: a local provider wt has no lifecycle
-// backend for, or a discovered row whose route would go through LiteLLM (see
+// backend for, or an Unmapped cloud row whose route would go through LiteLLM (see
 // catalog.Row Action/BlockReason). A non-running local model is deliberately
 // NOT one of these — it is a start row — and a local model that is not on disk
 // is not one either: it has no row at all. Every

@@ -119,37 +119,31 @@ func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	}
 }
 
-// TestRenderTableDiscoveredBlockedUnderLitellm verifies a discovered model —
-// which is not in LiteLLM's model_list — is unselectable and labelled when
-// LiteLLM routing is on, but fine in direct mode.
-func TestRenderTableDiscoveredBlockedUnderLitellm(t *testing.T) {
+// TestRenderTableDiscoveredSelectableUnderLitellm verifies a discovered model
+// is selectable with LiteLLM routing on, exactly as in direct mode (#179
+// Phase B): wt routes it under its discovered id, so the old "(not in
+// LiteLLM)" block would refuse a model the proxy serves. Under routing it is
+// labelled "(via proxy)" only when the route is forced, like any other row.
+func TestRenderTableDiscoveredSelectableUnderLitellm(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
 	}
 	row := tableRow{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, Location: config.LocationLocal, Status: catalog.StatusNew, Running: true, Discovered: true}}
 
-	direct := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
-	if direct.items[0].blocked != "" || direct.items[0].exception != "" {
-		t.Errorf("direct mode: blocked=%q exception=%q, want none", direct.items[0].blocked, direct.items[0].exception)
-	}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
-	lite := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
-	if lite.items[0].exception != "(not in LiteLLM)" || lite.items[0].blocked == "" || lite.items[0].start {
-		t.Errorf("litellm mode: exception=%q blocked=%q start=%v", lite.items[0].exception, lite.items[0].blocked, lite.items[0].start)
-	}
-	// Advice must name a command that changes the state wt reads (wt owns
-	// routing now; `modelman litellm off` would not).
-	if !strings.Contains(lite.items[0].blocked, "wt litellm off") || strings.Contains(lite.items[0].blocked, "modelman litellm") {
-		t.Errorf("blocked hint = %q, want `wt litellm off`", lite.items[0].blocked)
+	for _, enabled := range []bool{false, true} {
+		cfg.SetLitellmForTest(config.LitellmState{Enabled: enabled, URL: "http://localhost:4000", APIKey: "sk-test"})
+		tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
+		if it := tbl.items[0]; it.blocked != "" || it.exception != "" {
+			t.Errorf("litellm enabled=%v: blocked=%q exception=%q, want a selectable row", enabled, it.blocked, it.exception)
+		}
 	}
 }
 
 // TestRenderTableDiscoveredLitellmUnconfigured verifies that a discovered row
 // under enabled-but-unconfigured LiteLLM (no URL/key) is labelled
-// "(litellm required)" and stays launchable: the "(not in LiteLLM)" block only
-// applies when the route resolves without error, so a config error must not be
-// masked by it.
+// "(litellm required)" and stays launchable: a route error is reported on
+// Enter, like any launch row's.
 func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},

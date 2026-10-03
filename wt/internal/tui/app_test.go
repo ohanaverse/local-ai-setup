@@ -34,7 +34,6 @@ func testConfig() *config.Config {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 	return cfg
 }
 
@@ -720,7 +719,6 @@ func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
-	cfg.ReadyAllForTest()
 	m := phaseModelWithList(t, cfg, "claude", "code")
 	m.selectedPath = "/repo"
 
@@ -784,7 +782,6 @@ func TestNoOllamaWarnInLitellmMode(t *testing.T) {
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	cfg.ReadyAllForTest()
 	m := phaseModelWithList(t, cfg, "claude", "code")
 	m.selectedPath = "/repo"
 

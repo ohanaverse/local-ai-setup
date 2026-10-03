@@ -58,7 +58,6 @@ func smokeFixtureConfig(t *testing.T) *config.Config {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 	return cfg
 }
 

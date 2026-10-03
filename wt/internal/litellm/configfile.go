@@ -241,6 +241,17 @@ func (f *File) Rows() []RowInfo {
 	return out
 }
 
+// hasUnmarkedRow reports whether any mapping row named id lacks wt's marker:
+// a hand-written row of that name, which a discovered route never replaces.
+func (f *File) hasUnmarkedRow(id string) bool {
+	for _, r := range f.Rows() {
+		if r.ID == id && !r.Managed {
+			return true
+		}
+	}
+	return false
+}
+
 // row returns the first mapping row named id, or nil.
 func (f *File) row(id string) *yaml.Node {
 	ml := f.modelListSeq()

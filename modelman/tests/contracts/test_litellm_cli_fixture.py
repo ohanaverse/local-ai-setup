@@ -14,9 +14,10 @@ FIXTURE = Path(__file__).resolve().parents[3] / "docs" / "contracts" / "litellm-
 
 def test_sync_fixture_parses():
     # Pins `wt litellm sync --json`, which modelman's bridge parses with
-    # parse_change_result: every sync action survives the parse, a per-id
-    # build error arrives as an error, not an action, and a restart warning
-    # arrives in warnings.
+    # parse_change_result: every sync action survives the parse — a discovered
+    # local model's route (#179 Phase B) arrives under its discovered id like
+    # any other — a per-id build error arrives as an error, not an action, and
+    # a restart warning arrives in warnings.
     doc = json.loads(FIXTURE.read_text())
     res = parse_change_result(json.dumps(doc["sync"]))
     assert [(o.id, o.action) for o in res.outcomes if not o.error] == [
@@ -24,6 +25,7 @@ def test_sync_fixture_parses():
         ("openrouter/x", "rewritten"),
         ("openrouter/adopt", "adopted"),
         ("openrouter/new", "routed"),
+        ("ollama/llama3.2:3b", "routed"),
     ]
     assert [o.id for o in res.outcomes if o.error] == ["openrouter/bad"]
     assert res.changed

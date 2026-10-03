@@ -17,53 +17,36 @@ type LitellmState struct {
 	APIKey  string `toml:"api_key"`
 }
 
-// ModelmanEntry is the decoded-in-memory subset of one modelman.toml
-// [model_state] entry that wt reads: the ready flag (the local route gate).
-type ModelmanEntry struct {
-	Ready bool
-}
-
 // modelmanState mirrors the subset of ~/.config/local-ai/modelman.toml that
 // wt needs read-only access to. The full file is owned by modelman.
 //
-// `downloaded` is the legacy spelling of `ready` (modelman/state.py still
-// accepts `downloaded` as a read-side fallback for pre-registry files).
-// wt materializes both keys into a single Ready bool so the ready gate
-// treats legacy entries consistently with modelman. modelman's retired
-// `exposed`/`litellm_exposed` keys are not read (#179: configured is exposed).
+// wt reads no per-model state at all (#179 Phase B): what is on disk and
+// what is running come from its live inventory, never from modelman's
+// `ready`/`downloaded`, `running` or retired `exposed` flags.
 type modelmanState struct {
 	// price_refresh_last_run is modelman's global "token pricing last
 	// refreshed" date (YYYY-MM-DD), written by `modelman refresh-prices`.
 	// wt reads it post-launch to print a stale-pricing notice.
-	PriceRefreshLastRun string `toml:"price_refresh_last_run"`
-	ModelState          map[string]struct {
-		Ready      bool `toml:"ready"`
-		Downloaded bool `toml:"downloaded"`
-	} `toml:"model_state"`
-	Litellm *LitellmState `toml:"litellm"`
+	PriceRefreshLastRun string        `toml:"price_refresh_last_run"`
+	Litellm             *LitellmState `toml:"litellm"`
 }
 
-// loadModelmanState reads modelman.toml and returns the per-model ready map and
-// the legacy [litellm] routing state (nil when the table is absent). A missing
-// file returns an empty map and nil.
-func loadModelmanState() (map[string]ModelmanEntry, *LitellmState, error) {
+// loadModelmanState reads modelman.toml and returns its legacy [litellm]
+// routing state (nil when the table or the file is absent).
+func loadModelmanState() (*LitellmState, error) {
 	path := ModelmanPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return map[string]ModelmanEntry{}, nil, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read modelman.toml: %w", err)
+		return nil, fmt.Errorf("read modelman.toml: %w", err)
 	}
 	var s modelmanState
 	if err := toml.Unmarshal(data, &s); err != nil {
-		return nil, nil, fmt.Errorf("parse modelman.toml: %w", err)
+		return nil, fmt.Errorf("parse modelman.toml: %w", err)
 	}
-	out := make(map[string]ModelmanEntry, len(s.ModelState))
-	for id, st := range s.ModelState {
-		out[id] = ModelmanEntry{Ready: st.Ready || st.Downloaded}
-	}
-	return out, s.Litellm, nil
+	return s.Litellm, nil
 }
 
 // PriceRefreshLastRun returns modelman's global token-pricing refresh

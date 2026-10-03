@@ -42,7 +42,7 @@ func RegistryPath() string {
 // MODELMAN_REGISTRY NOR modelman's MODELMAN_STATE override — a deliberate
 // asymmetry: wt is a read-only consumer and never needs to redirect the state
 // file the way tests (or wt itself) redirect the registry. The subset wt
-// reads (the per-model ready flags) is pinned by
+// reads (price_refresh_last_run and the legacy [litellm] table) is pinned by
 // docs/contracts/modelman.sample.toml. wt reads this file read-only.
 func ModelmanPath() string {
 	return filepath.Join(baseConfigHome(), "local-ai", "modelman.toml")

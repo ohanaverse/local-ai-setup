@@ -1,0 +1,541 @@
+package litellm
+
+import (
+	"os"
+	"slices"
+	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+)
+
+// discoveredCfg is testConfig plus the omlx family (omlx and omlx-6bit, one
+// physical server) with one registry 6-bit model, and an ollama cloud model —
+// a cloud model on the LOCAL ollama provider.
+func discoveredCfg() *config.Config {
+	cfg := testConfig()
+	cfg.Providers = append(cfg.Providers,
+		config.Provider{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		config.Provider{ID: "omlx-6bit", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+	)
+	cfg.Models = append(cfg.Models,
+		config.Model{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal},
+		config.Model{ID: "ollama/glm:cloud", ProviderID: "ollama", ModelName: "glm:cloud", Location: config.LocationCloud},
+	)
+	return cfg
+}
+
+// TestDiscoveredModelAndRowFamily pins the two id rules discovered routing
+// rests on (#179 Phase B): a discovered model's id is the catalog's
+// config.DiscoveredModelID under its provider FAMILY — two slashes for an
+// mtplx repo id — and RowFamily classifies a config.yaml row by family:
+// registry local models by provider (omlx-6bit is the omlx family), registry
+// cloud models never (even on the local ollama provider — otherwise an
+// untrusted ollama probe would freeze its cloud routes), and any other id by
+// its local-provider prefix. A wrong family either strands a stale route or
+// lets a stop delete a sibling's.
+func TestDiscoveredModelAndRowFamily(t *testing.T) {
+	m := DiscoveredModel("mtplx", "mlx-community/Qwen3.8-27B-4bit")
+	want := config.Model{ID: "mtplx/mlx-community/Qwen3.8-27B-4bit", ProviderID: "mtplx", ModelName: "mlx-community/Qwen3.8-27B-4bit", Location: config.LocationLocal, Source: config.SourceDiscovered}
+	if !equalModel(m, want) {
+		t.Fatalf("DiscoveredModel = %+v, want %+v", m, want)
+	}
+	cfg := discoveredCfg()
+	cases := map[string]string{
+		"omlx-6bit/Six":                   "omlx",
+		"mtplx/Youssofal--Q":              "mtplx",
+		"ollama/glm:cloud":                "",
+		"openrouter/x/y":                  "",
+		"omlx/stray-model":                "omlx",
+		"omlx-6bit/deleted":               "omlx",
+		"mtplx/mlx-community/Qwen3.8-27B": "mtplx",
+		"openrouter/qwen/deleted":         "",
+		"my-alias":                        "",
+	}
+	for id, want := range cases {
+		if got := RowFamily(cfg, id); got != want {
+			t.Errorf("RowFamily(%s) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// equalModel compares the identity fields DiscoveredModel sets.
+func equalModel(a, b config.Model) bool {
+	return a.ID == b.ID && a.ProviderID == b.ProviderID && a.ModelName == b.ModelName && a.Location == b.Location && a.Source == b.Source
+}
+
+// TestPrepareModelBuildsDiscoveredRow pins the row a discovered model gets:
+// the provider policy supplies the prefixed model, the /v1 api_base and the
+// literal key; pricing is the explicit $0 every local row carries; and the
+// row is marked as wt's, so a later stop or sync can remove it. Without the
+// marker a discovered route would read as hand-written and never go away.
+func TestPrepareModelBuildsDiscoveredRow(t *testing.T) {
+	cfg := discoveredCfg()
+	node, err := prepareModel(cfg, DiscoveredModel("omlx", "stray-model"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decode(t, node)
+	if got["model_name"] != "omlx/stray-model" {
+		t.Errorf("model_name = %v", got["model_name"])
+	}
+	params := got["litellm_params"].(map[string]any)
+	if params["model"] != "openai/stray-model" || params["api_base"] != "http://localhost:8000/v1" || params["api_key"] != "not-needed" {
+		t.Errorf("litellm_params = %v", params)
+	}
+	info := got["model_info"].(map[string]any)
+	if info["input_cost_per_token"] != 0 || info["output_cost_per_token"] != 0 || info[ManagedKey] != true {
+		t.Errorf("model_info = %v, want $0 pricing and the marker", info)
+	}
+	if _, err := prepareModel(cfg, DiscoveredModel("ghost", "x")); err == nil {
+		t.Error("a discovered model whose provider is not in the registry must be rejected")
+	}
+}
+
+// TestApplyChangeRemovesFamilyMarkedRows pins RemoveFamilies (#179 Phase B):
+// a single-model start or stop removes every marked row of the family —
+// discovered siblings the registry never named included — plus the family's
+// registry ids even when their row predates the marker, but never an
+// unmarked row that is not a registry id, another family's row, a cloud row,
+// or the id being added. One write, one restart.
+func TestApplyChangeRemovesFamilyMarkedRows(t *testing.T) {
+	o, restarts, p := opts(t, `model_list:
+  - model_name: omlx/disc-a
+    litellm_params: {model: openai/disc-a}
+    model_info: {wt_managed: true}
+  - model_name: omlx/disc-b
+    litellm_params: {model: openai/disc-b}
+    model_info: {wt_managed: true}
+  - model_name: omlx-6bit/Six
+    litellm_params: {model: openai/Six}
+  - model_name: omlx/hand
+    litellm_params: {model: openai/hand}
+  - model_name: mtplx/Youssofal--Q
+    litellm_params: {model: openai/Youssofal/Q}
+    model_info: {wt_managed: true}
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y}
+    model_info: {wt_managed: true}
+`)
+	ch := Change{Add: []config.Model{DiscoveredModel("omlx", "disc-a")}, RemoveFamilies: []string{"omlx"}}
+	res, err := ApplyChange(discoveredCfg(), ch, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"omlx/disc-a", true}, {"omlx/hand", false}, {"mtplx/Youssofal--Q", true}, {"openrouter/x/y", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	if !res.Changed || *restarts != 1 {
+		t.Fatalf("changed=%v restarts=%d, want true/1", res.Changed, *restarts)
+	}
+}
+
+// handWrittenLlama is the reference host's hand-written ollama row whose
+// name is exactly the discovered id of the pulled llama3.2:3b, carrying a
+// hand-set timeout, in a file every earlier wt write already normalised
+// (litellm_settings and the ollama drop params), so any change is the row.
+const handWrittenLlama = `model_list:
+  - model_name: ollama/llama3.2:3b
+    litellm_params: {model: ollama_chat/llama3.2:3b, timeout: 600, additional_drop_params: [reasoning_effort]}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+
+// TestApplyChangeNeverReplacesHandWrittenDiscoveredName pins the Phase B
+// safety rule on the start path: a discovered model whose id already names a
+// hand-written (unmarked) row is not written — no add, no adoption, no
+// rewrite, no restart — so the user's row (and its timeout) keeps serving the
+// name. A registry id keeps Phase A adoption: its unmarked row is wt's.
+func TestApplyChangeNeverReplacesHandWrittenDiscoveredName(t *testing.T) {
+	o, restarts, p := opts(t, handWrittenLlama)
+	res, err := ApplyChange(discoveredCfg(), Change{Add: []config.Model{DiscoveredModel("ollama", "llama3.2:3b")}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != handWrittenLlama || res.Changed || *restarts != 0 {
+		t.Fatalf("hand-written row touched: changed=%v restarts=%d\n%s", res.Changed, *restarts, b)
+	}
+
+	o2, _, p2 := opts(t, "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n")
+	gemma := discoveredCfg().Models[:1] // ollama/gemma:9b, a registry id
+	if _, err := ApplyChange(discoveredCfg(), Change{Add: gemma}, o2); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p2); !slices.Equal(got, []RowInfo{{"ollama/gemma:9b", true}}) {
+		t.Fatalf("registry row = %v, want it adopted (marked)", got)
+	}
+}
+
+// TestApplyChangeFamilyClearKeepsHandWrittenRow pins the same safety rule on
+// the stop path: clearing a family (and naming the id in Remove) while a
+// hand-written row carries a discovered id of that family leaves the file
+// byte-identical — the row is unmarked and not a registry id, so it is not
+// wt's to remove — and when a marked row shares the name, only the marked
+// one goes. Deleting it would silently drop a route the user wrote by hand.
+func TestApplyChangeFamilyClearKeepsHandWrittenRow(t *testing.T) {
+	o, restarts, p := opts(t, handWrittenLlama)
+	ch := Change{Remove: []string{"ollama/llama3.2:3b"}, RemoveFamilies: []string{"ollama"}}
+	res, err := ApplyChange(discoveredCfg(), ch, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != handWrittenLlama || res.Changed || *restarts != 0 {
+		t.Fatalf("hand-written row touched: changed=%v restarts=%d\n%s", res.Changed, *restarts, b)
+	}
+
+	o2, _, p2 := opts(t, `model_list:
+  - model_name: ollama/llama3.2:3b
+    litellm_params: {model: ollama_chat/llama3.2:3b, timeout: 600}
+  - model_name: ollama/llama3.2:3b
+    litellm_params: {model: ollama_chat/llama3.2:3b}
+    model_info: {wt_managed: true}
+`)
+	if _, err := ApplyChange(discoveredCfg(), Change{RemoveFamilies: []string{"ollama"}}, o2); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p2); !slices.Equal(got, []RowInfo{{"ollama/llama3.2:3b", false}}) {
+		t.Fatalf("rows = %v, want only the hand-written row left", got)
+	}
+}
+
+// TestPrepareModelRejectsFamilylessDiscoveredID pins that a discovered model
+// for a provider with a LiteLLM policy but no probe family (retired llamacpp)
+// — whose id comes out as "/<artifact>" — is rejected instead of built: such
+// a row has no family, so no stop or family clear could ever remove it.
+// ApplyChange reports it per model and writes nothing.
+func TestPrepareModelRejectsFamilylessDiscoveredID(t *testing.T) {
+	cfg := discoveredCfg()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "llamacpp", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080"}})
+	m := DiscoveredModel("llamacpp", "local-model")
+	if m.ID != "/local-model" {
+		t.Fatalf("id = %q, want the family-less /local-model this test guards", m.ID)
+	}
+	for _, bad := range []config.Model{m, {ProviderID: "omlx", ModelName: "x"}} {
+		if node, err := prepareModel(cfg, bad); err == nil || node != nil {
+			t.Errorf("prepareModel(%q) = %v, %v; want a rejection", bad.ID, node, err)
+		}
+	}
+	const body = "model_list: []\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	o, restarts, p := opts(t, body)
+	res, err := ApplyChange(cfg, Change{Add: []config.Model{m}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Outcomes) != 1 || res.Outcomes[0].Err == nil || res.Changed || *restarts != 0 {
+		t.Fatalf("res = %+v restarts=%d, want one error outcome and no write", res, *restarts)
+	}
+	if b, _ := os.ReadFile(p); string(b) != body {
+		t.Fatalf("config.yaml changed:\n%s", b)
+	}
+}
+
+// TestApplyPlannedNeverWritesNilRow pins the write path's guard: a planned
+// add with neither a row nor an error is reported as that id's error and
+// skipped, never handed to SetRow — a nil node in model_list would corrupt
+// config.yaml (or panic on save) for every route, not just this one. The
+// other add in the same plan is still written.
+func TestApplyPlannedNeverWritesNilRow(t *testing.T) {
+	cfg := testConfig()
+	o, restarts, p := opts(t, "model_list: []\n")
+	good, err := prepareModel(cfg, cfg.Models[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := applyPlanned(func(*File) ([]plannedAdd, []plannedRemove) {
+		return []plannedAdd{{id: "omlx/no-row"}, {id: cfg.Models[0].ID, row: good}}, nil
+	}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Outcomes) != 2 || res.Outcomes[0].ID != "omlx/no-row" || res.Outcomes[0].Err == nil || res.Outcomes[0].Action != "" {
+		t.Fatalf("outcomes = %+v, want the row-less add reported as an error", res.Outcomes)
+	}
+	if got := readRows(t, p); !slices.Equal(got, []RowInfo{{"ollama/gemma:9b", true}}) || *restarts != 1 {
+		t.Fatalf("rows = %v restarts=%d, want only the built row written", got, *restarts)
+	}
+}
+
+// TestApplyChangeIgnoresEmptyFamily pins that an empty RemoveFamilies entry
+// clears nothing. localmodels.Family is "" for every provider without a
+// probe family (cloud providers, retired llamacpp) and RowFamily is "" for
+// every cloud row, so an unguarded "" would match — and delete — every marked
+// cloud route plus the registry local models on family-less providers: a
+// caller passing Family(m.ProviderID) for such a model would wipe all cloud
+// routing on one start or stop.
+func TestApplyChangeIgnoresEmptyFamily(t *testing.T) {
+	cfg := discoveredCfg()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "llamacpp", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080"}})
+	cfg.Models = append(cfg.Models, config.Model{ID: "llamacpp/local", ProviderID: "llamacpp", ModelName: "local", Location: config.LocationLocal})
+	const body = `model_list:
+  - model_name: ollama/glm:cloud
+    litellm_params: {model: ollama_chat/glm:cloud, additional_drop_params: [reasoning_effort]}
+    model_info: {wt_managed: true}
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y}
+    model_info: {wt_managed: true}
+  - model_name: llamacpp/local
+    litellm_params: {model: openai/local-model}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	o, restarts, p := opts(t, body)
+	res, err := ApplyChange(cfg, Change{RemoveFamilies: []string{""}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != body || res.Changed || *restarts != 0 || len(res.Outcomes) != 0 {
+		t.Fatalf("empty family cleared routes: res=%+v restarts=%d\n%s", res, *restarts, b)
+	}
+}
+
+// TestSyncRoutesDiscoveredModels pins sync's Phase B desired set: a
+// discovered local model the caller found running (or pulled) gets a marked
+// route under its discovered id — two-slash mtplx ids included — and loses it
+// once it is no longer found, because the marked row is wt's.
+func TestSyncRoutesDiscoveredModels(t *testing.T) {
+	o, _, p := opts(t, "model_list: []\n")
+	cfg := discoveredCfg()
+	local := []config.Model{DiscoveredModel("ollama", "llama3.2:3b"), DiscoveredModel("mtplx", "mlx-community/Qwen3.8-27B-4bit")}
+	if _, err := Sync(cfg, local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"openrouter/x/y", true}, {"ollama/glm:cloud", true}, {"ollama/llama3.2:3b", true}, {"mtplx/mlx-community/Qwen3.8-27B-4bit", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	if _, err := Sync(cfg, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, want[:2]) {
+		t.Fatalf("rows after the models went away = %v, want only the cloud routes", got)
+	}
+}
+
+// TestSyncLeavesHandWrittenDiscoveredName pins Review Focus 1 on the sync
+// path: the reference host's hand-written "ollama/llama3.2:3b" row is named
+// exactly like the discovered id of the pulled model, yet sync neither plans
+// nor performs an add or adoption for it, and keeps it when the model is gone
+// — the row is the user's, not wt's.
+func TestSyncLeavesHandWrittenDiscoveredName(t *testing.T) {
+	o, _, p := opts(t, handWrittenLlama)
+	cfg := discoveredCfg()
+	local := []config.Model{DiscoveredModel("ollama", "llama3.2:3b")}
+	plan, err := PlanSync(cfg, local, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Add, "ollama/llama3.2:3b") || slices.Contains(plan.Remove, "ollama/llama3.2:3b") {
+		t.Fatalf("plan = %+v, want the hand-written row left alone", plan)
+	}
+	for _, l := range [][]config.Model{local, nil} {
+		if _, err := Sync(cfg, l, o); err != nil {
+			t.Fatal(err)
+		}
+		if got := readRows(t, p); !slices.Contains(got, RowInfo{"ollama/llama3.2:3b", false}) {
+			t.Fatalf("rows = %v, want the hand-written row kept unmarked", got)
+		}
+	}
+}
+
+// TestSyncSkipsUntouchedFamilies pins UntouchedFamilies: while a family's
+// probe cannot vouch for it, sync neither removes its discovered routes nor
+// adds new ones — a flaky probe must never wipe routes it cannot see — while
+// a trusted family's stale discovered row still goes, and a registry cloud
+// model on the untrusted family's provider is still routed (it is not that
+// family's row).
+func TestSyncSkipsUntouchedFamilies(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: omlx/stray-model
+    litellm_params: {model: openai/stray-model, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: mtplx/org/gone
+    litellm_params: {model: openai/org/gone, api_base: http://localhost:8003/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`)
+	o.UntouchedFamilies = []string{"omlx", "ollama"}
+	local := []config.Model{DiscoveredModel("omlx", "new-model")}
+	if _, err := Sync(discoveredCfg(), local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"omlx/stray-model", true}, {"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+}
+
+// TestSyncRecheckCoversDiscoveredIDs pins that the under-lock Recheck guards
+// discovered routes exactly like registry ones: a discovered model that
+// stopped before the lock gets no fresh route, and a discovered model that
+// started meanwhile keeps the marked row the stale probe would have removed.
+func TestSyncRecheckCoversDiscoveredIDs(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: omlx/started-meanwhile
+    litellm_params: {model: openai/started-meanwhile, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`)
+	o.Recheck = func() []string { return []string{"omlx/started-meanwhile"} }
+	local := []config.Model{DiscoveredModel("omlx", "stopped-meanwhile")}
+	if _, err := Sync(discoveredCfg(), local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"omlx/started-meanwhile", true}, {"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+}
+
+// TestSyncDeletedOverlayKeepsTheModelRouted pins spec B3's "deleting a local
+// overlay entry does not change routing": once its registry entry is gone, a
+// running model is found as discovered and keeps a marked route under its
+// discovered id. For an overlay whose id was provider/model_name the route
+// name does not even change; for a legacy "--"-style id the old marked row
+// goes and the model is routed under its discovered id (the documented stats
+// split for such ids). Only a stop removes a local route.
+func TestSyncDeletedOverlayKeepsTheModelRouted(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/llama3.2:3b
+    litellm_params: {model: ollama_chat/llama3.2:3b}
+    model_info: {wt_managed: true}
+  - model_name: mtplx/org--deleted
+    litellm_params: {model: openai/org/deleted}
+    model_info: {wt_managed: true}
+`)
+	local := []config.Model{DiscoveredModel("ollama", "llama3.2:3b"), DiscoveredModel("mtplx", "org/deleted")}
+	if _, err := Sync(discoveredCfg(), local, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"ollama/llama3.2:3b", true}, {"openrouter/x/y", true}, {"ollama/glm:cloud", true}, {"mtplx/org/deleted", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+}
+
+// TestSyncUntouchedFamilyFreezesRegistryRoutesToo pins that UntouchedFamilies
+// covers a family's REGISTRY rows exactly like its discovered ones, with or
+// without the per-id Untouched list: a registry model the stale probe calls
+// running gets no new route, one it calls stopped keeps its marked row, and a
+// marked row that differs from what wt would build is not rewritten — the
+// file is byte-identical and the proxy is not restarted. The dry run reports
+// the same empty plan the real sync performs.
+func TestSyncUntouchedFamilyFreezesRegistryRoutesToo(t *testing.T) {
+	const body = `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_base: https://openrouter.ai/api/v1, api_key: sk-test}
+    model_info: {supports_vision: true, input_cost_per_token: 0.25, output_cost_per_token: 2e-06, cache_read_input_token_cost: 5e-07, cache_creation_input_token_cost: 5e-07, wt_managed: true}
+  - model_name: ollama/glm:cloud
+    litellm_params: {model: ollama_chat/glm:cloud, api_base: http://localhost:11434, additional_drop_params: [reasoning_effort]}
+    model_info: {wt_managed: true}
+  - model_name: mtplx/Youssofal--Q
+    litellm_params: {model: openai/stale-name, api_base: http://localhost:9999/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	cfg := discoveredCfg()
+	// Settle the cloud rows first so the frozen run below has nothing else to
+	// change; mtplx is frozen here too, so its stale row survives the settle.
+	o, restarts, p := opts(t, body)
+	o.UntouchedFamilies = []string{"mtplx", "omlx"}
+	if _, err := Sync(cfg, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*restarts = 0
+	for _, local := range [][]config.Model{nil, localFor(cfg, "omlx-6bit/Six", "mtplx/Youssofal--Q")} {
+		plan, err := PlanSync(cfg, local, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Add)+len(plan.Remove)+len(plan.Errors) != 0 {
+			t.Fatalf("plan = %+v, want nothing planned for frozen families", plan)
+		}
+		res, err := Sync(cfg, local, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Changed || *restarts != 0 || string(after) != string(before) {
+			t.Fatalf("changed=%v restarts=%d, want the file untouched:\n%s", res.Changed, *restarts, after)
+		}
+	}
+	if got := readRows(t, p); !slices.Contains(got, RowInfo{"mtplx/Youssofal--Q", true}) || slices.Contains(got, RowInfo{"omlx-6bit/Six", true}) {
+		t.Fatalf("rows = %v, want the stale mtplx row kept and no omlx-6bit row added", got)
+	}
+}
+
+// TestSyncEmptyUntouchedFamilyFreezesNothing pins that an empty string in
+// UntouchedFamilies names no family. RowFamily is "" for every cloud and
+// hand-aliased row, so honouring it would freeze them all: the marked row of
+// a deleted cloud model would never be removed while any caller passed a
+// provider with no probe family.
+func TestSyncEmptyUntouchedFamilyFreezesNothing(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: openrouter/deleted
+    litellm_params: {model: openrouter/deleted}
+    model_info: {wt_managed: true}
+`)
+	o.UntouchedFamilies = []string{""}
+	if _, err := Sync(discoveredCfg(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	if got := readRows(t, p); !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want the deleted cloud model's row removed: %v", got, want)
+	}
+}
+
+// TestSyncDiscoveredIDNeverStandsInForARegistryModel pins that a discovered
+// artifact whose id happens to spell a registry local id does not make that
+// registry model desired. The registry model "ollama/foo" serves model_name
+// "bar" and is not pulled; an unregistered pulled artifact "foo" has the
+// discovered id "ollama/foo" too. The registry model owns the id and is
+// desired only by its own inventory entry, so the colliding discovered entry
+// is dropped: sync writes no "ollama/foo → ollama_chat/bar" route — a route
+// to a model that is not on disk — in the dry run and the real run alike,
+// and removes one left over from before. The registry model itself, handed
+// in, is still routed.
+func TestSyncDiscoveredIDNeverStandsInForARegistryModel(t *testing.T) {
+	cfg := discoveredCfg()
+	cfg.Models = append(cfg.Models, config.Model{ID: "ollama/foo", ProviderID: "ollama", ModelName: "bar", Location: config.LocationLocal})
+	cloud := []RowInfo{{"openrouter/x/y", true}, {"ollama/glm:cloud", true}}
+	collide := []config.Model{DiscoveredModel("ollama", "foo")}
+
+	o, _, p := opts(t, "model_list: []\n")
+	plan, err := PlanSync(cfg, collide, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Add, "ollama/foo") {
+		t.Fatalf("dry run plans to add %v: the registry model is not pulled", plan.Add)
+	}
+	if _, err := Sync(cfg, collide, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, cloud) {
+		t.Fatalf("rows = %v, want only the cloud routes %v", got, cloud)
+	}
+
+	// The registry model's own entry still routes it; once only the colliding
+	// artifact is left, that route goes.
+	if _, err := Sync(cfg, localFor(cfg, "ollama/foo"), o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, append(slices.Clone(cloud), RowInfo{"ollama/foo", true})) {
+		t.Fatalf("rows = %v, want the registry model routed", got)
+	}
+	if _, err := Sync(cfg, collide, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRows(t, p); !slices.Equal(got, cloud) {
+		t.Fatalf("rows = %v, want the stale ollama/foo route removed", got)
+	}
+}

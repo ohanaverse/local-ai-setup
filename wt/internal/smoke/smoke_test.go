@@ -47,7 +47,6 @@ func smokeFixtureConfig(t *testing.T) *config.Config {
 			{Name: "shell", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 	return cfg
 }
 
@@ -218,13 +217,11 @@ func TestEligibilityIncludesDiscoveredRunningModel(t *testing.T) {
 	}
 }
 
-// TestEligibilityExcludesDiscoveredUnderLitellm verifies a discovered running
-// model routed through LiteLLM is NOT eligible. It matters because the picker
-// makes such a row unselectable (internal/tui/modeltable.go) and the CLI
-// refuses it (pickerBlockedReason) — the gateway's model_list has no entry for
-// a model wt discovered on disk — so advertising it would break smoke's
-// contract that a model it reports eligible is a model a real launch accepts.
-func TestEligibilityExcludesDiscoveredUnderLitellm(t *testing.T) {
+// TestEligibilityIncludesDiscoveredUnderLitellm verifies a discovered running
+// model routed through LiteLLM IS eligible (#179 Phase B): wt routes it under
+// its discovered id, so a real launch accepts it and smoke must offer it —
+// before, the picker refused such a row and smoke hid it to match.
+func TestEligibilityIncludesDiscoveredUnderLitellm(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	disc := config.DiscoveredModelID("ollama", "extra")
 	stubSmokeProbe(t, localmodels.Snapshot{
@@ -235,10 +232,8 @@ func TestEligibilityExcludesDiscoveredUnderLitellm(t *testing.T) {
 	})
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	models, _ := Eligibility(cfg)
-	for _, m := range models {
-		if m.ID == disc {
-			t.Errorf("discovered model routed through LiteLLM reported eligible: %+v", m)
-		}
+	if !slices.ContainsFunc(models, func(m config.Model) bool { return m.ID == disc }) {
+		t.Errorf("discovered model routed through LiteLLM not eligible: %+v", models)
 	}
 }
 
@@ -576,7 +571,6 @@ func candidatesFixture(t *testing.T) (*config.Config, func()) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
-	cfg.ReadyAllForTest()
 	snap := localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
@@ -635,7 +629,6 @@ func TestCandidatesGateStartRowsPerAgent(t *testing.T) {
 			{Name: "codex", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 	defer SetSmokeProbeForTest(localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{

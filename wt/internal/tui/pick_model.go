@@ -133,7 +133,7 @@ func PickModel(cfg *config.Config, models []config.Model, theme themes.Theme) (c
 // PickStartModel is PickModel for callers that do not launch an agent from the
 // pick: `wt start` (starting is not launching) and `wt smoke` (its candidates
 // were already route-checked per agent), so the launch-route rules (a
-// discovered model not in LiteLLM, a route that fails to resolve) do not block
+// cloud model not in LiteLLM, a route that fails to resolve) do not block
 // or decorate rows.
 // Rows that cannot start at all (no start backend) stay blocked; a model that
 // is not on disk has no row to block.

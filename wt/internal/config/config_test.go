@@ -1164,7 +1164,7 @@ func TestLitellmDirectByDefault(t *testing.T) {
 // catalog, even with no modelman state at all. Native providers cannot route
 // through LiteLLM, so hiding them would make the agent unusable.
 func TestInCatalogNativeAlways(t *testing.T) {
-	cfg := &Config{modelman: map[string]ModelmanEntry{}}
+	cfg := &Config{}
 	m := Model{ID: "claude/native", ProviderID: "claude", Native: true}
 	if !cfg.InCatalog(m) {
 		t.Fatalf("native model must be in the catalog")
@@ -1179,7 +1179,6 @@ func TestInCatalogNativeAlways(t *testing.T) {
 func TestInCatalogNonNativeAlwaysIncluded(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{{ID: "cloudprov", Location: LocationCloud}},
-		modelman:  map[string]ModelmanEntry{"cloudprov/flagged": {Ready: true}},
 	}
 	flagged := Model{ID: "cloudprov/flagged", ProviderID: "cloudprov"}
 	unflagged := Model{ID: "cloudprov/unflagged", ProviderID: "cloudprov"}

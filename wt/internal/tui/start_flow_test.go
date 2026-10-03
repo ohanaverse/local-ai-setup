@@ -68,7 +68,6 @@ func startCfg(provider, id, name string) *config.Config {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"claude", provider}}},
 	}
-	cfg.ReadyAllForTest()
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	return cfg
 }
@@ -745,7 +744,6 @@ func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
 		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	local.ReadyAllForTest()
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
 		t.Error("enterModelPhase must not auto-start a lone start row")
 		return errors.New("no auto-start")

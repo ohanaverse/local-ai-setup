@@ -31,7 +31,6 @@ func modelTestConfig() *config.Config {
 			{Name: "claude", SupportedProviders: []string{"claude", "omlx"}},
 		},
 	}
-	cfg.ReadyAllForTest()
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	return cfg
 }

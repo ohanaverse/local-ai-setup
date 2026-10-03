@@ -538,15 +538,24 @@ func TestInventoryOllamaPsFailureIsPartial(t *testing.T) {
 
 // TestInventoryOmlx6bitOnlyStillScansDir verifies a registry with only
 // an omlx-6bit row still scans the omlx model dir (same physical server): the
-// row's own model_dir is honoured and discovered dirs appear.
+// row's own model_dir is honoured and discovered dirs appear — and the
+// discovered entry carries the omlx-6bit provider id (the only provider row
+// the registry defines) under its family-prefixed id, since
+// config.ResolveRoute and litellm.prepareModel both reject a provider id the
+// registry does not define. A discovered route named after the bare family
+// would be unroutable on this registry.
 func TestInventoryOmlx6bitOnlyStillScansDir(t *testing.T) {
 	root := t.TempDir()
 	mkdirs(t, root, "Some-Model-6bit")
 	srv := modelsServer(t)
 	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx-6bit", srv.URL, root)}}
 	snap := inventory(cfg, testClient)
-	if _, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Some-Model-6bit")); !ok {
-		t.Errorf("entries = %+v, want discovered Some-Model-6bit", snap.Entries)
+	disc, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Some-Model-6bit"))
+	if !ok {
+		t.Fatalf("entries = %+v, want discovered Some-Model-6bit", snap.Entries)
+	}
+	if disc.ProviderID != "omlx-6bit" {
+		t.Errorf("discovered ProviderID = %q, want the registry's omlx-6bit provider id", disc.ProviderID)
 	}
 }
 

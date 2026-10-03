@@ -234,24 +234,21 @@ func (r Row) BlockReason() string {
 }
 
 // RefusedByRoute reports whether the row must be refused because of how it
-// routes: a discovered model — one wt found on disk, absent from the LiteLLM
-// gateway's model_list — or an Unmapped cloud model cannot be launched
-// through the proxy. It is false when the route failed to resolve (a launch
-// row with a route error stays selectable and reports the error on Enter).
-// The picker table, the non-TUI -M pin and `wt smoke` all decide through this
-// one rule, and RouteRefusal gives them its one wording.
+// routes: an Unmapped cloud model has no LiteLLM route, so it cannot be
+// launched through the proxy. A discovered local model is never refused
+// (#179 Phase B): wt routes it under its discovered id once it is running. It
+// is false when the route failed to resolve (a launch row with a route error
+// stays selectable and reports the error on Enter). The picker table, the
+// non-TUI -M pin and `wt smoke` all decide through this one rule, and
+// RouteRefusal gives them its one wording.
 func (r Row) RefusedByRoute(route config.Route, routeErr error) bool {
-	return (r.Discovered || r.Unmapped) && routeErr == nil && (route.Litellm || route.Forced)
+	return r.Unmapped && routeErr == nil && (route.Litellm || route.Forced)
 }
 
 // RouteRefusal is RefusedByRoute's reason, or "" when the row is not refused.
 func (r Row) RouteRefusal(route config.Route, routeErr error) string {
-	switch {
-	case !r.RefusedByRoute(route, routeErr):
+	if !r.RefusedByRoute(route, routeErr) {
 		return ""
-	case r.Discovered:
-		return "discovered model " + r.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (wt litellm off) to use it"
-	default:
-		return fmt.Sprintf("cloud model %s is not in LiteLLM (provider %q has no LiteLLM mapping) — turn LiteLLM routing off (wt litellm off) to use it", r.Model.ID, r.Model.ProviderID)
 	}
+	return fmt.Sprintf("cloud model %s is not in LiteLLM (provider %q has no LiteLLM mapping) — turn LiteLLM routing off (wt litellm off) to use it", r.Model.ID, r.Model.ProviderID)
 }

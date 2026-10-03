@@ -124,20 +124,22 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []str
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
 	snap := probeInventory(cfg)
-	// The local models to route: running ones, plus pulled registry ollama
-	// models (desiredLocalIDs). That set is untrustworthy for a family whose
-	// probe did not fully succeed; leave its models' routes exactly as they
-	// are. The exception is a server that refused the connection: nothing is
-	// listening, so nothing is running, and its routes are stale and must go
-	// (the case a provider stopped outside wt leaves behind).
-	desired := desiredLocalIDs(snap)
+	// The local models to route: running ones, plus pulled ollama models,
+	// registered or discovered (desiredLocalModels). That set is
+	// untrustworthy for a family whose probe did not fully succeed; leave its
+	// routes — discovered ones included — exactly as they are. The exception
+	// is a server that refused the connection: nothing is listening, so
+	// nothing is running, and its routes are stale and must go (the case a
+	// provider stopped outside wt leaves behind).
+	desired := desiredLocalModels(cfg, snap)
 	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap, routedIDSet())
 	o := litellm.Options{
-		Untouched: untouched,
+		Untouched:         untouched,
+		UntouchedFamilies: untrustedFamilies(cfg, snap),
 		// The probe above predates the config.yaml lock; a start that lands
 		// in between must not lose its route, so removals are re-verified
 		// under the lock.
-		Recheck: func() []string { return desiredLocalIDs(probeInventory(cfg)) },
+		Recheck: func() []string { return desiredLocalIDs(cfg, probeInventory(cfg)) },
 	}
 	if dryRun {
 		plan, err := litellm.PlanSync(cfg, desired, o)
@@ -169,6 +171,14 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 // dial the same refused daemon — a failure that must be reported, not
 // swallowed. A stopped provider with neither is the everyday case and stays
 // silent.
+//
+// routed maps every model_name in config.yaml to whether a row of that name
+// carries wt's marker. A family sync freezes through UntouchedFamilies
+// (untrustedFamilies) that has no registry local model — only discovered
+// routes (#179 Phase B) — gets the same "probe did not succeed" warning when
+// config.yaml holds a marked row of the family, so its frozen routes are
+// never left unchanged silently. A family frozen without a probe (a registry
+// data gap, gapFamily) is warned about in its own words: it has no status.
 func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, routed map[string]bool) (untouched, warnings []string) {
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
@@ -182,6 +192,15 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 		if snap.Providers[fam] != localmodels.StatusOK && !snap.Down[fam] {
 			untouched = append(untouched, m.ID)
 			skipped[fam] = true
+		}
+	}
+	// Every untrusted family with a registry local model is in skipped
+	// already; the rest are frozen only for their discovered rows.
+	for _, f := range untrustedFamilies(cfg, snap) {
+		for id, managed := range routed {
+			if !skipped[f] && managed && litellm.RowFamily(cfg, id) == f {
+				skipped[f] = true
+			}
 		}
 	}
 	fams := make([]string, 0, len(skipped))
@@ -198,6 +217,12 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 			warnings = append(warnings, fmt.Sprintf("provider %q answered, but wt cannot tell which of its registered models it is serving (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 			continue
 		}
+		if _, probed := snap.Providers[f]; !probed && gapFamily(cfg, f) {
+			// Never probed, so there is no status to report: the registry
+			// names the family but cannot say it is local (gapFamily).
+			warnings = append(warnings, fmt.Sprintf("provider %q could not be probed (its registry entry has no resolvable location); its model routes were left unchanged", f))
+			continue
+		}
 		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 	}
 	downs := make([]string, 0, len(snap.Down))
@@ -211,7 +236,7 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 		return slices.ContainsFunc(ms, func(m config.Model) bool { return localmodels.Family(m.ProviderID) == f && keep(m) })
 	}
 	for _, f := range downs {
-		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { return routed[m.ID] })
+		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok })
 		cloud := inFamily(f, litellm.CloudModels(cfg), func(config.Model) bool { return true })
 		if !local && !cloud {
 			continue
@@ -228,9 +253,9 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 	return untouched, warnings
 }
 
-// routedIDSet is the set of model_name ids in config.yaml, for the probe
-// warnings. An unreadable file yields an empty set: sync itself then refuses
-// the file with the real error.
+// routedIDSet maps every model_name id in config.yaml to whether a row of
+// that name carries wt's marker, for the probe warnings. An unreadable file
+// yields an empty map: sync itself then refuses the file with the real error.
 func routedIDSet() map[string]bool {
 	out := map[string]bool{}
 	f, err := litellm.Open(litellm.DefaultPath())
@@ -238,24 +263,39 @@ func routedIDSet() map[string]bool {
 		return out
 	}
 	for _, r := range f.Rows() {
-		out[r.ID] = true
+		out[r.ID] = out[r.ID] || r.Managed
 	}
 	return out
 }
 
-// desiredLocalIDs lists the registered local model ids sync should route:
-// every one a probe found running, plus every registered model of a family
-// whose routes follow its artifact (ollama) that the probe saw pulled, loaded
-// or not — ollama serves a pulled model on request (#179). Pulled counts only
-// when the family's probe is fully OK: a partial probe (e.g. /api/ps refused
-// after /api/tags answered — the daemon died) cannot vouch that anything is
-// serving. An unknown artifact (ArtifactKnown false) never counts as pulled.
-// The real sync, its dry run and the under-lock Recheck all call this one
-// function so they cannot drift.
-func desiredLocalIDs(snap localmodels.Snapshot) []string {
+// desiredLocalIDs lists the local model ids sync should route — registered
+// or discovered (#179 Phase B): every entry a probe found running, plus every
+// entry of a family whose routes follow its artifact (ollama) that the probe
+// saw pulled, loaded or not — ollama serves a pulled model on request (#179).
+// Pulled counts only when the family's probe is fully OK: a partial probe
+// (e.g. /api/ps refused after /api/tags answered — the daemon died) cannot
+// vouch that anything is serving. An unknown artifact (ArtifactKnown false)
+// never counts as pulled. The real sync, its dry run and the under-lock
+// Recheck all call this one function so they cannot drift.
+func desiredLocalIDs(cfg *config.Config, snap localmodels.Snapshot) []string {
 	var desired []string
+	for _, e := range desiredLocalEntries(cfg, snap) {
+		desired = append(desired, e.ModelID)
+	}
+	return desired
+}
+
+// desiredLocalEntries is desiredLocalIDs' rule, returning the entries.
+//
+// A discovered entry whose id is a registry id is dropped: the registry model
+// owns that id and is desired only by its own (Registered) entry. Otherwise an
+// unregistered pulled artifact "foo" would make the registry model
+// "ollama/foo" — which serves some other model_name, not pulled — desired, and
+// sync would route the id to a model that is not on disk.
+func desiredLocalEntries(cfg *config.Config, snap localmodels.Snapshot) []localmodels.Entry {
+	var desired []localmodels.Entry
 	for _, e := range snap.Entries {
-		if !e.Registered {
+		if !e.Registered && config.IndexModelByID(cfg.Models, e.ModelID) >= 0 {
 			continue
 		}
 		fam := localmodels.Family(e.ProviderID)
@@ -263,10 +303,74 @@ func desiredLocalIDs(snap localmodels.Snapshot) []string {
 			localmodels.RoutesFollowArtifact(fam) &&
 			snap.Providers[fam] == localmodels.StatusOK
 		if e.Running || pulled {
-			desired = append(desired, e.ModelID)
+			desired = append(desired, e)
 		}
 	}
 	return desired
+}
+
+// desiredLocalModels maps desiredLocalIDs' entries to the models Sync
+// routes: a registered entry's registry overlay, else a DiscoveredModel under
+// the entry's discovered id.
+func desiredLocalModels(cfg *config.Config, snap localmodels.Snapshot) []config.Model {
+	var out []config.Model
+	for _, e := range desiredLocalEntries(cfg, snap) {
+		if i := config.IndexModelByID(cfg.Models, e.ModelID); e.Registered && i >= 0 {
+			out = append(out, cfg.Models[i])
+			continue
+		}
+		out = append(out, litellm.DiscoveredModel(e.ProviderID, e.Artifact))
+	}
+	return out
+}
+
+// untrustedFamilies lists the local provider families whose routes sync must
+// leave exactly as they are: every family whose probe RAN and came back
+// neither OK nor Down (refused), plus every family that could not be probed
+// because of a registry data gap (gapFamily). A family with no key in
+// snap.Providers was never probed — the inventory probes a family only when
+// the registry has a local provider row or a local model for it. When the
+// registry does not reference the family unresolvably either, nothing about
+// it is in doubt and it is not frozen: no later probe could ever vouch for
+// it, and its leftover marked rows would otherwise be kept (and warned
+// about) forever. Unlike syncUntouchedAndWarnings' per-id list, a family
+// covers the rows of discovered models too, which carry no registry id.
+func untrustedFamilies(cfg *config.Config, snap localmodels.Snapshot) []string {
+	var fams []string
+	for _, f := range localmodels.Families() {
+		status, probed := snap.Providers[f]
+		if !probed {
+			if gapFamily(cfg, f) {
+				fams = append(fams, f)
+			}
+			continue
+		}
+		if status != localmodels.StatusOK && !snap.Down[f] {
+			fams = append(fams, f)
+		}
+	}
+	return fams
+}
+
+// gapFamily reports whether the registry references family f unresolvably:
+// a provider row of the family with no location, or a model of the family
+// that litellm.RegistryGap drops (its provider is missing, or no location
+// resolves). The inventory skips such a family — not because it is unused,
+// but because the registry cannot say it is local — so its server may well
+// be serving, and its routes stay frozen like the gap models' own rows.
+// A family the registry references only as explicitly non-local is no gap.
+func gapFamily(cfg *config.Config, f string) bool {
+	for _, p := range cfg.Providers {
+		if localmodels.Family(p.ID) == f && p.Location == "" {
+			return true
+		}
+	}
+	for _, m := range cfg.Models {
+		if localmodels.Family(m.ProviderID) == f && litellm.RegistryGap(cfg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func runLitellmList(out io.Writer, asJSON bool) error {

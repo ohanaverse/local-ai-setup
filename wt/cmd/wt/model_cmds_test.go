@@ -28,7 +28,6 @@ func modelCmdConfig() *config.Config {
 			{ID: "omlx/c", ProviderID: "omlx", ModelName: "c", Location: config.LocationLocal},
 		},
 	}
-	cfg.ReadyAllForTest()
 	return cfg
 }
 

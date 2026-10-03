@@ -16,7 +16,7 @@ import (
 
 // Seams: production talks to the real config.yaml, proxy and stderr.
 var (
-	applyRoutes            = litellm.Apply
+	applyRoutes            = litellm.ApplyChange
 	restartProxy           = litellm.RestartContext
 	waitProxy              = litellm.WaitReady
 	probeProxy             = litellm.Listening
@@ -64,42 +64,46 @@ const (
 	restartForced                       // bounce (and wait) even if this write changed nothing
 )
 
-// routeAfterStart adds the started model's LiteLLM route. A single-model
-// provider (omlx, mtplx) can serve only one model, so starting one replaced
-// whatever ran before: its siblings' routes are removed in the same write.
-// restartOwed means an earlier deferred write (the replaced occupant's route
-// removal) has not been followed by a restart yet; this call's bounce settles
-// it, so a replace costs one proxy restart, not two.
-// It never fails the caller — a missing route is a warning, not a failed start.
+// routeAfterStart adds the started model's LiteLLM route: its registry
+// overlay's id when one matches, else its discovered id (#179 Phase B — the
+// id the catalog, -M and usage use). A single-model provider (omlx, mtplx)
+// can serve only one model, so starting one replaced whatever ran before:
+// every other route of its family — discovered siblings included — is
+// removed in the same write. restartOwed means an earlier deferred write (the
+// replaced occupant's route removal) has not been followed by a restart yet;
+// this call's bounce settles it, so a replace costs one proxy restart, not
+// two. It never fails the caller — a missing route is a warning, not a failed
+// start.
 func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartOwed bool) {
 	mode := restartIfChanged
 	if restartOwed {
 		mode = restartForced
 	}
+	applyAndReport(ctx, cfg, StartRouteChange(cfg, t), mode)
+}
+
+// StartRouteChange is the route change routeAfterStart writes for a started
+// target: the model to route (registry overlay, else discovered) and, for a
+// single-model provider, its family to clear. It is exported so the id the
+// start hook writes can be pinned against the id `wt litellm sync` desires
+// for the same model (cmd/wt) — if the two derivations drift, every sync
+// after a start removes the hook's route and adds its own.
+func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
 	m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName)
 	if !ok {
-		fmt.Fprintf(routesWarn, "wt: %s/%s is not in the registry; no LiteLLM route added (register it with modelman)\n", t.ProviderID, t.ModelName)
-		if restartOwed {
-			// No route to add, but the occupant's removal is still unsettled.
-			bounceRoutes(ctx, cfg)
-		}
-		return
+		m = litellm.DiscoveredModel(t.ProviderID, t.ModelName)
 	}
-	var remove []string
+	ch := litellm.Change{Add: []config.Model{m}}
 	if SingleModel(t.ProviderID) {
-		for _, id := range familyModelIDs(cfg, t.ProviderID) {
-			if id != m.ID {
-				remove = append(remove, id)
-			}
-		}
+		ch.RemoveFamilies = []string{localmodels.Family(t.ProviderID)}
 	}
-	applyAndReport(ctx, cfg, []string{m.ID}, remove, mode)
+	return ch
 }
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model
-// provider's model takes the whole provider down, so every one of its models
-// loses its route. Stopping an ollama model only unloads it, so its route
-// stays (see routeRemove). modelName may be "" for a provider-wide stop.
+// provider's model takes the whole provider down, so every route of its
+// family goes. Stopping an ollama model only unloads it, so its route stays
+// (see routeRemove). modelName may be "" for a provider-wide stop.
 func routeAfterStop(ctx context.Context, cfg *config.Config, providerID, modelName string) {
 	routeRemove(ctx, cfg, providerID, modelName, restartIfChanged)
 }
@@ -112,20 +116,20 @@ func routeRemove(ctx context.Context, cfg *config.Config, providerID, modelName 
 	if localmodels.RoutesFollowArtifact(localmodels.Family(providerID)) {
 		return false
 	}
-	var remove []string
+	var ch litellm.Change
 	switch {
 	case SingleModel(providerID):
-		remove = familyModelIDs(cfg, providerID)
+		ch.RemoveFamilies = []string{localmodels.Family(providerID)}
 	default:
 		// A multi-tenant backend whose routes do not follow artifacts; none
 		// exists today (ollama, the only multi-tenant one, returned above).
 		m, ok := litellm.ModelFor(cfg, providerID, modelName)
 		if !ok {
-			return false
+			m = litellm.DiscoveredModel(providerID, modelName)
 		}
-		remove = []string{m.ID}
+		ch.Remove = []string{m.ID}
 	}
-	return applyAndReport(ctx, cfg, nil, remove, mode)
+	return applyAndReport(ctx, cfg, ch, mode)
 }
 
 // routeAfterOccupantStopped removes the route of the occupant a replace just
@@ -140,7 +144,7 @@ func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ loca
 }
 
 // bounceRoutes settles route writes a deferred write already made — when the
-// start that followed them failed or found nothing to route, or when a batch of
+// start that followed them failed, or when a batch of
 // stops wrote its removals and owed the bounce (StopModelDeferred/SettleRoutes).
 // It restarts the proxy and waits for it; it writes nothing.
 //
@@ -156,19 +160,6 @@ func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ loca
 // hang this path.
 func bounceRoutes(ctx context.Context, cfg *config.Config) {
 	bounceProxyAsync(ctx, cfg)
-}
-
-// familyModelIDs lists the LiteLLM-managed local model ids whose provider
-// shares providerID's family (omlx and omlx-6bit are one physical server).
-func familyModelIDs(cfg *config.Config, providerID string) []string {
-	fam := localmodels.Family(providerID)
-	var ids []string
-	for _, m := range litellm.LocalModels(cfg) {
-		if localmodels.Family(m.ProviderID) == fam {
-			ids = append(ids, m.ID)
-		}
-	}
-	return ids
 }
 
 // applyAndReport writes the route change and reports whether config.yaml
@@ -188,12 +179,11 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 // for itself where it needs the proxy ready: the launch paths wait explicitly
 // (see WaitPendingRoutes) because the agent they hand off to dials the model
 // through the proxy.
-func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string, mode restartMode) bool {
-	res, err := applyRoutes(cfg, add, remove, litellm.Options{
-		SkipReadyGate: true,
+func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
+	res, err := applyRoutes(cfg, ch, litellm.Options{
 		// The restart is always deferred here: applyAndReport itself decides
 		// whether to restart, and runs that restart asynchronously, below.
-		// ForceRestart is deliberately not passed — Apply restarts on it even
+		// ForceRestart is deliberately not passed — ApplyChange restarts on it even
 		// with NoRestart set, which would put the bounce back on this path.
 		NoRestart: true,
 		// The caller's ctx bounds the config.yaml lock wait too, so a
@@ -204,6 +194,13 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
 			fmt.Fprintf(routesWarn, "wt: LiteLLM route not updated: %v\n", err)
 		}
+		// This write failed, but restartForced means an earlier deferred
+		// write (the replaced occupant's route removal) is already in
+		// config.yaml and still owes its restart: settle it, or the proxy
+		// keeps serving the dead occupant's route.
+		if mode == restartForced {
+			bounceProxyAsync(ctx, cfg)
+		}
 		return false
 	}
 	for _, o := range res.Outcomes {
@@ -211,7 +208,7 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 			fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
 		}
 	}
-	// res.Warnings is only ever populated by Apply's restart hook, which
+	// res.Warnings is only ever populated by ApplyChange's restart hook, which
 	// NoRestart disables; the restart's own warnings are reported below.
 	restart := (res.Changed && mode != restartDeferred) || mode == restartForced
 	if !restart {

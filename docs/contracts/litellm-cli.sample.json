@@ -13,6 +13,7 @@
       {"id": "openrouter/x", "action": "rewritten"},
       {"id": "openrouter/adopt", "action": "adopted"},
       {"id": "openrouter/new", "action": "routed"},
+      {"id": "ollama/llama3.2:3b", "action": "routed"},
       {"id": "openrouter/bad", "error": "model \"openrouter/bad\": empty model_name"}
     ],
     "changed": true,
@@ -21,7 +22,7 @@
   "sync_dry_run": {
     "dry_run": true,
     "plan": {
-      "add": ["openrouter/x/y"],
+      "add": ["openrouter/x/y", "ollama/llama3.2:3b"],
       "adopt": ["ollama/gemma:9b"],
       "rewrite": [],
       "remove": ["openrouter/old"],
