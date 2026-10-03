@@ -108,6 +108,15 @@ func familyOf(providerID string) string {
 // "omlx"); "" when wt has no probe for it.
 func Family(providerID string) string { return familyOf(providerID) }
 
+// RunningOnly reports whether a provider's family is probed for running state
+// only: wt can never enumerate what it has on disk, so a stopped model of that
+// family is indistinguishable from one that does not exist. True only for
+// mlx_lm_server (one target+draft pairing per process, and the served name is
+// not reconstructable). It is the one place that names such a family —
+// knowsArtifacts and internal/catalog's row rules both ask it, so adding a
+// second running-only family is an edit here alone.
+func RunningOnly(providerID string) bool { return familyOf(providerID) == "mlx_lm_server" }
+
 // RoutesFollowArtifact reports whether a family's LiteLLM routes follow
 // artifact presence rather than running state. True only for ollama: it
 // lazy-loads a model on request (and unloads idle ones), so a pulled model is
@@ -135,12 +144,11 @@ func (s *source) matchArtifact(artifact, modelName string) bool {
 }
 
 // knowsArtifacts reports whether this family's probe could enumerate what is
-// pulled or on disk. False for mlx_lm_server (one target+draft pairing per
-// process, and the served name is not reconstructable) and for a probe that
-// failed outright (StatusUnreachable), in which case artifacts was never
-// populated — so an empty Artifact carries no information either way.
+// pulled or on disk. False for a running-only family (RunningOnly) and for a
+// probe that failed outright (StatusUnreachable), in which case artifacts was
+// never populated — so an empty Artifact carries no information either way.
 func (s *source) knowsArtifacts() bool {
-	return s.family != "mlx_lm_server" && s.status != StatusUnreachable
+	return !RunningOnly(s.family) && s.status != StatusUnreachable
 }
 
 func (s *source) isRunning(name string) bool {

@@ -144,14 +144,15 @@ func Build(in Input) []Row {
 
 // listed reports whether a registered inventory entry gets a row: it is
 // serving, or its artifact is on disk, or discovery could not tell (unknown,
-// not missing) — except for mlx_lm_server, whose pairings can never be
-// discovered, so only a serving one is listed.
+// not missing) — except for a running-only family (localmodels.RunningOnly:
+// mlx_lm_server), whose models can never be discovered, so only a serving one
+// is listed.
 func listed(e localmodels.Entry) bool {
 	switch {
 	case e.Running, e.Artifact != "":
 		return true
 	case !e.ArtifactKnown:
-		return localmodels.Family(e.ProviderID) != "mlx_lm_server"
+		return !localmodels.RunningOnly(e.ProviderID)
 	}
 	return false
 }
@@ -159,8 +160,9 @@ func listed(e localmodels.Entry) bool {
 // MissingReason is the message for a pin of a registry local model that has
 // no row (#179 Phase B: local rows come only from the inventory): "<id> is
 // not on disk" when the probe confirmed its artifact is missing, or the
-// `modelman start` hint for a non-running mlx_lm_server pairing, which wt can
-// neither discover nor start. It is "" for any id the snapshot cannot vouch
+// `modelman start` hint for a non-running model of a running-only family
+// (localmodels.RunningOnly: an mlx_lm_server pairing), which wt can neither
+// discover nor start. It is "" for any id the snapshot cannot vouch
 // for — a model with a row, an unknown artifact, a discovered or unknown id,
 // or a nil snapshot (no probe ran) — so the caller keeps its own wording.
 // `wt start`, `wt smoke` and `wt -M` (both paths) consult it only when
@@ -175,7 +177,7 @@ func MissingReason(snap *localmodels.Snapshot, id string) string {
 			continue
 		}
 		switch {
-		case localmodels.Family(e.ProviderID) == "mlx_lm_server":
+		case localmodels.RunningOnly(e.ProviderID):
 			return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", id, id)
 		case e.ArtifactKnown && e.Artifact == "":
 			return fmt.Sprintf("%s is not on disk — pull or download it first", id)

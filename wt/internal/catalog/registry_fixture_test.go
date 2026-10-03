@@ -17,7 +17,7 @@ import (
 // Phase B rows (docs/contracts/registry.sample.toml, also parsed by
 // modelman's tests/contracts/test_registry_fixture.py) against a real
 // inventory round — a fake ollama daemon, a temp mtplx model directory, and
-// refused probes, never a real server. The "--"-style overlay matches its
+// failing /v1/models probes, never a real server. The "--"-style overlay matches its
 // on-disk artifact through model_name, the provider/model_name-style one
 // matches as before, and the overlay that is not on disk gets no row though
 // both languages still parse it. A one-sided change to how overlays match
@@ -38,9 +38,13 @@ func TestRegistryFixtureLocalOverlays(t *testing.T) {
 		_, _ = w.Write([]byte(`{"models":[]}`))
 	}))
 	defer ollama.Close()
-	gone := httptest.NewServer(http.NotFoundHandler())
-	refused := gone.URL
-	gone.Close()
+	// A server that answers every probe with an error, rather than a closed
+	// server's freed port: another process could rebind that port before the
+	// probe and answer it.
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer failing.Close()
 	mtplxDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mtplxDir, "org--contract-fixture-dashed"), 0o755); err != nil {
 		t.Fatal(err)
@@ -51,9 +55,9 @@ func TestRegistryFixtureLocalOverlays(t *testing.T) {
 		case "ollama":
 			p.Auth.BaseURL = ollama.URL
 		case "mtplx":
-			p.Auth.BaseURL, p.ModelDir = refused, mtplxDir
+			p.Auth.BaseURL, p.ModelDir = failing.URL, mtplxDir
 		case "mlx_lm_server":
-			p.Auth.BaseURL = refused
+			p.Auth.BaseURL = failing.URL
 		}
 	}
 	var local []config.Model

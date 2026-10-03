@@ -11,7 +11,7 @@ import (
 )
 
 // probeInventory is a test seam: production probes the live local-model
-// inventory. cmd/wt's TestMain stubs it to onDiskSnapshot so no test dials
+// inventory. cmd/wt's TestMain stubs it to localmodels.OnDiskSnapshotForTest so no test dials
 // the developer's real ollama/omlx/mtplx servers, and tests that need a
 // verdict stub it with their own snapshot.
 var probeInventory = localmodels.Inventory

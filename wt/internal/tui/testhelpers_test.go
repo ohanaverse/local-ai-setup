@@ -75,7 +75,7 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 // process. Tests that need local rows call stubInventory; tests that exercise
 // the start flow call stubStartModel.
 func TestMain(m *testing.M) {
-	runInventory = onDiskSnapshot
+	runInventory = localmodels.OnDiskSnapshotForTest
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
 	}
@@ -138,29 +138,4 @@ func selectedModelID(m model) string {
 		return ""
 	}
 	return it.model.ID
-}
-
-// onDiskSnapshot is the default inventory stub: every registry local model
-// is on disk (artifact = its model_name) and nothing is running, with every
-// family's probe OK. Since #179 Phase B a local row comes only from the
-// inventory, so an empty snapshot would hide every configured local model.
-// An mlx_lm_server pairing gets no artifact, exactly as the real inventory
-// reports one (its pairings can never be discovered on disk), so a stopped
-// pairing has no row here either.
-func onDiskSnapshot(cfg *config.Config) localmodels.Snapshot {
-	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{}}
-	for _, m := range cfg.Models {
-		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
-			continue
-		}
-		if fam := localmodels.Family(m.ProviderID); fam != "" {
-			snap.Providers[fam] = localmodels.StatusOK
-		}
-		e := localmodels.Entry{ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName, Registered: true}
-		if localmodels.Family(m.ProviderID) != "mlx_lm_server" {
-			e.Artifact, e.ArtifactKnown = m.ModelName, true
-		}
-		snap.Entries = append(snap.Entries, e)
-	}
-	return snap
 }
