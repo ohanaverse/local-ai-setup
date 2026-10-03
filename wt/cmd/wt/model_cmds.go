@@ -251,7 +251,7 @@ func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, 
 			return fmt.Errorf("wt start needs a TTY to list models; pass a model id directly (wt start <provider>/<name>)")
 		}
 		if len(rows) == 0 {
-			return fmt.Errorf("no local models are configured or detected")
+			return fmt.Errorf("no local model is on disk or running")
 		}
 		models := make([]config.Model, len(rows))
 		for i, r := range rows {

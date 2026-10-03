@@ -72,8 +72,8 @@ func TestBuildIncludesConfiguredAndDiscoveredLocal(t *testing.T) {
 // TestBuildHidesLocalModelsNotOnDisk verifies #179 Phase B's row rule: a
 // registry local model gets a row only from its inventory entry. An overlay
 // the probe confirmed is not on disk, and one with no inventory entry at all
-// (its family has no probe), both get no row — the picker lists what exists,
-// not what is configured. Agent supported_providers stays a hard constraint
+// (e.g. its location could not be resolved), both get no row — the picker
+// lists what exists, not what is configured. Agent supported_providers stays a hard constraint
 // for discovered rows, HideDiscovered (-T/-F) drops them, and a discovered id
 // equal to a registry row's id is dropped (the registry row wins).
 func TestBuildHidesLocalModelsNotOnDisk(t *testing.T) {
@@ -384,15 +384,17 @@ func TestMissingReason(t *testing.T) {
 		{ProviderID: "omlx", ModelID: "omlx/here", Artifact: "here", Registered: true, ArtifactKnown: true},
 		{ProviderID: "ollama", ModelID: "ollama/unknown", Registered: true},
 		{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/p", Registered: true},
+		{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/run", Registered: true, Running: true},
 		{ProviderID: "omlx", ModelID: "omlx/disc", Artifact: "disc", ArtifactKnown: true},
 	}}
 	cases := map[string]string{
-		"omlx/gone":       "omlx/gone is not on disk — pull or download it first",
-		"mlx_lm_server/p": "local model \"mlx_lm_server/p\" is not running — start it with `modelman start mlx_lm_server/p`",
-		"omlx/here":       "",
-		"ollama/unknown":  "",
-		"omlx/disc":       "",
-		"nope/x":          "",
+		"omlx/gone":         "omlx/gone is not on disk — pull or download it first",
+		"mlx_lm_server/p":   "local model \"mlx_lm_server/p\" is not running — start it with `modelman start mlx_lm_server/p`",
+		"omlx/here":         "",
+		"mlx_lm_server/run": "",
+		"ollama/unknown":    "",
+		"omlx/disc":         "",
+		"nope/x":            "",
 	}
 	for id, want := range cases {
 		if got := MissingReason(snap, id); got != want {

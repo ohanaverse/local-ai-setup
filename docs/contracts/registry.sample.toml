@@ -19,6 +19,8 @@
 #
 # Read by:
 #   - wt/internal/config/registry_fixture_test.go (Go)
+#   - wt/internal/catalog/registry_fixture_test.go (Go)
+#   - wt/cmd/wt/litellm_test.go (Go)
 #   - modelman/tests/contracts/test_registry_fixture.py (Python)
 #
 # The point of this file is that changing a field here without updating

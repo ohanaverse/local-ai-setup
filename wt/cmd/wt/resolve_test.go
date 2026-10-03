@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
@@ -577,5 +578,56 @@ func TestResolveModelNoMatchKeepsGenericMessage(t *testing.T) {
 	_, _, err := resolveModel("pi", cfg, "design", "", "") // -T filter matches nothing
 	if err == nil || !strings.Contains(err.Error(), "no models match") {
 		t.Errorf("err = %v, want the generic no-models-match error", err)
+	}
+}
+
+// offDiskResolveFixture is a pi agent over two omlx models in different
+// families, with the probe confirming omlx/gone is missing from disk and
+// omlx/here on disk — the setup for the zero-rows and filtered-pin cases.
+func offDiskResolveFixture(t *testing.T) *config.Config {
+	t.Helper()
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/gone", ModelName: "gone", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", ModelID: "omlx/here", ModelName: "here", Artifact: "here", Registered: true, ArtifactKnown: true},
+		},
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models: []config.Model{
+			{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Family: "a", Tags: []string{"code"}},
+			{ID: "omlx/here", ProviderID: "omlx", ModelName: "here", Family: "b", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ReadyAllForTest()
+	return cfg
+}
+
+// TestResolveModelAllOffDiskNamesTheCause verifies an unpinned launch whose
+// eligible list is non-empty but builds zero rows (every eligible model is a
+// local one confirmed not on disk) returns catalog.NoRowsReason — not the
+// generic "no models match ... tags/family" wording, which would send the
+// operator hunting for a -T/-F problem that is not there.
+func TestResolveModelAllOffDiskNamesTheCause(t *testing.T) {
+	cfg := offDiskResolveFixture(t)
+
+	_, _, err := resolveModel("pi", cfg, "", "a", "")
+	if err == nil || err.Error() != catalog.NoRowsReason("pi") {
+		t.Errorf("err = %v, want %q", err, catalog.NoRowsReason("pi"))
+	}
+}
+
+// TestResolveModelPinFilteredOutIsNotToldToPull verifies a -M pin that -F
+// removed from the eligible list is refused as "not in the eligible list"
+// even though it is also not on disk: the pull hint would be a lie, because
+// after pulling the same pin would still be ineligible.
+func TestResolveModelPinFilteredOutIsNotToldToPull(t *testing.T) {
+	cfg := offDiskResolveFixture(t)
+
+	_, _, err := resolveModel("pi", cfg, "", "b", "omlx/gone")
+	if err == nil || !strings.Contains(err.Error(), "not in the eligible list") || strings.Contains(err.Error(), "not on disk") {
+		t.Errorf("err = %v, want the eligibility wording, not the pull hint", err)
 	}
 }

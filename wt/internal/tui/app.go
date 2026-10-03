@@ -813,14 +813,16 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // (EligibleModelsIn only filters when a tag set is present) while the
 // header still shows a tag.
 //
-// models must be non-empty: buildRows emits one row per model, so an empty
-// table is only possible from an empty input, and both callers (the phaseAgent
-// Enter path and proceedFromSelectedPath's pinned-agent path) already guard
-// len(models) == 0 with their own status message. A future caller must do the
-// same — there is no empty-table branch here to catch it.
+// models must be non-empty: both callers (the phaseAgent Enter path and
+// proceedFromSelectedPath's pinned-agent path) guard len(models) == 0 with
+// their own status message. A non-empty list can still build zero rows (#179
+// Phase B: a registry local model that is neither on disk nor running has no
+// row), so an empty table routes back with catalog.NoRowsReason rather than
+// opening a "No items." picker whose Enter does nothing.
 //
-// The only route-back is a rejected -M pin: one with no row at all (outside
-// the eligible list), or one whose row is blocked.
+// Route-backs: a rejected -M pin — one with no row (MissingReason when the
+// pin is in the eligible list and the probe can say why, else "not in the
+// eligible list"), or one whose row is blocked — and an empty table.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
@@ -871,8 +873,13 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	if m.pinnedModel != "" {
 		idx, ok := idIndex[m.pinnedModel]
 		if !ok {
-			if reason := catalog.MissingReason(snap, m.pinnedModel); reason != "" {
-				return routeBack(reason)
+			// MissingReason only for a pin the agent could use: one outside
+			// the eligible list (unsupported provider, filtered by -T/-F)
+			// would be told to pull, then refused as ineligible after.
+			if config.IndexModelByID(models, m.pinnedModel) >= 0 {
+				if reason := catalog.MissingReason(snap, m.pinnedModel); reason != "" {
+					return routeBack(reason)
+				}
 			}
 			return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
 		}
@@ -899,6 +906,10 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		}
 		m.models.Select(idx)
 		return m.proceedToLaunch()
+	}
+
+	if len(tbl.items) == 0 {
+		return routeBack(catalog.NoRowsReason(agent))
 	}
 
 	// Cursor: the rotation's next-to-use model among actionable rows

@@ -257,11 +257,12 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 		// mlx_lm_server pairing) or a blocked local row is not a candidate, so
 		// name its real reason as `wt start` does rather than guessing.
 		rows, snap := localRowsSnap(cfg)
-		if reason := catalog.MissingReason(&snap, modelID); reason != "" {
+		if row, ok := catalog.Find(rows, modelID); ok {
+			if row.Action() == catalog.ActionBlock {
+				return smokeTarget{}, errors.New(row.BlockReason())
+			}
+		} else if reason := catalog.MissingReason(&snap, modelID); reason != "" {
 			return smokeTarget{}, errors.New(reason)
-		}
-		if row, ok := catalog.Find(rows, modelID); ok && row.Action() == catalog.ActionBlock {
-			return smokeTarget{}, errors.New(row.BlockReason())
 		}
 		if config.IndexModelByID(cfg.Models, modelID) >= 0 {
 			return smokeTarget{}, fmt.Errorf(

@@ -144,6 +144,9 @@ func selectedModelID(m model) string {
 // is on disk (artifact = its model_name) and nothing is running, with every
 // family's probe OK. Since #179 Phase B a local row comes only from the
 // inventory, so an empty snapshot would hide every configured local model.
+// An mlx_lm_server pairing gets no artifact, exactly as the real inventory
+// reports one (its pairings can never be discovered on disk), so a stopped
+// pairing has no row here either.
 func onDiskSnapshot(cfg *config.Config) localmodels.Snapshot {
 	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{}}
 	for _, m := range cfg.Models {
@@ -153,10 +156,11 @@ func onDiskSnapshot(cfg *config.Config) localmodels.Snapshot {
 		if fam := localmodels.Family(m.ProviderID); fam != "" {
 			snap.Providers[fam] = localmodels.StatusOK
 		}
-		snap.Entries = append(snap.Entries, localmodels.Entry{
-			ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName,
-			Artifact: m.ModelName, Registered: true, ArtifactKnown: true,
-		})
+		e := localmodels.Entry{ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName, Registered: true}
+		if localmodels.Family(m.ProviderID) != "mlx_lm_server" {
+			e.Artifact, e.ArtifactKnown = m.ModelName, true
+		}
+		snap.Entries = append(snap.Entries, e)
 	}
 	return snap
 }

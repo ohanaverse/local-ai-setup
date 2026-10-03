@@ -157,8 +157,9 @@ func listed(e localmodels.Entry) bool {
 // neither discover nor start. It is "" for any id the snapshot cannot vouch
 // for — a model with a row, an unknown artifact, a discovered or unknown id,
 // or a nil snapshot (no probe ran) — so the caller keeps its own wording.
-// `wt -M` (both paths), `wt start` and `wt smoke` consult it only when
-// catalog.Find misses.
+// `wt start`, `wt smoke` and `wt -M` (both paths) consult it only when
+// catalog.Find misses; `wt -M` additionally only for a pin in the agent's
+// eligible list, so a pin the agent cannot use at all is never told to pull.
 func MissingReason(snap *localmodels.Snapshot, id string) string {
 	if snap == nil {
 		return ""
@@ -175,6 +176,15 @@ func MissingReason(snap *localmodels.Snapshot, id string) string {
 		}
 	}
 	return ""
+}
+
+// NoRowsReason is the message for an agent whose eligible list is non-empty
+// but builds zero rows: every eligible model is a registry local model with no
+// row (confirmed not on disk, a stopped mlx_lm_server pairing, or no inventory
+// entry). `wt` (non-TUI) and the TUI picker share it so both name the real
+// cause instead of a -T/-F mismatch; pinning one with -M gets MissingReason.
+func NoRowsReason(agent string) string {
+	return fmt.Sprintf("no model for agent %q is in the cloud, running, or on disk — registry local models that are neither on disk nor running are hidden (pull or download one, or pin it with -M to see why)", agent)
 }
 
 // Find returns the row for id, discovered rows included — a -M pin names a
