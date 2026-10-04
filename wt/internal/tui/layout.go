@@ -29,10 +29,12 @@ import (
 // loses its last columns past the edge instead of truncating them with an
 // ellipsis inside it. frameSides measures those columns from the frame, too.
 //
-// View and fitLists each ask frameFor which frame to use, and agree only
-// because both read the same model state. So after changing state by hand (a
-// test setting m.status, say), go through Update before measuring View():
-// until then the list is still sized for the old state.
+// The measuring is done once, by fitLists, in the Update that changed
+// something; View does none of it. View asks drawnFrame for the fullest frame
+// that leaves the list the height it already has, which is the frame fitLists
+// sized it for as long as both read the same model state. So after changing
+// state by hand (a test setting m.status, say), go through Update before
+// measuring View(): until then the list is still sized for the old state.
 
 // listFrame renders a screen around its list's view: everything the screen
 // prints above, below and beside the list.
@@ -290,26 +292,39 @@ func (m *model) fitLists() {
 	}
 }
 
-// frameFor is the frame l is rendered in at the current window size, and the
-// size l must have inside it. View and fitTo both come through here, so the
-// frame a list was sized for is the frame it is drawn in.
-func (m *model) frameFor(l *list.Model, frames ...listFrame) (frame listFrame, width, height int) {
+// fitTo sizes l to the room its frames leave in a terminal of termWidth by
+// termHeight: the widest width at which l draws within the columns the frame
+// leaves beside it, and the height the fullest frame that fits leaves over.
+// It is the one place a list is measured (listExtent renders up to
+// listWidthSlack probes), which is why it runs in Update and never in View.
+func fitTo(l *list.Model, termWidth, termHeight int, frames ...listFrame) {
 	// The side columns are the same for every layout of a screen — the
 	// layouts differ in the lines they print, not in their padding — so the
 	// fullest one stands for all.
 	// Never a width below one: bubbles is not given zero or a negative size.
-	width, floor := listExtent(*l, max(1, m.width-frameSides(frames[0])))
-	frame, height = fitList(m.height, floor, frames...)
-	return frame, width, height
-}
-
-// fitTo sizes l to the room its frame leaves.
-func (m *model) fitTo(l *list.Model, frames ...listFrame) {
-	_, width, height := m.frameFor(l, frames...)
+	width, floor := listExtent(*l, max(1, termWidth-frameSides(frames[0])))
+	_, height := fitList(termHeight, floor, frames...)
 	// A model table shows the columns that fit this width; other lists have
 	// no table and are left alone.
 	fitTableColumns(l, width)
 	sizeList(l, width, height)
+}
+
+// drawnFrame is the frame to draw l in: the fullest one that leaves l the
+// height it has. fitTo gave l the room its chosen frame left over, and every
+// fuller frame leaves less than that, so this is the frame fitTo chose —
+// found from the list's own height instead of by measuring the list again on
+// every View (every keystroke of a filter is a View). When fitTo could fit no
+// frame it gave l its floor and fitList's last resort, the sparest frame,
+// which is what this returns too.
+func drawnFrame(l *list.Model, termHeight int, frames ...listFrame) listFrame {
+	frame, _ := fitList(termHeight, l.Height(), frames...)
+	return frame
+}
+
+// fitTo sizes l to the room its frames leave in this model's window.
+func (m *model) fitTo(l *list.Model, frames ...listFrame) {
+	fitTo(l, m.width, m.height, frames...)
 }
 
 // sizeList tells l its size, as many times as it takes for l to draw itself
