@@ -43,12 +43,11 @@
   again when the artifact goes. Known gap: a local model started outside wt
   has no route until a sync runs, and `wt start` on an already-running
   model writes none.
-- Starting a model on a single-model provider (omlx, mtplx) clears every
-  other wt-marked route of that provider family (the started model's route
-  is kept), and stopping one clears them all — discovered siblings
-  included, plus the rows of the family's registry models, not just the
-  sibling registry ids (#179 Phase B). Hand-written rows are still
-  never removed.
+- Starting a model on a single-model provider (omlx, mtplx) clears that
+  provider family's routes — every wt-marked row (discovered siblings
+  included) and the family's registry-model rows, marked or legacy-unmarked
+  — keeping only the started model's own route; stopping one clears them
+  all (#179 Phase B). Hand-written rows are still never removed.
 - `wt litellm sync` freezes every route of a local provider family it cannot
   vouch for — its discovered routes as well as its registry ids — when the
   family's probe ran and was neither OK nor refused, or when the registry
