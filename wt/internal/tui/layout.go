@@ -134,6 +134,12 @@ func frameSides(frame listFrame) int {
 	return lipgloss.Width(frame(probe)) - len(probe)
 }
 
+// pickerPadX is the model picker's horizontal padding on each side. It is
+// what frameSides measures beside the table and what modelFrames clips its own
+// text to, so the two must be the same number: a frame wider than the columns
+// its text was clipped to pushes the list's last columns off the edge.
+const pickerPadX = 2
+
 // modelFrames are the model picker's layouts: the agent/tag header above the
 // table, the mode line and key hints below it, a status line on top when one
 // is set, and a one-line margin above and below.
@@ -150,13 +156,15 @@ func frameSides(frame listFrame) int {
 // given up by choice; see fitList for what happens when even that is too much.
 func (m *model) modelFrames() []listFrame {
 	// The columns left between the picker's side padding: its own text is
-	// clipped to them, and the table is sized to them (frameSides).
-	inner := m.width - 4
+	// clipped to them, and the table is sized to them (frameSides measures
+	// this padding back off the frame). Derived from pickerPadX, never a
+	// literal, so the two cannot drift apart.
+	inner := m.width - 2*pickerPadX
 	build := func(margin, withHeader, withFooter bool) listFrame {
 		return func(listView string) string {
-			pad := lipgloss.NewStyle().Padding(0, 2)
+			pad := lipgloss.NewStyle().Padding(0, pickerPadX)
 			if margin {
-				pad = lipgloss.NewStyle().Padding(1, 2)
+				pad = lipgloss.NewStyle().Padding(1, pickerPadX)
 			}
 			headerStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader))
 			dimStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
