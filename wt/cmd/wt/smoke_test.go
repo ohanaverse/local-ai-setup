@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -819,5 +820,58 @@ func TestSmokeCmdRowDirFailureFailsTheRow(t *testing.T) {
 	}
 	if exitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+}
+
+// TestSmokeCmdInterruptEndsTheRun pins Ctrl+C during a row: the row's
+// directory is still removed, no further agent runs, the rows that did run
+// are still reported, the stop picker is not shown, and the command fails.
+// Before, the signal killed wt outright: no cleanup ran and the row's
+// directory stayed in the temp dir.
+func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	cfg.Agents = append(cfg.Agents, config.Agent{Name: "pi", SupportedProviders: []string{"ollama"}})
+	stubEnsureRoute(t)
+	oldRel, oldPick, oldTTY, oldExit, oldSig := releaseSession, runStopPicker, stdinTTY, smokeExit, smokeSignalCtx
+	t.Cleanup(func() {
+		releaseSession, runStopPicker, stdinTTY, smokeExit, smokeSignalCtx = oldRel, oldPick, oldTTY, oldExit, oldSig
+	})
+	releaseSession = func() {}
+	picked := false
+	runStopPicker = func(*config.Config) { picked = true }
+	stdinTTY = func() bool { return true }
+	smokeExit = func(int) {}
+	ctx, cancel := context.WithCancel(context.Background())
+	smokeSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+
+	var dirs []string
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		dirs = append(dirs, cwd)
+		*cleanup = func() error { return nil }
+		cancel() // Ctrl+C lands while the first agent runs
+		return smoke.StubOutcome("ok", 0)
+	}))
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx", "--prompt", "say ok"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("err = %v, want an interrupted error", err)
+	}
+	if len(dirs) != 1 {
+		t.Fatalf("%d agents ran, want 1: nothing may start after the interrupt", len(dirs))
+	}
+	if _, serr := os.Stat(dirs[0]); serr == nil {
+		t.Errorf("the row's directory %s was left behind", dirs[0])
+	}
+	if !strings.Contains(out.String(), "claude") && !strings.Contains(out.String(), "pi") {
+		t.Errorf("the row that ran was not reported:\n%s", out.String())
+	}
+	if picked {
+		t.Error("the stop picker was shown after an interrupt")
 	}
 }

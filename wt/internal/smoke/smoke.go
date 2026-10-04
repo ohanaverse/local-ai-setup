@@ -6,7 +6,9 @@
 package smoke
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -67,7 +69,7 @@ func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
 // cannot assign this package's unexported buildAndRun. Tests only.
 func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome) (restore func()) {
 	old := buildAndRun
-	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+	buildAndRun = func(_ context.Context, cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
 		return fn(cfg, agentName, m, prompt, cwd, timeout, profileApplier, cleanup)
 	}
 	return func() { buildAndRun = old }
@@ -187,7 +189,10 @@ type execOutcome struct {
 	Output   string
 	ExitCode int
 	TimedOut bool
-	StartErr error // non-nil if the command never started (e.g. agent not installed)
+	// Interrupted means ctx was cancelled (Ctrl+C) while the agent ran and
+	// its process group was killed. The row is FAIL.
+	Interrupted bool
+	StartErr    error // non-nil if the command never started (e.g. agent not installed)
 	// ModelFallback is the driver's warning when it could not select the
 	// model under test and the agent would run on its own default model
 	// (agents.LaunchInfo.ModelFallback). Non-empty means the row is FAIL
@@ -279,7 +284,7 @@ func StubOutcome(output string, exitCode int) execOutcome {
 	return execOutcome{Output: output, ExitCode: exitCode}
 }
 
-func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
 	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
 	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
 	*cleanup = func() error { return nil }
@@ -400,6 +405,15 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		}
 		<-done
 		return execOutcome{Command: cmdLine, Output: buf.String(), TimedOut: true}
+	case <-ctx.Done():
+		// Ctrl+C: Setpgid keeps the terminal's SIGINT from the agent, so
+		// unless the group is killed here it outlives wt, still running with
+		// permission checks off.
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		<-done
+		return execOutcome{Command: cmdLine, Output: buf.String(), Interrupted: true}
 	}
 }
 
@@ -415,10 +429,13 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 // invoke after the command exits (success or failure) to restore any config
 // file a profile's config_content mechanism rewrote. A nil profileApplier
 // is a no-op.
-func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, cwd string, profileApplier ProfileApplier) RowResult {
+//
+// Cancelling ctx kills the agent's whole process group and fails the row as
+// interrupted.
+func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, cwd string, profileApplier ProfileApplier) RowResult {
 	start := time.Now()
 	var cleanup func() error
-	out := buildAndRun(cfg, agentName, m, prompt, cwd, timeout, profileApplier, &cleanup)
+	out := buildAndRun(ctx, cfg, agentName, m, prompt, cwd, timeout, profileApplier, &cleanup)
 	defer func() {
 		if cerr := cleanup(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
@@ -448,6 +465,11 @@ func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentin
 	if out.ModelFallback != "" {
 		res.Status = StatusFail
 		res.Err = fmt.Errorf("%s fell back to its default model instead of %s: %s", agentName, m.ID, out.ModelFallback)
+		return res
+	}
+	if out.Interrupted {
+		res.Status = StatusFail
+		res.Err = errors.New("interrupted")
 		return res
 	}
 	if out.TimedOut {

@@ -127,9 +127,11 @@ one-shot — so there is none to release first.) This runs after PASS or FAIL
 once the start step (if any) succeeded, but not after a failed or cancelled
 start, an invalid or aborted selection, and is skipped entirely for `--json`
 or a non-TTY stdin. A FAIL still exits 1 regardless. A failed or Ctrl+C-ed
-start returns its error directly without the stop picker, and Ctrl+C while
-agents are running ends wt immediately (a started model stays up; use
-`wt stop`).
+start returns its error directly without the stop picker. Ctrl+C (or SIGTERM)
+while an agent is running kills that agent and everything it spawned, fails
+its row as `interrupted`, removes the row's directory, runs no further agent,
+prints the report for the rows that ran and exits 1 without the stop picker (a
+started model stays up; use `wt stop`). A second Ctrl+C ends wt at once.
 
 ## Progress (stderr)
 
