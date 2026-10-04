@@ -41,8 +41,9 @@ func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
 // the gateway). When the entry is missing, Build falls back to pi's default
 // model, surfaces a warning and sets ModelFallback (which wt smoke turns into
 // a FAIL). SyncModels writes the launch target's entry first, so this is left
-// for a user-disabled entry (_launch: false), a provider with no usable
-// base_url/secret, or an unreadable models.json.
+// for direct mode with no models.json yet (the sync creates the file only in
+// litellm mode), a user-disabled entry (_launch: false), a provider with no
+// usable base_url/secret, or an unreadable models.json.
 func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {

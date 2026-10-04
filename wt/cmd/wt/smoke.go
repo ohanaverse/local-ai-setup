@@ -1,6 +1,6 @@
 // wt smoke — given a model, finds every agent currently eligible for it
 // and runs a one-shot prompt through each via wt's real in-process launch
-// machinery (agents.BuildLaunchCmd), reporting PASS/FAIL/SKIP. Distinct
+// machinery (agents.BuildLaunchCmdInfo), reporting PASS/FAIL/SKIP. Distinct
 // from `make test-agents` (agents-smoke.sh's hand-curated regression
 // matrix): this command answers "is this model healthy across wt right
 // now" for whichever model you point it at.

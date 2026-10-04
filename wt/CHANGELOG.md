@@ -143,7 +143,8 @@
   pre-launch sync of `~/.pi/agent/models.json` only wrote registry models, so
   a discovered launch target had no entry and pi silently ran its own default
   model instead (`pi: model "…" not configured for pi, using default model`).
-  The launch target is now always synced like a registry model: under the
+  The launch target is now synced like a registry model (so, as for one,
+  not in direct mode while pi has no `models.json` yet): under the
   `litellm` pi provider keyed by its discovered id when routing through
   LiteLLM, or under the pi provider named after its registry provider keyed
   by the artifact name when direct (#179 Phase B).
