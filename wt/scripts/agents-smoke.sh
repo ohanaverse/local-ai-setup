@@ -26,7 +26,7 @@ claude|claude/native|-p @PROMPT@|own subscription, no model args
 claude|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|gateway round-trip
 claude|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash
 codex|DEFAULT_OLLAMA_MODEL|exec @PROMPT@|
-codex|openrouter/z-ai/glm-5.3-flash|exec @PROMPT@|OpenRouter GLM-5.3-Flash|xfail
+codex|openrouter/z-ai/glm-5.3-flash|exec @PROMPT@|OpenRouter GLM-5.3-Flash
 copilot|copilot/native|-p @PROMPT@|own subscription
 copilot|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|
 copilot|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash

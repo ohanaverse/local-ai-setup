@@ -368,7 +368,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 | Agent | Ollama Variant | OpenRouter (direct) | OpenRouter (litellm) | Notes |
 |-------|---------------|--------------------|--------------------|-------|
 | claude | ✅ PASS | ✅ PASS (forced proxy) | ✅ PASS | claude speaks anthropic only — direct mode routes through the proxy via protocol negotiation (2026-09-10 cutover) |
-| codex | ✅ PASS | ❌ FAIL | ❌ FAIL | Model catalog doesn't recognize GLM-5.3-Flash (routing works — forced through the proxy in both modes) |
+| codex | ✅ PASS | ✅ PASS | ✅ PASS | codex warns that the model's metadata is missing and falls back to defaults, then answers (see Known Limitations #2); forced through the proxy in both modes |
 | copilot | ✅ PASS | ✅ PASS | ✅ PASS | direct mode dials openrouter.ai directly (per-provider direct routing) |
 | opencode | ✅ PASS | ❌ FAIL | ❌ FAIL | ollama-only provider list (see Known Limitations #3) |
 | pi | ✅ PASS | ✅ PASS | ✅ PASS | direct mode dials openrouter.ai directly (per-provider direct routing) |
@@ -392,9 +392,14 @@ passes in both modes; its stale xfail mark was removed from the matrix.
 wt --cwd -A claude -M openrouter/z-ai/glm-5.3-flash -- -p "What is 2+2?"
 ```
 
-**2. Codex: Model Catalog Recognition**
+**2. Codex: Model Catalog Recognition** (no longer a failure, 2026-10-04)
 
-Codex (OpenAI's agent) doesn't recognize `openrouter/z-ai/glm-5.3-flash` in its model catalog. This requires a Codex update or model override configuration.
+Codex (OpenAI's agent) doesn't recognize `openrouter/z-ai/glm-5.3-flash` in its
+model catalog. It used to fail the row; codex v0.159.3 instead warns ("Model
+metadata ... not found. Defaulting to fallback metadata; this can degrade
+performance") and answers. The row passes in both modes with a real reply, and
+its stale xfail mark was removed from the matrix. The fallback metadata is
+still a caveat for real use.
 
 **3. Opencode: Model Eligibility**
 
@@ -409,7 +414,7 @@ step 4).
 For GLM-5.3-Flash via OpenRouter:
 
 1. **Automated tests:** Use copilot and pi agents in litellm mode (both pass)
-2. **Manual testing:** claude via OpenRouter works with natural prompts in litellm mode (the FAIL is specific to the smoke test's echo-exactly prompt); codex and opencode need the provider-list/catalog fixes above first
+2. **Manual testing:** claude via OpenRouter works with natural prompts in litellm mode (the FAIL is specific to the smoke test's echo-exactly prompt); codex works with its fallback-metadata warning; opencode needs the provider-list fix above first
 3. **Document limitations:** Note which agents have compatibility issues
 
 ### Success Criteria
