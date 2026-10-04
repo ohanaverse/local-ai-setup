@@ -959,8 +959,49 @@ func TestLaunchOfRunningLocalRowEnsuresRoute(t *testing.T) {
 	if next.routing == nil || next.routing.modelID != "omlx/qwen3.8" {
 		t.Fatalf("routing = %+v, want the in-flight check for omlx/qwen3.8", next.routing)
 	}
-	if len(stub.restoredAt) != 0 {
-		t.Fatalf("route output restored at %v, want it still redirected until the restart's warnings are in", stub.restoredAt)
+}
+
+// TestLaunchRouteCheckYieldsTheLockInsteadOfWaiting pins the picker's half of
+// #192's freeze fix. When the check cannot take the config.yaml lock at once —
+// another wt is mid-write — the update goroutine hands the whole thing to the
+// routing command instead of waiting for it, so the screen keeps repainting and
+// ctrl+c still works; the command retries the check with the lock wait it is
+// allowed to pay there, then waits for the restart that retry may start. The
+// retry is what shows up as a second "ensure:" event, and the routing screen is
+// entered even though whether the proxy will restart is not yet known.
+func TestLaunchRouteCheckYieldsTheLockInsteadOfWaiting(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.busy = true
+	stubRouteNotes(t)
+
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if routing.phase != phaseRouting {
+		t.Fatalf("phase = %v, want phaseRouting", routing.phase)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q, want only the non-blocking attempt: no wait, and no retry yet", got)
+	}
+	if cmd == nil {
+		t.Fatal("no command returned: nothing would retry the check or end the routing phase")
+	}
+
+	next, _ := updateMsg(routing, routeDoneFrom(t, cmd))
+
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want the check retried once behind the screen, then the wait", got)
+	}
+	if next.phase == phaseRouting || next.routing != nil {
+		t.Fatalf("phase = %v routing = %+v, want the routing phase left behind", next.phase, next.routing)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted after the retry", next.status)
+	}
+	// One buffer for the whole check: what the retry prints has to reach the
+	// notes the first attempt's would have.
+	if len(stub.outs) != 2 || stub.outs[0] == nil || stub.outs[0] != stub.outs[1] {
+		t.Fatalf("writers handed to the check = %v, want the retry given the first attempt's", stub.outs)
 	}
 }
 
@@ -968,18 +1009,24 @@ func TestLaunchOfRunningLocalRowEnsuresRoute(t *testing.T) {
 // for the proxy, and only its message launches the agent. Launching without
 // that wait hands the agent a proxy that is mid-restart (refused connection)
 // or still serving the old route table ("Invalid model name"). It also pins
-// that the output redirect comes off exactly once, and after the wait, so the
-// restart's own warnings are captured rather than written under the alt screen.
+// that the check's output is read only after the wait, so the restart's own
+// warnings — printed until then — are in the notes the message carries.
 func TestRoutingCommandWaitsThenLaunches(t *testing.T) {
 	m := launchRowFixture(t, "omlx/qwen3.8")
 	stub := stubEnsureRoute(t)
 	stubRouteNotes(t)
 
+	stub.ensureOutput, stub.waitOutput = routeUpdatedLine, "wt: LiteLLM proxy did not come back\n"
+
 	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	next, _ := updateMsg(routing, routeDoneFrom(t, cmd))
+	done := routeDoneFrom(t, cmd)
+	next, _ := updateMsg(routing, done)
 
 	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
 		t.Fatalf("events = %q, want ensure:omlx/qwen3.8,wait", got)
+	}
+	if want := routeUpdatedLine + "wt: LiteLLM proxy did not come back\n"; done.notes != want {
+		t.Fatalf("notes = %q, want %q: the buffer was read before the restart had finished printing", done.notes, want)
 	}
 	if next.phase == phaseRouting || next.routing != nil {
 		t.Fatalf("phase = %v routing = %+v, want the routing phase left behind", next.phase, next.routing)
@@ -987,16 +1034,13 @@ func TestRoutingCommandWaitsThenLaunches(t *testing.T) {
 	if !strings.Contains(next.status, "launch failed") {
 		t.Fatalf("status = %q, want the launch to have been attempted after the wait", next.status)
 	}
-	if stub.redirects != 1 || len(stub.restoredAt) != 1 || stub.restoredAt[0] != "ensure:omlx/qwen3.8,wait" {
-		t.Fatalf("redirects = %d restoredAt = %q, want one redirect restored once, after the wait", stub.redirects, stub.restoredAt)
-	}
 }
 
 // TestLaunchWithRouteAlreadyPresentLaunchesAtOnce pins the common case: the
 // route is already in config.yaml, nothing restarts, and the launch happens in
 // the same Update as today — no routing screen for even a frame and no wait.
 // A regression here would add a screen flash, or a needless wait, to every
-// launch of a running local model. The redirect still comes off exactly once.
+// launch of a running local model.
 func TestLaunchWithRouteAlreadyPresentLaunchesAtOnce(t *testing.T) {
 	m := launchRowFixture(t, "omlx/qwen3.8")
 	stub := stubEnsureRoute(t)
@@ -1013,9 +1057,6 @@ func TestLaunchWithRouteAlreadyPresentLaunchesAtOnce(t *testing.T) {
 	}
 	if !strings.Contains(next.status, "launch failed") {
 		t.Fatalf("status = %q, want the launch to have been attempted in the same Update", next.status)
-	}
-	if stub.redirects != 1 || len(stub.restoredAt) != 1 || stub.restoredAt[0] != "ensure:omlx/qwen3.8" {
-		t.Fatalf("redirects = %d restoredAt = %q, want one redirect restored once, straight after the check", stub.redirects, stub.restoredAt)
 	}
 }
 
@@ -1254,9 +1295,9 @@ func TestRoutingViewNamesTheModelAndOffersNoCancel(t *testing.T) {
 
 // TestQuitDuringRoutingStillFlushesTheNotes pins the ctrl+c exit: the check's
 // message is never handled, so Run() has to settle the check itself — wait for
-// the restart, take the redirect off, and print what was captured. Without it
-// the "updated" line and any restart warning are dropped, and the route output
-// stays redirected into a buffer nobody reads for the rest of the process.
+// the restart and print what the check collected. Without it the "updated"
+// line and any restart warning are dropped with the buffer they were written
+// to, and wt exits under a restart that is still in flight.
 func TestQuitDuringRoutingStillFlushesTheNotes(t *testing.T) {
 	m := launchRowFixture(t, "omlx/qwen3.8")
 	stub := stubEnsureRoute(t)
@@ -1273,16 +1314,13 @@ func TestQuitDuringRoutingStillFlushesTheNotes(t *testing.T) {
 	if want := routeWaitingLine + notes; out.String() != want {
 		t.Fatalf("printed = %q, want %q", out.String(), want)
 	}
-	if len(stub.restoredAt) != 1 || stub.restoredAt[0] != "ensure:omlx/qwen3.8,wait" {
-		t.Fatalf("restoredAt = %q, want the redirect taken off once, after the wait", stub.restoredAt)
-	}
 	// The command may still finish afterwards (it ran concurrently with the
-	// quit): it must get the same text without waiting or restoring again.
+	// quit): it must get the same text without waiting again.
 	if done := routeDoneFrom(t, cmd); done.notes != notes {
 		t.Fatalf("late routing command notes = %q, want %q", done.notes, notes)
 	}
-	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" || len(stub.restoredAt) != 1 {
-		t.Fatalf("events = %q restoredAt = %q, want one wait and one restore in total", got, stub.restoredAt)
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want one wait in total", got)
 	}
 	if pendingRouteNotes != "" {
 		t.Fatalf("pendingRouteNotes = %q, want cleared after the flush", pendingRouteNotes)
@@ -1343,8 +1381,8 @@ func TestRouteDoneAfterCtrlCDoesNotLaunch(t *testing.T) {
 	if out.String() != routeUpdatedLine {
 		t.Fatalf("printed = %q, want the notes once and no waiting line (the wait was over)", out.String())
 	}
-	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" || len(stub.restoredAt) != 1 {
-		t.Fatalf("events = %q restoredAt = %q, want one wait and one restore", got, stub.restoredAt)
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want one wait", got)
 	}
 }
 
@@ -1437,9 +1475,6 @@ func TestQuitDuringRoutingSettlesAcrossGoroutines(t *testing.T) {
 	}
 	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
 		t.Fatalf("events = %q, want exactly one wait", got)
-	}
-	if len(stub.restoredAt) != 1 || stub.restoredAt[0] != "ensure:omlx/qwen3.8,wait" {
-		t.Fatalf("restoredAt = %q, want the redirect taken off exactly once, after the wait", stub.restoredAt)
 	}
 }
 
@@ -1780,7 +1815,7 @@ func TestRunAndWaitCmdPrintsRouteNotesAboveTheAgent(t *testing.T) {
 
 // TestLaunchOfNativeRowSkipsEnsureRoute pins that a model that does not go
 // through LiteLLM (a native one never does) leaves config.yaml alone: no
-// check, no routing phase, and the route output is not redirected.
+// check and no routing phase.
 func TestLaunchOfNativeRowSkipsEnsureRoute(t *testing.T) {
 	m := launchRowFixture(t, "claude/opus")
 	stub := stubEnsureRoute(t)
@@ -1790,8 +1825,8 @@ func TestLaunchOfNativeRowSkipsEnsureRoute(t *testing.T) {
 	if len(stub.events) != 0 {
 		t.Fatalf("events = %v, want none for a native model", stub.events)
 	}
-	if next.phase == phaseRouting || stub.redirects != 0 {
-		t.Fatalf("phase = %v redirects = %d, want no routing phase and no redirect", next.phase, stub.redirects)
+	if next.phase == phaseRouting {
+		t.Fatalf("phase = %v, want no routing phase", next.phase)
 	}
 	// Without this the test would pass on an Enter that never reached
 	// proceedToLaunch at all.
@@ -1817,8 +1852,8 @@ func TestLaunchAfterStartSkipsEnsureRoute(t *testing.T) {
 	if joined := strings.Join(stub.events, ","); joined != "wait" {
 		t.Fatalf("events = %q, want only finishStart's wait", joined)
 	}
-	if next.phase == phaseRouting || stub.redirects != 0 {
-		t.Fatalf("phase = %v redirects = %d, want no routing phase and no redirect", next.phase, stub.redirects)
+	if next.phase == phaseRouting {
+		t.Fatalf("phase = %v, want no routing phase", next.phase)
 	}
 	if !strings.Contains(next.status, "launch failed") {
 		t.Fatalf("status = %q, want the launch to have been attempted", next.status)

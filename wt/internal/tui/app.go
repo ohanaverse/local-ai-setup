@@ -1393,7 +1393,7 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 // runAndWaitCmd never printed it. A check that is still in flight (the user
 // pressed ctrl+c on the routing screen, so its message was never handled) is
 // settled first — that waits for the proxy restart, which the process has to
-// wait for before exiting anyway, and puts the route output back on stderr.
+// wait for before exiting anyway, and is when the last of its output is in.
 // That wait can last as long as the restart, on a terminal that otherwise
 // looks idle, so it is announced first — but only when there really is
 // something left to wait for: a check whose command already finished settles

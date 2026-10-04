@@ -210,6 +210,5 @@ func clampModelSelection(m *model) tea.Cmd {
 // there is no separate browser. The lines around the list are modelFrames'
 // (layout.go), the same frames the list's height is measured from.
 func (m *model) phaseModelView() string {
-	frame, _, _ := m.frameFor(&m.models, m.modelFrames()...)
-	return frame(m.models.View())
+	return drawnFrame(&m.models, m.height, m.modelFrames()...)(m.models.View())
 }

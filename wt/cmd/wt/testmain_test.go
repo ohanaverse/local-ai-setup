@@ -86,17 +86,23 @@ func stubStartDriver(t *testing.T, err error) *startRequest {
 }
 
 // stubEnsureRoute records, in order, each launch-time route check as
-// "ensure:<model id>" and each wait for the proxy as "wait". Both seams are
-// restored on cleanup.
+// "ensure:<model id>" and each wait for the proxy as "wait". All three seams
+// are restored on cleanup.
+//
+// osStderr is captured too, though nothing asserts on it: a check that reports
+// "changed" sends the flow through waitForProxyRestart, whose progress line
+// would otherwise be sprayed over the test log by every launch test here. A
+// test that wants to see that line stubs osStderr itself.
 func stubEnsureRoute(t *testing.T) *[]string {
 	t.Helper()
 	var events []string
-	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
+	oldEnsure, oldWait, oldOut := ensureModelRoute, waitPendingRoutes, osStderr
 	ensureModelRoute = func(_ *config.Config, m config.Model) bool {
 		events = append(events, "ensure:"+m.ID)
 		return true
 	}
 	waitPendingRoutes = func() { events = append(events, "wait") }
-	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes = oldEnsure, oldWait })
+	osStderr = io.Discard
+	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes, osStderr = oldEnsure, oldWait, oldOut })
 	return &events
 }

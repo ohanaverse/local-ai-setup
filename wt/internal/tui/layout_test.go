@@ -670,10 +670,17 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 			stubRefcountStore(t)
 			stubInventory(t, runningOmlxSnapshot())
 			cfg := modelTestConfig()
-			next, _ := newPickModel(cfg, cfg.Models, themes.Default, false).Update(tea.WindowSizeMsg{Width: width, Height: height})
-			pm := next.(pickModel)
-			pm.notice = "omlx/qwen3.8 cannot be used here: " + strings.Repeat("a long reason ", 8)
-			return pm.View()
+			// The notice is raised the way a user raises it — Enter on a blocked
+			// row — so the list is fitted to the frame that carries it: the
+			// picker sizes its list in Update, like every other screen here.
+			pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+			pm.list.SelectedItem().(*modelItem).blocked = "omlx/qwen3.8 cannot be used here: " + strings.Repeat("a long reason ", 8)
+			next, _ := pm.Update(tea.WindowSizeMsg{Width: width, Height: height})
+			next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if next.(pickModel).notice == "" {
+				t.Fatal("Enter on the blocked row raised no notice")
+			}
+			return next.View()
 		}},
 	}
 	for _, p := range phases {
@@ -682,6 +689,33 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 				view := p.view(t, width, height)
 				assertFits(t, p.name, view, width, height)
 				t.Logf("%-28s %3dx%2d: %2d lines, %3d columns", p.name, width, height, lipgloss.Height(view), lipgloss.Width(view))
+			}
+		}
+	}
+}
+
+// TestDrawnFrameIsTheFrameTheListWasSizedFor pins the shortcut View takes.
+// fitTo measures the list (listExtent: up to sixteen probe renders) to choose a
+// frame and a height; View used to repeat that whole measurement on every
+// render — every keystroke of a filter — to arrive at the same frame. It now
+// asks drawnFrame for the fullest frame that leaves the list the height it
+// already has. That is only right if it is always the frame the measurement
+// would choose, so this compares the two across every height, with and without
+// a status, on one page of rows and on several.
+func TestDrawnFrameIsTheFrameTheListWasSizedFor(t *testing.T) {
+	for _, rows := range []int{2, 30} {
+		for height := 1; height <= 40; height++ {
+			for _, status := range []string{"", layoutStatus} {
+				m := rowsPicker(t, rows, 80, height)
+				m.status = status
+				m = resized(t, m, 80, height)
+				frames := m.modelFrames()
+				_, floor := listExtent(m.models, max(1, 80-frameSides(frames[0])))
+				measured, _ := fitList(height, floor, frames...)
+				drawn := drawnFrame(&m.models, height, frames...)
+				if got, want := drawn("LIST"), measured("LIST"); got != want {
+					t.Errorf("%d rows, height %d, status %q: View draws\n%s\nbut the list was sized for\n%s", rows, height, status, got, want)
+				}
 			}
 		}
 	}

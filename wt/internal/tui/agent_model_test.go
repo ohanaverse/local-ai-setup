@@ -308,7 +308,10 @@ func TestModelScreenMKeyIsNoOp(t *testing.T) {
 func TestViewModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:9b")
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	// Sized through Update, as the terminal does it: View draws the frame the
+	// list was sized for and measures nothing itself (layout.go), so a list
+	// still at its construction size gets the frame that leaves that much.
+	m := resized(t, phaseModelWithList(t, testConfig(), "claude", "code"), 80, 24)
 	view := m.View()
 	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[↑/↓] navigate", "[enter] launch or start"} {
 		if !strings.Contains(view, want) {
