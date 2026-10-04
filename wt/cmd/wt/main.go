@@ -201,6 +201,8 @@ func rootCmd() *cobra.Command {
 		Example: "  wt                          # interactive TUI\n" +
 			"  wt -W my-feature -A claude   # create worktree and launch\n" +
 			"  wt --cwd --agent codex       # launch in current repo root\n" +
+			"  wt -A claude -- --verbose    # pass arguments to the agent (a relative path is\n" +
+			"                               # resolved from the directory the agent starts in)\n" +
 			"  wt --init                    # seed agent instruction files\n" +
 			"  wt start [model]             # start a local model (picker when omitted)\n" +
 			"  wt stop [model|provider]     # stop a local model or provider (picker when omitted)\n" +

@@ -143,6 +143,12 @@
 
 ### Fixed
 
+- wt prints a note when an argument after `--` is a relative path that
+  resolves differently for the agent than for you. An agent starts in the
+  worktree wt launches it in, so `opencode-wt -- ../../other`, typed in a
+  subdirectory, reached opencode where that path named nothing and failed
+  with `Failed to change directory`. The note names the directory the agent
+  starts in and the absolute path to pass. The argument is not rewritten.
 - A provider entry whose `location` is mistyped (`"Local"`, say) no longer
   costs its models their LiteLLM routes (#195). The inventory probes only an
   exact `local`, so such a family went unprobed, and `wt litellm sync` then

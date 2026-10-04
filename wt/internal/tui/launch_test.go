@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -370,5 +372,103 @@ func TestRunAndWaitCmdNilProfileApplierIsNoop(t *testing.T) {
 	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a successful launchDoneMsg", msg)
+	}
+}
+
+// relativeArgTUIFixture mirrors the report behind the relative-argument note:
+// the command is typed in <repo>/wt, the agent starts in <repo>, and
+// "../../other" names a sibling project only from the first. It installs a
+// fake `claude`, points the shell-directory seam at <repo>/wt, and clears the
+// pending notes.
+func relativeArgTUIFixture(t *testing.T) (launch, other string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other = filepath.Join(root, "other")
+	launch = filepath.Join(root, "repo")
+	shell := filepath.Join(launch, "wt")
+	for _, d := range []string{other, shell} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldDir, oldNotes := shellDir, pendingRouteNotes
+	shellDir = func() (string, error) { return shell, nil }
+	pendingRouteNotes = ""
+	t.Cleanup(func() { shellDir, pendingRouteNotes = oldDir, oldNotes })
+	return launch, other
+}
+
+// TestLaunchAgentQueuesTheRelativePathNote pins the picker's half of the
+// relative-argument note. The picker owns the terminal while it builds the
+// launch, so a note printed then would be lost under the alt screen; it is
+// queued with the other pending notes and printed when the terminal is
+// released, above the agent's own output. The argument is passed on
+// unchanged.
+func TestLaunchAgentQueuesTheRelativePathNote(t *testing.T) {
+	launch, other := relativeArgTUIFixture(t)
+	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
+	cmd, err := launchAgent("claude", native, launch, false, nil, nil, []string{"../../other", "--verbose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cmd.Args, "../../other") {
+		t.Errorf("args = %v, want the relative argument passed through unchanged", cmd.Args)
+	}
+	for _, want := range []string{`wt: note: "../../other" is a relative path`, "claude starts in " + launch, other} {
+		if !strings.Contains(pendingRouteNotes, want) {
+			t.Errorf("pending notes %q lack %q", pendingRouteNotes, want)
+		}
+	}
+	if n := strings.Count(pendingRouteNotes, "wt: note:"); n != 1 {
+		t.Errorf("pending notes = %q, want exactly one", pendingRouteNotes)
+	}
+	// A launch that failed and is retried builds the command again; the note
+	// must not pile up.
+	if _, err := launchAgent("claude", native, launch, false, nil, nil, []string{"../../other", "--verbose"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(pendingRouteNotes, "wt: note:"); n != 1 {
+		t.Errorf("after a second build pending notes = %q, want still one", pendingRouteNotes)
+	}
+	var printed bytes.Buffer
+	flushRouteNotes(&printed)
+	if !strings.Contains(printed.String(), other) || pendingRouteNotes != "" {
+		t.Errorf("flushed %q, left %q; want the note printed once and the queue empty", printed.String(), pendingRouteNotes)
+	}
+}
+
+// TestPassthroughLaunchQueuesTheRelativePathNote pins the same for an agent
+// with no config entry, which the picker launches through launchPassthrough.
+func TestPassthroughLaunchQueuesTheRelativePathNote(t *testing.T) {
+	launch, other := relativeArgTUIFixture(t)
+	m := model{selectedPath: launch, extraArgs: []string{"../../other"}}
+	if got, _ := m.launchPassthrough("claude"); strings.Contains(got.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch built", got.status)
+	}
+	if !strings.Contains(pendingRouteNotes, `"../../other" is a relative path`) || !strings.Contains(pendingRouteNotes, other) {
+		t.Fatalf("pending notes = %q, want the relative-path note naming %s", pendingRouteNotes, other)
+	}
+}
+
+// TestLaunchAgentQueuesNothingWithoutAMistakenPath pins that an ordinary
+// picker launch leaves the queue empty.
+func TestLaunchAgentQueuesNothingWithoutAMistakenPath(t *testing.T) {
+	launch, _ := relativeArgTUIFixture(t)
+	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
+	for _, args := range [][]string{nil, {"run", "say hi"}, {"--verbose"}} {
+		if _, err := launchAgent("claude", native, launch, false, nil, nil, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pendingRouteNotes != "" {
+		t.Fatalf("pending notes = %q, want none", pendingRouteNotes)
 	}
 }

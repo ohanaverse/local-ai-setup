@@ -125,6 +125,37 @@ from `config.toml`) or "not installed" (no binary on PATH) — and selecting
 one is blocked with a clear error rather than advancing to a model screen
 that can never succeed.
 
+### Arguments after `--`
+
+Everything after `--` is handed to the agent unchanged
+(`claude-wt -- --verbose`, `opencode-wt -- /path/to/project`).
+
+**A relative path there is resolved by the agent, from the directory the
+agent starts in** — the worktree or repo root `wt` launches it in — not from
+the directory you typed the command in. Run from `<repo>/wt`,
+
+```
+opencode-wt -- ../../other-project
+```
+
+reaches opencode in `<repo>`, where `../../other-project` names a different
+place, and fails with `Failed to change directory`. Pass an absolute path.
+
+`wt` does not rewrite the argument: it cannot tell a path from any other word,
+and a prompt may contain something that only looks like one. When an argument
+names something that exists from your directory but is missing, or is a
+different file, from the agent's, it prints a note with the absolute path to
+use:
+
+```
+wt: note: "../../other-project" is a relative path. opencode starts in <repo>, where it does not exist. From <repo>/wt it is <parent>/other-project; pass that absolute path.
+```
+
+Launched from the picker, the note is printed when the agent takes the
+terminal, above the agent's own output. Flags (anything starting with `-`,
+including `--file=../x`), absolute paths, and words that name nothing from
+your directory are never flagged.
+
 ## Post-run summary line
 
 After the launched subprocess exits, `wt` prints a single summary line to

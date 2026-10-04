@@ -156,6 +156,30 @@ func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool,
 	return m, cmd, berr
 }
 
+// shellDir is a test seam over os.Getwd: the directory the user typed the
+// command in, which is what they meant a relative passthrough path against.
+var shellDir = os.Getwd
+
+// launchNotesOut is where pre-launch notes are printed; a seam so tests can
+// read them.
+var launchNotesOut io.Writer = os.Stderr
+
+// runLaunch is the one way a built agent command is run: it prints the
+// pre-launch notes, then hands off to runAgentCmd. The note it carries today
+// is agents.RelativeArgNotes — a passthrough argument that names a file from
+// the directory the command was typed in, but not from the worktree the agent
+// starts in, would otherwise fail (or open the wrong file) with nothing to
+// connect it to where wt started the agent. Every launch site goes through
+// here so none can run an agent without it.
+func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string) error {
+	if wd, err := shellDir(); err == nil {
+		for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
+			fmt.Fprintln(launchNotesOut, note)
+		}
+	}
+	return runAgentCmd(cmd, agent, m, cfg, pp)
+}
+
 // launchFiltered is the wired-up launch path used by main.go for every
 // non-TUI launch (-w, --cwd, and outside-a-repo passthrough). It resolves
 // the eligible model list (via cfg.EligibleModels), resolves the -M pin
@@ -193,7 +217,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if err != nil {
 			return err
 		}
-		return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
+		return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs)
 	}
 
 	// Resolve the model. If the caller precomputed the eligible list, reuse
@@ -273,7 +297,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
-	return runAgentCmd(cmd, agent, m, cfg, pp)
+	return runLaunch(cmd, agent, m, cfg, pp, extraArgs)
 }
 
 // launchPassthrough builds and runs the bare-agent command for an
@@ -292,7 +316,7 @@ func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []st
 	if err != nil {
 		return err
 	}
-	return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
+	return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs)
 }
 
 // selfHealAgentConfigContentTarget checks agent's config_content file

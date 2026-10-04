@@ -748,6 +748,7 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
+	queueLaunchNotes(name, cmd, m.extraArgs)
 	return m, runAndWaitCmd(cmd, name, config.Model{})
 }
 
