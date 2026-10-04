@@ -9,12 +9,14 @@ Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims i
 routing on/off switch. Every configured cloud and native model is in the
 picker (#179; see the root `CLAUDE.md`'s *Routing is derived, not stored*);
 local models are listed from live
-provider probes, and their routes are added and removed automatically by
+provider probes — with or without a registry entry (an unregistered model is
+routed under its discovered id, `<family>/<artifact>`) — and their routes
+are added and removed automatically by
 `wt start` / `wt stop` (and the TUI start flow and `wt smoke`).
 
 ```bash
 wt litellm status                 # routing on/off + url + api_key_set
-wt litellm sync [--dry-run]       # route every registry cloud model + the running local models
+wt litellm sync [--dry-run]       # route every registry cloud model + every running (or pulled ollama) local model
 wt litellm list                   # routed ids in config.yaml (hand-written rows marked)
 ```
 
