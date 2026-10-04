@@ -236,34 +236,47 @@ func TestOpenCodeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
 	}
 }
 
-// TestOpenCodeYoloFlagIsAuto pins opencode's skip-permissions flag to
-// "--auto" and where it lands in both argv forms. opencode 1.18 has no
-// "--dangerously-skip-permissions": passing it made opencode print its usage
-// and exit 1, so `wt --yolo -A opencode` and every opencode `wt smoke` row
-// failed on any model. Position matters for the one-shot form: "--auto" is
-// declared per command, so in front of the subcommand ("opencode --auto run
-// <prompt>") the parser takes "run" as the flag's value and never reaches the
-// run command — the flag must follow "run".
+// TestOpenCodeYoloFlagIsAuto pins opencode's skip-permissions flag to the
+// literal "--auto=true". opencode 1.18 has no "--dangerously-skip-permissions"
+// (passing it printed the usage and exited 1, failing `wt --yolo -A opencode`
+// and every opencode `wt smoke` row). The "=true" is load-bearing: "--auto" is
+// declared per command, so a bare "--auto" in front of a subcommand
+// ("opencode --auto run <prompt>") is parsed as taking "run" as its value and
+// the run command is never reached. With its value attached the flag cannot
+// swallow what follows, so Build can emit it leading for every argv form.
 func TestOpenCodeYoloFlagIsAuto(t *testing.T) {
 	d := opencodeDriver{}
-	if got := d.YoloFlag(); got != "--auto" {
-		t.Errorf("YoloFlag() = %q, want --auto", got)
+	if got := d.YoloFlag(); got != "--auto=true" {
+		t.Errorf("YoloFlag() = %q, want --auto=true", got)
 	}
 	m := config.Model{ID: "ollama/x", ModelName: "x", ProviderID: "ollama"}
 	for _, model := range []config.Model{m, {Native: true, ModelName: "native"}} {
 		lc := d.Build(model, true, directRoute(model))
-		if !slices.Equal(lc.Args, []string{"--auto"}) {
-			t.Errorf("interactive yolo args (native=%v) = %v, want [--auto]", model.Native, lc.Args)
+		if !slices.Equal(lc.Args, []string{"--auto=true"}) {
+			t.Errorf("yolo args (native=%v) = %v, want [--auto=true]", model.Native, lc.Args)
 		}
 		if lc := d.Build(model, false, directRoute(model)); len(lc.Args) != 0 {
 			t.Errorf("non-yolo args (native=%v) = %v, want none", model.Native, lc.Args)
 		}
 	}
-	yr, ok := Driver(d).(OneShotYoloRunner)
-	if !ok {
-		t.Fatal("opencodeDriver does not implement OneShotYoloRunner")
+}
+
+// TestOpenCodeYoloPassthroughSubcommand pins the argv of a yolo launch whose
+// passthrough args start with a subcommand (`wt --yolo -A opencode -- run
+// "do X"`): the flag must carry its own value, so opencode still resolves
+// "run". With a bare "--auto" there, opencode printed its root help instead
+// of running the prompt.
+func TestOpenCodeYoloPassthroughSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got := yr.OneShotYoloArgs("hello"); !slices.Equal(got, []string{"run", "--auto", "hello"}) {
-		t.Errorf("OneShotYoloArgs = %v, want [run --auto hello] (flag after the subcommand)", got)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd, err := BuildLaunchCmd("opencode", config.Model{Native: true, ModelName: "native"}, t.TempDir(), true, nil, nil, []string{"run", "do X"})
+	if err != nil {
+		t.Fatalf("BuildLaunchCmd: %v", err)
+	}
+	if got := cmd.Args[1:]; !slices.Equal(got, []string{"--auto=true", "run", "do X"}) {
+		t.Errorf("args = %v, want [--auto=true run \"do X\"]", got)
 	}
 }

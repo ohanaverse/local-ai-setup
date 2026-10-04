@@ -49,7 +49,7 @@ func TestPiSyncModelsAddsMissing(t *testing.T) {
 			{ID: "claude/native", ModelName: "native", Native: true},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -83,10 +83,10 @@ func TestPiSyncModelsIdempotent(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("first syncModels: %v", err)
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("second syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -107,7 +107,7 @@ func TestPiSyncModelsUsesModelName(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -127,7 +127,7 @@ func TestPiSyncModelsPreservesExisting(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -150,7 +150,7 @@ func TestPiSyncModelsMissingFile(t *testing.T) {
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels on missing file = %v, want nil", err)
 	}
 }
@@ -238,7 +238,7 @@ func TestSyncModelsLitellm(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -278,7 +278,7 @@ func TestSyncModelsLitellmDedicatedProvider(t *testing.T) {
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	for run := 1; run <= 2; run++ {
-		if err := syncModels(cfg, path, config.Model{}); err != nil {
+		if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 			t.Fatalf("syncModels run %d: %v", run, err)
 		}
 	}
@@ -316,7 +316,7 @@ func TestSyncModelsDirectPreservesLitellmProvider(t *testing.T) {
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -342,7 +342,7 @@ func TestSyncModelsDirectRevertsGatewayProvider(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -373,7 +373,7 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -413,7 +413,7 @@ func TestSyncModelsDirectPropagatesExecSecretError(t *testing.T) {
 
 	// The failing provider is the one being launched, so its secret_ref
 	// error must abort the sync.
-	err := syncModels(cfg, path, cfg.Models[0])
+	err := syncModels(cfg, path, cfg.Models[0], Route{})
 	if err == nil {
 		t.Fatal("syncModels: want error from failing exec: secret_ref, got nil")
 	}
@@ -454,7 +454,7 @@ func TestSyncModelsDirectUnrelatedProviderFailureDoesNotAbort(t *testing.T) {
 	// Launching the ollama model: nyt-litellm's broken helper must not
 	// abort the sync.
 	target := cfg.Models[0]
-	if err := syncModels(cfg, path, target); err != nil {
+	if err := syncModels(cfg, path, target, Route{}); err != nil {
 		t.Fatalf("syncModels: want nil (unrelated provider's failure must not abort), got %v", err)
 	}
 	f := readPiModels(t, path)
@@ -479,7 +479,7 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -513,7 +513,7 @@ func TestSyncModelsDirectResyncsStaleNonOllamaProvider(t *testing.T) {
 			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -546,7 +546,7 @@ func TestSyncModelsDirectPreservesForeignNonOllamaProvider(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -596,7 +596,7 @@ func TestSyncModelsDirectMarkedBlockSurvivesModelRename(t *testing.T) {
 			{ID: "mtplx/new-quant-variant", ModelName: "new-quant-variant", ProviderID: "mtplx"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -626,7 +626,7 @@ func TestSyncModelsDirectStampsLegacyOwnedBlock(t *testing.T) {
 			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -651,7 +651,7 @@ func TestSyncModelsDirectForeignBlockNeverMarked(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -681,7 +681,7 @@ func TestSyncModelsDirectForeignEmptyBlockNeverAdopted(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -709,7 +709,7 @@ func TestSyncModelsLitellmCreatesMissingFile(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -791,7 +791,7 @@ func TestSyncModelsDirectCreatesSchemaValidProviderBlock(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
@@ -826,7 +826,7 @@ func TestSyncModelsDirectSetsNytLitellmSupportsStoreFalse(t *testing.T) {
 			{ID: "nyt-litellm/claude-sonnet-4-6", ModelName: "claude-sonnet-4-6", ProviderID: "nyt-litellm"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	p := readPiModels(t, path).Providers["nyt-litellm"]
@@ -850,7 +850,7 @@ func TestSyncModelsSkipsProviderWithUnresolvableSecret(t *testing.T) {
 			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
 		},
 	}
-	if err := syncModels(cfg, path, config.Model{}); err != nil {
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	if _, ok := readPiModels(t, path).Providers["openrouter"]; ok {
@@ -975,7 +975,7 @@ func TestSyncModelsLitellmAddsDiscoveredTarget(t *testing.T) {
 			writeFile(t, path, emptyPiModels)
 			cfg := discoveredCfg()
 			cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-			if err := syncModels(cfg, path, target); err != nil {
+			if err := syncModels(cfg, path, target, Route{}); err != nil {
 				t.Fatalf("syncModels: %v", err)
 			}
 			models := readPiModels(t, path).Providers[piLitellmProviderID].Models
@@ -997,7 +997,7 @@ func TestSyncModelsLitellmAddsDiscoveredTarget(t *testing.T) {
 			}
 
 			before, _ := os.ReadFile(path)
-			if err := syncModels(cfg, path, target); err != nil {
+			if err := syncModels(cfg, path, target, Route{}); err != nil {
 				t.Fatalf("second syncModels: %v", err)
 			}
 			after, _ := os.ReadFile(path)
@@ -1022,7 +1022,7 @@ func TestSyncModelsDirectAddsDiscoveredTarget(t *testing.T) {
 			path := piHomeModelsPath(t)
 			writeFile(t, path, emptyPiModels)
 			cfg := discoveredCfg()
-			if err := syncModels(cfg, path, target); err != nil {
+			if err := syncModels(cfg, path, target, Route{}); err != nil {
 				t.Fatalf("syncModels: %v", err)
 			}
 			p := readPiModels(t, path).Providers[target.ProviderID]
@@ -1042,7 +1042,7 @@ func TestSyncModelsDirectAddsDiscoveredTarget(t *testing.T) {
 			}
 
 			before, _ := os.ReadFile(path)
-			if err := syncModels(cfg, path, target); err != nil {
+			if err := syncModels(cfg, path, target, Route{}); err != nil {
 				t.Fatalf("second syncModels: %v", err)
 			}
 			after, _ := os.ReadFile(path)
@@ -1067,7 +1067,7 @@ func TestSyncModelsTargetAlreadyCoveredChangesNothing(t *testing.T) {
 		sync := func(target config.Model) string {
 			path := filepath.Join(t.TempDir(), "models.json")
 			writeFile(t, path, emptyPiModels)
-			if err := syncModels(cfg, path, target); err != nil {
+			if err := syncModels(cfg, path, target, Route{}); err != nil {
 				t.Fatalf("syncModels: %v", err)
 			}
 			data, err := os.ReadFile(path)
@@ -1098,7 +1098,7 @@ func TestSyncModelsDirectDiscoveredTargetSkipsProviderWithoutBaseURL(t *testing.
 		path := filepath.Join(t.TempDir(), "models.json")
 		writeFile(t, path, emptyPiModels)
 		cfg := &config.Config{Providers: providers}
-		if err := syncModels(cfg, path, discoveredTargets[1]); err != nil {
+		if err := syncModels(cfg, path, discoveredTargets[1], Route{}); err != nil {
 			t.Fatalf("syncModels: %v", err)
 		}
 		if _, ok := readPiModels(t, path).Providers["mtplx"]; ok {
@@ -1116,7 +1116,7 @@ func TestSyncModelsDirectDiscoveredTargetKeepsForeignBlock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mine","baseUrl":"http://my-box:9000/v1","models":[{"_launch":true,"id":"my/own-model"}]}}}`)
 	target := discoveredTargets[1]
-	if err := syncModels(discoveredCfg(), path, target); err != nil {
+	if err := syncModels(discoveredCfg(), path, target, Route{}); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
 	p := readPiModels(t, path).Providers["mtplx"]
@@ -1138,11 +1138,11 @@ func TestSyncModelsLitellmKeepsDiscoveredDirectEntry(t *testing.T) {
 	writeFile(t, path, emptyPiModels)
 	target := discoveredTargets[0]
 	cfg := discoveredCfg()
-	if err := syncModels(cfg, path, target); err != nil {
+	if err := syncModels(cfg, path, target, Route{}); err != nil {
 		t.Fatalf("direct syncModels: %v", err)
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	if err := syncModels(cfg, path, target); err != nil {
+	if err := syncModels(cfg, path, target, Route{}); err != nil {
 		t.Fatalf("litellm syncModels: %v", err)
 	}
 	ol := readPiModels(t, path).Providers[piOllamaProviderID].Models
@@ -1173,5 +1173,111 @@ func TestPiBuildFlagsModelFallback(t *testing.T) {
 	t.Setenv("HOME", "") // os.UserHomeDir fails, so models.json cannot be located
 	if lc := (piDriver{}).Build(m, false, directRoute(m)); !lc.ModelFallback || lc.Warn == "" {
 		t.Errorf("models.json unlocatable: ModelFallback = %v, Warn = %q, want both set", lc.ModelFallback, lc.Warn)
+	}
+}
+
+// forcedRouteCfg is a registry whose "anth" provider speaks only the
+// anthropic protocol, which pi (openai-chat only) cannot use directly: with
+// the LiteLLM toggle OFF but a proxy configured, ResolveRoute forces that
+// provider's models through LiteLLM (Route.Litellm && Route.Forced) while
+// every other model stays direct.
+func forcedRouteCfg() *config.Config {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "anth", Protocols: []config.Protocol{config.ProtocolAnthropic}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://anth.example"}},
+		},
+		Models: []config.Model{
+			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama", Location: config.LocationLocal},
+			{ID: "anth/big-model", ModelName: "big-model", ProviderID: "anth"},
+		},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	return cfg
+}
+
+// TestSyncModelsForcedLitellmRouteWritesTargetEntry verifies the sync follows
+// the launch's RESOLVED route, not the LiteLLM toggle: with the toggle off, a
+// model whose provider shares no protocol with pi is forced through LiteLLM,
+// so Build looks it up as litellm/<id>. The sync must write that entry (and
+// the gateway endpoint) or pi silently launches its default model — with or
+// without a models.json already on disk. Only the target goes under litellm;
+// the other registry models stay direct-only, as the toggle says.
+func TestSyncModelsForcedLitellmRouteWritesTargetEntry(t *testing.T) {
+	for _, existing := range []bool{true, false} {
+		path := piHomeModelsPath(t)
+		if existing {
+			writeFile(t, path, emptyPiModels)
+		}
+		cfg := forcedRouteCfg()
+		target := cfg.Models[1]
+		r, err := cfg.ResolveRoute(target, piDriver{}.Protocols())
+		if err != nil || !r.Litellm || !r.Forced {
+			t.Fatalf("ResolveRoute = %+v, %v; want a forced litellm route", r, err)
+		}
+		if err := syncModels(cfg, path, target, r); err != nil {
+			t.Fatalf("existing=%v: syncModels: %v", existing, err)
+		}
+		f := readPiModels(t, path)
+		lp := f.Providers[piLitellmProviderID]
+		if lp.BaseURL != "http://localhost:4000/v1" || lp.APIKey != "sk-litellm" || lp.API == "" {
+			t.Errorf("existing=%v: litellm block = %+v, want the gateway endpoint", existing, lp)
+		}
+		if len(lp.Models) != 1 || lp.Models[0].ID != target.ID || !lp.Models[0].Launch {
+			t.Errorf("existing=%v: litellm models = %+v, want only the forced target %q", existing, lp.Models, target.ID)
+		}
+		if ol := f.Providers[piOllamaProviderID].Models; len(ol) != 1 || ol[0].ID != "qwen3.8:27b-mlx" {
+			t.Errorf("existing=%v: ollama models = %+v, want the direct registry model still synced", existing, ol)
+		}
+		lc := piDriver{}.Build(target, false, r)
+		if !slices.Equal(lc.Args, []string{"--model", "litellm/" + target.ID}) || lc.ModelFallback {
+			t.Errorf("existing=%v: args = %v, ModelFallback = %v, want --model litellm/%s", existing, lc.Args, lc.ModelFallback, target.ID)
+		}
+	}
+}
+
+// TestSyncModelsForcedLitellmRouteIgnoresTargetProviderSecret verifies a
+// forced launch does not fail on its own provider's broken credential
+// helper. pi reaches a forced model through LiteLLM, which holds the
+// provider's key itself, so the direct-mode rule "the target provider's
+// secret failure aborts the launch" would block a launch that works.
+func TestSyncModelsForcedLitellmRouteIgnoresTargetProviderSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+	cfg := forcedRouteCfg()
+	cfg.Providers[1].Auth.SecretRef = "exec:false"
+	target := cfg.Models[1]
+	r, err := cfg.ResolveRoute(target, piDriver{}.Protocols())
+	if err != nil {
+		t.Fatalf("ResolveRoute: %v", err)
+	}
+	if err := syncModels(cfg, path, target, r); err != nil {
+		t.Fatalf("syncModels: %v, want the forced launch to proceed", err)
+	}
+	if m := readPiModels(t, path).Providers[piLitellmProviderID].Models; len(m) != 1 || m[0].ID != target.ID {
+		t.Errorf("litellm models = %+v, want the forced target", m)
+	}
+}
+
+// TestSyncModelsDirectDiscoveredTargetKeepsForeignBlockHoldingIt verifies a
+// user's own unmarked pi provider block whose ONLY model is the discovered
+// launch target stays the user's: baseUrl/apiKey untouched, not stamped
+// _wtOwned. wt never wrote a discovered model's entry before it synced the
+// launch target, so such a block is hand-written (the workaround for the old
+// fallback) — counting the target as "a model wt would write" in the legacy
+// ownership inference repointed it at the registry endpoint.
+func TestSyncModelsDirectDiscoveredTargetKeepsForeignBlockHoldingIt(t *testing.T) {
+	target := discoveredTargets[1]
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mine","baseUrl":"http://my-box:9000/v1","models":[{"_launch":true,"id":"`+target.ModelName+`"}]}}}`)
+	if err := syncModels(discoveredCfg(), path, target, Route{}); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	p := readPiModels(t, path).Providers["mtplx"]
+	if p.BaseURL != "http://my-box:9000/v1" || p.APIKey != "mine" || p.WTOwned {
+		t.Errorf("foreign block taken over: %+v", p)
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != target.ModelName {
+		t.Errorf("models = %+v, want the user's single entry untouched", p.Models)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -401,19 +402,19 @@ func TestRealBuildAndRunSkipsYoloForCodex(t *testing.T) {
 	}
 }
 
-// TestRealBuildAndRunOpencodeYoloFollowsRun pins the one-shot argv wt smoke
-// hands opencode: "run --auto <prompt>", the skip-permissions flag AFTER the
-// subcommand and exactly once. opencode declares "--auto" per command, so
-// "opencode --auto run <prompt>" parses "run" as the flag's value and falls
-// into the default (TUI) command; and the flag it replaced,
+// TestRealBuildAndRunOpencodeYolo pins the one-shot argv wt smoke hands
+// opencode: "--auto=true run <prompt>", the skip-permissions flag exactly
+// once and with its value attached. opencode declares the flag per command,
+// so a bare "--auto" in front of "run" parses "run" as the flag's value and
+// falls into the default (TUI) command; and the flag it replaced,
 // "--dangerously-skip-permissions", no longer exists at all — opencode
 // printed its usage and exited 1, failing the opencode row on every model.
-func TestRealBuildAndRunOpencodeYoloFollowsRun(t *testing.T) {
+func TestRealBuildAndRunOpencodeYolo(t *testing.T) {
 	writeFakeAgentBinary(t, "opencode")
 	var cleanup func() error
 	outcome := realBuildAndRun(&config.Config{}, "opencode", config.Model{Native: true}, "the prompt", t.TempDir(), 10*time.Second, nil, &cleanup)
-	if !strings.HasSuffix(outcome.Command, "opencode run --auto the prompt") {
-		t.Fatalf("Command = %q, want it to end with \"opencode run --auto the prompt\"", outcome.Command)
+	if !strings.HasSuffix(outcome.Command, "opencode --auto=true run the prompt") {
+		t.Fatalf("Command = %q, want it to end with \"opencode --auto=true run the prompt\"", outcome.Command)
 	}
 }
 
@@ -557,6 +558,36 @@ func TestRealBuildAndRunDiscoveredModelNoFallback(t *testing.T) {
 	}
 	if res := RunRow(cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, t.TempDir(), nil); res.Status != StatusPass {
 		t.Fatalf("RunRow Status = %v, want PASS (err=%v)", res.Status, res.Err)
+	}
+}
+
+// silentFallbackDriver reports a model fallback without saying why
+// (LaunchCmd.ModelFallback set, Warn empty) — the shape a future driver could
+// take, since nothing ties the two fields together.
+type silentFallbackDriver struct{}
+
+func (silentFallbackDriver) Build(config.Model, bool, config.Route) agents.LaunchCmd {
+	return agents.LaunchCmd{Bin: "silent-fallback", ModelFallback: true}
+}
+
+func (silentFallbackDriver) YoloFlag() string { return "" }
+
+// TestRealBuildAndRunModelFallbackWithoutWarnStillFails asserts a fallback
+// the driver gave no warning for is still a FAIL. The outcome carries the
+// fallback as its reason string, so an empty reason used to read as "no
+// fallback": the agent was never run, yet the row's zero exit code passed it
+// whenever --prompt was set (no sentinel to miss) — a PASS for a row that
+// executed nothing.
+func TestRealBuildAndRunModelFallbackWithoutWarnStillFails(t *testing.T) {
+	t.Cleanup(agents.RegisterTest("silent-fallback", func() agents.Driver { return silentFallbackDriver{} }))
+	writeFakeAgentBinary(t, "silent-fallback")
+	var cleanup func() error
+	outcome := realBuildAndRun(&config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	if outcome.ModelFallback == "" || outcome.Command != "" {
+		t.Fatalf("ModelFallback = %q, Command = %q, want a non-empty fallback reason and the agent never started", outcome.ModelFallback, outcome.Command)
+	}
+	if res := RunRow(&config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", "", time.Second, t.TempDir(), nil); res.Status != StatusFail {
+		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
 	}
 }
 

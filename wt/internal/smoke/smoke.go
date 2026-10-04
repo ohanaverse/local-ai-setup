@@ -295,32 +295,30 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// in the current working directory (see docs/wt-smoke.md's
 	// "Tool-use permission" note): a --prompt override therefore runs
 	// unsupervised here too, not just the fixed sentinel prompt.
-	//
-	// An agent whose yolo flag must sit inside its one-shot args
-	// (agents.OneShotYoloRunner — opencode's "run --auto <prompt>") is built
-	// with yolo off here and gets the flag from OneShotYoloArgs below.
 	yolo := agentName != "codex"
-	yoloRunner, yoloInOneShot := agents.ByName(agentName).(agents.OneShotYoloRunner)
-	yoloInOneShot = yoloInOneShot && yolo
-	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, yolo && !yoloInOneShot, nil, cfg, nil)
+	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, yolo, nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}
 	// The driver could not select m and the agent would answer on its own
 	// default model. Don't run it: the outcome is already FAIL (see RunRow),
 	// and a run would spend a real request on a model this row is not about.
+	// execOutcome.ModelFallback doubles as the flag (non-empty = fallback),
+	// so a driver that set ModelFallback without a Warn still needs a
+	// reason here — an empty one would read as "no fallback" and RunRow
+	// would classify an agent that never ran by its zero exit code.
 	if info.ModelFallback {
-		return execOutcome{ModelFallback: info.Warn}
+		reason := info.Warn
+		if reason == "" {
+			reason = "the driver gave no reason"
+		}
+		return execOutcome{ModelFallback: reason}
 	}
-	d := agents.ByName(agentName)
-	osr, ok := d.(agents.OneShotRunner)
+	osr, ok := agents.ByName(agentName).(agents.OneShotRunner)
 	if !ok {
 		return execOutcome{StartErr: fmt.Errorf("agent %q does not support one-shot invocation", agentName)}
 	}
 	oneShotArgs := osr.OneShotArgs(prompt)
-	if yoloInOneShot {
-		oneShotArgs = yoloRunner.OneShotYoloArgs(prompt)
-	}
 
 	buf := &boundedWriter{}
 	cmd.Stdout = buf

@@ -70,9 +70,9 @@ The builtin `openai` provider is not usable for LiteLLM-routed models: opencode 
 
 ## Permissions (`--yolo`)
 
-`wt --yolo -A opencode` launches `opencode --auto`. opencode describes `--auto` as "auto-approve permissions that are not explicitly denied": it is **not** an unconditional skip — a permission your opencode config sets to `deny` stays denied, and only what would otherwise prompt is approved. (opencode 1.18 has no `--dangerously-skip-permissions`; passing it prints the usage text and exits 1.)
+`wt --yolo -A opencode` launches `opencode --auto=true`. opencode describes `--auto` as "auto-approve permissions that are not explicitly denied": it is **not** an unconditional skip — a permission your opencode config sets to `deny` stays denied, and only what would otherwise prompt is approved. (opencode 1.18 has no `--dangerously-skip-permissions`; passing it prints the usage text and exits 1.)
 
-`--auto` is declared per opencode command, so it must not sit directly in front of the `run` subcommand: with `opencode --auto run …`, opencode does not recognise `run` as the command (`opencode --auto run --help` prints the root help, where `opencode run --auto --help` prints `run`'s). wt therefore puts it first only for the interactive launch (`opencode --auto [<passthrough args>] [--session <id>]` — passthrough args come before the resume flag), and `wt smoke`'s one-shot is `opencode run --auto <prompt>`. A passthrough positional (`wt --yolo -A opencode -- <project-path>`) lands right behind the flag and may be affected; this is not verified — `--auto` is one of the default command's own options, so `opencode --auto <path>` may well parse correctly.
+wt attaches the value (`=true`) because `--auto` is declared per opencode command: bare and directly in front of a subcommand, it swallows it — `opencode --auto run …` never reaches `run` and instead starts the TUI with `run` as the project directory. `--auto=true` cannot take the next argument, so the flag leads every form: the interactive launch (`opencode --auto=true [<passthrough args>] [--session <id>]` — passthrough args come before the resume flag), a passthrough subcommand (`wt --yolo -A opencode -- run "<prompt>"` → `opencode --auto=true run "<prompt>"`), and `wt smoke`'s one-shot (`opencode --auto=true run <prompt>`).
 
 ## Session resume
 

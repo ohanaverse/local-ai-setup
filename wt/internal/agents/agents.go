@@ -74,9 +74,11 @@ type Driver interface {
 // implementation can scope any per-provider, failure-prone work (e.g. pi's
 // exec: secret_ref resolution) to the provider actually being launched
 // instead of treating every registry provider as equally load-bearing for
-// this one launch.
+// this one launch. r is the route resolved for target — what Build is about
+// to receive — so the sync and Build agree on how the model is reached even
+// when the route differs from the LiteLLM toggle (a protocol-forced route).
 type Syncer interface {
-	SyncModels(cfg *config.Config, target config.Model) error
+	SyncModels(cfg *config.Config, target config.Model, r Route) error
 }
 
 // ArgSetter is an optional Driver capability: some agents (e.g. shell) need
@@ -118,16 +120,6 @@ type Resumer interface {
 // model works through this agent without an interactive session.
 type OneShotRunner interface {
 	OneShotArgs(prompt string) []string
-}
-
-// OneShotYoloRunner is an optional capability for a OneShotRunner whose
-// skip-permissions flag must sit INSIDE its one-shot args rather than where
-// Build puts it (opencode: "run --auto <prompt>" — its flag in front of the
-// subcommand swallows the subcommand). When wt smoke wants yolo for such an
-// agent it builds the command with yolo off and appends OneShotYoloArgs
-// instead of OneShotArgs, so the flag appears exactly once.
-type OneShotYoloRunner interface {
-	OneShotYoloArgs(prompt string) []string
 }
 
 // InstructionPointer describes a single file created by `wt --init`.
@@ -361,7 +353,7 @@ func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo 
 		fmt.Fprintf(os.Stderr, "wt: %s requires LiteLLM for %s (no direct protocol overlap with provider %q) — routing through the proxy\n", agent, m.ID, route.ProviderID)
 	}
 	if s, ok := d.(Syncer); ok {
-		if err := s.SyncModels(cfg, m); err != nil {
+		if err := s.SyncModels(cfg, m, route); err != nil {
 			return nil, info, err
 		}
 	}

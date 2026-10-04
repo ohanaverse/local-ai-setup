@@ -74,10 +74,11 @@ permission-denied response it may not recover from within the timeout
 subcommand already never prompts for approval, so it never had this
 failure mode, and its yolo flag
 (`--dangerously-bypass-approvals-and-sandbox`) would additionally strip
-its own sandbox for no benefit. opencode's flag is `--auto`, placed inside
-the one-shot (`opencode run --auto <prompt>` — in front of `run` it would
-swallow the subcommand); it approves permissions that are "not explicitly
-denied", so a permission the opencode config sets to `deny` stays denied.
+its own sandbox for no benefit. opencode's flag is `--auto`, passed with
+its value attached (`opencode --auto=true run <prompt>` — a bare `--auto` in
+front of `run` would swallow the subcommand); it approves permissions that
+are "not explicitly denied", so a permission the opencode config sets to
+`deny` stays denied.
 
 **Cost:** the agent runs in the current working directory with permission
 checks bypassed — with the default sentinel prompt this is inert (the

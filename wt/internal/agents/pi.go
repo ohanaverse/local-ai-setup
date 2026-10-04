@@ -22,13 +22,14 @@ func (piDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAI
 // comment): it is synced too even when cfg does not hold it (a discovered
 // local model has no registry entry), and syncDirectProviders uses it to
 // decide which provider's secret_ref failure, if any, should actually fail
-// this launch.
-func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
+// this launch. r is target's resolved route — the same one Build gets — so
+// the entry is written where Build will look for it (see syncModels).
+func (piDriver) SyncModels(cfg *config.Config, target config.Model, r Route) error {
 	path, err := piModelsPath()
 	if err != nil {
 		return err
 	}
-	return syncModels(cfg, path, target)
+	return syncModels(cfg, path, target, r)
 }
 
 // Build passes --model only when the target model is present in pi's
@@ -41,9 +42,9 @@ func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
 // the gateway). When the entry is missing, Build falls back to pi's default
 // model, surfaces a warning and sets ModelFallback (which wt smoke turns into
 // a FAIL). SyncModels writes the launch target's entry first, so this is left
-// for direct mode with no models.json yet (the sync creates the file only in
-// litellm mode), a user-disabled entry (_launch: false), a provider with no
-// usable base_url/secret, or an unreadable models.json.
+// for a direct route with no models.json yet (the sync creates the file only
+// for a LiteLLM route), a user-disabled entry (_launch: false), a provider
+// with no usable base_url/secret, or an unreadable models.json.
 func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {

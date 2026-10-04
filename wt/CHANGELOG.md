@@ -147,14 +147,27 @@
   not in direct mode while pi has no `models.json` yet): under the
   `litellm` pi provider keyed by its discovered id when routing through
   LiteLLM, or under the pi provider named after its registry provider keyed
-  by the artifact name when direct (#179 Phase B).
-- opencode's skip-permissions flag is `--auto`. wt still passed
-  `--dangerously-skip-permissions`, which opencode 1.18 does not have, so
-  `wt --yolo -A opencode` and every opencode row of `wt smoke` (which forces
-  yolo) ended in opencode's usage text and exit 1. The interactive launch is
-  now `opencode --auto`, and smoke's one-shot is `opencode run --auto
-  <prompt>` — after the subcommand, because in front of it the flag swallows
-  `run`. Note `--auto` approves permissions that are "not explicitly denied":
+  by the artifact name when direct (#179 Phase B). A hand-written pi provider
+  block holding that artifact stays the user's: the discovered target does
+  not count toward the legacy "wt wrote every model in this block" ownership
+  inference, so its `baseUrl`/`apiKey` are not resynced.
+- pi's sync follows the launch's resolved route, not the LiteLLM toggle
+  alone. With the toggle off, a model whose provider shares no protocol with
+  pi is forced through LiteLLM and looked up as `litellm/<id>`, but the sync
+  only wrote direct entries, so pi silently ran its default model. The forced
+  launch target now gets its `litellm` entry and the gateway endpoint
+  (creating `models.json` if needed), and that provider's own `secret_ref`
+  can no longer fail the launch — LiteLLM holds the key.
+- opencode's skip-permissions flag is `--auto`, passed as `--auto=true`. wt
+  still passed `--dangerously-skip-permissions`, which opencode 1.18 does not
+  have, so `wt --yolo -A opencode` and every opencode row of `wt smoke`
+  (which forces yolo) ended in opencode's usage text and exit 1. The value is
+  attached because a bare `--auto` in front of a subcommand swallows it
+  (`opencode --auto run …` starts the TUI in a directory named `run`); with
+  `=true` the flag leads every argv form — the interactive launch
+  (`opencode --auto=true`), smoke's one-shot (`opencode --auto=true run
+  <prompt>`) and a passthrough subcommand (`wt --yolo -A opencode -- run
+  <prompt>`). Note `--auto` approves permissions that are "not explicitly denied":
   unlike an unconditional skip, a permission the opencode config denies
   stays denied.
 - `wt smoke` no longer reports PASS for an agent that fell back to a
