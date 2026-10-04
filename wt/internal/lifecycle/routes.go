@@ -51,11 +51,19 @@ func routePrintf(format string, args ...any) {
 // The restart's warnings are printed by a goroutine that outlives the call
 // that started it, so a caller that wants them too must call restore only
 // after WaitPendingRoutes() has returned; restoring earlier sends them to the
-// previous writer. w is written under a mutex, never concurrently, and never
-// after restore returns, so a plain bytes.Buffer is safe to read from then on.
+// previous writer. w is written under a mutex, never concurrently, so a plain
+// bytes.Buffer will do.
+//
 // restore puts back the writer that was current when SetRouteOutput was
-// called and is safe to call more than once. A caller that never calls
-// SetRouteOutput sees no change: the output goes to stderr.
+// called and is safe to call more than once. Redirects therefore do not nest
+// freely: two live at once must be restored in reverse order of installation
+// (last in, first out), because restoring the earlier one first lets the later
+// restore reinstall the earlier caller's writer, which would then be written
+// again after its own restore returned. Restored in order — or with only one
+// redirect live, which is the case today: the picker is the one caller and it
+// cannot nest — w is never written after restore returns and is safe to read
+// from then on. A caller that never calls SetRouteOutput sees no change: the
+// output goes to stderr.
 func SetRouteOutput(w io.Writer) (restore func()) {
 	routesOutMu.Lock()
 	prev := routesWarn

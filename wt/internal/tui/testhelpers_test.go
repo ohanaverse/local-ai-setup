@@ -172,6 +172,12 @@ type routeStub struct {
 	redirects  int
 	restoredAt []string
 
+	// waitEntered and waitRelease, when set, make the stubbed wait block the
+	// way a real proxy restart does: it closes waitEntered once it is inside
+	// and returns only when waitRelease is closed. Tests that run the routing
+	// command on its own goroutine use them to hold the restart open.
+	waitEntered, waitRelease chan struct{}
+
 	out io.Writer // the writer the flow handed setRouteOutput; nil when not redirected
 }
 
@@ -179,8 +185,10 @@ type routeStub struct {
 // (ensureModelRoute, waitPendingRoutes, setRouteOutput) for recording fakes
 // scripted by the returned routeStub. Nothing real is touched: no config.yaml,
 // no proxy, and not the process's route writer. All three seams are restored on
-// cleanup. The fakes are not synchronized: a test runs the routing command
-// itself, on the test goroutine.
+// cleanup. The fakes take no lock: a test either runs the routing command
+// itself, on the test goroutine, or (with waitEntered/waitRelease) reads the
+// stub only after every goroutine that settles the check has finished — settle
+// is once-only, so the fakes still run on one goroutine at a time.
 func stubEnsureRoute(t *testing.T) *routeStub {
 	t.Helper()
 	s := &routeStub{changed: true}
@@ -197,6 +205,10 @@ func stubEnsureRoute(t *testing.T) *routeStub {
 	}
 	waitPendingRoutes = func() {
 		s.events = append(s.events, "wait")
+		if s.waitEntered != nil {
+			close(s.waitEntered)
+			<-s.waitRelease
+		}
 		write(s.waitOutput)
 	}
 	setRouteOutput = func(w io.Writer) func() {

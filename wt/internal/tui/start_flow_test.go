@@ -18,6 +18,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
@@ -923,6 +925,10 @@ func launchRowFixture(t *testing.T, id string) model {
 // wrote a route; the tests script the stub to "print" it.
 const routeUpdatedLine = "wt: LiteLLM route for omlx/qwen3.8 updated\n"
 
+// routeWaitingLine is what Run() prints before it waits for a proxy restart
+// the user quit out of.
+const routeWaitingLine = "wt: waiting for the LiteLLM proxy restart…\n"
+
 // TestLaunchOfRunningLocalRowEnsuresRoute pins #192 for the picker: Enter on
 // a local row that is already running checks its LiteLLM route — such a model
 // may never have been started by wt, so no start hook wrote its route — and,
@@ -1261,7 +1267,9 @@ func TestQuitDuringRoutingStillFlushesTheNotes(t *testing.T) {
 	var out bytes.Buffer
 	flushRouteNotesAfterRun(final, &out)
 
-	if want := routeUpdatedLine + "wt: LiteLLM proxy did not come back\n"; out.String() != want {
+	notes := routeUpdatedLine + "wt: LiteLLM proxy did not come back\n"
+	// The restart was still ahead, so the wait is announced before the notes.
+	if want := routeWaitingLine + notes; out.String() != want {
 		t.Fatalf("printed = %q, want %q", out.String(), want)
 	}
 	if len(stub.restoredAt) != 1 || stub.restoredAt[0] != "ensure:omlx/qwen3.8,wait" {
@@ -1269,8 +1277,8 @@ func TestQuitDuringRoutingStillFlushesTheNotes(t *testing.T) {
 	}
 	// The command may still finish afterwards (it ran concurrently with the
 	// quit): it must get the same text without waiting or restoring again.
-	if done := routeDoneFrom(t, cmd); done.notes != out.String() {
-		t.Fatalf("late routing command notes = %q, want %q", done.notes, out.String())
+	if done := routeDoneFrom(t, cmd); done.notes != notes {
+		t.Fatalf("late routing command notes = %q, want %q", done.notes, notes)
 	}
 	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" || len(stub.restoredAt) != 1 {
 		t.Fatalf("events = %q restoredAt = %q, want one wait and one restore in total", got, stub.restoredAt)
@@ -1280,10 +1288,284 @@ func TestQuitDuringRoutingStillFlushesTheNotes(t *testing.T) {
 	}
 }
 
+// TestRouteDoneAfterCtrlCDoesNotLaunch pins the quit race: tea.Quit's QuitMsg
+// comes back through the message channel, so the check's routeDoneMsg can be
+// handled after ctrl+c and before the program stops. It must not launch — the
+// user quit, and a launch would also record rotation and a refcount entry for
+// a session that never happened, and have runAndWaitCmd print the notes while
+// Run() flushes them too. The agent here is one that WOULD launch, so a
+// dropped guard shows up as a launch command and written state. The notes are
+// still printed, exactly once, by the after-run flush — with no "waiting" line,
+// because the command had already finished the wait.
+func TestRouteDoneAfterCtrlCDoesNotLaunch(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	t.Cleanup(agents.RegisterTest("wt-stub", func() agents.Driver { return stubDriver{path: truePath} }))
+	m.agent = "wt-stub"
+	stub := stubEnsureRoute(t)
+	stub.ensureOutput = routeUpdatedLine
+	stubRouteNotes(t)
+
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	quitting, _ := updateMsg(routing, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if routing.routing.quitting {
+		t.Fatal("ctrl+c wrote through to the model Update was given")
+	}
+	done := routeDoneFrom(t, cmd) // the restart finishes in the gap before QuitMsg
+	final, launch := updateMsg(quitting, done)
+
+	if launch != nil {
+		t.Fatal("a routeDoneMsg after ctrl+c returned a command: the agent would launch after the user quit")
+	}
+	if final.phase != phaseRouting || final.routing == nil {
+		t.Fatalf("phase = %v routing = %+v, want the quitting check left for Run() to settle", final.phase, final.routing)
+	}
+	if last, ok := rotation.New().Last(); ok || last != "" {
+		t.Fatalf("rotation recorded %q for a launch that must not happen", last)
+	}
+	if counts := refcount.NewStore().Counts([]string{"omlx/qwen3.8"}); counts["omlx/qwen3.8"] != 0 {
+		t.Fatalf("refcount = %v for a launch that must not happen", counts)
+	}
+	if pendingRouteNotes != "" {
+		t.Fatalf("pendingRouteNotes = %q: the dropped message recorded its notes, so they would print twice", pendingRouteNotes)
+	}
+	if _, tick := updateMsg(quitting, routeTickMsg{id: quitting.routing.id}); tick != nil {
+		t.Fatal("the tick re-armed for a check the user quit out of")
+	}
+
+	var out bytes.Buffer
+	flushRouteNotesAfterRun(final, &out)
+
+	if out.String() != routeUpdatedLine {
+		t.Fatalf("printed = %q, want the notes once and no waiting line (the wait was over)", out.String())
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" || len(stub.restoredAt) != 1 {
+		t.Fatalf("events = %q restoredAt = %q, want one wait and one restore", got, stub.restoredAt)
+	}
+}
+
+// signalWriter is a mutex-guarded buffer that closes first on its first
+// write, so a test can wait for a goroutine to have printed something.
+type signalWriter struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	once  sync.Once
+	first chan struct{}
+}
+
+func (w *signalWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.buf.Write(p)
+	w.once.Do(func() { close(w.first) })
+	return n, err
+}
+
+func (w *signalWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// TestQuitDuringRoutingSettlesAcrossGoroutines runs the path the other tests
+// only simulate: the routing command on its own goroutine, blocked in the
+// proxy wait, while Run()'s after-run flush settles the same check from
+// another. This is what really happens on ctrl+c, and it is the only test in
+// which -race can see the two sides. The wait is announced while it is still
+// blocked, the notes are printed exactly once, the wait and the restore each
+// ran once, and both callers got the same text.
+func TestQuitDuringRoutingSettlesAcrossGoroutines(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.ensureOutput, stub.waitOutput = routeUpdatedLine, "wt: LiteLLM proxy did not come back\n"
+	stub.waitEntered, stub.waitRelease = make(chan struct{}), make(chan struct{})
+	stubRouteNotes(t)
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	final, _ := updateMsg(routing, tea.KeyMsg{Type: tea.KeyCtrlC})
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("command = %T, want the routing batch", batch)
+	}
+
+	timeout := time.After(10 * time.Second)
+	await := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-timeout:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+
+	// The routing command, as the tea runtime runs it: on its own goroutine.
+	cmdDone := make(chan struct{})
+	var done tea.Msg
+	go func() {
+		defer close(cmdDone)
+		done = batch[0]()
+	}()
+	await(stub.waitEntered, "the routing command to reach the proxy wait")
+
+	// Run()'s flush, concurrently, while the restart is still in flight.
+	out := &signalWriter{first: make(chan struct{})}
+	flushDone := make(chan struct{})
+	go func() {
+		defer close(flushDone)
+		flushRouteNotesAfterRun(final, out)
+	}()
+	await(out.first, "the flush to announce the wait")
+	select {
+	case <-flushDone:
+		t.Fatal("the flush returned while the proxy restart was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(stub.waitRelease)
+	await(cmdDone, "the routing command")
+	await(flushDone, "the flush")
+
+	notes := routeUpdatedLine + "wt: LiteLLM proxy did not come back\n"
+	if got := out.String(); got != routeWaitingLine+notes {
+		t.Fatalf("printed = %q, want the waiting line and then the notes exactly once", got)
+	}
+	if msg, ok := done.(routeDoneMsg); !ok || msg.notes != notes {
+		t.Fatalf("routing command returned %#v, want the same notes", done)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want exactly one wait", got)
+	}
+	if len(stub.restoredAt) != 1 || stub.restoredAt[0] != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("restoredAt = %q, want the redirect taken off exactly once, after the wait", stub.restoredAt)
+	}
+}
+
+// TestResumePromptShowsTheRouteNote pins that the route check's note is on
+// screen at the resume prompt, where a launch with a prior session stops: the
+// prompt used to render only its choices, so the "updated" line or a route
+// warning was invisible until the user backed out. It covers a written route
+// (through the routing phase) and an unchanged write that warned, a resume
+// warning shown beside the note, and esc — which clears the rest of the status
+// but must keep the note on the picker, since the route was written whether or
+// not the launch goes ahead.
+func TestResumePromptShowsTheRouteNote(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		changed       bool
+		output        string
+		resumeWarning string
+		wantNote      string
+	}{
+		{name: "route written", changed: true, output: routeUpdatedLine, wantNote: "wt: LiteLLM route for omlx/qwen3.8 updated"},
+		{name: "route written, resume warned", changed: true, output: routeUpdatedLine, resumeWarning: "resume check was slow", wantNote: "wt: LiteLLM route for omlx/qwen3.8 updated"},
+		{name: "unchanged write warned", changed: false, output: "wt: LiteLLM route not updated: boom\n", wantNote: "wt: LiteLLM route not updated: boom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := launchRowFixture(t, "omlx/qwen3.8")
+			stub := stubEnsureRoute(t)
+			stub.changed, stub.ensureOutput = tc.changed, tc.output
+			stubRouteNotes(t)
+			prev := resumeSession
+			resumeSession = func(string, bool, string) (*session.Session, string) {
+				return &session.Session{ID: "ses_prev"}, tc.resumeWarning
+			}
+			t.Cleanup(func() { resumeSession = prev })
+
+			next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+			if tc.changed {
+				next, _ = updateMsg(next, routeDoneFrom(t, cmd))
+			}
+			if next.phase != phaseResume {
+				t.Fatalf("phase = %v, want the resume prompt", next.phase)
+			}
+
+			view := next.View()
+			if !strings.Contains(view, tc.wantNote) {
+				t.Errorf("resume view = %q, want it to show the route note %q", view, tc.wantNote)
+			}
+			if tc.resumeWarning != "" && !strings.Contains(view, tc.resumeWarning) {
+				t.Errorf("resume view = %q, want the resume warning %q beside the note", view, tc.resumeWarning)
+			}
+			if !strings.Contains(view, "Resume previous session?") {
+				t.Errorf("resume view = %q, want the prompt itself still rendered", view)
+			}
+
+			back, _ := updateMsg(next, tea.KeyMsg{Type: tea.KeyEsc})
+			if back.phase != phaseModel {
+				t.Fatalf("phase after esc = %v, want the picker", back.phase)
+			}
+			if back.status != tc.wantNote {
+				t.Errorf("status after esc = %q, want only the route note %q", back.status, tc.wantNote)
+			}
+			if picker := back.View(); !strings.Contains(picker, tc.wantNote) {
+				t.Errorf("picker view after esc = %q, want it to still show %q", picker, tc.wantNote)
+			}
+		})
+	}
+}
+
+// TestEscFromResumePromptStillClearsOtherStatus pins the other half of the esc
+// rule: with no route note, esc from the resume prompt clears the status as it
+// always did, and a note from an earlier launch attempt does not come back on
+// a later one that printed nothing. Stale text following the user between
+// screens is the bug the clearing exists to prevent.
+func TestEscFromResumePromptStillClearsOtherStatus(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.changed, stub.ensureOutput = false, "wt: LiteLLM route not updated: boom\n"
+	stubRouteNotes(t)
+	prev := resumeSession
+	resumeSession = func(string, bool, string) (*session.Session, string) {
+		return &session.Session{ID: "ses_prev"}, "resume check was slow"
+	}
+	t.Cleanup(func() { resumeSession = prev })
+
+	first, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	back, _ := updateMsg(first, tea.KeyMsg{Type: tea.KeyEsc})
+	if back.status != "wt: LiteLLM route not updated: boom" {
+		t.Fatalf("status after esc = %q, want the first attempt's note", back.status)
+	}
+
+	stub.ensureOutput = "" // the second attempt's check is silent
+	second, _ := updateMsg(back, tea.KeyMsg{Type: tea.KeyEnter})
+	if second.phase != phaseResume || second.status != "resume check was slow" {
+		t.Fatalf("phase = %v status = %q, want the resume prompt with only its own warning", second.phase, second.status)
+	}
+	back, _ = updateMsg(second, tea.KeyMsg{Type: tea.KeyEsc})
+	if back.status != "" {
+		t.Fatalf("status after esc = %q, want it cleared: no route note belongs to this attempt", back.status)
+	}
+}
+
+// TestRouteDoneSizesTheModelList pins that a window size arriving during the
+// routing phase reaches the picker's list when the phase ends. Update resizes
+// the list only in phaseModel, so without this a failed launch or a cancelled
+// resume after routing shows a picker laid out for the old size — or for no
+// size at all, when a -M pin built the list before the terminal reported one.
+func TestRouteDoneSizesTheModelList(t *testing.T) {
+	m, cmd, _ := routingFixture(t)
+
+	resized, _ := updateMsg(m, tea.WindowSizeMsg{Width: 120, Height: 50})
+	if resized.phase != phaseRouting {
+		t.Fatalf("phase = %v, want a resize to leave the routing phase alone", resized.phase)
+	}
+	next, _ := updateMsg(resized, routeDoneFrom(t, cmd))
+
+	if next.phase != phaseModel {
+		t.Fatalf("phase = %v, want the picker after the failed launch", next.phase)
+	}
+	if w, h := next.models.Width(), next.models.Height(); w != 118 || h != 48 {
+		t.Fatalf("model list = %dx%d, want 118x48 (the new window minus the picker's margin)", w, h)
+	}
+}
+
 // TestFlushRouteNotesAfterRunPrintsWhatIsLeft pins Run()'s flush for a launch
 // that never happened (the user backed out at the resume prompt, or quit from
 // the picker): notes recorded by a finished check are printed once the alt
-// screen is gone, exactly once.
+// screen is gone, exactly once — and with no "waiting" line, since no check is
+// in flight and there is nothing to wait for.
 func TestFlushRouteNotesAfterRunPrintsWhatIsLeft(t *testing.T) {
 	stubRouteNotes(t)
 	pendingRouteNotes = routeUpdatedLine
@@ -1331,6 +1613,9 @@ func TestRunAndWaitCmdPrintsRouteNotesAboveTheAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Registered before the swap, so even a panic inside runAndWaitCmd cannot
+	// leave the test process's stderr pointing at a closed pipe.
+	t.Cleanup(func() { os.Stderr = old })
 	os.Stderr = w
 	msg := runAndWaitCmd(exec.Command("sh", "-c", "echo agent-output >&2"), "shell", config.Model{})()
 	w.Close()

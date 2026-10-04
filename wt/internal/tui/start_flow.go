@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -56,6 +57,17 @@ type routingState struct {
 	// message was handled — otherwise the captured lines would be dropped and
 	// the redirect left in place.
 	settle func() string
+	// settled reports whether settle has finished, so Run() can tell a check
+	// it still has to wait for from one that is merely unhandled. It is read
+	// from another goroutine than the one settling, hence the atomic.
+	settled *atomic.Bool
+	// quitting is set once ctrl+c asked wt to quit. tea.Quit is a command:
+	// its QuitMsg comes back through the message channel, so the check's
+	// routeDoneMsg can still be delivered in between. A quitting check drops
+	// it — the user is leaving, and launching an agent now would also record
+	// rotation and refcount for a session they did not want. It mirrors
+	// startState.cancelling. The state itself is kept so Run() can settle.
+	quitting bool
 }
 
 type routeDoneMsg struct {
@@ -102,14 +114,12 @@ func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
 	restore := setRouteOutput(&captured)
 	if !ensure(m.cfg, mdl) {
 		restore()
-		// Two statements on purpose: recordRouteNotes writes m.status, and Go
-		// does not say whether a call's receiver is copied before or after its
-		// arguments are evaluated.
-		note := m.recordRouteNotes(captured.String())
-		return m.launchSelected(note)
+		m.recordRouteNotes(captured.String())
+		return m.launchSelected()
 	}
 	var once sync.Once
 	var notes string
+	settled := &atomic.Bool{}
 	settle := func() string {
 		once.Do(func() {
 			wait()
@@ -117,12 +127,13 @@ func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
 			// warnings to stderr, under the alt screen.
 			restore()
 			notes = captured.String()
+			settled.Store(true)
 		})
 		return notes
 	}
 	m.routeRun++
 	id := m.routeRun
-	m.routing = &routingState{id: id, modelID: mdl.ID, began: time.Now(), settle: settle}
+	m.routing = &routingState{id: id, modelID: mdl.ID, began: time.Now(), settle: settle, settled: settled}
 	m.phase = phaseRouting
 	m.status = ""
 	return m, tea.Batch(func() tea.Msg { return routeDoneMsg{id: id, notes: settle()} }, routeTick(id))
@@ -132,12 +143,12 @@ func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
 // the text to pendingRouteNotes, which is printed on the real terminal once the
 // alt screen is released, and puts the last non-empty line in the status line
 // for a user who lands on the resume prompt or back on the picker instead of
-// in the agent. It returns that line ("" when nothing was printed, in which
-// case the status is left alone) so launchSelected can keep it beside a resume
-// warning.
-func (m *model) recordRouteNotes(notes string) string {
+// in the agent. The same line is kept in m.routeNote, so launchSelected can
+// show it beside a resume warning and esc from the resume prompt can keep it.
+// A check that printed nothing leaves both alone.
+func (m *model) recordRouteNotes(notes string) {
 	if notes == "" {
-		return ""
+		return
 	}
 	pendingRouteNotes += notes
 	note := ""
@@ -147,18 +158,26 @@ func (m *model) recordRouteNotes(notes string) string {
 		}
 	}
 	if note != "" {
+		m.routeNote = note
 		m.status = note
 	}
-	return note
 }
 
 // handleRouteKey handles keys in phaseRouting. The route is already written
 // and the proxy restart cannot be called off, so there is nothing to cancel:
 // ctrl+c quits wt (Run() still collects the check's output on the way out) and
 // every other key is ignored — including esc and q, which elsewhere would quit
-// or pop back to a picker whose launch is still about to happen.
+// or pop back to a picker whose launch is still about to happen. ctrl+c also
+// marks the check as quitting, so its routeDoneMsg cannot launch an agent in
+// the gap before the QuitMsg is handled (see routingState.quitting).
 func (m model) handleRouteKey(msg tea.KeyMsg) (model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
+		// A copy, not a write through the pointer: Update returns a new model
+		// and must leave the one it was given as it found it. settle and
+		// settled are shared by the copy, which is what keeps them once-only.
+		quitting := *m.routing
+		quitting.quitting = true
+		m.routing = &quitting
 		return m, tea.Quit
 	}
 	return m, nil
@@ -167,24 +186,34 @@ func (m model) handleRouteKey(msg tea.KeyMsg) (model, tea.Cmd) {
 // handleRouteMsg processes the routing phase's messages. Its caller routes
 // only routeDoneMsg/routeTickMsg here. A message whose id does not match the
 // in-flight check, or that arrives outside phaseRouting, is stale and is
-// dropped: acting on it would launch an agent the user did not ask for.
+// dropped: acting on it would launch an agent the user did not ask for. So is
+// any message for a check the user quit out of (routingState.quitting); its
+// captured output is not lost, because Run() settles the check and prints it.
 func (m model) handleRouteMsg(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case routeTickMsg:
-		if m.routing == nil || m.phase != phaseRouting || msg.id != m.routing.id {
+		if m.routing == nil || m.phase != phaseRouting || msg.id != m.routing.id || m.routing.quitting {
 			return m, nil
 		}
 		return m, routeTick(msg.id)
 	case routeDoneMsg:
-		if m.routing == nil || m.phase != phaseRouting || msg.id != m.routing.id {
+		if m.routing == nil || m.phase != phaseRouting || msg.id != m.routing.id || m.routing.quitting {
 			return m, nil
 		}
 		m.routing = nil
 		// Back to the picker's phase first, as finishStart does: every way
 		// launchSelected can fail to launch returns to the model picker.
 		m.phase = phaseModel
-		note := m.recordRouteNotes(msg.notes)
-		return m.launchSelected(note)
+		// Update resizes the model list only in phaseModel, so a window size
+		// that arrived during routing — the first one, even, when a -M pin
+		// built the list before the terminal reported its size — never reached
+		// it. Size it now, or a failed launch or a cancelled resume would land
+		// on a mis-sized picker.
+		if m.width > 0 && m.height > 0 {
+			m.models.SetSize(m.width-2, m.height-2)
+		}
+		m.recordRouteNotes(msg.notes)
+		return m.launchSelected()
 	}
 	return m, nil
 }
