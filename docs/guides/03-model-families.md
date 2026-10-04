@@ -113,13 +113,14 @@ There is no TUI path to assign tags today. To make `wt -T`/tag rotation meaningf
 - `-F/--family` — model's `family` must equal one of the listed families (OR within the flag);
 - both set → AND;
 - neither set → **no filter** (the full agent-eligible catalog is listed);
+- a discovered local model (on disk, no registry entry) has no family or tags, so any `-T`/`-F` hides it; with no filter every on-disk model of a provider the agent supports is listed;
 - filter empties the list → picker status: `no models for agent "…" in tag "…" — edit your config`.
 
-(Verified in wt source: `internal/config/config.go`, `EligibleModels`.)
+(Verified in wt source: `internal/config/config.go`, `EligibleModels`; the discovered-model rule is `internal/catalog/catalog.go` `Build`, `Input.HideDiscovered`.)
 
 ### 4. How the `wt` picker derives its options
 
-`wt` picks worktree → agent → model from the joined catalog (registry-consumer design: `~/.config/local-ai/registry.toml` loaded **read-only** for Providers/Models, joined in memory with `~/.config/agent-wt/config.toml` for Agents + `default_tag`; a missing/malformed registry fails closed).
+`wt` picks worktree → agent → model from the joined catalog (registry-consumer design: `~/.config/local-ai/registry.toml` loaded **read-only** for Providers/Models, joined in memory with `~/.config/agent-wt/config.toml` for Agents + `default_tag`; a missing/malformed registry fails closed). Local rows come from wt's live inventory, not from the registry: a local entry only adds family, tags and cost to a model wt finds on disk or running, and an entry whose artifact is missing is not offered (see [02-providers-and-models](02-providers-and-models.md) Step 3).
 
 ```bash
 wt --help

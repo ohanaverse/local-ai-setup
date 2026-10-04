@@ -76,7 +76,7 @@ Unlike ollama/omlx, **`mlx_lm_server` has no baked-in default pairing** — you 
 
 ### 5. Route and use it
 
-The isolated pairing is live on port 8001; `wt litellm sync` (or the `modelman start` you'd use for a registered pairing) then adds its route, so it shows up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `modelman benchmark run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
+The isolated pairing is live on port 8001; provided the pairing is registered (Step 3 — `mlx_lm_server` is never discovered, so an unregistered pairing gets no row and no route), `wt litellm sync` (or the `modelman start` you'd use for a registered pairing) then adds its route, so it shows up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `modelman benchmark run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
 
 ## Verification
 

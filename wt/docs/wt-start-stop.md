@@ -25,8 +25,16 @@ wt stop <target> --yes           # skip the in-use confirmation
   `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
   first`.
 - No lifecycle backend (mlx_lm_server): exits 1 with the `modelman start`
-  hint; in the picker such a row is unselectable and shows the reason as a
-  notice.
+  hint. A stopped mlx_lm_server pairing is not listed in the picker, so
+  that message is reached only by naming the model.
+- A started model is routed under its registry id, or its discovered id
+  (`<family>/<artifact>`) when it has no registry entry; starting or
+  stopping an omlx/mtplx model clears that provider family's routes — the
+  family's registry-model rows and its wt-marked discovered rows — keeping
+  only the started model's own route on start. A hand-written row under
+  another name is never removed. A model that is already running gets no
+  route from `wt start` — run `wt litellm sync` if something else started
+  it.
 - Cloud or unknown id: exits 1.
 
 ## `wt stop [model|provider]`

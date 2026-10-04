@@ -19,7 +19,8 @@ wt smoke <model-id> --prompt "explain what 2+2 is"
 wt smoke <model-id> --json
 ```
 
-- `model-id` — a registry model id (`provider/name`). Omitted → interactive
+- `model-id` — a model id (`provider/name`): a registry id, or a discovered
+  model's id. Omitted → interactive
   picker over every currently eligible model (cloud, local and running, or
   local and idle — an idle pick is started first; blocked rows are
   unselectable), using the same decorated, sorted list (family,
@@ -45,13 +46,17 @@ An agent is eligible for a model when selecting it would launch or could
 launch after a start: the model's provider is in the agent's
 `supported_providers` and the row is a launch row (cloud, or a local model
 the live probe reports running) or a start row (an idle local model wt can
-start). Blocked rows — no lifecycle backend, or an unmapped cloud model wt
-cannot route — are excluded, and a
+start). Rows that cannot run — no lifecycle backend, or an unmapped cloud
+model whose route goes through LiteLLM — are excluded, and a
 local model that is not on disk has no row; passing either by id names the
 reason (not on disk, no lifecycle backend) as `wt start` does, while other ineligible ids (for
 example a model no agent supports) get a generic "cannot be smoke-tested"
 message
 (`smoke.Candidates` walks the same `catalog` rows a real launch consults).
+A discovered model (on disk, no registry entry) is eligible like any other:
+wt routes it under its discovered id when it starts it, so agents that go
+through LiteLLM can run it (one that something else started needs a
+`wt litellm sync` first).
 An idle pick is started first through the shared start driver, honouring
 the root `--replace` flag when another model occupies a single-model
 provider's slot.

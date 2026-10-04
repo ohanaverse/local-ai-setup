@@ -38,7 +38,7 @@ on/off state are owned by `wt` (see below):
 | File / setting | Purpose | Env override |
 |----------------|---------|------------|
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
-| `modelman.toml` | Per-machine mutable state: download markers and the `running` hint (also read by `wt`, read-only) | `MODELMAN_STATE` |
+| `modelman.toml` | Per-machine mutable state: download markers and the `running` hint (`wt` reads none of the per-model state — only `price_refresh_last_run` and the legacy `[litellm]` table, read-only) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 | LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`, and skips its route sync when the file is missing. Both resolve it the same way: `WT_LITELLM_CONFIG`, then legacy `MODELMAN_LITELLM_CONFIG`, then the default | `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`) |
 | LiteLLM proxy restart | Done by wt after a route change: `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | (wt-owned) |
@@ -136,8 +136,9 @@ size_bytes = 123456789
 running = false
 ```
 
-There is no `exposed` flag (removed in #179). What is configured in `registry.toml` is what gets
-routed: modelman ignores a legacy `exposed`/`litellm_exposed` key on read and
+There is no `exposed` flag (removed in #179). Every cloud model configured in
+`registry.toml` is routed, and a local model while it runs (Ollama: while it
+is pulled), with or without an entry: modelman ignores a legacy `exposed`/`litellm_exposed` key on read and
 drops it on the next save, and `wt` derives the actual routes from the registry
 plus live probes. To see what is routed, ask `wt litellm list`.
 
@@ -170,9 +171,9 @@ This file is optional — a fresh install starts with an empty store.
 modelman                        # open the TUI (model list)
 modelman sync                   # reconcile configured models against providers, then sync LiteLLM routes
 modelman litellm status|on|off|set   # passthroughs to `wt litellm ...`
-modelman start                  # list local models: registered+on-disk, registered-but-missing, discovered
+modelman start                  # list local models: registered+on-disk, registered-but-missing, discovered (each under its id, running ones marked)
 modelman start <model>          # start (and route) a local model — a registry entry or an on-disk artifact discovered by probe
-modelman stop <model-id>        # stop one local model (and drop its route)
+modelman stop <model-id>        # stop one local model — registry id or discovered id (its route goes too, except a pulled Ollama model's)
 modelman stop --all             # stop every running local model
 modelman provider isolate|stop|stop-all|restore|list   # low-level provider lifecycle (benchmark isolation)
 modelman refresh-prices         # refresh OpenRouter-priced models' per-token prices
@@ -182,8 +183,20 @@ modelman migrate                # one-time import of legacy config (see below)
 ```
 
 `start <model>` accepts a registry id, a model's provider-side name, or an
-on-disk artifact no registry entry claims (`<provider>/<name>` discovered
-id or bare artifact name) — started as-is, no registration needed. Several
+on-disk artifact no registry entry claims (its discovered id or bare artifact
+name) — started as-is, no registration needed. The discovered id is
+`<family>/<artifact>`: `ollama/<name:tag>`, `omlx/<model directory name>`,
+`mtplx/<org>/<name>` (MTPLX keeps the `/`). On a registry whose only
+omlx-family row is `omlx-6bit`, modelman cannot list or start unregistered
+omlx artifacts (wt still lists and routes them as `omlx/<dir>`) — add an
+`omlx` provider row, or start the model with `wt start`. It is the id wt lists and routes
+the model under, the id `modelman stop` takes, and the id `modelman start`
+with no argument prints in its `Discovered` section — with `(running)` beside
+a model modelman started that a live probe confirms. A registry entry for a
+local model is an optional overlay (family, tags, cost, `model_info`) on what
+is on disk; the convention for a new one is `id = "<provider family>/<model_name>"`
+(`omlx` for an `omlx-6bit` model)
+(see `../docs/guides/02-providers-and-models.md` Step 3). Several
 local models can run at once; oMLX, MTPLX and
 mlx_lm_server serve one model per process, so starting another model on one
 of them replaces its current model. `modelman provider isolate
@@ -201,7 +214,14 @@ The TUI has a single screen:
   artifact with no `registry.toml` entry shows up as an extra row with
   status `+`; pressing `enter`/`e` on it opens a registration dialog
   (Provider/Model prefilled and locked) instead of the normal edit
-  dialog, so you just pick a family to register it. LOC is an icon
+  dialog, so you just pick a family to register it — the explicit way to
+  give a discovered model an overlay; nothing registers one implicitly. The
+  `+` row shows RUNNING `●` while the model runs (started with
+  `modelman start <artifact>`; `s` does not act on a `+` row). Known
+  follow-up: this `+`-row form derives the new id with every `/` in the name
+  spelled `--` (`mtplx/org--name`), not the convention above, so an MTPLX
+  model registered from its `+` row gets an id that differs from its
+  discovered id (the `a` add form keeps the slash for MTPLX). LOC is an icon
   (↗ cloud / ▤ local / `—` when unknown), and
   RUNNING shows `●` for a local model modelman started (verified by a
   live probe when the TUI opens) and `-` otherwise; COST
@@ -274,9 +294,10 @@ reflexive `Enter` is never destructive.
 
 There is no expose/unexpose step. **What is configured is what is routed**
 (#179): `wt` reads `registry.toml` and the live providers and keeps
-`config.yaml` in step — cloud models always, a local model while it runs or,
-for Ollama, while it is pulled. modelman changes state and then asks wt to
-reconcile:
+`config.yaml` in step — configured cloud models always, a local model while
+it runs or, for Ollama, while it is pulled. A local model needs no registry
+entry for that: one with none is routed under its discovered id,
+`<family>/<artifact>`. modelman changes state and then asks wt to reconcile:
 
 ```bash
 wt litellm list      # what is routed right now — the authoritative answer
@@ -295,11 +316,13 @@ stderr and never fail the command.
 
 A route wt wrote carries a `model_info.wt_managed` marker, and a hand-written
 `model_list` entry (no marker, and a name that is not a registry id) is never
-touched by wt; `wt litellm list` marks those `(hand-written)`. Preview what a
+touched by wt — a discovered model's route never replaces one of the same
+name; `wt litellm list` marks those `(hand-written)`. Preview what a
 sync would change with `wt litellm sync --dry-run`. To stop routing a model,
-remove it from `registry.toml` (or, for a local model on a single-model
-provider, stop it — a pulled Ollama model stays routed) rather than editing
-`config.yaml`. Details: `../docs/guides/04-litellm-config.md` §2.
+remove a cloud model from `registry.toml`, or stop a local model (on a
+single-model provider; a pulled Ollama model stays routed until it is
+removed from Ollama) rather than editing `config.yaml` — deleting a local
+model's registry entry alone does not unroute it while it runs. Details: `../docs/guides/04-litellm-config.md` §2.
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
 (wt honors `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`). wt's
