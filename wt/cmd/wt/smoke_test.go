@@ -856,8 +856,8 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 	cmd := smokeCmd(&app{cfg: cfg})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var errOut bytes.Buffer
+	cmd.SetErr(&errOut)
 	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx", "--prompt", "say ok"})
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "interrupted") {
@@ -874,6 +874,11 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 	}
 	if picked {
 		t.Error("the stop picker was shown after an interrupt")
+	}
+	// An interrupt is not a usage mistake: the flag summary must not follow it.
+	// (cobra prints it to the command's out writer when one is set.)
+	if printed := out.String() + errOut.String(); strings.Contains(printed, "Usage:") {
+		t.Errorf("the usage text was printed after an interrupt:\n%s", printed)
 	}
 }
 
@@ -918,5 +923,26 @@ func TestSmokeCmdRemovesTheAgentStateDir(t *testing.T) {
 	}
 	if _, err := os.Stat(stateDir); err == nil {
 		t.Fatalf("claude's project directory %s was left behind", stateDir)
+	}
+}
+
+// TestSmokeInheritsTheRootCwdFlag pins the wiring the tests above assume:
+// smokeRowDirs registers a --cwd flag of its own, because a bare smokeCmd has
+// no parent, so on their own they would still pass if the root command lost
+// the flag — and `wt smoke --cwd` would then be an unknown-flag error.
+func TestSmokeInheritsTheRootCwdFlag(t *testing.T) {
+	sc, _, err := rootCmd().Find([]string{"smoke"})
+	if err != nil || sc.Name() != "smoke" {
+		t.Fatalf("no smoke command under the root command (err = %v)", err)
+	}
+	f := sc.InheritedFlags().Lookup("cwd")
+	if f == nil {
+		t.Fatal("wt smoke does not inherit --cwd from the root command")
+	}
+	if f.Value.Type() != "bool" {
+		t.Fatalf("--cwd is a %s flag, want bool: runSmoke reads it with GetBool", f.Value.Type())
+	}
+	if !strings.Contains(f.Usage, "current directory") {
+		t.Errorf("--cwd usage %q does not say what it does for wt smoke (runs in the current directory)", f.Usage)
 	}
 }

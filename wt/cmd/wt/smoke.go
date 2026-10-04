@@ -68,6 +68,8 @@ func smokeCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
+				// An interrupt is not a usage mistake: no flag summary after it.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted)
 				return err
 			}
 			if anyFail {
@@ -86,6 +88,9 @@ func smokeCmd(a *app) *cobra.Command {
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
 	return cmd
 }
+
+// errSmokeInterrupted is what runSmoke returns for a run Ctrl+C cut short.
+var errSmokeInterrupted = errors.New("interrupted")
 
 // smokeSignalCtx is a test seam over signal.NotifyContext, as startSignalCtx
 // is for the start step: the context the rows run under, cancelled by Ctrl+C
@@ -232,23 +237,25 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			}
 		}
 
-		rowDir, removeRowDir := cwd, func() {}
+		// The row's directory is made only once the agent is known to run:
+		// a row whose agent is not installed never pays for it or the sweep.
+		rowDir, removeRowDir := smoke.FixedDir(cwd), func() {}
 		if !inPlace {
 			// One directory per row, so one agent's leftovers cannot reach
 			// the next agent's run. A directory that cannot be created fails
-			// its own row: returning the error here would throw away the
-			// report of every row that has already run.
-			var dirErr error
-			if rowDir, removeRowDir, dirErr = smoke.NewRowDir(); dirErr != nil {
-				r := smoke.RowResult{Agent: agentName, Model: m.ID, Status: smoke.StatusFail, Err: dirErr}
-				logSmokeResult(stderr, r)
-				rows = append(rows, r)
-				continue
+			// its own row (RunRow reports the error): the rows that have
+			// already run are still reported.
+			rowDir = func() (string, error) {
+				dir, remove, err := smoke.NewRowDir()
+				if err != nil {
+					return "", err
+				}
+				removeRowDir = remove
+				// What the agent records about this directory in its own
+				// state (claude's project entry, pi's sessions) goes with it.
+				rowDirs = append(append(rowDirs, dir), smoke.AgentStateDirs(agentName, dir)...)
+				return dir, nil
 			}
-			rowDirs = append(rowDirs, rowDir)
-			// What the agent records about this directory in its own state
-			// (claude's project entry, pi's sessions) goes with it.
-			rowDirs = append(rowDirs, smoke.AgentStateDirs(agentName, rowDir)...)
 		}
 		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
 		removeRowDir()
@@ -269,7 +276,7 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
 	}
 	if interrupted && err == nil {
-		err = errors.New("interrupted")
+		err = errSmokeInterrupted
 	}
 	return anyFail, err
 }

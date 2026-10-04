@@ -246,7 +246,7 @@ func TestEligibilityIncludesDiscoveredUnderLitellm(t *testing.T) {
 func withStubBuildAndRun(t *testing.T, out execOutcome) {
 	t.Helper()
 	old := buildAndRun
-	buildAndRun = func(_ context.Context, _ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ ProfileApplier, cleanup *func() error) execOutcome {
+	buildAndRun = func(_ context.Context, _ *config.Config, _ string, _ config.Model, _ string, _ RowDir, _ time.Duration, _ ProfileApplier, cleanup *func() error) execOutcome {
 		*cleanup = func() error { return nil }
 		return out
 	}
@@ -257,7 +257,7 @@ func withStubBuildAndRun(t *testing.T, out execOutcome) {
 // output classifies PASS.
 func TestRunRowPass(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "before WT-SMOKE-claude-run-1 after"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v, want PASS (err=%v)", res.Status, res.Err)
 	}
@@ -268,7 +268,7 @@ func TestRunRowPass(t *testing.T) {
 // enough on its own when a sentinel was requested.
 func TestRunRowFailMissingSentinel(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "wrong output"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -278,7 +278,7 @@ func TestRunRowFailMissingSentinel(t *testing.T) {
 // regardless of what the output contains.
 func TestRunRowFailNonZeroExit(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 1, Output: "WT-SMOKE-claude-run-1"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -289,7 +289,7 @@ func TestRunRowFailNonZeroExit(t *testing.T) {
 // substring convention agents-smoke.sh's classifier uses.
 func TestRunRowSkipNotInstalled(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf("agent claude not installed")})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusSkip {
 		t.Fatalf("Status = %v, want SKIP", res.Status)
 	}
@@ -300,7 +300,7 @@ func TestRunRowSkipNotInstalled(t *testing.T) {
 // not SKIP — only the exact installed-check message means SKIP.
 func TestRunRowFailOtherStartErr(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf(`unknown provider "x" for model "y"`)})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -310,7 +310,7 @@ func TestRunRowFailOtherStartErr(t *testing.T) {
 // timeout-specific error, and never blocks on a hung process.
 func TestRunRowFailTimeout(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{TimedOut: true})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "timed out") {
 		t.Fatalf("Status = %v, Err = %v, want FAIL with a timeout error", res.Status, res.Err)
 	}
@@ -321,7 +321,7 @@ func TestRunRowFailTimeout(t *testing.T) {
 // the documented verification degradation for a custom prompt.
 func TestRunRowCustomPromptSkipsSentinelCheck(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "anything at all"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, FixedDir("."), nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v, want PASS (empty sentinel means exit-code-only)", res.Status)
 	}
@@ -353,7 +353,7 @@ func writeFakeAgentBinary(t *testing.T, name string) {
 func TestRealBuildAndRunOneShotArgsNilApplier(t *testing.T) {
 	writeFakeAgentBinary(t, "agy")
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if cleanup == nil {
 		t.Fatal("realBuildAndRun never set *cleanup")
 	}
@@ -377,7 +377,7 @@ func TestRealBuildAndRunOneShotArgsNilApplier(t *testing.T) {
 func TestRealBuildAndRunPassesYolo(t *testing.T) {
 	writeFakeAgentBinary(t, "copilot")
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), &config.Config{}, "copilot", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "copilot", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if !strings.HasSuffix(outcome.Command, "--yolo -p the prompt") {
 		t.Fatalf("Command = %q, want it to end with \"--yolo -p the prompt\" (yolo must be passed for one-shot copilot launches)", outcome.Command)
 	}
@@ -396,7 +396,7 @@ func TestRealBuildAndRunPassesYolo(t *testing.T) {
 func TestRealBuildAndRunSkipsYoloForCodex(t *testing.T) {
 	writeFakeAgentBinary(t, "codex")
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), &config.Config{}, "codex", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "codex", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if strings.Contains(outcome.Command, "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("Command = %q, want it to NOT contain codex's yolo flag (codex exec never prompts; forcing it only strips its sandbox)", outcome.Command)
 	}
@@ -415,7 +415,7 @@ func TestRealBuildAndRunSkipsYoloForCodex(t *testing.T) {
 func TestRealBuildAndRunOpencodeYolo(t *testing.T) {
 	writeFakeAgentBinary(t, "opencode")
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), &config.Config{}, "opencode", config.Model{Native: true}, "the prompt", t.TempDir(), 10*time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "opencode", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 10*time.Second, nil, &cleanup)
 	if !strings.HasSuffix(outcome.Command, "opencode --auto=true run the prompt") {
 		t.Fatalf("Command = %q, want it to end with \"opencode --auto=true run the prompt\"", outcome.Command)
 	}
@@ -434,7 +434,7 @@ func TestRealBuildAndRunOneShotArgsPlacedByApplier(t *testing.T) {
 		return func() error { cleanupCalled = true; return nil }, nil
 	}
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, applier, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, applier, &cleanup)
 	if !strings.HasSuffix(outcome.Command, "--extra -p the prompt") {
 		t.Fatalf("Command = %q, want the applier's own flag then oneShotArgs at the end", outcome.Command)
 	}
@@ -460,7 +460,7 @@ func TestRealBuildAndRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.
 		return func() error { return nil }, fmt.Errorf("boom")
 	}
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, applier, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, applier, &cleanup)
 	if strings.Contains(outcome.Command, "--partial") {
 		t.Fatalf("Command = %q, still contains the failed applier's partial mutation — revert did not happen", outcome.Command)
 	}
@@ -478,7 +478,7 @@ func TestRealBuildAndRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.
 func TestRunRowFailModelFallback(t *testing.T) {
 	const warn = `pi: model "ollama/x" not configured for pi, using default model`
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "WT-SMOKE-pi-run-1", ModelFallback: warn})
-	res := RunRow(context.Background(), &config.Config{}, "pi", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-pi-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "pi", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-pi-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL for a model fallback", res.Status)
 	}
@@ -529,7 +529,7 @@ func smokeDiscoveredOllama() config.Model {
 func TestRealBuildAndRunReportsModelFallback(t *testing.T) {
 	cfg := smokePiFixture(t, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[{"_launch":false,"id":"llama3.2:1b"}]}}}`)
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if cleanup == nil {
 		t.Fatal("realBuildAndRun never set *cleanup")
 	}
@@ -539,7 +539,7 @@ func TestRealBuildAndRunReportsModelFallback(t *testing.T) {
 	if outcome.Command != "" || outcome.StartErr != nil {
 		t.Fatalf("Command = %q, StartErr = %v, want the agent never started", outcome.Command, outcome.StartErr)
 	}
-	if res := RunRow(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", time.Second, t.TempDir(), nil); res.Status != StatusFail {
+	if res := RunRow(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusFail {
 		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
 	}
 }
@@ -552,14 +552,14 @@ func TestRealBuildAndRunReportsModelFallback(t *testing.T) {
 func TestRealBuildAndRunDiscoveredModelNoFallback(t *testing.T) {
 	cfg := smokePiFixture(t, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[]}}}`)
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", t.TempDir(), 10*time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", FixedDir(t.TempDir()), 10*time.Second, nil, &cleanup)
 	if outcome.ModelFallback != "" {
 		t.Fatalf("ModelFallback = %q, want none", outcome.ModelFallback)
 	}
 	if !strings.HasSuffix(outcome.Command, "--model ollama/llama3.2:1b -p the prompt") {
 		t.Fatalf("Command = %q, want it to end with \"--model ollama/llama3.2:1b -p the prompt\"", outcome.Command)
 	}
-	if res := RunRow(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, t.TempDir(), nil); res.Status != StatusPass {
+	if res := RunRow(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusPass {
 		t.Fatalf("RunRow Status = %v, want PASS (err=%v)", res.Status, res.Err)
 	}
 }
@@ -585,11 +585,11 @@ func TestRealBuildAndRunModelFallbackWithoutWarnStillFails(t *testing.T) {
 	t.Cleanup(agents.RegisterTest("silent-fallback", func() agents.Driver { return silentFallbackDriver{} }))
 	writeFakeAgentBinary(t, "silent-fallback")
 	var cleanup func() error
-	outcome := realBuildAndRun(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if outcome.ModelFallback == "" || outcome.Command != "" {
 		t.Fatalf("ModelFallback = %q, Command = %q, want a non-empty fallback reason and the agent never started", outcome.ModelFallback, outcome.Command)
 	}
-	if res := RunRow(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", "", time.Second, t.TempDir(), nil); res.Status != StatusFail {
+	if res := RunRow(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", "", time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusFail {
 		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
 	}
 }
@@ -709,7 +709,7 @@ func TestDefaultPrompt(t *testing.T) {
 func TestRunRowFailsOnPromptEcho(t *testing.T) {
 	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n{\"malformed\": tool call\n"})
-	res := RunRow(context.Background(), &config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL: the output holds only the echoed prompt", res.Status)
 	}
@@ -720,7 +720,7 @@ func TestRunRowFailsOnPromptEcho(t *testing.T) {
 func TestRunRowPassesOnTheConvertedReply(t *testing.T) {
 	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n" + sentinel + "\n"})
-	res := RunRow(context.Background(), &config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v (%v), want PASS", res.Status, res.Err)
 	}
@@ -933,7 +933,7 @@ func TestSweepRowDirsReportsWhatItCannotRemove(t *testing.T) {
 // cancelled run classifies FAIL with an interrupt-specific error.
 func TestRunRowFailInterrupted(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{Interrupted: true})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "interrupted") {
 		t.Fatalf("Status = %v, Err = %v, want FAIL with an interrupted error", res.Status, res.Err)
 	}
@@ -960,7 +960,7 @@ func TestRealBuildAndRunCancelKillsTheAgentGroup(t *testing.T) {
 	done := make(chan execOutcome, 1)
 	go func() {
 		var cleanup func() error
-		done <- realBuildAndRun(ctx, &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), 3*time.Second, nil, &cleanup)
+		done <- realBuildAndRun(ctx, &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 3*time.Second, nil, &cleanup)
 	}()
 
 	var pgid int
@@ -1064,7 +1064,7 @@ func TestRealBuildAndRunDropsInheritedGitEnv(t *testing.T) {
 	t.Setenv("GIT_INDEX_FILE", "/caller/.git/index")
 	t.Setenv("GIT_AUTHOR_NAME", "someone")
 	var cleanup func() error
-	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), 5*time.Second, nil, &cleanup)
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 5*time.Second, nil, &cleanup)
 	if out.StartErr != nil || out.ExitCode != 0 {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -1090,7 +1090,7 @@ func TestRealBuildAndRunWaitsForTheAgentGroup(t *testing.T) {
 	late := filepath.Join(t.TempDir(), "late")
 	fakeAgy(t, "(/bin/sleep 0.4; echo x > "+late+") >/dev/null 2>&1 &\nexit 0\n")
 	var cleanup func() error
-	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), 5*time.Second, nil, &cleanup)
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 5*time.Second, nil, &cleanup)
 	if out.StartErr != nil || out.ExitCode != 0 {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -1109,7 +1109,7 @@ func TestRealBuildAndRunKillsAGroupThatOutlivesTheAgent(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	fakeAgy(t, "echo $$ > "+pidFile+"\n/bin/sleep 30 >/dev/null 2>&1 &\nexit 0\n")
 	var cleanup func() error
-	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), 5*time.Second, nil, &cleanup)
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 5*time.Second, nil, &cleanup)
 	if out.StartErr != nil || out.ExitCode != 0 {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -1129,5 +1129,62 @@ func TestRealBuildAndRunKillsAGroupThatOutlivesTheAgent(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("process group %d is still alive after the row returned", pgid)
 		}
+	}
+}
+
+// TestRealBuildAndRunMakesNoDirForAnAgentThatCannotRun pins when a row's
+// directory is asked for: only once the agent is about to start. A row whose
+// agent is not installed (SKIP) or cannot select the model (FAIL) runs
+// nothing, so it must not cost a `git init` and a sweep at the end of the run.
+func TestRealBuildAndRunMakesNoDirForAnAgentThatCannotRun(t *testing.T) {
+	asked := 0
+	rowDir := func() (string, error) { asked++; return t.TempDir(), nil }
+	var cleanup func() error
+
+	t.Setenv("PATH", t.TempDir()) // agy is not installed
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", rowDir, time.Second, nil, &cleanup); out.StartErr == nil {
+		t.Fatalf("outcome = %+v, want a not-installed error", out)
+	}
+	if asked != 0 {
+		t.Errorf("a row whose agent is not installed asked for a directory")
+	}
+
+	t.Cleanup(agents.RegisterTest("silent-fallback", func() agents.Driver { return silentFallbackDriver{} }))
+	writeFakeAgentBinary(t, "silent-fallback")
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", rowDir, time.Second, nil, &cleanup); out.ModelFallback == "" {
+		t.Fatalf("outcome = %+v, want a model fallback", out)
+	}
+	if asked != 0 {
+		t.Errorf("a row whose agent fell back to its default model asked for a directory")
+	}
+
+	writeFakeAgentBinary(t, "agy")
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", rowDir, time.Second, nil, &cleanup); out.StartErr != nil {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if asked != 1 {
+		t.Errorf("a row that ran asked for a directory %d times, want 1", asked)
+	}
+}
+
+// TestRealBuildAndRunRunsTheAgentInTheRowDir pins that the directory the row
+// was given is the agent's working directory.
+func TestRealBuildAndRunRunsTheAgentInTheRowDir(t *testing.T) {
+	pwdFile := filepath.Join(t.TempDir(), "pwd")
+	fakeAgy(t, "/bin/pwd -P > "+pwdFile+"\n")
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cleanup func() error
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(dir), 5*time.Second, nil, &cleanup); out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	got, err := os.ReadFile(pwdFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != dir {
+		t.Fatalf("the agent ran in %q, want %q", strings.TrimSpace(string(got)), dir)
 	}
 }

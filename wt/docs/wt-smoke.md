@@ -110,7 +110,14 @@ An agent also records the directory it ran in within its own state: claude
 creates `~/.claude/projects/<dir>/` (transcript and memory), pi a session
 directory under `~/.pi/agent/sessions/`. For a temporary row directory the
 sweep removes those too. With `--cwd` they are your project's own and are
-left alone.
+left alone. codex, copilot and opencode keep no per-directory state; like any
+run of theirs, a row is recorded as one more session in their global history
+(codex's `~/.codex/sessions/` and databases, copilot's
+`~/.copilot/session-state/`, opencode's database), which `wt smoke` does not
+touch.
+
+A row that runs no agent — the agent is not installed, or cannot select the
+model — creates no directory at all.
 
 The agent and the `git init` do not inherit the variables that point git at a
 repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the like), so

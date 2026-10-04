@@ -70,7 +70,12 @@ func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
 // cannot assign this package's unexported buildAndRun. Tests only.
 func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome) (restore func()) {
 	old := buildAndRun
-	buildAndRun = func(_ context.Context, cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+	buildAndRun = func(_ context.Context, cfg *config.Config, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+		cwd, err := rowDir()
+		if err != nil {
+			*cleanup = func() error { return nil }
+			return execOutcome{StartErr: err}
+		}
 		return fn(cfg, agentName, m, prompt, cwd, timeout, profileApplier, cleanup)
 	}
 	return func() { buildAndRun = old }
@@ -206,6 +211,14 @@ type execOutcome struct {
 // test stubs (cmd/wt's smoke tests) that cannot access the unexported type.
 type ExecOutcome = execOutcome
 
+// RowDir yields the directory a row's agent runs in. It is a func so that the
+// directory is only made once the agent is known to run: a row whose agent is
+// not installed, or cannot select the model, never asks for it.
+type RowDir func() (string, error)
+
+// FixedDir is the RowDir for a directory that already exists.
+func FixedDir(dir string) RowDir { return func() (string, error) { return dir, nil } }
+
 // buildAndRun builds and runs one agent's one-shot launch command. It is a
 // package-level var so tests can stub it with canned outcomes, following
 // the seam pattern documented in wt/CLAUDE.md's Go Tests section.
@@ -285,7 +298,7 @@ func StubOutcome(output string, exitCode int) execOutcome {
 	return execOutcome{Output: output, ExitCode: exitCode}
 }
 
-func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
 	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
 	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
 	*cleanup = func() error { return nil }
@@ -303,7 +316,8 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 	// fixed sentinel prompt. That is why cmd/wt hands each row a fresh
 	// temporary directory (NewRowDir) unless --cwd was passed.
 	yolo := agentName != "codex"
-	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, yolo, nil, cfg, nil)
+	// Built with no directory: it is set below, once the agent is known to run.
+	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, "", yolo, nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}
@@ -326,6 +340,11 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 		return execOutcome{StartErr: fmt.Errorf("agent %q does not support one-shot invocation", agentName)}
 	}
 	oneShotArgs := osr.OneShotArgs(prompt)
+	// Only now: every return above is a row that runs no agent, and a
+	// directory made for it would be a `git init` and a sweep for nothing.
+	if cmd.Dir, err = rowDir(); err != nil {
+		return execOutcome{StartErr: err}
+	}
 
 	buf := &boundedWriter{}
 	cmd.Stdout = buf
@@ -440,10 +459,10 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 //
 // Cancelling ctx kills the agent's whole process group and fails the row as
 // interrupted.
-func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, cwd string, profileApplier ProfileApplier) RowResult {
+func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier) RowResult {
 	start := time.Now()
 	var cleanup func() error
-	out := buildAndRun(ctx, cfg, agentName, m, prompt, cwd, timeout, profileApplier, &cleanup)
+	out := buildAndRun(ctx, cfg, agentName, m, prompt, rowDir, timeout, profileApplier, &cleanup)
 	defer func() {
 		if cerr := cleanup(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)

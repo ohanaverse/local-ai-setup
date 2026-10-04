@@ -414,7 +414,7 @@ step 4).
 For GLM-5.3-Flash via OpenRouter:
 
 1. **Automated tests:** Use copilot and pi agents in litellm mode (both pass)
-2. **Manual testing:** claude via OpenRouter works with natural prompts in litellm mode (the FAIL is specific to the smoke test's echo-exactly prompt); codex works with its fallback-metadata warning; opencode needs the provider-list fix above first
+2. **Manual testing:** claude via OpenRouter works in both modes; codex works with its fallback-metadata warning; opencode needs the provider-list fix above first
 3. **Document limitations:** Note which agents have compatibility issues
 
 ### Success Criteria
