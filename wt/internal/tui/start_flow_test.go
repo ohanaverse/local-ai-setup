@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -1536,6 +1537,137 @@ func TestEscFromResumePromptStillClearsOtherStatus(t *testing.T) {
 	back, _ = updateMsg(second, tea.KeyMsg{Type: tea.KeyEsc})
 	if back.status != "" {
 		t.Fatalf("status after esc = %q, want it cleared: no route note belongs to this attempt", back.status)
+	}
+}
+
+// resumePromptFixture lands on the resume prompt for omlx/qwen3.8 in a window
+// of the given size, after a route check that printed output ("" for a silent
+// one) without changing config.yaml. A prior session always exists.
+func resumePromptFixture(t *testing.T, width, height int, output string) (model, *routeStub) {
+	t.Helper()
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	m.width, m.height = width, height
+	stub := stubEnsureRoute(t)
+	stub.changed, stub.ensureOutput = false, output
+	stubRouteNotes(t)
+	prev := resumeSession
+	resumeSession = func(string, bool, string) (*session.Session, string) {
+		return &session.Session{ID: "ses_prev"}, ""
+	}
+	t.Cleanup(func() { resumeSession = prev })
+	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if next.phase != phaseResume {
+		t.Fatalf("phase = %v, want the resume prompt", next.phase)
+	}
+	return next, stub
+}
+
+// TestResumeViewFitsTheTerminal pins that the resume prompt never renders more
+// lines than the terminal has, with or without a status line. Bubble Tea drops
+// lines from the top of a view that is too tall, and the status is the top
+// line: a view one line over shows the prompt and silently loses the route
+// note it was changed to show. Asserting on the View() string alone cannot see
+// that, so the line count is checked against the window height.
+func TestResumeViewFitsTheTerminal(t *testing.T) {
+	const note = "wt: LiteLLM route not updated: boom"
+	for _, height := range []int{12, 24, 50} {
+		for _, output := range []string{"", note + "\n"} {
+			m, _ := resumePromptFixture(t, 80, height, output)
+
+			view := m.View()
+
+			if got := lipgloss.Height(view); got > height {
+				t.Errorf("height %d, status %q: view is %d lines, want at most %d", height, m.status, got, height)
+			}
+			if !strings.Contains(view, "[enter] choose") {
+				t.Errorf("height %d: view = %q, want the key hint", height, view)
+			}
+			if output != "" && !strings.HasPrefix(view, ErrorStyle(m.theme).Render(note)+"\n") {
+				t.Errorf("height %d: view = %q, want the note as its first line", height, view)
+			}
+			if output == "" && strings.Contains(view, "wt: LiteLLM") {
+				t.Errorf("height %d: view = %q, want no note for a silent check", height, view)
+			}
+		}
+	}
+}
+
+// TestResumeViewFitsAfterResizeAndNewStatus pins the two ways the fit can
+// break while the prompt is already up: the window is resized, and a status
+// appears that was not there on entry (a launch from the prompt fails). In
+// both the list must be re-sized, or the top line — the status — is lost.
+func TestResumeViewFitsAfterResizeAndNewStatus(t *testing.T) {
+	const note = "wt: LiteLLM route not updated: boom"
+	m, _ := resumePromptFixture(t, 80, 24, note+"\n")
+	for _, height := range []int{12, 50, 24} {
+		resized, _ := updateMsg(m, tea.WindowSizeMsg{Width: 100, Height: height})
+		view := resized.View()
+		if got := lipgloss.Height(view); got > height {
+			t.Errorf("resized to %d: view is %d lines, want at most %d", height, got, height)
+		}
+		if !strings.Contains(view, note) {
+			t.Errorf("resized to %d: view = %q, want the note still shown", height, view)
+		}
+	}
+
+	// No status on entry; "Start fresh" (the default choice) then fails to
+	// launch, because the fixture's agent has no driver.
+	quiet, _ := resumePromptFixture(t, 80, 24, "")
+	if before := lipgloss.Height(quiet.View()); before > 24 {
+		t.Fatalf("view without a status is %d lines, want at most 24", before)
+	}
+	failed, _ := updateMsg(quiet, tea.KeyMsg{Type: tea.KeyEnter})
+	if failed.phase != phaseResume || !strings.Contains(failed.status, "launch failed") {
+		t.Fatalf("phase = %v status = %q, want a failed launch left on the resume prompt", failed.phase, failed.status)
+	}
+	view := failed.View()
+	if got := lipgloss.Height(view); got > 24 {
+		t.Errorf("view with the new status is %d lines, want at most 24", got)
+	}
+	if !strings.Contains(view, "launch failed") {
+		t.Errorf("view = %q, want the launch failure shown", view)
+	}
+}
+
+// TestLaunchAttemptStartsWithAClearStatus pins that nothing an earlier launch
+// attempt left in the status line shows up on a later attempt's screens. The
+// route note is kept across esc from the resume prompt, and the resume prompt
+// renders the status — so without a reset at the start of each attempt the
+// next prompt, for a different model or for the same one, would announce a
+// route update that did not happen on this launch.
+func TestLaunchAttemptStartsWithAClearStatus(t *testing.T) {
+	const note = "wt: LiteLLM route for omlx/qwen3.8 updated"
+	for name, nextRow := range map[string]string{
+		"another row":  "claude/opus",
+		"the same row": "omlx/qwen3.8",
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, stub := resumePromptFixture(t, 80, 24, routeUpdatedLine)
+			back, _ := updateMsg(first, tea.KeyMsg{Type: tea.KeyEsc})
+			if back.status != note {
+				t.Fatalf("status after esc = %q, want the first attempt's note", back.status)
+			}
+
+			// The second attempt: a silent check (or none, for the native
+			// row) and no resume warning.
+			stub.ensureOutput = ""
+			back.models.Select(indexOfID(back, nextRow))
+			second, _ := updateMsg(back, tea.KeyMsg{Type: tea.KeyEnter})
+
+			if second.phase != phaseResume || second.launchModel.ID != nextRow {
+				t.Fatalf("phase = %v launchModel = %s, want the resume prompt for %s", second.phase, second.launchModel.ID, nextRow)
+			}
+			if second.status != "" || second.routeNote != "" {
+				t.Fatalf("status = %q routeNote = %q, want both empty: the earlier attempt's note is stale", second.status, second.routeNote)
+			}
+			if view := second.View(); strings.Contains(view, "wt: LiteLLM") {
+				t.Fatalf("resume view = %q, want no route note from the earlier attempt", view)
+			}
+			again, _ := updateMsg(second, tea.KeyMsg{Type: tea.KeyEsc})
+			if again.status != "" {
+				t.Fatalf("status after the second esc = %q, want empty", again.status)
+			}
+		})
 	}
 }
 

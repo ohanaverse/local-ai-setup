@@ -132,7 +132,9 @@ type model struct {
 	// resume warning, and esc from the resume prompt — which clears the status
 	// so stale text does not follow the user back — puts it back, since the
 	// route was written whether or not the launch goes ahead. proceedToLaunch
-	// resets it, so it never outlives the attempt it belongs to.
+	// resets it together with m.status at the start of every launch attempt,
+	// so neither the field nor the text it put on screen outlives the attempt
+	// it belongs to.
 	routeNote string
 
 	// new-worktree prompt (this lesson)
@@ -235,7 +237,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.models.SetSize(msg.Width-2, msg.Height-2)
 		}
 		if m.phase == phaseResume {
-			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
+			m.sizeResumeList()
 		}
 		if m.phase == phaseReplaceConfirm {
 			m.replace.choices.SetSize(msg.Width-2, msg.Height-2)
@@ -557,6 +559,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
+							// The status line may have just appeared: make room.
+							m.sizeResumeList()
 							return m, nil
 						}
 						return m.launchAndRecord(cmd)
@@ -564,6 +568,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
+							// The status line may have just appeared: make room.
+							m.sizeResumeList()
 							return m, nil
 						}
 						return m.launchAndRecord(cmd)
@@ -677,9 +683,10 @@ func (m model) View() string {
 		body := m.resume.choices.View() + "\n[enter] choose   [esc] back"
 		// As phaseModelView does, and in the same style and place: the status
 		// here is the route check's note (and any resume warning), which the
-		// user would otherwise only see after backing out to the picker.
-		if m.status != "" {
-			body = ErrorStyle(m.theme).Render(m.status) + "\n\n" + body
+		// user would otherwise only see after backing out to the picker. The
+		// list was sized to leave room for it (sizeResumeList).
+		if status := m.resumeStatusBlock(); status != "" {
+			body = status + body
 		}
 		return body
 	}
@@ -1141,8 +1148,14 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// Capture the model so launchAndRecord records exactly this pick in
 	// both the no-session and resume paths, without re-reading the picker.
 	m.launchModel = highlighted.model
-	// A new attempt: a note left by an earlier one is not about this launch.
+	// A new attempt: a note left by an earlier one is not about this launch,
+	// and neither is whatever the status line still shows — the note esc kept
+	// from the last resume prompt, or an older error. The resume prompt and
+	// the picker both render m.status, so leaving it would put another
+	// model's route line on this attempt's screens. No caller sets a status
+	// just before calling this that is meant to survive it.
 	m.routeNote = ""
+	m.status = ""
 	// A launch row is a model that was already running, and wt may not be
 	// what started it, so its LiteLLM route may not exist yet. A row this
 	// flow just started (start is still set: the table is not rebuilt in
@@ -1200,7 +1213,31 @@ func (m model) launchSelected() (model, tea.Cmd) {
 	m.resume.session = sess
 	m.resume.choices = list.New(buildResumeChoices(sess), ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
+	// The status (a route note, a resume warning) is already set: leave room.
+	m.sizeResumeList()
 	return m, nil
+}
+
+// resumeStatusBlock is the status line as the resume prompt renders it above
+// its choices — the picker's style, followed by a blank line — or "" when
+// there is no status.
+func (m model) resumeStatusBlock() string {
+	if m.status == "" {
+		return ""
+	}
+	return ErrorStyle(m.theme).Render(m.status) + "\n\n"
+}
+
+// sizeResumeList sizes the resume prompt's list so the whole view fits the
+// terminal: the window minus the usual two-line margin (the key hint below the
+// list takes one of them) and minus the lines the status block takes when
+// there is one. Bubble Tea drops lines from the TOP of a view taller than the
+// terminal, and the status is the top line, so an unsized list would push off
+// screen exactly the line the block exists to show. It is called wherever the
+// window size or the presence of a status can change while this prompt is up:
+// on entry, on a resize, and when a failed launch sets a status.
+func (m *model) sizeResumeList() {
+	m.resume.choices.SetSize(m.width-2, m.height-2-strings.Count(m.resumeStatusBlock(), "\n"))
 }
 
 // launchAndRecord records the model as last-launched (so the next picker
