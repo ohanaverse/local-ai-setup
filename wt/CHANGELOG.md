@@ -147,6 +147,15 @@
   `litellm` pi provider keyed by its discovered id when routing through
   LiteLLM, or under the pi provider named after its registry provider keyed
   by the artifact name when direct (#179 Phase B).
+- opencode's skip-permissions flag is `--auto`. wt still passed
+  `--dangerously-skip-permissions`, which opencode 1.18 does not have, so
+  `wt --yolo -A opencode` and every opencode row of `wt smoke` (which forces
+  yolo) ended in opencode's usage text and exit 1. The interactive launch is
+  now `opencode --auto`, and smoke's one-shot is `opencode run --auto
+  <prompt>` — after the subcommand, because in front of it the flag swallows
+  `run`. Note `--auto` approves permissions that are "not explicitly denied":
+  unlike an unconditional skip, a permission the opencode config denies
+  stays denied.
 - `wt smoke` no longer reports PASS for an agent that fell back to a
   different model. A row whose driver could not select the model under test
   is FAIL (`<agent> fell back to its default model instead of <id>: …`) and

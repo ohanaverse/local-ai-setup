@@ -120,6 +120,16 @@ type OneShotRunner interface {
 	OneShotArgs(prompt string) []string
 }
 
+// OneShotYoloRunner is an optional capability for a OneShotRunner whose
+// skip-permissions flag must sit INSIDE its one-shot args rather than where
+// Build puts it (opencode: "run --auto <prompt>" — its flag in front of the
+// subcommand swallows the subcommand). When wt smoke wants yolo for such an
+// agent it builds the command with yolo off and appends OneShotYoloArgs
+// instead of OneShotArgs, so the flag appears exactly once.
+type OneShotYoloRunner interface {
+	OneShotYoloArgs(prompt string) []string
+}
+
 // InstructionPointer describes a single file created by `wt --init`.
 type InstructionPointer struct {
 	Path    string // relative to the repo root, e.g. "CLAUDE.md"

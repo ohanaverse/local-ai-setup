@@ -295,7 +295,14 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// in the current working directory (see docs/wt-smoke.md's
 	// "Tool-use permission" note): a --prompt override therefore runs
 	// unsupervised here too, not just the fixed sentinel prompt.
-	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, agentName != "codex", nil, cfg, nil)
+	//
+	// An agent whose yolo flag must sit inside its one-shot args
+	// (agents.OneShotYoloRunner — opencode's "run --auto <prompt>") is built
+	// with yolo off here and gets the flag from OneShotYoloArgs below.
+	yolo := agentName != "codex"
+	yoloRunner, yoloInOneShot := agents.ByName(agentName).(agents.OneShotYoloRunner)
+	yoloInOneShot = yoloInOneShot && yolo
+	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, yolo && !yoloInOneShot, nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}
@@ -311,6 +318,9 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		return execOutcome{StartErr: fmt.Errorf("agent %q does not support one-shot invocation", agentName)}
 	}
 	oneShotArgs := osr.OneShotArgs(prompt)
+	if yoloInOneShot {
+		oneShotArgs = yoloRunner.OneShotYoloArgs(prompt)
+	}
 
 	buf := &boundedWriter{}
 	cmd.Stdout = buf

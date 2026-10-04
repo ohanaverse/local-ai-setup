@@ -401,6 +401,22 @@ func TestRealBuildAndRunSkipsYoloForCodex(t *testing.T) {
 	}
 }
 
+// TestRealBuildAndRunOpencodeYoloFollowsRun pins the one-shot argv wt smoke
+// hands opencode: "run --auto <prompt>", the skip-permissions flag AFTER the
+// subcommand and exactly once. opencode declares "--auto" per command, so
+// "opencode --auto run <prompt>" parses "run" as the flag's value and falls
+// into the default (TUI) command; and the flag it replaced,
+// "--dangerously-skip-permissions", no longer exists at all — opencode
+// printed its usage and exited 1, failing the opencode row on every model.
+func TestRealBuildAndRunOpencodeYoloFollowsRun(t *testing.T) {
+	writeFakeAgentBinary(t, "opencode")
+	var cleanup func() error
+	outcome := realBuildAndRun(&config.Config{}, "opencode", config.Model{Native: true}, "the prompt", t.TempDir(), 10*time.Second, nil, &cleanup)
+	if !strings.HasSuffix(outcome.Command, "opencode run --auto the prompt") {
+		t.Fatalf("Command = %q, want it to end with \"opencode run --auto the prompt\"", outcome.Command)
+	}
+}
+
 // TestRealBuildAndRunOneShotArgsPlacedByApplier locks realBuildAndRun's
 // "profileApplier != nil, success" branch: the applier — not
 // realBuildAndRun — places oneShotArgs, and realBuildAndRun must adopt the

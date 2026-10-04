@@ -16,7 +16,18 @@ func init() { register("opencode", func() Driver { return opencodeDriver{} }) }
 
 type opencodeDriver struct{}
 
-func (opencodeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
+// YoloFlag is opencode's "--auto": "auto-approve permissions that are not
+// explicitly denied". Not an unconditional skip — a permission the user's
+// opencode config sets to "deny" stays denied. (opencode 1.18 has no
+// "--dangerously-skip-permissions"; passing it is a usage error, exit 1.)
+//
+// The flag is declared per command, not globally, so opencode's parser only
+// knows it is a boolean once the command is resolved: "opencode --auto run
+// <prompt>" takes "run" as the flag's VALUE and lands in the default (TUI)
+// command. Build therefore emits it leading only for the interactive launch
+// (where wt follows it with nothing or another flag), and the one-shot form
+// puts it after the subcommand — see OneShotYoloArgs.
+func (opencodeDriver) YoloFlag() string { return "--auto" }
 
 func (opencodeDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
 
@@ -133,3 +144,10 @@ const opencodeGatewayProviderID = "agent-wt"
 // OneShotArgs runs a single prompt non-interactively and exits — used by
 // wt smoke to verify a model works through this agent.
 func (opencodeDriver) OneShotArgs(prompt string) []string { return []string{"run", prompt} }
+
+// OneShotYoloArgs is the one-shot form with permissions auto-approved:
+// "run --auto <prompt>", the flag after the subcommand (see YoloFlag for why
+// it cannot precede it).
+func (opencodeDriver) OneShotYoloArgs(prompt string) []string {
+	return []string{"run", opencodeDriver{}.YoloFlag(), prompt}
+}

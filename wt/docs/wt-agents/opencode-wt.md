@@ -68,6 +68,12 @@ When LiteLLM routing is enabled (`wt litellm status`), the inline config declare
 
 The builtin `openai` provider is not usable for LiteLLM-routed models: opencode validates model ids against its own catalog ("Model not found"), and the models.dev openai path speaks the responses API, whose bridged stream opencode cannot map ("text part … not found"). opencode splits a model ref on the first slash, so `agent-wt/<id>` selects the wt provider while the registry id stays verbatim inside it. Explicit `models` + `small_model` are required: catalog-unknown ids are rejected, and opencode's default background model (`gpt-5-nano`) otherwise hits the proxy with a name it does not expose. Full rationale: [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
+## Permissions (`--yolo`)
+
+`wt --yolo -A opencode` launches `opencode --auto`. opencode describes `--auto` as "auto-approve permissions that are not explicitly denied": it is **not** an unconditional skip — a permission your opencode config sets to `deny` stays denied, and only what would otherwise prompt is approved. (opencode 1.18 has no `--dangerously-skip-permissions`; passing it prints the usage text and exits 1.)
+
+`--auto` is declared per opencode command, so it must not sit directly in front of a subcommand or a positional: `opencode --auto run <prompt>` parses `run` as the flag's value and falls into the default (TUI) command. wt therefore puts it first only for the interactive launch (`opencode --auto [--session <id>]`), and `wt smoke`'s one-shot is `opencode run --auto <prompt>`. A passthrough positional (`wt --yolo -A opencode -- <project-path>`) lands right behind the flag and is swallowed the same way — pass a flag first, or drop `--yolo` for that launch.
+
 ## Session resume
 
 `wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--session <id>` automatically.
