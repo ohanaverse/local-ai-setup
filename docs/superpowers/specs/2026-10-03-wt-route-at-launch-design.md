@@ -113,7 +113,12 @@ The `ActionLaunch` branch of `runStart` calls the ensure and `WaitPendingRoutes(
 
 One proxy restart when the route was missing. None otherwise: one locked read of `config.yaml`.
 
-In the TUI the wait runs on the update goroutine, so the screen stops updating for the length of a restart. The existing start flow behaves the same way, for the same reason (`wt/internal/tui/start_flow.go`).
+In the TUI the picker must not freeze during that restart, and the check's output must not be lost under the alt screen:
+
+- The write itself runs on the update goroutine. It is a fast locked read of `config.yaml`, plus a write when the route is missing.
+- When the write changed nothing, the launch continues at once with no extra screen.
+- When it changed the file, the picker enters a routing phase that shows `Updating the LiteLLM route for <id> — restarting the proxy (<elapsed>)`. The wait for the proxy runs in a command, and the launch continues when it finishes. The restart cannot be cancelled, so the only key is ctrl+c to quit.
+- Route output is captured while the picker owns the terminal (`lifecycle.SetRouteOutput`). It is printed on the real terminal when the agent takes it, or after wt exits if no launch happened, and its last line is shown in the picker's status line.
 
 ## Error handling
 
@@ -147,7 +152,8 @@ The launch always proceeds. A missing route then shows as the proxy's own error,
 
 **`internal/tui`**
 
-- `proceedToLaunch` calls the ensure for a running local row and waits before launching. It skips the other cases.
+- `proceedToLaunch` calls the ensure for a running local row. A changed write enters the routing phase and launches only after the wait; an unchanged one launches at once without waiting. It skips the other cases.
+- Captured route output reaches the status line and the post-release notes; keys other than ctrl+c are ignored while routing; a stale completion message is dropped.
 
 All through the existing seams (`applyRoutes`, `restartProxy`, `waitPendingRoutes`). No test starts a model or a proxy.
 
