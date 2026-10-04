@@ -553,7 +553,7 @@ def start(
     provider-side name, or the native name of a model a provider has on
     disk with no registry.toml entry — that one starts without being
     registered (#179 Phase B), and wt routes it under its discovered id
-    `<provider>/<name>`.
+    `<family>/<name>` (the id the no-arg listing prints).
 
     Omit model_id to print a live inventory: models registered and on
     disk, models registered but missing their artifact, and on-disk
@@ -582,11 +582,13 @@ def start(
                 typer.echo(f"  {model_id_str}")
             typer.echo()
         if inventory.discovered:
-            typer.echo("Discovered (not in registry.toml — `modelman start <name>` runs one):")
+            typer.echo("Discovered (not in registry.toml — `modelman start <id>` runs one):")
             for disc in inventory.discovered:
-                typer.echo(
-                    f"  {disc.provider_id}:{disc.variant_id}\t{format_size(disc.size_bytes)}"
-                )
+                # The discovered id, not `<provider row>:<name>`: it is what
+                # `modelman start` and `modelman stop` take.
+                marker = "*" if disc.running else " "
+                suffix = " (running)" if disc.running else ""
+                typer.echo(f"{marker} {disc.model_id}\t{format_size(disc.size_bytes)}{suffix}")
             typer.echo()
         _echo_inventory_caveats(inventory)
         typer.echo("Run `modelman start <model_id>` to start one.")
@@ -617,7 +619,11 @@ def start(
 
 @app.command()
 def stop(
-    model_id: str | None = typer.Argument(None, help="Registry model id to stop."),
+    model_id: str | None = typer.Argument(
+        None,
+        help="Id of the running model to stop: a registry id, or the discovered id "
+        "`<family>/<name>` of a model started without a registry entry.",
+    ),
     all_: bool = typer.Option(False, "--all", help="Stop every currently-running local model."),
 ) -> None:
     """Stop one running local model (by id), or every one of them with

@@ -1495,6 +1495,92 @@ async def test_register_discovered_model_persists_ready_state_to_disk(tmp_path, 
     assert model_state.size_bytes == 19_530_941_006
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_id", "variant_id", "discovered_id", "entry_id"),
+    [
+        # ollama/omlx: the registered id IS the discovered id, so the row the
+        # running flag lives on is the row the registration writes.
+        ("omlx", "Qwen3.8-27B-4bit", "omlx/Qwen3.8-27B-4bit", "omlx/Qwen3.8-27B-4bit"),
+        # mtplx: the registered id spells "/" as "--", so the flag sits on a
+        # DIFFERENT row and has to move with the model.
+        ("mtplx", "Org/Qwen-MTPLX", "mtplx/Org/Qwen-MTPLX", "mtplx/Org--Qwen-MTPLX"),
+    ],
+)
+async def test_register_discovered_model_keeps_the_running_flag(
+    tmp_path, monkeypatch, provider_id, variant_id, discovered_id, entry_id
+):
+    """#179 Phase B: `modelman start <artifact>` flags a model under its
+    discovered id with no registry entry. Registering that still-serving
+    model from its `+` row must not drop the flag: a whole-row
+    ModelState(ready=True, ...) write reset running to False, after which
+    the row showed RUNNING `-` and neither `modelman stop <id>` nor
+    `stop --all` could find the live process. Read back from disk."""
+    from modelman.local_control import DiscoveredModel
+    from modelman.screens import models as models_module
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(
+                id=provider_id, name=provider_id, auth=AuthConfig(type="none"), location="local"
+            )
+        ],
+        families=[FamilyEntry(name="qwen3.8")],
+        models=[],
+    )
+    save_registry(reg, reg_path)
+    store = StateStore()
+    store.set(discovered_id, ModelState(running=True))
+    save_state(store, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    discovered = DiscoveredModel(
+        provider_id=provider_id, variant_id=variant_id, path="/models/x", size_bytes=2048
+    )
+    monkeypatch.setattr(
+        models_module, "discover_unregistered_models", lambda registry, local_map=None: [discovered]
+    )
+    # The model is genuinely serving: the mount reconcile keeps its flag.
+    monkeypatch.setattr("modelman.local_control._probe_running", lambda *a, **k: True)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile+discover worker settle
+        assert load_state(state_path).get(discovered_id).running is True
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.move_cursor(row=mt.row_count - 1)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        app.screen.query_one("#save", Button).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert [m.id for m in app.screen.registry.models] == [entry_id]
+        in_memory = app.screen.state.get(entry_id)
+        assert in_memory.running is True and in_memory.ready is True
+
+    on_disk = load_state(state_path)
+    row = on_disk.get(entry_id)
+    assert row.running is True
+    assert row.ready is True
+    assert row.disk_path == "/models/x"
+    assert row.size_bytes == 2048
+    # Exactly one row carries the flag: a moved flag leaves no stale twin
+    # under the discovered id for stop --all / the occupant lookup to find.
+    assert [mid for mid, st in on_disk.models.items() if st.running] == [entry_id]
+    if discovered_id != entry_id:
+        assert discovered_id not in on_disk.models
+
+
 # --- pricing_updated_at preservation / refresh ---------------------------
 
 
