@@ -119,6 +119,10 @@ touch.
 A row that runs no agent — the agent is not installed, or cannot select the
 model — creates no directory at all.
 
+The agent's `PWD` is set to the row's directory along with its working
+directory. wt's own `PWD` names the directory you ran it from, and an agent
+that trusts `PWD` (opencode does) would otherwise run there.
+
 The agent and the `git init` do not inherit the variables that point git at a
 repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the like), so
 `wt smoke` run from a git hook, or from a shell that exports them, still keeps

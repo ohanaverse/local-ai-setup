@@ -413,18 +413,35 @@ func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exe
 		fmt.Fprintln(os.Stderr, lc.Warn)
 	}
 	cmd := exec.Command(bin, lc.Args...)
-	cmd.Dir = workdir
 	if len(lc.ClearEnv) > 0 {
 		cmd.Env = append(filterEnv(os.Environ(), lc.ClearEnv), lc.Env...)
 	} else {
 		cmd.Env = append(os.Environ(), lc.Env...)
 	}
+	SetDir(cmd, workdir)
 	return cmd, lc, nil
 }
 
 // filterEnv returns env with any entry whose key is in clear removed. It is
 // used to strip inherited gateway vars (e.g. ANTHROPIC_BASE_URL) before a
 // native launch, so the agent uses its own subscription rather than routing
+// SetDir makes dir the working directory cmd runs in, PWD included. cmd's
+// environment is inherited from wt, whose PWD names the caller's directory,
+// and os/exec only fills PWD in when the environment has none — so an agent
+// that trusts PWD over getcwd (opencode does) would open the caller's
+// directory instead of dir.
+func SetDir(cmd *exec.Cmd, dir string) {
+	cmd.Dir = dir
+	if dir == "" {
+		return
+	}
+	env := cmd.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	cmd.Env = append(filterEnv(env, []string{"PWD"}), "PWD="+dir)
+}
+
 // to a gateway a parent shell happened to export.
 func filterEnv(env, clear []string) []string {
 	drop := make(map[string]bool, len(clear))

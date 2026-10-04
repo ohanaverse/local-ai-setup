@@ -1188,3 +1188,37 @@ func TestRealBuildAndRunRunsTheAgentInTheRowDir(t *testing.T) {
 		t.Fatalf("the agent ran in %q, want %q", strings.TrimSpace(string(got)), dir)
 	}
 }
+
+// TestRealBuildAndRunSetsPWDToTheRowDir pins the isolation for an agent that
+// takes its directory from PWD: opencode ran its smoke row in the caller's
+// directory, permissions off, although the process's cwd was the row's
+// temporary one — the inherited PWD still named the caller's (#193).
+func TestRealBuildAndRunSetsPWDToTheRowDir(t *testing.T) {
+	writeFakeAgentBinary(t, "agy")
+	t.Setenv("PWD", "/stale/caller")
+	dir := t.TempDir()
+	// A shell script cannot report the PWD it was handed (sh corrects a
+	// wrong one on startup), so read the command the agent is started with.
+	var gotDir string
+	var pwd []string
+	applier := func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+		gotDir = cmd.Dir
+		for _, kv := range cmd.Env {
+			if strings.HasPrefix(kv, "PWD=") {
+				pwd = append(pwd, kv)
+			}
+		}
+		cmd.Args = append(cmd.Args, oneShotArgs...)
+		return func() error { return nil }, nil
+	}
+	var cleanup func() error
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(dir), 5*time.Second, applier, &cleanup); out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if gotDir != dir {
+		t.Fatalf("the agent's directory was %q, want the row directory %q", gotDir, dir)
+	}
+	if len(pwd) != 1 || pwd[0] != "PWD="+dir {
+		t.Fatalf("the agent's PWD entries were %v, want exactly PWD=%s", pwd, dir)
+	}
+}

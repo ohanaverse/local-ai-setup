@@ -342,9 +342,11 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 	oneShotArgs := osr.OneShotArgs(prompt)
 	// Only now: every return above is a row that runs no agent, and a
 	// directory made for it would be a `git init` and a sweep for nothing.
-	if cmd.Dir, err = rowDir(); err != nil {
+	dir, err := rowDir()
+	if err != nil {
 		return execOutcome{StartErr: err}
 	}
+	agents.SetDir(cmd, dir)
 
 	buf := &boundedWriter{}
 	cmd.Stdout = buf
