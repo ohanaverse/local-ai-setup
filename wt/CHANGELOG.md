@@ -148,16 +148,20 @@
   exact `local`, so such a family went unprobed, and `wt litellm sync` then
   removed its marked routes with no warning. Any location that is neither
   `local` nor `cloud` is now a registry gap like a missing one: the routes are
-  kept, and the warning names the value.
+  kept, and the warning names the value. That warning no longer needs a
+  discovered model's route to be present: a family whose only routes are its
+  registry models' own was kept with no warning at all.
 - `wt litellm sync`'s "could not be probed" warning says which registry gap
   it found — no location, an invalid location, or models with no provider
   entry — instead of "no resolvable location" for all of them (#195).
 - A stopped provider whose only routes belong to discovered models is warned
   about like any other when `wt litellm sync` removes those routes as stale;
   it used to remove them silently (#195).
-- A route removal that removed nothing is no longer reported. Stopping a
-  model on a single-model provider reported every registry model of that
-  provider as `unrouted`, whether or not it had a route (#195).
+- A route removal that removed nothing is no longer recorded as an outcome.
+  Stopping a model on a single-model provider recorded every registry model
+  of that provider as `unrouted` in the route writer's result, whether or not
+  it had a route (#195). Nothing printed those entries, so no command's output
+  changes.
 - Launching a running local model that wt did not start no longer fails with
   `Invalid model name` (#192). wt writes the model's LiteLLM route, if it is
   missing, before handing the model to an agent — on a `-M` pin, on rotation,

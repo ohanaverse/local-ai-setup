@@ -174,7 +174,6 @@ func TestRouteHooksRequestOnlyRealFamilies(t *testing.T) {
 		calls, _ := stubRoutes(t, litellm.Result{}, nil)
 		routeAfterStart(context.Background(), cfg, Target{ProviderID: tc.provider, ModelName: tc.model}, false)
 		routeAfterStop(context.Background(), cfg, tc.provider)
-		routeAfterStop(context.Background(), cfg, tc.provider) // a provider-wide stop
 		if len(*calls) == 0 {
 			t.Errorf("%s/%s: no route write recorded for the start", tc.provider, tc.model)
 			continue

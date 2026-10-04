@@ -34,7 +34,7 @@ func runRecheck(o Options) (fresh []string, ok bool) {
 	}
 }
 
-// Options tunes Apply/ApplyChange/Sync.
+// Options tunes ApplyChange/Sync.
 //   - Path    — config.yaml; "" means DefaultPath().
 //   - Restart — proxy restart hook; nil means Restart. Tests inject.
 //   - Ctx     — bounds the config.yaml lock wait; nil means no bound.
@@ -82,9 +82,10 @@ type Options struct {
 	ForceRestart bool
 }
 
-// Outcome is one id's result. Action is "routed" or "unrouted" (Apply and
-// ApplyChange) — Sync further splits "routed" into "adopted" and "rewritten"
-// where its plan says so; Err is set when the id was rejected.
+// Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
+// — Sync further splits "routed" into "adopted" and "rewritten" where its
+// plan says so; Err is set when the id was rejected. A removal that removed no
+// row has no outcome.
 type Outcome struct {
 	ID     string
 	Action string
@@ -262,8 +263,8 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 		var rm []plannedRemove
 		seen := map[string]bool{}
 		drop := func(id string, markedOnly bool) {
-			// "" names no row: a caller with no model name to give (a
-			// provider-wide stop) must not plan a removal for it.
+			// "" names no row. It must not reach removeRows, which would
+			// match it against every marked row that has no model_name.
 			if id == "" || adding[id] || seen[id] {
 				return
 			}
@@ -327,9 +328,10 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (
 			}
 			// A removal that removed nothing is not an outcome. A family clear
 			// names every registry local model of the family, routed or not;
-			// reporting each as "unrouted" told the user — and modelman, which
-			// reads these outcomes — that routes were removed that never
-			// existed (#195).
+			// recording each as "unrouted" made the Result claim routes were
+			// removed that never existed (#195). Sync's removals come from the
+			// rows themselves, so its report — what `wt litellm sync` prints
+			// and modelman reads — never held one.
 			if removed {
 				res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unrouted"})
 			}

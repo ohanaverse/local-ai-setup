@@ -543,9 +543,11 @@ func TestSyncDiscoveredIDNeverStandsInForARegistryModel(t *testing.T) {
 // TestApplyChangeReportsOnlyRowsItRemoved pins #195: a removal that removes
 // nothing is not an outcome. A family clear names every registry local model
 // of the family, routed or not, and used to report each as "unrouted" — so a
-// stop on a provider whose models were never routed claimed to have unrouted
-// them, in `wt litellm … --json` and to modelman, which reads it. An empty id
-// in Remove (a caller with no model name to give) was reported the same way.
+// stop on a provider whose models were never routed claimed, in its Result,
+// to have unrouted them. Nothing prints those outcomes today (the lifecycle
+// hook reads only the failures), but a Result that lists removals which never
+// happened misleads the first caller that does. An empty id in Remove was
+// reported the same way.
 func TestApplyChangeReportsOnlyRowsItRemoved(t *testing.T) {
 	const body = `model_list:
   - model_name: mtplx/org/live

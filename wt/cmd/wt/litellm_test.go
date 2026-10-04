@@ -1430,6 +1430,12 @@ litellm_settings:
 	badLocation := litellmTestConfig()
 	badLocation.Providers = append(badLocation.Providers, config.Provider{ID: "omlx", Location: "Local", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
 	badLocation.Models = append(badLocation.Models, reg)
+	// The typo can sit on the model instead: its provider row is sound (and
+	// not local, so the family still goes unprobed), and the model's own
+	// location override is the gap to repair.
+	badModelLocation := litellmTestConfig()
+	badModelLocation.Providers = append(badModelLocation.Providers, config.Provider{ID: "omlx", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
+	badModelLocation.Models = append(badModelLocation.Models, config.Model{ID: "omlx/reg", ProviderID: "omlx", ModelName: "reg", Location: "Local"})
 	// Each cause is named in its own words (#195): "no resolvable location"
 	// sent a user whose provider row was simply missing to look for a
 	// location to fix.
@@ -1442,6 +1448,7 @@ litellm_settings:
 		{"provider row without a location", noLocation, `provider "omlx" could not be probed (its registry entry has no location)` + tail},
 		{"providers empty", noProviders, `provider "omlx" could not be probed (the registry has models for it but no provider entry)` + tail},
 		{"provider row with a mistyped location", badLocation, `provider "omlx" could not be probed (its registry entry has location "Local"; expected "local" or "cloud")` + tail},
+		{"model with a mistyped location of its own", badModelLocation, `provider "omlx" could not be probed (model "omlx/reg" has location "Local"; expected "local" or "cloud")` + tail},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := tc.want
@@ -1480,6 +1487,59 @@ litellm_settings:
 			}
 			if got, wantRows := f.Rows(), []litellm.RowInfo{{ID: "omlx/org/live", Managed: true}, {ID: "omlx/reg", Managed: true}}; !slices.Equal(got, wantRows) {
 				t.Errorf("rows = %v, want %v", got, wantRows)
+			}
+		})
+	}
+}
+
+// TestLitellmSyncWarnsWhenAGapFamilyHasOnlyRegistryRoutes pins that the
+// registry-gap warning does not depend on a discovered route being present
+// (#195). The usual shape of the gap is a provider row with a missing or
+// mistyped location and nothing in config.yaml but its registry models' own
+// routes. Those rows are kept — and RowFamily answers "" for them, since
+// their location does not resolve to "local" — so the family was frozen with
+// no warning at all: a route that never follows a start or a stop again, and
+// nothing telling the user to repair the registry.
+func TestLitellmSyncWarnsWhenAGapFamilyHasOnlyRegistryRoutes(t *testing.T) {
+	const body = `model_list:
+  - model_name: omlx/reg
+    litellm_params: {model: openai/reg, api_base: http://localhost:8000/v1, api_key: not-needed, use_chat_completions_api: true}
+    model_info: {wt_managed: true}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	const tail = "; its model routes were left unchanged"
+	for _, tc := range []struct {
+		name     string
+		location config.Location
+		want     string
+	}{
+		{"no location", "", `provider "omlx" could not be probed (its registry entry has no location)` + tail},
+		{"mistyped location", "Local", `provider "omlx" could not be probed (its registry entry has location "Local"; expected "local" or "cloud")` + tail},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := litellmEnv(t, body)
+			cfg := litellmTestConfig()
+			cfg.Providers = append(cfg.Providers, config.Provider{ID: "omlx", Location: tc.location, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
+			cfg.Models = append(cfg.Models, config.Model{ID: "omlx/reg", ProviderID: "omlx", ModelName: "reg"})
+			stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+			for _, dryRun := range []bool{true, false} {
+				var out, errOut bytes.Buffer
+				if err := runLitellmSync(&out, &errOut, cfg, true, dryRun); err != nil {
+					t.Fatalf("dryRun=%v: %v (stderr %q)", dryRun, err, errOut.String())
+				}
+				var doc struct{ Warnings []string }
+				if err := json.Unmarshal(out.Bytes(), &doc); err != nil || !slices.Equal(doc.Warnings, []string{tc.want}) {
+					t.Errorf("dryRun=%v: stdout %q (%v), want only the warning %q", dryRun, out.String(), err, tc.want)
+				}
+			}
+			f, err := litellm.Open(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := f.Rows(), []litellm.RowInfo{{ID: "omlx/reg", Managed: true}}; !slices.Equal(got, want) {
+				t.Errorf("rows = %v, want the gap model's route kept %v", got, want)
 			}
 		})
 	}
