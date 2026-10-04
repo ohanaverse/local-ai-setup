@@ -43,10 +43,11 @@
   again when the artifact goes. Known gap: a local model started outside wt
   has no route until a sync runs, and `wt start` on an already-running
   model writes none.
-- Starting or stopping a model on a single-model provider (omlx, mtplx)
-  clears every wt-marked route of that provider family — discovered
-  siblings included — plus the rows of the family's registry models, not
-  just the sibling registry ids (#179 Phase B). Hand-written rows are still
+- Starting a model on a single-model provider (omlx, mtplx) clears every
+  other wt-marked route of that provider family (the started model's route
+  is kept), and stopping one clears them all — discovered siblings
+  included, plus the rows of the family's registry models, not just the
+  sibling registry ids (#179 Phase B). Hand-written rows are still
   never removed.
 - `wt litellm sync` freezes every route of a local provider family it cannot
   vouch for — its discovered routes as well as its registry ids — when the
@@ -147,7 +148,8 @@
   1 and point to `wt litellm sync`, so a script calling them fails instead of
   silently doing nothing.
 - The model picker's EXPOSED column (#179). Every configured native, cloud and
-  local model is in the catalog; whether a model is routed is
+  local model is in the catalog (local: see the Phase B entry above — a row
+  needs the model on disk or running); whether a model is routed is
   `wt litellm list`.
 - Reading modelman's per-model state from `modelman.toml` (#179): first the
   `exposed` / legacy `litellm_exposed` keys, then (Phase B) `ready` and

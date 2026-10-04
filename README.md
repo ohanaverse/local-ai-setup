@@ -19,7 +19,7 @@ The how-to lives in the guides now; this README is just the index. Read
 |---|---|
 | [`00-config-map.md`](docs/guides/00-config-map.md) | which tool owns, writes, reads each config file |
 | [`01-initial-setup.md`](docs/guides/01-initial-setup.md) | fresh-machine install; smoke-test the stack |
-| [`02-providers-and-models.md`](docs/guides/02-providers-and-models.md) | register and download providers and models — a configured model is routed |
+| [`02-providers-and-models.md`](docs/guides/02-providers-and-models.md) | register and download providers and models — a configured cloud model is routed, a local model while it runs |
 | [`03-model-families.md`](docs/guides/03-model-families.md) | families, tags, and wt model rotation |
 | [`04-litellm-config.md`](docs/guides/04-litellm-config.md) | audit proxy config, `wt litellm sync` routing, admin UI |
 | [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated modelman benchmark runs |

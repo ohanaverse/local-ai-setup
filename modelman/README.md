@@ -38,7 +38,7 @@ on/off state are owned by `wt` (see below):
 | File / setting | Purpose | Env override |
 |----------------|---------|------------|
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
-| `modelman.toml` | Per-machine mutable state: download markers and the `running` hint (also read by `wt`, read-only) | `MODELMAN_STATE` |
+| `modelman.toml` | Per-machine mutable state: download markers and the `running` hint (`wt` reads none of the per-model state — only `price_refresh_last_run` and the legacy `[litellm]` table, read-only) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 | LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`, and skips its route sync when the file is missing. Both resolve it the same way: `WT_LITELLM_CONFIG`, then legacy `MODELMAN_LITELLM_CONFIG`, then the default | `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`) |
 | LiteLLM proxy restart | Done by wt after a route change: `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | (wt-owned) |
@@ -136,8 +136,9 @@ size_bytes = 123456789
 running = false
 ```
 
-There is no `exposed` flag (removed in #179). What is configured in `registry.toml` is what gets
-routed: modelman ignores a legacy `exposed`/`litellm_exposed` key on read and
+There is no `exposed` flag (removed in #179). Every cloud model configured in
+`registry.toml` is routed, and a local model while it runs (Ollama: while it
+is pulled), with or without an entry: modelman ignores a legacy `exposed`/`litellm_exposed` key on read and
 drops it on the next save, and `wt` derives the actual routes from the registry
 plus live probes. To see what is routed, ask `wt litellm list`.
 
@@ -184,14 +185,17 @@ modelman migrate                # one-time import of legacy config (see below)
 `start <model>` accepts a registry id, a model's provider-side name, or an
 on-disk artifact no registry entry claims (its discovered id or bare artifact
 name) — started as-is, no registration needed. The discovered id is
-`<family>/<artifact>`: `ollama/<name:tag>`, `omlx/<model directory name>`
-(`omlx` also for an artifact found through an `omlx-6bit` row — one server),
-`mtplx/<org>/<name>` (MTPLX keeps the `/`). It is the id wt lists and routes
+`<family>/<artifact>`: `ollama/<name:tag>`, `omlx/<model directory name>`,
+`mtplx/<org>/<name>` (MTPLX keeps the `/`). On a registry whose only
+omlx-family row is `omlx-6bit`, modelman cannot list or start unregistered
+omlx artifacts (wt still lists and routes them as `omlx/<dir>`) — add an
+`omlx` provider row, or start the model with `wt start`. It is the id wt lists and routes
 the model under, the id `modelman stop` takes, and the id `modelman start`
 with no argument prints in its `Discovered` section — with `(running)` beside
 a model modelman started that a live probe confirms. A registry entry for a
 local model is an optional overlay (family, tags, cost, `model_info`) on what
-is on disk; the convention for a new one is `id = "<provider>/<model_name>"`
+is on disk; the convention for a new one is `id = "<provider family>/<model_name>"`
+(`omlx` for an `omlx-6bit` model)
 (see `../docs/guides/02-providers-and-models.md` Step 3). Several
 local models can run at once; oMLX, MTPLX and
 mlx_lm_server serve one model per process, so starting another model on one
@@ -214,9 +218,10 @@ The TUI has a single screen:
   give a discovered model an overlay; nothing registers one implicitly. The
   `+` row shows RUNNING `●` while the model runs (started with
   `modelman start <artifact>`; `s` does not act on a `+` row). Known
-  follow-up: the form derives the new id with every `/` in the name spelled
-  `--` (`mtplx/org--name`), not the `<provider>/<model_name>` convention, so
-  a registered MTPLX model's id differs from its discovered id. LOC is an icon
+  follow-up: this `+`-row form derives the new id with every `/` in the name
+  spelled `--` (`mtplx/org--name`), not the convention above, so an MTPLX
+  model registered from its `+` row gets an id that differs from its
+  discovered id (the `a` add form keeps the slash for MTPLX). LOC is an icon
   (↗ cloud / ▤ local / `—` when unknown), and
   RUNNING shows `●` for a local model modelman started (verified by a
   live probe when the TUI opens) and `-` otherwise; COST

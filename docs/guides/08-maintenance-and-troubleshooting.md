@@ -240,7 +240,7 @@ uv run modelman start <model-id>   # any local provider; for omlx/mtplx `wt star
 
 A model with no registry entry is routed the same way, under its discovered id `<family>/<artifact>` (`wt litellm sync --dry-run` lists it as `<id>: would route`). A `(hand-written)` row in `wt litellm list` whose name equals a discovered model's id (an alias you wrote before #179, say) keeps serving that name: wt never replaces it, so delete the row from `config.yaml` if you want wt's marked row, then run `wt litellm sync`.
 
-**Step 10 — the model is running, wt offers it, and the launch fails with `Invalid model name`? Run `wt litellm sync`.** (Known gap, #179 Phase B.) A route is written when *wt* starts a model, or by a sync. A local model — registered or discovered — that something else started (the provider's own CLI or app — `ollama run`, say) with no sync since is `run` in wt's picker but has no row yet, and wt launches a running row without checking the route. With LiteLLM routing on, the agent then gets the proxy's `400 Invalid model name`:
+**Step 10 — the model is running, wt offers it, and the launch fails with `Invalid model name`? Run `wt litellm sync`.** (Known gap, #179 Phase B.) A route is written when *wt* starts a model, or by a sync. A local model — registered or discovered — that something else started (an omlx or mtplx model you loaded by hand with the provider's own CLI, say) with no sync since is `run` in wt's picker but has no row yet, and wt launches a running row without checking the route. With LiteLLM routing on, the agent then gets the proxy's `400 Invalid model name`:
 
 ```bash
 wt litellm list | grep -x '<model-id>'   # no line = no route
@@ -337,7 +337,7 @@ cd /Users/keith/github/ohanaverse/local-ai-setup/wt
 git pull && go build -o /Users/keith/.local/bin/wt ./cmd/wt
 ```
 
-Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and run `wt litellm sync --dry-run` before any modelman command triggers the first real sync.
+Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before any modelman command triggers the first real sync.
 
 Verify — `wt --version` ran live, 2026-08-29:
 

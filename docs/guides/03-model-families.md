@@ -116,7 +116,7 @@ There is no TUI path to assign tags today. To make `wt -T`/tag rotation meaningf
 - a discovered local model (on disk, no registry entry) has no family or tags, so any `-T`/`-F` hides it; with no filter every on-disk model of a provider the agent supports is listed;
 - filter empties the list → picker status: `no models for agent "…" in tag "…" — edit your config`.
 
-(Verified in wt source: `internal/config/config.go`, `EligibleModels`.)
+(Verified in wt source: `internal/config/config.go`, `EligibleModels`; the discovered-model rule is `internal/catalog/catalog.go` `Build`, `Input.HideDiscovered`.)
 
 ### 4. How the `wt` picker derives its options
 
