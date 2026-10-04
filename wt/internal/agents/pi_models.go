@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
@@ -159,14 +160,28 @@ func isDefaultOllamaAPIKey(apiKey string) bool {
 // bare entries would 400 through LiteLLM), and prunes the "ollama/…" entries
 // an older litellm-mode sync left under the ollama provider, which pi's
 // --model grammar can never launch.
-func syncModels(cfg *config.Config, path string, target config.Model) error {
+//
+// target — the model this launch is about to use — is synced exactly like a
+// registry model even when cfg.Models does not hold it (see syncedModels): a
+// discovered local model has no registry entry, and without its own entry
+// Build would fall back to pi's default model.
+//
+// r is the route this launch resolved for target, and it — not the LiteLLM
+// toggle alone — decides where target's entry goes, because Build looks the
+// model up by route. With the toggle off, a target whose provider shares no
+// protocol with pi is forced through LiteLLM anyway (r.Litellm): the direct
+// sync still runs for the registry models, and target additionally gets its
+// "litellm" entry plus the gateway endpoint (creating the file if need be).
+// The zero Route means "follow the toggle".
+func syncModels(cfg *config.Config, path string, target config.Model, r Route) error {
 	var f piModelsFile
 	data, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
-		// No catalog yet. In gateway mode, create one so pi routes through
-		// LiteLLM on first launch; in direct mode there is nothing to sync.
-		if !cfg.IsLitellm() {
+		// No catalog yet. When this launch goes through LiteLLM (the toggle,
+		// or a route forced there), create one so pi can select the model;
+		// in direct mode there is nothing to sync.
+		if !cfg.IsLitellm() && !r.Litellm {
 			return nil
 		}
 	case err != nil:
@@ -181,11 +196,24 @@ func syncModels(cfg *config.Config, path string, target config.Model) error {
 	}
 
 	mutated := false
-	if cfg.IsLitellm() {
-		mutated = syncLitellmProvider(cfg, f) || mutated
+	switch {
+	case cfg.IsLitellm():
+		mutated = syncLitellmProvider(cfg, f, syncedModels(cfg, target)) || mutated
 		mutated = revertOllamaProvider(cfg, f) || mutated
-	} else {
-		directMutated, err := syncDirectProviders(cfg, f, target)
+	case r.Litellm:
+		// Protocol-forced LiteLLM route in direct mode. The registry models
+		// sync direct as usual, but with no launch target: pi reaches this
+		// model through the proxy, which holds the provider's key itself,
+		// so the target provider's secret_ref must not be able to fail the
+		// launch, and a discovered target needs no direct entry.
+		directMutated, err := syncDirectProviders(cfg, f, cfg.Models, config.Model{})
+		if err != nil {
+			return err
+		}
+		mutated = directMutated || mutated
+		mutated = syncLitellmProvider(cfg, f, []config.Model{target}) || mutated
+	default:
+		directMutated, err := syncDirectProviders(cfg, f, syncedModels(cfg, target), target)
 		if err != nil {
 			return err
 		}
@@ -202,10 +230,35 @@ func syncModels(cfg *config.Config, path string, target config.Model) error {
 	return config.WriteFileAtomic(path, out, 0o644)
 }
 
+// syncedModels is the model set a sync writes entries for: every cfg model,
+// plus the launch target when the registry does not already cover it. A
+// discovered local model (on disk, no registry.toml entry — #179 Phase B) is
+// launchable and routed but absent from cfg.Models, so without this its
+// entry would never be written and pi would launch on its default model.
+// "Covered" means a cfg model with the same id (the litellm entry key) or
+// the same provider + provider-side name (the direct entry key). A native
+// target, one with no ModelName, and the zero Model add nothing — those
+// return cfg.Models itself, so the result is read-only. Adding the target
+// appends to a clone, never to cfg.Models' backing array.
+func syncedModels(cfg *config.Config, target config.Model) []config.Model {
+	if target.Native || target.ModelName == "" {
+		return cfg.Models
+	}
+	for _, m := range cfg.Models {
+		if m.ID == target.ID || (m.ProviderID == target.ProviderID && m.ModelName == target.ModelName) {
+			return cfg.Models
+		}
+	}
+	return append(slices.Clone(cfg.Models), target)
+}
+
 // syncLitellmProvider ensures provider "litellm" exists with the configured
-// gateway endpoint and one _launch entry per non-native cfg model, keyed by
-// full registry id. Existing entries are never removed or reordered.
-func syncLitellmProvider(cfg *config.Config, f piModelsFile) bool {
+// gateway endpoint and one _launch entry per non-native model in models (the
+// cfg models plus the launch target — see syncedModels — or the target alone
+// for a protocol-forced route in direct mode), keyed by full registry id (a discovered target's discovered id, which is the name wt
+// routes it under in LiteLLM). Existing entries are never removed or
+// reordered.
+func syncLitellmProvider(cfg *config.Config, f piModelsFile, models []config.Model) bool {
 	p := f.Providers[piLitellmProviderID]
 	mutated := false
 	if p.BaseURL != cfg.LitellmBaseURL()+"/v1" || p.APIKey != cfg.LitellmAPIKey() {
@@ -220,7 +273,7 @@ func syncLitellmProvider(cfg *config.Config, f piModelsFile) bool {
 	for _, m := range p.Models {
 		existing[m.ID] = true
 	}
-	for _, m := range cfg.Models {
+	for _, m := range models {
 		if m.Native || m.ModelName == "" {
 			continue
 		}
@@ -270,7 +323,9 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 	// registry id of a non-native cfg model. Only in gateway mode, where the
 	// replacement entries exist; a bare ModelName that coincides with any
 	// such id is never equal to its own registry key, so direct-mode-managed
-	// entries are never pruned.
+	// entries are never pruned. Deliberately walks cfg.Models, not
+	// syncedModels: a discovered launch target is not a registry model, so
+	// nothing it wrote under this provider is ever a prune candidate.
 	kept := p.Models[:0]
 	for _, m := range p.Models {
 		prune := false
@@ -325,10 +380,18 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 // providers fail in the same run, which one's warning prints first is
 // unspecified — harmless now that no such failure can abort the sync.
 //
+// synced is the set to write entries for — the cfg models plus the launch
+// target when the registry does not cover it (see syncedModels); a
+// discovered target lands in the block of its own registry provider, keyed
+// by its artifact name. It does NOT count as a model "wt would write" in the
+// ownership check above: that inference is about legacy (pre-marker) blocks,
+// and wt never wrote a discovered model's entry before it stamped _wtOwned,
+// so an unmarked block holding one is the user's.
+//
 // Returns whether anything changed.
-func syncDirectProviders(cfg *config.Config, f piModelsFile, target config.Model) (bool, error) {
+func syncDirectProviders(cfg *config.Config, f piModelsFile, synced []config.Model, target config.Model) (bool, error) {
 	byProvider := map[string][]config.Model{}
-	for _, m := range cfg.Models {
+	for _, m := range synced {
 		if m.Native || m.ModelName == "" {
 			continue
 		}
@@ -398,12 +461,16 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile, target config.Model
 			owned = p.WTOwned
 			if !owned {
 				// Legacy (pre-marker) block: fall back to requiring every
-				// model already in it to still be one wt would write for
-				// this provider today. See the piProvider.WTOwned doc
-				// comment for why this is fragile and the marker exists.
+				// model already in it to still be a registry model of this
+				// provider today (cfg.Models, not the synced set — see this
+				// function's doc comment for why a discovered target is
+				// left out). See the piProvider.WTOwned doc comment for why
+				// this is fragile and the marker exists.
 				wantedModelNames := make(map[string]bool, len(models))
-				for _, m := range models {
-					wantedModelNames[m.ModelName] = true
+				for _, m := range cfg.Models {
+					if m.ProviderID == providerID && !m.Native && m.ModelName != "" {
+						wantedModelNames[m.ModelName] = true
+					}
 				}
 				// A block with no existing models can't confirm ownership
 				// this way — an empty set is vacuously "all models match",

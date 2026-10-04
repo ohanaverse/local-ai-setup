@@ -19,6 +19,12 @@ type LaunchCmd struct {
 	Env      []string // extra env vars, merged over os.Environ() by the caller
 	ClearEnv []string // env var names stripped from the inherited environment
 	Warn     string   // printed to stderr by Command when non-empty
+	// ModelFallback reports that the driver could not select the requested
+	// model and the agent will run on its OWN default model instead (Warn
+	// says why). A real launch warns and continues; wt smoke fails the row,
+	// because the default model answers the smoke prompt just as well and
+	// would otherwise report a model it never exercised as PASS.
+	ModelFallback bool
 }
 
 // Route is an alias so drivers in this package can refer to config.Route
@@ -68,9 +74,11 @@ type Driver interface {
 // implementation can scope any per-provider, failure-prone work (e.g. pi's
 // exec: secret_ref resolution) to the provider actually being launched
 // instead of treating every registry provider as equally load-bearing for
-// this one launch.
+// this one launch. r is the route resolved for target — what Build is about
+// to receive — so the sync and Build agree on how the model is reached even
+// when the route differs from the LiteLLM toggle (a protocol-forced route).
 type Syncer interface {
-	SyncModels(cfg *config.Config, target config.Model) error
+	SyncModels(cfg *config.Config, target config.Model, r Route) error
 }
 
 // ArgSetter is an optional Driver capability: some agents (e.g. shell) need
@@ -310,9 +318,27 @@ func IsCommand(name string) bool {
 // appended to the agent's command. For agents implementing ArgSetter (e.g.
 // shell), the args are passed via SetArgs and not appended again.
 func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	cmd, _, err := BuildLaunchCmdInfo(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+	return cmd, err
+}
+
+// LaunchInfo is what a built launch says about itself beyond the exec.Cmd.
+type LaunchInfo struct {
+	// ModelFallback mirrors LaunchCmd.ModelFallback: the agent will run on
+	// its own default model, not the requested one. Warn is the driver's
+	// reason (already printed to stderr by Command).
+	ModelFallback bool
+	Warn          string
+}
+
+// BuildLaunchCmdInfo is BuildLaunchCmd plus the LaunchInfo of the command it
+// built. A real launch ignores the info (a fallback only warns); wt smoke
+// reads it to fail a row whose agent would answer on a different model.
+func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
+	var info LaunchInfo
 	d := ByName(agent)
 	if d == nil {
-		return nil, fmt.Errorf("unknown agent: %s", agent)
+		return nil, info, fmt.Errorf("unknown agent: %s", agent)
 	}
 	// Guard nil cfg (used by some command-level tests that only care
 	// about resume/session wiring). A nil config resolves as direct mode.
@@ -321,14 +347,14 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 	}
 	route, err := cfg.ResolveRoute(m, ProtocolsFor(agent))
 	if err != nil {
-		return nil, err
+		return nil, info, err
 	}
 	if route.Forced {
 		fmt.Fprintf(os.Stderr, "wt: %s requires LiteLLM for %s (no direct protocol overlap with provider %q) — routing through the proxy\n", agent, m.ID, route.ProviderID)
 	}
 	if s, ok := d.(Syncer); ok {
-		if err := s.SyncModels(cfg, m); err != nil {
-			return nil, err
+		if err := s.SyncModels(cfg, m, route); err != nil {
+			return nil, info, err
 		}
 	}
 	// If the driver consumes args itself (e.g. shell), hand them over and
@@ -337,10 +363,11 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 		as.SetArgs(extraArgs)
 		extraArgs = nil
 	}
-	cmd, err := Command(d, m, yolo, route, worktreePath)
+	cmd, lc, err := command(d, m, yolo, route, worktreePath)
 	if err != nil {
-		return nil, err
+		return nil, info, err
 	}
+	info = LaunchInfo{ModelFallback: lc.ModelFallback, Warn: lc.Warn}
 	// Append passthrough args for regular agents.
 	if len(extraArgs) > 0 {
 		cmd.Args = append(cmd.Args, extraArgs...)
@@ -354,16 +381,23 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 			cmd.Args = append(cmd.Args, r.ResumeFlag(), sess.ID)
 		}
 	}
-	return cmd, nil
+	return cmd, info, nil
 }
 
 // Command resolves the agent binary and returns an exec.Cmd ready to run in
 // workdir, with the driver's extra env merged over the inherited environment.
 func Command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, error) {
+	cmd, _, err := command(d, m, yolo, r, workdir)
+	return cmd, err
+}
+
+// command is Command plus the driver's LaunchCmd, so BuildLaunchCmdInfo can
+// report what the driver decided (ModelFallback) alongside the exec.Cmd.
+func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, LaunchCmd, error) {
 	lc := d.Build(m, yolo, r)
 	bin, err := exec.LookPath(lc.Bin)
 	if err != nil {
-		return nil, fmt.Errorf("agent %s not installed", lc.Bin)
+		return nil, lc, fmt.Errorf("agent %s not installed", lc.Bin)
 	}
 	if lc.Warn != "" {
 		fmt.Fprintln(os.Stderr, lc.Warn)
@@ -375,7 +409,7 @@ func Command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exe
 	} else {
 		cmd.Env = append(os.Environ(), lc.Env...)
 	}
-	return cmd, nil
+	return cmd, lc, nil
 }
 
 // filterEnv returns env with any entry whose key is in clear removed. It is

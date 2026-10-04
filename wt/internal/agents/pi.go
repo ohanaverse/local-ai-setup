@@ -19,14 +19,17 @@ func (piDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAI
 // SyncModels adds any non-native models from cfg that are missing from pi's
 // models.json, so rotation-selected models are always available to pi.
 // target is the model this launch is about to use (see Syncer's doc
-// comment) — syncDirectProviders uses it to decide which provider's
-// secret_ref failure, if any, should actually fail this launch.
-func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
+// comment): it is synced too even when cfg does not hold it (a discovered
+// local model has no registry entry), and syncDirectProviders uses it to
+// decide which provider's secret_ref failure, if any, should actually fail
+// this launch. r is target's resolved route — the same one Build gets — so
+// the entry is written where Build will look for it (see syncModels).
+func (piDriver) SyncModels(cfg *config.Config, target config.Model, r Route) error {
 	path, err := piModelsPath()
 	if err != nil {
 		return err
 	}
-	return syncModels(cfg, path, target)
+	return syncModels(cfg, path, target, r)
 }
 
 // Build passes --model only when the target model is present in pi's
@@ -37,7 +40,11 @@ func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
 // --model on the first slash, so a registry id under the "ollama" provider
 // could never be addressed and its bare form would be sent upstream (400 at
 // the gateway). When the entry is missing, Build falls back to pi's default
-// model and surfaces a warning.
+// model, surfaces a warning and sets ModelFallback (which wt smoke turns into
+// a FAIL). SyncModels writes the launch target's entry first, so this is left
+// for a direct route with no models.json yet (the sync creates the file only
+// for a LiteLLM route), a user-disabled entry (_launch: false), a provider
+// with no usable base_url/secret, or an unreadable models.json.
 func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {
@@ -46,6 +53,7 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	path, err := piModelsPath()
 	if err != nil {
 		lc.Warn = fmt.Sprintf("pi: cannot locate models.json (%v), using default model", err)
+		lc.ModelFallback = true
 		return lc
 	}
 	modelArg := r.ProviderID + "/" + r.ModelRef
@@ -60,6 +68,7 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		lc.Args = append(lc.Args, "--model", modelArg)
 	} else {
 		lc.Warn = fmt.Sprintf("pi: model %q not configured for pi, using default model", modelArg)
+		lc.ModelFallback = true
 	}
 	return lc
 }

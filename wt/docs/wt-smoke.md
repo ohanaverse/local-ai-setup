@@ -74,7 +74,11 @@ permission-denied response it may not recover from within the timeout
 subcommand already never prompts for approval, so it never had this
 failure mode, and its yolo flag
 (`--dangerously-bypass-approvals-and-sandbox`) would additionally strip
-its own sandbox for no benefit.
+its own sandbox for no benefit. opencode's flag is `--auto`, passed with
+its value attached (`opencode --auto=true run <prompt>` — a bare `--auto` in
+front of `run` would swallow the subcommand); it approves permissions that
+are "not explicitly denied", so a permission the opencode config sets to
+`deny` stays denied.
 
 **Cost:** the agent runs in the current working directory with permission
 checks bypassed — with the default sentinel prompt this is inert (the
@@ -138,6 +142,14 @@ $ wt smoke ollama/qwen3.8:27b-mlx
 
 `--json` emits `{"run_id", "model", "rows": [{"agent", "model", "status",
 "exit_code", "duration_ms", "command", "output", "error"}]}`.
+
+A row whose agent could not select the model under test and would run on
+its own default model instead is FAIL, with the error `<agent> fell back to
+its default model instead of <id>: <the driver's reason>`; the agent is not
+run (empty `command`). The default model would echo the sentinel just as
+well, so exit 0 plus the sentinel proves nothing there. Today only pi can
+fall back this way (see [pi-wt.md](wt-agents/pi-wt.md)); a real launch only
+warns.
 
 Exit code: `0` if every non-SKIP row PASSed, `1` if any row FAILed. SKIP
 (agent binary not installed) never affects the exit code.

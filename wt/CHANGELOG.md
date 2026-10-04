@@ -139,6 +139,43 @@
   gone since #179 Phase B: a model the provider answered for and does not
   have, and a non-running `mlx_lm_server` pairing, now have no row — see
   Changed and Removed.)
+- pi can launch a discovered local model (on disk, no registry entry). The
+  pre-launch sync of `~/.pi/agent/models.json` only wrote registry models, so
+  a discovered launch target had no entry and pi silently ran its own default
+  model instead (`pi: model "…" not configured for pi, using default model`).
+  The launch target is now synced like a registry model (so, as for one,
+  not in direct mode while pi has no `models.json` yet): under the
+  `litellm` pi provider keyed by its discovered id when routing through
+  LiteLLM, or under the pi provider named after its registry provider keyed
+  by the artifact name when direct (#179 Phase B). A hand-written pi provider
+  block holding that artifact stays the user's: the discovered target does
+  not count toward the legacy "wt wrote every model in this block" ownership
+  inference, so its `baseUrl`/`apiKey` are not resynced.
+- pi's sync follows the launch's resolved route, not the LiteLLM toggle
+  alone. With the toggle off, a model whose provider shares no protocol with
+  pi is forced through LiteLLM and looked up as `litellm/<id>`, but the sync
+  only wrote direct entries, so pi silently ran its default model. The forced
+  launch target now gets its `litellm` entry and the gateway endpoint
+  (creating `models.json` if needed), and that provider's own `secret_ref`
+  can no longer fail the launch — LiteLLM holds the key.
+- opencode's skip-permissions flag is `--auto`, passed as `--auto=true`. wt
+  still passed `--dangerously-skip-permissions`, which opencode 1.18 does not
+  have, so `wt --yolo -A opencode` and every opencode row of `wt smoke`
+  (which forces yolo) ended in opencode's usage text and exit 1. The value is
+  attached because a bare `--auto` in front of a subcommand swallows it
+  (`opencode --auto run …` starts the TUI in a directory named `run`); with
+  `=true` the flag leads every argv form — the interactive launch
+  (`opencode --auto=true`), smoke's one-shot (`opencode --auto=true run
+  <prompt>`) and a passthrough subcommand (`wt --yolo -A opencode -- run
+  <prompt>`). Note `--auto` approves permissions that are "not explicitly denied":
+  unlike an unconditional skip, a permission the opencode config denies
+  stays denied.
+- `wt smoke` no longer reports PASS for an agent that fell back to a
+  different model. A row whose driver could not select the model under test
+  is FAIL (`<agent> fell back to its default model instead of <id>: …`) and
+  the agent is not run — the default model echoes the sentinel just as well,
+  which is how the pi bug above passed smoke. A real launch still warns and
+  continues.
 
 ### Removed
 
