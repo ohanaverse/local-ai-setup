@@ -22,6 +22,38 @@
   writing path.
 - Stopping an ollama model no longer removes its LiteLLM route: a pulled
   model is still served on request (#179).
+- Local models are discovered, not configured (#179 Phase B). A local row in
+  the model picker, `wt start`, `wt smoke` and the non-TUI launch path now
+  comes only from what wt's live probes find on disk or running; a registry
+  entry is an optional overlay (family, tags, cost, `model_info`) matched to
+  a found model by provider family and `model_name`. A registry local model
+  that is not on disk is no longer listed (a failed probe still lists it, as
+  `unknown`, and a stopped `mlx_lm_server` pairing is not listed either);
+  pinning one (`-M`, `wt start`, `wt smoke`) says
+  `<id> is not on disk — pull or download it first`.
+- A local model with no registry entry is routed through LiteLLM like any
+  other (#179 Phase B), under its discovered id `<family>/<artifact>`
+  (`ollama/<name:tag>`, `omlx/<dir>`, `mtplx/<org>/<name>`): by the start
+  hook when wt starts it, and by `wt litellm sync` while it runs (an ollama
+  model while it is pulled). The row carries the marker and $0 pricing. A
+  discovered route never replaces a hand-written (unmarked) row of the same
+  name. **The first sync after upgrading adds a route for every pulled
+  ollama model and every running omlx/mtplx model that has no registry
+  entry** — additive, listed by `wt litellm sync --dry-run`, and removed
+  again when the artifact goes. Known gap: a local model started outside wt
+  has no route until a sync runs, and `wt start` on an already-running
+  model writes none.
+- Starting or stopping a model on a single-model provider (omlx, mtplx)
+  clears every wt-marked route of that provider family — discovered
+  siblings included — plus the rows of the family's registry models, not
+  just the sibling registry ids (#179 Phase B). Hand-written rows are still
+  never removed.
+- `wt litellm sync` freezes every route of a local provider family it cannot
+  vouch for — its discovered routes as well as its registry ids — when the
+  family's probe ran and was neither OK nor refused, or when the registry
+  references the family without a resolvable location (#179 Phase B). A
+  family the registry does not reference at all is not frozen: its leftover
+  marked routes are removed.
 - Stopping several models at once (the post-exit stop picker or `wt stop`)
   restarts the LiteLLM proxy once at the end instead of once per model (#142).
 - The post-session stale-pricing notice is no longer printed when no model
@@ -100,12 +132,13 @@
   `EligibleModels` instead of re-scanning the catalog to build a family-count
   map. (The map and its column are gone with the compact layout.)
 - A configured local model now reads `unknown` rather than `absent` when the
-  probe could not determine whether its artifact is present — a failed ollama
-  probe, or any non-running `mlx_lm_server` row, whose target+draft pairing is
-  not discoverable. `absent` is reserved for a provider that answered and does
-  not have the model. Previously a transient daemon hiccup made every configured
+  probe could not determine whether its artifact is present (a failed ollama
+  probe). Previously a transient daemon hiccup made every configured
   ollama model unlaunchable in the TUI even though the same model launched
-  fine through `-M` and the non-TUI path.
+  fine through `-M` and the non-TUI path. (The `absent` status itself is
+  gone since #179 Phase B: a model the provider answered for and does not
+  have, and a non-running `mlx_lm_server` pairing, now have no row — see
+  Changed and Removed.)
 
 ### Removed
 
@@ -116,9 +149,19 @@
 - The model picker's EXPOSED column (#179). Every configured native, cloud and
   local model is in the catalog; whether a model is routed is
   `wt litellm list`.
-- Reading modelman's `exposed` / legacy `litellm_exposed` keys from
-  `modelman.toml` (#179); wt reads only `ready` (and legacy `downloaded`)
-  from `[model_state]`.
+- Reading modelman's per-model state from `modelman.toml` (#179): first the
+  `exposed` / legacy `litellm_exposed` keys, then (Phase B) `ready` and
+  legacy `downloaded` too. wt now reads no `[model_state]` key at all — what
+  is on disk and what is running come from its live probes.
+- The ready gate (#179 Phase B): a local model is routed because a probe
+  found it running (or pulled, for ollama), never because modelman flagged
+  it downloaded.
+- The "not in LiteLLM" refusal for discovered models (#179 Phase B): an
+  unregistered local model is selectable with LiteLLM routing on, in the
+  picker, with `-M` and in `wt smoke`. The refusal remains for a cloud model
+  whose provider has no LiteLLM mapping.
+- The `absent` picker status and the unselectable "not on disk" row (#179
+  Phase B): a registry local model that is not on disk has no row.
 - The `d` keybinding in the model picker has been removed. Tag groups
   are now selected via the `-T` flag instead of an in-picker toggle.
 
