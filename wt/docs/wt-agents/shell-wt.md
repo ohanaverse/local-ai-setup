@@ -23,7 +23,7 @@ shell-wt -- rm --init
 # Skip picker, use/create a named worktree
 shell-wt -W my-feature -- make test
 
-# Run in current repo root (skip picker)
+# Run in the current directory (skip picker)
 shell-wt --cwd -- npm test
 ```
 
@@ -42,7 +42,7 @@ shell-wt --cwd -- npm test
 | Flag | Description |
 |------|-------------|
 | `-W <name>`, `--worktree <name>` | Use/create worktree for branch, skip worktree picker |
-| `--cwd` | Run in current repo root, skip worktree picker |
+| `--cwd` | Run in the current directory, skip worktree picker |
 | `--init` | Seed agent instruction files (AGENTS.md) and exit |
 | `--no-guard` | Remove main-branch commit guard |
 | `--check-guard` | Report guard status |

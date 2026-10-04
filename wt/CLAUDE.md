@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repo.
 
 The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. Three launch inputs:
 
-1. **Where** — `--cwd` (current repo root), `-W <name>` (named worktree), or the worktree picker.
+1. **Where** — `--cwd` (the current directory — the one launch that does not move to a checkout root), `-W <name>` (named worktree), or the worktree picker.
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
 3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (eligible models rotate on successive launches).
 
@@ -36,7 +36,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 | `--replace` | With `-M`, start the model even if it means stopping a running one |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
-| `--cwd` | Launch in the current repo root; skip the worktree picker |
+| `--cwd` | Launch in the current directory; skip the worktree picker. Session resume is looked up for that directory |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed AGENTS.md + pointer files, then exit |
 | `--version` | Print version and exit |
@@ -359,7 +359,7 @@ Run the Go test block above before any commit, then exercise the installed binar
 ```bash
 wt                                   # interactive TUI (needs TTY)
 wt -W my-feature -A claude           # named worktree + launch
-wt --cwd -A codex                    # current repo root
+wt --cwd -A codex                    # current directory
 claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files
 wt start [<id>] / wt stop [<id>|<provider>]   # local-model lifecycle (routes follow automatically)
