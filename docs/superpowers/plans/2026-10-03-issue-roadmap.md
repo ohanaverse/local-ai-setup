@@ -43,7 +43,7 @@ This roadmap fixes order and PR boundaries. It does not approve any milestone's 
 
 ### PR A1: ensure the route before a local launch
 
-- Before a local launch row is handed to the agent, and when its route goes through LiteLLM, write the same change the start hook writes: `lifecycle.StartRouteChange` → `litellm.ApplyChange`, then `lifecycle.WaitPendingRoutes()`.
+- Before a local launch row is handed to the agent, and when its route goes through LiteLLM, route the same model the start hook would (`lifecycle.StartRouteChange`'s `Add`, through `litellm.ApplyChange`), then `lifecycle.WaitPendingRoutes()`. Add-only: unlike the start hook it removes no route (decided in the spec).
 - Apply it on every launch path: the non-TUI launch (`resolveModelForLaunch` in `wt/cmd/wt/main.go`), the TUI launch (`wt/internal/tui/start_flow.go`), and `wt smoke`.
 - `wt start <running id>` repairs the route, and no longer only prints "already running".
 - Carry the row's model id in `lifecycle.Target`, so the route write uses the id the picker resolved and does not re-derive it through `litellm.ModelFor`'s fuzzy fallback. This also closes #195's "two artifacts name-matching one registry entry" item.

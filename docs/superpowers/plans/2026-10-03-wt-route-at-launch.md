@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-03-wt-route-at-launch-design.md`
 
+> **Superseded in one respect (2026-10-03, during execution).** Where this plan says the launch-time check writes "the same `litellm.Change` the start hook writes", or that a single-model provider's family is cleared (Architecture above; Task 2's first test and `EnsureRoute` comment; Task 3's "matching the start hook"; Task 5's guide-04 wording), the spec now wins: the check is **Add-only and never removes a route**. Task 2's review found that a family clear at launch has no occupancy guard and would delete a running sibling's route. The code, tests and docs follow the spec.
+
 ## Global Constraints
 
 - All work is in `wt/` plus docs. modelman is not touched.

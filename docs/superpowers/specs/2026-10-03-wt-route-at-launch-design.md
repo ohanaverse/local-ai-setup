@@ -140,7 +140,7 @@ The launch always proceeds. A missing route then shows as the proxy's own error,
 
 **`cmd/wt`**
 
-- `launchFilteredImpl` calls the ensure for a running local model routed through LiteLLM, and waits before `runAgentCmd`. It skips cloud, direct and command-agent launches, and a launch that just started the model.
+- `launchFilteredImpl` calls the ensure for a running local model routed through LiteLLM, and waits before `runAgentCmd`. It skips direct and command-agent launches; a cloud model is a no-op inside `EnsureModelRoute`. A pin that was just started is checked again (see Design), which changes nothing.
 - `runStart` on a running id calls the ensure and prints both lines.
 - `runSmoke` calls the ensure when the target is already running.
 - The existing test that pins `StartRouteChange` against sync's desired id (`wt/cmd/wt/litellm_test.go`) passes `ModelID` and still holds.
