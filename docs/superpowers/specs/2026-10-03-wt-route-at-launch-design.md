@@ -58,8 +58,10 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) (changed boo
 - For a single-model provider that change also clears the family's other routes, as the start hook does. Only one model of that family can be running, so its siblings' routes are stale.
 - `ApplyChange` already skips a discovered id that has a hand-written row. `EnsureRoute` adds no rule of its own.
 - A write failure prints the existing `wt: LiteLLM route not updated: …` warning and returns false. A missing `config.yaml` (LiteLLM not set up) stays silent, as today.
-- When it adds a route it prints one line on stderr: `wt: added LiteLLM route for <id>`. When the route was present it prints nothing.
+- When the write changed `config.yaml` it prints one line on stderr: `wt: LiteLLM route for <id> updated`. When nothing changed it prints nothing. The wording is "updated", not "added", because a change can also be the removal of a stale sibling route while the model's own route was already there.
 - It returns as soon as the file is written. The caller owes `WaitPendingRoutes()` before using the proxy.
+
+Callers use a thin wrapper, `EnsureModelRoute(cfg, model) bool`. It skips a model whose location is not local, bounds the `config.yaml` lock wait at 10s so a launch cannot hang behind another wt process, and builds the `Target` from the model.
 
 ### When callers invoke it
 
@@ -69,7 +71,11 @@ A caller invokes `EnsureRoute` only when all three hold:
 2. The probe reported it running. Every hand-off point already holds a row or a launchable list built from a probe.
 3. Its route for this agent resolves through LiteLLM (`cfg.ResolveRoute`).
 
-A cloud model, a direct route, a command agent, and routing switched off all skip the call. So does a launch that just ran `lifecycle.Start`, since the hook has already written the route.
+A cloud model, a direct route, a command agent, and routing switched off all skip the call.
+
+Condition 3 applies to agent launches. `wt start` and `wt smoke` have no single agent route to consult, so they call it unconditionally for a running local model, as the start hook does.
+
+A launch that just ran `lifecycle.Start` does not need the call, since the hook has already written the route. The TUI and `wt smoke` skip it there. The non-TUI launch cannot tell a just-started pin from a running one at its hand-off point, so it calls it anyway; that costs one read of `config.yaml` and changes nothing.
 
 Each caller then calls `WaitPendingRoutes()` before handing off. It costs nothing when no restart is pending.
 
@@ -101,7 +107,7 @@ The stop side (`routeRemove`) does not take a `Target` and is unchanged.
 
 ### `wt start <running id>`
 
-The `ActionLaunch` branch of `runStart` calls `EnsureRoute` and `WaitPendingRoutes()`, then prints `wt: <id> is already running`. The added-route line appears above it when a route was written. `wt start` has no agent, so condition 3 becomes: LiteLLM routing is enabled.
+The `ActionLaunch` branch of `runStart` calls the ensure and `WaitPendingRoutes()`, then prints `wt: <id> is already running`. The updated-route line appears above it when a route was written. The call is unconditional: `wt start` on an idle model writes the route whatever the routing toggle says, and on a running model it now matches.
 
 ### Cost
 
@@ -148,8 +154,8 @@ All through the existing seams (`applyRoutes`, `restartProxy`, `waitPendingRoute
 **Live**
 
 1. Start an omlx or mtplx model by hand. Confirm `wt litellm list` lacks it.
-2. `wt -M <id>` with an agent: the added-route line prints, and the agent gets a reply.
-3. Launch again: no added-route line, no proxy restart.
+2. `wt -M <id>` with an agent: the updated-route line prints, and the agent gets a reply.
+3. Launch again: no updated-route line, no proxy restart.
 4. `wt start <id>` on a running, unrouted model: route added.
 5. TUI picker launch of the same model. This step needs the user.
 
