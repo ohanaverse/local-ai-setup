@@ -251,7 +251,7 @@ size_bytes = 13958643712
 running = false
 ```
 
-A block like this with no line in the first grep means the model has no route. For a non-ollama local model that means it is downloaded but not running — or it was started outside wt and modelman and no sync has run since (`wt litellm sync` writes the row). For ollama it means the model is not *pulled* (a pulled one is routed whether or not it is loaded) or no sync has run since the pull — `wt litellm sync --dry-run` tells the two apart. `uv run modelman start ollama/gpt-oss:20b` fixes either — the start's own `wt litellm sync` writes the row. (A `ready = false` block means modelman does not have the artifact; on an ollama `:cloud` stub or a cloud provider, `ready` is permanently false by design.)
+A block like this with no line in the first grep means the model has no route. For a non-ollama local model that means it is downloaded but not running — or it was started outside wt and modelman and no sync has run since (`wt litellm sync` writes the row, and so does launching it through wt or `wt start <id>`). For ollama it means the model is not *pulled* (a pulled one is routed whether or not it is loaded) or no sync has run since the pull — `wt litellm sync --dry-run` tells the two apart. `uv run modelman start ollama/gpt-oss:20b` fixes either — the start's own `wt litellm sync` writes the row. (A `ready = false` block means modelman does not have the artifact; on an ollama `:cloud` stub or a cloud provider, `ready` is permanently false by design.)
 
 Registry-side probe for a newly added model (only applies after a TUI add — `sync` never adds model ids); expected output mirrors the Step-3 entry shape (the `id` line plus the 3 lines after it). Example (illustrative — your ids will differ):
 

@@ -40,9 +40,8 @@
   name. **The first sync after upgrading adds a route for every pulled
   ollama model and every running omlx/mtplx model that has no registry
   entry** — additive, listed by `wt litellm sync --dry-run`, and removed
-  again when the artifact goes. Known gap: a local model started outside wt
-  has no route until a sync runs, and `wt start` on an already-running
-  model writes none.
+  again when the artifact goes. A local model started outside wt has no
+  route until a sync runs or wt launches it (see Fixed, #192).
 - Starting a model on a single-model provider (omlx, mtplx) clears that
   provider family's routes — every wt-marked row (discovered siblings
   included) and the family's registry-model rows, marked or legacy-unmarked
@@ -127,6 +126,17 @@
 
 ### Fixed
 
+- Launching a running local model that wt did not start no longer fails with
+  `Invalid model name` (#192). wt writes the model's LiteLLM route, if it is
+  missing, before handing the model to an agent — on a `-M` pin, on rotation,
+  in the picker and in `wt smoke` — and `wt start <id>` on a running model now
+  repairs the route instead of only reporting `already running`. It prints
+  `wt: LiteLLM route for <id> updated` when it wrote one. A hand-written row
+  is never replaced, and nothing is written when the launch dials the provider
+  directly.
+- The start hook writes a model's route under the id the picker showed. An
+  artifact whose name resembles a registry model's (`org/name` beside `name`)
+  was routed under the registry model's id (#195).
 - The model picker (TUI) fetches the agent's full catalog once and filters it
   in place via `cfg.EligibleModelsIn`, sharing a single traversal with
   `EligibleModels` instead of re-scanning the catalog to build a family-count
