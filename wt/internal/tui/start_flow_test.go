@@ -1677,9 +1677,10 @@ func TestLaunchAttemptStartsWithAClearStatus(t *testing.T) {
 // of routing a failed launch after it shows a picker laid out for the old size
 // — or for no size at all, when a -M pin built the list before the terminal
 // reported one. The expected size is the picker's own, not the bare window's:
-// 120 columns minus the list's two-column margin, and 50 lines minus the six
-// the picker prints around the table (top and bottom margin, agent, tag, the
-// mode line, the key hints) and the two the "launch failed" status takes.
+// 120 columns minus the two columns of padding the picker puts on each side
+// of the table, and 50 lines minus the six the picker prints around the table
+// (top and bottom margin, agent, tag, the mode line, the key hints) and the
+// two the "launch failed" status takes.
 func TestRouteDoneSizesTheModelList(t *testing.T) {
 	m, cmd, _ := routingFixture(t)
 
@@ -1692,8 +1693,13 @@ func TestRouteDoneSizesTheModelList(t *testing.T) {
 	if next.phase != phaseModel || !strings.Contains(next.status, "launch failed") {
 		t.Fatalf("phase = %v status = %q, want the picker after the failed launch", next.phase, next.status)
 	}
-	if w, h := next.models.Width(), next.models.Height(); w != 118 || h != 42 {
-		t.Fatalf("model list = %dx%d, want 118x42 (50 lines minus six of chrome and two of status)", w, h)
+	if w, h := next.models.Width(), next.models.Height(); w != 116 || h != 42 {
+		t.Fatalf("model list = %dx%d, want 116x42 (120 columns minus four of padding; 50 lines minus six of chrome and two of status)", w, h)
+	}
+	for i, line := range strings.Split(next.View(), "\n") {
+		if got := lipgloss.Width(line); got > 120 {
+			t.Fatalf("picker line %d is %d columns, want at most the terminal's 120", i, got)
+		}
 	}
 	if got := lipgloss.Height(next.View()); got != 50 {
 		t.Fatalf("picker view is %d lines, want exactly the terminal's 50", got)

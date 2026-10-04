@@ -236,15 +236,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m, m.applyRefreshedTable(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		if m.ready {
-			m.list.SetSize(msg.Width-2, msg.Height-2)
-		}
-		// The agent picker, the model picker, the resume prompt and the ollama
-		// warning are sized by fitLists, from the lines each prints around its
-		// list.
-		if m.phase == phaseReplaceConfirm {
-			m.replace.choices.SetSize(msg.Width-2, msg.Height-2)
-		}
+		// Every list is sized by fitLists, from the lines and columns its
+		// screen prints around it.
 		if m.phase == phaseNewWorktree {
 			m.newInput.Width = msg.Width - 4
 		}
@@ -685,25 +678,25 @@ func (m model) View() string {
 		if m.width <= 0 || m.height <= 0 {
 			return "ollama availability warning (waiting for window size)"
 		}
-		return ollamaWarnFrame(m.ollamaWarnModel.View())
+		return m.choiceFrame()(m.ollamaWarnModel.View())
 	}
 	if m.phase == phaseStarting {
 		if m.width <= 0 || m.height <= 0 {
 			return "start progress (waiting for window size)"
 		}
-		return m.startingView()
+		return clip(m.startingView(), m.width)
 	}
 	if m.phase == phaseRouting {
 		if m.width <= 0 || m.height <= 0 {
 			return "route update (waiting for window size)"
 		}
-		return m.routingView()
+		return clip(m.routingView(), m.width)
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
 			return "replace confirm (waiting for window size)"
 		}
-		return m.replace.choices.View() + "\n[enter] choose   [esc] back"
+		return m.choiceFrame()(m.replace.choices.View())
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
@@ -720,16 +713,7 @@ func (m model) View() string {
 	if !m.ready {
 		return m.status
 	}
-	if m.listError != "" {
-		return ErrorStyle(m.theme).Render("error: "+m.listError) + "\n" + m.list.View()
-	}
-	// A pinned --agent that errors (config error, empty model catalog) sets
-	// m.status while staying on the worktree list; render it so the failure
-	// is visible instead of silently swallowed by the list view.
-	if m.status != "" {
-		return ErrorStyle(m.theme).Render(m.status) + "\n" + m.list.View()
-	}
-	return m.list.View()
+	return m.worktreeFrame()(m.list.View())
 }
 
 // launchCommand builds and runs a command (no model layer) — e.g. the shell

@@ -85,6 +85,6 @@ func buildAgentList(cfg *config.Config) []list.Item {
 // The picker list is built by selectedEntryMsg via buildAgentList and
 // stored on m.agentList; phaseAgentView only formats the surrounding chrome.
 func (m *model) phaseAgentView() string {
-	frame, _ := fitList(m.height, minChoiceListHeight, m.agentFrames()...)
+	frame, _, _ := m.frameFor(&m.agentList, m.agentFrames()...)
 	return frame(m.agentList.View())
 }

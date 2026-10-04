@@ -20,6 +20,14 @@
   `id<TAB>(hand-written)` and its `--json` gains `rows: [{id, managed}]`.
   A `config.yaml` whose `model_list` is not a list is refused on every
   writing path.
+- On a terminal too narrow for the whole model table, the model picker (and
+  the picker `wt start` and `wt smoke` use) now drops whole columns —
+  survey first, then usage (30D, 7D, 1D), cost, location and family — and
+  always keeps the model id, status and running columns. It used to let the
+  terminal cut the row mid-column, which on a long model id hid whether the
+  model was running. The filter still matches the dropped columns' text, and
+  widening the terminal brings the columns back. Only when the three kept
+  columns alone do not fit is a row cut at the edge.
 - Stopping an ollama model no longer removes its LiteLLM route: a pulled
   model is still served on request (#179).
 - Local models are discovered, not configured (#179 Phase B). A local row in
@@ -146,10 +154,17 @@
   the terminal UI drops a too-tall view's top lines, so the header and every
   status the picker set (a failed start, `cancelled`, a resume warning) were
   pushed off the top. The list is now sized to leave room for them, and
-  re-sized when a status appears or clears. The agent picker's `directory:`
-  line was lost the same way and is fixed the same way; the ollama
-  availability prompt now follows a window resize. A terminal too short for
-  the whole model picker gives up its blank margin, then the header.
+  re-sized when a status appears or clears, the list's help is expanded with
+  `?`, or the terminal is resized. The agent picker's `directory:` line was
+  lost the same way and is fixed the same way; the ollama availability prompt
+  now follows a window resize. A terminal too short for the whole model picker
+  gives up its blank margin, then the header, then the mode line and key
+  hints; the agent picker gives up its `directory:` line (below 14 lines when
+  a status is showing).
+- No picker screen is wider than the terminal. The model picker's table was
+  sized two columns past the right edge, and a long status line widened the
+  whole screen; lists are now sized to the columns their screen leaves, and
+  status lines, paths and key hints end at the edge.
 - The start hook writes a model's route under the id the picker showed. An
   artifact whose name resembles a registry model's (`org/name` beside `name`)
   was routed under the registry model's id (#195).

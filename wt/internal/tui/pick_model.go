@@ -28,6 +28,10 @@ type pickModel struct {
 	// notice is a one-line message under the list, set when Enter hits a
 	// blocked row and cleared on the next key.
 	notice string
+	// width is the terminal's, kept to clip the notice: a line wider than the
+	// terminal is cut at the edge anyway, and clipping it here keeps the view
+	// within the width the list was sized for.
+	width int
 }
 
 // newPickModel builds the picker's list from models via the same buildTable
@@ -74,7 +78,15 @@ func (m pickModel) Init() tea.Cmd { return nil }
 func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.list.SetSize(msg.Width-2, msg.Height-2)
+		m.width = msg.Width
+		// As the agent flow's picker does (layout.go): the widest list that
+		// draws within the terminal, the table columns that fit it, and the
+		// size told twice in case it changed the page count. The two spare
+		// lines leave room for the notice.
+		width, _ := listExtent(m.list, msg.Width)
+		fitTableColumns(&m.list, width)
+		m.list.SetSize(width, msg.Height-2)
+		m.list.SetSize(width, msg.Height-2)
 		return m, nil
 	case tea.KeyMsg:
 		m.notice = ""
@@ -114,7 +126,7 @@ func (m pickModel) View() string {
 	}
 	v := m.list.View()
 	if m.notice != "" {
-		v += "\n" + m.notice
+		v += "\n" + clip(m.notice, m.width)
 	}
 	return v
 }

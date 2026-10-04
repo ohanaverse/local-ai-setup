@@ -49,9 +49,17 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // picker honors it: the agent flow shows it on Enter, and the standalone
 // PickModel/PickStartModel (wt smoke, wt start) refuse to select a blocked
 // row and show it as a notice instead.
+//
+// line is always the FULL table's row, whatever the terminal's width: it is
+// what the filter matches, so a query for a family or a cost still finds its
+// row when that column is not drawn. What is drawn comes from cells through
+// cols, the layout the whole table shares (nil for an item built by hand, in
+// which case the full line is drawn).
 type modelItem struct {
 	model     config.Model
 	line      string
+	cells     [numCols]string
+	cols      *tableColumns
 	marked    bool
 	ref       int
 	exception string
@@ -89,7 +97,9 @@ func refColumn(ref int) string {
 }
 
 // FilterValue returns the full line so the list's built-in fuzzy filter
-// narrows by both family and ID. Deliberately excludes the marker prefix:
+// narrows by both family and ID — the full table's line, not the columns
+// drawn at the current width, so hiding a column on a narrow terminal does
+// not change what a query can find. Deliberately excludes the marker prefix:
 // the user never typed it, so it would only pollute match ranking.
 func (m modelItem) FilterValue() string { return m.line }
 
@@ -99,6 +109,9 @@ func (m modelItem) FilterValue() string { return m.line }
 func (m modelItem) Title() string {
 	prefix := refColumn(m.ref)
 	line := m.line
+	if m.cols != nil {
+		line = m.cols.line(m.cells)
+	}
 	if m.exception != "" {
 		line += " " + m.exception
 	}
@@ -148,6 +161,26 @@ func styleTableTitle(l *list.Model, theme themes.Theme) {
 	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
 }
 
+// tableItemPad is the left padding the list's delegate puts before a row's
+// text (two columns, for the selected row's border and its padding); a row
+// may be as wide as the list minus that.
+const tableItemPad = 2
+
+// fitTableColumns narrows or widens the table in l to a list of the given
+// width: it picks the columns that fit (tableColumns.fit) and sets the header
+// to match. The rows redraw from the shared layout by themselves, so nothing
+// is rebuilt: the inventory is not probed again and the cursor, the marked
+// row and any filter are untouched. A list with no rows has nothing to fit.
+func fitTableColumns(l *list.Model, width int) {
+	for _, it := range l.Items() {
+		if mi, ok := it.(*modelItem); ok && mi.cols != nil {
+			mi.cols.fit(width - tableItemPad)
+			l.Title = mi.cols.header()
+			return
+		}
+	}
+}
+
 // clampModelSelection guards against bubbles v1.0.0 leaving
 // m.Index() outside [0, len(VisibleItems())) after a filter
 // narrows the list. With dividers gone there is no
@@ -169,6 +202,6 @@ func clampModelSelection(m *model) tea.Cmd {
 // there is no separate browser. The lines around the list are modelFrames'
 // (layout.go), the same frames the list's height is measured from.
 func (m *model) phaseModelView() string {
-	frame, _ := fitList(m.height, minTableListHeight, m.modelFrames()...)
+	frame, _, _ := m.frameFor(&m.models, m.modelFrames()...)
 	return frame(m.models.View())
 }
