@@ -31,10 +31,12 @@ var currentProgram *tea.Program
 // capture-then-emit pattern is required. Reset by Run() before launch.
 var pendingSummary string
 
-// pendingRouteNotes is what the launch-time LiteLLM route check printed while
-// the alt screen was up (#192): `wt: LiteLLM route for <id> updated` and any
-// route warning, collected in the check's own buffer (checkLaunchRoute) because stderr is not
-// reliably visible under the alt screen. It follows pendingSummary's
+// pendingRouteNotes holds the lines wt has for the user that arise while the
+// alt screen is up, where stderr is not reliably visible. Two things feed it:
+// what the launch-time LiteLLM route check printed (#192) —
+// `wt: LiteLLM route for <id> updated` and any route warning, collected in the
+// check's own buffer (checkLaunchRoute) — and the pre-launch notes about the
+// command being built (queueLaunchNotes). It follows pendingSummary's
 // capture-then-emit pattern with two emit points: runAndWaitCmd prints it the
 // moment it releases the terminal, above the agent's own output, and Run()
 // prints whatever is left after p.Run() returns (the user quit, or the launch
@@ -98,7 +100,35 @@ var profileApplier ProfileApplier
 // delegates to agents.BuildLaunchCmd so the launch construction logic lives
 // in one place.
 func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+	cmd, err := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+	if err == nil {
+		queueLaunchNotes(agent, cmd, extraArgs)
+	}
+	return cmd, err
+}
+
+// shellDir is a test seam over os.Getwd: the directory the user typed the
+// command in, which is what they meant a relative passthrough path against.
+var shellDir = os.Getwd
+
+// queueLaunchNotes adds the pre-launch notes for a built command to
+// pendingRouteNotes. Today that is agents.RelativeArgNotes: a passthrough
+// argument naming a file from the directory wt was run in, but not from the
+// worktree the agent starts in. The non-TUI path prints these straight to
+// stderr; here the picker still owns the terminal, so they wait for
+// runAndWaitCmd to release it and are printed above the agent's own output.
+func queueLaunchNotes(agent string, cmd *exec.Cmd, extraArgs []string) {
+	wd, err := shellDir()
+	if err != nil {
+		return
+	}
+	for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
+		// A launch that failed and was retried builds its command again;
+		// the note is about the arguments, so say it once.
+		if line := note + "\n"; !strings.Contains(pendingRouteNotes, line) {
+			pendingRouteNotes += line
+		}
+	}
 }
 
 // buildPassthrough is a test seam wrapping agents.BuildPassthroughCmd,

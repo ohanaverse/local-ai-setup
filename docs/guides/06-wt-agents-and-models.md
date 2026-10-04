@@ -188,7 +188,7 @@ Available Commands:
 
   Observed: `wt: main guard is installed in this repo.`
 - `--yolo` — exists in 0.1.0, verified in `wt --help` and `cmd/wt/main.go`; prepends the agent's skip-permissions flag (claude: `--dangerously-skip-permissions`). Source-verified caveat: pi has no such flag, so `--yolo` is a no-op there (`internal/agents/agents_test.go`: "Pi has no yolo flag").
-- `--cwd` — launch in the current repo root with no pickers; it skips the TUI (and its interactive resume prompt), but a prior resume-capable session for the directory is still resumed automatically at launch — `cmd/wt/launch.go:28-44` looks up the newest session for the worktree (unless the model is native) and `buildLaunch` appends the resume flag when one exists.
+- `--cwd` — launch in the current directory with no pickers (the one launch that stays where you typed it; `-W` and the picker start at a worktree's root); it skips the TUI (and its interactive resume prompt), but a prior resume-capable session started in that same directory is still resumed automatically at launch — `cmd/wt/launch.go:28-44` looks up the newest session for the worktree (unless the model is native) and `buildLaunch` appends the resume flag when one exists.
 - `--debug-worktrees` / `--debug-session <agent>` — test helpers printing worktrees/branches and the newest claude/opencode session respectively; not for daily use, one line, moving on.
 - Removed subcommands now fail loudly instead of creating a worktree named "models": `wt models` → error "wt models is removed; use wt config to view models", same shape for `wt agents` (source-verified guard in `cmd/wt/main.go`).
 

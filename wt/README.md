@@ -67,7 +67,7 @@ All launchers support:
 | Flag | Description |
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip TUI |
-| `--cwd` | Launch in the current repo root; skips the TUI picker. A prior resume-capable session still auto-resumes. |
+| `--cwd` | Launch in the current directory; skips the TUI picker. A prior resume-capable session started in that directory still auto-resumes. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |

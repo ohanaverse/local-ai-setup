@@ -106,7 +106,7 @@ func main() {
 
 // runLaunchPath installs the guard when inside a git repo and either
 // auto-launches or routes to the picker/TUI. launchPath is the resolved
-// worktree path for -W, the repo root for --cwd, "." for outside-a-repo
+// worktree path for -W, the current directory for --cwd, "." for outside-a-repo
 // passthrough, and "" when the worktree picker should be shown. root is the
 // repo root that owns launchPath ("" when not inside a git repo, or when the
 // worktree picker will resolve it); it gates the guard install. Callers pass
@@ -200,7 +200,9 @@ func rootCmd() *cobra.Command {
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 		Example: "  wt                          # interactive TUI\n" +
 			"  wt -W my-feature -A claude   # create worktree and launch\n" +
-			"  wt --cwd --agent codex       # launch in current repo root\n" +
+			"  wt --cwd --agent codex       # launch in the current directory\n" +
+			"  wt -A claude -- --verbose    # pass arguments to the agent (a relative path is\n" +
+			"                               # resolved from the directory the agent starts in)\n" +
 			"  wt --init                    # seed agent instruction files\n" +
 			"  wt start [model]             # start a local model (picker when omitted)\n" +
 			"  wt stop [model|provider]     # stop a local model or provider (picker when omitted)\n" +
@@ -391,13 +393,20 @@ func rootCmd() *cobra.Command {
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
 
-			// --cwd: launch in the current repo root.
+			// --cwd: launch in the current directory — the one launch that
+			// does not move to a checkout's root, so a relative path after
+			// `--` means the same thing to the agent as it did to the user.
+			// Session resume follows: it is looked up for this directory.
 			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
 				root, err := worktree.RepoRoot()
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
+				wd, err := os.Getwd()
+				if err != nil {
+					return err
+				}
+				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, wd, root)
 			}
 
 			// Outside a git repo: pure passthrough to the agent. With no agent
@@ -425,7 +434,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
-	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker (wt smoke: run the agents in the current directory)")
+	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.

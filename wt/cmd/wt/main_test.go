@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1215,5 +1216,51 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 	}
 	if !found {
 		t.Errorf("cmd.Env = %v, want WT_TEST_TUI_PROFILE_APPLIED=1 (the captured applier must actually apply the profile)", cmd.Env)
+	}
+}
+
+// TestCwdFlagLaunchesInTheCurrentDirectory pins what --cwd means: the agent
+// starts in the directory the command was typed in, not at the root of its
+// checkout. It used to start at the root, so a relative path after `--`
+// (`opencode-wt --cwd -- ../../other` from <repo>/wt) named a different place
+// for the agent than for the user. -W and the picker still start at a
+// worktree's root; --cwd is the one launch that stays put.
+func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
+	dir := initTestRepo(t)
+	sub := filepath.Join(dir, "pkg", "inner")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(sub); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	withCleanConfigEnv(t, t.TempDir())
+
+	var gotPath string
+	var guarded bool
+	oldLaunchFiltered, oldGuard := launchFiltered, maybeInstallGuard
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+		gotPath = worktreePath
+		return nil
+	}
+	maybeInstallGuard = func() { guarded = true }
+	t.Cleanup(func() { launchFiltered, maybeInstallGuard = oldLaunchFiltered, oldGuard })
+
+	root := rootCmd()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"--cwd", "--agent", "shell"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	realGot, _ := filepath.EvalSymlinks(gotPath)
+	realWant, _ := filepath.EvalSymlinks(sub)
+	if !filepath.IsAbs(gotPath) || realGot != realWant {
+		t.Errorf("launch path = %q, want the current directory %q", gotPath, sub)
+	}
+	if !guarded {
+		t.Error("the guard was not installed: --cwd in a subdirectory is still inside a repo")
 	}
 }

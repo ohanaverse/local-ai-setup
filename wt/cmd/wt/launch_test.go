@@ -1933,3 +1933,92 @@ func TestLaunchFilteredSkipsEnsureOnDirectRoute(t *testing.T) {
 		t.Fatalf("events = %v, want none on a direct route", *events)
 	}
 }
+
+// relativeArgFixture is the report behind the relative-argument note: the
+// command is typed in <repo>/wt, the agent starts in <repo>, and the argument
+// "../../other" names a sibling project from the first and nothing from the
+// second. It installs a fake `claude` that exits 0, points the shell-directory
+// seam at <repo>/wt, and captures the notes.
+func relativeArgFixture(t *testing.T) (launch, other string, notes *bytes.Buffer) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other = filepath.Join(root, "other")
+	launch = filepath.Join(root, "repo")
+	shell := filepath.Join(launch, "wt")
+	for _, d := range []string{other, shell} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("MODELMAN_REGISTRY", "")
+
+	notes = &bytes.Buffer{}
+	oldDir, oldOut := shellDir, osStderr
+	shellDir = func() (string, error) { return shell, nil }
+	osStderr = notes
+	t.Cleanup(func() { shellDir, osStderr = oldDir, oldOut })
+	return launch, other, notes
+}
+
+// TestLaunchNotesARelativePassthroughPath pins the note on the model-launch
+// path: an argument after `--` that exists from the directory the command was
+// typed in but not from the worktree the agent starts in is named, with the
+// absolute path to pass instead, before the agent runs. The argument itself
+// is handed over unchanged.
+func TestLaunchNotesARelativePassthroughPath(t *testing.T) {
+	launch, other, notes := relativeArgFixture(t)
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
+		Models:     []config.Model{{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true, Tags: []string{"code"}}},
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
+	}
+	if err := launchFiltered("claude", launch, cfg, false, "", "", "", false, []string{"../../other", "--verbose"}, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	got := notes.String()
+	for _, want := range []string{`wt: note: "../../other" is a relative path`, "claude starts in " + launch, other} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notes %q lack %q", got, want)
+		}
+	}
+	if n := strings.Count(got, "wt: note:"); n != 1 {
+		t.Errorf("notes = %q, want exactly one (the flag is not a path)", got)
+	}
+}
+
+// TestPassthroughLaunchNotesARelativePath pins the same note for an agent
+// with no config entry, which launches through launchPassthrough.
+func TestPassthroughLaunchNotesARelativePath(t *testing.T) {
+	launch, other, notes := relativeArgFixture(t)
+	if err := launchPassthrough("claude", launch, false, []string{"../../other"}, &config.Config{}, nil); err != nil {
+		t.Fatalf("launchPassthrough: %v", err)
+	}
+	if got := notes.String(); !strings.Contains(got, `"../../other" is a relative path`) || !strings.Contains(got, other) {
+		t.Fatalf("notes = %q, want the relative-path note naming %s", got, other)
+	}
+}
+
+// TestLaunchStaysQuietWithoutAMistakenPath pins that an ordinary launch
+// prints no note: no passthrough arguments, or ones that name nothing from
+// the shell's directory.
+func TestLaunchStaysQuietWithoutAMistakenPath(t *testing.T) {
+	launch, _, notes := relativeArgFixture(t)
+	for _, args := range [][]string{nil, {"run", "say hi"}, {"--verbose"}} {
+		if err := launchPassthrough("claude", launch, false, args, &config.Config{}, nil); err != nil {
+			t.Fatalf("launchPassthrough %v: %v", args, err)
+		}
+	}
+	if notes.Len() != 0 {
+		t.Fatalf("notes = %q, want none", notes.String())
+	}
+}

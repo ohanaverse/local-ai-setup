@@ -106,7 +106,7 @@ defaulted (it always comes from `-A` or the agent+command picker).
 | `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). Errors if not in the eligible list. Skips the model picker. Without `-A`, the agent+command picker is shown first, then the pin is validated against the chosen agent. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
-| `--cwd` | Launch in the current repo root; skip the worktree picker. The agent+command picker still appears when `-A` is omitted, and the model picker still appears when `-M` is omitted. |
+| `--cwd` | Launch in the current directory; skip the worktree picker. The agent+command picker still appears when `-A` is omitted, and the model picker still appears when `-M` is omitted. |
 | `--yolo` | Skip permission prompts (agent-specific). |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 
@@ -124,6 +124,55 @@ that cannot launch carry an inline indication — "not configured" (missing
 from `config.toml`) or "not installed" (no binary on PATH) — and selecting
 one is blocked with a clear error rather than advancing to a model screen
 that can never succeed.
+
+### Arguments after `--`
+
+Everything after `--` is handed to the agent unchanged
+(`claude-wt -- --verbose`, `opencode-wt -- /path/to/project`).
+
+**A relative path there is resolved by the agent, from the directory the
+agent starts in**, which is not always the one you typed the command in:
+
+| How you launch | Where the agent starts |
+|---|---|
+| `--cwd` | the directory you typed the command in |
+| `-W <name>`, or the worktree picker | the root of that worktree |
+| outside a git repo | the directory you typed the command in |
+
+So with `--cwd` a relative path means what you meant. With `-W` or the picker
+it is read from the worktree's root: run from `<repo>/wt` and pick the main
+checkout,
+
+```
+opencode-wt -- ../../other-project
+```
+
+reaches opencode in `<repo>`, where `../../other-project` names a different
+place, and fails with `Failed to change directory`. Pass an absolute path, or
+check where you ended up.
+
+Session resume follows the same directory: a prior session is offered (or, with
+no picker, resumed) only when you launch from the directory it was started in.
+
+`wt` does not rewrite the argument: it cannot tell a path from any other word,
+and a prompt may contain something that only looks like one. When an argument
+names something that exists from your directory but is missing, or is a
+different file, from the agent's, it prints a note with the absolute path to
+use:
+
+```
+wt: note: "../../other-project" is a relative path. opencode starts in <repo>, where it does not exist. From <repo>/wt it is <parent>/other-project; pass that absolute path.
+```
+
+Launched from the picker, the note is printed when the agent takes the
+terminal, above the agent's own output. Flags (anything starting with `-`,
+including `--file=../x`), absolute paths, words that name nothing from your
+directory, and the bare program name `shell-wt` runs (`make` in
+`shell-wt -- make docs`) are never flagged. Neither is a path that names the
+same place in the worktree you launched: `shell-wt -W feat -- cat README.md`
+from the repo root reads `.worktrees/feat/README.md`, the checkout you asked
+for, so there is no note — unless the file is missing there (untracked, or not
+on that branch). Paths in the note have their symbolic links resolved.
 
 ## Post-run summary line
 
