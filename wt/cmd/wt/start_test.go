@@ -293,6 +293,103 @@ func TestStartProgressRepeatsWhileWarming(t *testing.T) {
 	}
 }
 
+// TestEnsureRouteBeforeLaunchAnnouncesTheProxyWait pins #192's CLI half. A route
+// write restarts the proxy, and waiting for that restart used to be a total
+// silence between the check's one-line "updated" notice and the agent taking the
+// terminal — 10-20s of a wt that looks hung, on a path a user runs by hand and
+// cannot tell from a dead process. The line names the wait and repeats with
+// elapsed time, as the engine's own progress line does; a run that waits must
+// show it started waiting and that it is still going.
+func TestEnsureRouteBeforeLaunchAnnouncesTheProxyWait(t *testing.T) {
+	oldOut := osStderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	osStderr = w
+	t.Cleanup(func() { osStderr = oldOut })
+	oldInterval := routeWaitInterval
+	routeWaitInterval = 5 * time.Millisecond
+	t.Cleanup(func() { routeWaitInterval = oldInterval })
+
+	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
+	ensureModelRoute = func(*config.Config, config.Model) bool { return true }
+	entered, release := make(chan struct{}), make(chan struct{})
+	waitPendingRoutes = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes = oldEnsure, oldWait })
+
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		ensureRouteBeforeLaunch(&config.Config{}, config.Model{ID: "ollama/x"})
+	}()
+	<-entered
+
+	// One needle for both checks below, so the repeat test cannot watch for a
+	// line the first one did not require.
+	const waitLine = "wt: waiting for the LiteLLM proxy to pick up the route ("
+
+	// The first line has to be out before the wait is entered, not after it
+	// returns: a line that only appears once the wait is over announces nothing.
+	out := readSome(t, r)
+	if !strings.Contains(out, waitLine) {
+		t.Fatalf("output = %q, want the wait announced before it is entered", out)
+	}
+	// And it repeats, so a wait long enough to be a real restart does not go
+	// quiet again after the first line. Each read blocks for up to 50ms, so the
+	// second line's arrival is what ends this loop; reaching the deadline
+	// instead is a failure, not a slow pass.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(out, waitLine) < 2 {
+		out += readSome(t, r)
+	}
+	close(release)
+	<-exited
+	_ = w.Close()
+
+	if got := strings.Count(out, waitLine); got < 2 {
+		t.Fatalf("output = %q, want the wait announced again while it is still running (%d lines)", out, got)
+	}
+}
+
+// TestEnsureRouteBeforeLaunchStaysQuietWhenNothingChanged verifies the other
+// half of the same choice: the common launch — a running model whose route is
+// already in config.yaml — must stay silent. restartIfChanged bounces the proxy
+// only on a write, so the check's return value is exactly the signal; printing
+// the wait line unconditionally would put a line about a restart that is not
+// happening in front of every such launch.
+func TestEnsureRouteBeforeLaunchStaysQuietWhenNothingChanged(t *testing.T) {
+	oldOut := osStderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	osStderr = w
+	t.Cleanup(func() { osStderr = oldOut })
+
+	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
+	ensureModelRoute = func(*config.Config, config.Model) bool { return false }
+	waited := false
+	waitPendingRoutes = func() { waited = true }
+	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes = oldEnsure, oldWait })
+
+	ensureRouteBeforeLaunch(&config.Config{}, config.Model{ID: "ollama/x"})
+	_ = w.Close()
+
+	buf, _ := io.ReadAll(r)
+	if got := string(buf); got != "" {
+		t.Errorf("output = %q, want none: nothing changed, so no restart is coming", got)
+	}
+	// The wait is still called — every path about to use the proxy settles the
+	// route hook first — it simply has nothing to wait for.
+	if !waited {
+		t.Error("waitPendingRoutes was not called: the proxy hand-off invariant was dropped, not just the line")
+	}
+}
+
 // TestAskYesNoDefaultsToNo verifies the confirm rule the replace prompt
 // relies on: only an explicit y/yes consents; an empty line, other text, or
 // EOF is a refusal. A default-yes regression here would let an accidental

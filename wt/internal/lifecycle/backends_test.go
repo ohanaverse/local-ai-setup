@@ -97,7 +97,7 @@ func TestOllamaStartWarmsModel(t *testing.T) {
 	srv := newChatServer(t)
 	e := testEnv()
 	var stages []Stage
-	err := ollamaBackend{}.start(context.Background(), e, provCfg("ollama", srv.URL), Target{"ollama", "gemma4:9b"}, func(s Stage) { stages = append(stages, s) })
+	err := ollamaBackend{}.start(context.Background(), e, provCfg("ollama", srv.URL), Target{ProviderID: "ollama", ModelName: "gemma4:9b"}, func(s Stage) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestOllamaDaemonDown(t *testing.T) {
 	dead := httptest.NewServer(http.NotFoundHandler())
 	url := dead.URL
 	dead.Close()
-	err := ollamaBackend{}.start(context.Background(), testEnv(), provCfg("ollama", url), Target{"ollama", "m"}, func(Stage) {})
+	err := ollamaBackend{}.start(context.Background(), testEnv(), provCfg("ollama", url), Target{ProviderID: "ollama", ModelName: "m"}, func(Stage) {})
 	var dd *DaemonDownError
 	if !errors.As(err, &dd) || dd.Origin != url {
 		t.Errorf("err = %v, want *DaemonDownError with origin %s", err, url)
@@ -143,7 +143,7 @@ func TestOmlxAlreadyUpSkipsStartAndWarmsBasename(t *testing.T) {
 	}
 	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
 	var stages []Stage
-	err := omlxBackend{}.start(context.Background(), e, provCfg("omlx", srv.URL), Target{"omlx", "mlx-community/Qwen3.8-27B-4bit"}, func(s Stage) { stages = append(stages, s) })
+	err := omlxBackend{}.start(context.Background(), e, provCfg("omlx", srv.URL), Target{ProviderID: "omlx", ModelName: "mlx-community/Qwen3.8-27B-4bit"}, func(s Stage) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestOmlxStartsDaemonWhenDown(t *testing.T) {
 		return nil, nil
 	}
 	var stages []Stage
-	err := omlxBackend{}.start(context.Background(), e, provCfg("omlx", "http://"+addr), Target{"omlx", "Qwen-4bit"}, func(s Stage) { stages = append(stages, s) })
+	err := omlxBackend{}.start(context.Background(), e, provCfg("omlx", "http://"+addr), Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, func(s Stage) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestOmlxMissingBinaryAndNeverComesUp(t *testing.T) {
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "", errors.New("not found") }
 	var bm *BinaryMissingError
-	if err := (omlxBackend{}).start(context.Background(), e, provCfg("omlx", url), Target{"omlx", "m"}, func(Stage) {}); !errors.As(err, &bm) {
+	if err := (omlxBackend{}).start(context.Background(), e, provCfg("omlx", url), Target{ProviderID: "omlx", ModelName: "m"}, func(Stage) {}); !errors.As(err, &bm) {
 		t.Errorf("err = %v, want *BinaryMissingError", err)
 	}
 
@@ -195,7 +195,7 @@ func TestOmlxMissingBinaryAndNeverComesUp(t *testing.T) {
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return []byte("license expired"), errors.New("exit 1")
 	}
-	err := (omlxBackend{}).start(context.Background(), e, provCfg("omlx", url), Target{"omlx", "m"}, func(Stage) {})
+	err := (omlxBackend{}).start(context.Background(), e, provCfg("omlx", url), Target{ProviderID: "omlx", ModelName: "m"}, func(Stage) {})
 	if err == nil || !containsFold(err.Error(), "license expired") {
 		t.Errorf("err = %v, want it to include the omlx start output", err)
 	}

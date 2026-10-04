@@ -11,6 +11,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,6 +45,7 @@ const (
 	phaseNewWorktree                 // create-new-worktree prompt
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
+	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -119,6 +121,22 @@ type model struct {
 	startRun int           // monotonically increasing run id; stale messages are dropped by id
 	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
 
+	// launch-time route check (#192): a launch that had to write the model's
+	// LiteLLM route waits for the proxy restart behind phaseRouting instead of
+	// freezing the picker.
+	routing  *routingState // in-flight route check (phaseRouting); nil when idle
+	routeRun int           // monotonically increasing run id; stale messages are dropped by id
+	// routeNote is the status line the current launch attempt's route check
+	// left ("" for none). It is kept apart from m.status because status is
+	// overwritten and cleared by other things: launchSelected joins it with a
+	// resume warning, and esc from the resume prompt — which clears the status
+	// so stale text does not follow the user back — puts it back, since the
+	// route was written whether or not the launch goes ahead. proceedToLaunch
+	// resets it together with m.status at the start of every launch attempt,
+	// so neither the field nor the text it put on screen outlives the attempt
+	// it belongs to.
+	routeNote string
+
 	// new-worktree prompt (this lesson)
 	newInput         textinput.Model
 	newError         string
@@ -179,12 +197,24 @@ func (m model) openNewWorktreePrompt() model {
 }
 
 // Update handles messages and returns the new state plus optional commands.
+// Whatever the message did, the list on screen is then fitted to the lines its
+// screen prints around it (fitLists, layout.go).
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	next.fitLists()
+	return next, cmd
+}
+
+// update is Update without the final list fit.
+func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case startStageMsg, startTickMsg, startDoneMsg:
 		// The case list is exactly the set handleStartMsg handles, so it
 		// always has something to say.
 		return m.handleStartMsg(msg)
+	case routeDoneMsg, routeTickMsg:
+		// Likewise exactly the set handleRouteMsg handles.
+		return m.handleRouteMsg(msg)
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -206,21 +236,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyRefreshedTable(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		if m.ready {
-			m.list.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseAgent {
-			m.agentList.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseModel {
-			m.models.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseResume {
-			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseReplaceConfirm {
-			m.replace.choices.SetSize(msg.Width-2, msg.Height-2)
-		}
+		// Every list is sized by fitLists, from the lines and columns its
+		// screen prints around it.
 		if m.phase == phaseNewWorktree {
 			m.newInput.Width = msg.Width - 4
 		}
@@ -236,6 +253,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.listError = ""
+		// The load is over: take the placeholder down. Only the placeholder —
+		// a status another path set while the load was in flight (a pinned
+		// agent's config error, say) is still worth showing.
+		if m.status == loadingStatus {
+			m.status = ""
+		}
 		// Pass the three groups straight to buildList, which interleaves them
 		// into the picker (sentinel → worktrees → locals → separator → remotes)
 		// and tags the (current)/(default) markers on entryItem.
@@ -312,6 +335,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseStarting && m.start != nil {
 			return m.handleStartKey(msg)
 		}
+		// So does an in-flight route check, for the same reason and at the same
+		// place: the launch it precedes is already decided, so no key may move
+		// the cursor, pop a screen or quit by accident. Only ctrl+c gets out.
+		if m.phase == phaseRouting {
+			return m.handleRouteKey(msg)
+		}
 		// Model picker wrap-around: bubble/list does not wrap by default.
 		// Skip while the filter input is active (or has just been opened,
 		// which resets the cursor to index 0 via GoToStart) so "j"/"k"
@@ -361,7 +390,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.phase == phaseResume {
 				m.phase = phaseModel
-				m.status = ""
+				// Everything else in the status belonged to the prompt being
+				// left (a resume warning), but the route note is still true:
+				// the route was written. Empty when there was no note.
+				m.status = m.routeNote
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn {
@@ -646,25 +678,31 @@ func (m model) View() string {
 		if m.width <= 0 || m.height <= 0 {
 			return "resume prompt (waiting for window size)"
 		}
-		return m.resume.choices.View() + "\n[enter] choose   [esc] back"
+		return m.resumeFrame()(m.resume.choices.View())
 	}
 	if m.phase == phaseOllamaWarn {
 		if m.width <= 0 || m.height <= 0 {
 			return "ollama availability warning (waiting for window size)"
 		}
-		return m.ollamaWarnModel.View() + "\n[enter] choose   [esc] back"
+		return m.choiceFrame()(m.ollamaWarnModel.View())
 	}
 	if m.phase == phaseStarting {
 		if m.width <= 0 || m.height <= 0 {
 			return "start progress (waiting for window size)"
 		}
-		return m.startingView()
+		return clip(m.startingView(), m.width)
+	}
+	if m.phase == phaseRouting {
+		if m.width <= 0 || m.height <= 0 {
+			return "route update (waiting for window size)"
+		}
+		return clip(m.routingView(), m.width)
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
 			return "replace confirm (waiting for window size)"
 		}
-		return m.replace.choices.View() + "\n[enter] choose   [esc] back"
+		return m.choiceFrame()(m.replace.choices.View())
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
@@ -681,16 +719,7 @@ func (m model) View() string {
 	if !m.ready {
 		return m.status
 	}
-	if m.listError != "" {
-		return ErrorStyle(m.theme).Render("error: "+m.listError) + "\n" + m.list.View()
-	}
-	// A pinned --agent that errors (config error, empty model catalog) sets
-	// m.status while staying on the worktree list; render it so the failure
-	// is visible instead of silently swallowed by the list view.
-	if m.status != "" {
-		return ErrorStyle(m.theme).Render(m.status) + "\n" + m.list.View()
-	}
-	return m.list.View()
+	return m.worktreeFrame()(m.list.View())
 }
 
 // launchCommand builds and runs a command (no model layer) — e.g. the shell
@@ -954,6 +983,8 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
+	// The list was built at the bare window size; give it the picker's.
+	m.fitLists()
 	return m, nil
 }
 
@@ -1081,15 +1112,13 @@ func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
 	return cmd
 }
 
-// proceedToLaunch checks for a prior session and either launches the agent
-// directly or transitions to the resume prompt. It is the shared flow used
-// by both the phaseModel enter handler and the ollama warning proceed choice.
-// Every path that bails back to the picker re-probes the table: this is reached
-// from the start flow, where the table was built before the attempt, so a start
-// that succeeded and then failed to launch would otherwise leave the picker
-// claiming RUNNING="-" for a model that is loaded and serving. The probe is
-// deferred to a command, so paying for it on the paths that did not start
-// anything costs nothing on the update loop.
+// proceedToLaunch is the one funnel every model launch passes through: the
+// phaseModel enter handler, the ollama warning's proceed choice, a pinned or
+// lone launch row in enterModelPhase, and a start that just succeeded. It
+// captures the highlighted row as the launch model, runs the launch-time
+// LiteLLM route check where one is needed, and continues in launchSelected —
+// in this same Update, unless the check had to write the route, in which case
+// phaseRouting shows the proxy restart first.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.current is gone; m.models is the
@@ -1102,6 +1131,43 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// Capture the model so launchAndRecord records exactly this pick in
 	// both the no-session and resume paths, without re-reading the picker.
 	m.launchModel = highlighted.model
+	// A new attempt: a note left by an earlier one is not about this launch,
+	// and neither is whatever the status line still shows — the note esc kept
+	// from the last resume prompt, or an older error. The resume prompt and
+	// the picker both render m.status, so leaving it would put another
+	// model's route line on this attempt's screens. No caller sets a status
+	// just before calling this that is meant to survive it.
+	m.routeNote = ""
+	m.status = ""
+	// A launch row is a model that was already running, and wt may not be
+	// what started it, so its LiteLLM route may not exist yet. A row this
+	// flow just started (start is still set: the table is not rebuilt in
+	// between) had its route written by the start hook, and finishStart has
+	// already waited for the proxy.
+	if highlighted.start || m.cfg == nil {
+		return m.launchSelected()
+	}
+	// Only a launch that goes through LiteLLM needs the route: a direct or
+	// native launch leaves config.yaml alone.
+	if route, _ := m.cfg.ResolveRoute(highlighted.model, agents.ProtocolsFor(m.agent)); !route.Litellm {
+		return m.launchSelected()
+	}
+	return m.checkLaunchRoute(highlighted.model)
+}
+
+// launchSelected launches m.launchModel: it checks for a prior session and
+// either launches the agent directly or transitions to the resume prompt. It
+// reads m.launchModel rather than the picker's cursor because it also runs
+// from the routing phase's completion message, an Update later than the one
+// that picked the row. m.routeNote, the status line a route check left, is
+// kept beside a resume warning rather than replaced by it.
+// Every path that bails back to the picker re-probes the table: this is reached
+// from the start flow, where the table was built before the attempt, so a start
+// that succeeded and then failed to launch would otherwise leave the picker
+// claiming RUNNING="-" for a model that is loaded and serving. The probe is
+// deferred to a command, so paying for it on the paths that did not start
+// anything costs nothing on the update loop.
+func (m model) launchSelected() (model, tea.Cmd) {
 	// Native models launch fresh: resuming a session would restore the
 	// session's stored model, silently overriding the user's "native" choice
 	// (and, for claude, routing a gateway model at the real Anthropic API).
@@ -1109,12 +1175,17 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// convenience, and refusing to launch over it left the user unable to
 	// start the agent at all (opencode #162). The lookup itself is shared with
 	// the non-TUI path via agents.ResumeSession so the two cannot disagree.
-	sess, warning := resumeSession(m.agent, highlighted.model.Native, m.selectedPath)
+	sess, warning := resumeSession(m.agent, m.launchModel.Native, m.selectedPath)
 	if warning != "" {
+		// The route note is already in the status line; a warning must not
+		// push it out, so both are shown.
+		if m.routeNote != "" {
+			warning = m.routeNote + "; " + warning
+		}
 		m.status = warning
 	}
 	if sess == nil {
-		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
+		cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 		if err != nil {
 			m.status = "launch failed: " + err.Error()
 			return m.refreshTable()
@@ -1125,6 +1196,9 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	m.resume.session = sess
 	m.resume.choices = list.New(buildResumeChoices(sess), ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
+	// The status (a route note, a resume warning) is already set: leave room
+	// for it now, for a caller that renders before the next Update.
+	m.fitLists()
 	return m, nil
 }
 
@@ -1232,12 +1306,18 @@ type entriesLoadedMsg struct {
 	err           error
 }
 
+// loadingStatus is the placeholder View shows until the worktree list
+// arrives. It lives in m.status, so the load has to take it back down: every
+// later screen renders m.status, and a placeholder left there reads as a
+// stuck "loading" message on the agent and model pickers.
+const loadingStatus = "loading worktrees..."
+
 // newRunModel builds the TUI's initial model from Run's arguments. It is split
 // out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
 // without starting a real tea.Program.
 func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
 	return model{
-		status:       "loading worktrees...",
+		status:       loadingStatus,
 		cfg:          cfg,
 		theme:        theme,
 		yolo:         yolo,
@@ -1289,12 +1369,16 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
 	pendingSummary = ""
+	pendingRouteNotes = ""
 	pendingSurveyState = pendingSurvey{}
 	profileApplier = applyProfile
 	finalModel, err := p.Run()
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
+	// Route output first: it belongs to the launch (or to the launch that
+	// never happened), so it goes above the summary and the survey.
+	flushRouteNotesAfterRun(finalModel, os.Stderr)
 	printPendingSummaryAndSurvey(cfg)
 	if err == nil {
 		if fm, ok := finalModel.(model); ok && fm.fatalErr != nil {
@@ -1302,6 +1386,27 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 		}
 	}
 	return err
+}
+
+// flushRouteNotesAfterRun prints, once the alt screen is gone, whatever route
+// output is still pending: the user quit, or the launch never happened, so
+// runAndWaitCmd never printed it. A check that is still in flight (the user
+// pressed ctrl+c on the routing screen, so its message was never handled) is
+// settled first — that waits for the proxy restart, which the process has to
+// wait for before exiting anyway, and is when the last of its output is in.
+// That wait can last as long as the restart, on a terminal that otherwise
+// looks idle, so it is announced first — but only when there really is
+// something left to wait for: a check whose command already finished settles
+// instantly and gets no line. It is extracted from Run() so it is
+// unit-testable without a real tea.Program/TTY.
+func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
+	if fm, ok := final.(model); ok && fm.routing != nil {
+		if !fm.routing.settled.Load() {
+			fmt.Fprintln(w, "wt: waiting for the LiteLLM proxy restart…")
+		}
+		pendingRouteNotes += fm.routing.settle()
+	}
+	flushRouteNotes(w)
 }
 
 // printPendingSummaryAndSurvey runs the TUI's post-exit flow once the

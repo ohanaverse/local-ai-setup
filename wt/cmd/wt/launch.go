@@ -259,6 +259,14 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if berr != nil {
 		return berr
 	}
+	// The agent is about to dial m through the proxy. A local model here is
+	// running (the launchable list holds no other kind, and a pin was started
+	// above if it was idle), but wt may not be what started it, so its route
+	// may not exist. Only a launch that goes through LiteLLM needs the route;
+	// a direct launch leaves config.yaml alone.
+	if route.Litellm {
+		ensureRouteBeforeLaunch(cfg, m)
+	}
 	if rerr := rotation.New().RecordFor(agent, m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
 	}

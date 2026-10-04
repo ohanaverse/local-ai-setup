@@ -11,7 +11,12 @@ import (
 // Target names the model to start by its provider-side name — exactly
 // config.Model.ModelName. For a discovered model that is the artifact name, so
 // no registry entry is required.
-type Target struct{ ProviderID, ModelName string }
+//
+// ModelID is the catalog row's id (a registry id or a discovered id). The
+// route hook writes the route under it, so the id in config.yaml is the one
+// the picker showed. It may be empty: the hook then derives the model from
+// ProviderID and ModelName (see StartRouteChange).
+type Target struct{ ProviderID, ModelName, ModelID string }
 
 // Stage is a progress milestone reported during Start.
 type Stage string

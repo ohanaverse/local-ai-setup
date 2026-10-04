@@ -47,6 +47,82 @@ var confirmReplace = promptReplace
 // is not listed yet. Tests stub it to observe that ordering without a proxy.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
 
+// ensureModelRoute is a test seam over lifecycle.EnsureModelRoute. Production
+// rewrites config.yaml and restarts the LiteLLM proxy; TestMain stubs it so no
+// test touches the developer's real proxy.
+var ensureModelRoute = lifecycle.EnsureModelRoute
+
+// routeWaitInterval is how often the route wait's line is repeated, so a wait
+// that runs for the better part of a minute keeps showing signs of life. Same
+// job as startProgressInterval, for the one wait that has no engine stage to
+// report.
+var routeWaitInterval = 10 * time.Second
+
+// ensureRouteBeforeLaunch makes sure a running local model has its LiteLLM
+// route, then waits for the proxy to carry it (#192). A model wt did not
+// start — an omlx or mtplx server started by hand, an ollama model pulled
+// since the last sync — has no route until something writes one; without this
+// the launch reaches the proxy and gets "Invalid model name". It only ever
+// adds that one route: unlike the start hook it removes nothing, so a running
+// sibling's route survives. It is a no-op for a cloud model, costs one read of
+// config.yaml when the route is already there, and never fails the launch. m
+// must be a model the probe reported running: this never starts one.
+//
+// A write means the proxy is restarting, and the wait for it is announced and
+// kept alive rather than run in silence (see waitForProxyRestart). The check's
+// own return value says whether there is such a wait: restartIfChanged bounces
+// the proxy if and only if config.yaml changed. That is also what keeps the
+// common case quiet — a route already in place prints nothing at all.
+func ensureRouteBeforeLaunch(cfg *config.Config, m config.Model) {
+	// The wait is called on both paths: every path about to use the proxy
+	// settles the route hook's restart first, and with nothing pending — the
+	// unchanged case, and the only case that reaches here without a bounce —
+	// it returns at once.
+	if !ensureModelRoute(cfg, m) {
+		waitPendingRoutes()
+		return
+	}
+	waitForProxyRestart()
+}
+
+// waitForProxyRestart blocks until the route hook's asynchronous proxy restart
+// has finished, printing a line first and repeating it with elapsed time. The
+// restart plus the readiness poll behind it runs 10–20s, and the only thing on
+// stderr before it is the route check's one-line "updated" notice — so without
+// this the user sees wt stop moving and cannot tell that from a hang. It is the
+// CLI's counterpart to the TUI picker's route screen (#192 review).
+func waitForProxyRestart() {
+	// The seams are read HERE, and the ticker goroutine is waited for before
+	// returning: it must not outlive this call, or reading the package
+	// variables from it would race with a later test's Cleanup restoring them
+	// (the same reason startProgress captures them).
+	w := osStderr
+	interval := routeWaitInterval
+	began := time.Now()
+	line := func() {
+		fmt.Fprintf(w, "wt: waiting for the LiteLLM proxy to pick up the route (%s)\n",
+			time.Since(began).Round(time.Second))
+	}
+	line()
+	done, exited := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(exited)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				line()
+			}
+		}
+	}()
+	waitPendingRoutes()
+	close(done)
+	<-exited
+}
+
 // osStderr is the progress stream, a seam so tests can capture it.
 var osStderr io.Writer = os.Stderr
 
@@ -147,7 +223,7 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	began := time.Now()
 	report := startProgress(id, done, began)
 
-	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName}
+	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
 	opts := lifecycle.Options{Progress: report}
 
 	err := lifecycleStart(ctx, cfg, target, opts)

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"testing"
 
@@ -79,6 +80,13 @@ func TestMain(m *testing.M) {
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
 	}
+	// The launch-time route check (#192): unstubbed, a test that launches a
+	// running local model through LiteLLM would rewrite the developer's real
+	// config.yaml and restart their proxy. Both forms are stubbed — the
+	// non-blocking first attempt reports "done, nothing changed", which is the
+	// launch-in-this-same-Update path.
+	tryEnsureModelRoute = func(io.Writer, *config.Config, config.Model) (bool, bool) { return false, true }
+	ensureModelRoute = func(io.Writer, *config.Config, config.Model) bool { return false }
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.
 	releaseSession = func() {}
@@ -138,4 +146,120 @@ func selectedModelID(m model) string {
 		return ""
 	}
 	return it.model.ID
+}
+
+// routeStub is what stubEnsureRoute hands a test: the knobs that script the
+// launch-time route check and the record of what the flow did with it.
+type routeStub struct {
+	// changed is what the stubbed check reports: true (the default) means "the
+	// route was missing and was written", so the proxy restarts.
+	changed bool
+	// busy makes the non-blocking first attempt (tryEnsureModelRoute) report
+	// that it got nowhere — a config.yaml lock another wt holds. The flow then
+	// owes a retry through the blocking form, which is what a test sees as a
+	// second "ensure:<id>" event before the wait.
+	busy bool
+	// ensureOutput is written by the stubbed check into the writer the flow
+	// handed it, the way lifecycle prints the "updated" line during the
+	// synchronous write; waitOutput is written into that same writer by the
+	// stubbed waitPendingRoutes, the way the check's async restart prints its
+	// warnings until the wait returns.
+	ensureOutput, waitOutput string
+	// events is each check as "ensure:<model id>" and each wait for the proxy
+	// as "wait", in order.
+	events []string
+	// waitEntered and waitRelease, when set, make the stubbed wait block the
+	// way a real proxy restart does: it closes waitEntered once it is inside
+	// and returns only when waitRelease is closed. Tests that run the routing
+	// command on its own goroutine use them to hold the restart open.
+	waitEntered, waitRelease chan struct{}
+
+	// outs is the writer each check was handed, in call order: one entry per
+	// "ensure:" event. The flow must hand the retry the first attempt's
+	// writer, or half of the check's output ends up somewhere nobody reads.
+	outs []io.Writer
+}
+
+// stubEnsureRoute swaps the three launch-time route check seams
+// (tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes) for recording
+// fakes scripted by the returned routeStub. Nothing real is touched: no
+// config.yaml and no proxy. All three seams are restored on cleanup. The fakes take no lock: a test either
+// runs the routing command itself, on the test goroutine, or (with
+// waitEntered/waitRelease) reads the stub only after every goroutine that
+// settles the check has finished — settle is once-only, so the fakes still run
+// on one goroutine at a time.
+//
+// Both forms of the check record the same "ensure:<id>" event: they are one
+// check, once blocking and once not, and a test asserting on the flow reads
+// better when it says "the check ran" either way. A retry therefore shows up as
+// the event twice (s.busy), which is the only way the blocking form is reached
+// from the launch flow at all.
+func stubEnsureRoute(t *testing.T) *routeStub {
+	t.Helper()
+	s := &routeStub{changed: true}
+	oldTry, oldEnsure, oldWait := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes
+	// write prints to the writer the latest check was handed; a wait that no
+	// check preceded (finishStart's) has none and prints nothing.
+	write := func(text string) {
+		if len(s.outs) > 0 && s.outs[len(s.outs)-1] != nil && text != "" {
+			_, _ = io.WriteString(s.outs[len(s.outs)-1], text)
+		}
+	}
+	tryEnsureModelRoute = func(out io.Writer, _ *config.Config, m config.Model) (bool, bool) {
+		s.events = append(s.events, "ensure:"+m.ID)
+		s.outs = append(s.outs, out)
+		if s.busy {
+			// The lock was held: nothing written, nothing known, nothing said.
+			return false, false
+		}
+		write(s.ensureOutput)
+		return s.changed, true
+	}
+	ensureModelRoute = func(out io.Writer, _ *config.Config, m config.Model) bool {
+		s.events = append(s.events, "ensure:"+m.ID)
+		s.outs = append(s.outs, out)
+		write(s.ensureOutput)
+		return s.changed
+	}
+	waitPendingRoutes = func() {
+		s.events = append(s.events, "wait")
+		if s.waitEntered != nil {
+			close(s.waitEntered)
+			<-s.waitRelease
+		}
+		write(s.waitOutput)
+	}
+	t.Cleanup(func() {
+		tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes = oldTry, oldEnsure, oldWait
+	})
+	return s
+}
+
+// stubRouteNotes clears pendingRouteNotes for one test and restores it after,
+// so a test asserting on the captured route output neither sees another test's
+// lines nor leaves its own behind.
+func stubRouteNotes(t *testing.T) {
+	t.Helper()
+	old := pendingRouteNotes
+	pendingRouteNotes = ""
+	t.Cleanup(func() { pendingRouteNotes = old })
+}
+
+// routeDoneFrom runs the routing command out of the batch checkLaunchRoute
+// returned and returns its routeDoneMsg. The batch also holds the one-second
+// elapsed-time tick, which is left unrun: only the first command is the check.
+func routeDoneFrom(t *testing.T, cmd tea.Cmd) routeDoneMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("no command: the routing phase must return the wait as a command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("command = %T (%d), want a batch of the routing command and its tick", batch, len(batch))
+	}
+	done, ok := batch[0]().(routeDoneMsg)
+	if !ok {
+		t.Fatalf("first batched command returned %T, want routeDoneMsg", done)
+	}
+	return done
 }

@@ -20,7 +20,9 @@ wt stop <target> --yes           # skip the in-use confirmation
 - Idle model: started through the same driver as `wt -M` (progress on
   stderr, Ctrl+C cancels). If the provider's single slot is occupied wt
   asks before replacing the running model; `--replace` skips the question.
-- Already running: does nothing, exits 0 (`wt: <id> is already running`).
+- Already running: the model is left running. Its LiteLLM route is written
+  if it is missing (`wt: LiteLLM route for <id> updated` on stderr), then wt
+  prints `wt: <id> is already running` and exits 0.
 - Not on disk (a registry entry whose artifact is missing): not listed;
   `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
   first`.
@@ -32,9 +34,13 @@ wt stop <target> --yes           # skip the in-use confirmation
   stopping an omlx/mtplx model clears that provider family's routes — the
   family's registry-model rows and its wt-marked discovered rows — keeping
   only the started model's own route on start. A hand-written row under
-  another name is never removed. A model that is already running gets no
-  route from `wt start` — run `wt litellm sync` if something else started
-  it.
+  another name is never removed. A model that is already running — one
+  something else started — gets only its own missing route: that write
+  removes no route and never replaces a hand-written row whose name is not
+  a registry model id (one named like a registry id is adopted as wt's own
+  row, as `wt litellm sync` does — guide 04,
+  `docs/guides/04-litellm-config.md`, Gotchas). Stale routes are left to the
+  next start, stop or `wt litellm sync`.
 - Cloud or unknown id: exits 1.
 
 ## `wt stop [model|provider]`
@@ -68,8 +74,9 @@ stopped (a single-model provider counts once). `--yes` skips the question; with 
 
 ## Exit codes
 
-`0` on success, no-op (already running, nothing to stop on a provider) or
-a cancelled `wt stop` picker; `1` on any error, including a declined
+`0` on success, when there was nothing to start or stop (already running —
+`wt start` may still write that model's missing route — or nothing to stop
+on a provider) or a cancelled `wt stop` picker; `1` on any error, including a declined
 confirmation and a cancelled `wt start` picker (`model selection canceled`).
 
 See also [`wt-smoke.md`](wt-smoke.md).

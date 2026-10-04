@@ -136,6 +136,12 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		// wait belongs to the code about to USE the proxy, and costs nothing
 		// when nothing is pending.
 		waitPendingRoutes()
+	} else {
+		// Already running, so no start hook ran: a model started outside wt
+		// has no route yet, and every row below would FAIL against the proxy
+		// with "Invalid model name". Writes that one route if it is missing
+		// and removes nothing; a no-op for a cloud target.
+		ensureRouteBeforeLaunch(a.cfg, m)
 	}
 	// Registered only once the start step succeeded: a failed start returns its
 	// error without an interactive stop picker burying it.

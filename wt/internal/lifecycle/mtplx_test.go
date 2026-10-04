@@ -120,7 +120,7 @@ func pidGone(pid int) bool {
 func TestMtplxStartSpawnsWaitsWarms(t *testing.T) {
 	e, cfg, port, argvFile := mtplxEnv(t, "serve", 0)
 	var stages []Stage
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{"mtplx", "Org/Model"}, func(s Stage) { stages = append(stages, s) })
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(s Stage) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestMtplxCancelTearsDownSpawnedProcess(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "serve", 5000) // never listens within the test
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(500 * time.Millisecond); cancel() }()
-	err := mtplxBackend{}.start(ctx, e, cfg, Target{"mtplx", "Org/Model"}, func(Stage) {})
+	err := mtplxBackend{}.start(ctx, e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -169,7 +169,7 @@ func TestMtplxCancelTearsDownSpawnedProcess(t *testing.T) {
 func TestMtplxProcessDiesDuringLoad(t *testing.T) {
 	e, cfg, _, _ := mtplxEnv(t, "die", 0)
 	start := time.Now()
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{"mtplx", "Org/Model"}, func(Stage) {})
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.Contains(err.Error(), "exited") {
 		t.Errorf("die: err = %v, want an 'exited' error", err)
 	}
@@ -178,7 +178,7 @@ func TestMtplxProcessDiesDuringLoad(t *testing.T) {
 	}
 
 	e2, cfg2, _, _ := mtplxEnv(t, "die-now", 0)
-	err = mtplxBackend{}.start(context.Background(), e2, cfg2, Target{"mtplx", "Org/Model"}, func(Stage) {})
+	err = mtplxBackend{}.start(context.Background(), e2, cfg2, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.Contains(err.Error(), "exited immediately") {
 		t.Errorf("die-now: err = %v, want 'exited immediately'", err)
 	}
@@ -191,14 +191,14 @@ func TestMtplxMissingBinaryAndPortBusy(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "serve", 0)
 	e.lookPath = func(string) (string, error) { return "", errors.New("nope") }
 	var bm *BinaryMissingError
-	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{"mtplx", "m"}, func(Stage) {}); !errors.As(err, &bm) {
+	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {}); !errors.As(err, &bm) {
 		t.Errorf("err = %v, want *BinaryMissingError", err)
 	}
 
 	busy := httptest.NewServer(http.NotFoundHandler())
 	defer busy.Close()
 	e.lookPath = func(string) (string, error) { return os.Args[0], nil }
-	err := (mtplxBackend{}).start(context.Background(), e, provCfg("mtplx", busy.URL), Target{"mtplx", "m"}, func(Stage) {})
+	err := (mtplxBackend{}).start(context.Background(), e, provCfg("mtplx", busy.URL), Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {})
 	var pb *PortBusyError
 	if !errors.As(err, &pb) {
 		t.Errorf("err = %v, want *PortBusyError", err)

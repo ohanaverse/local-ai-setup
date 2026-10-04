@@ -55,8 +55,9 @@ message
 (`smoke.Candidates` walks the same `catalog` rows a real launch consults).
 A discovered model (on disk, no registry entry) is eligible like any other:
 wt routes it under its discovered id when it starts it, so agents that go
-through LiteLLM can run it (one that something else started needs a
-`wt litellm sync` first).
+through LiteLLM can run it. A target that is already running — whoever
+started it — has its route written first if it is missing
+(`wt: LiteLLM route for <id> updated`).
 An idle pick is started first through the shared start driver, honouring
 the root `--replace` flag when another model occupies a single-model
 provider's slot.

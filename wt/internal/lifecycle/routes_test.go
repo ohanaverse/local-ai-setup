@@ -579,3 +579,358 @@ func TestBounceRoutesLeavesConfigAlone(t *testing.T) {
 		t.Fatal("bounceRoutes did not restart the proxy")
 	}
 }
+
+// TestStartRouteChangeUsesTheRowsModelID pins #195: an artifact whose name
+// fuzzy-matches a registry model ("org/Y/Q35" ends in "/Y/Q35") is a distinct
+// model with its own discovered id. With the row's id carried in Target the
+// route is written under that id; the lenient ModelFor fallback would route
+// the registry model mtplx/Y--Q35, so the picker and the hook would disagree.
+func TestStartRouteChangeUsesTheRowsModelID(t *testing.T) {
+	cfg := routesCfg()
+	ch := StartRouteChange(cfg, Target{ProviderID: "mtplx", ModelName: "org/Y/Q35", ModelID: "mtplx/org/Y/Q35"})
+	if len(ch.Add) != 1 || ch.Add[0].ID != "mtplx/org/Y/Q35" {
+		t.Fatalf("add = %+v, want the discovered id mtplx/org/Y/Q35", ch.Add)
+	}
+	if !slices.Equal(ch.RemoveFamilies, []string{"mtplx"}) {
+		t.Errorf("families = %v, want the single-model family cleared", ch.RemoveFamilies)
+	}
+}
+
+// TestStartRouteChangeExactRegistryID pins the other half: a ModelID that IS
+// a registry id routes that registry model, whatever its ModelName spelling.
+func TestStartRouteChangeExactRegistryID(t *testing.T) {
+	ch := StartRouteChange(routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"})
+	if len(ch.Add) != 1 || ch.Add[0].ID != "mtplx/Y--Q35" {
+		t.Fatalf("add = %+v, want the registry model mtplx/Y--Q35", ch.Add)
+	}
+}
+
+// TestStartRouteChangeWithoutModelIDKeepsTheFallback pins that a Target built
+// without an id resolves as before: ModelFor, then the discovered model.
+func TestStartRouteChangeWithoutModelIDKeepsTheFallback(t *testing.T) {
+	ch := StartRouteChange(routesCfg(), Target{ProviderID: "mtplx", ModelName: "org/Y/Q35"})
+	if len(ch.Add) != 1 || ch.Add[0].ID != "mtplx/Y--Q35" {
+		t.Fatalf("add = %+v, want the fuzzy-matched registry model", ch.Add)
+	}
+}
+
+// TestEnsureRouteAddsOnlyTheModelsRoute pins that the launch-time ensure
+// routes the model the start hook would, and removes nothing — not even a
+// single-model provider's family. Nothing was stopped on this path, and an
+// omlx/mtplx server can list sibling variants as running together: a family
+// clear here would delete a running sibling's route, so alternating launches
+// on two variants would each rewrite config.yaml, bounce the proxy and leave a
+// live session on the other with "Invalid model name". It also pins the one
+// line a changed write prints.
+func TestEnsureRouteAddsOnlyTheModelsRoute(t *testing.T) {
+	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	changed := EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"})
+	WaitPendingRoutes()
+	if !changed {
+		t.Fatal("changed = false, want true when the write changed config.yaml")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %+v, want one", *calls)
+	}
+	c := (*calls)[0]
+	if !slices.Equal(c.add, []string{"mtplx/Y--Q35"}) || len(c.remove) != 0 || len(c.families) != 0 {
+		t.Fatalf("call = %+v, want add [mtplx/Y--Q35] and no removal: the ensure must not clear a running sibling's route", c)
+	}
+	if got, want := warn.String(), "wt: LiteLLM route for mtplx/Y--Q35 updated\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+// TestEnsureRouteQuietWhenNothingChanged pins that a write reporting no
+// change prints nothing and restarts nothing, whatever the reason it was
+// unchanged. The write is stubbed, so why ApplyChange leaves a file alone
+// (the route is already there, a hand-written row holds the name) is not
+// exercised here.
+func TestEnsureRouteQuietWhenNothingChanged(t *testing.T) {
+	_, warn := stubRoutes(t, litellm.Result{Changed: false}, nil)
+	restarts := 0
+	restartProxy = func(context.Context) []string { restarts++; return nil }
+	changed := EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"})
+	WaitPendingRoutes()
+	if changed || warn.Len() != 0 || restarts != 0 {
+		t.Fatalf("changed = %v output = %q restarts = %d, want an unchanged, silent no-op", changed, warn.String(), restarts)
+	}
+}
+
+// TestEnsureRouteSilentWhenConfigMissing pins that a machine with no
+// config.yaml — LiteLLM never set up — sees nothing at launch.
+func TestEnsureRouteSilentWhenConfigMissing(t *testing.T) {
+	_, warn := stubRoutes(t, litellm.Result{}, litellm.ErrMissing)
+	if EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}) {
+		t.Fatal("changed = true on a missing config.yaml")
+	}
+	WaitPendingRoutes()
+	if warn.Len() != 0 {
+		t.Fatalf("output = %q, want nothing", warn.String())
+	}
+}
+
+// TestEnsureRouteWarnsAndNeverFails pins that a failed write is a warning,
+// never an error the launch could trip on, and prints no "updated" line.
+func TestEnsureRouteWarnsAndNeverFails(t *testing.T) {
+	_, warn := stubRoutes(t, litellm.Result{}, errors.New("boom"))
+	if EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}) {
+		t.Fatal("changed = true on a failed write")
+	}
+	WaitPendingRoutes()
+	if got, want := warn.String(), "wt: LiteLLM route not updated: boom\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+// TestEnsureModelRouteSkipsNonLocal pins the guard: a cloud model and a model
+// whose location cannot be resolved (its provider row is missing) are never
+// written, and the second does not panic.
+func TestEnsureModelRouteSkipsNonLocal(t *testing.T) {
+	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	cfg := routesCfg()
+	cloud := config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud}
+	orphan := config.Model{ID: "gone/y", ProviderID: "gone", ModelName: "y"}
+	if EnsureModelRoute(cfg, cloud) || EnsureModelRoute(cfg, orphan) {
+		t.Fatal("changed = true for a model that is not local")
+	}
+	if len(*calls) != 0 || warn.Len() != 0 {
+		t.Fatalf("calls = %+v output = %q, want no write and no output", *calls, warn.String())
+	}
+}
+
+// TestEnsureModelRouteBoundsTheLockWait pins that a launch cannot hang behind
+// another wt holding the config.yaml lock: the write is handed a context with
+// a deadline. It also pins the Target EnsureModelRoute builds — the row's id
+// travels with it.
+func TestEnsureModelRouteBoundsTheLockWait(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	inner := applyRoutes
+	var hadDeadline bool
+	var added string
+	applyRoutes = func(cfg *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
+		if o.Ctx != nil {
+			_, hadDeadline = o.Ctx.Deadline()
+		}
+		if len(ch.Add) == 1 {
+			added = ch.Add[0].ID
+		}
+		return inner(cfg, ch, o)
+	}
+	EnsureModelRoute(routesCfg(), config.Model{ID: "mtplx/org/Y/Q35", ProviderID: "mtplx", ModelName: "org/Y/Q35", Location: config.LocationLocal})
+	WaitPendingRoutes()
+	if !hadDeadline {
+		t.Error("the route write got no deadline: a contended config.yaml lock would hang the launch")
+	}
+	if added != "mtplx/org/Y/Q35" {
+		t.Errorf("added = %q, want the row's own id mtplx/org/Y/Q35", added)
+	}
+}
+
+// TestTryEnsureModelRouteDoesNotWaitForTheLock pins the launch-time check's
+// non-blocking form against a lock another wt is genuinely holding: it reports
+// that it got nowhere, promptly, and writes nothing. This is what keeps the TUI
+// picker's update goroutine — the one that repaints the screen and answers keys
+// — from freezing for ensureRouteLockTimeout before its routing screen has been
+// entered (#192 review). A regression here does not fail an assertion, it hangs
+// the picker with ctrl+c dead, so the guard below is the test.
+func TestTryEnsureModelRouteDoesNotWaitForTheLock(t *testing.T) {
+	cfgPath, restarts, warn := realRoutes(t, "model_list: []\n")
+	cfg := routesCfg()
+	mdl := config.Model{ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal}
+
+	// Hold the lock the way another wt mid-write would. flock conflicts between
+	// two open file descriptions, this process's included, so a plain goroutine
+	// with its own WithLock is enough to contend.
+	release := make(chan struct{})
+	holding, held := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(held)
+		_ = litellm.WithLock(context.Background(), cfgPath, func() error {
+			close(holding)
+			<-release
+			return nil
+		})
+	}()
+	<-holding
+
+	var changed, done bool
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		changed, done = TryEnsureModelRouteTo(nil, cfg, mdl)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		// Unblock the holder so the check can finish writing before the test
+		// ends; the assertions are moot on a failure path that already fataled.
+		close(release)
+		<-held
+		<-returned
+		t.Fatal("TryEnsureModelRouteTo waited for a held config.yaml lock: the picker would freeze")
+	}
+	close(release)
+	<-held
+	WaitPendingRoutes()
+
+	if done {
+		t.Error("done = true, want false: nothing was established while the lock was held")
+	}
+	if changed {
+		t.Error("changed = true, want false: nothing was written")
+	}
+	if warn.String() != "" {
+		t.Errorf("output = %q, want none: a contended lock is not a warning, the retry reports", warn.String())
+	}
+	if got := routedIDs(t, cfgPath); len(got) != 0 {
+		t.Errorf("routed = %v, want none: the check wrote config.yaml while another wt held it", got)
+	}
+	if got := restarts(); got != 0 {
+		t.Errorf("restarts = %d, want 0: nothing changed, so no proxy bounce", got)
+	}
+}
+
+// TestTryEnsureModelRouteRoutesWhenTheLockIsFree pins the other side of the same
+// form: a free lock is still taken, so the common launch — the route already
+// present — is decided here, on the update goroutine, in one non-blocking call.
+// WithLock only runs its first flock before it consults a deadline, and that is
+// what an already-cancelled context relies on; a form that turned contention
+// into "never write" would push every launch of a running model onto the retry
+// path and its routing screen.
+func TestTryEnsureModelRouteRoutesWhenTheLockIsFree(t *testing.T) {
+	cfgPath, restarts, warn := realRoutes(t, "model_list: []\n")
+
+	changed, done := TryEnsureModelRouteTo(nil, routesCfg(), config.Model{
+		ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal,
+	})
+	WaitPendingRoutes()
+
+	if !done || !changed {
+		t.Fatalf("changed = %v done = %v, want both true with the lock free", changed, done)
+	}
+	if got := routedIDs(t, cfgPath); !slices.Contains(got, "mtplx/Y--Q35") {
+		t.Errorf("routed = %v, want mtplx/Y--Q35", got)
+	}
+	if want := "wt: LiteLLM route for mtplx/Y--Q35 updated\n"; warn.String() != want {
+		t.Errorf("output = %q, want %q", warn.String(), want)
+	}
+	// The write itself changed the file, so the proxy must have bounced: this
+	// form bounces exactly as the blocking one does, it just does not wait.
+	if got := restarts(); got != 1 {
+		t.Errorf("restarts = %d, want 1", got)
+	}
+}
+
+// TestTryEnsureModelRouteGivesTheWriteNoTimeToWait pins the mechanism at the
+// seam it lives at: the non-blocking form hands ApplyChange a context that is
+// already done, so WithLock cannot poll (lockPollInterval) its way up to a
+// deadline. It is deliberately not "a short wait" — a 50ms budget would pass
+// every behavioural test here and still put a stall on the update goroutine.
+func TestTryEnsureModelRouteGivesTheWriteNoTimeToWait(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	inner := applyRoutes
+	var ctxErr error
+	var hadDeadline bool
+	applyRoutes = func(cfg *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
+		if o.Ctx != nil {
+			ctxErr = o.Ctx.Err()
+			_, hadDeadline = o.Ctx.Deadline()
+		}
+		return inner(cfg, ch, o)
+	}
+	TryEnsureModelRouteTo(nil, routesCfg(), config.Model{
+		ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal,
+	})
+	WaitPendingRoutes()
+
+	if ctxErr == nil {
+		t.Error("the route write got a live context: WithLock would poll for the lock up to its caller's deadline")
+	}
+	if hadDeadline {
+		t.Error("the route write got a deadline, want none: a deadline is a wait, however short")
+	}
+}
+
+// TestEnsureModelRouteToSendsItsOutputToTheCaller pins what the TUI picker
+// relies on (#192): a check handed a writer prints there and not on stderr —
+// the "updated" line and, as long as the caller reads only after
+// WaitPendingRoutes, what the asynchronous proxy restart prints too. A failed
+// restart is the warning that explains an "Invalid model name" launch, and it
+// is printed by a goroutine that outlives the check; under Bubble Tea's alt
+// screen stderr is where nobody would see either line. The next check, handed
+// no writer, must print on stderr as before: the writer belongs to one check,
+// not to the process. Run under -race this also pins that the restart
+// goroutine's write and the check's own do not race.
+func TestEnsureModelRouteToSendsItsOutputToTheCaller(t *testing.T) {
+	_, stderr := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	restartProxy = func(context.Context) []string { return []string{"LiteLLM proxy restart failed: boom"} }
+	mdl := config.Model{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}
+	const want = "wt: LiteLLM route for ollama/a:1 updated\nwt: LiteLLM proxy restart failed: boom\n"
+
+	var captured bytes.Buffer
+	if !EnsureModelRouteTo(&captured, routesCfg(), mdl) {
+		t.Fatal("changed = false, want true when the write changed config.yaml")
+	}
+	WaitPendingRoutes()
+	if got := captured.String(); got != want {
+		t.Fatalf("the check's writer got %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr got %q, want nothing: the check was handed its own writer", stderr.String())
+	}
+
+	EnsureModelRoute(routesCfg(), mdl)
+	WaitPendingRoutes()
+	if got := stderr.String(); got != want {
+		t.Fatalf("stderr after a check with no writer = %q, want %q", got, want)
+	}
+	if got := captured.String(); got != want {
+		t.Fatalf("the first check's writer = %q after a later check, want it untouched (%q)", got, want)
+	}
+}
+
+// TestRouteOutputIsNotSharedWithAnotherOperation pins the #192 review finding
+// that replaced SetRouteOutput. That redirect swapped one process-wide writer
+// for the length of a check, so it caught whatever any route operation printed
+// in that window: a start whose replace failed leaves a proxy restart in
+// flight, the user launches another, running model while it is, and the first
+// model's restart warning was collected as the second launch's note — shown in
+// its status line, in place of its own "updated" line. A check's writer now
+// travels with the check, so the unrelated restart still prints on stderr.
+func TestRouteOutputIsNotSharedWithAnotherOperation(t *testing.T) {
+	_, stderr := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var restarts atomic.Int32
+	restartProxy = func(context.Context) []string {
+		if restarts.Add(1) > 1 {
+			return nil // the check's own restart: nothing to report
+		}
+		// The other operation's restart: held open across the whole check,
+		// then failing.
+		close(entered)
+		<-release
+		return []string{"LiteLLM proxy restart failed: the other model's"}
+	}
+
+	// The other operation: a failed replace settling the occupant's removal.
+	bounceRoutes(context.Background(), routesCfg())
+	<-entered
+
+	var captured bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&captured, routesCfg(), config.Model{
+		ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal,
+	})
+	if !changed || !done {
+		t.Fatalf("changed = %v done = %v, want the check to write its route", changed, done)
+	}
+	close(release)
+	WaitPendingRoutes()
+
+	if got, want := captured.String(), "wt: LiteLLM route for ollama/a:1 updated\n"; got != want {
+		t.Errorf("the check's writer got %q, want only its own line %q", got, want)
+	}
+	if got, want := stderr.String(), "wt: LiteLLM proxy restart failed: the other model's\n"; got != want {
+		t.Errorf("stderr got %q, want the other operation's warning %q", got, want)
+	}
+}

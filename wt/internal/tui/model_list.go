@@ -49,9 +49,17 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // picker honors it: the agent flow shows it on Enter, and the standalone
 // PickModel/PickStartModel (wt smoke, wt start) refuse to select a blocked
 // row and show it as a notice instead.
+//
+// line is always the FULL table's row, whatever the terminal's width: it is
+// what the filter matches, so a query for a family or a cost still finds its
+// row when that column is not drawn. What is drawn comes from cells through
+// cols, the layout the whole table shares (nil for an item built by hand, in
+// which case the full line is drawn).
 type modelItem struct {
 	model     config.Model
 	line      string
+	cells     [numCols]string
+	cols      *tableColumns
 	marked    bool
 	ref       int
 	exception string
@@ -89,7 +97,9 @@ func refColumn(ref int) string {
 }
 
 // FilterValue returns the full line so the list's built-in fuzzy filter
-// narrows by both family and ID. Deliberately excludes the marker prefix:
+// narrows by both family and ID — the full table's line, not the columns
+// drawn at the current width, so hiding a column on a narrow terminal does
+// not change what a query can find. Deliberately excludes the marker prefix:
 // the user never typed it, so it would only pollute match ranking.
 func (m modelItem) FilterValue() string { return m.line }
 
@@ -99,6 +109,9 @@ func (m modelItem) FilterValue() string { return m.line }
 func (m modelItem) Title() string {
 	prefix := refColumn(m.ref)
 	line := m.line
+	if m.cols != nil {
+		line = m.cols.line(m.cells)
+	}
 	if m.exception != "" {
 		line += " " + m.exception
 	}
@@ -148,6 +161,34 @@ func styleTableTitle(l *list.Model, theme themes.Theme) {
 	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
 }
 
+// tableTitleRoom is how much wider than the table's header its list must be
+// for bubbles to draw that header whole. The list's title bar appends two
+// spaces to the title (the gap before a status message, there even when the
+// message is empty) and cuts the result, with an ellipsis, to the list's width
+// less the one column it reserves for its spinner. A header closer to the edge
+// than this loses the end of its last heading, or keeps it and gains a stray
+// "…" where the two spaces were cut.
+//
+// The rows need no such room. The delegate would keep a row clear of its
+// title styles' padding, but ThemedListDelegate's title styles have none, so a
+// row is drawn whole up to the list's full width.
+const tableTitleRoom = 3
+
+// fitTableColumns narrows or widens the table in l to a list of the given
+// width: it picks the columns that fit (tableColumns.fit) and sets the header
+// to match. The rows redraw from the shared layout by themselves, so nothing
+// is rebuilt: the inventory is not probed again and the cursor, the marked
+// row and any filter are untouched. A list with no rows has nothing to fit.
+func fitTableColumns(l *list.Model, width int) {
+	for _, it := range l.Items() {
+		if mi, ok := it.(*modelItem); ok && mi.cols != nil {
+			mi.cols.fit(width)
+			l.Title = mi.cols.header()
+			return
+		}
+	}
+}
+
 // clampModelSelection guards against bubbles v1.0.0 leaving
 // m.Index() outside [0, len(VisibleItems())) after a filter
 // narrows the list. With dividers gone there is no
@@ -166,31 +207,8 @@ func clampModelSelection(m *model) tea.Cmd {
 // phaseModelView renders the model picker screen: the list of
 // agent+tag-compatible models, an agent/tag header, and a footer
 // describing the keybinds. The picker IS the agent+model screen —
-// there is no separate browser.
+// there is no separate browser. The lines around the list are modelFrames'
+// (layout.go), the same frames the list's height is measured from.
 func (m *model) phaseModelView() string {
-	pad := lipgloss.NewStyle().Padding(1, 2)
-	headerStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader))
-	dimStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	header := headerStyle.Render(fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag))
-	// Mode footer: the picker is where an off/on surprise surfaces (a row
-	// marked "(via proxy)" under direct mode), so name the current mode on
-	// the same screen. Falls back to direct when cfg is nil (view-only
-	// tests).
-	mode := "LiteLLM: off (direct)"
-	if m.cfg != nil && m.cfg.IsLitellm() {
-		mode = "LiteLLM: on"
-	}
-	// Enter's effect depends on the highlighted row — launch for a cloud or
-	// already-running row, start through the lifecycle engine for a
-	// non-running local one — so the hint names both rather than claiming
-	// Enter always launches.
-	footer := dimStyle.Render(fmt.Sprintf("\n%s\n[↑/↓] navigate   [enter] launch or start   [q] quit", mode))
-	body := header + m.models.View() + footer
-	// A launch/config/session/ollama error set on the model phase must be
-	// visible; phaseModelView previously dropped m.status, making a failed
-	// launch look like "nothing happens" when Enter was pressed.
-	if m.status != "" {
-		body = ErrorStyle(m.theme).Render(m.status) + "\n\n" + body
-	}
-	return pad.Render(body)
+	return drawnFrame(&m.models, m.height, m.modelFrames()...)(m.models.View())
 }

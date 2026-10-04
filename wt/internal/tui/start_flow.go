@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -17,15 +21,228 @@ import (
 var startModel = lifecycle.Start
 
 // waitPendingRoutes is a test seam over lifecycle.WaitPendingRoutes. The route
-// hook's LiteLLM proxy restart runs asynchronously, and a successful start
-// hands straight off to the launch flow, whose agent dials the model THROUGH
-// the proxy: launching while the restart is in flight can meet a refused
-// connection or the pre-restart route table. It is called on the Bubble Tea
-// update goroutine, so the "Starting …" screen stops updating for the length
-// of the restart — the alternative (a wait phase of its own) would show a
-// ticking screen for the same total time, and this is the last thing that
-// happens before the agent takes over the terminal anyway.
+// hook's LiteLLM proxy restart runs asynchronously, and both of its callers
+// here hand straight off to the launch flow, whose agent dials the model
+// THROUGH the proxy: launching while the restart is in flight can meet a
+// refused connection or the pre-restart route table. finishStart calls it on
+// the Bubble Tea update goroutine, so the "Starting …" screen stops updating
+// for the length of the restart — that screen already says the routes are
+// being updated, and it is the last thing before the agent takes the
+// terminal. The launch-time route check (checkLaunchRoute) has no such screen
+// to sit behind, so it calls it from a command, behind phaseRouting.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
+
+// ensureModelRoute is a test seam over lifecycle.EnsureModelRouteTo, the form
+// of the launch-time check that sends its output to a writer of the caller's.
+// Production rewrites config.yaml and restarts the LiteLLM proxy; TestMain
+// stubs it.
+var ensureModelRoute = lifecycle.EnsureModelRouteTo
+
+// tryEnsureModelRoute is a test seam over lifecycle.TryEnsureModelRouteTo, the
+// launch-time check's first, non-blocking attempt. See checkLaunchRoute for why
+// the check needs two forms and why this one runs on the update goroutine.
+var tryEnsureModelRoute = lifecycle.TryEnsureModelRouteTo
+
+// routingState is the in-flight launch-time route check (phaseRouting): the
+// route was written and the proxy is restarting.
+type routingState struct {
+	// id is the run id; a routeDoneMsg or routeTickMsg carrying another one is
+	// from a superseded check and is dropped, as startState.id does for starts.
+	id      int
+	modelID string
+	began   time.Time
+	// settle finishes the check: it re-runs the route write if the first,
+	// non-blocking attempt could not take the config.yaml lock, waits for the
+	// proxy restart and returns what the check printed. It runs at most once
+	// however many callers there are, and every caller gets the same text: the
+	// routing command calls it, and so does Run() when the user quit before
+	// that command's message was handled — otherwise the collected lines
+	// would be dropped, and wt would exit under a restart still in flight.
+	settle func() string
+	// settled reports whether settle has finished, so Run() can tell a check
+	// it still has to wait for from one that is merely unhandled. It is read
+	// from another goroutine than the one settling, hence the atomic.
+	settled *atomic.Bool
+	// quitting is set once ctrl+c asked wt to quit. tea.Quit is a command:
+	// its QuitMsg comes back through the message channel, so the check's
+	// routeDoneMsg can still be delivered in between. A quitting check drops
+	// it — the user is leaving, and launching an agent now would also record
+	// rotation and refcount for a session they did not want. It mirrors
+	// startState.cancelling. The state itself is kept so Run() can settle.
+	quitting bool
+}
+
+type routeDoneMsg struct {
+	id    int
+	notes string
+}
+type routeTickMsg struct{ id int }
+
+func routeTick(id int) tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return routeTickMsg{id: id} })
+}
+
+// checkLaunchRoute makes sure a running local model has its LiteLLM route
+// before the launch (#192), then continues to launchSelected. A model wt did
+// not start has no route until something writes one, and the agent launched on
+// it would get "Invalid model name" from the proxy. The check writes that one
+// route if it is missing and removes nothing, so a running sibling's route
+// survives. It never fails the launch. mdl must be a row the probe reported
+// running: this never starts a model. The caller has already established that
+// the launch goes through LiteLLM.
+//
+// The check runs on the update goroutine, so it must not wait: it takes the
+// config.yaml lock only if it is free right now (TryEnsureModelRouteTo), and a
+// lock another wt holds is handed to the returned command, behind phaseRouting.
+// EnsureModelRoute would instead block this goroutine for up to
+// ensureRouteLockTimeout (10s) — frozen with no repaint and no key, ctrl+c
+// included, and *before* the routing screen had been entered, so the one screen
+// built to cover a route wait would be the one thing the wait prevented.
+//
+// What follows depends on what that first attempt could establish:
+//
+//   - Free lock, nothing written: nothing was restarted, so there is nothing to
+//     wait for and the launch continues in this same Update — no routing
+//     screen, not for a frame.
+//   - Free lock, route written: the proxy is restarting, which takes 10–20 s.
+//     Waiting for it here would freeze the picker with no status, so the model
+//     enters phaseRouting and the wait runs in the returned command.
+//   - Contended lock: nothing was written and nothing is yet known, so the
+//     command re-runs the whole check with the wait it is allowed to pay there,
+//     then waits for the restart that check may start.
+//
+// Everything the check prints is collected rather than written to stderr,
+// where the alt screen would hide it; recordRouteNotes keeps it for the real
+// terminal. The check is handed the buffer itself, so only its own lines land
+// there — the restart a failed start is still settling prints where it always
+// did, and cannot turn up as this launch's note. The buffer is read at once
+// when the check finished and nothing changed (nothing was started that could
+// still write to it), and only after the wait otherwise: the restart's
+// warnings are written by a goroutine, and the wait is what rejoins it.
+//
+// The seams and m.cfg are read HERE, on the update goroutine, and the command
+// closes over the values, so a test's seam swap cannot race the command — the
+// same reason runStart reads startModel before starting its goroutine.
+func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
+	try, ensure, wait := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes
+	cfg := m.cfg
+	// A pointer: the command below outlives this Update and writes to it.
+	captured := &bytes.Buffer{}
+	changed, done := try(captured, cfg, mdl)
+	if done && !changed {
+		m.recordRouteNotes(captured.String())
+		return m.launchSelected()
+	}
+	var once sync.Once
+	var notes string
+	settled := &atomic.Bool{}
+	settle := func() string {
+		once.Do(func() {
+			if !done {
+				// The lock was held, so the check above wrote nothing and got
+				// no further than that. Run it again, this time willing to wait
+				// for the lock: a retry that still fails reports itself, and
+				// until it has run, whether the proxy is about to restart is
+				// simply unknown — which is why this path is behind the screen
+				// even though it may end up changing nothing.
+				ensure(captured, cfg, mdl)
+			}
+			wait()
+			// Only now: the restart's goroutine writes its warnings to the
+			// buffer until the wait has returned.
+			notes = captured.String()
+			settled.Store(true)
+		})
+		return notes
+	}
+	m.routeRun++
+	id := m.routeRun
+	m.routing = &routingState{id: id, modelID: mdl.ID, began: time.Now(), settle: settle, settled: settled}
+	m.phase = phaseRouting
+	m.status = ""
+	return m, tea.Batch(func() tea.Msg { return routeDoneMsg{id: id, notes: settle()} }, routeTick(id))
+}
+
+// recordRouteNotes keeps what a launch-time route check printed: it appends
+// the text to pendingRouteNotes, which is printed on the real terminal once the
+// alt screen is released, and puts the last non-empty line in the status line
+// for a user who lands on the resume prompt or back on the picker instead of
+// in the agent. The same line is kept in m.routeNote, so launchSelected can
+// show it beside a resume warning and esc from the resume prompt can keep it.
+// A check that printed nothing leaves both alone.
+func (m *model) recordRouteNotes(notes string) {
+	if notes == "" {
+		return
+	}
+	pendingRouteNotes += notes
+	note := ""
+	for _, line := range strings.Split(notes, "\n") {
+		if strings.TrimSpace(line) != "" {
+			note = strings.TrimSpace(line)
+		}
+	}
+	if note != "" {
+		m.routeNote = note
+		m.status = note
+	}
+}
+
+// handleRouteKey handles keys in phaseRouting. The route is already written
+// and the proxy restart cannot be called off, so there is nothing to cancel:
+// ctrl+c quits wt (Run() still collects the check's output on the way out) and
+// every other key is ignored — including esc and q, which elsewhere would quit
+// or pop back to a picker whose launch is still about to happen. ctrl+c also
+// marks the check as quitting, so its routeDoneMsg cannot launch an agent in
+// the gap before the QuitMsg is handled (see routingState.quitting).
+func (m model) handleRouteKey(msg tea.KeyMsg) (model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		// A copy, not a write through the pointer: Update returns a new model
+		// and must leave the one it was given as it found it. settle and
+		// settled are shared by the copy, which is what keeps them once-only.
+		quitting := *m.routing
+		quitting.quitting = true
+		m.routing = &quitting
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// handleRouteMsg processes the routing phase's messages. Its caller routes
+// only routeDoneMsg/routeTickMsg here. A message whose id does not match the
+// in-flight check, or that arrives outside phaseRouting, is stale and is
+// dropped: acting on it would launch an agent the user did not ask for. So is
+// any message for a check the user quit out of (routingState.quitting); its
+// captured output is not lost, because Run() settles the check and prints it.
+func (m model) handleRouteMsg(msg tea.Msg) (model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case routeTickMsg:
+		if m.routing == nil || m.phase != phaseRouting || msg.id != m.routing.id || m.routing.quitting {
+			return m, nil
+		}
+		return m, routeTick(msg.id)
+	case routeDoneMsg:
+		if m.routing == nil || m.phase != phaseRouting || msg.id != m.routing.id || m.routing.quitting {
+			return m, nil
+		}
+		m.routing = nil
+		// Back to the picker's phase first, as finishStart does: every way
+		// launchSelected can fail to launch returns to the model picker.
+		m.phase = phaseModel
+		// A window size that arrived during routing never reached the model
+		// list, which is fitted only while its own phase is showing; Update's
+		// fitLists does that once this message has been handled.
+		m.recordRouteNotes(msg.notes)
+		return m.launchSelected()
+	}
+	return m, nil
+}
+
+// routingView is phaseRouting's screen. It names no cancel key because there
+// is none: see handleRouteKey.
+func (m model) routingView() string {
+	elapsed := time.Since(m.routing.began).Round(time.Second)
+	return fmt.Sprintf("Updating the LiteLLM route for %s — restarting the proxy (%s)\n\n[ctrl+c] quit wt", m.routing.modelID, elapsed)
+}
 
 // startState is the in-flight start: which row, the current stage, when it
 // began, how to cancel it, and the channel carrying its messages.
@@ -115,7 +332,7 @@ func (m model) beginStart(it *modelItem, allowReplace bool) (model, tea.Cmd) {
 	// Any refresh still in flight predates this start; finishStart issues its own.
 	m.refreshGen++
 	id := m.startRun
-	ch := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName}, allowReplace, id)
+	ch := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, id)
 	m.start = &startState{id: id, item: it, began: time.Now(), cancel: cancel, ch: ch}
 	m.phase = phaseStarting
 	m.status = ""

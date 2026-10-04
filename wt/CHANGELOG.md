@@ -20,6 +20,14 @@
   `id<TAB>(hand-written)` and its `--json` gains `rows: [{id, managed}]`.
   A `config.yaml` whose `model_list` is not a list is refused on every
   writing path.
+- On a terminal too narrow for the whole model table, the model picker (and
+  the picker `wt start` and `wt smoke` use) now drops whole columns —
+  survey first, then usage (30D, 7D, 1D), cost, location and family — and
+  always keeps the model id, status and running columns. The list used to cut
+  a row wider than itself wherever its own width fell, ending it in `…`,
+  which on a long model id hid whether the model was running. The filter still matches the dropped columns' text, and
+  widening the terminal brings the columns back. Only when the three kept
+  columns alone do not fit is a row cut at the edge.
 - Stopping an ollama model no longer removes its LiteLLM route: a pulled
   model is still served on request (#179).
 - Local models are discovered, not configured (#179 Phase B). A local row in
@@ -40,9 +48,8 @@
   name. **The first sync after upgrading adds a route for every pulled
   ollama model and every running omlx/mtplx model that has no registry
   entry** — additive, listed by `wt litellm sync --dry-run`, and removed
-  again when the artifact goes. Known gap: a local model started outside wt
-  has no route until a sync runs, and `wt start` on an already-running
-  model writes none.
+  again when the artifact goes. A local model started outside wt has no
+  route until a sync runs or wt launches it (see Fixed, #192).
 - Starting a model on a single-model provider (omlx, mtplx) clears that
   provider family's routes — every wt-marked row (discovered siblings
   included) and the family's registry-model rows, marked or legacy-unmarked
@@ -127,6 +134,44 @@
 
 ### Fixed
 
+- Launching a running local model that wt did not start no longer fails with
+  `Invalid model name` (#192). wt writes the model's LiteLLM route, if it is
+  missing, before handing the model to an agent — on a `-M` pin, on rotation,
+  in the picker and in `wt smoke` — and `wt start <id>` on a running model now
+  repairs the route instead of only reporting `already running`. It prints
+  `wt: LiteLLM route for <id> updated` when it wrote one. In the picker, a
+  launch that had to write the route shows an "Updating the LiteLLM route"
+  progress screen while the proxy restarts instead of freezing, and that line
+  and any route warning are printed on the terminal once the picker releases
+  it (when the agent starts, or after wt exits). A hand-written row
+  whose name is not a registry model id is never replaced (one named like a
+  registry id is adopted, as `wt litellm sync` does — guide 04,
+  `docs/guides/04-litellm-config.md`, Gotchas), and nothing is written when
+  the launch dials the provider directly.
+- The model picker's agent/tag header and its status line are on screen
+  again. The picker's view was taller than the terminal — the list took the
+  window height minus two under six to eight lines of the picker's own — and
+  the terminal UI drops a too-tall view's top lines, so the header and every
+  status the picker set (a failed start, `cancelled`, a resume warning) were
+  pushed off the top. The list is now sized to leave room for them, and
+  re-sized when a status appears or clears, the list's help is expanded with
+  `?`, or the terminal is resized. The agent picker's `directory:` line was
+  lost the same way and is fixed the same way; the ollama availability prompt
+  now follows a window resize. A terminal too short for the whole model picker
+  gives up its blank margin, then the header, then the mode line and key
+  hints; the agent picker gives up its `directory:` line (below 14 lines when
+  a status is showing).
+- `loading worktrees...` no longer stays on the picker after the worktrees
+  have loaded. It was the picker's initial status and nothing cleared it; it
+  went unnoticed on the agent and model pickers only because their status
+  line was off the top of the screen.
+- No picker screen is wider than the terminal. The model picker's table was
+  sized two columns past the right edge, and a long status line widened the
+  whole screen; lists are now sized to the columns their screen leaves, and
+  status lines, paths and key hints end at the edge.
+- The start hook writes a model's route under the id the picker showed. An
+  artifact whose name resembles a registry model's (`org/name` beside `name`)
+  was routed under the registry model's id (#195).
 - The model picker (TUI) fetches the agent's full catalog once and filters it
   in place via `cfg.EligibleModelsIn`, sharing a single traversal with
   `EligibleModels` instead of re-scanning the catalog to build a family-count

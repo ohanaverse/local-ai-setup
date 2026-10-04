@@ -650,3 +650,40 @@ func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
 		t.Fatalf("events = %s, want row", got)
 	}
 }
+
+// TestSmokeCmdRunningPinEnsuresRouteBeforeRows pins #192 for smoke: a target
+// that is already running skips the start, so no start hook writes its route.
+// Smoke checks the route and waits for the proxy before the first row, or a
+// model started outside wt reports a spurious FAIL on every row.
+func TestSmokeCmdRunningPinEnsuresRouteBeforeRows(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	events := stubEnsureRoute(t)
+	oldStart, oldRel, oldPick, oldTTY, oldExit := startModel, releaseSession, runStopPicker, stdinTTY, smokeExit
+	t.Cleanup(func() {
+		startModel, releaseSession, runStopPicker, stdinTTY, smokeExit = oldStart, oldRel, oldPick, oldTTY, oldExit
+	})
+	startModel = func(*config.Config, catalog.Row, bool) error {
+		*events = append(*events, "start")
+		return nil
+	}
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) { *events = append(*events, "stop") }
+	stdinTTY = func() bool { return true }
+	smokeExit = func(code int) { *events = append(*events, fmt.Sprintf("exit%d", code)) }
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		*events = append(*events, "row")
+		*cleanup = func() error { return nil }
+		return smoke.StubOutcome("boom", 1)
+	}))
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(*events, ","); got != "ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1" {
+		t.Fatalf("events = %s, want ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1", got)
+	}
+}

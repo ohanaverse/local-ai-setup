@@ -48,7 +48,7 @@ restart the proxy after a change, via `WT_LITELLM_RESTART_CMD` (legacy alias
 gui/$(id -u)/local.litellm.proxy`. `wt litellm sync` restarts and returns
 (the proxy may need a few seconds before the new route is live); only the
 automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI start flow
-and stop picker then wait up to 30s for `/health/liveliness`, when a LiteLLM
+and stop picker, and the route check at launch, then wait up to 30s for `/health/liveliness`, when a LiteLLM
 URL is configured and a pre-probe before the restart was not refused.
 `modelman` no longer routes models itself (#179): it changes its own state and
 then runs one `wt litellm sync`, which is what makes a start/stop/registry

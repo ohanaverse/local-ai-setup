@@ -1801,3 +1801,135 @@ func TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError(t *testing.T) {
 		t.Errorf("stderr = %q, want no self-heal notice when the target couldn't even be resolved", string(out))
 	}
 }
+
+// TestLaunchFilteredEnsuresRouteForRunningLocalModel pins #192: a running
+// local model launched through LiteLLM has its route checked, and the proxy
+// waited for, before the agent runs. Such a model may never have been started
+// by wt, so no start hook wrote its route.
+func TestLaunchFilteredEnsuresRouteForRunningLocalModel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+		Models: []config.Model{
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/remote-only-model", Artifact: "remote-only-model", ModelName: "remote-only-model", Registered: true, Running: true},
+		},
+	})
+	events := stubEnsureRoute(t)
+
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	if got := strings.Join(*events, ","); got != "ensure:ollama/remote-only-model,wait" {
+		t.Fatalf("events = %q, want ensure:ollama/remote-only-model,wait", got)
+	}
+}
+
+// TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm pins that the
+// launch-time route check (#192) is gated on the per-model resolved route,
+// not on the routing toggle. codex speaks only openai-responses, which the
+// ollama provider does not serve, so ResolveRoute forces LiteLLM with the
+// toggle off — the one case where route.Litellm and cfg.IsLitellm()
+// disagree. The agent dials the proxy, so the model's route must be checked
+// and the proxy waited for; a gate on the toggle would skip both.
+func TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		// No Protocols set: EffectiveProtocols defaults to openai-chat only,
+		// which codex's openai-responses never overlaps.
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+		Models: []config.Model{
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "codex", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	if cfg.IsLitellm() {
+		t.Fatal("fixture: the routing toggle must be off")
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/remote-only-model", Artifact: "remote-only-model", ModelName: "remote-only-model", Registered: true, Running: true},
+		},
+	})
+	events := stubEnsureRoute(t)
+
+	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered with protocol-forced litellm: %v", err)
+	}
+	if got := strings.Join(*events, ","); got != "ensure:ollama/remote-only-model,wait" {
+		t.Fatalf("events = %q, want ensure:ollama/remote-only-model,wait", got)
+	}
+}
+
+// TestLaunchFilteredSkipsEnsureOnDirectRoute pins that a launch dialing the
+// provider directly never touches config.yaml: the route it would write is
+// not on this launch's path. The provider speaks claude's wire protocol and
+// has a base_url, so with LiteLLM off the route resolves direct.
+func TestLaunchFilteredSkipsEnsureOnDirectRoute(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx/m", ProviderID: "omlx", ModelName: "m", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"omlx"}}},
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/m", Artifact: "m", ModelName: "m", Registered: true, Running: true, ArtifactKnown: true},
+		},
+	})
+	events := stubEnsureRoute(t)
+
+	// The launch must succeed: an error here would mean it never reached the
+	// point where the check would run, and the assertion below would pass
+	// without proving anything.
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered on a direct route: %v", err)
+	}
+	if len(*events) != 0 {
+		t.Fatalf("events = %v, want none on a direct route", *events)
+	}
+}

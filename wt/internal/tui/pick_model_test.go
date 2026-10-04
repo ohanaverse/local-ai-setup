@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -314,5 +316,128 @@ func TestPickStartModelIgnoresLaunchRoutes(t *testing.T) {
 	plain := byID(newPickModel(cfg, models, themes.Default, false))
 	if it := plain["omlx/idle"]; it == nil || it.blocked == "" {
 		t.Errorf("plain PickModel omlx/idle: %+v, want blocked by the unresolvable route", it)
+	}
+}
+
+// rowsPickModel is the standalone picker with the given number of rows, before
+// the terminal has reported a size.
+func rowsPickModel(t *testing.T, rows int) pickModel {
+	t.Helper()
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, runningOmlxSnapshot())
+	cfg := rowsConfig(rows)
+	pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+	if got := len(pm.list.Items()); got != rows {
+		t.Fatalf("standalone picker has %d rows, want %d", got, rows)
+	}
+	return pm
+}
+
+// TestStandalonePickerFitsWithHelpOpenAndANotice pins that the picker
+// `wt start` and `wt smoke` use stays within the terminal when `?` opens the
+// full help and Enter on a blocked row then adds its one-line notice — for
+// every row count and height, and with the window size reported again while
+// the help is open. The expanded help can tip the list onto a second page,
+// which adds a pagination line, and the notice takes a line of its own; the
+// list is fitted to its frame after each of those messages (pickModel.fit). A
+// view one line over loses the table's header line off the top.
+//
+// A terminal too short for the expanded help plus the notice is not counted:
+// the list keeps its least height there, as in the agent flow's picker.
+func TestStandalonePickerFitsWithHelpOpenAndANotice(t *testing.T) {
+	var helpOnly, withNotice, resizedOpen tooTall
+	for rows := 2; rows <= 49; rows++ {
+		base := rowsPickModel(t, rows)
+		// Enter on the highlighted row must show a notice, not select it.
+		base.list.SelectedItem().(*modelItem).blocked = "claude/opus cannot be started here"
+		for height := 12; height <= 60; height++ {
+			name := fmt.Sprintf("%d rows, height %d", rows, height)
+			size := tea.WindowSizeMsg{Width: 80, Height: height}
+			next, _ := base.Update(size)
+			next, _ = next.Update(helpKey)
+			open := next.(pickModel)
+			if !open.list.Help.ShowAll {
+				t.Fatalf("%s: the full help did not open", name)
+			}
+			if _, floor := listExtent(open.list, 80); floor > height-1 {
+				continue
+			}
+			helpOnly.check(name, open.View(), height)
+
+			enter := tea.KeyMsg{Type: tea.KeyEnter}
+			next, cmd := open.Update(enter)
+			noticed := next.(pickModel)
+			if cmd != nil || noticed.notice == "" {
+				t.Fatalf("%s: Enter on the blocked row: notice = %q cmd = %v, want a notice and no selection", name, noticed.notice, cmd)
+			}
+			withNotice.check(name, noticed.View(), height)
+
+			next, _ = open.Update(size)
+			next, _ = next.Update(enter)
+			resizedOpen.check(name, next.View(), height)
+		}
+	}
+	helpOnly.report(t, "standalone picker, help open")
+	withNotice.report(t, "standalone picker, help open and a notice showing")
+	resizedOpen.report(t, "standalone picker, help open, size reported again, and a notice showing")
+}
+
+// TestStandalonePickerFitsItsListToTheNotice pins that the picker's list is
+// sized from the frame its View renders, not from a number kept beside it. The
+// picker used to size its list to the window minus a literal two and add the
+// notice in View, so any line added to View was a line nobody counted — the
+// view grew past the terminal and Bubble Tea dropped the table's header off
+// the top. Now the notice is part of the frame: without one the view is
+// exactly the terminal's height, with nothing held back for it; raising it
+// takes its line from the list; and the next key gives the line back.
+func TestStandalonePickerFitsItsListToTheNotice(t *testing.T) {
+	const width, height = 80, 24
+	base := rowsPickModel(t, 40) // more rows than fit: the list fills its height
+	base.list.SelectedItem().(*modelItem).blocked = "claude/opus cannot be started here"
+
+	next, _ := base.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	sized := next.(pickModel)
+	if got := lipgloss.Height(sized.View()); got != height {
+		t.Fatalf("no notice: view is %d lines, want all %d of the terminal's", got, height)
+	}
+
+	next, _ = sized.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	noticed := next.(pickModel)
+	view := noticed.View()
+	if !strings.Contains(view, "claude/opus cannot be started here") {
+		t.Fatalf("Enter on the blocked row: view does not show the notice:\n%s", view)
+	}
+	if got := lipgloss.Height(view); got != height {
+		t.Fatalf("notice showing: view is %d lines, want %d: the notice's line comes out of the list", got, height)
+	}
+	if got, want := noticed.list.Height(), sized.list.Height()-1; got != want {
+		t.Fatalf("notice showing: list height = %d, want %d (one line given to the notice)", got, want)
+	}
+
+	next, _ = noticed.Update(tea.KeyMsg{Type: tea.KeyDown})
+	cleared := next.(pickModel)
+	if cleared.notice != "" || cleared.list.Height() != sized.list.Height() {
+		t.Fatalf("after the next key: notice = %q list height = %d, want the notice gone and the list back at %d",
+			cleared.notice, cleared.list.Height(), sized.list.Height())
+	}
+	if got := lipgloss.Height(cleared.View()); got != height {
+		t.Fatalf("notice cleared: view is %d lines, want %d", got, height)
+	}
+}
+
+// TestStandalonePickerNeverSizesItsListToNothing pins that a terminal
+// reporting no columns or no lines (some do, briefly, while a window is being
+// created) does not hand bubbles a width of zero: the agent flow's picker
+// floors the width at one for the same reason, and the two pickers size the
+// same table. The view must still render.
+func TestStandalonePickerNeverSizesItsListToNothing(t *testing.T) {
+	for _, size := range [][2]int{{0, 0}, {0, 24}, {80, 0}} {
+		next, _ := rowsPickModel(t, 3).Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		pm := next.(pickModel)
+		if pm.list.Width() < 1 {
+			t.Errorf("terminal %dx%d: list width = %d, want at least 1", size[0], size[1], pm.list.Width())
+		}
+		_ = pm.View() // must not panic
 	}
 }

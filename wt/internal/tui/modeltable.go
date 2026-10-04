@@ -15,10 +15,115 @@ import (
 )
 
 // modelTable is the rendered selector: a header line (shown as the list's
-// title) and one item per sorted row.
+// title) and one item per sorted row. header is the full table's; the items
+// share one tableColumns, which decides how much of the table is drawn at the
+// width the list is given (fitTableColumns).
 type modelTable struct {
 	header string
 	items  []*modelItem
+}
+
+// The table's columns, left to right.
+const (
+	colFamily = iota
+	colModel
+	colLoc
+	colStatus
+	colRunning
+	colCost
+	col1D
+	col7D
+	col30D
+	colSurvey
+	numCols
+)
+
+// colSep separates two columns.
+const colSep = "  "
+
+// colDropOrder is the order in which columns are given up when the table is
+// wider than its list: the survey segment first, then usage from the longest
+// window to the shortest, cost, location and family. MODEL, STATUS and RUNNING
+// are not in it: they say what a row is and whether Enter launches or starts
+// it, so they are never dropped.
+var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colLoc, colFamily}
+
+// tableColumns is one table's column layout, shared by its header and every
+// one of its rows so that they always show the same columns. A column is shown
+// whole or not at all — in the header and in every row alike — which keeps the
+// columns aligned and means the terminal's edge never cuts one in half.
+type tableColumns struct {
+	heads  [numCols]string // column headings, padded to the column's width (SURVEY is not padded: it is last)
+	widths [numCols]int    // each column's width in runes
+	// tail is the widest text any row appends after its columns: the
+	// exception note ("(via proxy)") and the space before it.
+	tail  int
+	shown [numCols]bool
+}
+
+// fit chooses the columns to show in a list of the given width. It starts
+// from the whole table and gives up columns in colDropOrder until what is
+// left fits: every row (width) within the list's width, and the header with
+// tableTitleRoom to spare, which the list's title bar needs to draw it whole.
+// If MODEL, STATUS and RUNNING alone are still too wide — a very narrow
+// terminal, or a very long model id — those three stay and the list cuts the
+// line at its right edge, the header up to three columns before the rows:
+// that is the one case in which content is cut, and the model id is never
+// abbreviated to avoid it.
+func (c *tableColumns) fit(width int) {
+	for i := range c.shown {
+		c.shown[i] = true
+	}
+	for _, drop := range colDropOrder {
+		if c.width() <= width && utf8.RuneCountInString(c.header())+tableTitleRoom <= width {
+			return
+		}
+		c.shown[drop] = false
+	}
+}
+
+// width is the widest a row can be with the columns now shown: the prefix,
+// the columns at their full width, and the longest exception note.
+func (c *tableColumns) width() int {
+	w, n := rowPrefixWidth+c.tail, 0
+	for i, shown := range c.shown {
+		if shown {
+			w += c.widths[i]
+			n++
+		}
+	}
+	return w + len(colSep)*(n-1)
+}
+
+// header is the header line for the columns now shown.
+func (c *tableColumns) header() string {
+	var cells []string
+	for i, shown := range c.shown {
+		if shown {
+			cells = append(cells, c.heads[i])
+		}
+	}
+	// With every column shown the last heading is SURVEY, which is not
+	// padded; with it dropped the last one is, and the padding is trimmed.
+	return strings.Repeat(" ", rowPrefixWidth) + strings.TrimRight(strings.Join(cells, colSep), " ")
+}
+
+// line is one row's columns for the layout now shown: the padded cells, then
+// the survey segment when that column is shown and the row has one. A row
+// that ends in a padded cell has its trailing spaces trimmed, exactly as the
+// full table's rows do.
+func (c *tableColumns) line(cells [numCols]string) string {
+	var out []string
+	for i, shown := range c.shown {
+		if shown && i != colSurvey {
+			out = append(out, cells[i])
+		}
+	}
+	line := strings.Join(out, colSep)
+	if c.shown[colSurvey] && cells[colSurvey] != "" {
+		return line + colSep + cells[colSurvey]
+	}
+	return strings.TrimRight(line, " ")
 }
 
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
@@ -127,12 +232,18 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		w1, w7, w30 = maxRunes(w1, c1[i]), maxRunes(w7, c7[i]), maxRunes(w30, c30[i])
 		wS = maxRunes(wS, string(r.Status))
 	}
-	const sep = "  "
-	header := strings.Repeat(" ", rowPrefixWidth) + strings.Join([]string{
-		padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", wS),
-		padRunes("RUNNING", 7), padRunes("COST", costW),
-		padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
-	}, sep)
+	// One layout for the header and every row. It starts with every column
+	// shown; whoever sizes the list narrows it (fitTableColumns).
+	cols := &tableColumns{
+		heads: [numCols]string{
+			padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", wS),
+			padRunes("RUNNING", 7), padRunes("COST", costW),
+			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
+		},
+		widths: [numCols]int{famW, idW, 5, wS, 7, costW, w1, w7, w30, len("SURVEY")},
+	}
+	cols.fit(int(^uint(0) >> 1))
+	header := cols.header()
 
 	items := make([]*modelItem, 0, len(rows))
 	for i, r := range rows {
@@ -140,19 +251,17 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		if loc == "" {
 			loc = "-"
 		}
-		line := strings.Join([]string{
+		// The last padded column would leave trailing spaces; tableColumns.line
+		// keeps them only when the survey segment follows (so it stays
+		// column-aligned).
+		cells := [numCols]string{
 			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(loc, 5), padRunes(string(r.Status), wS),
 			padRunes(flag(r.Running, "run"), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
-		}, sep)
-		// The last padded column would leave trailing spaces; keep them only
-		// when the survey segment follows (so it stays column-aligned).
-		if seg := survey.FormatPickerSegment(r.stats); seg != "" {
-			line += sep + seg
-		} else {
-			line = strings.TrimRight(line, " ")
+			survey.FormatPickerSegment(r.stats),
 		}
-		it := &modelItem{model: r.Model, line: line, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID]}
+		cols.widths[colSurvey] = maxRunes(cols.widths[colSurvey], cells[colSurvey])
+		it := &modelItem{model: r.Model, line: cols.line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID]}
 		switch r.Action() {
 		case catalog.ActionBlock:
 			it.blocked = r.BlockReason()
@@ -187,6 +296,9 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			case route.Forced:
 				it.exception = "(via proxy)"
 			}
+		}
+		if it.exception != "" {
+			cols.tail = max(cols.tail, 1+utf8.RuneCountInString(it.exception))
 		}
 		items = append(items, it)
 	}
