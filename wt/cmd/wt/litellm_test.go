@@ -1729,12 +1729,13 @@ func TestSyncProbeWarningIgnoresHandWrittenRows(t *testing.T) {
 // routes both, a start of one removes the other, the next sync puts it back —
 // one proxy restart each time.
 //
-// It is not reachable with the providers wt supports: omlx and mtplx each
-// report exactly one running model (omlx's two variants are one daemon with
-// one occupant; an mtplx process serves one model). The launch-time route
-// check does not take part: it only adds (#192). A fix belongs with whichever
-// provider first makes this real — deciding then whether the start hook should
-// keep running siblings, or sync should route only the occupant.
+// It is reachable on omlx as soon as its model directory holds two models:
+// omlx's /v1/models lists every model in its pool, loaded or not (the load
+// state is only on /v1/models/status), and the probe reads every listed id as
+// running. An mtplx process serves one model, so it cannot happen there. The
+// launch-time route check does not take part: it only adds (#192). A fix means
+// deciding whether the start hook should keep listed siblings, or the probe
+// should count only the loaded occupant.
 func TestSyncAndStartHookDisagreeWhenASingleModelServerListsSiblings(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
 	cfg := litellmTestConfig()
