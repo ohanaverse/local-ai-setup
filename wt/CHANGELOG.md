@@ -4,6 +4,15 @@
 
 ### Changed
 
+- `wt smoke` runs each agent in its own fresh temporary git repository, removed
+  when the row ends, instead of the current directory (#193). Smoke runs
+  agents with permission checks off, and a model's stray tool call had written
+  a junk file into a real repo. Pass `--cwd` to run in the current directory
+  as before.
+- `wt smoke`'s default prompt no longer contains the text the row looks for
+  (#193). It gives the text in lower case and asks for it in upper case. An
+  agent that prints the prompt back, as codex does, used to pass the row on
+  that echo whatever the model replied; a model that cannot answer now FAILs.
 - `wt litellm sync` reconciles every route, not just the local ones (#179,
   "configured is exposed"). It routes every registry cloud model whose
   provider is non-native and has a LiteLLM mapping, plus the running local

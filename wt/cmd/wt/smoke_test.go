@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -685,5 +687,90 @@ func TestSmokeCmdRunningPinEnsuresRouteBeforeRows(t *testing.T) {
 	}
 	if got := strings.Join(*events, ","); got != "ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1" {
 		t.Fatalf("events = %s, want ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1", got)
+	}
+}
+
+// smokeRowDirs runs `wt smoke` on the fixture's running model with a stubbed
+// agent run and returns, per row, the directory the agent was given, whether
+// it was a git repository while the row ran, and whether it still exists once
+// the command has returned. extraArgs follow the model id.
+func smokeRowDirs(t *testing.T, cwdFlag bool) (dir string, wasGitRepo, existsAfter bool) {
+	t.Helper()
+	cfg := smokeFixtureConfig(t)
+	stubEnsureRoute(t)
+	oldRel, oldPick, oldTTY := releaseSession, runStopPicker, stdinTTY
+	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY = oldRel, oldPick, oldTTY })
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) {}
+	stdinTTY = func() bool { return false }
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		dir = cwd
+		_, err := os.Stat(filepath.Join(cwd, ".git"))
+		wasGitRepo = err == nil
+		*cleanup = func() error { return nil }
+		// Exit 0 with a --prompt override: exit-code-only, so the row passes
+		// and the command returns without smokeExit.
+		return smoke.StubOutcome("ok", 0)
+	}))
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	// --cwd is a persistent flag of the root command; a bare smokeCmd has no
+	// parent to inherit it from.
+	cmd.Flags().Bool("cwd", false, "")
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	args := []string{"ollama/qwen3.8:27b-mlx", "--prompt", "say ok"}
+	if cwdFlag {
+		args = append(args, "--cwd")
+	}
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if dir == "" {
+		t.Fatal("no row ran")
+	}
+	_, err := os.Stat(dir)
+	return dir, wasGitRepo, err == nil
+}
+
+// TestSmokeCmdRunsRowsInAFreshGitRepo pins #193: smoke runs each agent with
+// permission checks off, so by default a row runs in a fresh temporary git
+// repository — never the caller's directory, where a model's stray tool call
+// has written junk into a real repo — and the directory is removed afterwards.
+func TestSmokeCmdRunsRowsInAFreshGitRepo(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, wasGitRepo, existsAfter := smokeRowDirs(t, false)
+	if dir == wd {
+		t.Fatalf("the row ran in the working directory %s", wd)
+	}
+	if rel, rerr := filepath.Rel(wd, dir); rerr == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("the row's directory %s is inside the working directory %s", dir, wd)
+	}
+	if !wasGitRepo {
+		t.Errorf("the row's directory %s was not a git repository: codex refuses to run outside one", dir)
+	}
+	if existsAfter {
+		t.Errorf("the row's directory %s was left behind", dir)
+	}
+}
+
+// TestSmokeCmdCwdFlagRunsInPlace pins the opt-out: with --cwd a row runs in
+// the caller's directory, as every row did before #193, and smoke neither
+// creates nor removes anything.
+func TestSmokeCmdCwdFlagRunsInPlace(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, _, existsAfter := smokeRowDirs(t, true)
+	if dir != wd {
+		t.Fatalf("with --cwd the row ran in %s, want the working directory %s", dir, wd)
+	}
+	if !existsAfter {
+		t.Fatal("smoke removed the working directory")
 	}
 }

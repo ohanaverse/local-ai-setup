@@ -55,6 +55,9 @@ func smokeCmd(a *app) *cobra.Command {
 			"prompt through each, using wt's real launch machinery. Reports\n" +
 			"PASS/FAIL/SKIP per agent with enough detail to diagnose a failure\n" +
 			"without re-running anything by hand.\n\n" +
+			"Each agent runs with its permission checks off, in a fresh temporary git\n" +
+			"repository that is removed afterwards; pass --cwd to run in the current\n" +
+			"directory instead.\n\n" +
 			"With no model-id, shows the full model picker (requires a TTY). A local\n" +
 			"model that isn't running is started first; on exit, offers to stop\n" +
 			"running local models.",
@@ -118,9 +121,16 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 	timeout = smokeTimeout(a.cfg, m, timeout)
 	jsonOut, _ := cmd.Flags().GetBool("json")
-	cwd, err := os.Getwd()
-	if err != nil {
-		return false, err
+	// --cwd is the root command's persistent flag; here it opts a run back
+	// into the caller's directory. The default is a fresh temporary git
+	// repository per row (#193): every row runs its agent with permission
+	// checks off, and a model's stray tool call must not land in a real repo.
+	inPlace, _ := cmd.Flags().GetBool("cwd")
+	cwd := ""
+	if inPlace {
+		if cwd, err = os.Getwd(); err != nil {
+			return false, err
+		}
 	}
 
 	if t.Start() {
@@ -166,6 +176,11 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
+	// Every row's directory, swept once more when the run ends: a row removes
+	// its own directory at once, but a background hook an agent leaves behind
+	// can write into it afterwards and bring it back.
+	var rowDirs []string
+	defer func() { smoke.SweepRowDirs(rowDirs) }()
 	for _, agentName := range agentsToRun {
 		prompt, sentinel := promptOverride, ""
 		if promptOverride == "" {
@@ -188,7 +203,17 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			}
 		}
 
-		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd, pa)
+		rowDir, removeRowDir := cwd, func() {}
+		if !inPlace {
+			// One directory per row, so one agent's leftovers cannot reach
+			// the next agent's run.
+			if rowDir, removeRowDir, err = smoke.NewRowDir(); err != nil {
+				return false, err
+			}
+			rowDirs = append(rowDirs, rowDir)
+		}
+		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
+		removeRowDir()
 		logSmokeResult(stderr, r)
 		rows = append(rows, r)
 	}

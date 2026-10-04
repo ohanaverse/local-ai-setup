@@ -17,6 +17,7 @@ wt smoke <model-id> --only claude,codex
 wt smoke <model-id> --timeout 60s
 wt smoke <model-id> --prompt "explain what 2+2 is"
 wt smoke <model-id> --json
+wt smoke <model-id> --cwd        # run the agents in the current directory
 ```
 
 - `model-id` — a model id (`provider/name`): a registry id, or a discovered
@@ -28,13 +29,16 @@ wt smoke <model-id> --json
   renders — unlike that flow, the list here is never narrowed to one
   agent's supported providers, since `wt smoke` picks the model first and
   derives its eligible agents from that choice afterward.
-- `--prompt` — override the default sentinel-echo prompt. A custom prompt
+- `--prompt` — override the default sentinel prompt. A custom prompt
   cannot be verified for a sentinel it was never asked to produce, so
   verification degrades to "the agent exited 0 within the timeout" — this
   confirms wiring, not response correctness. **Runs with tool-use
-  permission bypassed, in the current working directory** (see "Tool-use
-  permission" below) — an override prompt therefore runs whatever it asks
-  for unsupervised in this checkout, not just the fixed sentinel text.
+  permission bypassed** (see "Tool-use permission" below) — an override
+  prompt therefore runs whatever it asks for unsupervised, in a temporary
+  directory by default and in your checkout with `--cwd`.
+- `--cwd` — run each agent in the current directory. Without it every row
+  runs in its own fresh temporary git repository, removed when the row ends
+  (see "Tool-use permission").
 - `--timeout` — per-agent timeout. Default: `180s` for cloud models, `900s` for local models (cold prefill of large agent prompts can take minutes). An explicit value applies to both.
 - `--only` — comma-separated agents to restrict the run to; must be a
   subset of the model's currently eligible agents.
@@ -81,11 +85,35 @@ front of `run` would swallow the subcommand); it approves permissions that
 are "not explicitly denied", so a permission the opencode config sets to
 `deny` stays denied.
 
-**Cost:** the agent runs in the current working directory with permission
-checks bypassed — with the default sentinel prompt this is inert (the
-prompt only asks for an exact-text echo), but a `--prompt` override (above)
-or a backing model that decides to explore unprompted runs genuinely
-unsupervised here, not in a scratch directory.
+**Where it runs:** each row runs in its own fresh temporary directory, which
+`wt smoke` creates before the row and removes after it, with whatever the
+agent wrote there. The directory is a git repository (`git init`), because
+codex refuses to run outside one. So an agent running with permission checks
+bypassed cannot write into your checkout: the default prompt only asks for a
+line of text, but a `--prompt` override, or a backing model that decides to
+call a tool unprompted, runs genuinely unsupervised.
+
+`--cwd` runs the rows in the current directory instead, for a test that needs
+your project's files or agent configuration. Everything above then applies to
+your checkout.
+
+An agent can leave a background process behind that writes into its working
+directory after it exits (a session-save hook, for example). `wt smoke`
+removes each row's directory when the row ends and sweeps them all once more
+at the end of the run; anything written later than that is left in the
+system temp directory, under a `wt-smoke-*` name.
+
+The temporary directory limits where a *relative* write lands. It is not a
+sandbox: an agent with permissions off can still write to an absolute path.
+
+## The default prompt
+
+The default prompt gives the model a short text in lower case and asks for it
+back in upper case; the row passes when the upper-case text is in the output.
+The text the row looks for is never in the prompt itself. That matters because
+some agents print the prompt back (codex's output opens with it): a check for
+text the prompt contains would pass on that echo whatever the model replied,
+or if no model replied at all.
 
 ## Exit flow
 
@@ -147,7 +175,7 @@ $ wt smoke ollama/qwen3.8:27b-mlx
 A row whose agent could not select the model under test and would run on
 its own default model instead is FAIL, with the error `<agent> fell back to
 its default model instead of <id>: <the driver's reason>`; the agent is not
-run (empty `command`). The default model would echo the sentinel just as
+run (empty `command`). The default model would produce the sentinel just as
 well, so exit 0 plus the sentinel proves nothing there. Today only pi can
 fall back this way (see [pi-wt.md](wt-agents/pi-wt.md)); a real launch only
 warns.

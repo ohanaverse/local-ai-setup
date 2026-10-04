@@ -681,16 +681,70 @@ func TestBoundedWriterMatchesTruncateOutput(t *testing.T) {
 	}
 }
 
-// TestDefaultPrompt asserts the sentinel is embedded verbatim in the
-// prompt RunRow will later search for in captured output.
+// TestDefaultPrompt pins #193: the sentinel RunRow searches for must never
+// appear verbatim in the prompt. Some agents print the prompt back (codex's
+// transcript starts with a "user" block holding it), so a sentinel the prompt
+// contains would be found in the output whatever the model replied — or even
+// if no model replied at all. The prompt carries the text in lower case and
+// asks for it in upper case; the check looks for the upper-case form.
 func TestDefaultPrompt(t *testing.T) {
 	prompt, sentinel := DefaultPrompt("claude", "run-abcd1234")
-	wantSentinel := "WT-SMOKE-claude-run-abcd1234"
-	if sentinel != wantSentinel {
-		t.Fatalf("sentinel = %q, want %q", sentinel, wantSentinel)
+	if want := "WT-SMOKE-CLAUDE-RUN-ABCD1234"; sentinel != want {
+		t.Fatalf("sentinel = %q, want %q", sentinel, want)
 	}
-	if !strings.Contains(prompt, sentinel) {
-		t.Fatalf("prompt %q does not contain sentinel %q", prompt, sentinel)
+	if strings.Contains(prompt, sentinel) {
+		t.Fatalf("prompt %q contains the sentinel %q: a prompt echo would pass the row", prompt, sentinel)
+	}
+	if !strings.Contains(prompt, "wt-smoke-claude-run-abcd1234") {
+		t.Fatalf("prompt %q does not carry the lower-case text the model is asked to convert", prompt)
+	}
+}
+
+// TestRunRowFailsOnPromptEcho is the false PASS #193 reported: an agent that
+// exits 0 having printed only the prompt back — the model's own reply being
+// junk or absent — must FAIL the default-prompt check.
+func TestRunRowFailsOnPromptEcho(t *testing.T) {
+	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n{\"malformed\": tool call\n"})
+	res := RunRow(&config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, ".", nil)
+	if res.Status != StatusFail {
+		t.Fatalf("Status = %v, want FAIL: the output holds only the echoed prompt", res.Status)
+	}
+}
+
+// TestRunRowPassesOnTheConvertedReply is the other half: the same echo plus
+// the model's upper-case reply passes.
+func TestRunRowPassesOnTheConvertedReply(t *testing.T) {
+	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n" + sentinel + "\n"})
+	res := RunRow(&config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, ".", nil)
+	if res.Status != StatusPass {
+		t.Fatalf("Status = %v (%v), want PASS", res.Status, res.Err)
+	}
+}
+
+// TestNewRowDirIsAFreshGitRepoAndCleansUp pins the directory a smoke row runs
+// in by default (#193): a new, empty directory outside the caller's tree that
+// is a git repository — codex refuses to run outside one — and that its
+// cleanup removes, along with anything the agent wrote there.
+func TestNewRowDirIsAFreshGitRepoAndCleansUp(t *testing.T) {
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("row dir %s is not a git repository: %v", dir, err)
+	}
+	wd, _ := os.Getwd()
+	if rel, err := filepath.Rel(wd, dir); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("row dir %s is inside the working directory %s", dir, wd)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "junk.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("row dir %s still exists after cleanup (err = %v)", dir, err)
 	}
 }
 
@@ -788,5 +842,51 @@ func TestCandidatesGateStartRowsPerAgent(t *testing.T) {
 		if !slices.Equal(got, []string{"claude"}) {
 			t.Fatalf("agents = %v, want only [claude] (codex's route cannot resolve)", got)
 		}
+	}
+}
+
+// TestSweepRowDirsRemovesWhatALateWriterRecreates pins the race seen on a real
+// run (#193): an agent's own background hook — a session-save script claude
+// leaves running after it exits — wrote into the row's directory just as it
+// was being removed, and the directory survived. The end-of-run sweep keeps
+// removing until the directories have stayed gone for a moment.
+func TestSweepRowDirsRemovesWhatALateWriterRecreates(t *testing.T) {
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(150 * time.Millisecond)
+		_ = os.MkdirAll(filepath.Join(dir, ".hook", "logs"), 0o755)
+		_ = os.WriteFile(filepath.Join(dir, ".hook", "logs", "late.log"), []byte("x"), 0o644)
+	}()
+	SweepRowDirs([]string{dir})
+	<-done
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("row dir %s survived the sweep (err = %v)", dir, err)
+	}
+}
+
+// TestSweepRowDirsReturnsPromptlyWhenNothingIsLeft pins the cost: with no late
+// writer the sweep waits only its short settle time, and with no directories
+// at all it does not wait.
+func TestSweepRowDirsReturnsPromptlyWhenNothingIsLeft(t *testing.T) {
+	start := time.Now()
+	SweepRowDirs(nil)
+	if d := time.Since(start); d > 50*time.Millisecond {
+		t.Fatalf("an empty sweep took %s", d)
+	}
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	start = time.Now()
+	SweepRowDirs([]string{dir})
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("a sweep with nothing to remove took %s", d)
 	}
 }

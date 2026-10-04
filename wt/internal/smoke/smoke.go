@@ -292,9 +292,10 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// (--dangerously-bypass-approvals-and-sandbox), which smoke has no
 	// reason to need — see TestRealBuildAndRunSkipsYoloForCodex. Every
 	// agent driver runs the smoke prompt with permission checks bypassed
-	// in the current working directory (see docs/wt-smoke.md's
-	// "Tool-use permission" note): a --prompt override therefore runs
-	// unsupervised here too, not just the fixed sentinel prompt.
+	// in cwd (see docs/wt-smoke.md's "Tool-use permission" note): a
+	// --prompt override therefore runs unsupervised too, not just the
+	// fixed sentinel prompt. That is why cmd/wt hands each row a fresh
+	// temporary directory (NewRowDir) unless --cwd was passed.
 	yolo := agentName != "codex"
 	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, yolo, nil, cfg, nil)
 	if err != nil {
@@ -404,7 +405,7 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 
 // RunRow runs agentName's one-shot prompt against model m and classifies
 // the result. sentinel is the exact string the default prompt asked the
-// agent to echo; pass "" when prompt was overridden by the caller (a
+// model to produce (DefaultPrompt); pass "" when prompt was overridden by the caller (a
 // custom prompt was never asked to produce a sentinel), which degrades
 // verification to "exited 0 within timeout".
 //
@@ -442,7 +443,7 @@ func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentin
 		return res
 	}
 	// Checked before the exit code and sentinel: an agent on its default
-	// model exits 0 and echoes the sentinel just as well, so those say
+	// model exits 0 and produces the sentinel just as well, so those say
 	// nothing about the model under test.
 	if out.ModelFallback != "" {
 		res.Status = StatusFail
@@ -479,10 +480,80 @@ func NewRunID() string {
 	return fmt.Sprintf("run-%x", b)
 }
 
-// DefaultPrompt returns the sentinel-echo prompt and the sentinel RunRow
-// should look for in the agent's output.
+// DefaultPrompt returns the smoke prompt and the sentinel RunRow should look
+// for in the agent's output.
+//
+// The prompt must never contain the sentinel verbatim (#193). Some agents
+// print the prompt back — codex's transcript opens with a "user" block
+// holding it — so a sentinel the prompt contains is found in the output
+// whatever the model replied, and even when no model replied at all. The
+// prompt therefore carries the text in lower case and asks for it in upper
+// case, and RunRow's case-sensitive search can only be satisfied by a reply.
+// One instruction on one token keeps it within reach of a small local model
+// and needs no per-agent parsing of where a reply starts.
 func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
-	sentinel = fmt.Sprintf("WT-SMOKE-%s-%s", agentName, runID)
-	prompt = fmt.Sprintf("Reply with exactly this text and nothing else: %s", sentinel)
+	text := strings.ToLower(fmt.Sprintf("wt-smoke-%s-%s", agentName, runID))
+	sentinel = strings.ToUpper(text)
+	prompt = fmt.Sprintf("Reply with exactly this text converted to upper case and nothing else: %s", text)
 	return prompt, sentinel
+}
+
+// NewRowDir creates the directory one smoke row runs in by default (#193):
+// a fresh, empty temporary directory, so an agent running with permission
+// checks off cannot write into the caller's working tree — a small model
+// under claude once created a junk file in the repo root this way. It is
+// made a git repository because codex refuses to run outside one ("Not
+// inside a trusted directory"). cleanup removes the directory and whatever
+// the agent left in it.
+func NewRowDir() (dir string, cleanup func(), err error) {
+	dir, err = os.MkdirTemp("", "wt-smoke-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating a smoke directory: %w", err)
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	if out, gerr := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); gerr != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("git init in %s: %v: %s", dir, gerr, strings.TrimSpace(string(out)))
+	}
+	return dir, cleanup, nil
+}
+
+const (
+	// sweepPoll is how often SweepRowDirs re-checks the row directories.
+	sweepPoll = 100 * time.Millisecond
+	// sweepQuiet is how long every directory must have stayed gone before the
+	// sweep stops: long enough to catch a hook that writes just after its
+	// agent exits, short enough to be unnoticeable at the end of a run.
+	sweepQuiet = 300 * time.Millisecond
+	// sweepLimit bounds the sweep when something keeps writing.
+	sweepLimit = 3 * time.Second
+)
+
+// SweepRowDirs removes the row directories of one smoke run once more, after
+// the last row, and keeps doing so until they have all stayed gone for
+// sweepQuiet (or sweepLimit passes). Each row already removes its own
+// directory the moment it ends, but an agent can leave a background process
+// behind that writes into its working directory afterwards — claude's
+// session-save hook did exactly that on a real run, recreating the directory
+// just removed (#193). Whatever such a process writes after the sweep lands
+// in the system temp directory, never in the caller's checkout; the sweep
+// only keeps the common case tidy.
+func SweepRowDirs(dirs []string) {
+	if len(dirs) == 0 {
+		return
+	}
+	deadline := time.Now().Add(sweepLimit)
+	quietSince := time.Now()
+	for {
+		for _, d := range dirs {
+			if _, err := os.Lstat(d); err == nil {
+				_ = os.RemoveAll(d)
+				quietSince = time.Now()
+			}
+		}
+		if time.Since(quietSince) >= sweepQuiet || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(sweepPoll)
+	}
 }
