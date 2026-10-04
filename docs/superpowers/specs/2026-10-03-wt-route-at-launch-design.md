@@ -54,11 +54,11 @@ Two alternatives were rejected:
 func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) (changed bool)
 ```
 
-- It applies `StartRouteChange(cfg, t)` through `applyAndReport` with `restartIfChanged`. The change is the same one the start hook writes, so the hook, the ensure and `wt litellm sync` agree on the id.
-- For a single-model provider that change also clears the family's other routes, as the start hook does. Only one model of that family can be running, so its siblings' routes are stale.
+- It applies the `Add` half of `StartRouteChange(cfg, t)` through `applyAndReport` with `restartIfChanged`. The model to route is derived exactly as the start hook derives it, so the hook, the ensure and `wt litellm sync` agree on the id.
+- It never removes a route. The start hook also clears a single-model provider's family, which is safe there because `Start` has just stopped or refused any occupant. The ensure has no such guard: a single-model server can list sibling variants as running together, sync routes all of them, and a family clear at launch would delete a running sibling's route and restart the proxy on every alternating launch. Stale sibling routes are left for the next start, stop or sync.
 - `ApplyChange` already skips a discovered id that has a hand-written row. `EnsureRoute` adds no rule of its own.
 - A write failure prints the existing `wt: LiteLLM route not updated: …` warning and returns false. A missing `config.yaml` (LiteLLM not set up) stays silent, as today.
-- When the write changed `config.yaml` it prints one line on stderr: `wt: LiteLLM route for <id> updated`. When nothing changed it prints nothing. The wording is "updated", not "added", because a change can also be the removal of a stale sibling route while the model's own route was already there.
+- When the write changed `config.yaml` it prints one line on stderr: `wt: LiteLLM route for <id> updated`. When nothing changed it prints nothing. The wording is "updated", not "added", because a change can also be a rewrite of a row that drifted from the registry.
 - It returns as soon as the file is written. The caller owes `WaitPendingRoutes()` before using the proxy.
 
 Callers use a thin wrapper, `EnsureModelRoute(cfg, model) bool`. It skips a model whose location is not local, bounds the `config.yaml` lock wait at 10s so a launch cannot hang behind another wt process, and builds the `Target` from the model.
@@ -83,7 +83,7 @@ Each caller then calls `WaitPendingRoutes()` before handing off. It costs nothin
 
 The issue requires no write when a provider's probe is untrusted. A row marked running came from a probe that answered, so condition 2 satisfies it. An unreachable or unknown family has no running row.
 
-`EnsureRoute` does not probe again. The consequence is accepted: in the TUI the picker can stay open, and a model that stopped meanwhile gets a route written for it. For a single-model provider the same write clears its siblings' routes. That launch fails with or without the write, and the next sync or start corrects the file. Probing again would add up to 2s to every local launch.
+`EnsureRoute` does not probe again. The consequence is accepted: in the TUI the picker can stay open, and a model that stopped meanwhile gets a route written for it. No other route is touched. That launch fails with or without the write, and the next sync or start corrects the file. Probing again would add up to 2s to every local launch.
 
 ### Model id in `lifecycle.Target`
 
@@ -134,7 +134,7 @@ The launch always proceeds. A missing route then shows as the proxy's own error,
 - Adds a missing route and reports changed.
 - Route present: reports unchanged, no restart.
 - Hand-written row for the id: unchanged.
-- Single-model provider: siblings' marked routes removed in the same write.
+- Single-model provider: the write carries no family removal.
 - Write error: warning, false, no restart.
 - `StartRouteChange` with `ModelID`: exact registry id, discovered id, and the two-artifacts-one-entry case yielding two distinct ids.
 
@@ -173,5 +173,5 @@ Guides stay state-independent.
 ## Out of scope
 
 - A cloud model with a missing route.
-- Removing stale routes at launch, beyond the sibling clear the start hook already does.
+- Removing stale routes at launch. The ensure only adds.
 - The other #195 items. They are milestone C.
