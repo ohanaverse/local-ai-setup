@@ -1102,6 +1102,14 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// Capture the model so launchAndRecord records exactly this pick in
 	// both the no-session and resume paths, without re-reading the picker.
 	m.launchModel = highlighted.model
+	// A launch row is a model that was already running, and wt may not be
+	// what started it, so its LiteLLM route may not exist yet. A row this
+	// flow just started (start is still set: the table is not rebuilt in
+	// between) had its route written by the start hook, and finishStart has
+	// already waited for the proxy.
+	if !highlighted.start {
+		ensureLaunchRoute(m.cfg, m.agent, highlighted.model)
+	}
 	// Native models launch fresh: resuming a session would restore the
 	// session's stored model, silently overriding the user's "native" choice
 	// (and, for claude, routing a gateway model at the real Anthropic API).

@@ -893,3 +893,79 @@ func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
 		t.Fatal("the start flow never proceeded after the routes settled")
 	}
 }
+
+// launchRowFixture is the model picker over modelTestConfig with omlx/qwen3.8
+// running, the cursor on id, and the agent swapped for one no driver knows so
+// that Enter runs proceedToLaunch and then fails the launch observably.
+func launchRowFixture(t *testing.T, id string) model {
+	t.Helper()
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, runningOmlxSnapshot())
+	m := flowEnter(t, model{cfg: modelTestConfig(), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	idx := indexOfID(m, id)
+	if idx < 0 {
+		t.Fatalf("no row %s in %v", id, itemIDs(m))
+	}
+	m.models.Select(idx)
+	m.agent = "not-a-real-agent"
+	return m
+}
+
+// TestLaunchOfRunningLocalRowEnsuresRoute pins #192 for the picker: Enter on
+// a local row that is already running checks its LiteLLM route and waits for
+// the proxy before the launch. Such a model may never have been started by
+// wt, so no start hook wrote its route.
+func TestLaunchOfRunningLocalRowEnsuresRoute(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	events := stubEnsureRoute(t)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := strings.Join(*events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want ensure:omlx/qwen3.8,wait", got)
+	}
+	if status := next.(model).status; !strings.Contains(status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted after the check", status)
+	}
+}
+
+// TestLaunchOfNativeRowSkipsEnsureRoute pins that a model that does not go
+// through LiteLLM (a native one never does) leaves config.yaml alone.
+func TestLaunchOfNativeRowSkipsEnsureRoute(t *testing.T) {
+	m := launchRowFixture(t, "claude/opus")
+	events := stubEnsureRoute(t)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(*events) != 0 {
+		t.Fatalf("events = %v, want none for a native model", *events)
+	}
+	// Without this the test would pass on an Enter that never reached
+	// proceedToLaunch at all.
+	if status := next.(model).status; !strings.Contains(status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted", status)
+	}
+}
+
+// TestLaunchAfterStartSkipsEnsureRoute pins that a row wt just started is not
+// checked again: the start hook wrote its route, and finishStart already
+// waited for the proxy. The only wait recorded is finishStart's.
+func TestLaunchAfterStartSkipsEnsureRoute(t *testing.T) {
+	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+	m.cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	m.agent = "not-a-real-agent"
+	events := stubEnsureRoute(t)
+
+	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+	next, _ := updateMsg(got, recvStart(t, got))
+
+	if joined := strings.Join(*events, ","); joined != "wait" {
+		t.Fatalf("events = %q, want only finishStart's wait", joined)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted", next.status)
+	}
+}

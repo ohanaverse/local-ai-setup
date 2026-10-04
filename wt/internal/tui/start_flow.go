@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 )
@@ -26,6 +27,31 @@ var startModel = lifecycle.Start
 // ticking screen for the same total time, and this is the last thing that
 // happens before the agent takes over the terminal anyway.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
+
+// ensureModelRoute is a test seam over lifecycle.EnsureModelRoute. Production
+// rewrites config.yaml and restarts the LiteLLM proxy; TestMain stubs it.
+var ensureModelRoute = lifecycle.EnsureModelRoute
+
+// ensureLaunchRoute makes sure a running local model has its LiteLLM route,
+// then waits for the proxy to carry it (#192). A model wt did not start has
+// no route until something writes one, and the agent launched on it would get
+// "Invalid model name" from the proxy. The check writes that one route if it
+// is missing and removes nothing, so a running sibling's route survives. Only
+// a launch that goes through LiteLLM needs the route: a direct or native
+// launch leaves config.yaml alone. Like waitPendingRoutes in finishStart, the
+// wait runs on the update goroutine — it is the last thing before the agent
+// takes the terminal. It never fails the launch. mdl must be a row the probe
+// reported running: this never starts a model.
+func ensureLaunchRoute(cfg *config.Config, agent string, mdl config.Model) {
+	if cfg == nil {
+		return
+	}
+	if route, _ := cfg.ResolveRoute(mdl, agents.ProtocolsFor(agent)); !route.Litellm {
+		return
+	}
+	ensureModelRoute(cfg, mdl)
+	waitPendingRoutes()
+}
 
 // startState is the in-flight start: which row, the current stage, when it
 // began, how to cancel it, and the channel carrying its messages.
