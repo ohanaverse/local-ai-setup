@@ -38,9 +38,10 @@ var routeWG sync.WaitGroup
 //     off: an agent launched after a local-model start talks to that model
 //     THROUGH LiteLLM, so proceeding while the restart is still in flight can
 //     meet a refused connection or the pre-restart route table (the model just
-//     started not yet listed). The launch paths — cmd/wt's startForLaunch, the
-//     TUI start flow before proceedToLaunch, wt smoke before its one-shot
-//     prompt — therefore wait here rather than only at process exit.
+//     started not yet listed). The launch paths — cmd/wt's startForLaunch and
+//     ensureRouteBeforeLaunch, the TUI start flow and ensureLaunchRoute before
+//     the launch, wt smoke before its one-shot prompt — therefore wait here
+//     rather than only at process exit.
 func WaitPendingRoutes() {
 	routeWG.Wait()
 }
@@ -53,6 +54,10 @@ const (
 	// tell "nothing there" (refused: no wait) from "something there" (any
 	// other outcome, even a timeout: wait for it after the restart).
 	proxyAliveTimeout = 1500 * time.Millisecond
+	// ensureRouteLockTimeout bounds the config.yaml lock wait of a launch-time
+	// route check. A launch must not hang behind another wt process holding
+	// the lock; giving up only costs the check, and the launch proceeds.
+	ensureRouteLockTimeout = 10 * time.Second
 )
 
 // restartMode says who bounces the proxy after a route write.
@@ -83,8 +88,9 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 }
 
 // StartRouteChange is the route change routeAfterStart writes for a started
-// target: the model to route (registry overlay, else discovered) and, for a
-// single-model provider, its family to clear. It is exported so the id the
+// target: the model to route (registry overlay, else discovered — routeModel
+// says how a target's id and name choose it) and, for a single-model
+// provider, its family to clear. It is exported so the id the
 // start hook writes can be pinned against the id `wt litellm sync` desires
 // for the same model (cmd/wt) — if the two derivations drift, every sync
 // after a start removes the hook's route and adds its own.
@@ -114,6 +120,45 @@ func routeModel(cfg *config.Config, t Target) config.Model {
 		return m
 	}
 	return litellm.DiscoveredModel(t.ProviderID, t.ModelName)
+}
+
+// EnsureRoute writes t's LiteLLM route when it is missing (#192). It is for a
+// model that is already running but that wt did not start — an omlx or mtplx
+// server started by hand, an ollama model pulled since the last sync — which
+// has no route until something writes one, so an agent launched on it gets
+// "Invalid model name" from the proxy.
+//
+// The change is StartRouteChange, the one the start hook writes, so the two
+// cannot name a model's route differently. Unlike Start it never starts or
+// stops anything: a caller holding a stale probe gets at worst a route for a
+// model that has since stopped, which the next sync or start removes.
+//
+// It never fails the caller: a failed write is a warning (applyAndReport) and
+// a missing config.yaml is silent. It reports whether config.yaml changed, and
+// says so in one line when it did. The proxy restart that a change triggers is
+// asynchronous — a caller about to use the proxy owes WaitPendingRoutes().
+func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
+	ch := StartRouteChange(cfg, t)
+	changed := applyAndReport(ctx, cfg, ch, restartIfChanged)
+	if changed {
+		fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
+	}
+	return changed
+}
+
+// EnsureModelRoute is EnsureRoute for a launch row's model, the form the
+// launch paths call. It skips a model that is not local — a cloud route is
+// sync's business, and a model whose location cannot be resolved is not one
+// wt can route — and bounds the config.yaml lock wait so a launch cannot hang
+// behind another wt process. The caller must only pass a model the probe
+// reported running.
+func EnsureModelRoute(cfg *config.Config, m config.Model) bool {
+	if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ensureRouteLockTimeout)
+	defer cancel()
+	return EnsureRoute(ctx, cfg, Target{ProviderID: m.ProviderID, ModelName: m.ModelName, ModelID: m.ID})
 }
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model

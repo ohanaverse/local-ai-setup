@@ -613,3 +613,111 @@ func TestStartRouteChangeWithoutModelIDKeepsTheFallback(t *testing.T) {
 		t.Fatalf("add = %+v, want the fuzzy-matched registry model", ch.Add)
 	}
 }
+
+// TestEnsureRouteWritesTheStartHooksChange pins that the launch-time ensure
+// and the start hook write the same change: the model's route and, for a
+// single-model provider, its family cleared. It also pins the one line a
+// changed write prints.
+func TestEnsureRouteWritesTheStartHooksChange(t *testing.T) {
+	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	changed := EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"})
+	WaitPendingRoutes()
+	if !changed {
+		t.Fatal("changed = false, want true when the write changed config.yaml")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %+v, want one", *calls)
+	}
+	c := (*calls)[0]
+	if !slices.Equal(c.add, []string{"mtplx/Y--Q35"}) || len(c.remove) != 0 || !slices.Equal(c.families, []string{"mtplx"}) {
+		t.Fatalf("call = %+v, want add [mtplx/Y--Q35] and the mtplx family cleared", c)
+	}
+	if got, want := warn.String(), "wt: LiteLLM route for mtplx/Y--Q35 updated\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+// TestEnsureRouteQuietWhenNothingChanged covers a route that is already
+// there and a discovered id served by a hand-written row (ApplyChange skips
+// it): both come back unchanged, so nothing prints and the proxy is left
+// alone.
+func TestEnsureRouteQuietWhenNothingChanged(t *testing.T) {
+	_, warn := stubRoutes(t, litellm.Result{Changed: false}, nil)
+	restarts := 0
+	restartProxy = func(context.Context) []string { restarts++; return nil }
+	changed := EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"})
+	WaitPendingRoutes()
+	if changed || warn.Len() != 0 || restarts != 0 {
+		t.Fatalf("changed = %v output = %q restarts = %d, want an unchanged, silent no-op", changed, warn.String(), restarts)
+	}
+}
+
+// TestEnsureRouteSilentWhenConfigMissing pins that a machine with no
+// config.yaml — LiteLLM never set up — sees nothing at launch.
+func TestEnsureRouteSilentWhenConfigMissing(t *testing.T) {
+	_, warn := stubRoutes(t, litellm.Result{}, litellm.ErrMissing)
+	if EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}) {
+		t.Fatal("changed = true on a missing config.yaml")
+	}
+	WaitPendingRoutes()
+	if warn.Len() != 0 {
+		t.Fatalf("output = %q, want nothing", warn.String())
+	}
+}
+
+// TestEnsureRouteWarnsAndNeverFails pins that a failed write is a warning,
+// never an error the launch could trip on, and prints no "updated" line.
+func TestEnsureRouteWarnsAndNeverFails(t *testing.T) {
+	_, warn := stubRoutes(t, litellm.Result{}, errors.New("boom"))
+	if EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}) {
+		t.Fatal("changed = true on a failed write")
+	}
+	WaitPendingRoutes()
+	if got, want := warn.String(), "wt: LiteLLM route not updated: boom\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+// TestEnsureModelRouteSkipsNonLocal pins the guard: a cloud model and a model
+// whose location cannot be resolved (its provider row is missing) are never
+// written, and the second does not panic.
+func TestEnsureModelRouteSkipsNonLocal(t *testing.T) {
+	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	cfg := routesCfg()
+	cloud := config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud}
+	orphan := config.Model{ID: "gone/y", ProviderID: "gone", ModelName: "y"}
+	if EnsureModelRoute(cfg, cloud) || EnsureModelRoute(cfg, orphan) {
+		t.Fatal("changed = true for a model that is not local")
+	}
+	if len(*calls) != 0 || warn.Len() != 0 {
+		t.Fatalf("calls = %+v output = %q, want no write and no output", *calls, warn.String())
+	}
+}
+
+// TestEnsureModelRouteBoundsTheLockWait pins that a launch cannot hang behind
+// another wt holding the config.yaml lock: the write is handed a context with
+// a deadline. It also pins the Target EnsureModelRoute builds — the row's id
+// travels with it.
+func TestEnsureModelRouteBoundsTheLockWait(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	inner := applyRoutes
+	var hadDeadline bool
+	var added string
+	applyRoutes = func(cfg *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
+		if o.Ctx != nil {
+			_, hadDeadline = o.Ctx.Deadline()
+		}
+		if len(ch.Add) == 1 {
+			added = ch.Add[0].ID
+		}
+		return inner(cfg, ch, o)
+	}
+	EnsureModelRoute(routesCfg(), config.Model{ID: "mtplx/org/Y/Q35", ProviderID: "mtplx", ModelName: "org/Y/Q35", Location: config.LocationLocal})
+	WaitPendingRoutes()
+	if !hadDeadline {
+		t.Error("the route write got no deadline: a contended config.yaml lock would hang the launch")
+	}
+	if added != "mtplx/org/Y/Q35" {
+		t.Errorf("added = %q, want the row's own id mtplx/org/Y/Q35", added)
+	}
+}
