@@ -4,6 +4,11 @@
 
 ### Changed
 
+- `--cwd` launches the agent in the directory you typed the command in, not
+  at the root of the current checkout. A relative path after `--` then means
+  what you meant. `-W` and the worktree picker still start at a worktree's
+  root. Session resume is per directory, so a session started at the repo
+  root is offered only when you launch from the root.
 - `wt smoke` runs each agent in its own fresh temporary git repository, removed
   when the row ends, instead of the current directory (#193). Smoke runs
   agents with permission checks off, and a model's stray tool call had written
@@ -149,6 +154,9 @@
   subdirectory, reached opencode where that path named nothing and failed
   with `Failed to change directory`. The note names the directory the agent
   starts in and the absolute path to pass. The argument is not rewritten.
+  There is no note for the same path in the worktree you launched
+  (`shell-wt -W feat -- cat README.md` from the repo root), nor for the
+  program name `shell-wt` runs.
 - A provider entry whose `location` is mistyped (`"Local"`, say) no longer
   costs its models their LiteLLM routes (#195). The inventory probes only an
   exact `local`, so such a family went unprobed, and `wt litellm sync` then
