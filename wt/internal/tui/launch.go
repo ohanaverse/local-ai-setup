@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,6 +30,34 @@ var currentProgram *tea.Program
 // lands in the alt-screen and is discarded when the TUI shuts down, so the
 // capture-then-emit pattern is required. Reset by Run() before launch.
 var pendingSummary string
+
+// pendingRouteNotes is what the launch-time LiteLLM route check printed while
+// the alt screen was up (#192): `wt: LiteLLM route for <id> updated` and any
+// route warning, captured through setRouteOutput because stderr is not
+// reliably visible under the alt screen. It follows pendingSummary's
+// capture-then-emit pattern with two emit points: runAndWaitCmd prints it the
+// moment it releases the terminal, above the agent's own output, and Run()
+// prints whatever is left after p.Run() returns (the user quit, or the launch
+// never happened). Appended to by recordRouteNotes; reset by Run() before
+// launch.
+var pendingRouteNotes string
+
+// flushRouteNotes prints pendingRouteNotes to w and clears it, so the lines
+// are shown exactly once. Callers pass os.Stderr at a point where it is the
+// real terminal; it takes a writer so tests can read what was printed.
+func flushRouteNotes(w io.Writer) {
+	notes := pendingRouteNotes
+	pendingRouteNotes = ""
+	if notes == "" {
+		return
+	}
+	// The captured lines end in a newline; guard anyway so the agent's first
+	// line of output never continues one of ours.
+	if !strings.HasSuffix(notes, "\n") {
+		notes += "\n"
+	}
+	fmt.Fprint(w, notes)
+}
 
 // pendingSurvey holds the agent/model to survey once the alt-screen tears
 // down, mirroring pendingSummary's capture-then-emit pattern (printing
@@ -100,6 +130,11 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 				}
 			}()
 		}
+		// The terminal is the user's again: print what the route check said
+		// before the profile prompt or the agent prints anything, so the
+		// lines sit above the agent's own output instead of being lost with
+		// the alt screen.
+		flushRouteNotes(os.Stderr)
 		var profileCleanup func() error
 		if profileApplier != nil {
 			var perr error

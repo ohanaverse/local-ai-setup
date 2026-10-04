@@ -3,7 +3,9 @@ package tui
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -83,6 +85,11 @@ func TestMain(m *testing.M) {
 	// running local model through LiteLLM would rewrite the developer's real
 	// config.yaml and restart their proxy.
 	ensureModelRoute = func(*config.Config, config.Model) bool { return false }
+	// The check redirects lifecycle's process-wide route writer while it runs.
+	// Unstubbed, every test that launches through LiteLLM would swap the real
+	// process's writer for its own buffer; the default redirects nothing and
+	// its restore is a no-op.
+	setRouteOutput = func(io.Writer) func() { return func() {} }
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.
 	releaseSession = func() {}
@@ -144,18 +151,91 @@ func selectedModelID(m model) string {
 	return it.model.ID
 }
 
-// stubEnsureRoute records, in order, each launch-time route check as
-// "ensure:<model id>" and each wait for the proxy as "wait". Both seams are
-// restored on cleanup.
-func stubEnsureRoute(t *testing.T) *[]string {
+// routeStub is what stubEnsureRoute hands a test: the knobs that script the
+// launch-time route check and the record of what the flow did with it.
+type routeStub struct {
+	// changed is what the stubbed ensureModelRoute reports: true (the default)
+	// means "the route was missing and was written", so the proxy restarts.
+	changed bool
+	// ensureOutput is written into the redirected route writer by the stubbed
+	// ensureModelRoute, the way lifecycle prints the "updated" line during the
+	// synchronous write; waitOutput is written by the stubbed
+	// waitPendingRoutes, the way the async restart prints its warnings.
+	ensureOutput, waitOutput string
+	// events is each check as "ensure:<model id>" and each wait for the proxy
+	// as "wait", in order.
+	events []string
+	// redirects counts setRouteOutput calls; restoredAt holds, for each call
+	// of a restore func, the events recorded up to that moment — so a test
+	// can tell both how often the redirect came off and whether that was
+	// before or after the wait.
+	redirects  int
+	restoredAt []string
+
+	out io.Writer // the writer the flow handed setRouteOutput; nil when not redirected
+}
+
+// stubEnsureRoute swaps the three launch-time route check seams
+// (ensureModelRoute, waitPendingRoutes, setRouteOutput) for recording fakes
+// scripted by the returned routeStub. Nothing real is touched: no config.yaml,
+// no proxy, and not the process's route writer. All three seams are restored on
+// cleanup. The fakes are not synchronized: a test runs the routing command
+// itself, on the test goroutine.
+func stubEnsureRoute(t *testing.T) *routeStub {
 	t.Helper()
-	var events []string
-	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
-	ensureModelRoute = func(_ *config.Config, m config.Model) bool {
-		events = append(events, "ensure:"+m.ID)
-		return true
+	s := &routeStub{changed: true}
+	oldEnsure, oldWait, oldOut := ensureModelRoute, waitPendingRoutes, setRouteOutput
+	write := func(text string) {
+		if s.out != nil && text != "" {
+			_, _ = io.WriteString(s.out, text)
+		}
 	}
-	waitPendingRoutes = func() { events = append(events, "wait") }
-	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes = oldEnsure, oldWait })
-	return &events
+	ensureModelRoute = func(_ *config.Config, m config.Model) bool {
+		s.events = append(s.events, "ensure:"+m.ID)
+		write(s.ensureOutput)
+		return s.changed
+	}
+	waitPendingRoutes = func() {
+		s.events = append(s.events, "wait")
+		write(s.waitOutput)
+	}
+	setRouteOutput = func(w io.Writer) func() {
+		s.redirects++
+		s.out = w
+		return func() {
+			s.restoredAt = append(s.restoredAt, strings.Join(s.events, ","))
+			s.out = nil
+		}
+	}
+	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes, setRouteOutput = oldEnsure, oldWait, oldOut })
+	return s
+}
+
+// stubRouteNotes clears pendingRouteNotes for one test and restores it after,
+// so a test asserting on the captured route output neither sees another test's
+// lines nor leaves its own behind.
+func stubRouteNotes(t *testing.T) {
+	t.Helper()
+	old := pendingRouteNotes
+	pendingRouteNotes = ""
+	t.Cleanup(func() { pendingRouteNotes = old })
+}
+
+// routeDoneFrom runs the routing command out of the batch checkLaunchRoute
+// returned and returns its routeDoneMsg. The batch also holds the one-second
+// elapsed-time tick, which is left unrun: only the first command is the check.
+func routeDoneFrom(t *testing.T, cmd tea.Cmd) routeDoneMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("no command: the routing phase must return the wait as a command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("command = %T (%d), want a batch of the routing command and its tick", batch, len(batch))
+	}
+	done, ok := batch[0]().(routeDoneMsg)
+	if !ok {
+		t.Fatalf("first batched command returned %T, want routeDoneMsg", done)
+	}
+	return done
 }

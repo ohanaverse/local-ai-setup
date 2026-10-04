@@ -131,7 +131,11 @@
   missing, before handing the model to an agent — on a `-M` pin, on rotation,
   in the picker and in `wt smoke` — and `wt start <id>` on a running model now
   repairs the route instead of only reporting `already running`. It prints
-  `wt: LiteLLM route for <id> updated` when it wrote one. A hand-written row
+  `wt: LiteLLM route for <id> updated` when it wrote one. In the picker, a
+  launch that had to write the route shows an "Updating the LiteLLM route"
+  progress screen while the proxy restarts instead of freezing, and that line
+  and any route warning are printed on the terminal once the picker releases
+  it (when the agent starts, or after wt exits). A hand-written row
   whose name is not a registry model id is never replaced (one named like a
   registry id is adopted, as `wt litellm sync` does — guide 04,
   `docs/guides/04-litellm-config.md`, Gotchas), and nothing is written when

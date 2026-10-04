@@ -726,3 +726,69 @@ func TestEnsureModelRouteBoundsTheLockWait(t *testing.T) {
 		t.Errorf("added = %q, want the row's own id mtplx/org/Y/Q35", added)
 	}
 }
+
+// TestSetRouteOutputRedirectsAndRestores pins the redirect the TUI picker
+// relies on (#192): while it is in place the "updated" line goes to the
+// caller's writer and not to the previous one, and after restore the previous
+// writer gets the output again. Without it the picker's route output lands on
+// Bubble Tea's alt screen and the user never sees it; a restore that did not
+// put the writer back would silence every later route warning in the process.
+func TestSetRouteOutputRedirectsAndRestores(t *testing.T) {
+	_, prev := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	target := Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"}
+	const line = "wt: LiteLLM route for mtplx/Y--Q35 updated\n"
+
+	var captured bytes.Buffer
+	restore := SetRouteOutput(&captured)
+	if !EnsureRoute(context.Background(), routesCfg(), target) {
+		t.Fatal("changed = false, want true when the write changed config.yaml")
+	}
+	WaitPendingRoutes()
+	restore()
+
+	if got := captured.String(); got != line {
+		t.Fatalf("redirected output = %q, want %q", got, line)
+	}
+	if prev.Len() != 0 {
+		t.Fatalf("previous writer got %q while the redirect was in place, want nothing", prev.String())
+	}
+
+	EnsureRoute(context.Background(), routesCfg(), target)
+	WaitPendingRoutes()
+	if got := prev.String(); got != line {
+		t.Fatalf("previous writer after restore = %q, want %q", got, line)
+	}
+	if got := captured.String(); got != line {
+		t.Fatalf("redirect buffer after restore = %q, want it untouched (%q)", got, line)
+	}
+	// A second restore must not put an older writer back over a newer one.
+	restore()
+	if routesWarn != prev {
+		t.Fatal("a repeated restore changed the writer")
+	}
+}
+
+// TestSetRouteOutputCapturesAsyncRestartWarnings pins that the redirect also
+// catches what the asynchronous proxy restart prints, as long as the caller
+// restores only after WaitPendingRoutes: a failed restart is the warning that
+// explains an "Invalid model name" launch, and it is printed by a goroutine
+// that outlives EnsureRoute. Run under -race this also pins that the restart
+// goroutine's write and the redirect do not race.
+func TestSetRouteOutputCapturesAsyncRestartWarnings(t *testing.T) {
+	_, prev := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	restartProxy = func(context.Context) []string { return []string{"LiteLLM proxy restart failed: boom"} }
+
+	var captured bytes.Buffer
+	restore := SetRouteOutput(&captured)
+	EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"})
+	WaitPendingRoutes()
+	restore()
+
+	want := "wt: LiteLLM route for ollama/a:1 updated\nwt: LiteLLM proxy restart failed: boom\n"
+	if got := captured.String(); got != want {
+		t.Fatalf("redirected output = %q, want %q", got, want)
+	}
+	if prev.Len() != 0 {
+		t.Fatalf("previous writer got %q, want the restart warning captured by the redirect", prev.String())
+	}
+}

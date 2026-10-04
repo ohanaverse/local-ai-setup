@@ -23,6 +23,54 @@ var (
 	routesWarn   io.Writer = os.Stderr
 )
 
+// routesOutMu guards routesWarn against the one concurrent pair this package
+// has: SetRouteOutput swapping the writer while an async proxy restart
+// (bounceProxyAsync) is printing a warning. Every print goes through
+// routePrintf, which holds it for the whole write, so a writer handed to
+// SetRouteOutput is never written by two goroutines at once and is never
+// written again once the restore func has returned.
+var routesOutMu sync.Mutex
+
+// routePrintf is the single way this file prints: the "updated" line and every
+// route warning. It reads the current writer and writes to it under
+// routesOutMu, so a redirect cannot land between the two.
+func routePrintf(format string, args ...any) {
+	routesOutMu.Lock()
+	defer routesOutMu.Unlock()
+	fmt.Fprintf(routesWarn, format, args...)
+}
+
+// SetRouteOutput sends everything the route hooks print — the "updated" line
+// and every warning, including those from the asynchronous proxy restart — to
+// w until the returned restore func is called. It exists for a caller that
+// owns the terminal: the TUI picker runs under Bubble Tea's alt screen, where
+// a line written to stderr is not reliably visible and is gone once the agent
+// takes the terminal, so the picker captures this output and prints it itself
+// when the terminal is released.
+//
+// The restart's warnings are printed by a goroutine that outlives the call
+// that started it, so a caller that wants them too must call restore only
+// after WaitPendingRoutes() has returned; restoring earlier sends them to the
+// previous writer. w is written under a mutex, never concurrently, and never
+// after restore returns, so a plain bytes.Buffer is safe to read from then on.
+// restore puts back the writer that was current when SetRouteOutput was
+// called and is safe to call more than once. A caller that never calls
+// SetRouteOutput sees no change: the output goes to stderr.
+func SetRouteOutput(w io.Writer) (restore func()) {
+	routesOutMu.Lock()
+	prev := routesWarn
+	routesWarn = w
+	routesOutMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			routesOutMu.Lock()
+			routesWarn = prev
+			routesOutMu.Unlock()
+		})
+	}
+}
+
 // routeWG tracks the in-flight async proxy restarts applyAndReport started.
 var routeWG sync.WaitGroup
 
@@ -39,9 +87,9 @@ var routeWG sync.WaitGroup
 //     THROUGH LiteLLM, so proceeding while the restart is still in flight can
 //     meet a refused connection or the pre-restart route table (the model just
 //     started not yet listed). The launch paths — cmd/wt's startForLaunch and
-//     ensureRouteBeforeLaunch, the TUI start flow and ensureLaunchRoute before
-//     the launch, wt smoke before its one-shot prompt — therefore wait here
-//     rather than only at process exit.
+//     ensureRouteBeforeLaunch, the TUI start flow and the picker's routing
+//     phase (checkLaunchRoute) before the launch, wt smoke before its one-shot
+//     prompt — therefore wait here rather than only at process exit.
 func WaitPendingRoutes() {
 	routeWG.Wait()
 }
@@ -149,7 +197,7 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
 	ch := litellm.Change{Add: StartRouteChange(cfg, t).Add}
 	changed := applyAndReport(ctx, cfg, ch, restartIfChanged)
 	if changed {
-		fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
+		routePrintf("wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
 	}
 	return changed
 }
@@ -261,7 +309,7 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 	})
 	if err != nil {
 		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
-			fmt.Fprintf(routesWarn, "wt: LiteLLM route not updated: %v\n", err)
+			routePrintf("wt: LiteLLM route not updated: %v\n", err)
 		}
 		// This write failed, but restartForced means an earlier deferred
 		// write (the replaced occupant's route removal) is already in
@@ -274,7 +322,7 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 	}
 	for _, o := range res.Outcomes {
 		if o.Err != nil {
-			fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
+			routePrintf("wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
 		}
 	}
 	// res.Warnings is only ever populated by ApplyChange's restart hook, which
@@ -327,11 +375,11 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// restart is expected" case to stay quiet about — suppressing them on
 		// that theory is exactly what hid this path failing silently.
 		for _, w := range restartProxy(bgCtx) {
-			fmt.Fprintf(routesWarn, "wt: %s\n", w)
+			routePrintf("wt: %s\n", w)
 		}
 		if wasUp {
 			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
-				fmt.Fprintf(routesWarn, "wt: %v\n", err)
+				routePrintf("wt: %v\n", err)
 			}
 		}
 	}()

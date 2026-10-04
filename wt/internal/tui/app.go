@@ -11,6 +11,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,6 +45,7 @@ const (
 	phaseNewWorktree                 // create-new-worktree prompt
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
+	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -119,6 +121,12 @@ type model struct {
 	startRun int           // monotonically increasing run id; stale messages are dropped by id
 	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
 
+	// launch-time route check (#192): a launch that had to write the model's
+	// LiteLLM route waits for the proxy restart behind phaseRouting instead of
+	// freezing the picker.
+	routing  *routingState // in-flight route check (phaseRouting); nil when idle
+	routeRun int           // monotonically increasing run id; stale messages are dropped by id
+
 	// new-worktree prompt (this lesson)
 	newInput         textinput.Model
 	newError         string
@@ -185,6 +193,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The case list is exactly the set handleStartMsg handles, so it
 		// always has something to say.
 		return m.handleStartMsg(msg)
+	case routeDoneMsg, routeTickMsg:
+		// Likewise exactly the set handleRouteMsg handles.
+		return m.handleRouteMsg(msg)
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -311,6 +322,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// wrap-around below, which must not move the cursor mid-start).
 		if m.phase == phaseStarting && m.start != nil {
 			return m.handleStartKey(msg)
+		}
+		// So does an in-flight route check, for the same reason and at the same
+		// place: the launch it precedes is already decided, so no key may move
+		// the cursor, pop a screen or quit by accident. Only ctrl+c gets out.
+		if m.phase == phaseRouting {
+			return m.handleRouteKey(msg)
 		}
 		// Model picker wrap-around: bubble/list does not wrap by default.
 		// Skip while the filter input is active (or has just been opened,
@@ -659,6 +676,12 @@ func (m model) View() string {
 			return "start progress (waiting for window size)"
 		}
 		return m.startingView()
+	}
+	if m.phase == phaseRouting {
+		if m.width <= 0 || m.height <= 0 {
+			return "route update (waiting for window size)"
+		}
+		return m.routingView()
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
@@ -1081,15 +1104,13 @@ func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
 	return cmd
 }
 
-// proceedToLaunch checks for a prior session and either launches the agent
-// directly or transitions to the resume prompt. It is the shared flow used
-// by both the phaseModel enter handler and the ollama warning proceed choice.
-// Every path that bails back to the picker re-probes the table: this is reached
-// from the start flow, where the table was built before the attempt, so a start
-// that succeeded and then failed to launch would otherwise leave the picker
-// claiming RUNNING="-" for a model that is loaded and serving. The probe is
-// deferred to a command, so paying for it on the paths that did not start
-// anything costs nothing on the update loop.
+// proceedToLaunch is the one funnel every model launch passes through: the
+// phaseModel enter handler, the ollama warning's proceed choice, a pinned or
+// lone launch row in enterModelPhase, and a start that just succeeded. It
+// captures the highlighted row as the launch model, runs the launch-time
+// LiteLLM route check where one is needed, and continues in launchSelected —
+// in this same Update, unless the check had to write the route, in which case
+// phaseRouting shows the proxy restart first.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.current is gone; m.models is the
@@ -1107,9 +1128,30 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// flow just started (start is still set: the table is not rebuilt in
 	// between) had its route written by the start hook, and finishStart has
 	// already waited for the proxy.
-	if !highlighted.start {
-		ensureLaunchRoute(m.cfg, m.agent, highlighted.model)
+	if highlighted.start || m.cfg == nil {
+		return m.launchSelected("")
 	}
+	// Only a launch that goes through LiteLLM needs the route: a direct or
+	// native launch leaves config.yaml alone.
+	if route, _ := m.cfg.ResolveRoute(highlighted.model, agents.ProtocolsFor(m.agent)); !route.Litellm {
+		return m.launchSelected("")
+	}
+	return m.checkLaunchRoute(highlighted.model)
+}
+
+// launchSelected launches m.launchModel: it checks for a prior session and
+// either launches the agent directly or transitions to the resume prompt. It
+// reads m.launchModel rather than the picker's cursor because it also runs
+// from the routing phase's completion message, an Update later than the one
+// that picked the row. routeNote is the status line a route check left ("" for
+// none), kept beside a resume warning rather than replaced by it.
+// Every path that bails back to the picker re-probes the table: this is reached
+// from the start flow, where the table was built before the attempt, so a start
+// that succeeded and then failed to launch would otherwise leave the picker
+// claiming RUNNING="-" for a model that is loaded and serving. The probe is
+// deferred to a command, so paying for it on the paths that did not start
+// anything costs nothing on the update loop.
+func (m model) launchSelected(routeNote string) (model, tea.Cmd) {
 	// Native models launch fresh: resuming a session would restore the
 	// session's stored model, silently overriding the user's "native" choice
 	// (and, for claude, routing a gateway model at the real Anthropic API).
@@ -1117,12 +1159,17 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// convenience, and refusing to launch over it left the user unable to
 	// start the agent at all (opencode #162). The lookup itself is shared with
 	// the non-TUI path via agents.ResumeSession so the two cannot disagree.
-	sess, warning := resumeSession(m.agent, highlighted.model.Native, m.selectedPath)
+	sess, warning := resumeSession(m.agent, m.launchModel.Native, m.selectedPath)
 	if warning != "" {
+		// The route note is already in the status line; a warning must not
+		// push it out, so both are shown.
+		if routeNote != "" {
+			warning = routeNote + "; " + warning
+		}
 		m.status = warning
 	}
 	if sess == nil {
-		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
+		cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 		if err != nil {
 			m.status = "launch failed: " + err.Error()
 			return m.refreshTable()
@@ -1297,12 +1344,16 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
 	pendingSummary = ""
+	pendingRouteNotes = ""
 	pendingSurveyState = pendingSurvey{}
 	profileApplier = applyProfile
 	finalModel, err := p.Run()
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
+	// Route output first: it belongs to the launch (or to the launch that
+	// never happened), so it goes above the summary and the survey.
+	flushRouteNotesAfterRun(finalModel, os.Stderr)
 	printPendingSummaryAndSurvey(cfg)
 	if err == nil {
 		if fm, ok := finalModel.(model); ok && fm.fatalErr != nil {
@@ -1310,6 +1361,21 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 		}
 	}
 	return err
+}
+
+// flushRouteNotesAfterRun prints, once the alt screen is gone, whatever route
+// output is still pending: the user quit, or the launch never happened, so
+// runAndWaitCmd never printed it. A check that is still in flight (the user
+// pressed ctrl+c on the routing screen, so its message was never handled) is
+// settled first — that waits for the proxy restart, which the process has to
+// wait for before exiting anyway, and puts the route output back on stderr. It
+// is extracted from Run() so it is unit-testable without a real
+// tea.Program/TTY.
+func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
+	if fm, ok := final.(model); ok && fm.routing != nil {
+		pendingRouteNotes += fm.routing.settle()
+	}
+	flushRouteNotes(w)
 }
 
 // printPendingSummaryAndSurvey runs the TUI's post-exit flow once the
