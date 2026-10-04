@@ -6,10 +6,13 @@
 package smoke
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -67,7 +70,12 @@ func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
 // cannot assign this package's unexported buildAndRun. Tests only.
 func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome) (restore func()) {
 	old := buildAndRun
-	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+	buildAndRun = func(_ context.Context, cfg *config.Config, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+		cwd, err := rowDir()
+		if err != nil {
+			*cleanup = func() error { return nil }
+			return execOutcome{StartErr: err}
+		}
 		return fn(cfg, agentName, m, prompt, cwd, timeout, profileApplier, cleanup)
 	}
 	return func() { buildAndRun = old }
@@ -187,7 +195,10 @@ type execOutcome struct {
 	Output   string
 	ExitCode int
 	TimedOut bool
-	StartErr error // non-nil if the command never started (e.g. agent not installed)
+	// Interrupted means ctx was cancelled (Ctrl+C) while the agent ran and
+	// its process group was killed. The row is FAIL.
+	Interrupted bool
+	StartErr    error // non-nil if the command never started (e.g. agent not installed)
 	// ModelFallback is the driver's warning when it could not select the
 	// model under test and the agent would run on its own default model
 	// (agents.LaunchInfo.ModelFallback). Non-empty means the row is FAIL
@@ -199,6 +210,14 @@ type execOutcome struct {
 // ExecOutcome is the exported alias for execOutcome, used by cross-package
 // test stubs (cmd/wt's smoke tests) that cannot access the unexported type.
 type ExecOutcome = execOutcome
+
+// RowDir yields the directory a row's agent runs in. It is a func so that the
+// directory is only made once the agent is known to run: a row whose agent is
+// not installed, or cannot select the model, never asks for it.
+type RowDir func() (string, error)
+
+// FixedDir is the RowDir for a directory that already exists.
+func FixedDir(dir string) RowDir { return func() (string, error) { return dir, nil } }
 
 // buildAndRun builds and runs one agent's one-shot launch command. It is a
 // package-level var so tests can stub it with canned outcomes, following
@@ -279,7 +298,7 @@ func StubOutcome(output string, exitCode int) execOutcome {
 	return execOutcome{Output: output, ExitCode: exitCode}
 }
 
-func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
 	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
 	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
 	*cleanup = func() error { return nil }
@@ -292,11 +311,13 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// (--dangerously-bypass-approvals-and-sandbox), which smoke has no
 	// reason to need — see TestRealBuildAndRunSkipsYoloForCodex. Every
 	// agent driver runs the smoke prompt with permission checks bypassed
-	// in the current working directory (see docs/wt-smoke.md's
-	// "Tool-use permission" note): a --prompt override therefore runs
-	// unsupervised here too, not just the fixed sentinel prompt.
+	// in cwd (see docs/wt-smoke.md's "Tool-use permission" note): a
+	// --prompt override therefore runs unsupervised too, not just the
+	// fixed sentinel prompt. That is why cmd/wt hands each row a fresh
+	// temporary directory (NewRowDir) unless --cwd was passed.
 	yolo := agentName != "codex"
-	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, yolo, nil, cfg, nil)
+	// Built with no directory: it is set below, once the agent is known to run.
+	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, "", yolo, nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}
@@ -319,6 +340,13 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		return execOutcome{StartErr: fmt.Errorf("agent %q does not support one-shot invocation", agentName)}
 	}
 	oneShotArgs := osr.OneShotArgs(prompt)
+	// Only now: every return above is a row that runs no agent, and a
+	// directory made for it would be a `git init` and a sweep for nothing.
+	dir, err := rowDir()
+	if err != nil {
+		return execOutcome{StartErr: err}
+	}
+	agents.SetDir(cmd, dir)
 
 	buf := &boundedWriter{}
 	cmd.Stdout = buf
@@ -356,6 +384,12 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		cmd.Args = append(cmd.Args, oneShotArgs...)
 	}
 	cmdLine := strings.Join(cmd.Args, " ")
+	// After the profile, so nothing puts them back: the agent finds its
+	// repository from cwd alone (see gitRepoEnv).
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = withoutGitRepoEnv(cmd.Env)
 
 	// cmd.Stdout/Stderr being the exact same io.Writer value makes os/exec
 	// share one pipe and copy goroutine between them instead of racing two
@@ -380,6 +414,7 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 
 	select {
 	case waitErr := <-done:
+		settleGroup(ctx, cmd.Process.Pid)
 		exitCode := 0
 		if waitErr != nil {
 			ee, ok := waitErr.(*exec.ExitError)
@@ -399,12 +434,21 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		}
 		<-done
 		return execOutcome{Command: cmdLine, Output: buf.String(), TimedOut: true}
+	case <-ctx.Done():
+		// Ctrl+C: Setpgid keeps the terminal's SIGINT from the agent, so
+		// unless the group is killed here it outlives wt, still running with
+		// permission checks off.
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		<-done
+		return execOutcome{Command: cmdLine, Output: buf.String(), Interrupted: true}
 	}
 }
 
 // RunRow runs agentName's one-shot prompt against model m and classifies
 // the result. sentinel is the exact string the default prompt asked the
-// agent to echo; pass "" when prompt was overridden by the caller (a
+// model to produce (DefaultPrompt); pass "" when prompt was overridden by the caller (a
 // custom prompt was never asked to produce a sentinel), which degrades
 // verification to "exited 0 within timeout".
 //
@@ -414,10 +458,13 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 // invoke after the command exits (success or failure) to restore any config
 // file a profile's config_content mechanism rewrote. A nil profileApplier
 // is a no-op.
-func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, cwd string, profileApplier ProfileApplier) RowResult {
+//
+// Cancelling ctx kills the agent's whole process group and fails the row as
+// interrupted.
+func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier) RowResult {
 	start := time.Now()
 	var cleanup func() error
-	out := buildAndRun(cfg, agentName, m, prompt, cwd, timeout, profileApplier, &cleanup)
+	out := buildAndRun(ctx, cfg, agentName, m, prompt, rowDir, timeout, profileApplier, &cleanup)
 	defer func() {
 		if cerr := cleanup(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
@@ -442,11 +489,16 @@ func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentin
 		return res
 	}
 	// Checked before the exit code and sentinel: an agent on its default
-	// model exits 0 and echoes the sentinel just as well, so those say
+	// model exits 0 and produces the sentinel just as well, so those say
 	// nothing about the model under test.
 	if out.ModelFallback != "" {
 		res.Status = StatusFail
 		res.Err = fmt.Errorf("%s fell back to its default model instead of %s: %s", agentName, m.ID, out.ModelFallback)
+		return res
+	}
+	if out.Interrupted {
+		res.Status = StatusFail
+		res.Err = errors.New("interrupted")
 		return res
 	}
 	if out.TimedOut {
@@ -479,10 +531,166 @@ func NewRunID() string {
 	return fmt.Sprintf("run-%x", b)
 }
 
-// DefaultPrompt returns the sentinel-echo prompt and the sentinel RunRow
-// should look for in the agent's output.
+// DefaultPrompt returns the smoke prompt and the sentinel RunRow should look
+// for in the agent's output.
+//
+// The prompt must never contain the sentinel verbatim (#193). Some agents
+// print the prompt back — codex's transcript opens with a "user" block
+// holding it — so a sentinel the prompt contains is found in the output
+// whatever the model replied, and even when no model replied at all. The
+// prompt therefore carries the text in lower case and asks for it in upper
+// case, and RunRow's case-sensitive search can only be satisfied by a reply.
+// One instruction on one token keeps it within reach of a small local model
+// and needs no per-agent parsing of where a reply starts.
 func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
-	sentinel = fmt.Sprintf("WT-SMOKE-%s-%s", agentName, runID)
-	prompt = fmt.Sprintf("Reply with exactly this text and nothing else: %s", sentinel)
+	text := strings.ToLower(fmt.Sprintf("wt-smoke-%s-%s", agentName, runID))
+	sentinel = strings.ToUpper(text)
+	prompt = fmt.Sprintf("Reply with exactly this text converted to upper case and nothing else: %s", text)
 	return prompt, sentinel
+}
+
+// rowDirPrefix starts the name of every directory NewRowDir creates.
+const rowDirPrefix = "wt-smoke-"
+
+// NewRowDir creates the directory one smoke row runs in by default (#193):
+// a fresh, empty temporary directory, so an agent running with permission
+// checks off cannot write into the caller's working tree — a small model
+// under claude once created a junk file in the repo root this way. It is
+// made a git repository because codex refuses to run outside one ("Not
+// inside a trusted directory"). cleanup removes the directory and whatever
+// the agent left in it.
+func NewRowDir() (dir string, cleanup func(), err error) {
+	dir, err = os.MkdirTemp("", rowDirPrefix)
+	if err != nil {
+		return "", nil, fmt.Errorf("creating a smoke directory: %w", err)
+	}
+	// The path the agent will see: macOS's temp dir sits behind a symlink,
+	// and an agent keys its own state on the resolved one (AgentStateDirs).
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+		dir = resolved
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	initCmd := exec.Command("git", "-C", dir, "init", "-q")
+	initCmd.Env = withoutGitRepoEnv(os.Environ())
+	if out, gerr := initCmd.CombinedOutput(); gerr != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("git init in %s: %v: %s", dir, gerr, strings.TrimSpace(string(out)))
+	}
+	return dir, cleanup, nil
+}
+
+// AgentStateDirs returns the directories agentName keeps in its own state for
+// the row directory rowDir (claude's ~/.claude/projects entry, pi's session
+// directory), for the caller to remove with the row: each row would otherwise
+// leave one behind for good. It answers only for a directory NewRowDir made —
+// the same lookup for the caller's real directory (a --cwd run) would name
+// the user's own transcripts.
+func AgentStateDirs(agentName, rowDir string) []string {
+	if !strings.HasPrefix(filepath.Base(rowDir), rowDirPrefix) {
+		return nil
+	}
+	sd, ok := agents.ByName(agentName).(agents.StateDirer)
+	if !ok {
+		return nil
+	}
+	return []string{sd.StateDir(rowDir)}
+}
+
+// gitRepoEnv names the variables that point git at a repository. Inherited
+// from a git hook or a shell that exports them, they win over the working
+// directory: `git init` in a row's directory would re-initialise the caller's
+// repository, and an agent's git commands would act on it.
+var gitRepoEnv = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX",
+	"GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+}
+
+// withoutGitRepoEnv returns env without the gitRepoEnv variables.
+func withoutGitRepoEnv(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(gitRepoEnv, name)
+	})
+}
+
+// Variables rather than constants so a test can shorten groupGrace.
+var (
+	// groupGrace is how long a finished agent's process group gets to empty
+	// before what is left of it is killed.
+	groupGrace = 5 * time.Second
+	// groupPoll is how often settleGroup checks whether the group is empty.
+	groupPoll = 20 * time.Millisecond
+)
+
+// settleGroup returns once the process group pgid is empty. An agent that has
+// exited can leave processes of its own behind — claude's session-save hook
+// wrote into the row's directory after claude was gone (#193) — and the row
+// is not over while they run: the caller removes the directory next. They get
+// groupGrace to finish; what is still there then, or when ctx is cancelled,
+// is killed.
+//
+// The group's leader has been reaped by now, so its id is only held by the
+// members still alive; signalling it once it is empty reaches nothing.
+func settleGroup(ctx context.Context, pgid int) {
+	deadline := time.Now().Add(groupGrace)
+	for syscall.Kill(-pgid, 0) == nil {
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			return
+		}
+		time.Sleep(groupPoll)
+	}
+}
+
+// Variables rather than constants so a test can shorten sweepLimit.
+var (
+	// sweepPoll is how often SweepRowDirs re-checks the row directories.
+	sweepPoll = 100 * time.Millisecond
+	// sweepQuiet is how long every directory must have stayed gone before the
+	// sweep stops: long enough to catch a hook that writes just after its
+	// agent exits, short enough to be unnoticeable at the end of a run.
+	sweepQuiet = 300 * time.Millisecond
+	// sweepLimit bounds the sweep when something keeps writing.
+	sweepLimit = 3 * time.Second
+)
+
+// SweepRowDirs removes the row directories of one smoke run once more, after
+// the last row, and keeps doing so until they have all stayed gone for
+// sweepQuiet (or sweepLimit passes). Each row already removes its own
+// directory the moment it ends, and settleGroup has by then waited out (or
+// killed) whatever the agent left running in its process group — claude's
+// session-save hook recreated the directory just removed on a real run
+// (#193). The sweep is the backstop for a process that left that group
+// (a daemonised helper) and writes later still, and it is what removes the
+// agent state directories (AgentStateDirs) the caller adds to dirs. Whatever
+// is written after the sweep lands in the system temp directory, never in the
+// caller's checkout.
+//
+// It returns the directories its last pass could not remove (an agent left a
+// read-only tree behind, say), so the caller can name them instead of leaving
+// an unsupervised agent's output behind in silence. A failed removal is
+// retried like a directory that came back: it also fails while a late writer
+// is still adding files.
+func SweepRowDirs(dirs []string) (left []string) {
+	if len(dirs) == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(sweepLimit)
+	quietSince := time.Now()
+	for {
+		left = left[:0]
+		for _, d := range dirs {
+			if _, err := os.Lstat(d); err == nil {
+				if os.RemoveAll(d) != nil {
+					left = append(left, d)
+				}
+				quietSince = time.Now()
+			}
+		}
+		if time.Since(quietSince) >= sweepQuiet || time.Now().After(deadline) {
+			return left
+		}
+		time.Sleep(sweepPoll)
+	}
 }

@@ -228,3 +228,32 @@ func TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeStateDir pins where claude keeps a working directory's project
+// state: ~/.claude/projects/<slug>, every character outside [a-zA-Z0-9-]
+// (an underscore included) turned into a dash.
+func TestClaudeStateDir(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	got := claudeDriver{}.StateDir("/private/var/x_y/T/wt-smoke-1")
+	if want := "/h/.claude/projects/-private-var-x-y-T-wt-smoke-1"; got != want {
+		t.Fatalf("StateDir = %q, want %q", got, want)
+	}
+}
+
+// TestPiStateDir pins where pi keeps a working directory's sessions:
+// <agent dir>/sessions/--<path>--, the leading slash dropped and only "/",
+// "\" and ":" turned into dashes (an underscore survives), with
+// PI_CODING_AGENT_DIR overriding ~/.pi/agent.
+func TestPiStateDir(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	got := piDriver{}.StateDir("/private/var/x_y/T/wt-smoke-1")
+	if want := "/h/.pi/agent/sessions/--private-var-x_y-T-wt-smoke-1--"; got != want {
+		t.Fatalf("StateDir = %q, want %q", got, want)
+	}
+	t.Setenv("PI_CODING_AGENT_DIR", "/elsewhere")
+	got = piDriver{}.StateDir("/tmp/wt-smoke-1")
+	if want := "/elsewhere/sessions/--tmp-wt-smoke-1--"; got != want {
+		t.Fatalf("StateDir with PI_CODING_AGENT_DIR = %q, want %q", got, want)
+	}
+}

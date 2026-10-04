@@ -1020,3 +1020,25 @@ func TestIssueFor(t *testing.T) {
 		t.Errorf("IssueFor(shell) = %q, want \"\" (command)", got)
 	}
 }
+
+// TestCommandSetsPWDToTheWorkdir pins that the agent's PWD names the
+// directory it runs in. The environment is inherited from wt, whose PWD is
+// the caller's directory, and os/exec only fills PWD in when the environment
+// has none — so an agent that trusts PWD over getcwd (opencode does) opened
+// the caller's directory instead of the worktree it was launched in.
+func TestCommandSetsPWDToTheWorkdir(t *testing.T) {
+	t.Setenv("PWD", "/stale/caller")
+	cmd, err := Command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/work/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pwd []string
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "PWD=") {
+			pwd = append(pwd, kv)
+		}
+	}
+	if len(pwd) != 1 || pwd[0] != "PWD=/work/tree" {
+		t.Fatalf("PWD entries = %v, want exactly PWD=/work/tree", pwd)
+	}
+}

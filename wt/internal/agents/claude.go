@@ -28,9 +28,13 @@ func (claudeDriver) InstructionPointers() []InstructionPointer {
 
 func (claudeDriver) ResumeFlag() string { return "--resume" }
 
+// StateDir is claude's per-project directory (transcripts and memory).
+func (claudeDriver) StateDir(path string) string {
+	return filepath.Join(os.Getenv("HOME"), ".claude", "projects", session.Slug(path))
+}
+
 func (claudeDriver) LatestSession(path string) (*session.Session, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".claude", "projects", session.Slug(path))
-	return session.LatestByExt(dir, ".jsonl", func(f os.FileInfo) string {
+	return session.LatestByExt(claudeDriver{}.StateDir(path), ".jsonl", func(f os.FileInfo) string {
 		return strings.TrimSuffix(f.Name(), ".jsonl")
 	})
 }

@@ -4,12 +4,15 @@
 package smoke
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -243,7 +246,7 @@ func TestEligibilityIncludesDiscoveredUnderLitellm(t *testing.T) {
 func withStubBuildAndRun(t *testing.T, out execOutcome) {
 	t.Helper()
 	old := buildAndRun
-	buildAndRun = func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ ProfileApplier, cleanup *func() error) execOutcome {
+	buildAndRun = func(_ context.Context, _ *config.Config, _ string, _ config.Model, _ string, _ RowDir, _ time.Duration, _ ProfileApplier, cleanup *func() error) execOutcome {
 		*cleanup = func() error { return nil }
 		return out
 	}
@@ -254,7 +257,7 @@ func withStubBuildAndRun(t *testing.T, out execOutcome) {
 // output classifies PASS.
 func TestRunRowPass(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "before WT-SMOKE-claude-run-1 after"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v, want PASS (err=%v)", res.Status, res.Err)
 	}
@@ -265,7 +268,7 @@ func TestRunRowPass(t *testing.T) {
 // enough on its own when a sentinel was requested.
 func TestRunRowFailMissingSentinel(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "wrong output"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -275,7 +278,7 @@ func TestRunRowFailMissingSentinel(t *testing.T) {
 // regardless of what the output contains.
 func TestRunRowFailNonZeroExit(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 1, Output: "WT-SMOKE-claude-run-1"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -286,7 +289,7 @@ func TestRunRowFailNonZeroExit(t *testing.T) {
 // substring convention agents-smoke.sh's classifier uses.
 func TestRunRowSkipNotInstalled(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf("agent claude not installed")})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusSkip {
 		t.Fatalf("Status = %v, want SKIP", res.Status)
 	}
@@ -297,7 +300,7 @@ func TestRunRowSkipNotInstalled(t *testing.T) {
 // not SKIP — only the exact installed-check message means SKIP.
 func TestRunRowFailOtherStartErr(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf(`unknown provider "x" for model "y"`)})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL", res.Status)
 	}
@@ -307,7 +310,7 @@ func TestRunRowFailOtherStartErr(t *testing.T) {
 // timeout-specific error, and never blocks on a hung process.
 func TestRunRowFailTimeout(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{TimedOut: true})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "timed out") {
 		t.Fatalf("Status = %v, Err = %v, want FAIL with a timeout error", res.Status, res.Err)
 	}
@@ -318,7 +321,7 @@ func TestRunRowFailTimeout(t *testing.T) {
 // the documented verification degradation for a custom prompt.
 func TestRunRowCustomPromptSkipsSentinelCheck(t *testing.T) {
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "anything at all"})
-	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, FixedDir("."), nil)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v, want PASS (empty sentinel means exit-code-only)", res.Status)
 	}
@@ -350,7 +353,7 @@ func writeFakeAgentBinary(t *testing.T, name string) {
 func TestRealBuildAndRunOneShotArgsNilApplier(t *testing.T) {
 	writeFakeAgentBinary(t, "agy")
 	var cleanup func() error
-	outcome := realBuildAndRun(&config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if cleanup == nil {
 		t.Fatal("realBuildAndRun never set *cleanup")
 	}
@@ -374,7 +377,7 @@ func TestRealBuildAndRunOneShotArgsNilApplier(t *testing.T) {
 func TestRealBuildAndRunPassesYolo(t *testing.T) {
 	writeFakeAgentBinary(t, "copilot")
 	var cleanup func() error
-	outcome := realBuildAndRun(&config.Config{}, "copilot", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "copilot", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if !strings.HasSuffix(outcome.Command, "--yolo -p the prompt") {
 		t.Fatalf("Command = %q, want it to end with \"--yolo -p the prompt\" (yolo must be passed for one-shot copilot launches)", outcome.Command)
 	}
@@ -393,7 +396,7 @@ func TestRealBuildAndRunPassesYolo(t *testing.T) {
 func TestRealBuildAndRunSkipsYoloForCodex(t *testing.T) {
 	writeFakeAgentBinary(t, "codex")
 	var cleanup func() error
-	outcome := realBuildAndRun(&config.Config{}, "codex", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "codex", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if strings.Contains(outcome.Command, "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("Command = %q, want it to NOT contain codex's yolo flag (codex exec never prompts; forcing it only strips its sandbox)", outcome.Command)
 	}
@@ -412,7 +415,7 @@ func TestRealBuildAndRunSkipsYoloForCodex(t *testing.T) {
 func TestRealBuildAndRunOpencodeYolo(t *testing.T) {
 	writeFakeAgentBinary(t, "opencode")
 	var cleanup func() error
-	outcome := realBuildAndRun(&config.Config{}, "opencode", config.Model{Native: true}, "the prompt", t.TempDir(), 10*time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "opencode", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 10*time.Second, nil, &cleanup)
 	if !strings.HasSuffix(outcome.Command, "opencode --auto=true run the prompt") {
 		t.Fatalf("Command = %q, want it to end with \"opencode --auto=true run the prompt\"", outcome.Command)
 	}
@@ -431,7 +434,7 @@ func TestRealBuildAndRunOneShotArgsPlacedByApplier(t *testing.T) {
 		return func() error { cleanupCalled = true; return nil }, nil
 	}
 	var cleanup func() error
-	outcome := realBuildAndRun(&config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, applier, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, applier, &cleanup)
 	if !strings.HasSuffix(outcome.Command, "--extra -p the prompt") {
 		t.Fatalf("Command = %q, want the applier's own flag then oneShotArgs at the end", outcome.Command)
 	}
@@ -457,7 +460,7 @@ func TestRealBuildAndRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.
 		return func() error { return nil }, fmt.Errorf("boom")
 	}
 	var cleanup func() error
-	outcome := realBuildAndRun(&config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, applier, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, applier, &cleanup)
 	if strings.Contains(outcome.Command, "--partial") {
 		t.Fatalf("Command = %q, still contains the failed applier's partial mutation — revert did not happen", outcome.Command)
 	}
@@ -475,7 +478,7 @@ func TestRealBuildAndRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.
 func TestRunRowFailModelFallback(t *testing.T) {
 	const warn = `pi: model "ollama/x" not configured for pi, using default model`
 	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "WT-SMOKE-pi-run-1", ModelFallback: warn})
-	res := RunRow(&config.Config{}, "pi", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-pi-run-1", time.Second, ".", nil)
+	res := RunRow(context.Background(), &config.Config{}, "pi", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-pi-run-1", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL for a model fallback", res.Status)
 	}
@@ -526,7 +529,7 @@ func smokeDiscoveredOllama() config.Model {
 func TestRealBuildAndRunReportsModelFallback(t *testing.T) {
 	cfg := smokePiFixture(t, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[{"_launch":false,"id":"llama3.2:1b"}]}}}`)
 	var cleanup func() error
-	outcome := realBuildAndRun(cfg, "pi", smokeDiscoveredOllama(), "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if cleanup == nil {
 		t.Fatal("realBuildAndRun never set *cleanup")
 	}
@@ -536,7 +539,7 @@ func TestRealBuildAndRunReportsModelFallback(t *testing.T) {
 	if outcome.Command != "" || outcome.StartErr != nil {
 		t.Fatalf("Command = %q, StartErr = %v, want the agent never started", outcome.Command, outcome.StartErr)
 	}
-	if res := RunRow(cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", time.Second, t.TempDir(), nil); res.Status != StatusFail {
+	if res := RunRow(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusFail {
 		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
 	}
 }
@@ -549,14 +552,14 @@ func TestRealBuildAndRunReportsModelFallback(t *testing.T) {
 func TestRealBuildAndRunDiscoveredModelNoFallback(t *testing.T) {
 	cfg := smokePiFixture(t, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[]}}}`)
 	var cleanup func() error
-	outcome := realBuildAndRun(cfg, "pi", smokeDiscoveredOllama(), "the prompt", t.TempDir(), 10*time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", FixedDir(t.TempDir()), 10*time.Second, nil, &cleanup)
 	if outcome.ModelFallback != "" {
 		t.Fatalf("ModelFallback = %q, want none", outcome.ModelFallback)
 	}
 	if !strings.HasSuffix(outcome.Command, "--model ollama/llama3.2:1b -p the prompt") {
 		t.Fatalf("Command = %q, want it to end with \"--model ollama/llama3.2:1b -p the prompt\"", outcome.Command)
 	}
-	if res := RunRow(cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, t.TempDir(), nil); res.Status != StatusPass {
+	if res := RunRow(context.Background(), cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusPass {
 		t.Fatalf("RunRow Status = %v, want PASS (err=%v)", res.Status, res.Err)
 	}
 }
@@ -582,11 +585,11 @@ func TestRealBuildAndRunModelFallbackWithoutWarnStillFails(t *testing.T) {
 	t.Cleanup(agents.RegisterTest("silent-fallback", func() agents.Driver { return silentFallbackDriver{} }))
 	writeFakeAgentBinary(t, "silent-fallback")
 	var cleanup func() error
-	outcome := realBuildAndRun(&config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	outcome := realBuildAndRun(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), time.Second, nil, &cleanup)
 	if outcome.ModelFallback == "" || outcome.Command != "" {
 		t.Fatalf("ModelFallback = %q, Command = %q, want a non-empty fallback reason and the agent never started", outcome.ModelFallback, outcome.Command)
 	}
-	if res := RunRow(&config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", "", time.Second, t.TempDir(), nil); res.Status != StatusFail {
+	if res := RunRow(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", "", time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusFail {
 		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
 	}
 }
@@ -681,16 +684,70 @@ func TestBoundedWriterMatchesTruncateOutput(t *testing.T) {
 	}
 }
 
-// TestDefaultPrompt asserts the sentinel is embedded verbatim in the
-// prompt RunRow will later search for in captured output.
+// TestDefaultPrompt pins #193: the sentinel RunRow searches for must never
+// appear verbatim in the prompt. Some agents print the prompt back (codex's
+// transcript starts with a "user" block holding it), so a sentinel the prompt
+// contains would be found in the output whatever the model replied — or even
+// if no model replied at all. The prompt carries the text in lower case and
+// asks for it in upper case; the check looks for the upper-case form.
 func TestDefaultPrompt(t *testing.T) {
 	prompt, sentinel := DefaultPrompt("claude", "run-abcd1234")
-	wantSentinel := "WT-SMOKE-claude-run-abcd1234"
-	if sentinel != wantSentinel {
-		t.Fatalf("sentinel = %q, want %q", sentinel, wantSentinel)
+	if want := "WT-SMOKE-CLAUDE-RUN-ABCD1234"; sentinel != want {
+		t.Fatalf("sentinel = %q, want %q", sentinel, want)
 	}
-	if !strings.Contains(prompt, sentinel) {
-		t.Fatalf("prompt %q does not contain sentinel %q", prompt, sentinel)
+	if strings.Contains(prompt, sentinel) {
+		t.Fatalf("prompt %q contains the sentinel %q: a prompt echo would pass the row", prompt, sentinel)
+	}
+	if !strings.Contains(prompt, "wt-smoke-claude-run-abcd1234") {
+		t.Fatalf("prompt %q does not carry the lower-case text the model is asked to convert", prompt)
+	}
+}
+
+// TestRunRowFailsOnPromptEcho is the false PASS #193 reported: an agent that
+// exits 0 having printed only the prompt back — the model's own reply being
+// junk or absent — must FAIL the default-prompt check.
+func TestRunRowFailsOnPromptEcho(t *testing.T) {
+	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n{\"malformed\": tool call\n"})
+	res := RunRow(context.Background(), &config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil)
+	if res.Status != StatusFail {
+		t.Fatalf("Status = %v, want FAIL: the output holds only the echoed prompt", res.Status)
+	}
+}
+
+// TestRunRowPassesOnTheConvertedReply is the other half: the same echo plus
+// the model's upper-case reply passes.
+func TestRunRowPassesOnTheConvertedReply(t *testing.T) {
+	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n" + sentinel + "\n"})
+	res := RunRow(context.Background(), &config.Config{}, "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil)
+	if res.Status != StatusPass {
+		t.Fatalf("Status = %v (%v), want PASS", res.Status, res.Err)
+	}
+}
+
+// TestNewRowDirIsAFreshGitRepoAndCleansUp pins the directory a smoke row runs
+// in by default (#193): a new, empty directory outside the caller's tree that
+// is a git repository — codex refuses to run outside one — and that its
+// cleanup removes, along with anything the agent wrote there.
+func TestNewRowDirIsAFreshGitRepoAndCleansUp(t *testing.T) {
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("row dir %s is not a git repository: %v", dir, err)
+	}
+	wd, _ := os.Getwd()
+	if rel, err := filepath.Rel(wd, dir); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("row dir %s is inside the working directory %s", dir, wd)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "junk.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("row dir %s still exists after cleanup (err = %v)", dir, err)
 	}
 }
 
@@ -788,5 +845,380 @@ func TestCandidatesGateStartRowsPerAgent(t *testing.T) {
 		if !slices.Equal(got, []string{"claude"}) {
 			t.Fatalf("agents = %v, want only [claude] (codex's route cannot resolve)", got)
 		}
+	}
+}
+
+// TestSweepRowDirsRemovesWhatALateWriterRecreates pins the race seen on a real
+// run (#193): an agent's own background hook — a session-save script claude
+// leaves running after it exits — wrote into the row's directory just as it
+// was being removed, and the directory survived. The end-of-run sweep keeps
+// removing until the directories have stayed gone for a moment.
+func TestSweepRowDirsRemovesWhatALateWriterRecreates(t *testing.T) {
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	// The sweep races a timed writer: should it ever lose, don't leave the
+	// directory behind in the system temp directory.
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(150 * time.Millisecond)
+		_ = os.MkdirAll(filepath.Join(dir, ".hook", "logs"), 0o755)
+		_ = os.WriteFile(filepath.Join(dir, ".hook", "logs", "late.log"), []byte("x"), 0o644)
+	}()
+	SweepRowDirs([]string{dir})
+	<-done
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("row dir %s survived the sweep (err = %v)", dir, err)
+	}
+}
+
+// TestSweepRowDirsReturnsPromptlyWhenNothingIsLeft pins the cost: with no late
+// writer the sweep waits only its short settle time, and with no directories
+// at all it does not wait.
+func TestSweepRowDirsReturnsPromptlyWhenNothingIsLeft(t *testing.T) {
+	start := time.Now()
+	SweepRowDirs(nil)
+	if d := time.Since(start); d > 50*time.Millisecond {
+		t.Fatalf("an empty sweep took %s", d)
+	}
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	start = time.Now()
+	SweepRowDirs([]string{dir})
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("a sweep with nothing to remove took %s", d)
+	}
+}
+
+// TestSweepRowDirsReportsWhatItCannotRemove pins the sweep's return value: a
+// directory an agent left unremovable (a read-only tree) is handed back so
+// `wt smoke` can name it, rather than an unsupervised agent's output staying
+// in the temp directory with nothing said.
+func TestSweepRowDirsReportsWhatItCannotRemove(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can remove a read-only tree")
+	}
+	oldLimit := sweepLimit
+	sweepLimit = 250 * time.Millisecond
+	t.Cleanup(func() { sweepLimit = oldLimit })
+
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	gone := filepath.Join(t.TempDir(), "gone")
+
+	left := SweepRowDirs([]string{dir, gone})
+	if len(left) != 1 || left[0] != dir {
+		t.Fatalf("left = %v, want only %s", left, dir)
+	}
+}
+
+// TestRunRowFailInterrupted asserts a row whose agent was killed by a
+// cancelled run classifies FAIL with an interrupt-specific error.
+func TestRunRowFailInterrupted(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{Interrupted: true})
+	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
+	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "interrupted") {
+		t.Fatalf("Status = %v, Err = %v, want FAIL with an interrupted error", res.Status, res.Err)
+	}
+}
+
+// TestRealBuildAndRunCancelKillsTheAgentGroup pins what Ctrl+C does to a
+// running row. The agent runs in its own process group (Setpgid), so the
+// terminal's SIGINT never reaches it: unless the cancelled context kills that
+// group, wt exits and the agent — and anything it spawned — keeps running
+// with permission checks off for the rest of its timeout.
+func TestRealBuildAndRunCancelKillsTheAgentGroup(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	// The agent records its pid, then waits on a child of its own: the child
+	// is what a kill aimed at the direct process alone would leave behind.
+	script := "#!/bin/sh\necho $$ > " + pidFile + "\n/bin/sleep 30 &\nwait\n"
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan execOutcome, 1)
+	go func() {
+		var cleanup func() error
+		done <- realBuildAndRun(ctx, &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 3*time.Second, nil, &cleanup)
+	}()
+
+	var pgid int
+	for deadline := time.Now().Add(2 * time.Second); pgid == 0; time.Sleep(10 * time.Millisecond) {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			pgid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fake agent never started")
+		}
+	}
+	// Whatever the outcome, the test must not leave the group running.
+	t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+	cancel()
+
+	out := <-done
+	if !out.Interrupted {
+		t.Fatalf("outcome = %+v, want Interrupted", out)
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if err := syscall.Kill(-pgid, 0); err == syscall.ESRCH {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process group %d is still alive after the run was cancelled", pgid)
+		}
+	}
+}
+
+// TestAgentStateDirsOnlyForSmokeDirs pins the guard on what smoke may delete
+// from an agent's own state: only the entry for a directory NewRowDir made.
+// The caller's real project (a --cwd run) must never be offered for removal —
+// that entry holds the user's transcripts.
+func TestAgentStateDirsOnlyForSmokeDirs(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	if got := AgentStateDirs("claude", "/private/tmp/wt-smoke-123"); len(got) != 1 || got[0] != "/h/.claude/projects/-private-tmp-wt-smoke-123" {
+		t.Errorf("claude in a smoke directory: %v, want its project directory", got)
+	}
+	if got := AgentStateDirs("claude", "/Users/me/repo"); got != nil {
+		t.Errorf("claude in a real directory: %v, want nothing", got)
+	}
+	if got := AgentStateDirs("codex", "/private/tmp/wt-smoke-123"); got != nil {
+		t.Errorf("codex keeps no per-directory state: %v, want nothing", got)
+	}
+}
+
+// TestNewRowDirIsTheResolvedPath pins that NewRowDir hands back the path the
+// agent will see: macOS's temp dir sits behind a symlink (/var →
+// /private/var), and an agent keys its own state on the resolved one.
+func TestNewRowDirIsTheResolvedPath(t *testing.T) {
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
+		t.Fatalf("row dir %s resolves to %s (err = %v)", dir, real, err)
+	}
+}
+
+// TestNewRowDirIgnoresInheritedGitDir pins the isolation under a git hook or a
+// shell that exports GIT_DIR: `git -C <dir> init` obeys GIT_DIR over -C, so it
+// would re-initialise the caller's repository and leave the row's directory
+// without one.
+func TestNewRowDirIgnoresInheritedGitDir(t *testing.T) {
+	other := filepath.Join(t.TempDir(), "caller.git")
+	t.Setenv("GIT_DIR", other)
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Errorf("row dir %s is not a git repository: %v", dir, err)
+	}
+	if _, err := os.Stat(other); err == nil {
+		t.Errorf("git init ran against the inherited GIT_DIR %s", other)
+	}
+}
+
+// fakeAgy puts an executable `agy` with the given shell body first on PATH.
+// The body must call other programs by absolute path: PATH holds nothing else.
+func fakeAgy(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// TestRealBuildAndRunDropsInheritedGitEnv pins that the agent does not
+// inherit the variables that point git at a repository: with them set, the
+// agent's git commands would act on the caller's repository from inside the
+// row's temporary directory. Variables that only describe the user survive.
+func TestRealBuildAndRunDropsInheritedGitEnv(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), "env")
+	fakeAgy(t, "/usr/bin/env > "+envFile+"\n")
+	t.Setenv("GIT_DIR", "/caller/.git")
+	t.Setenv("GIT_WORK_TREE", "/caller")
+	t.Setenv("GIT_INDEX_FILE", "/caller/.git/index")
+	t.Setenv("GIT_AUTHOR_NAME", "someone")
+	var cleanup func() error
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 5*time.Second, nil, &cleanup)
+	if out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	env, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"GIT_DIR=", "GIT_WORK_TREE=", "GIT_INDEX_FILE="} {
+		if strings.Contains("\n"+string(env), "\n"+name) {
+			t.Errorf("the agent inherited %s", name)
+		}
+	}
+	if !strings.Contains(string(env), "GIT_AUTHOR_NAME=someone") {
+		t.Error("GIT_AUTHOR_NAME was dropped; only repository-locating variables should be")
+	}
+}
+
+// TestRealBuildAndRunWaitsForTheAgentGroup pins that a row is not over until
+// what the agent left running is: a background process in the agent's group
+// (a session-save hook) that writes after the agent exits has written by the
+// time the row returns, so removing the row's directory afterwards is final.
+func TestRealBuildAndRunWaitsForTheAgentGroup(t *testing.T) {
+	late := filepath.Join(t.TempDir(), "late")
+	fakeAgy(t, "(/bin/sleep 0.4; echo x > "+late+") >/dev/null 2>&1 &\nexit 0\n")
+	var cleanup func() error
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 5*time.Second, nil, &cleanup)
+	if out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("the row returned before the agent's background process had finished: %v", err)
+	}
+}
+
+// TestRealBuildAndRunKillsAGroupThatOutlivesTheAgent pins the bound on that
+// wait: a background process still running when groupGrace is up is killed,
+// so nothing in the agent's group can write into the row's directory later.
+func TestRealBuildAndRunKillsAGroupThatOutlivesTheAgent(t *testing.T) {
+	oldGrace := groupGrace
+	groupGrace = 200 * time.Millisecond
+	t.Cleanup(func() { groupGrace = oldGrace })
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	fakeAgy(t, "echo $$ > "+pidFile+"\n/bin/sleep 30 >/dev/null 2>&1 &\nexit 0\n")
+	var cleanup func() error
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(t.TempDir()), 5*time.Second, nil, &cleanup)
+	if out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pgid == 0 {
+		t.Fatalf("no pid in %q", b)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if err := syscall.Kill(-pgid, 0); err == syscall.ESRCH {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process group %d is still alive after the row returned", pgid)
+		}
+	}
+}
+
+// TestRealBuildAndRunMakesNoDirForAnAgentThatCannotRun pins when a row's
+// directory is asked for: only once the agent is about to start. A row whose
+// agent is not installed (SKIP) or cannot select the model (FAIL) runs
+// nothing, so it must not cost a `git init` and a sweep at the end of the run.
+func TestRealBuildAndRunMakesNoDirForAnAgentThatCannotRun(t *testing.T) {
+	asked := 0
+	rowDir := func() (string, error) { asked++; return t.TempDir(), nil }
+	var cleanup func() error
+
+	t.Setenv("PATH", t.TempDir()) // agy is not installed
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", rowDir, time.Second, nil, &cleanup); out.StartErr == nil {
+		t.Fatalf("outcome = %+v, want a not-installed error", out)
+	}
+	if asked != 0 {
+		t.Errorf("a row whose agent is not installed asked for a directory")
+	}
+
+	t.Cleanup(agents.RegisterTest("silent-fallback", func() agents.Driver { return silentFallbackDriver{} }))
+	writeFakeAgentBinary(t, "silent-fallback")
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "silent-fallback", config.Model{Native: true}, "the prompt", rowDir, time.Second, nil, &cleanup); out.ModelFallback == "" {
+		t.Fatalf("outcome = %+v, want a model fallback", out)
+	}
+	if asked != 0 {
+		t.Errorf("a row whose agent fell back to its default model asked for a directory")
+	}
+
+	writeFakeAgentBinary(t, "agy")
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", rowDir, time.Second, nil, &cleanup); out.StartErr != nil {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if asked != 1 {
+		t.Errorf("a row that ran asked for a directory %d times, want 1", asked)
+	}
+}
+
+// TestRealBuildAndRunRunsTheAgentInTheRowDir pins that the directory the row
+// was given is the agent's working directory.
+func TestRealBuildAndRunRunsTheAgentInTheRowDir(t *testing.T) {
+	pwdFile := filepath.Join(t.TempDir(), "pwd")
+	fakeAgy(t, "/bin/pwd -P > "+pwdFile+"\n")
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cleanup func() error
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(dir), 5*time.Second, nil, &cleanup); out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	got, err := os.ReadFile(pwdFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != dir {
+		t.Fatalf("the agent ran in %q, want %q", strings.TrimSpace(string(got)), dir)
+	}
+}
+
+// TestRealBuildAndRunSetsPWDToTheRowDir pins the isolation for an agent that
+// takes its directory from PWD: opencode ran its smoke row in the caller's
+// directory, permissions off, although the process's cwd was the row's
+// temporary one — the inherited PWD still named the caller's (#193).
+func TestRealBuildAndRunSetsPWDToTheRowDir(t *testing.T) {
+	writeFakeAgentBinary(t, "agy")
+	t.Setenv("PWD", "/stale/caller")
+	dir := t.TempDir()
+	// A shell script cannot report the PWD it was handed (sh corrects a
+	// wrong one on startup), so read the command the agent is started with.
+	var gotDir string
+	var pwd []string
+	applier := func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+		gotDir = cmd.Dir
+		for _, kv := range cmd.Env {
+			if strings.HasPrefix(kv, "PWD=") {
+				pwd = append(pwd, kv)
+			}
+		}
+		cmd.Args = append(cmd.Args, oneShotArgs...)
+		return func() error { return nil }, nil
+	}
+	var cleanup func() error
+	if out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", FixedDir(dir), 5*time.Second, applier, &cleanup); out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if gotDir != dir {
+		t.Fatalf("the agent's directory was %q, want the row directory %q", gotDir, dir)
+	}
+	if len(pwd) != 1 || pwd[0] != "PWD="+dir {
+		t.Fatalf("the agent's PWD entries were %v, want exactly PWD=%s", pwd, dir)
 	}
 }

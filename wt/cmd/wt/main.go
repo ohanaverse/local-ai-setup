@@ -425,7 +425,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
-	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker")
+	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker (wt smoke: run the agents in the current directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.

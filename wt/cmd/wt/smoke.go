@@ -7,13 +7,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -55,6 +58,9 @@ func smokeCmd(a *app) *cobra.Command {
 			"prompt through each, using wt's real launch machinery. Reports\n" +
 			"PASS/FAIL/SKIP per agent with enough detail to diagnose a failure\n" +
 			"without re-running anything by hand.\n\n" +
+			"Each agent runs with its permission checks off, in a fresh temporary git\n" +
+			"repository that is removed afterwards; pass --cwd to run in the current\n" +
+			"directory instead.\n\n" +
 			"With no model-id, shows the full model picker (requires a TTY). A local\n" +
 			"model that isn't running is started first; on exit, offers to stop\n" +
 			"running local models.",
@@ -62,6 +68,8 @@ func smokeCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
+				// An interrupt is not a usage mistake: no flag summary after it.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted)
 				return err
 			}
 			if anyFail {
@@ -79,6 +87,16 @@ func smokeCmd(a *app) *cobra.Command {
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
 	return cmd
+}
+
+// errSmokeInterrupted is what runSmoke returns for a run Ctrl+C cut short.
+var errSmokeInterrupted = errors.New("interrupted")
+
+// smokeSignalCtx is a test seam over signal.NotifyContext, as startSignalCtx
+// is for the start step: the context the rows run under, cancelled by Ctrl+C
+// or SIGTERM.
+var smokeSignalCtx = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // runSmoke resolves the target, starts it if idle, runs every selected agent
@@ -118,9 +136,16 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 	timeout = smokeTimeout(a.cfg, m, timeout)
 	jsonOut, _ := cmd.Flags().GetBool("json")
-	cwd, err := os.Getwd()
-	if err != nil {
-		return false, err
+	// --cwd is the root command's persistent flag; here it opts a run back
+	// into the caller's directory. The default is a fresh temporary git
+	// repository per row (#193): every row runs its agent with permission
+	// checks off, and a model's stray tool call must not land in a real repo.
+	inPlace, _ := cmd.Flags().GetBool("cwd")
+	cwd := ""
+	if inPlace {
+		if cwd, err = os.Getwd(); err != nil {
+			return false, err
+		}
 	}
 
 	if t.Start() {
@@ -143,12 +168,30 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		// and removes nothing; a no-op for a cloud target.
 		ensureRouteBeforeLaunch(a.cfg, m)
 	}
+	stderr := cmd.ErrOrStderr()
+	// Every row's directory, swept once more when the run ends: a row removes
+	// its own directory at once, but a background hook an agent leaves behind
+	// can write into it afterwards and bring it back. Registered before the
+	// stop flow so that it runs after it — the time the stop picker takes is
+	// time a late writer has had to finish. A directory that cannot be removed
+	// is named, since it holds whatever an unsupervised agent wrote.
+	var rowDirs []string
+	defer func() {
+		for _, d := range smoke.SweepRowDirs(rowDirs) {
+			fmt.Fprintf(stderr, "wt: could not remove the smoke directory %s\n", d)
+		}
+	}()
 	// Registered only once the start step succeeded: a failed start returns its
-	// error without an interactive stop picker burying it.
-	defer smokeStopFlow(a.cfg, jsonOut)
+	// error without an interactive stop picker burying it. An interrupted run
+	// skips it too — Ctrl+C means leave now.
+	interrupted := false
+	defer func() {
+		if !interrupted {
+			smokeStopFlow(a.cfg, jsonOut)
+		}
+	}()
 
 	runID := smoke.NewRunID()
-	stderr := cmd.ErrOrStderr()
 
 	// Reuse newApp()'s already-loaded profiles.toml state instead of
 	// loading and re-validating the file a second time. If profiles.toml
@@ -164,6 +207,12 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	if validateErr != nil {
 		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", validateErr)
 	}
+
+	// Ctrl+C or SIGTERM cancels ctx instead of killing wt: the running row's
+	// agent is killed with its process group, its directory is removed, and
+	// the rows that ran are still reported.
+	ctx, stopSignals := smokeSignalCtx()
+	defer stopSignals()
 
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
 	for _, agentName := range agentsToRun {
@@ -188,15 +237,46 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			}
 		}
 
-		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd, pa)
+		// The row's directory is made only once the agent is known to run:
+		// a row whose agent is not installed never pays for it or the sweep.
+		rowDir, removeRowDir := smoke.FixedDir(cwd), func() {}
+		if !inPlace {
+			// One directory per row, so one agent's leftovers cannot reach
+			// the next agent's run. A directory that cannot be created fails
+			// its own row (RunRow reports the error): the rows that have
+			// already run are still reported.
+			rowDir = func() (string, error) {
+				dir, remove, err := smoke.NewRowDir()
+				if err != nil {
+					return "", err
+				}
+				removeRowDir = remove
+				// What the agent records about this directory in its own
+				// state (claude's project entry, pi's sessions) goes with it.
+				rowDirs = append(append(rowDirs, dir), smoke.AgentStateDirs(agentName, dir)...)
+				return dir, nil
+			}
+		}
+		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
+		removeRowDir()
 		logSmokeResult(stderr, r)
 		rows = append(rows, r)
+		if ctx.Err() != nil {
+			interrupted = true
+			break
+		}
 	}
+	// Restore the default handler: a second Ctrl+C during the report, the
+	// sweep or the stop picker kills wt.
+	stopSignals()
 
 	if jsonOut {
 		anyFail, err = printSmokeJSON(cmd.OutOrStdout(), runID, m.ID, rows)
 	} else {
 		anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
+	}
+	if interrupted && err == nil {
+		err = errSmokeInterrupted
 	}
 	return anyFail, err
 }
