@@ -155,8 +155,11 @@ Launched from the picker, the note is printed when the agent takes the
 terminal, above the agent's own output. Flags (anything starting with `-`,
 including `--file=../x`), absolute paths, words that name nothing from your
 directory, and the bare program name `shell-wt` runs (`make` in
-`shell-wt -- make docs`) are never flagged. Paths in the note have their
-symbolic links resolved.
+`shell-wt -- make docs`) are never flagged. Neither is a path that names the
+same place in the worktree you launched: `shell-wt -W feat -- cat README.md`
+from the repo root reads `.worktrees/feat/README.md`, the checkout you asked
+for, so there is no note — unless the file is missing there (untracked, or not
+on that branch). Paths in the note have their symbolic links resolved.
 
 ## Post-run summary line
 

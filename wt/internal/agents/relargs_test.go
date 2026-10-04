@@ -2,6 +2,7 @@ package agents
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,5 +170,101 @@ func TestRelativeArgNotesSkipsACommandAgentsProgramName(t *testing.T) {
 	}
 	if notes := RelativeArgNotes("claude", shell, launch, []string{"make"}); len(notes) != 1 {
 		t.Errorf("an agent's first argument: notes = %q, want one", notes)
+	}
+}
+
+// relArgsGit runs git in dir for the worktree fixtures, with the caller's
+// identity and repository variables out of the way.
+func relArgsGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// relArgsRepo makes a real repository at root/<name> with README.md,
+// docs/README.md and docs/guide.md committed, and returns its path.
+func relArgsRepo(t *testing.T, root, name string) string {
+	t.Helper()
+	repo := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"README.md", "docs/README.md", "docs/guide.md"} {
+		if err := os.WriteFile(filepath.Join(repo, f), []byte(f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	relArgsGit(t, repo, "init", "-q")
+	relArgsGit(t, repo, "add", ".")
+	relArgsGit(t, repo, "commit", "-q", "-m", "init")
+	return repo
+}
+
+// TestRelativeArgNotesStaysQuietForAWorktreeTwin pins the ordinary launch:
+// `shell-wt -W feat -- cat README.md`, typed at the repo root, starts in
+// .worktrees/feat, where README.md is that checkout's copy of the same tracked
+// file — a different file on disk, and the one the user meant. A note there
+// fires on every -W launch that names a tracked file and tells the user to pass
+// the main checkout's path, which runs the command against the wrong checkout.
+// It holds in both directions (a worktree's shell launching at the repo root).
+func TestRelativeArgNotesStaysQuietForAWorktreeTwin(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := relArgsRepo(t, root, "repo")
+	feat := filepath.Join(repo, ".worktrees", "feat")
+	relArgsGit(t, repo, "worktree", "add", "-q", feat, "-b", "feat")
+
+	args := []string{"README.md", "docs", "docs/guide.md", "./README.md"}
+	if notes := RelativeArgNotes("claude", repo, feat, args); len(notes) != 0 {
+		t.Errorf("repo root → worktree: notes = %q, want none", notes)
+	}
+	if notes := RelativeArgNotes("claude", feat, repo, args); len(notes) != 0 {
+		t.Errorf("worktree → repo root: notes = %q, want none", notes)
+	}
+	if notes := RelativeArgNotes("claude", filepath.Join(repo, "docs"), filepath.Join(feat, "docs"), []string{"guide.md", "../README.md"}); len(notes) != 0 {
+		t.Errorf("the same subdirectory of both: notes = %q, want none", notes)
+	}
+}
+
+// TestRelativeArgNotesStillFlagsWhatIsNotATwin pins the edges of the twin
+// rule, so that it cannot grow into "never note between two checkouts": the
+// real mistakes between a checkout and its worktree are still reported.
+func TestRelativeArgNotesStillFlagsWhatIsNotATwin(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := relArgsRepo(t, filepath.Join(root, "nest"), "repo")
+	feat := filepath.Join(repo, ".worktrees", "feat")
+	relArgsGit(t, repo, "worktree", "add", "-q", feat, "-b", "feat")
+	unrelated := relArgsRepo(t, root, "unrelated")
+	if err := os.WriteFile(filepath.Join(repo, "scratch.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ../../outside.md climbs out of the worktree into the main checkout, and
+	// out of the main checkout altogether: two files that are no twins.
+	for _, f := range []string{filepath.Join(repo, "outside.md"), filepath.Join(root, "outside.md")} {
+		if err := os.WriteFile(f, []byte(f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		shell, launch, arg, want string
+	}{
+		"typed in a subdirectory, launched at the worktree root": {filepath.Join(repo, "docs"), feat, "README.md", "a different file"},
+		"untracked, so the worktree has no copy":                 {repo, feat, "scratch.md", "does not exist"},
+		"two unrelated repositories":                             {repo, unrelated, "README.md", "a different file"},
+		"a path that leaves the checkout":                        {feat, repo, "../../outside.md", "a different file"},
+	} {
+		notes := RelativeArgNotes("claude", tc.shell, tc.launch, []string{tc.arg})
+		if len(notes) != 1 || !strings.Contains(notes[0], tc.want) {
+			t.Errorf("%s: notes = %q, want one saying %q", name, notes, tc.want)
+		}
 	}
 }
