@@ -171,7 +171,7 @@ modelman                        # open the TUI (model list)
 modelman sync                   # reconcile configured models against providers, then sync LiteLLM routes
 modelman litellm status|on|off|set   # passthroughs to `wt litellm ...`
 modelman start                  # list local models: registered+on-disk, registered-but-missing, discovered
-modelman start <model>          # start (and route) a local model; a discovered artifact is registered first
+modelman start <model>          # start (and route) a local model — a registry entry or an on-disk artifact discovered by probe
 modelman stop <model-id>        # stop one local model (and drop its route)
 modelman stop --all             # stop every running local model
 modelman provider isolate|stop|stop-all|restore|list   # low-level provider lifecycle (benchmark isolation)
@@ -181,9 +181,10 @@ modelman usage report           # wt launch history joined with LiteLLM spend
 modelman migrate                # one-time import of legacy config (see below)
 ```
 
-`start <model>` accepts a registry id, a model's provider-side name, or the
-name of an on-disk artifact modelman hasn't registered yet (you are prompted
-for a family). Several local models can run at once; oMLX, MTPLX and
+`start <model>` accepts a registry id, a model's provider-side name, or an
+on-disk artifact no registry entry claims (`<provider>/<name>` discovered
+id or bare artifact name) — started as-is, no registration needed. Several
+local models can run at once; oMLX, MTPLX and
 mlx_lm_server serve one model per process, so starting another model on one
 of them replaces its current model. `modelman provider isolate
 <ollama|omlx|omlx-6bit|mtplx>` stops the other providers and starts one (used

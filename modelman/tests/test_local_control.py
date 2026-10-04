@@ -1734,6 +1734,45 @@ def test_same_provider_occupant_sees_a_flagged_discovered_model(tmp_path):
     assert occupant == "omlx/stray-4bit"
 
 
+def test_running_model_ids_verifies_a_discarded_registration_by_repo_id(tmp_path):
+    # Registering a discovered mtplx artifact moves its running flag from
+    # the discovered id ("mtplx/org/model") to the registered id
+    # ("mtplx/org--model" — parse_model's "/" → "--"); a session Discard
+    # rolls the registry entry back while the flag row stays on disk. The
+    # server reports the repo id ("org/model"), which the registered
+    # spelling can never name-match (`_name_matches` is separator-aware),
+    # so the probe must retry the repo-id spelling before clearing — the
+    # TUI's mount reconcile otherwise drops a serving model's flag and
+    # `modelman stop` starts reading it dead. A genuinely dead one (neither
+    # spelling answers) is still cleared.
+    state_path = _state_path(tmp_path, {"mtplx/org--model": True, "mtplx/dead--model": True})
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+        ],
+        models=[],
+    )
+    probed: list[tuple[str, str]] = []
+
+    def probe(provider_id, model_name, base):
+        probed.append((provider_id, model_name))
+        return model_name == "org/model"
+
+    with patch("modelman.local_control._probe_running", side_effect=probe):
+        ids = running_model_ids(registry, load_state(state_path), state_path)
+
+    assert ids == ["mtplx/org--model"]
+    assert sorted(probed) == [
+        ("mtplx", "dead--model"),
+        ("mtplx", "dead/model"),
+        ("mtplx", "org--model"),
+        ("mtplx", "org/model"),
+    ]
+    state = load_state(state_path)
+    assert state.get("mtplx/org--model").running is True
+    assert state.get("mtplx/dead--model").running is False
+
+
 def test_stop_all_stops_a_running_discovered_model(tmp_path, wt_calls):
     # `modelman stop --all` works off the flags, so a model started without a
     # registry entry is stopped and its flag cleared like any other, with the

@@ -498,7 +498,11 @@ class ModelScreen(Screen[None]):
                     d.variant_id,
                     _format_location(LOCATION_LOCAL),
                     "[cyan]+[/cyan]",
-                    "-",
+                    # Same source as the registered rows above: a discovered
+                    # artifact keeps its running flag under its discovered id
+                    # (#179 Phase B), and the on-mount reconcile has already
+                    # probe-verified it by the time this repopulates.
+                    "●" if self.state.get(d.model_id).running else "-",
                     "-",
                     format_size(d.size_bytes) if d.size_bytes is not None else "—",
                     key=row_key,

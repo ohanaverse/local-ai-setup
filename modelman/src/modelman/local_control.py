@@ -8,9 +8,12 @@ Both delegate the actual stop/start to modelman.benchmark.isolation —
 the same in-process lifecycle contract `modelman benchmark` uses, which
 drives modelman.providers.lifecycle's backends — and record which models
 are running via a per-model
-`running: bool` flag on modelman.toml's ModelState (state.py), which wt's
-model picker reads read-only to filter its catalog to running local
-models plus cloud models. Cross-provider concurrency is unrestricted —
+`running: bool` flag on modelman.toml's ModelState (state.py) — a hint
+only modelman's own readers use, and only after a live probe confirms it.
+wt reads no per-model state key at all (#179 Phase B): it probes the
+providers themselves and discovers what is on disk, so this flag shapes
+modelman's own views (the TUI's RUNNING column, `modelman start`'s
+inventory, stop paths) alone. Cross-provider concurrency is unrestricted —
 multiple local models on DIFFERENT providers may run at once. Single-port
 providers (omlx, mtplx, mlx_lm_server) can still only ever serve one
 model each, so starting a different model on the SAME provider replaces
@@ -878,8 +881,24 @@ def running_model_ids(
         probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
         if _probe_running(provider_id, model_name, probe_origin):
             verified.append(model_id)
-        else:
-            _clear_stale_running_flag(model_id, state_path)
+            continue
+        if (
+            model_id not in models_by_id
+            and "--" in model_name
+            and _probe_running(provider_id, model_name.replace("--", "/"), probe_origin)
+        ):
+            # A flagged id that no registry entry owns but that is spelled the
+            # REGISTERED way (the id's "/" → "--": "mtplx/org--name"): the
+            # server reports the repo id ("org/name"), so the spelling above
+            # can never name-match it. This is where register-a-discovered-
+            # artifact leaves the running flag (screens/models.py record()),
+            # and it stays on disk through a Discard, which rolls the entry
+            # back — verify against the repo-id spelling (wt's mtplxRepoID /
+            # MTPLXProvider._repo_id) before declaring the flag stale, or the
+            # next TUI mount clears a serving model's flag.
+            verified.append(model_id)
+            continue
+        _clear_stale_running_flag(model_id, state_path)
     return sorted(verified)
 
 
