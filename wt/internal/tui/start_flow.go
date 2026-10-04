@@ -204,14 +204,9 @@ func (m model) handleRouteMsg(msg tea.Msg) (model, tea.Cmd) {
 		// Back to the picker's phase first, as finishStart does: every way
 		// launchSelected can fail to launch returns to the model picker.
 		m.phase = phaseModel
-		// Update resizes the model list only in phaseModel, so a window size
-		// that arrived during routing — the first one, even, when a -M pin
-		// built the list before the terminal reported its size — never reached
-		// it. Size it now, or a failed launch or a cancelled resume would land
-		// on a mis-sized picker.
-		if m.width > 0 && m.height > 0 {
-			m.models.SetSize(m.width-2, m.height-2)
-		}
+		// A window size that arrived during routing never reached the model
+		// list, which is fitted only while its own phase is showing; Update's
+		// fitLists does that once this message has been handled.
 		m.recordRouteNotes(msg.notes)
 		return m.launchSelected()
 	}

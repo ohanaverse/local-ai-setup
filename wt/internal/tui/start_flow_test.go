@@ -1672,10 +1672,14 @@ func TestLaunchAttemptStartsWithAClearStatus(t *testing.T) {
 }
 
 // TestRouteDoneSizesTheModelList pins that a window size arriving during the
-// routing phase reaches the picker's list when the phase ends. Update resizes
-// the list only in phaseModel, so without this a failed launch or a cancelled
-// resume after routing shows a picker laid out for the old size — or for no
-// size at all, when a -M pin built the list before the terminal reported one.
+// routing phase reaches the picker's list when the phase ends. The model list
+// is fitted only while its own phase is showing, so without a fit at the end
+// of routing a failed launch after it shows a picker laid out for the old size
+// — or for no size at all, when a -M pin built the list before the terminal
+// reported one. The expected size is the picker's own, not the bare window's:
+// 120 columns minus the list's two-column margin, and 50 lines minus the six
+// the picker prints around the table (top and bottom margin, agent, tag, the
+// mode line, the key hints) and the two the "launch failed" status takes.
 func TestRouteDoneSizesTheModelList(t *testing.T) {
 	m, cmd, _ := routingFixture(t)
 
@@ -1685,11 +1689,14 @@ func TestRouteDoneSizesTheModelList(t *testing.T) {
 	}
 	next, _ := updateMsg(resized, routeDoneFrom(t, cmd))
 
-	if next.phase != phaseModel {
-		t.Fatalf("phase = %v, want the picker after the failed launch", next.phase)
+	if next.phase != phaseModel || !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("phase = %v status = %q, want the picker after the failed launch", next.phase, next.status)
 	}
-	if w, h := next.models.Width(), next.models.Height(); w != 118 || h != 48 {
-		t.Fatalf("model list = %dx%d, want 118x48 (the new window minus the picker's margin)", w, h)
+	if w, h := next.models.Width(), next.models.Height(); w != 118 || h != 42 {
+		t.Fatalf("model list = %dx%d, want 118x42 (50 lines minus six of chrome and two of status)", w, h)
+	}
+	if got := lipgloss.Height(next.View()); got != 50 {
+		t.Fatalf("picker view is %d lines, want exactly the terminal's 50", got)
 	}
 }
 

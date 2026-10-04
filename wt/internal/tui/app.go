@@ -197,7 +197,16 @@ func (m model) openNewWorktreePrompt() model {
 }
 
 // Update handles messages and returns the new state plus optional commands.
+// Whatever the message did, the list on screen is then fitted to the lines its
+// screen prints around it (fitLists, layout.go).
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	next.fitLists()
+	return next, cmd
+}
+
+// update is Update without the final list fit.
+func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case startStageMsg, startTickMsg, startDoneMsg:
 		// The case list is exactly the set handleStartMsg handles, so it
@@ -230,15 +239,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ready {
 			m.list.SetSize(msg.Width-2, msg.Height-2)
 		}
-		if m.phase == phaseAgent {
-			m.agentList.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseModel {
-			m.models.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseResume {
-			m.sizeResumeList()
-		}
+		// The agent picker, the model picker, the resume prompt and the ollama
+		// warning are sized by fitLists, from the lines each prints around its
+		// list.
 		if m.phase == phaseReplaceConfirm {
 			m.replace.choices.SetSize(msg.Width-2, msg.Height-2)
 		}
@@ -559,8 +562,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
-							// The status line may have just appeared: make room.
-							m.sizeResumeList()
 							return m, nil
 						}
 						return m.launchAndRecord(cmd)
@@ -568,8 +569,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
-							// The status line may have just appeared: make room.
-							m.sizeResumeList()
 							return m, nil
 						}
 						return m.launchAndRecord(cmd)
@@ -680,21 +679,13 @@ func (m model) View() string {
 		if m.width <= 0 || m.height <= 0 {
 			return "resume prompt (waiting for window size)"
 		}
-		body := m.resume.choices.View() + "\n[enter] choose   [esc] back"
-		// As phaseModelView does, and in the same style and place: the status
-		// here is the route check's note (and any resume warning), which the
-		// user would otherwise only see after backing out to the picker. The
-		// list was sized to leave room for it (sizeResumeList).
-		if status := m.resumeStatusBlock(); status != "" {
-			body = status + body
-		}
-		return body
+		return m.resumeFrame()(m.resume.choices.View())
 	}
 	if m.phase == phaseOllamaWarn {
 		if m.width <= 0 || m.height <= 0 {
 			return "ollama availability warning (waiting for window size)"
 		}
-		return m.ollamaWarnModel.View() + "\n[enter] choose   [esc] back"
+		return ollamaWarnFrame(m.ollamaWarnModel.View())
 	}
 	if m.phase == phaseStarting {
 		if m.width <= 0 || m.height <= 0 {
@@ -1002,6 +993,8 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
+	// The list was built at the bare window size; give it the picker's.
+	m.fitLists()
 	return m, nil
 }
 
@@ -1213,31 +1206,10 @@ func (m model) launchSelected() (model, tea.Cmd) {
 	m.resume.session = sess
 	m.resume.choices = list.New(buildResumeChoices(sess), ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
-	// The status (a route note, a resume warning) is already set: leave room.
-	m.sizeResumeList()
+	// The status (a route note, a resume warning) is already set: leave room
+	// for it now, for a caller that renders before the next Update.
+	m.fitLists()
 	return m, nil
-}
-
-// resumeStatusBlock is the status line as the resume prompt renders it above
-// its choices — the picker's style, followed by a blank line — or "" when
-// there is no status.
-func (m model) resumeStatusBlock() string {
-	if m.status == "" {
-		return ""
-	}
-	return ErrorStyle(m.theme).Render(m.status) + "\n\n"
-}
-
-// sizeResumeList sizes the resume prompt's list so the whole view fits the
-// terminal: the window minus the usual two-line margin (the key hint below the
-// list takes one of them) and minus the lines the status block takes when
-// there is one. Bubble Tea drops lines from the TOP of a view taller than the
-// terminal, and the status is the top line, so an unsized list would push off
-// screen exactly the line the block exists to show. It is called wherever the
-// window size or the presence of a status can change while this prompt is up:
-// on entry, on a resize, and when a failed launch sets a status.
-func (m *model) sizeResumeList() {
-	m.resume.choices.SetSize(m.width-2, m.height-2-strings.Count(m.resumeStatusBlock(), "\n"))
 }
 
 // launchAndRecord records the model as last-launched (so the next picker

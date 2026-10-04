@@ -140,6 +140,16 @@
   registry id is adopted, as `wt litellm sync` does — guide 04,
   `docs/guides/04-litellm-config.md`, Gotchas), and nothing is written when
   the launch dials the provider directly.
+- The model picker's agent/tag header and its status line are on screen
+  again. The picker's view was taller than the terminal — the list took the
+  window height minus two under six to eight lines of the picker's own — and
+  the terminal UI drops a too-tall view's top lines, so the header and every
+  status the picker set (a failed start, `cancelled`, a resume warning) were
+  pushed off the top. The list is now sized to leave room for them, and
+  re-sized when a status appears or clears. The agent picker's `directory:`
+  line was lost the same way and is fixed the same way; the ollama
+  availability prompt now follows a window resize. A terminal too short for
+  the whole model picker gives up its blank margin, then the header.
 - The start hook writes a model's route under the id the picker showed. An
   artifact whose name resembles a registry model's (`org/name` beside `name`)
   was routed under the registry model's id (#195).

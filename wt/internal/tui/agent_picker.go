@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"fmt"
-
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -87,10 +85,6 @@ func buildAgentList(cfg *config.Config) []list.Item {
 // The picker list is built by selectedEntryMsg via buildAgentList and
 // stored on m.agentList; phaseAgentView only formats the surrounding chrome.
 func (m *model) phaseAgentView() string {
-	header := fmt.Sprintf("directory: %s\n\n", m.selectedPath)
-	if m.status != "" {
-		header += "status: " + m.status + "\n\n"
-	}
-	footer := "\n[↑/↓] navigate   [enter] continue   [esc] back"
-	return header + m.agentList.View() + footer
+	frame, _ := fitList(m.height, minChoiceListHeight, m.agentFrames()...)
+	return frame(m.agentList.View())
 }

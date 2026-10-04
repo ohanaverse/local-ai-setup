@@ -166,31 +166,9 @@ func clampModelSelection(m *model) tea.Cmd {
 // phaseModelView renders the model picker screen: the list of
 // agent+tag-compatible models, an agent/tag header, and a footer
 // describing the keybinds. The picker IS the agent+model screen —
-// there is no separate browser.
+// there is no separate browser. The lines around the list are modelFrames'
+// (layout.go), the same frames the list's height is measured from.
 func (m *model) phaseModelView() string {
-	pad := lipgloss.NewStyle().Padding(1, 2)
-	headerStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader))
-	dimStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	header := headerStyle.Render(fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag))
-	// Mode footer: the picker is where an off/on surprise surfaces (a row
-	// marked "(via proxy)" under direct mode), so name the current mode on
-	// the same screen. Falls back to direct when cfg is nil (view-only
-	// tests).
-	mode := "LiteLLM: off (direct)"
-	if m.cfg != nil && m.cfg.IsLitellm() {
-		mode = "LiteLLM: on"
-	}
-	// Enter's effect depends on the highlighted row — launch for a cloud or
-	// already-running row, start through the lifecycle engine for a
-	// non-running local one — so the hint names both rather than claiming
-	// Enter always launches.
-	footer := dimStyle.Render(fmt.Sprintf("\n%s\n[↑/↓] navigate   [enter] launch or start   [q] quit", mode))
-	body := header + m.models.View() + footer
-	// A launch/config/session/ollama error set on the model phase must be
-	// visible; phaseModelView previously dropped m.status, making a failed
-	// launch look like "nothing happens" when Enter was pressed.
-	if m.status != "" {
-		body = ErrorStyle(m.theme).Render(m.status) + "\n\n" + body
-	}
-	return pad.Render(body)
+	frame, _ := fitList(m.height, minTableListHeight, m.modelFrames()...)
+	return frame(m.models.View())
 }
