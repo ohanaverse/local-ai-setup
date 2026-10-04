@@ -124,6 +124,8 @@ In the TUI the picker must not freeze during that restart, and the check's outpu
 
 For the status line to be visible at all, the view must fit the terminal. Before this work the model picker's view was taller than the terminal, and Bubble Tea drops lines from the top of an over-tall view, so the picker's header and status line were never shown. The model picker and the resume prompt size their lists from the lines everything else takes, so the rendered view never exceeds the terminal height, with or without a status line. This is a sizing fix only: no text, style or key hint changes.
 
+The same holds for width: no rendered line is wider than the terminal. When the model table is wider than the list, whole columns are dropped until it fits, in this order: SURVEY, 30D, 7D, 1D, COST, LOC, FAMILY. MODEL, STATUS and RUNNING are always kept. A column is shown whole or not at all, so nothing is half-cut by the terminal's edge; only when those three alone do not fit is a row cut at the right edge. At a width where everything fits, the table is unchanged. Hiding a column does not change what a filter query matches.
+
 ## Error handling
 
 | Case | Behavior |
