@@ -843,10 +843,7 @@ class ModelScreen(Screen[None]):
         # every other queued mutation on this screen, apply() never sees
         # this in-memory `self.state` — run_queued_ops() (main.py) always
         # rebuilds `state` fresh from modelman.toml after the TUI process
-        # exits, so an in-memory-only ready flag would be lost. Mirrors
-        # the CLI's equivalent path (local_control.py's
-        # _register_discovered_model), which writes through locked_state
-        # for the same reason.
+        # exits, so an in-memory-only ready flag would be lost.
         model_state = ModelState(
             ready=True, disk_path=discovered.path, size_bytes=discovered.size_bytes
         )

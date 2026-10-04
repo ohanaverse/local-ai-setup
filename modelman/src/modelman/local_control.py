@@ -61,8 +61,6 @@ from .registry import (
     Registry,
     base_origin,
     is_local_location,
-    known_families,
-    locked_registry,
     model_entry_to_variant,
     model_has_local_artifact,
     provider_config,
@@ -87,6 +85,13 @@ _DEFAULT_BASE_ORIGIN = {
 # never as two independent providers.
 _OMLX_PROVIDER_IDS: frozenset[str] = frozenset({"omlx", "omlx-6bit"})
 
+# The omlx family's registry provider rows, in the order wt picks one to
+# stand for the family (wt/internal/localmodels/inventory.go's familyIDs /
+# familyProviderID): plain `omlx` first, `omlx-6bit` on a registry that
+# defines no plain row.
+_OMLX_FAMILY = "omlx"
+_OMLX_FAMILY_PROVIDER_IDS: tuple[str, ...] = ("omlx", "omlx-6bit")
+
 # Subprocess seam so tests can keep the probe hermetic (conftest patches
 # it); production calls subprocess.run directly.
 _default_runner = subprocess.run
@@ -94,22 +99,6 @@ _default_runner = subprocess.run
 
 class LocalControlError(Exception):
     """Raised for user-facing `modelman start`/`modelman stop` failures."""
-
-
-class DiscoveredModelNeedsFamily(LocalControlError):
-    """Raised by start_local_model() when `model_id` matches an on-disk,
-    unregistered artifact but no `family` was supplied. The CLI catches
-    this, prompts the user, and retries with `family` set — nothing is
-    written to registry.toml/modelman.toml before this is raised.
-    """
-
-    def __init__(self, provider_id: str, variant_id: str, suggested_families: list[str]):
-        self.provider_id = provider_id
-        self.variant_id = variant_id
-        self.suggested_families = suggested_families
-        super().__init__(
-            f"{provider_id}/{variant_id} is on disk but not registered — a family is required"
-        )
 
 
 @dataclass
@@ -314,10 +303,17 @@ def same_provider_occupant(
     """
     if provider_id == "ollama":
         return None
-    if provider_id in _OMLX_PROVIDER_IDS:
-        domain = {m.id for m in registry.models if m.provider_id in _OMLX_PROVIDER_IDS}
-    else:
-        domain = {m.id for m in registry.models if m.provider_id == provider_id}
+    slot_providers = _OMLX_PROVIDER_IDS if provider_id in _OMLX_PROVIDER_IDS else {provider_id}
+    domain = {m.id for m in registry.models if m.provider_id in slot_providers}
+    # A model started without a registry entry (#179 Phase B) is flagged
+    # under its discovered id `<family>/<name>` (see _discovered_id; the
+    # omlx family's prefix is in _OMLX_PROVIDER_IDS): it occupies the slot too.
+    registered = {m.id for m in registry.models}
+    domain |= {
+        mid
+        for mid in state.models
+        if mid not in registered and mid.partition("/")[0] in slot_providers
+    }
     return _same_provider_occupant(state, domain, exclude_model_id=model_id)
 
 
@@ -570,73 +566,61 @@ def _find_discovered(registry: Registry, name: str) -> list[DiscoveredModel]:
     return [d for d in _discovered_models(registry, local_map) if _name_matches(d.variant_id, name)]
 
 
-def _register_discovered_model(
-    registry: Registry,
-    state: StateStore,
-    match: DiscoveredModel,
-    family: str,
-    registry_path: Path | None,
-    state_path: Path | None,
-) -> ModelEntry:
-    """Write a new registry.toml entry for `match` and mark it ready in
-    modelman.toml. Mutates `registry` and `state` in place (the caller's
-    in-memory copies) so the rest of start_local_model's flow sees the new
-    model immediately. Routing is not this function's job: the start that
-    follows runs one `wt litellm sync` (#179).
+def _discovered_family(provider_id: str) -> str:
+    """The provider family a discovered id is prefixed with — wt's
+    localmodels.Family(): omlx and omlx-6bit are one physical server and
+    share the family "omlx"; every other local provider is its own family.
     """
-    model_id = f"{match.provider_id}/{match.variant_id.replace('/', '--')}"
-    entry = ModelEntry(
-        id=model_id,
-        family=family,
+    return _OMLX_FAMILY if provider_id in _OMLX_PROVIDER_IDS else provider_id
+
+
+def _discovered_id(provider_id: str, variant_id: str) -> str:
+    """The id of an on-disk artifact with no registry.toml entry:
+    `<family>/<artifact name as the provider lists it>`.
+
+    Must equal wt's id for the same artifact —
+    config.DiscoveredModelID(localmodels.Family(providerID), artifact) in
+    wt/internal/litellm/service.go's DiscoveredModel — because the running
+    flag, `modelman stop <id>` and the LiteLLM route wt writes all key on
+    it. So the prefix is the FAMILY, not the registry provider row: an
+    artifact found through an `omlx-6bit` row is `omlx/<name>`, never
+    `omlx-6bit/<name>`. The artifact spellings already agree: ollama's tag,
+    omlx's directory basename, and for mtplx the repo id `org/name` both
+    sides derive from the `org--name` directory (MTPLXProvider._repo_id,
+    wt's mtplxRepoID) — the "/" is kept, unlike a registered id.
+    """
+    return f"{_discovered_family(provider_id)}/{variant_id}"
+
+
+def _discovered_entry(match: DiscoveredModel) -> ModelEntry:
+    """An in-memory ModelEntry for an on-disk artifact with no registry.toml
+    overlay, so start_local_model can drive its provider. It is never
+    written to registry.toml (#179 Phase B: local models are discovered, not
+    configured): its id is `<family>/<native name>` (_discovered_id) — the
+    id wt's catalog and LiteLLM route give the running model — and the
+    start's one `wt litellm sync` routes it under that id. provider_id stays
+    the registry row the artifact was found through (it picks the lifecycle
+    backend and env var). `fetch.repo` lets omlx, which derives its on-disk
+    path from fetch rather than model_name, find the artifact; name-keyed
+    providers (ollama, mtplx) never read it.
+    """
+    return ModelEntry(
+        id=_discovered_id(match.provider_id, match.variant_id),
+        family="",
         provider_id=match.provider_id,
         model_name=match.variant_id,
         location=LOCATION_LOCAL,
         source="discovered",
-        # Providers that derive their on-disk path from fetch.repo/local_path
-        # (omlx) rather than model_name (ollama, mtplx) can only resolve this
-        # artifact again if repo is populated — list_local()'s variant_id IS
-        # the repo-basename-shaped identifier omlx's own repo_basename()
-        # would produce, so it round-trips through _target_dir() correctly.
-        # A no-op for name-keyed providers, which never read fetch.repo.
         fetch=Fetch(repo=match.variant_id),
     )
-    try:
-        with locked_registry(registry_path) as fresh:
-            # Defense-in-depth against a concurrent registration or a hand-edited
-            # registry.toml: the id is derived from (provider, native name), so a
-            # collision means this artifact is already registered and appending
-            # would duplicate it in registry.toml.
-            # Raising here (inside the lock, before the write) leaves the file
-            # untouched — locked_registry only saves on a clean exit.
-            if any(m.id == model_id for m in fresh.models):
-                raise LocalControlError(f"{model_id} is already registered")
-            fresh.models.append(entry)
-        registry.models.append(entry)
-
-        model_state = ModelState(ready=True, disk_path=match.path, size_bytes=match.size_bytes)
-        with locked_state(state_path) as fresh_state:
-            fresh_state.set(model_id, model_state)
-        state.set(model_id, model_state)
-    except OSError as exc:
-        raise LocalControlError(f"failed to register {model_id}: {exc}") from exc
-    return entry
 
 
-def _resolve_or_register(
-    registry: Registry,
-    state: StateStore,
-    model_id: str,
-    family: str | None,
-    registry_path: Path | None,
-    state_path: Path | None,
-) -> ModelEntry:
+def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
     """Resolve `model_id` to a ModelEntry, trying — in order — a registry
-    id, an existing model's native provider-side name (so a discovered
-    model that was auto-registered under `<provider>/<name>` still
-    resolves when the user re-types its bare native name), and finally an
-    on-disk-but-unregistered artifact (which requires `family` and
-    registers it). Raises LocalControlError('unknown model: ...') if none
-    match, or DiscoveredModelNeedsFamily if the third case needs a family.
+    id, an existing model's native provider-side name, and finally an
+    on-disk artifact with no registry entry (an unsaved _discovered_entry;
+    nothing is registered). Raises LocalControlError('unknown model: ...')
+    if none match.
     """
     try:
         return registry.model(model_id)
@@ -647,8 +631,8 @@ def _resolve_or_register(
     # spelling (the discovered listing prints omlx's directory basename,
     # "Qwen3.8-27B-4bit") while model_name holds the registry's (the full repo
     # id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison missed that
-    # model and fell through to the register-a-discovered-model step below,
-    # duplicating an already-registered artifact.
+    # model and fell through to the discovered-artifact step below, starting
+    # an already-registered artifact under a second id.
     providers_by_id = _provider_by_id(registry)
     native_matches = [
         m
@@ -668,19 +652,19 @@ def _resolve_or_register(
     if not discovered:
         raise LocalControlError(f"unknown model: {model_id}")
     if len(discovered) > 1:
+        # The full discovered id names exactly one of them: _find_discovered
+        # matches leniently on the name's tail, so `ollama/shared` also
+        # matches mtplx's `shared` — and the error below tells the user to
+        # type precisely that id.
+        exact = [d for d in discovered if _discovered_id(d.provider_id, d.variant_id) == model_id]
+        if len(exact) == 1:
+            return _discovered_entry(exact[0])
         providers = ", ".join(sorted(m.provider_id for m in discovered))
         raise LocalControlError(
             f"{model_id!r} matches on-disk models from multiple providers ({providers}) — "
-            "register one manually to disambiguate"
+            "use the full <provider>/<name> id"
         )
-    if family is None:
-        match = discovered[0]
-        raise DiscoveredModelNeedsFamily(
-            match.provider_id, match.variant_id, known_families(registry, state)
-        )
-    return _register_discovered_model(
-        registry, state, discovered[0], family, registry_path, state_path
-    )
+    return _discovered_entry(discovered[0])
 
 
 def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelInventory:
@@ -741,6 +725,31 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
     )
 
 
+def _flagged_target(
+    model_id: str,
+    models_by_id: dict[str, ModelEntry],
+    providers_by_id: dict[str, ProviderEntry],
+) -> tuple[str, str] | None:
+    """(provider_id, model_name) to probe for a flagged model id: its
+    registry entry's, or — for a model started without one (#179 Phase B,
+    see _discovered_entry) — the `<family>/<native name>` its discovered
+    id spells, provided the registry has a provider row of that family
+    (for the omlx family the first of omlx / omlx-6bit, as wt's
+    familyProviderID picks it). None when the id names neither (nothing to
+    probe, so the flag is not verified)."""
+    model = models_by_id.get(model_id)
+    if model is not None:
+        return model.provider_id, model.model_name
+    family, _, model_name = model_id.partition("/")
+    if not model_name:
+        return None
+    candidates = _OMLX_FAMILY_PROVIDER_IDS if family == _OMLX_FAMILY else (family,)
+    for provider_id in candidates:
+        if provider_id in providers_by_id:
+            return provider_id, model_name
+    return None
+
+
 def running_model_ids(
     registry: Registry,
     state: StateStore,
@@ -757,12 +766,13 @@ def running_model_ids(
     for model_id, model_state in state.models.items():
         if not model_state.running:
             continue
-        model = models_by_id.get(model_id)
-        if model is None:
+        target = _flagged_target(model_id, models_by_id, providers_by_id)
+        if target is None:
             continue
-        provider = providers_by_id.get(model.provider_id)
+        provider_id, model_name = target
+        provider = providers_by_id.get(provider_id)
         probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
-        if _probe_running(model.provider_id, model.model_name, probe_origin):
+        if _probe_running(provider_id, model_name, probe_origin):
             verified.append(model_id)
         else:
             _clear_stale_running_flag(model_id, state_path)
@@ -782,8 +792,6 @@ def start_local_model(
     model_id: str,
     state_path: Path | None = None,
     *,
-    family: str | None = None,
-    registry_path: Path | None = None,
     litellm_path: Path | None = None,
 ) -> StartResult:
     """Start model_id as a running local model, alongside any other local
@@ -796,10 +804,11 @@ def start_local_model(
     loads on first request.
 
     model_id may be a registry id, an existing model's native
-    provider-side name, or (with `family` set) the native name of an
-    on-disk artifact with no registry.toml entry yet — see
-    _resolve_or_register. Raises DiscoveredModelNeedsFamily when the third
-    case needs a family the caller hasn't supplied yet.
+    provider-side name, or the native name (or `<provider>/<name>` id) of
+    an on-disk artifact with no registry.toml entry — see
+    _resolve_local_model. The last case is started without registering it
+    (#179 Phase B): its one `wt litellm sync` routes it under its
+    discovered id, and its running flag is kept under that id.
 
     Raises LocalControlError when model_id is unknown, not a local model,
     its provider cannot be isolated, or an mlx_lm_server pairing can't be
@@ -810,8 +819,7 @@ def start_local_model(
     runs — modelman start is the recovery command wt's own "not running"
     message prescribes, and must not no-op on a flag whose process died.
     """
-    state = load_state(state_path)
-    model = _resolve_or_register(registry, state, model_id, family, registry_path, state_path)
+    model = _resolve_local_model(registry, model_id)
     resolved_id = model.id
 
     provider = _provider_entry(registry, model.provider_id)
@@ -853,9 +861,8 @@ def start_local_model(
 
     probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
 
-    # Re-read rather than reusing the state loaded above: _resolve_or_register()
-    # may have registered a discovered model (registry + state writes), and a
-    # concurrent start/stop may have changed flags meanwhile.
+    # Read as late as possible: a concurrent start/stop may have changed
+    # flags while the provider checks above ran.
     fresh_state = load_state(state_path)
     other_running = sorted(
         mid for mid, s in fresh_state.models.items() if mid != resolved_id and s.running

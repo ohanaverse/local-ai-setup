@@ -17,7 +17,6 @@ from .config import default_config_path
 from .formatting import format_size
 from .litellm import sync_routes
 from .local_control import (
-    DiscoveredModelNeedsFamily,
     LocalControlError,
     LocalModelInventory,
     inventory_local_models,
@@ -552,8 +551,9 @@ def start(
 
     model_id may be a registry id, an existing model's native
     provider-side name, or the native name of a model a provider has on
-    disk but that has no registry.toml entry yet — the last case prompts
-    for a family, then registers and starts it in one step.
+    disk with no registry.toml entry — that one starts without being
+    registered (#179 Phase B), and wt routes it under its discovered id
+    `<provider>/<name>`.
 
     Omit model_id to print a live inventory: models registered and on
     disk, models registered but missing their artifact, and on-disk
@@ -565,7 +565,7 @@ def start(
         inventory = inventory_local_models(registry, state)
         if not (inventory.downloaded or inventory.not_downloaded or inventory.discovered):
             typer.echo(
-                "No local models found. `modelman start <name>` will register one it finds on disk."
+                "No local models found. `modelman start <name>` starts one it finds on disk."
             )
             _echo_inventory_caveats(inventory)
             return
@@ -582,7 +582,7 @@ def start(
                 typer.echo(f"  {model_id_str}")
             typer.echo()
         if inventory.discovered:
-            typer.echo("Discovered (not in registry.toml — `modelman start <name>` to add):")
+            typer.echo("Discovered (not in registry.toml — `modelman start <name>` runs one):")
             for disc in inventory.discovered:
                 typer.echo(
                     f"  {disc.provider_id}:{disc.variant_id}\t{format_size(disc.size_bytes)}"
@@ -592,35 +592,14 @@ def start(
         typer.echo("Run `modelman start <model_id>` to start one.")
         return
 
-    family: str | None = None
-    while True:
-        try:
-            # start_local_model owns the marker read/write (short locked_state
-            # transactions around it); the stop-all/warmup subprocesses must run
-            # outside any state lock.
-            result = start_local_model(registry, model_id, family=family)
-            break
-        except DiscoveredModelNeedsFamily as exc:
-            hint = (
-                f" (existing: {', '.join(exc.suggested_families)})"
-                if exc.suggested_families
-                else ""
-            )
-            typer.echo(
-                f"{exc.provider_id}/{exc.variant_id} was found on disk but isn't registered yet.{hint}"
-            )
-            # default="" stops click's own prompt() from silently re-looping
-            # on blank input (its built-in retry never returns an empty
-            # string when no default is set) so this loop can print its own
-            # "cannot be empty" message and re-prompt.
-            answer = typer.prompt("Family name for this model", default="", show_default=False)
-            while not answer.strip():
-                typer.echo("Family name cannot be empty.", err=True)
-                answer = typer.prompt("Family name for this model", default="", show_default=False)
-            family = answer.strip()
-        except LocalControlError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(1) from exc
+    try:
+        # start_local_model owns the marker read/write (short locked_state
+        # transactions around it); the stop-all/warmup subprocesses must run
+        # outside any state lock.
+        result = start_local_model(registry, model_id)
+    except LocalControlError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     if result.already_running:
         typer.echo(f"{result.model_id} is already running.")
