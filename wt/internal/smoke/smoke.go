@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -362,6 +363,12 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 		cmd.Args = append(cmd.Args, oneShotArgs...)
 	}
 	cmdLine := strings.Join(cmd.Args, " ")
+	// After the profile, so nothing puts them back: the agent finds its
+	// repository from cwd alone (see gitRepoEnv).
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = withoutGitRepoEnv(cmd.Env)
 
 	// cmd.Stdout/Stderr being the exact same io.Writer value makes os/exec
 	// share one pipe and copy goroutine between them instead of racing two
@@ -386,6 +393,7 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 
 	select {
 	case waitErr := <-done:
+		settleGroup(ctx, cmd.Process.Pid)
 		exitCode := 0
 		if waitErr != nil {
 			ee, ok := waitErr.(*exec.ExitError)
@@ -520,6 +528,9 @@ func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
 	return prompt, sentinel
 }
 
+// rowDirPrefix starts the name of every directory NewRowDir creates.
+const rowDirPrefix = "wt-smoke-"
+
 // NewRowDir creates the directory one smoke row runs in by default (#193):
 // a fresh, empty temporary directory, so an agent running with permission
 // checks off cannot write into the caller's working tree — a small model
@@ -528,16 +539,87 @@ func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
 // inside a trusted directory"). cleanup removes the directory and whatever
 // the agent left in it.
 func NewRowDir() (dir string, cleanup func(), err error) {
-	dir, err = os.MkdirTemp("", "wt-smoke-")
+	dir, err = os.MkdirTemp("", rowDirPrefix)
 	if err != nil {
 		return "", nil, fmt.Errorf("creating a smoke directory: %w", err)
 	}
+	// The path the agent will see: macOS's temp dir sits behind a symlink,
+	// and an agent keys its own state on the resolved one (AgentStateDirs).
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+		dir = resolved
+	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
-	if out, gerr := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); gerr != nil {
+	initCmd := exec.Command("git", "-C", dir, "init", "-q")
+	initCmd.Env = withoutGitRepoEnv(os.Environ())
+	if out, gerr := initCmd.CombinedOutput(); gerr != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("git init in %s: %v: %s", dir, gerr, strings.TrimSpace(string(out)))
 	}
 	return dir, cleanup, nil
+}
+
+// AgentStateDirs returns the directories agentName keeps in its own state for
+// the row directory rowDir (claude's ~/.claude/projects entry, pi's session
+// directory), for the caller to remove with the row: each row would otherwise
+// leave one behind for good. It answers only for a directory NewRowDir made —
+// the same lookup for the caller's real directory (a --cwd run) would name
+// the user's own transcripts.
+func AgentStateDirs(agentName, rowDir string) []string {
+	if !strings.HasPrefix(filepath.Base(rowDir), rowDirPrefix) {
+		return nil
+	}
+	sd, ok := agents.ByName(agentName).(agents.StateDirer)
+	if !ok {
+		return nil
+	}
+	return []string{sd.StateDir(rowDir)}
+}
+
+// gitRepoEnv names the variables that point git at a repository. Inherited
+// from a git hook or a shell that exports them, they win over the working
+// directory: `git init` in a row's directory would re-initialise the caller's
+// repository, and an agent's git commands would act on it.
+var gitRepoEnv = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX",
+	"GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+}
+
+// withoutGitRepoEnv returns env without the gitRepoEnv variables.
+func withoutGitRepoEnv(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(gitRepoEnv, name)
+	})
+}
+
+// Variables rather than constants so a test can shorten groupGrace.
+var (
+	// groupGrace is how long a finished agent's process group gets to empty
+	// before what is left of it is killed.
+	groupGrace = 5 * time.Second
+	// groupPoll is how often settleGroup checks whether the group is empty.
+	groupPoll = 20 * time.Millisecond
+)
+
+// settleGroup returns once the process group pgid is empty. An agent that has
+// exited can leave processes of its own behind — claude's session-save hook
+// wrote into the row's directory after claude was gone (#193) — and the row
+// is not over while they run: the caller removes the directory next. They get
+// groupGrace to finish; what is still there then, or when ctx is cancelled,
+// is killed.
+//
+// The group's leader has been reaped by now, so its id is only held by the
+// members still alive; signalling it once it is empty reaches nothing.
+func settleGroup(ctx context.Context, pgid int) {
+	deadline := time.Now().Add(groupGrace)
+	for syscall.Kill(-pgid, 0) == nil {
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			return
+		}
+		time.Sleep(groupPoll)
+	}
 }
 
 // Variables rather than constants so a test can shorten sweepLimit.
@@ -555,12 +637,14 @@ var (
 // SweepRowDirs removes the row directories of one smoke run once more, after
 // the last row, and keeps doing so until they have all stayed gone for
 // sweepQuiet (or sweepLimit passes). Each row already removes its own
-// directory the moment it ends, but an agent can leave a background process
-// behind that writes into its working directory afterwards — claude's
-// session-save hook did exactly that on a real run, recreating the directory
-// just removed (#193). Whatever such a process writes after the sweep lands
-// in the system temp directory, never in the caller's checkout; the sweep
-// only keeps the common case tidy.
+// directory the moment it ends, and settleGroup has by then waited out (or
+// killed) whatever the agent left running in its process group — claude's
+// session-save hook recreated the directory just removed on a real run
+// (#193). The sweep is the backstop for a process that left that group
+// (a daemonised helper) and writes later still, and it is what removes the
+// agent state directories (AgentStateDirs) the caller adds to dirs. Whatever
+// is written after the sweep lands in the system temp directory, never in the
+// caller's checkout.
 //
 // It returns the directories its last pass could not remove (an agent left a
 // read-only tree behind, say), so the caller can name them instead of leaving

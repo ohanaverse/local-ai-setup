@@ -122,6 +122,16 @@ type OneShotRunner interface {
 	OneShotArgs(prompt string) []string
 }
 
+// StateDirer is an optional Driver capability for agents that keep state of
+// their own (transcripts, memory) in a directory keyed on the working
+// directory. wt smoke removes it for the temporary directory a row ran in,
+// which would otherwise leave one such directory behind per row.
+type StateDirer interface {
+	// StateDir returns that directory for the working directory path, which
+	// must be the path the agent itself sees (symlinks resolved).
+	StateDir(path string) string
+}
+
 // InstructionPointer describes a single file created by `wt --init`.
 type InstructionPointer struct {
 	Path    string // relative to the repo root, e.g. "CLAUDE.md"

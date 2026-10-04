@@ -38,9 +38,32 @@ agy|agy/native|-p @PROMPT@|native model; driver ignores it
 shell|-|echo @PROMPT@|-- passthrough becomes argv
 EOF
 
+# smoke_text is the lower-case text a row's prompt carries. The prompt must
+# never contain the sentinel itself (expected_reply): codex prints its prompt
+# back, so a sentinel the prompt contains passes on that echo whatever the
+# model replied -- the false PASS `wt smoke` had (#193, smoke.DefaultPrompt).
+smoke_text() {
+  local agent="$1" runid="$2"
+  printf 'wt-smoke-%s-%s\n' "$agent" "$runid" | tr '[:upper:]' '[:lower:]'
+}
+
 build_prompt() {
   local agent="$1" runid="$2"
-  echo "Reply with exactly this text and nothing else: WT-SMOKE-${agent}-${runid}"
+  echo "Reply with exactly this text converted to upper case and nothing else: $(smoke_text "$agent" "$runid")"
+}
+
+# expected_reply is what a row's output must contain to PASS: the prompt's
+# text in upper case, which only a model's reply can produce. The shell row
+# has no model -- it echoes its argv to prove the `--` passthrough -- so there
+# the prompt's own text coming back is the pass condition.
+expected_reply() {
+  local agent="$1" runid="$2" text
+  text=$(smoke_text "$agent" "$runid")
+  if [[ "$agent" == "shell" ]]; then
+    echo "$text"
+  else
+    echo "$text" | tr '[:lower:]' '[:upper:]'
+  fi
 }
 
 # new_runid generates the run identifier embedded in every row's prompt.
@@ -290,7 +313,7 @@ run_row() {
   # agent failures and must not be masked as SKIP.
   if [[ $status -ne 0 ]] && [[ "$result" == *"agent ${agent} not installed"* ]]; then
     verdict="SKIP"
-  elif [[ $status -eq 0 ]] && [[ "$result" == *"WT-SMOKE-${agent}-${runid}"* ]]; then
+  elif [[ $status -eq 0 ]] && [[ "$result" == *"$(expected_reply "$agent" "$runid")"* ]]; then
     verdict="PASS"
   fi
 

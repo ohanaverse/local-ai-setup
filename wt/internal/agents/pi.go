@@ -2,6 +2,9 @@ package agents
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -94,4 +97,22 @@ func (piDriver) RequiredMechanism(m profiles.Mechanism) (profiles.Mechanism, boo
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by
 // wt smoke to verify a model works through this agent.
+// piSessionDirChars are what pi's session manager turns into a dash when it
+// names a working directory's session directory.
+var piSessionDirChars = strings.NewReplacer("/", "-", `\`, "-", ":", "-")
+
+// StateDir is pi's session directory for a working directory:
+// <agent dir>/sessions/--<path>--, the agent dir being PI_CODING_AGENT_DIR or
+// ~/.pi/agent.
+func (piDriver) StateDir(path string) string {
+	agentDir := os.Getenv("PI_CODING_AGENT_DIR")
+	if agentDir == "" {
+		agentDir = filepath.Join(os.Getenv("HOME"), ".pi", "agent")
+	}
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) {
+		path = path[1:]
+	}
+	return filepath.Join(agentDir, "sessions", "--"+piSessionDirChars.Replace(path)+"--")
+}
+
 func (piDriver) OneShotArgs(prompt string) []string { return []string{"-p", prompt} }

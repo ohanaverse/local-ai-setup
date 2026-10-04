@@ -989,3 +989,145 @@ func TestRealBuildAndRunCancelKillsTheAgentGroup(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentStateDirsOnlyForSmokeDirs pins the guard on what smoke may delete
+// from an agent's own state: only the entry for a directory NewRowDir made.
+// The caller's real project (a --cwd run) must never be offered for removal —
+// that entry holds the user's transcripts.
+func TestAgentStateDirsOnlyForSmokeDirs(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	if got := AgentStateDirs("claude", "/private/tmp/wt-smoke-123"); len(got) != 1 || got[0] != "/h/.claude/projects/-private-tmp-wt-smoke-123" {
+		t.Errorf("claude in a smoke directory: %v, want its project directory", got)
+	}
+	if got := AgentStateDirs("claude", "/Users/me/repo"); got != nil {
+		t.Errorf("claude in a real directory: %v, want nothing", got)
+	}
+	if got := AgentStateDirs("codex", "/private/tmp/wt-smoke-123"); got != nil {
+		t.Errorf("codex keeps no per-directory state: %v, want nothing", got)
+	}
+}
+
+// TestNewRowDirIsTheResolvedPath pins that NewRowDir hands back the path the
+// agent will see: macOS's temp dir sits behind a symlink (/var →
+// /private/var), and an agent keys its own state on the resolved one.
+func TestNewRowDirIsTheResolvedPath(t *testing.T) {
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
+		t.Fatalf("row dir %s resolves to %s (err = %v)", dir, real, err)
+	}
+}
+
+// TestNewRowDirIgnoresInheritedGitDir pins the isolation under a git hook or a
+// shell that exports GIT_DIR: `git -C <dir> init` obeys GIT_DIR over -C, so it
+// would re-initialise the caller's repository and leave the row's directory
+// without one.
+func TestNewRowDirIgnoresInheritedGitDir(t *testing.T) {
+	other := filepath.Join(t.TempDir(), "caller.git")
+	t.Setenv("GIT_DIR", other)
+	dir, cleanup, err := NewRowDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Errorf("row dir %s is not a git repository: %v", dir, err)
+	}
+	if _, err := os.Stat(other); err == nil {
+		t.Errorf("git init ran against the inherited GIT_DIR %s", other)
+	}
+}
+
+// fakeAgy puts an executable `agy` with the given shell body first on PATH.
+// The body must call other programs by absolute path: PATH holds nothing else.
+func fakeAgy(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// TestRealBuildAndRunDropsInheritedGitEnv pins that the agent does not
+// inherit the variables that point git at a repository: with them set, the
+// agent's git commands would act on the caller's repository from inside the
+// row's temporary directory. Variables that only describe the user survive.
+func TestRealBuildAndRunDropsInheritedGitEnv(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), "env")
+	fakeAgy(t, "/usr/bin/env > "+envFile+"\n")
+	t.Setenv("GIT_DIR", "/caller/.git")
+	t.Setenv("GIT_WORK_TREE", "/caller")
+	t.Setenv("GIT_INDEX_FILE", "/caller/.git/index")
+	t.Setenv("GIT_AUTHOR_NAME", "someone")
+	var cleanup func() error
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), 5*time.Second, nil, &cleanup)
+	if out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	env, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"GIT_DIR=", "GIT_WORK_TREE=", "GIT_INDEX_FILE="} {
+		if strings.Contains("\n"+string(env), "\n"+name) {
+			t.Errorf("the agent inherited %s", name)
+		}
+	}
+	if !strings.Contains(string(env), "GIT_AUTHOR_NAME=someone") {
+		t.Error("GIT_AUTHOR_NAME was dropped; only repository-locating variables should be")
+	}
+}
+
+// TestRealBuildAndRunWaitsForTheAgentGroup pins that a row is not over until
+// what the agent left running is: a background process in the agent's group
+// (a session-save hook) that writes after the agent exits has written by the
+// time the row returns, so removing the row's directory afterwards is final.
+func TestRealBuildAndRunWaitsForTheAgentGroup(t *testing.T) {
+	late := filepath.Join(t.TempDir(), "late")
+	fakeAgy(t, "(/bin/sleep 0.4; echo x > "+late+") >/dev/null 2>&1 &\nexit 0\n")
+	var cleanup func() error
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), 5*time.Second, nil, &cleanup)
+	if out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("the row returned before the agent's background process had finished: %v", err)
+	}
+}
+
+// TestRealBuildAndRunKillsAGroupThatOutlivesTheAgent pins the bound on that
+// wait: a background process still running when groupGrace is up is killed,
+// so nothing in the agent's group can write into the row's directory later.
+func TestRealBuildAndRunKillsAGroupThatOutlivesTheAgent(t *testing.T) {
+	oldGrace := groupGrace
+	groupGrace = 200 * time.Millisecond
+	t.Cleanup(func() { groupGrace = oldGrace })
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	fakeAgy(t, "echo $$ > "+pidFile+"\n/bin/sleep 30 >/dev/null 2>&1 &\nexit 0\n")
+	var cleanup func() error
+	out := realBuildAndRun(context.Background(), &config.Config{}, "agy", config.Model{Native: true}, "the prompt", t.TempDir(), 5*time.Second, nil, &cleanup)
+	if out.StartErr != nil || out.ExitCode != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pgid == 0 {
+		t.Fatalf("no pid in %q", b)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if err := syscall.Kill(-pgid, 0); err == syscall.ESRCH {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process group %d is still alive after the row returned", pgid)
+		}
+	}
+}

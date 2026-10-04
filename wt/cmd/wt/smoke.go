@@ -246,6 +246,9 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 				continue
 			}
 			rowDirs = append(rowDirs, rowDir)
+			// What the agent records about this directory in its own state
+			// (claude's project entry, pi's sessions) goes with it.
+			rowDirs = append(rowDirs, smoke.AgentStateDirs(agentName, rowDir)...)
 		}
 		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
 		removeRowDir()

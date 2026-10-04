@@ -98,10 +98,24 @@ your project's files or agent configuration. Everything above then applies to
 your checkout.
 
 An agent can leave a background process behind that writes into its working
-directory after it exits (a session-save hook, for example). `wt smoke`
-removes each row's directory when the row ends and sweeps them all once more
-at the end of the run (after the stop picker); anything written later than
-that is left in the system temp directory, under a `wt-smoke-*` name. A
+directory after it exits (a session-save hook, for example). A row is not over
+until the agent's process group is empty: `wt smoke` waits up to 5 seconds for
+what the agent left running, then kills what remains. That applies with
+`--cwd` too. It then removes the row's directory, and sweeps them all once
+more at the end of the run (after the stop picker) for a process that left the
+group; anything written later than that is left in the system temp directory,
+under a `wt-smoke-*` name.
+
+An agent also records the directory it ran in within its own state: claude
+creates `~/.claude/projects/<dir>/` (transcript and memory), pi a session
+directory under `~/.pi/agent/sessions/`. For a temporary row directory the
+sweep removes those too. With `--cwd` they are your project's own and are
+left alone.
+
+The agent and the `git init` do not inherit the variables that point git at a
+repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the like), so
+`wt smoke` run from a git hook, or from a shell that exports them, still keeps
+the agent out of that repository. A
 directory the sweep cannot remove is named on stderr (`wt: could not remove
 the smoke directory <path>`). A row whose directory cannot be created is FAIL
 with that reason; the other rows still run and the report is still printed.

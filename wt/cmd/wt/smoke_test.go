@@ -22,6 +22,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -873,5 +874,49 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 	}
 	if picked {
 		t.Error("the stop picker was shown after an interrupt")
+	}
+}
+
+// TestSmokeCmdRemovesTheAgentStateDir pins that a row leaves nothing behind
+// in the agent's own state either: claude registers the row's temporary
+// directory as a project under ~/.claude/projects, and one such entry per row
+// — transcript and memory directory included — otherwise stays forever.
+func TestSmokeCmdRemovesTheAgentStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := smokeFixtureConfig(t)
+	stubEnsureRoute(t)
+	oldRel, oldPick, oldTTY := releaseSession, runStopPicker, stdinTTY
+	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY = oldRel, oldPick, oldTTY })
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) {}
+	stdinTTY = func() bool { return false }
+	var stateDir string
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		*cleanup = func() error { return nil }
+		// What claude does on a real run, keyed on the directory it sees.
+		real, err := filepath.EvalSymlinks(cwd)
+		if err != nil {
+			t.Error(err)
+		}
+		stateDir = filepath.Join(home, ".claude", "projects", session.Slug(real))
+		if err := os.MkdirAll(filepath.Join(stateDir, "memory"), 0o755); err != nil {
+			t.Error(err)
+		}
+		return smoke.StubOutcome("ok", 0)
+	}))
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx", "--prompt", "say ok"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if stateDir == "" {
+		t.Fatal("no row ran")
+	}
+	if _, err := os.Stat(stateDir); err == nil {
+		t.Fatalf("claude's project directory %s was left behind", stateDir)
 	}
 }

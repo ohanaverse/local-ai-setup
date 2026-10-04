@@ -26,7 +26,7 @@ reconcile which is current before relying on either.
    - `Build(m config.Model, yolo bool, r Route) LaunchCmd` — dial from the resolved `Route` (base origin, API key, model ref); never hardcode a provider endpoint
    - `YoloFlag() string`
    - `Protocols() []Protocol` (the `ProtocolDeclarer` capability) — the wire protocols the agent speaks; this drives route resolution
-2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `Resumer`
+2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `Resumer`, `StateDirer` (if the agent keeps per-working-directory state, so `wt smoke` can remove it for its temporary directories)
 3. Register in `internal/agents/catalog.go` via `AddEntry()` or `MustAdd()`
 4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
 5. Update the driver table in `wt/CLAUDE.md`
