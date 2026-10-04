@@ -7,9 +7,11 @@ FIXTURE = Path(__file__).resolve().parents[3] / "docs" / "contracts" / "modelman
 
 def test_load_state_matches_shared_fixture():
     """Pins modelman's read of the shared docs/contracts/modelman.sample.toml
-    fixture: both languages must decode `ready` (including the legacy
-    `downloaded` spelling) and the `[litellm]` table identically, or a schema
-    drift between modelman and wt ships silently. #179: the legacy
+    fixture. modelman decodes the per-model keys (`ready`, including the
+    legacy `downloaded` spelling); wt reads no per-model key any more (#179
+    Phase B) — only the `[litellm]` table and `price_refresh_last_run`, which
+    both languages must decode identically or a schema drift between
+    modelman and wt ships silently. #179: the legacy
     `exposed`/`litellm_exposed` keys some rows still carry (wt ignores
     them too) load without error and are ignored by modelman."""
     state = load_state(path=FIXTURE)
