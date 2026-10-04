@@ -868,6 +868,21 @@ func TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant(t *testing.T) {
 		{"nothing routed, no cloud models", "model_list: []\n", litellmTestConfig, nil},
 		{"local route present", "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n", litellmTestConfig,
 			[]string{`provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`}},
+		// #195: a family whose only route is a discovered model's marked row
+		// has no registry local model to notice, so the row was removed with
+		// no word. It is a local route treated as stale like any other.
+		{"only a discovered route", "model_list:\n  - model_name: ollama/pulled:1b\n    litellm_params: {model: ollama_chat/pulled:1b}\n    model_info: {wt_managed: true}\n", func() *config.Config {
+			cfg := litellmTestConfig()
+			cfg.Models = cfg.Models[1:] // drop the registry ollama model: nothing local is registered
+			return cfg
+		}, []string{`provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`}},
+		// A hand-written row of the family is not wt's to remove, so a refused
+		// daemon says nothing about it.
+		{"only a hand-written row", "model_list:\n  - model_name: ollama/mine:1b\n    litellm_params: {model: ollama_chat/mine:1b}\n", func() *config.Config {
+			cfg := litellmTestConfig()
+			cfg.Models = cfg.Models[1:]
+			return cfg
+		}, nil},
 		{"ollama cloud model", "model_list: []\n", func() *config.Config {
 			cfg := litellmTestConfig()
 			cfg.Models = append(cfg.Models, config.Model{ID: "ollama/glm:cloud", ProviderID: "ollama", ModelName: "glm:cloud", Location: config.LocationCloud})
@@ -1389,7 +1404,6 @@ litellm_settings:
 // run and the real run, and with no proxy restart. Treating the gap as
 // "never probed, so stale" removed a serving model's route silently.
 func TestLitellmSyncKeepsRoutesOfRegistryGapFamily(t *testing.T) {
-	const want = `provider "omlx" could not be probed (its registry entry has no resolvable location); its model routes were left unchanged`
 	const body = `model_list:
   - model_name: omlx/org/live
     litellm_params: {model: openai/org/live, api_base: http://localhost:8000/v1, api_key: not-needed, use_chat_completions_api: true}
@@ -1408,11 +1422,29 @@ litellm_settings:
 	noProviders := litellmTestConfig()
 	noProviders.Providers = nil
 	noProviders.Models = append(noProviders.Models, reg)
+	// A location that is neither "local" nor "cloud" (a typo such as "Local")
+	// is the same kind of gap (#195): the inventory probes only an exact
+	// "local", so the family went unprobed, and because the gap check looked
+	// only for an EMPTY location the family was not frozen either — sync
+	// removed a serving model's route with no warning at all.
+	badLocation := litellmTestConfig()
+	badLocation.Providers = append(badLocation.Providers, config.Provider{ID: "omlx", Location: "Local", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
+	badLocation.Models = append(badLocation.Models, reg)
+	// Each cause is named in its own words (#195): "no resolvable location"
+	// sent a user whose provider row was simply missing to look for a
+	// location to fix.
+	const tail = "; its model routes were left unchanged"
 	for _, tc := range []struct {
 		name string
 		cfg  *config.Config
-	}{{"provider row without a location", noLocation}, {"providers empty", noProviders}} {
+		want string
+	}{
+		{"provider row without a location", noLocation, `provider "omlx" could not be probed (its registry entry has no location)` + tail},
+		{"providers empty", noProviders, `provider "omlx" could not be probed (the registry has models for it but no provider entry)` + tail},
+		{"provider row with a mistyped location", badLocation, `provider "omlx" could not be probed (its registry entry has location "Local"; expected "local" or "cloud")` + tail},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
+			want := tc.want
 			p := litellmEnv(t, body)
 			restarts := filepath.Join(t.TempDir(), "restarts")
 			t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
@@ -1625,5 +1657,70 @@ func TestSyncProbeWarningIgnoresHandWrittenRows(t *testing.T) {
 	want := []string{`provider "omlx" probe did not succeed (status "unreachable"); its model routes were left unchanged`}
 	if len(untouched) != 0 || !slices.Equal(warns, want) {
 		t.Fatalf("untouched = %v, warnings = %q; want none and only %q", untouched, warns, want)
+	}
+}
+
+// TestSyncAndStartHookDisagreeWhenASingleModelServerListsSiblings pins a known
+// disagreement, on purpose, so that the day it becomes reachable it is a
+// conscious change and not a surprise (#195). Sync routes every local model
+// the probe reports running. The start hook treats a single-model family as
+// holding one model and clears the family's other routes. If one single-model
+// server ever reported two models running, the two would undo each other: sync
+// routes both, a start of one removes the other, the next sync puts it back —
+// one proxy restart each time.
+//
+// It is not reachable with the providers wt supports: omlx and mtplx each
+// report exactly one running model (omlx's two variants are one daemon with
+// one occupant; an mtplx process serves one model). The launch-time route
+// check does not take part: it only adds (#192). A fix belongs with whichever
+// provider first makes this real — deciding then whether the start hook should
+// keep running siblings, or sync should route only the occupant.
+func TestSyncAndStartHookDisagreeWhenASingleModelServerListsSiblings(t *testing.T) {
+	p := litellmEnv(t, "model_list: []\n")
+	cfg := litellmTestConfig()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: config.DiscoveredModelID("omlx", "org/A-4bit"), ModelName: "org/A-4bit", Artifact: "org/A-4bit", ArtifactKnown: true, Running: true},
+			{ProviderID: "omlx", ModelID: config.DiscoveredModelID("omlx", "org/B-4bit"), ModelName: "org/B-4bit", Artifact: "org/B-4bit", ArtifactKnown: true, Running: true},
+		},
+	})
+	rows := func() []string {
+		t.Helper()
+		f, err := litellm.Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, r := range f.Rows() {
+			ids = append(ids, r.ID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+	sync := func() {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if err := runLitellmSync(&out, &errOut, cfg, true, false); err != nil {
+			t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
+		}
+	}
+	both := []string{"omlx/org/A-4bit", "omlx/org/B-4bit"}
+
+	sync()
+	if got := rows(); !slices.Equal(got, both) {
+		t.Fatalf("after sync rows = %v, want both running siblings routed %v", got, both)
+	}
+	ch := lifecycle.StartRouteChange(cfg, lifecycle.Target{ProviderID: "omlx", ModelName: "org/A-4bit", ModelID: "omlx/org/A-4bit"})
+	if _, err := litellm.ApplyChange(cfg, ch, litellm.Options{NoRestart: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(); !slices.Equal(got, both[:1]) {
+		t.Fatalf("after the start hook rows = %v, want only the started model %v", got, both[:1])
+	}
+	sync()
+	if got := rows(); !slices.Equal(got, both) {
+		t.Fatalf("after the next sync rows = %v, want the sibling routed again %v", got, both)
 	}
 }

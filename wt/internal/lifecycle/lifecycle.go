@@ -279,7 +279,7 @@ func Stop(ctx context.Context, cfg *config.Config, providerID string) error {
 	if err := stop(ctx, defaultEnv(), cfg, providerID); err != nil {
 		return err
 	}
-	routeAfterStop(ctx, cfg, providerID, "")
+	routeAfterStop(ctx, cfg, providerID)
 	return nil
 }
 
@@ -310,7 +310,7 @@ func StopModelDeferred(ctx context.Context, cfg *config.Config, providerID, mode
 	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
 		return false, err
 	}
-	return routeRemove(ctx, cfg, providerID, modelName, restartDeferred), nil
+	return routeRemove(ctx, cfg, providerID, restartDeferred), nil
 }
 
 // SettleRoutes restarts the LiteLLM proxy (and waits for it, asynchronously —

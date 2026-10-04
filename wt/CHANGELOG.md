@@ -143,6 +143,21 @@
 
 ### Fixed
 
+- A provider entry whose `location` is mistyped (`"Local"`, say) no longer
+  costs its models their LiteLLM routes (#195). The inventory probes only an
+  exact `local`, so such a family went unprobed, and `wt litellm sync` then
+  removed its marked routes with no warning. Any location that is neither
+  `local` nor `cloud` is now a registry gap like a missing one: the routes are
+  kept, and the warning names the value.
+- `wt litellm sync`'s "could not be probed" warning says which registry gap
+  it found — no location, an invalid location, or models with no provider
+  entry — instead of "no resolvable location" for all of them (#195).
+- A stopped provider whose only routes belong to discovered models is warned
+  about like any other when `wt litellm sync` removes those routes as stale;
+  it used to remove them silently (#195).
+- A route removal that removed nothing is no longer reported. Stopping a
+  model on a single-model provider reported every registry model of that
+  provider as `unrouted`, whether or not it had a route (#195).
 - Launching a running local model that wt did not start no longer fails with
   `Invalid model name` (#192). wt writes the model's LiteLLM route, if it is
   missing, before handing the model to an agent — on a `-M` pin, on rotation,

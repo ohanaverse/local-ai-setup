@@ -292,32 +292,27 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 // routeAfterStop removes the stopped model's route. Stopping a single-model
 // provider's model takes the whole provider down, so every route of its
 // family goes. Stopping an ollama model only unloads it, so its route stays
-// (see routeRemove). modelName may be "" for a provider-wide stop.
-func routeAfterStop(ctx context.Context, cfg *config.Config, providerID, modelName string) {
-	routeRemove(ctx, cfg, providerID, modelName, restartIfChanged)
+// (see routeRemove).
+func routeAfterStop(ctx context.Context, cfg *config.Config, providerID string) {
+	routeRemove(ctx, cfg, providerID, restartIfChanged)
 }
 
 // routeRemove writes a stop's route removal and reports whether config.yaml
 // changed. For a family whose routes follow its artifact (ollama) it writes
 // nothing and returns false: stopping unloads the model, but a pulled model is
 // still served on request, so its route stays (#179).
-func routeRemove(ctx context.Context, cfg *config.Config, providerID, modelName string, mode restartMode) bool {
+func routeRemove(ctx context.Context, cfg *config.Config, providerID string, mode restartMode) bool {
 	if localmodels.RoutesFollowArtifact(localmodels.Family(providerID)) {
 		return false
 	}
-	var ch litellm.Change
-	switch {
-	case SingleModel(providerID):
-		ch.RemoveFamilies = []string{localmodels.Family(providerID)}
-	default:
-		// A multi-tenant backend whose routes do not follow artifacts; none
-		// exists today (ollama, the only multi-tenant one, returned above).
-		m, ok := litellm.ModelFor(cfg, providerID, modelName)
-		if !ok {
-			m = litellm.DiscoveredModel(providerID, modelName)
-		}
-		ch.Remove = []string{m.ID}
+	// Every family whose routes do not follow its artifacts is single-model
+	// (omlx, mtplx; mlx_lm_server has no stop backend): stopping its model
+	// takes the provider down, so the whole family's routes go. A backend
+	// that is neither would need a per-model removal here; none exists.
+	if !SingleModel(providerID) {
+		return false
 	}
+	ch := litellm.Change{RemoveFamilies: []string{localmodels.Family(providerID)}}
 	return applyAndReport(ctx, cfg, ch, mode)
 }
 
@@ -329,7 +324,7 @@ func routeRemove(ctx context.Context, cfg *config.Config, providerID, modelName 
 // (routeAfterStart on success, bounceRoutes on failure). It reports whether a
 // restart is now owed.
 func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ localmodels.Entry) bool {
-	return routeRemove(ctx, cfg, occ.ProviderID, occ.ModelName, restartDeferred)
+	return routeRemove(ctx, cfg, occ.ProviderID, restartDeferred)
 }
 
 // bounceRoutes settles route writes a deferred write already made — when the
