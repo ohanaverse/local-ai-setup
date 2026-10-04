@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -57,11 +58,54 @@ const (
 	goldenRow2   = "    -        ollama/gemma4:9b                                 local  new     -        -                        0   0   0"
 )
 
+// refusedTable is a table whose widest row ends in an exception note: a cloud
+// model whose provider has no LiteLLM mapping, with routing through the proxy
+// on, reads "(not in LiteLLM)" after its columns. The second row has no note.
+// The agent is "" so no row is forced through the proxy (that would add
+// "(via proxy)" to both and print the forced-route notice).
+func refusedTable(t *testing.T) modelTable {
+	t.Helper()
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "zcloud", Location: config.LocationCloud, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "https://zcloud.example"}},
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
+	rows := []tableRow{
+		{
+			Row: catalog.Row{
+				Model: config.Model{ID: "zcloud/glm-5.5-turbo-preview-2026-09", ProviderID: "zcloud", ModelName: "glm-5.5-turbo-preview-2026-09", Family: "glm",
+					Cost: config.ModelCost{InputPricePerMillion: price(1), CachePricePerMillion: price(0.1), OutputPricePerMillion: price(4)}},
+				Location: config.LocationCloud, Status: catalog.StatusOK, Unmapped: true,
+			},
+			counts: usage.UsageCounts{OneDay: 2, SevenDay: 30, ThirtyDay: 211},
+		},
+		{
+			Row: catalog.Row{
+				Model:    config.Model{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8"},
+				Location: config.LocationLocal, Status: catalog.StatusOK, Running: true,
+			},
+		},
+	}
+	tbl := renderTable(rows, cfg, "", nil, "")
+	if got := tbl.items[0].exception; got != "(not in LiteLLM)" || tbl.items[1].exception != "" {
+		t.Fatalf("fixture: exceptions = %q / %q, want \"(not in LiteLLM)\" on the first row only", got, tbl.items[1].exception)
+	}
+	return tbl
+}
+
 // tablePicker is the agent flow's model picker over realisticTable in a
 // terminal of the given size, with the cursor on the running local row.
 func tablePicker(t *testing.T, width, height int) model {
 	t.Helper()
-	tbl := realisticTable()
+	return pickerOver(t, realisticTable(), width, height)
+}
+
+// pickerOver is the agent flow's model picker over tbl in a terminal of the
+// given size, with the cursor on the second row.
+func pickerOver(t *testing.T, tbl modelTable, width, height int) model {
+	t.Helper()
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -114,10 +158,14 @@ func TestModelTableDropsWholeColumnsInOrder(t *testing.T) {
 		view := m.View()
 		assertFits(t, "model table", view, tc.width, 24)
 
-		// MODEL, STATUS and RUNNING fit beside the row prefix from 76 columns
-		// up for this table (47 + 6 + 7, two separators, the 4-column prefix,
-		// the list's 2 and the picker's 4). Below that the list cuts the row.
-		fits := tc.width >= 76
+		// MODEL, STATUS and RUNNING are whole in the header and in every row
+		// from 75 columns up for this table: 47 + 6 + 7, two separators and
+		// the 4-column prefix make a 68-column header, the list's title bar
+		// needs 3 more to draw it whole, and the picker pads 4. (The rows need
+		// less — no title-bar room, and their last cell is trimmed — so they
+		// are whole a few columns before the header is.) Below that the list
+		// cuts the line. TestModelTableColumnBoundaries pins the exact widths.
+		fits := tc.width >= 75
 		ids := []string{"openrouter/anthropic/claude-sonnet-4.5-thinking", "omlx/Qwen3.8-27B-Instruct-MLX-6bit", "ollama/gemma4:9b"}
 		cells := [][]string{{"ok", "-"}, {"ok", "run"}, {"new", "-"}}
 		if fits {
@@ -146,6 +194,132 @@ func TestModelTableDropsWholeColumnsInOrder(t *testing.T) {
 			}
 		}
 	}
+}
+
+// tableCut describes what the list cut off the table in m's view, or "" when
+// the header and every row are drawn whole: the header line holds the whole
+// header with no ellipsis after it, and each row's line holds the whole row
+// (its exception note included) with none either. bubbles marks whatever it
+// cuts with "…", and nothing in a header or in these fixtures' rows contains
+// one.
+func tableCut(m model) string {
+	lines := strings.Split(m.View(), "\n")
+	whole := func(text string) bool {
+		for _, line := range lines {
+			if strings.Contains(line, text) {
+				return !strings.Contains(line, "…")
+			}
+		}
+		return false
+	}
+	if !whole(m.models.Title) {
+		return "the header"
+	}
+	for i, it := range m.models.Items() {
+		if !whole(it.(*modelItem).Title()) {
+			return fmt.Sprintf("row %d", i)
+		}
+	}
+	return ""
+}
+
+// columnBoundary is one terminal width at which a table gains a column, and
+// the columns it shows from there up to the next one.
+type columnBoundary struct {
+	width int
+	want  string
+}
+
+// assertColumnBoundaries checks each boundary at its exact width and one
+// column either side: the columns shown (one column narrower still shows the
+// previous boundary's), and that at all three widths the header and every row
+// are drawn whole. The first boundary is the narrowest terminal that holds
+// the three columns that always stay.
+func assertColumnBoundaries(t *testing.T, tbl func() modelTable, boundaries []columnBoundary) {
+	t.Helper()
+	for i, b := range boundaries {
+		for _, width := range []int{b.width - 1, b.width, b.width + 1} {
+			want := b.want
+			if width < b.width {
+				if i == 0 {
+					continue // narrower than the kept columns: something is cut
+				}
+				want = boundaries[i-1].want
+			}
+			m := pickerOver(t, tbl(), width, 24)
+			if got := shownColumns(m.models.Title); got != want {
+				t.Errorf("width %d: columns = %q, want %q", width, got, want)
+			}
+			if cut := tableCut(m); cut != "" {
+				t.Errorf("width %d: %s is cut or followed by an ellipsis:\n%s", width, cut, m.View())
+			}
+		}
+	}
+}
+
+// TestModelTableColumnBoundaries pins the exact terminal width at which each
+// column of the realistic table appears, and that one column narrower it is
+// still hidden — with the header and every row whole on both sides. The fit
+// has to leave the list's title bar three columns beyond the header (two
+// spaces it appends, one it reserves for a spinner); a fit that counted less
+// kept a column one to three columns too long, and the header then read
+// "RUNNIN…" or grew a stray "…" after its last heading while the rows under
+// it were fine. Below the first width the three kept columns do not fit and
+// the header is the first thing cut.
+func TestModelTableColumnBoundaries(t *testing.T) {
+	assertColumnBoundaries(t, realisticTable, []columnBoundary{
+		// 68 columns of header (prefix 4, 47 + 6 + 7, two separators), the
+		// title bar's 3, the picker's 4.
+		{75, "MODEL STATUS RUNNING"},
+		{84, "FAMILY MODEL STATUS RUNNING"},
+		{91, "FAMILY MODEL LOC STATUS RUNNING"},
+		{113, "FAMILY MODEL LOC STATUS RUNNING COST"},
+		{120, "FAMILY MODEL LOC STATUS RUNNING COST 1D"},
+		{124, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D"},
+		{129, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D"},
+		{146, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
+	})
+	// One column short of the first boundary the rows still fit — they need no
+	// title-bar room — and the header is what is cut.
+	if cut := tableCut(tablePicker(t, 74, 24)); cut != "the header" {
+		t.Errorf("width 74: cut = %q, want the header cut and the rows whole", cut)
+	}
+}
+
+// TestModelTableCountsTheExceptionNote pins that the note a row appends after
+// its columns — "(not in LiteLLM)", "(via proxy)" — is part of the width the
+// column fit counts: wherever the three kept columns and the note fit, the
+// note is whole, and each further column appears only where the row has room
+// for it AND the note. The note is why a blocked row cannot be chosen; a fit
+// that left it out kept columns the row had no room for, and the list cut the
+// row inside the note.
+func TestModelTableCountsTheExceptionNote(t *testing.T) {
+	tbl := func() modelTable { return refusedTable(t) }
+	// The refused row with only the kept columns is 68 columns wide (prefix 4,
+	// a 36-column id, STATUS, "-" and the 17 columns of the note with its
+	// space), plus the picker's 4.
+	const keptFit = 72
+	for width := keptFit; width <= 160; width++ {
+		m := pickerOver(t, tbl(), width, 24)
+		if cut := tableCut(m); cut != "" {
+			t.Errorf("width %d (columns %q): %s is cut", width, shownColumns(m.models.Title), cut)
+		}
+		if !strings.Contains(m.View(), " (not in LiteLLM)") {
+			t.Errorf("width %d: view lacks the whole exception note", width)
+		}
+	}
+	// With the note counted, each column arrives later than the header alone
+	// would allow (FAMILY at 87, where the header fits from 73).
+	assertColumnBoundaries(t, tbl, []columnBoundary{
+		{keptFit, "MODEL STATUS RUNNING"},
+		{87, "FAMILY MODEL STATUS RUNNING"},
+		{94, "FAMILY MODEL LOC STATUS RUNNING"},
+		{119, "FAMILY MODEL LOC STATUS RUNNING COST"},
+		{123, "FAMILY MODEL LOC STATUS RUNNING COST 1D"},
+		{127, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D"},
+		{132, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D"},
+		{140, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
+	})
 }
 
 // TestModelTableUnchangedWhenItFits pins that at a width with room for
@@ -253,14 +427,17 @@ func TestStandalonePickerDropsColumnsToo(t *testing.T) {
 	pm := newPickModel(cfg, cfg.Models, themes.Default, false)
 	full := pm.list.Title
 
-	next, _ := pm.Update(tea.WindowSizeMsg{Width: 44, Height: 24})
+	// 45 is the narrowest terminal that holds the header with FAMILY: 42
+	// columns, and the 3 the list's title bar needs beyond it (this picker has
+	// no side padding).
+	next, _ := pm.Update(tea.WindowSizeMsg{Width: 45, Height: 24})
 	narrow := next.(pickModel)
 	if got := shownColumns(narrow.list.Title); got != "FAMILY MODEL STATUS RUNNING" {
-		t.Errorf("columns at 44 = %q, want survey, usage, cost and location dropped", got)
+		t.Errorf("columns at 45 = %q, want survey, usage, cost and location dropped", got)
 	}
-	assertFits(t, "standalone picker", narrow.View(), 44, 24)
-	if view := narrow.View(); !strings.Contains(view, "omlx/qwen3.8") || !strings.Contains(view, "RUNNING") || !strings.Contains(view, "run") {
-		t.Errorf("view at 44 = %q, want the model id and the running column", view)
+	assertFits(t, "standalone picker", narrow.View(), 45, 24)
+	if view := narrow.View(); !strings.Contains(view, "omlx/qwen3.8") || !strings.Contains(view, "RUNNING") || !strings.Contains(view, "run") || strings.Contains(view, "RUNNING…") {
+		t.Errorf("view at 45 = %q, want the model id and the running column, whole", view)
 	}
 
 	next, _ = narrow.Update(tea.WindowSizeMsg{Width: 160, Height: 24})

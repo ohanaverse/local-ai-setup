@@ -161,10 +161,18 @@ func styleTableTitle(l *list.Model, theme themes.Theme) {
 	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
 }
 
-// tableItemPad is the left padding the list's delegate puts before a row's
-// text (two columns, for the selected row's border and its padding); a row
-// may be as wide as the list minus that.
-const tableItemPad = 2
+// tableTitleRoom is how much wider than the table's header its list must be
+// for bubbles to draw that header whole. The list's title bar appends two
+// spaces to the title (the gap before a status message, there even when the
+// message is empty) and cuts the result, with an ellipsis, to the list's width
+// less the one column it reserves for its spinner. A header closer to the edge
+// than this loses the end of its last heading, or keeps it and gains a stray
+// "…" where the two spaces were cut.
+//
+// The rows need no such room. The delegate would keep a row clear of its
+// title styles' padding, but ThemedListDelegate's title styles have none, so a
+// row is drawn whole up to the list's full width.
+const tableTitleRoom = 3
 
 // fitTableColumns narrows or widens the table in l to a list of the given
 // width: it picks the columns that fit (tableColumns.fit) and sets the header
@@ -174,7 +182,7 @@ const tableItemPad = 2
 func fitTableColumns(l *list.Model, width int) {
 	for _, it := range l.Items() {
 		if mi, ok := it.(*modelItem); ok && mi.cols != nil {
-			mi.cols.fit(width - tableItemPad)
+			mi.cols.fit(width)
 			l.Title = mi.cols.header()
 			return
 		}

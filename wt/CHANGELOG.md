@@ -23,9 +23,9 @@
 - On a terminal too narrow for the whole model table, the model picker (and
   the picker `wt start` and `wt smoke` use) now drops whole columns —
   survey first, then usage (30D, 7D, 1D), cost, location and family — and
-  always keeps the model id, status and running columns. It used to let the
-  terminal cut the row mid-column, which on a long model id hid whether the
-  model was running. The filter still matches the dropped columns' text, and
+  always keeps the model id, status and running columns. The list used to cut
+  a row wider than itself wherever its own width fell, ending it in `…`,
+  which on a long model id hid whether the model was running. The filter still matches the dropped columns' text, and
   widening the terminal brings the columns back. Only when the three kept
   columns alone do not fit is a row cut at the edge.
 - Stopping an ollama model no longer removes its LiteLLM route: a pulled

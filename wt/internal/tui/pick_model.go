@@ -80,13 +80,13 @@ func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		// As the agent flow's picker does (layout.go): the widest list that
-		// draws within the terminal, the table columns that fit it, and the
-		// size told twice in case it changed the page count. The two spare
-		// lines leave room for the notice.
-		width, _ := listExtent(m.list, msg.Width)
+		// draws within the terminal — never narrower than one column, since
+		// bubbles is not given a zero or negative width — the table columns
+		// that fit it, and the size told until the list has settled on it
+		// (sizeList). The two spare lines leave room for the notice.
+		width, _ := listExtent(m.list, max(1, msg.Width))
 		fitTableColumns(&m.list, width)
-		m.list.SetSize(width, msg.Height-2)
-		m.list.SetSize(width, msg.Height-2)
+		sizeList(&m.list, width, msg.Height-2)
 		return m, nil
 	case tea.KeyMsg:
 		m.notice = ""

@@ -35,6 +35,17 @@ func resized(t *testing.T, m model, width, height int) model {
 	return next
 }
 
+// rowsConfig is modelTestConfig with as many more cloud models as it takes to
+// make the given number of rows.
+func rowsConfig(rows int) *config.Config {
+	cfg := modelTestConfig()
+	for i := len(cfg.Models); i < rows; i++ {
+		name := fmt.Sprintf("extra-%02d", i)
+		cfg.Models = append(cfg.Models, config.Model{ID: "claude/" + name, ProviderID: "claude", ModelName: name, Family: "extra", Tags: []string{"code"}})
+	}
+	return cfg
+}
+
 // rowsPicker is the model picker with the given number of rows in a terminal
 // of the given size: modelTestConfig's running local row and cloud row, plus
 // as many more cloud rows as it takes. The row count matters because a list
@@ -47,11 +58,7 @@ func rowsPicker(t *testing.T, rows, width, height int) model {
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	stubInventory(t, runningOmlxSnapshot())
-	cfg := modelTestConfig()
-	for i := len(cfg.Models); i < rows; i++ {
-		name := fmt.Sprintf("extra-%02d", i)
-		cfg.Models = append(cfg.Models, config.Model{ID: "claude/" + name, ProviderID: "claude", ModelName: name, Family: "extra", Tags: []string{"code"}})
-	}
+	cfg := rowsConfig(rows)
 	m := flowEnter(t, model{cfg: cfg, agent: "claude", selectedPath: t.TempDir(), width: width, height: height}, "claude")
 	if got := len(m.models.Items()); got != rows {
 		t.Fatalf("picker has %d rows, want %d", got, rows)
@@ -351,6 +358,110 @@ func TestModelPickerFitsWithFullHelpOpen(t *testing.T) {
 		if closed.models.Height() != m.models.Height() {
 			t.Errorf("height %d: list height after closing the help = %d, want %d back", height, closed.models.Height(), m.models.Height())
 		}
+	}
+}
+
+// helpKey is `?`, which bubbles' list handles itself: it opens or closes the
+// full help.
+var helpKey = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
+
+// tooTall collects the cases of a sweep whose view has more lines than the
+// terminal, and reports them as one failure with a few examples: a sweep that
+// goes wrong goes wrong in hundreds of cases at once.
+type tooTall struct {
+	count    int
+	examples []string
+}
+
+func (o *tooTall) check(name, view string, height int) {
+	if got := lipgloss.Height(view); got > height {
+		o.count++
+		if len(o.examples) < 6 {
+			o.examples = append(o.examples, fmt.Sprintf("%s: view is %d lines, want at most %d", name, got, height))
+		}
+	}
+}
+
+func (o *tooTall) report(t *testing.T, what string) {
+	t.Helper()
+	if o.count > 0 {
+		t.Errorf("%s: %d cases taller than the terminal, e.g.\n  %s", what, o.count, strings.Join(o.examples, "\n  "))
+	}
+}
+
+// TestModelPickerFitsWhenHelpTogglesInOneUpdate pins that `?` — one key, one
+// Update — leaves the picker within the terminal at once, for every row count
+// and height, with and without a status. bubbles' own `?` handler re-paginates
+// for the taller help without refreshing which keys are enabled, and the full
+// help is two lines taller once the next/previous-page keys are; so a list
+// that `?` tips from one page to several (12 rows in 24 lines) was sized
+// against the shorter help and drew two lines over. Those two lines came off
+// the top — the blank margin and the `agent :` line — and stayed off until the
+// next key. Closing the help is swept the same way. Each case also sizes once
+// more and expects nothing to move: a fit that only settles on the following
+// message is the bug.
+//
+// A terminal too short for the expanded help under the sparest layout (the
+// help's own lines plus a status) is not counted: there the list keeps its
+// least height and the view is over by design (fitList).
+func TestModelPickerFitsWhenHelpTogglesInOneUpdate(t *testing.T) {
+	// The reviewer's two reproductions, by name, before the sweep.
+	for _, tc := range []struct{ rows, height int }{{12, 24}, {11, 24}, {13, 24}, {4, 16}} {
+		m := rowsPicker(t, tc.rows, 80, tc.height)
+		if m.models.Paginator.TotalPages != 1 {
+			t.Fatalf("%d rows at height %d: %d pages before the help opens, want a single page", tc.rows, tc.height, m.models.Paginator.TotalPages)
+		}
+		open, _ := updateMsg(m, helpKey)
+		view := open.View()
+		assertFits(t, fmt.Sprintf("%d rows, help opened", tc.rows), view, 80, tc.height)
+		if !strings.Contains(view, "agent : not-a-real-agent") {
+			t.Errorf("%d rows at height %d: view lacks the agent line with the help open", tc.rows, tc.height)
+		}
+	}
+
+	var opened, closed tooTall
+	unsettled, unsettledExample := 0, ""
+	for rows := 2; rows <= 49; rows++ {
+		base := rowsPicker(t, rows, 80, 60)
+		for _, status := range []string{"", layoutStatus} {
+			for height := 12; height <= 60; height++ {
+				name := fmt.Sprintf("%d rows, height %d, status=%t", rows, height, status != "")
+				m := base
+				m.status = status
+				m = resized(t, m, 80, height)
+
+				open, _ := updateMsg(m, helpKey)
+				if !open.models.Help.ShowAll || open.status != status {
+					t.Fatalf("%s: full help shown = %t, status = %q; want the help open and the status kept", name, open.models.Help.ShowAll, open.status)
+				}
+				room := height
+				if status != "" {
+					room -= 2
+				}
+				if _, floor := listExtent(open.models, 76); floor <= room {
+					opened.check(name, open.View(), height)
+					// Sizing again must change nothing.
+					again := resized(t, open, 80, height)
+					if got, want := open.models.Paginator.PerPage, again.models.Paginator.PerPage; got != want {
+						unsettled++
+						if unsettled == 1 {
+							unsettledExample = fmt.Sprintf("%s: %d rows per page, %d once sized again", name, got, want)
+						}
+					}
+				}
+
+				shut, _ := updateMsg(open, helpKey)
+				closed.check(name, shut.View(), height)
+				if shut.models.Help.ShowAll {
+					t.Fatalf("%s: the full help did not close", name)
+				}
+			}
+		}
+	}
+	opened.report(t, "help opened in one Update")
+	closed.report(t, "help closed in one Update")
+	if unsettled > 0 {
+		t.Errorf("help opened in one Update: %d cases changed when sized again (the first fit had not settled), e.g. %s", unsettled, unsettledExample)
 	}
 }
 

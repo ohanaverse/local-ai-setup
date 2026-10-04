@@ -70,7 +70,8 @@ func clip(s string, width int) string {
 // Both are measured, by rendering a copy of the list squeezed to one line,
 // rather than kept as constants, because they follow the list's own state and
 // styles: a constant floor is wrong the moment the help is expanded. The copy
-// is sized twice for the reason fitTo gives.
+// is sized twice for the reason sizeList gives (two passes reach its fixed
+// point; the third there only confirms it).
 //
 // The search gives up after listWidthSlack columns: if the list is still too
 // wide by then (a terminal narrower than a single key binding), it is given
@@ -294,28 +295,54 @@ func (m *model) frameFor(l *list.Model, frames ...listFrame) (frame listFrame, w
 	return frame, width, height
 }
 
-// fitTo sizes l to the room its frame leaves. bubbles needs to be told twice
-// when the new size changes the number of pages: SetSize works out how many
-// rows fit from the height of the pagination line as it was BEFORE the call,
-// and that line is one row with a single page and two with several. A size
-// that tips the list from one page to two is therefore computed with one row
-// too many, and the list draws one line taller than it was told — which, in a
-// view that otherwise fits exactly, pushes the top line off the screen until
-// the next message. Sizing again, now that the page count is right, corrects
-// it. One repeat is always enough: the second pass uses the two-row line, and
-// fewer rows per page cannot bring the list back to a single page; going the
-// other way, from several pages to one, the first pass only errs on the small
-// side. The loop allows a third pass and stops as soon as the page count
-// holds still, so it cannot spin.
+// fitTo sizes l to the room its frame leaves.
 func (m *model) fitTo(l *list.Model, frames ...listFrame) {
 	_, width, height := m.frameFor(l, frames...)
 	// A model table shows the columns that fit this width; other lists have
 	// no table and are left alone.
 	fitTableColumns(l, width)
+	sizeList(l, width, height)
+}
+
+// sizeList tells l its size, as many times as it takes for l to draw itself
+// within it. bubbles' SetSize works out how many rows fit on a page from the
+// lines the list prints around them, and two of those are read as they were
+// BEFORE the call:
+//
+//   - the pagination line, one row with a single page and two with several,
+//     which follows the page count the previous sizing left;
+//   - the help, whose expanded form (`?`) is two rows taller once the
+//     next/previous-page keys are enabled. SetSize enables them only after it
+//     has counted the rows, and bubbles' own `?` handler re-paginates without
+//     touching them at all.
+//
+// So a size that tips the list from one page to several is computed with too
+// many rows per page, and the list draws one line taller than it was told —
+// two more when `?` is what tipped it, since the pass that corrects the
+// pagination line is the one that enables the page keys. In a view that
+// otherwise fits exactly, those lines push the top of the screen off until
+// the next message.
+//
+// Sizing again corrects it, and the loop stops at a fixed point: a pass that
+// leaves the page count, the rows per page and the page keys as it found them
+// read the same pagination line and help a further pass would, so a further
+// pass would change nothing. The page count alone is not enough to stop on —
+// `?` leaves it at two before the first pass and at two after it, with the
+// rows per page still wrong.
+//
+// Three passes always get there. The first leaves the page keys in step with
+// the page count, whatever state it started from. If it ended on several
+// pages, the second reads the two-row line and the taller help — the most
+// those ever take — so it fits no more rows than the first and stays on
+// several pages; if it ended on one page, the second reads the least they
+// take, fits no fewer rows and stays on one. Either way the second pass
+// counts its rows from the state it ends in, which is the fixed point, and
+// the third only observes that nothing moved.
+func sizeList(l *list.Model, width, height int) {
 	for pass := 0; pass < 3; pass++ {
-		pages := l.Paginator.TotalPages
+		pages, perPage, pageKeys := l.Paginator.TotalPages, l.Paginator.PerPage, l.KeyMap.NextPage.Enabled()
 		l.SetSize(width, height)
-		if l.Paginator.TotalPages == pages {
+		if l.Paginator.TotalPages == pages && l.Paginator.PerPage == perPage && l.KeyMap.NextPage.Enabled() == pageKeys {
 			break
 		}
 	}

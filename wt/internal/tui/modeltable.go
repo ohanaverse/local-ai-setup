@@ -61,26 +61,29 @@ type tableColumns struct {
 	shown [numCols]bool
 }
 
-// fit chooses the columns to show in a row of the given width (the row's own
-// text: prefix, columns and exception note, without the list's padding). It
-// starts from the whole table and gives up columns in colDropOrder until the
-// rest fits. If MODEL, STATUS and RUNNING alone are still too wide — a very
-// narrow terminal, or a very long model id — those three stay and the list
-// cuts the row at its right edge: that is the one case in which a row's
-// content is cut, and the model id is never abbreviated to avoid it.
+// fit chooses the columns to show in a list of the given width. It starts
+// from the whole table and gives up columns in colDropOrder until what is
+// left fits: every row (width) within the list's width, and the header with
+// tableTitleRoom to spare, which the list's title bar needs to draw it whole.
+// If MODEL, STATUS and RUNNING alone are still too wide — a very narrow
+// terminal, or a very long model id — those three stay and the list cuts the
+// line at its right edge, the header up to three columns before the rows:
+// that is the one case in which content is cut, and the model id is never
+// abbreviated to avoid it.
 func (c *tableColumns) fit(width int) {
 	for i := range c.shown {
 		c.shown[i] = true
 	}
 	for _, drop := range colDropOrder {
-		if c.width() <= width {
+		if c.width() <= width && utf8.RuneCountInString(c.header())+tableTitleRoom <= width {
 			return
 		}
 		c.shown[drop] = false
 	}
 }
 
-// width is the widest a row can be with the columns now shown.
+// width is the widest a row can be with the columns now shown: the prefix,
+// the columns at their full width, and the longest exception note.
 func (c *tableColumns) width() int {
 	w, n := rowPrefixWidth+c.tail, 0
 	for i, shown := range c.shown {

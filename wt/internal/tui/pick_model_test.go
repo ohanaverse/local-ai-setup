@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -314,5 +315,85 @@ func TestPickStartModelIgnoresLaunchRoutes(t *testing.T) {
 	plain := byID(newPickModel(cfg, models, themes.Default, false))
 	if it := plain["omlx/idle"]; it == nil || it.blocked == "" {
 		t.Errorf("plain PickModel omlx/idle: %+v, want blocked by the unresolvable route", it)
+	}
+}
+
+// rowsPickModel is the standalone picker with the given number of rows, before
+// the terminal has reported a size.
+func rowsPickModel(t *testing.T, rows int) pickModel {
+	t.Helper()
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, runningOmlxSnapshot())
+	cfg := rowsConfig(rows)
+	pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+	if got := len(pm.list.Items()); got != rows {
+		t.Fatalf("standalone picker has %d rows, want %d", got, rows)
+	}
+	return pm
+}
+
+// TestStandalonePickerFitsWithHelpOpenAndANotice pins that the picker
+// `wt start` and `wt smoke` use stays within the terminal when `?` opens the
+// full help and Enter on a blocked row then adds its one-line notice — for
+// every row count and height, and with the window size reported again while
+// the help is open. The expanded help can tip the list onto a second page, and
+// the pagination line that appears takes one of the two lines the picker keeps
+// spare; the notice needs the other. A view one line over loses the table's
+// header line off the top.
+//
+// A terminal too short for the expanded help itself is not counted: the list
+// keeps its least height there, as in the agent flow's picker.
+func TestStandalonePickerFitsWithHelpOpenAndANotice(t *testing.T) {
+	var helpOnly, withNotice, resizedOpen tooTall
+	for rows := 2; rows <= 49; rows++ {
+		base := rowsPickModel(t, rows)
+		// Enter on the highlighted row must show a notice, not select it.
+		base.list.SelectedItem().(*modelItem).blocked = "claude/opus cannot be started here"
+		for height := 12; height <= 60; height++ {
+			name := fmt.Sprintf("%d rows, height %d", rows, height)
+			size := tea.WindowSizeMsg{Width: 80, Height: height}
+			next, _ := base.Update(size)
+			next, _ = next.Update(helpKey)
+			open := next.(pickModel)
+			if !open.list.Help.ShowAll {
+				t.Fatalf("%s: the full help did not open", name)
+			}
+			if _, floor := listExtent(open.list, 80); floor > height-2 {
+				continue
+			}
+			helpOnly.check(name, open.View(), height)
+
+			enter := tea.KeyMsg{Type: tea.KeyEnter}
+			next, cmd := open.Update(enter)
+			noticed := next.(pickModel)
+			if cmd != nil || noticed.notice == "" {
+				t.Fatalf("%s: Enter on the blocked row: notice = %q cmd = %v, want a notice and no selection", name, noticed.notice, cmd)
+			}
+			withNotice.check(name, noticed.View(), height)
+
+			next, _ = open.Update(size)
+			next, _ = next.Update(enter)
+			resizedOpen.check(name, next.View(), height)
+		}
+	}
+	helpOnly.report(t, "standalone picker, help open")
+	withNotice.report(t, "standalone picker, help open and a notice showing")
+	resizedOpen.report(t, "standalone picker, help open, size reported again, and a notice showing")
+}
+
+// TestStandalonePickerNeverSizesItsListToNothing pins that a terminal
+// reporting no columns or no lines (some do, briefly, while a window is being
+// created) does not hand bubbles a width of zero: the agent flow's picker
+// floors the width at one for the same reason, and the two pickers size the
+// same table. The view must still render.
+func TestStandalonePickerNeverSizesItsListToNothing(t *testing.T) {
+	for _, size := range [][2]int{{0, 0}, {0, 24}, {80, 0}} {
+		next, _ := rowsPickModel(t, 3).Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		pm := next.(pickModel)
+		if pm.list.Width() < 1 {
+			t.Errorf("terminal %dx%d: list width = %d, want at least 1", size[0], size[1], pm.list.Width())
+		}
+		_ = pm.View() // must not panic
 	}
 }
