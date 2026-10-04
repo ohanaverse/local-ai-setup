@@ -727,6 +727,131 @@ func TestEnsureModelRouteBoundsTheLockWait(t *testing.T) {
 	}
 }
 
+// TestTryEnsureModelRouteDoesNotWaitForTheLock pins the launch-time check's
+// non-blocking form against a lock another wt is genuinely holding: it reports
+// that it got nowhere, promptly, and writes nothing. This is what keeps the TUI
+// picker's update goroutine — the one that repaints the screen and answers keys
+// — from freezing for ensureRouteLockTimeout before its routing screen has been
+// entered (#192 review). A regression here does not fail an assertion, it hangs
+// the picker with ctrl+c dead, so the guard below is the test.
+func TestTryEnsureModelRouteDoesNotWaitForTheLock(t *testing.T) {
+	cfgPath, restarts, warn := realRoutes(t, "model_list: []\n")
+	cfg := routesCfg()
+	mdl := config.Model{ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal}
+
+	// Hold the lock the way another wt mid-write would. flock conflicts between
+	// two open file descriptions, this process's included, so a plain goroutine
+	// with its own WithLock is enough to contend.
+	release := make(chan struct{})
+	holding, held := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(held)
+		_ = litellm.WithLock(context.Background(), cfgPath, func() error {
+			close(holding)
+			<-release
+			return nil
+		})
+	}()
+	<-holding
+
+	var changed, done bool
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		changed, done = TryEnsureModelRoute(cfg, mdl)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		// Unblock the holder so the check can finish writing before the test
+		// ends; the assertions are moot on a failure path that already fataled.
+		close(release)
+		<-held
+		<-returned
+		t.Fatal("TryEnsureModelRoute waited for a held config.yaml lock: the picker would freeze")
+	}
+	close(release)
+	<-held
+	WaitPendingRoutes()
+
+	if done {
+		t.Error("done = true, want false: nothing was established while the lock was held")
+	}
+	if changed {
+		t.Error("changed = true, want false: nothing was written")
+	}
+	if warn.String() != "" {
+		t.Errorf("output = %q, want none: a contended lock is not a warning, the retry reports", warn.String())
+	}
+	if got := routedIDs(t, cfgPath); len(got) != 0 {
+		t.Errorf("routed = %v, want none: the check wrote config.yaml while another wt held it", got)
+	}
+	if got := restarts(); got != 0 {
+		t.Errorf("restarts = %d, want 0: nothing changed, so no proxy bounce", got)
+	}
+}
+
+// TestTryEnsureModelRouteRoutesWhenTheLockIsFree pins the other side of the same
+// form: a free lock is still taken, so the common launch — the route already
+// present — is decided here, on the update goroutine, in one non-blocking call.
+// WithLock only runs its first flock before it consults a deadline, and that is
+// what an already-cancelled context relies on; a form that turned contention
+// into "never write" would push every launch of a running model onto the retry
+// path and its routing screen.
+func TestTryEnsureModelRouteRoutesWhenTheLockIsFree(t *testing.T) {
+	cfgPath, restarts, warn := realRoutes(t, "model_list: []\n")
+
+	changed, done := TryEnsureModelRoute(routesCfg(), config.Model{
+		ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal,
+	})
+	WaitPendingRoutes()
+
+	if !done || !changed {
+		t.Fatalf("changed = %v done = %v, want both true with the lock free", changed, done)
+	}
+	if got := routedIDs(t, cfgPath); !slices.Contains(got, "mtplx/Y--Q35") {
+		t.Errorf("routed = %v, want mtplx/Y--Q35", got)
+	}
+	if want := "wt: LiteLLM route for mtplx/Y--Q35 updated\n"; warn.String() != want {
+		t.Errorf("output = %q, want %q", warn.String(), want)
+	}
+	// The write itself changed the file, so the proxy must have bounced: this
+	// form bounces exactly as the blocking one does, it just does not wait.
+	if got := restarts(); got != 1 {
+		t.Errorf("restarts = %d, want 1", got)
+	}
+}
+
+// TestTryEnsureModelRouteGivesTheWriteNoTimeToWait pins the mechanism at the
+// seam it lives at: the non-blocking form hands ApplyChange a context that is
+// already done, so WithLock cannot poll (lockPollInterval) its way up to a
+// deadline. It is deliberately not "a short wait" — a 50ms budget would pass
+// every behavioural test here and still put a stall on the update goroutine.
+func TestTryEnsureModelRouteGivesTheWriteNoTimeToWait(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	inner := applyRoutes
+	var ctxErr error
+	var hadDeadline bool
+	applyRoutes = func(cfg *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
+		if o.Ctx != nil {
+			ctxErr = o.Ctx.Err()
+			_, hadDeadline = o.Ctx.Deadline()
+		}
+		return inner(cfg, ch, o)
+	}
+	TryEnsureModelRoute(routesCfg(), config.Model{
+		ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal,
+	})
+	WaitPendingRoutes()
+
+	if ctxErr == nil {
+		t.Error("the route write got a live context: WithLock would poll for the lock up to its caller's deadline")
+	}
+	if hadDeadline {
+		t.Error("the route write got a deadline, want none: a deadline is a wait, however short")
+	}
+}
+
 // TestSetRouteOutputRedirectsAndRestores pins the redirect the TUI picker
 // relies on (#192): while it is in place the "updated" line goes to the
 // caller's writer and not to the previous one, and after restore the previous

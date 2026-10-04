@@ -36,6 +36,11 @@ var waitPendingRoutes = lifecycle.WaitPendingRoutes
 // rewrites config.yaml and restarts the LiteLLM proxy; TestMain stubs it.
 var ensureModelRoute = lifecycle.EnsureModelRoute
 
+// tryEnsureModelRoute is a test seam over lifecycle.TryEnsureModelRoute, the
+// launch-time check's first, non-blocking attempt. See checkLaunchRoute for why
+// the check needs two forms and why this one runs on the update goroutine.
+var tryEnsureModelRoute = lifecycle.TryEnsureModelRoute
+
 // setRouteOutput is a test seam over lifecycle.SetRouteOutput. Production
 // redirects the process-wide route output (the "updated" line and every route
 // warning) away from stderr, which Bubble Tea's alt screen hides; TestMain
@@ -50,12 +55,13 @@ type routingState struct {
 	id      int
 	modelID string
 	began   time.Time
-	// settle waits for the proxy restart, puts the route output back and
-	// returns what was captured. It runs at most once however many callers
-	// there are, and every caller gets the same text: the routing command
-	// calls it, and so does Run() when the user quit before that command's
-	// message was handled — otherwise the captured lines would be dropped and
-	// the redirect left in place.
+	// settle finishes the check: it re-runs the route write if the first,
+	// non-blocking attempt could not take the config.yaml lock, waits for the
+	// proxy restart, puts the route output back and returns what was captured.
+	// It runs at most once however many callers there are, and every caller
+	// gets the same text: the routing command calls it, and so does Run() when
+	// the user quit before that command's message was handled — otherwise the
+	// captured lines would be dropped and the redirect left in place.
 	settle func() string
 	// settled reports whether settle has finished, so Run() can tell a check
 	// it still has to wait for from one that is merely unhandled. It is read
@@ -89,30 +95,42 @@ func routeTick(id int) tea.Cmd {
 // running: this never starts a model. The caller has already established that
 // the launch goes through LiteLLM.
 //
-// The write itself is synchronous: it is a fast locked read of config.yaml
-// (plus a write when the route is missing) and does not wait for the proxy.
-// What follows depends on whether it changed the file:
+// The check runs on the update goroutine, so it must not wait: it takes the
+// config.yaml lock only if it is free right now (TryEnsureModelRoute), and a
+// lock another wt holds is handed to the returned command, behind phaseRouting.
+// EnsureModelRoute would instead block this goroutine for up to
+// ensureRouteLockTimeout (10s) — frozen with no repaint and no key, ctrl+c
+// included, and *before* the routing screen had been entered, so the one screen
+// built to cover a route wait would be the one thing the wait prevented.
 //
-//   - Unchanged: nothing was restarted, so there is nothing to wait for and the
-//     launch continues in this same Update — no routing screen, not for a frame.
-//   - Changed: the proxy is restarting, which takes 10–20 s. Waiting for it
-//     here would freeze the picker with no status, so the model enters
-//     phaseRouting and the wait runs in the returned command.
+// What follows depends on what that first attempt could establish:
+//
+//   - Free lock, nothing written: nothing was restarted, so there is nothing to
+//     wait for and the launch continues in this same Update — no routing
+//     screen, not for a frame.
+//   - Free lock, route written: the proxy is restarting, which takes 10–20 s.
+//     Waiting for it here would freeze the picker with no status, so the model
+//     enters phaseRouting and the wait runs in the returned command.
+//   - Contended lock: nothing was written and nothing is yet known, so the
+//     command re-runs the whole check with the wait it is allowed to pay there,
+//     then waits for the restart that check may start.
 //
 // Everything the check prints is captured rather than written to stderr, where
 // the alt screen would hide it; recordRouteNotes keeps it for the real
 // terminal. The redirect therefore has to come back off on both paths: at once
-// when nothing changed, and only after the wait when something did, so that
-// the restart's own warnings are captured too.
+// when the check finished and nothing changed, and only after the wait
+// otherwise, so that the restart's own warnings are captured too.
 //
-// The three seams are read HERE, on the update goroutine, and the command
+// The seams and m.cfg are read HERE, on the update goroutine, and the command
 // closes over the values, so a test's seam swap cannot race the command — the
 // same reason runStart reads startModel before starting its goroutine.
 func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
-	ensure, wait := ensureModelRoute, waitPendingRoutes
+	try, ensure, wait := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes
+	cfg := m.cfg
 	var captured bytes.Buffer
 	restore := setRouteOutput(&captured)
-	if !ensure(m.cfg, mdl) {
+	changed, done := try(cfg, mdl)
+	if done && !changed {
 		restore()
 		m.recordRouteNotes(captured.String())
 		return m.launchSelected()
@@ -122,6 +140,15 @@ func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
 	settled := &atomic.Bool{}
 	settle := func() string {
 		once.Do(func() {
+			if !done {
+				// The lock was held, so the check above wrote nothing and got
+				// no further than that. Run it again, this time willing to wait
+				// for the lock: a retry that still fails reports itself, and
+				// until it has run, whether the proxy is about to restart is
+				// simply unknown — which is why this path is behind the screen
+				// even though it may end up changing nothing.
+				ensure(cfg, mdl)
+			}
 			wait()
 			// Only now: restoring before the wait would send the restart's
 			// warnings to stderr, under the alt screen.

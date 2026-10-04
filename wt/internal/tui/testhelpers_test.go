@@ -83,7 +83,10 @@ func TestMain(m *testing.M) {
 	}
 	// The launch-time route check (#192): unstubbed, a test that launches a
 	// running local model through LiteLLM would rewrite the developer's real
-	// config.yaml and restart their proxy.
+	// config.yaml and restart their proxy. Both forms are stubbed — the
+	// non-blocking first attempt reports "done, nothing changed", which is the
+	// launch-in-this-same-Update path.
+	tryEnsureModelRoute = func(*config.Config, config.Model) (bool, bool) { return false, true }
 	ensureModelRoute = func(*config.Config, config.Model) bool { return false }
 	// The check redirects lifecycle's process-wide route writer while it runs.
 	// Unstubbed, every test that launches through LiteLLM would swap the real
@@ -154,9 +157,14 @@ func selectedModelID(m model) string {
 // routeStub is what stubEnsureRoute hands a test: the knobs that script the
 // launch-time route check and the record of what the flow did with it.
 type routeStub struct {
-	// changed is what the stubbed ensureModelRoute reports: true (the default)
-	// means "the route was missing and was written", so the proxy restarts.
+	// changed is what the stubbed check reports: true (the default) means "the
+	// route was missing and was written", so the proxy restarts.
 	changed bool
+	// busy makes the non-blocking first attempt (tryEnsureModelRoute) report
+	// that it got nowhere — a config.yaml lock another wt holds. The flow then
+	// owes a retry through the blocking form, which is what a test sees as a
+	// second "ensure:<id>" event before the wait.
+	busy bool
 	// ensureOutput is written into the redirected route writer by the stubbed
 	// ensureModelRoute, the way lifecycle prints the "updated" line during the
 	// synchronous write; waitOutput is written by the stubbed
@@ -181,22 +189,38 @@ type routeStub struct {
 	out io.Writer // the writer the flow handed setRouteOutput; nil when not redirected
 }
 
-// stubEnsureRoute swaps the three launch-time route check seams
-// (ensureModelRoute, waitPendingRoutes, setRouteOutput) for recording fakes
-// scripted by the returned routeStub. Nothing real is touched: no config.yaml,
-// no proxy, and not the process's route writer. All three seams are restored on
-// cleanup. The fakes take no lock: a test either runs the routing command
-// itself, on the test goroutine, or (with waitEntered/waitRelease) reads the
-// stub only after every goroutine that settles the check has finished — settle
-// is once-only, so the fakes still run on one goroutine at a time.
+// stubEnsureRoute swaps the four launch-time route check seams
+// (tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes, setRouteOutput)
+// for recording fakes scripted by the returned routeStub. Nothing real is
+// touched: no config.yaml, no proxy, and not the process's route writer. All
+// four seams are restored on cleanup. The fakes take no lock: a test either
+// runs the routing command itself, on the test goroutine, or (with
+// waitEntered/waitRelease) reads the stub only after every goroutine that
+// settles the check has finished — settle is once-only, so the fakes still run
+// on one goroutine at a time.
+//
+// Both forms of the check record the same "ensure:<id>" event: they are one
+// check, once blocking and once not, and a test asserting on the flow reads
+// better when it says "the check ran" either way. A retry therefore shows up as
+// the event twice (s.busy), which is the only way the blocking form is reached
+// from the launch flow at all.
 func stubEnsureRoute(t *testing.T) *routeStub {
 	t.Helper()
 	s := &routeStub{changed: true}
-	oldEnsure, oldWait, oldOut := ensureModelRoute, waitPendingRoutes, setRouteOutput
+	oldTry, oldEnsure, oldWait, oldOut := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes, setRouteOutput
 	write := func(text string) {
 		if s.out != nil && text != "" {
 			_, _ = io.WriteString(s.out, text)
 		}
+	}
+	tryEnsureModelRoute = func(_ *config.Config, m config.Model) (bool, bool) {
+		s.events = append(s.events, "ensure:"+m.ID)
+		if s.busy {
+			// The lock was held: nothing written, nothing known, nothing said.
+			return false, false
+		}
+		write(s.ensureOutput)
+		return s.changed, true
 	}
 	ensureModelRoute = func(_ *config.Config, m config.Model) bool {
 		s.events = append(s.events, "ensure:"+m.ID)
@@ -219,7 +243,9 @@ func stubEnsureRoute(t *testing.T) *routeStub {
 			s.out = nil
 		}
 	}
-	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes, setRouteOutput = oldEnsure, oldWait, oldOut })
+	t.Cleanup(func() {
+		tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes, setRouteOutput = oldTry, oldEnsure, oldWait, oldOut
+	})
 	return s
 }
 

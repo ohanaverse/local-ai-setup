@@ -964,6 +964,51 @@ func TestLaunchOfRunningLocalRowEnsuresRoute(t *testing.T) {
 	}
 }
 
+// TestLaunchRouteCheckYieldsTheLockInsteadOfWaiting pins the picker's half of
+// #192's freeze fix. When the check cannot take the config.yaml lock at once —
+// another wt is mid-write — the update goroutine hands the whole thing to the
+// routing command instead of waiting for it, so the screen keeps repainting and
+// ctrl+c still works; the command retries the check with the lock wait it is
+// allowed to pay there, then waits for the restart that retry may start. The
+// retry is what shows up as a second "ensure:" event, and the routing screen is
+// entered even though whether the proxy will restart is not yet known.
+func TestLaunchRouteCheckYieldsTheLockInsteadOfWaiting(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.busy = true
+	stubRouteNotes(t)
+
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if routing.phase != phaseRouting {
+		t.Fatalf("phase = %v, want phaseRouting", routing.phase)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q, want only the non-blocking attempt: no wait, and no retry yet", got)
+	}
+	if cmd == nil {
+		t.Fatal("no command returned: nothing would retry the check or end the routing phase")
+	}
+	if len(stub.restoredAt) != 0 {
+		t.Fatalf("route output restored at %v, want it still redirected until the retry has run", stub.restoredAt)
+	}
+
+	next, _ := updateMsg(routing, routeDoneFrom(t, cmd))
+
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want the check retried once behind the screen, then the wait", got)
+	}
+	if next.phase == phaseRouting || next.routing != nil {
+		t.Fatalf("phase = %v routing = %+v, want the routing phase left behind", next.phase, next.routing)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted after the retry", next.status)
+	}
+	if stub.redirects != 1 || len(stub.restoredAt) != 1 {
+		t.Fatalf("redirects = %d restoredAt = %q, want one redirect restored once", stub.redirects, stub.restoredAt)
+	}
+}
+
 // TestRoutingCommandWaitsThenLaunches pins the second half: the command waits
 // for the proxy, and only its message launches the agent. Launching without
 // that wait hands the agent a proxy that is mid-restart (refused connection)

@@ -202,7 +202,14 @@ func routeModel(cfg *config.Config, t Target) config.Model {
 // says so in one line when it did. The proxy restart that a change triggers is
 // asynchronous — a caller about to use the proxy owes WaitPendingRoutes().
 func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
-	ch := litellm.Change{Add: StartRouteChange(cfg, t).Add}
+	return ensureChange(ctx, cfg, litellm.Change{Add: StartRouteChange(cfg, t).Add})
+}
+
+// ensureChange is EnsureRoute's body for a change already built: it writes it,
+// reports whether config.yaml changed, and says so in one line when it did.
+// One change builder serving every launch-time check is what keeps a model from
+// being routed under one id by one caller and another id by the next.
+func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bool {
 	changed := applyAndReport(ctx, cfg, ch, restartIfChanged)
 	if changed {
 		routePrintf("wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
@@ -210,19 +217,69 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
 	return changed
 }
 
-// EnsureModelRoute is EnsureRoute for a launch row's model, the form the
-// launch paths call. It skips a model that is not local — a cloud route is
-// sync's business, and a model whose location cannot be resolved is not one
-// wt can route — and bounds the config.yaml lock wait so a launch cannot hang
-// behind another wt process. The caller must only pass a model the probe
-// reported running.
-func EnsureModelRoute(cfg *config.Config, m config.Model) bool {
+// modelRouteChange is the route change a launch row's model needs, and whether
+// the launch-time check applies to it at all: only a local model is wt's to
+// route — a cloud route is sync's business, and a model whose location cannot
+// be resolved is not one wt can route. The row's id travels with it, so
+// StartRouteChange resolves the model by id (see routeModel).
+func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool) {
 	if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+		return litellm.Change{}, false
+	}
+	t := Target{ProviderID: m.ProviderID, ModelName: m.ModelName, ModelID: m.ID}
+	return litellm.Change{Add: StartRouteChange(cfg, t).Add}, true
+}
+
+// EnsureModelRoute is EnsureRoute for a launch row's model, the form the
+// launch paths call. It skips a model that is not local (modelRouteChange) and
+// bounds the config.yaml lock wait so a launch cannot hang behind another wt
+// process. The caller must only pass a model the probe reported running.
+func EnsureModelRoute(cfg *config.Config, m config.Model) bool {
+	ch, ok := modelRouteChange(cfg, m)
+	if !ok {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ensureRouteLockTimeout)
 	defer cancel()
-	return EnsureRoute(ctx, cfg, Target{ProviderID: m.ProviderID, ModelName: m.ModelName, ModelID: m.ID})
+	return ensureChange(ctx, cfg, ch)
+}
+
+// TryEnsureModelRoute is EnsureModelRoute for a caller that cannot stop what it
+// is doing — the TUI picker, whose update goroutine is also the one that
+// repaints the screen and answers keys. EnsureModelRoute bounds its lock wait
+// at ensureRouteLockTimeout (10s), which is a long time for a goroutine that
+// cannot redraw: the picker would freeze, ctrl+c included, and it would do so
+// *before* its routing phase had been entered, so the one screen built to cover
+// a route wait would be the one thing the wait prevented (#192 review).
+//
+// So this form never waits. It attempts the config.yaml lock exactly once:
+// WithLock runs its first flock before it consults a deadline, and the
+// already-cancelled context below is what a contended lock hits, so a free lock
+// is still taken and a held one returns at once rather than polling
+// (lockPollInterval) up to a deadline.
+//
+// done reports whether the check finished at all: changed says whether
+// config.yaml was written, and is only meaningful when done is true. done ==
+// false means the check got nowhere — most often another wt holds the lock
+// mid-write, but any failure to read or write config.yaml lands here too — and
+// the caller owes a retry through EnsureModelRoute, where waiting is
+// affordable, before it uses the proxy. That path prints nothing: the retry
+// reports, since a contended lock is not itself a warning.
+func TryEnsureModelRoute(cfg *config.Config, m config.Model) (changed, done bool) {
+	ch, ok := modelRouteChange(cfg, m)
+	if !ok {
+		return false, true // not wt's to route: nothing to retry, nothing to say
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	changed, err := applyReported(ctx, cfg, ch, restartIfChanged)
+	if err != nil {
+		return false, false
+	}
+	if changed {
+		routePrintf("wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
+	}
+	return changed, true
 }
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model
@@ -305,9 +362,28 @@ func bounceRoutes(ctx context.Context, cfg *config.Config) {
 // (see WaitPendingRoutes) because the agent they hand off to dials the model
 // through the proxy.
 func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
+	changed, err := applyReported(ctx, cfg, ch, mode)
+	if err != nil {
+		routePrintf("wt: LiteLLM route not updated: %v\n", err)
+	}
+	return changed
+}
+
+// applyReported is applyAndReport without the not-updated line: it returns the
+// failure instead of printing it, so a caller bound by its own deadline can
+// tell "the config.yaml lock is held" from "the write failed" and decide where
+// to say so. A contended lock is not a warning — TryEnsureModelRoute hands it
+// to a retry that can afford to wait (see EnsureModelRoute), and only that
+// retry, or applyAndReport, reports.
+//
+// Everything else is applyAndReport's: ErrMissing is silent (no config.yaml =
+// LiteLLM not set up), a restartForced mode settles the earlier deferred write
+// even when this one failed (or the proxy keeps serving the dead occupant's
+// route), and the restart itself runs asynchronously.
+func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) (bool, error) {
 	res, err := applyRoutes(cfg, ch, litellm.Options{
-		// The restart is always deferred here: applyAndReport itself decides
-		// whether to restart, and runs that restart asynchronously, below.
+		// The restart is always deferred here: the caller decides whether to
+		// restart, and runs that restart asynchronously, below.
 		// ForceRestart is deliberately not passed — ApplyChange restarts on it even
 		// with NoRestart set, which would put the bounce back on this path.
 		NoRestart: true,
@@ -316,9 +392,6 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 		Ctx: ctx,
 	})
 	if err != nil {
-		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
-			routePrintf("wt: LiteLLM route not updated: %v\n", err)
-		}
 		// This write failed, but restartForced means an earlier deferred
 		// write (the replaced occupant's route removal) is already in
 		// config.yaml and still owes its restart: settle it, or the proxy
@@ -326,7 +399,10 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 		if mode == restartForced {
 			bounceProxyAsync(ctx, cfg)
 		}
-		return false
+		if errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
+			return false, nil
+		}
+		return false, err
 	}
 	for _, o := range res.Outcomes {
 		if o.Err != nil {
@@ -336,11 +412,10 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 	// res.Warnings is only ever populated by ApplyChange's restart hook, which
 	// NoRestart disables; the restart's own warnings are reported below.
 	restart := (res.Changed && mode != restartDeferred) || mode == restartForced
-	if !restart {
-		return res.Changed
+	if restart {
+		bounceProxyAsync(ctx, cfg)
 	}
-	bounceProxyAsync(ctx, cfg)
-	return res.Changed
+	return res.Changed, nil
 }
 
 // bounceProxyAsync restarts the LiteLLM proxy — and, when one was listening,
