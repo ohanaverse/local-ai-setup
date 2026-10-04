@@ -1117,10 +1117,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         scan already verified the artifact's identity, and for omlx in
         particular the reported name is a bare directory basename with
         no HF org segment, which parse_model() would reject outright.
-        Id/repo derivation mirrors local_control.py's
-        _register_discovered_model exactly, so a model registered from
-        the TUI resolves identically to one registered via `modelman
-        start <name>`.
+        The id spells a "/" in the reported name as "--"; fetch.repo is the
+        reported name, so omlx (which derives its on-disk path from
+        fetch.repo) can find the artifact again.
         """
         assert self._discovered is not None
         discovered = self._discovered

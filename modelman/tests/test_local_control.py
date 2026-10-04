@@ -12,14 +12,16 @@ import pytest
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     DiscoveredModel,
-    DiscoveredModelNeedsFamily,
     InventoryEntry,
     LocalControlError,
+    _discovered_entry,
     _name_matches,
+    _ollama_name_matches,
     _probe_running,
     discover_unregistered_models,
     inventory_local_models,
     running_model_ids,
+    same_provider_occupant,
     start_local_model,
     stop_all_local_models,
     stop_local_model,
@@ -31,7 +33,6 @@ from modelman.registry import (
     ProviderEntry,
     Registry,
     load_registry,
-    locked_registry,
     save_registry,
 )
 from modelman.state import ModelState, StateStore, load_state, locked_state, save_state
@@ -1102,43 +1103,17 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
     )
 
 
-def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
-    # A bare provider-native name matching an on-disk, unregistered artifact
-    # can't be auto-registered without a family — this is the interactive
-    # prompt path the CLI's `start` command catches and retries. Also
-    # verifies the failure has no side effects: nothing is written before
-    # the family is known.
+def test_start_discovered_artifact_runs_without_registering(tmp_path, wt_calls):
+    # #179 Phase B: an on-disk artifact with no registry.toml entry is started
+    # as-is — no family prompt, no registry entry, no ready flag — and the
+    # start's single `wt litellm sync` is what routes it, under the id wt's
+    # catalog gives it (<family>/<native name>). The running flag lives
+    # under that same id so `modelman stop` can find it. Typing wt's id works
+    # as well as the bare native name.
     registry = _registry()
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
-    mapping = {
-        "ollama": [
-            {"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}
-        ]
-    }
-    with (
-        _patch_provider_local_models(mapping),
-        pytest.raises(DiscoveredModelNeedsFamily) as excinfo,
-    ):
-        start_local_model(registry, "llama3.2:3b", registry_path=registry_path)
-    assert excinfo.value.provider_id == "ollama"
-    assert excinfo.value.variant_id == "llama3.2:3b"
-    # No side effects: nothing is written and nothing is started when the
-    # call can't proceed without a family.
-    assert load_registry(registry_path).models == registry.models
-
-
-def test_start_unregistered_name_with_family_registers_and_starts(tmp_path, wt_calls):
-    # The full discover -> register -> start -> sync pipeline for a
-    # provider-native name with no registry.toml entry: this is the
-    # single most consequential path this branch adds, so it asserts on
-    # every artifact it should produce — the registry.toml entry (family/
-    # provider/name/source/location), the in-memory registry the caller
-    # keeps using for the rest of the call, the ready+sized state, the
-    # running marker, and exactly one route sync.
-    registry = _registry()
-    registry_path = tmp_path / "registry.toml"
-    save_registry(registry, registry_path)
+    before = registry_path.read_text()
     state_path = _state_path(tmp_path)
     mapping = {
         "ollama": [
@@ -1146,84 +1121,30 @@ def test_start_unregistered_name_with_family_registers_and_starts(tmp_path, wt_c
         ]
     }
 
-    with (
-        _patch_provider_local_models(mapping),
-        patch("modelman.local_control.stop_all_local_providers") as mock_stop,
-        patch("modelman.local_control.isolate_provider") as mock_isolate,
-    ):
-        mock_isolate.return_value = IsolateResult(
-            provider="ollama",
-            model="llama3.2:3b",
-            direct_url="http://localhost:11434/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
-        result = start_local_model(
-            registry,
-            "llama3.2:3b",
-            state_path,
-            family="discovered",
-            registry_path=registry_path,
-        )
+    for typed in ("llama3.2:3b", "ollama/llama3.2:3b"):
+        with (
+            _patch_provider_local_models(mapping),
+            patch("modelman.local_control.isolate_provider") as mock_isolate,
+        ):
+            result = start_local_model(registry, typed, state_path)
+        mock_isolate.assert_not_called()  # ollama is flag-only
+        assert result.model_id == "ollama/llama3.2:3b"
 
-    mock_stop.assert_not_called()  # ollama is flag-only, never stop-all'd on start
-    mock_isolate.assert_not_called()
-    assert result.already_running is False
-    assert result.model_id == "ollama/llama3.2:3b"
-
-    on_disk = load_registry(registry_path)
-    entry = on_disk.model("ollama/llama3.2:3b")
-    assert entry.family == "discovered"
-    assert entry.provider_id == "ollama"
-    assert entry.model_name == "llama3.2:3b"
-    assert entry.source == "discovered"
-    assert entry.location == "local"
-    # The in-memory registry the caller passed in must reflect the write too
-    # (start_local_model keeps using it for the rest of this call, and a CLI
-    # process only has this one in-memory copy for the whole invocation).
-    assert registry.model("ollama/llama3.2:3b") == entry
-
-    state_on_disk = load_state(state_path)
-    model_state = state_on_disk.get("ollama/llama3.2:3b")
-    assert model_state.ready is True
-    assert model_state.size_bytes == 2_000_000_000
-    assert load_state(state_path).get("ollama/llama3.2:3b").running is True
-    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
-    assert not [c for c in wt_calls if c[:1] in (["expose"], ["unexpose"])]
+    assert registry_path.read_text() == before
+    assert [m.id for m in registry.models] == [m.id for m in _registry().models]
+    model_state = load_state(state_path).get("ollama/llama3.2:3b")
+    assert model_state.running is True
+    assert model_state.ready is False
+    # One sync per start: the second start found the flag and probed it, and
+    # the idempotent path re-syncs too.
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]] * 2
 
 
-def test_start_unregistered_name_registry_write_failure_raises_local_control_error(tmp_path):
-    # A registry.toml write failure while registering a discovered model
-    # (full disk, read-only filesystem) must surface as a clean
-    # LocalControlError the CLI already knows how to print, not an unguarded
-    # OSError/traceback — mirrors the OSError handling main.py's `sync`
-    # command already applies around its own registry/state saves.
-    registry = _registry()
-    registry_path = tmp_path / "registry.toml"
-    save_registry(registry, registry_path)
-    mapping = {
-        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
-    }
-
-    with (
-        _patch_provider_local_models(mapping),
-        patch("modelman.local_control.locked_registry", side_effect=OSError("disk full")),
-        pytest.raises(LocalControlError, match="failed to register"),
-    ):
-        start_local_model(registry, "llama3.2:3b", family="discovered", registry_path=registry_path)
-
-
-def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_path):
-    # Regression test for a bug this branch's review found: auto-registering
-    # a discovered omlx artifact without ModelEntry.fetch left OMLXProvider
-    # unable to re-derive the artifact's on-disk directory afterward
-    # (_target_dir() only reads variant['repo']/['local_path'], both sourced
-    # from fetch, never the model name) — the model modelman just started
-    # and registered would show up as "not downloaded" on the very next
-    # `modelman start` inventory. Uses the real OMLXProvider (like the
-    # omlx join-mismatch tests below) rather than the name-keyed
-    # _patch_provider_local_models stub, since the stub can't reproduce a
-    # bug that only exists in OMLXProvider's own path derivation.
+def test_start_discovered_omlx_artifact_drives_the_provider_by_its_name(tmp_path):
+    # The unsaved entry must carry enough for the provider to start the
+    # artifact: omlx gets the on-disk name through its model env var, using
+    # the real OMLXProvider listing (not the name-keyed stub) because omlx's
+    # artifact names are directory basenames. registry.toml stays untouched.
     model_dir = _omlx_model_dir(tmp_path, basename="Qwen3.8-27B-4bit")
     registry = Registry(
         providers=[
@@ -1239,11 +1160,8 @@ def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_pa
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
     state_path = _state_path(tmp_path)
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text("model_list: []\n")
 
     with (
-        patch("modelman.local_control.stop_all_local_providers"),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control._probe_running", return_value=False),
     ):
@@ -1254,27 +1172,20 @@ def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_pa
             ok=True,
             error=None,
         )
-        start_local_model(
-            registry,
-            "Qwen3.8-27B-4bit",
-            state_path,
-            family="qwen3.8",
-            registry_path=registry_path,
-            litellm_path=litellm_path,
-        )
+        result = start_local_model(registry, "Qwen3.8-27B-4bit", state_path)
 
-    inventory = inventory_local_models(load_registry(registry_path), load_state(state_path))
-    assert inventory.downloaded == [
-        InventoryEntry(model_id="omlx/Qwen3.8-27B-4bit", running=False, size_bytes=2048)
-    ]
-    assert inventory.not_downloaded == []
+    assert result.model_id == "omlx/Qwen3.8-27B-4bit"
+    mock_isolate.assert_called_once_with(
+        "omlx", env={"LLM_ISOLATE_OMLX_4BIT_MODEL": "Qwen3.8-27B-4bit"}, solo=True
+    )
+    assert load_registry(registry_path).models == []
+    assert load_state(state_path).get("omlx/Qwen3.8-27B-4bit").running is True
 
 
 def test_start_unregistered_name_ambiguous_across_providers_raises(tmp_path):
     # A discovered name matching on-disk artifacts from two different
-    # providers is genuinely ambiguous — auto-registering either one would
-    # silently guess wrong, so this must raise and require the user to
-    # register manually instead.
+    # providers is genuinely ambiguous — starting either one would silently
+    # guess wrong, so this must raise and ask for the full <family>/<name>.
     registry = _registry()
     registry.providers.append(
         ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
@@ -1287,17 +1198,19 @@ def test_start_unregistered_name_ambiguous_across_providers_raises(tmp_path):
     }
     with (
         _patch_provider_local_models(mapping),
-        pytest.raises(LocalControlError, match="multiple providers"),
+        pytest.raises(LocalControlError, match="multiple providers") as excinfo,
     ):
-        start_local_model(registry, "shared-name", registry_path=registry_path)
+        start_local_model(registry, "shared-name")
+    # It names the ids to type, not the provider rows.
+    assert "(mtplx/shared-name, ollama/shared-name)" in str(excinfo.value)
+    assert "<family>/<name>" in str(excinfo.value)
 
 
 def test_start_native_name_resolves_existing_registered_model_without_reregistering(tmp_path):
-    # A model already registered (auto or curated) under its native
-    # provider-side name must resolve idempotently by that name too - a
-    # user who auto-registered "llama3.2:3b" and starts it again by the
-    # same bare name must not see "unknown model" just because the id it
-    # was registered under is "ollama/llama3.2:3b", not the bare name.
+    # A model already registered (from a TUI `+` row or curated) must
+    # resolve by its native provider-side name too - a user who starts
+    # "llama3.2:3b" by the bare name must not see "unknown model" just
+    # because the id it is registered under is "ollama/llama3.2:3b".
     registry = _registry()
     registry.models.append(
         ModelEntry(
@@ -1317,7 +1230,7 @@ def test_start_native_name_resolves_existing_registered_model_without_reregister
         patch("modelman.local_control.stop_all_local_providers") as mock_stop,
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
-        result = start_local_model(registry, "llama3.2:3b", state_path, registry_path=registry_path)
+        result = start_local_model(registry, "llama3.2:3b", state_path)
     assert result.model_id == "ollama/llama3.2:3b"
     mock_stop.assert_not_called()
     mock_isolate.assert_not_called()  # ollama is flag-only
@@ -1670,9 +1583,9 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
     # The duplicate-registration bug: the old "discovered" listing told the
     # user to type the on-disk basename, but the native-name match compared
     # it verbatim against model_name (the full repo id), missed, and fell
-    # through to auto-registration — writing a SECOND registry.toml entry and
-    # a SECOND LiteLLM model_list row for an already-registered, already-
-    # routed artifact.
+    # through to the discovered-artifact step — which then registered it a
+    # second time, and today would start an already-registered artifact
+    # under a second, discovered id.
     registry = _omlx_registry(_omlx_model_dir(tmp_path))
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
@@ -1695,7 +1608,6 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
             registry,
             "Qwen3.8-27B-4bit",
             state_path,
-            registry_path=registry_path,
             litellm_path=litellm_path,
         )
 
@@ -1710,9 +1622,9 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
 
 
 def test_find_discovered_omlx_basename_does_not_rediscover_registered_model(tmp_path):
-    # The same join, exercised through start_local_model's resolution path
-    # with no family: an already-registered omlx model must never raise
-    # DiscoveredModelNeedsFamily just because its on-disk spelling differs.
+    # The same join, exercised through start_local_model's resolution path:
+    # an already-registered omlx model must never be started as a
+    # discovered artifact just because its on-disk spelling differs.
     registry = _omlx_registry(_omlx_model_dir(tmp_path))
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
@@ -1731,9 +1643,7 @@ def test_find_discovered_omlx_basename_does_not_rediscover_registered_model(tmp_
         )
         # The full repo id must keep resolving too (registry-id lookup misses
         # it; the native-name match is what catches it).
-        result = start_local_model(
-            registry, "mlx-community/Qwen3.8-27B-4bit", state_path, registry_path=registry_path
-        )
+        result = start_local_model(registry, "mlx-community/Qwen3.8-27B-4bit", state_path)
     assert result.model_id == _OMLX_MODEL_ID
 
 
@@ -1786,77 +1696,496 @@ def test_inventory_falls_back_to_cached_size_when_provider_reports_none():
     )
 
 
-def test_register_discovered_model_persists_registry_before_syncing(tmp_path):
-    # wt builds LiteLLM routes from registry.toml ON DISK, so a
-    # just-discovered model must be persisted before the sync runs —
-    # otherwise wt never sees it and `modelman start <native-name>` leaves
-    # it unrouted.
-    from modelman import wt_bridge
+def test_running_model_ids_verifies_a_discovered_model_by_probing_it(tmp_path):
+    # #179 Phase B: a model started without a registry entry keeps its
+    # running flag under its discovered id <family>/<native name>. The
+    # verified-running view must probe it like a registered model — the TUI
+    # mount reconcile clears every flag this function does not return, so
+    # skipping unregistered ids would wipe a live model's flag on every
+    # mount. A dead one is cleared; an id whose provider is not in the
+    # registry has nothing to probe and is not verified.
+    state_path = _state_path(
+        tmp_path,
+        {"ollama/llama3.2:3b": True, "omlx/gone-4bit": True, "ghost/x": True},
+    )
+    probed: list[tuple[str, str]] = []
 
-    registry = _registry()
-    registry_path = tmp_path / "registry.toml"
-    save_registry(registry, registry_path)
-    state_path = _state_path(tmp_path)
-    mapping = {
-        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
-    }
-    seen: list[list[str]] = []
+    def probe(provider_id, model_name, base):
+        probed.append((provider_id, model_name))
+        return model_name == "llama3.2:3b"
 
-    def recording_sync(**kwargs):
-        seen.append([m.id for m in load_registry(registry_path).models])
-        return wt_bridge.BridgeResult([], True, [])
+    with patch("modelman.local_control._probe_running", side_effect=probe):
+        ids = running_model_ids(_registry(), load_state(state_path), state_path)
 
-    with (
-        _patch_provider_local_models(mapping),
-        patch.object(wt_bridge, "sync", recording_sync),
-    ):
-        start_local_model(
-            registry,
-            "llama3.2:3b",
-            state_path,
-            family="discovered",
-            registry_path=registry_path,
-        )
-
-    assert len(seen) == 1, "the start must sync exactly once"
-    assert "ollama/llama3.2:3b" in seen[0]
+    assert ids == ["ollama/llama3.2:3b"]
+    assert sorted(probed) == [("ollama", "llama3.2:3b"), ("omlx", "gone-4bit")]
+    state = load_state(state_path)
+    assert state.get("ollama/llama3.2:3b").running is True
+    assert state.get("omlx/gone-4bit").running is False
 
 
-def test_register_discovered_model_refuses_an_id_that_already_exists(tmp_path):
-    # Defense-in-depth against a race or a hand-edited registry.toml: the id
-    # is derived from (provider, native name), so a colliding id means the
-    # model is already registered — appending a second entry would duplicate
-    # it in registry.toml and in LiteLLM's model_list.
-    registry = _registry()
-    registry_path = tmp_path / "registry.toml"
-    save_registry(registry, registry_path)
-    # On-disk registry already has the entry; the in-memory copy passed in
-    # does not (the race this guards against).
-    with locked_registry(registry_path) as fresh:
-        fresh.models.append(
-            ModelEntry(
-                id="ollama/llama3.2:3b",
-                family="other",
-                provider_id="ollama",
-                model_name="llama3.2:3b",
+def test_same_provider_occupant_sees_a_flagged_discovered_model(tmp_path):
+    # Starting a registered omlx model replaces whatever omlx serves, and a
+    # model started without a registry entry is flagged only under its
+    # discovered id: the occupant lookup must find it, or its flag would
+    # outlive the replacement.
+    state_path = _state_path(tmp_path, {"omlx/stray-4bit": True})
+    occupant = same_provider_occupant(_registry(), load_state(state_path), "omlx/model-a", "omlx")
+    assert occupant == "omlx/stray-4bit"
+
+
+def test_running_model_ids_verifies_a_discarded_registration_by_repo_id(tmp_path):
+    # Registering a discovered mtplx artifact moves its running flag from
+    # the discovered id ("mtplx/org/model") to the registered id
+    # ("mtplx/org--model" — parse_model's "/" → "--"); a session Discard
+    # rolls the registry entry back while the flag row stays on disk. The
+    # server reports the repo id ("org/model"), which the registered
+    # spelling can never name-match (`_name_matches` is separator-aware),
+    # so the probe must retry the repo-id spelling before clearing — the
+    # TUI's mount reconcile otherwise drops a serving model's flag and
+    # `modelman stop` starts reading it dead. A genuinely dead one (neither
+    # spelling answers) is still cleared.
+    state_path = _state_path(tmp_path, {"mtplx/org--model": True, "mtplx/dead--model": True})
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+        ],
+        models=[],
+    )
+    probed: list[tuple[str, str]] = []
+
+    def probe(provider_id, model_name, base):
+        probed.append((provider_id, model_name))
+        return model_name == "org/model"
+
+    with patch("modelman.local_control._probe_running", side_effect=probe):
+        ids = running_model_ids(registry, load_state(state_path), state_path)
+
+    assert ids == ["mtplx/org--model"]
+    assert sorted(probed) == [
+        ("mtplx", "dead--model"),
+        ("mtplx", "dead/model"),
+        ("mtplx", "org--model"),
+        ("mtplx", "org/model"),
+    ]
+    state = load_state(state_path)
+    assert state.get("mtplx/org--model").running is True
+    assert state.get("mtplx/dead--model").running is False
+
+
+def test_stop_all_stops_a_running_discovered_model(tmp_path, wt_calls):
+    # `modelman stop --all` works off the flags, so a model started without a
+    # registry entry is stopped and its flag cleared like any other, with the
+    # one closing sync.
+    state_path = _state_path(tmp_path, {"ollama/llama3.2:3b": True})
+    with patch("modelman.local_control.stop_all_local_providers") as mock_stop_all:
+        result = stop_all_local_models(state_path)
+    mock_stop_all.assert_called_once()
+    assert result.stopped == ["ollama/llama3.2:3b"]
+    assert load_state(state_path).get("ollama/llama3.2:3b").running is False
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+# --- discovered ids equal wt's ---------------------------------------------
+#
+# wt names a discovered model config.DiscoveredModelID(localmodels.Family(
+# providerID), artifact) (wt/internal/litellm/service.go DiscoveredModel,
+# wt/internal/localmodels/inventory.go). modelman keeps the running flag
+# under its own id for the same model and `modelman stop <id>` reads that
+# flag, while the route wt writes is named by wt's id — so the two must be
+# the same string, per provider family.
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "variant_id", "wt_id"),
+    [
+        # ollama: the tag as `ollama list` / /api/tags spells it.
+        ("ollama", "llama3.2:3b", "ollama/llama3.2:3b"),
+        # omlx: the model directory's basename.
+        ("omlx", "Qwen3.8-27B-4bit", "omlx/Qwen3.8-27B-4bit"),
+        # omlx-6bit is the SAME physical server: wt's id is prefixed with the
+        # family ("omlx"), never the registry provider row.
+        ("omlx-6bit", "Qwen3.8-27B-6bit", "omlx/Qwen3.8-27B-6bit"),
+        # mtplx: the repo id (org/name), "/" kept — not the registered-id
+        # spelling "org--name".
+        ("mtplx", "Youssofal/Qwen3.8-27B", "mtplx/Youssofal/Qwen3.8-27B"),
+    ],
+)
+def test_discovered_entry_id_is_wts_family_prefixed_id(provider_id, variant_id, wt_id):
+    entry = _discovered_entry(
+        DiscoveredModel(provider_id=provider_id, variant_id=variant_id, path="/x", size_bytes=None)
+    )
+    assert entry.id == wt_id
+    # The provider row is untouched: it selects the lifecycle backend and
+    # env var (omlx-6bit's differ from omlx's).
+    assert entry.provider_id == provider_id
+    assert entry.model_name == variant_id
+
+
+def test_start_discovered_mtplx_artifact_uses_the_repo_id_wt_routes(tmp_path):
+    # The real MTPLXProvider over an on-disk `<org>--<name>` directory: wt
+    # spells that artifact `org/name` (mtplxRepoID) and routes it as
+    # `mtplx/org/name`. modelman must flag it under exactly that id, serve it
+    # by the repo id, probe it by the repo id, and stop it by that id.
+    from modelman.local_process import ProcessResult
+
+    model_dir = tmp_path / "mtplx-models"
+    (model_dir / "Youssofal--Qwen3.8-27B-MTPLX").mkdir(parents=True)
+    (model_dir / "Youssofal--Qwen3.8-27B-MTPLX" / "weights.safetensors").write_bytes(b"x")
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="mtplx",
+                name="MTPLX",
                 location="local",
-                source="discovered",
+                model_dir=str(model_dir),
+                auth=AuthConfig(type="none"),
             )
+        ],
+    )
+    state_path = _state_path(tmp_path)
+    wt_id = "mtplx/Youssofal/Qwen3.8-27B-MTPLX"
+
+    with patch("modelman.local_control.isolate_provider") as mock_isolate:
+        mock_isolate.return_value = IsolateResult(
+            provider="mtplx",
+            model="Youssofal/Qwen3.8-27B-MTPLX",
+            direct_url="http://localhost:8003/v1/chat/completions",
+            ok=True,
+            error=None,
         )
+        result = start_local_model(registry, "Youssofal/Qwen3.8-27B-MTPLX", state_path)
+
+    assert result.model_id == wt_id
+    mock_isolate.assert_called_once_with(
+        "mtplx", "Youssofal/Qwen3.8-27B-MTPLX", env=None, solo=True
+    )
+    assert load_state(state_path).get(wt_id).running is True
+
+    probed: list[tuple[str, str]] = []
+
+    def probe(provider_id, model_name, base):
+        probed.append((provider_id, model_name))
+        return True
+
+    with patch("modelman.local_control._probe_running", side_effect=probe):
+        assert running_model_ids(registry, load_state(state_path), state_path) == [wt_id]
+    assert probed == [("mtplx", "Youssofal/Qwen3.8-27B-MTPLX")]
+
+    with patch("modelman.providers.lifecycle.stop") as mock_lifecycle_stop:
+        mock_lifecycle_stop.return_value = ProcessResult(
+            provider="mtplx", model="", direct_url="", ok=True, error=None
+        )
+        stopped = stop_local_model(wt_id, state_path)
+    mock_lifecycle_stop.assert_called_once_with("mtplx")
+    assert stopped.stopped_model_id == wt_id
+    assert load_state(state_path).get(wt_id).running is False
+
+
+def _omlx_6bit_only_registry() -> Registry:
+    return Registry(
+        providers=[
+            ProviderEntry(
+                id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none")
+            )
+        ],
+        models=[
+            ModelEntry(
+                id="omlx-6bit/registered",
+                family="registered",
+                provider_id="omlx-6bit",
+                model_name="org/registered-6bit",
+                fetch=Fetch(repo="org/registered-6bit"),
+            )
+        ],
+    )
+
+
+def test_start_discovered_artifact_on_an_omlx_6bit_only_registry_uses_the_family_id(tmp_path):
+    # A registry whose only omlx-family provider row is `omlx-6bit`: wt
+    # still routes an unregistered artifact as `omlx/<name>` (family-
+    # prefixed) with the omlx-6bit row as its provider. If modelman can
+    # enumerate that row (stubbed here), the flag must sit under wt's id —
+    # not `omlx-6bit/<name>` — while the lifecycle is still driven through
+    # the omlx-6bit row; the probe, the occupant lookup and `modelman stop`
+    # must all resolve the family-prefixed id back to that one server.
+    registry = _omlx_6bit_only_registry()
     state_path = _state_path(tmp_path)
     mapping = {
-        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
+        "omlx-6bit": [
+            {"variant_id": "Qwen3.8-27B-6bit", "path": "/omlx/Qwen3.8-27B-6bit", "size_bytes": None}
+        ]
     }
-
     with (
         _patch_provider_local_models(mapping),
-        pytest.raises(LocalControlError, match="already registered"),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
-        start_local_model(
-            registry,
-            "llama3.2:3b",
-            state_path,
-            family="discovered",
-            registry_path=registry_path,
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx-6bit",
+            model="Qwen3.8-27B-6bit",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
         )
-    assert [m.id for m in load_registry(registry_path).models].count("ollama/llama3.2:3b") == 1
+        result = start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
+
+    assert result.model_id == "omlx/Qwen3.8-27B-6bit"
+    mock_isolate.assert_called_once_with(
+        "omlx-6bit", env={"LLM_ISOLATE_OMLX_6BIT_MODEL": "Qwen3.8-27B-6bit"}, solo=True
+    )
+    state = load_state(state_path)
+    assert state.get("omlx/Qwen3.8-27B-6bit").running is True
+    assert "omlx-6bit/Qwen3.8-27B-6bit" not in state.models
+
+    # Verified-running view: the family prefix "omlx" is not a provider row
+    # here, so the probe must go to the family's row that IS defined.
+    probed: list[tuple[str, str]] = []
+
+    def probe(provider_id, model_name, base):
+        probed.append((provider_id, model_name))
+        return True
+
+    with patch("modelman.local_control._probe_running", side_effect=probe):
+        assert running_model_ids(registry, state, state_path) == ["omlx/Qwen3.8-27B-6bit"]
+    assert probed == [("omlx-6bit", "Qwen3.8-27B-6bit")]
+
+    # Occupant of the shared omlx server, seen from a registered omlx-6bit model.
+    assert (
+        same_provider_occupant(registry, state, "omlx-6bit/registered", "omlx-6bit")
+        == "omlx/Qwen3.8-27B-6bit"
+    )
+
+    with patch("modelman.local_control.stop_provider") as mock_stop:
+        stopped = stop_local_model("omlx/Qwen3.8-27B-6bit", state_path)
+    mock_stop.assert_called_once_with("omlx")
+    assert stopped.stopped_model_id == "omlx/Qwen3.8-27B-6bit"
+    assert load_state(state_path).get("omlx/Qwen3.8-27B-6bit").running is False
+
+
+def test_start_on_an_omlx_6bit_only_registry_finds_nothing_with_the_real_providers(tmp_path):
+    # What modelman's discovery ACTUALLY yields today for that registry: no
+    # Provider class is registered under "omlx-6bit", so the row cannot be
+    # enumerated and an unregistered omlx artifact is simply unknown — no
+    # `omlx-6bit/<name>` id (which would differ from wt's `omlx/<name>`) can
+    # be produced, and nothing is flagged.
+    model_dir = _omlx_model_dir(tmp_path, basename="Qwen3.8-27B-6bit")
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="omlx-6bit",
+                name="oMLX 6-bit",
+                location="local",
+                model_dir=str(model_dir),
+                auth=AuthConfig(type="none"),
+            )
+        ],
+    )
+    state_path = _state_path(tmp_path)
+    assert inventory_local_models(registry, StateStore()).unqueryable_providers == ["omlx-6bit"]
+    with (
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        pytest.raises(LocalControlError, match="unknown model"),
+    ):
+        start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
+    mock_isolate.assert_not_called()
+    assert load_state(state_path).models == {}
+
+
+def test_start_full_discovered_id_disambiguates_a_name_two_providers_share(tmp_path):
+    # The ambiguity error tells the user to type the full <family>/<name>
+    # id. _find_discovered matches leniently on the name's tail, so that id
+    # still matches BOTH artifacts — the exact discovered id must pick its own.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [{"variant_id": "shared-name", "path": "ollama:shared-name", "size_bytes": None}],
+        "mtplx": [{"variant_id": "shared-name", "path": "/mtplx/shared-name", "size_bytes": None}],
+    }
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
+        result = start_local_model(registry, "ollama/shared-name", state_path)
+    mock_isolate.assert_not_called()  # the ollama one: flag-only
+    assert result.model_id == "ollama/shared-name"
+    assert load_state(state_path).get("ollama/shared-name").running is True
+    assert load_state(state_path).get("mtplx/shared-name").running is False
+
+
+@pytest.mark.parametrize(
+    ("typed", "has", "wrong_family"),
+    [
+        # Only ollama has `foo`; a single-port family's prefix must not
+        # start it (and replace that server's occupant on the way).
+        ("omlx/foo", "ollama", "omlx"),
+        # The other direction: only mtplx has it, ollama's prefix typed.
+        ("ollama/foo", "mtplx", "ollama"),
+        # A provider row's own id that is not the family (omlx-6bit).
+        ("omlx-6bit/foo", "ollama", "omlx-6bit"),
+        # A cloud provider row's id is still a provider prefix, not a name.
+        ("openrouter/foo", "ollama", "openrouter"),
+    ],
+)
+def test_start_wrong_family_prefix_never_starts_another_providers_artifact(
+    tmp_path, typed, has, wrong_family
+):
+    # _find_discovered matches on the name's tail, so `<other family>/foo`
+    # matches the one artifact named `foo` wherever it lives. A typed
+    # family/provider prefix is a claim about WHERE the model is: when no
+    # candidate's discovered id equals what was typed, it is unknown — and
+    # the error names the id that does exist so it can be retyped.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    state_path = _state_path(tmp_path)
+    mapping = {has: [{"variant_id": "foo", "path": f"/{has}/foo", "size_bytes": None}]}
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider") as mock_stop,
+        pytest.raises(LocalControlError, match="unknown model") as excinfo,
+    ):
+        start_local_model(registry, typed, state_path)
+    assert f"{has}/foo" in str(excinfo.value)
+    mock_isolate.assert_not_called()
+    mock_stop.assert_not_called()
+    assert load_state(state_path).models == {}
+
+
+def test_ollama_name_matches_mirrors_wts_implicit_latest_rule():
+    # wt/internal/localmodels/match.go OllamaNameMatches(have, want): exact,
+    # or — only when the overlay's name carries no ":" tag — the artifact is
+    # that name with ollama's implicit ":latest". One-directional, as in wt.
+    assert _ollama_name_matches("llama3.2:latest", "llama3.2")
+    assert _ollama_name_matches("llama3.2:3b", "llama3.2:3b")
+    assert not _ollama_name_matches("llama3.2", "llama3.2:latest")
+    assert not _ollama_name_matches("llama3.2:3b", "llama3.2")
+    assert not _ollama_name_matches("org/llama3.2:3b", "llama3.2:3b")
+
+
+def test_ollama_overlay_without_a_tag_owns_the_latest_artifact(tmp_path):
+    # wt matches overlay model_name "llama3.2" to the pulled artifact
+    # "llama3.2:latest" and routes it under the OVERLAY's id. modelman must
+    # agree: the artifact is not listed as discovered, and starting it by its
+    # listed name (bare or family-prefixed) resolves to the overlay — never a
+    # second, discovered id `ollama/llama3.2:latest` wt does not route.
+    registry = _registry()
+    registry.models.append(
+        ModelEntry(
+            id="ollama/my-llama",
+            family="llama",
+            provider_id="ollama",
+            model_name="llama3.2",
+            location="local",
+        )
+    )
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {"variant_id": "llama3.2:latest", "path": "ollama:llama3.2:latest", "size_bytes": 7}
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        assert inventory_local_models(registry, StateStore()).discovered == []
+        for typed in ("llama3.2:latest", "ollama/llama3.2:latest"):
+            result = start_local_model(registry, typed, state_path)
+            assert result.model_id == "ollama/my-llama"
+    state = load_state(state_path)
+    assert state.get("ollama/my-llama").running is True
+    assert "ollama/llama3.2:latest" not in state.models
+
+
+def test_ollama_overlay_with_another_tag_does_not_own_the_latest_artifact():
+    # The rule is only the implicit tag: an overlay for "llama3.2:3b" leaves
+    # "llama3.2:latest" discovered, exactly as wt lists it.
+    registry = _registry()
+    registry.models.append(
+        ModelEntry(
+            id="ollama/llama3.2:3b",
+            family="llama",
+            provider_id="ollama",
+            model_name="llama3.2:3b",
+            location="local",
+        )
+    )
+    mapping = {
+        "ollama": [
+            {"variant_id": "llama3.2:latest", "path": "ollama:llama3.2:latest", "size_bytes": 7}
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        discovered = inventory_local_models(registry, StateStore()).discovered
+    assert [d.model_id for d in discovered] == ["ollama/llama3.2:latest"]
+
+
+def test_omlx_artifact_registered_on_the_other_family_row_is_not_discovered(tmp_path):
+    # omlx and omlx-6bit are one server and (for wt) one family: an overlay
+    # on the omlx-6bit row consumes the artifact, so wt never lists it as
+    # discovered. Matching per exact provider row re-discovered it through
+    # the `omlx` row — listed as both registered and discovered, startable
+    # under a second id.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(
+            id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none")
+        )
+    )
+    registry.models.append(
+        ModelEntry(
+            id="omlx-6bit/org--Qwen3.8-27B-6bit",
+            family="qwen3.8",
+            provider_id="omlx-6bit",
+            model_name="org/Qwen3.8-27B-6bit",
+            fetch=Fetch(repo="org/Qwen3.8-27B-6bit"),
+        )
+    )
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "omlx": [
+            {"variant_id": "Qwen3.8-27B-6bit", "path": "/omlx/Qwen3.8-27B-6bit", "size_bytes": None}
+        ]
+    }
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx-6bit", model="x", direct_url=None, ok=True, error=None
+        )
+        assert discover_unregistered_models(registry) == []
+        result = start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
+    assert result.model_id == "omlx-6bit/org--Qwen3.8-27B-6bit"
+
+
+def test_start_refuses_a_discovered_id_that_is_a_registry_models_id(tmp_path):
+    # Registry `omlx/foo` names a DIFFERENT artifact (model_name "bar");
+    # an unregistered on-disk artifact `foo` would get the discovered id
+    # `omlx/foo` too. Starting it would write the running flag onto the
+    # registry model's row, and wt drops the colliding discovered entry, so
+    # it would never be routed. Refuse, naming the registry model that owns
+    # the id; nothing is started or flagged.
+    registry = _registry()
+    registry.models.append(
+        ModelEntry(
+            id="omlx/foo",
+            family="foo",
+            provider_id="omlx",
+            model_name="bar",
+            fetch=Fetch(repo="org/bar"),
+        )
+    )
+    state_path = _state_path(tmp_path)
+    mapping = {"omlx": [{"variant_id": "foo", "path": "/omlx/foo", "size_bytes": None}]}
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        pytest.raises(LocalControlError, match="omlx/foo") as excinfo,
+    ):
+        start_local_model(registry, "foo", state_path)
+    assert "already" in str(excinfo.value) and "bar" in str(excinfo.value)
+    mock_isolate.assert_not_called()
+    assert load_state(state_path).models == {}

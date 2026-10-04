@@ -113,7 +113,7 @@ def _variant_to_model_entry(
     step — the form already gave us one. `source` defaults to
     "curated" (every normal add/edit); the discovered-registration flow
     passes "discovered" explicitly so provenance survives into
-    registry.toml, matching the CLI's own auto-register convention.
+    registry.toml.
     """
     provider_id = variant["provider"]
     # Sanity: provider must exist in the registry. Defends against a
@@ -498,7 +498,11 @@ class ModelScreen(Screen[None]):
                     d.variant_id,
                     _format_location(LOCATION_LOCAL),
                     "[cyan]+[/cyan]",
-                    "-",
+                    # Same source as the registered rows above: a discovered
+                    # artifact keeps its running flag under its discovered id
+                    # (#179 Phase B), and the on-mount reconcile has already
+                    # probe-verified it by the time this repopulates.
+                    "●" if self.state.get(d.model_id).running else "-",
                     "-",
                     format_size(d.size_bytes) if d.size_bytes is not None else "—",
                     key=row_key,
@@ -843,16 +847,35 @@ class ModelScreen(Screen[None]):
         # every other queued mutation on this screen, apply() never sees
         # this in-memory `self.state` — run_queued_ops() (main.py) always
         # rebuilds `state` fresh from modelman.toml after the TUI process
-        # exits, so an in-memory-only ready flag would be lost. Mirrors
-        # the CLI's equivalent path (local_control.py's
-        # _register_discovered_model), which writes through locked_state
-        # for the same reason.
-        model_state = ModelState(
-            ready=True, disk_path=discovered.path, size_bytes=discovered.size_bytes
-        )
+        # exits, so an in-memory-only ready flag would be lost.
+        #
+        # The artifact may be RUNNING: `modelman start <artifact>` flags a
+        # model with no registry entry under its discovered id (#179 Phase
+        # B). So this merges into the existing row rather than replacing it
+        # — a fresh ModelState would reset `running` while the model keeps
+        # serving, hiding it from `modelman stop` — and when the registered
+        # id differs from the discovered one (mtplx: `org--name` vs
+        # `org/name`) the flag moves to the new id, leaving no twin behind.
+        discovered_id = discovered.model_id
+
+        def record(store: StateStore) -> None:
+            running = store.get(entry.id).running
+            if discovered_id != entry.id and discovered_id in store.models:
+                running = running or store.models.pop(discovered_id).running
+            store.set(
+                entry.id,
+                replace(
+                    store.get(entry.id),
+                    ready=True,
+                    disk_path=discovered.path,
+                    size_bytes=discovered.size_bytes,
+                    running=running,
+                ),
+            )
+
         with locked_state(self.state_path) as fresh_state:
-            fresh_state.set(entry.id, model_state)
-        self.state.set(entry.id, model_state)
+            record(fresh_state)
+        record(self.state)
         self.discovered = [d for d in self.discovered if d is not discovered]
         self.reload()
         self._refresh_pending_bar()
@@ -1121,9 +1144,12 @@ class ModelScreen(Screen[None]):
         # `self.registry.models = list(self._snapshot_models)` line above
         # (and re-saved to disk right after this method returns), so the
         # orphaned state row here keys a model id no longer in the
-        # registry. Nothing reads state.models keys independently of
-        # registry.models, so the orphan is inert — dropping it here is
-        # just tidiness, not a correctness requirement.
+        # registry. This only tidies the in-memory copy; the row stays in
+        # modelman.toml. It is not inert there when it carries a running
+        # flag: running_model_ids, the occupant lookup and stop --all read
+        # flagged ids that have no registry entry (#179 Phase B), so a
+        # still-serving model whose registration was discarded stays
+        # stoppable under that id.
         for mid in list(self.state.models):
             if mid not in self._snapshot_state_entries:
                 self.state.models.pop(mid, None)

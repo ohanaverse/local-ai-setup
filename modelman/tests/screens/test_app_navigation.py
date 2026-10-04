@@ -349,6 +349,54 @@ async def test_reconcile_self_heal_clears_running_for_dead_model(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_reconcile_keeps_a_live_discovered_models_flag_and_clears_a_dead_one(
+    tmp_path, monkeypatch
+):
+    """#179 Phase B: a model started without a registry entry is flagged
+    under its discovered id only. The mount reconcile clears every running
+    flag running_model_ids() does not return, so an unregistered id that was
+    skipped instead of probed would lose its flag on every TUI open while
+    still serving. A live one must survive (in memory and on disk); a dead
+    one is cleared like any registered model's."""
+    from unittest.mock import MagicMock
+
+    _reg_path, state_path = _seed_registry_and_state(
+        tmp_path, monkeypatch, providers=("ollama", "omlx")
+    )
+    store = StateStore()
+    store.set("omlx/live-4bit", ModelState(running=True))
+    store.set("omlx/gone-4bit", ModelState(running=True))
+    save_state(store, state_path)
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.list_local.return_value = []
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr(
+        "modelman.local_control._probe_running",
+        lambda provider_id, model_name, base: model_name == "live-4bit",
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.state import load_state as _load_state
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            await pilot.pause()
+            if not _load_state(state_path).get("omlx/gone-4bit").running:
+                break
+        await pilot.pause()
+        assert app.screen.state.get("omlx/gone-4bit").running is False
+        assert app.screen.state.get("omlx/live-4bit").running is True
+
+    on_disk = _load_state(state_path)
+    assert on_disk.get("omlx/gone-4bit").running is False
+    assert on_disk.get("omlx/live-4bit").running is True
+
+
+@pytest.mark.asyncio
 async def test_reconcile_self_heal_syncs_routes_for_the_dead_model(tmp_path, monkeypatch, wt_calls):
     """Clearing a stale running flag must reach LiteLLM in the same breath:
     the route it leaves behind points at a dead backend, and nothing else

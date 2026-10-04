@@ -262,26 +262,75 @@ def test_start_command_no_args_shows_three_sections(tmp_path, monkeypatch):
     # 1_073_741_824 B = 1 GiB exactly, chosen so format_size's repeated
     # /1024 division lands on a clean "1.0 GB" instead of a rounding-prone
     # value (e.g. 1_000_000_000 B formats as "953.7 MB", not "1000.0 MB").
-    assert "ollama:z" in result.stdout and "1.0 GB" in result.stdout
+    assert "ollama/z" in result.stdout and "1.0 GB" in result.stdout
+    # The discovered line is the id itself — what `modelman start`/`stop`
+    # take — never the untypeable `<provider row>:<name>`.
+    assert "ollama:z" not in result.stdout
 
 
-def test_start_command_discovers_and_prompts_for_family(tmp_path, monkeypatch):
-    # `modelman start <name>` against an on-disk-but-unregistered artifact
-    # must prompt once for a family, then register+expose+start it - this is
-    # the "discovered model" onboarding path the family prompt exists for.
+def test_start_command_no_args_marks_a_running_discovered_model(tmp_path, monkeypatch):
+    # A model started without a registry entry is flagged under its
+    # discovered id. The inventory must print that id (the one to hand
+    # `modelman stop`) and mark it running, verified the same way a
+    # registered row is; a discovered artifact with no flag gets no marker.
     registry_path = tmp_path / "registry.toml"
     registry_path.write_text(
+        '[[providers]]\nid = "omlx"\nname = "oMLX"\nlocation = "local"\n'
+        'auth = { type = "none" }\n\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text(
+        '[model_state."omlx/live-4bit"]\nrunning = true\n\n'
+        '[model_state."omlx/dead-4bit"]\nrunning = true\n'
+    )
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    def get_class(name):
+        return object if name == "omlx" else None
+
+    def get(name, config):
+        return _stub_provider(
+            [
+                {"variant_id": n, "path": f"/omlx/{n}", "size_bytes": 1_073_741_824}
+                for n in ("live-4bit", "dead-4bit", "idle-4bit")
+            ]
+        )
+
+    with (
+        patch("modelman.local_control.ProviderRegistry.get_class", side_effect=get_class),
+        patch("modelman.local_control.ProviderRegistry.get", side_effect=get),
+        patch(
+            "modelman.local_control._probe_running",
+            side_effect=lambda provider_id, model_name, base: model_name == "live-4bit",
+        ),
+    ):
+        result = runner.invoke(app, ["start"])
+    assert result.exit_code == 0, result.output
+    lines = {line.split("\t")[0]: line for line in result.stdout.splitlines()}
+    assert lines["* omlx/live-4bit"].endswith("(running)")
+    assert "(running)" not in lines["  omlx/dead-4bit"]
+    assert "(running)" not in lines["  omlx/idle-4bit"]
+
+
+def test_start_command_starts_a_discovered_model_without_prompting(tmp_path, monkeypatch):
+    # #179 Phase B: `modelman start <name>` against an on-disk artifact with
+    # no registry.toml entry starts it as-is — no family prompt, nothing
+    # registered — under the id wt routes it by (<family>/<native name>).
+    # The old prompt-and-register onboarding is gone: local models are
+    # discovered, and an overlay is optional metadata added later.
+    registry_path = tmp_path / "registry.toml"
+    registry_text = (
         '[[providers]]\nid = "ollama"\nname = "Ollama"\nlocation = "local"\n'
         'auth = { type = "none" }\n\n'
     )
+    registry_path.write_text(registry_text)
     state_path = tmp_path / "modelman.toml"
     litellm_path = tmp_path / "config.yaml"
     litellm_path.write_text("model_list: []\n")
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
-
-    from modelman.benchmark.isolation import IsolateResult
 
     def get_class(name):
         return object if name == "ollama" else None
@@ -300,67 +349,15 @@ def test_start_command_discovers_and_prompts_for_family(tmp_path, monkeypatch):
     with (
         patch("modelman.local_control.ProviderRegistry.get_class", side_effect=get_class),
         patch("modelman.local_control.ProviderRegistry.get", side_effect=get),
-        patch("modelman.local_control.stop_all_local_providers"),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
-        mock_isolate.return_value = IsolateResult(
-            provider="ollama",
-            model="llama3.2:3b",
-            direct_url="http://localhost:11434/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
-        result = runner.invoke(app, ["start", "llama3.2:3b"], input="general\n")
+        result = runner.invoke(app, ["start", "llama3.2:3b"], input="")
 
-    assert result.exit_code == 0, result.stdout
-    assert "isn't registered yet" in result.stdout
-    assert "Started llama3.2:3b" in result.stdout or "Started ollama/llama3.2:3b" in result.stdout
-    assert load_state(path=state_path).get("ollama/llama3.2:3b").running is True
-
-
-def test_start_command_empty_family_reprompts(tmp_path, monkeypatch):
-    # An empty family answer must not be accepted silently - the prompt has
-    # to re-ask until it gets a non-empty name, otherwise a blind Enter would
-    # register the model under an empty family.
-    registry_path = tmp_path / "registry.toml"
-    registry_path.write_text(
-        '[[providers]]\nid = "ollama"\nname = "Ollama"\nlocation = "local"\n'
-        'auth = { type = "none" }\n\n'
-    )
-    state_path = tmp_path / "modelman.toml"
-    litellm_path = tmp_path / "config.yaml"
-    litellm_path.write_text("model_list: []\n")
-    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
-    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
-
-    from modelman.benchmark.isolation import IsolateResult
-
-    def get_class(name):
-        return object if name == "ollama" else None
-
-    def get(name, config):
-        return _stub_provider(
-            [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": None}]
-        )
-
-    with (
-        patch("modelman.local_control.ProviderRegistry.get_class", side_effect=get_class),
-        patch("modelman.local_control.ProviderRegistry.get", side_effect=get),
-        patch("modelman.local_control.stop_all_local_providers"),
-        patch("modelman.local_control.isolate_provider") as mock_isolate,
-    ):
-        mock_isolate.return_value = IsolateResult(
-            provider="ollama",
-            model="llama3.2:3b",
-            direct_url="http://localhost:11434/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
-        result = runner.invoke(app, ["start", "llama3.2:3b"], input="\ngeneral\n")
-
-    assert result.exit_code == 0, result.stdout
-    assert "cannot be empty" in result.output
+    assert result.exit_code == 0, result.output
+    mock_isolate.assert_not_called()  # ollama is flag-only
+    assert "Started ollama/llama3.2:3b." in result.stdout
+    assert "isn't registered yet" not in result.output
+    assert registry_path.read_text() == registry_text
     assert load_state(path=state_path).get("ollama/llama3.2:3b").running is True
 
 
