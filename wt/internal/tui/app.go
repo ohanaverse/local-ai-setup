@@ -253,6 +253,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			return m, nil
 		}
 		m.listError = ""
+		// The load is over: take the placeholder down. Only the placeholder —
+		// a status another path set while the load was in flight (a pinned
+		// agent's config error, say) is still worth showing.
+		if m.status == loadingStatus {
+			m.status = ""
+		}
 		// Pass the three groups straight to buildList, which interleaves them
 		// into the picker (sentinel → worktrees → locals → separator → remotes)
 		// and tags the (current)/(default) markers on entryItem.
@@ -1300,12 +1306,18 @@ type entriesLoadedMsg struct {
 	err           error
 }
 
+// loadingStatus is the placeholder View shows until the worktree list
+// arrives. It lives in m.status, so the load has to take it back down: every
+// later screen renders m.status, and a placeholder left there reads as a
+// stuck "loading" message on the agent and model pickers.
+const loadingStatus = "loading worktrees..."
+
 // newRunModel builds the TUI's initial model from Run's arguments. It is split
 // out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
 // without starting a real tea.Program.
 func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
 	return model{
-		status:       "loading worktrees...",
+		status:       loadingStatus,
 		cfg:          cfg,
 		theme:        theme,
 		yolo:         yolo,

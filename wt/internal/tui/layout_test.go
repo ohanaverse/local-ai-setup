@@ -686,3 +686,41 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadingStatusIsClearedWhenWorktreesLoad pins a bug the picker's height
+// fix exposed: "loading worktrees..." is the model's initial status, shown
+// until the worktree list arrives, and nothing cleared it on a successful
+// load. While the status line was pushed off the top of the agent and model
+// screens nobody saw it; once those screens fit the terminal it sat on every
+// one of them. A status some other path set while the load was in flight is
+// not the placeholder and must survive.
+func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+	}}}
+	fresh := newRunModel(false, false, "", "", "", "", nil, themes.Theme{}, "", &config.Config{})
+	fresh.width, fresh.height = 80, 24
+	if !strings.Contains(fresh.View(), "loading worktrees") {
+		t.Fatalf("before the load the view is %q, want the loading placeholder", fresh.View())
+	}
+
+	loaded, _ := updateMsg(fresh, entriesLoadedMsg{groups: groups})
+	if loaded.status != "" {
+		t.Errorf("status after a successful load = %q, want it cleared", loaded.status)
+	}
+	if strings.Contains(loaded.View(), "loading worktrees") {
+		t.Errorf("the worktree list still shows the loading placeholder:\n%s", loaded.View())
+	}
+
+	other := fresh
+	other.status = "config error: boom"
+	kept, _ := updateMsg(other, entriesLoadedMsg{groups: groups})
+	if kept.status != "config error: boom" {
+		t.Errorf("status = %q, want a status that is not the placeholder kept", kept.status)
+	}
+
+	failed, _ := updateMsg(fresh, entriesLoadedMsg{err: errors.New("not a git repo")})
+	if !strings.Contains(failed.status, "not a git repo") {
+		t.Errorf("status after a failed load = %q, want the error", failed.status)
+	}
+}
