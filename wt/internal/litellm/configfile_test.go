@@ -401,9 +401,9 @@ func TestOpenRefusesMultiDocument(t *testing.T) {
 		t.Fatalf("Open(multi-doc) err = %v, want ErrInvalid", err)
 	}
 	n := 0
-	res, err := Apply(testConfig(), nil, []string{"a/b"}, Options{Path: p, Restart: func() []string { n++; return nil }})
+	res, err := ApplyChange(testConfig(), Change{Remove: []string{"a/b"}}, Options{Path: p, Restart: func() []string { n++; return nil }})
 	if !errors.Is(err, ErrInvalid) || res.Changed || n != 0 {
-		t.Fatalf("Apply err=%v changed=%v restarts=%d", err, res.Changed, n)
+		t.Fatalf("ApplyChange err=%v changed=%v restarts=%d", err, res.Changed, n)
 	}
 	if got, _ := os.ReadFile(p); string(got) != body {
 		t.Fatalf("multi-doc file modified:\n%s", got)

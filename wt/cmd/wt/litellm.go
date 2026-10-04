@@ -177,8 +177,10 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 // (untrustedFamilies) that has no registry local model — only discovered
 // routes (#179 Phase B) — gets the same "probe did not succeed" warning when
 // config.yaml holds a marked row of the family, so its frozen routes are
-// never left unchanged silently. A family frozen without a probe (a registry
-// data gap, gapFamily) is warned about in its own words: it has no status.
+// never left unchanged silently. A marked row of one of the family's registry
+// gap models counts the same way (RowFamily cannot place it). A family frozen
+// without a probe (a registry data gap, gapFamily) is warned about in its own
+// words: it has no status.
 func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, routed map[string]bool) (untouched, warnings []string) {
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
@@ -194,13 +196,37 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 			skipped[fam] = true
 		}
 	}
-	// Every untrusted family with a registry local model is in skipped
-	// already; the rest are frozen only for their discovered rows.
-	for _, f := range untrustedFamilies(cfg, snap) {
+	// managedRow reports whether config.yaml holds a marked row that
+	// litellm.RowFamily places in family f: a registry local model's route, or
+	// a discovered model's, which no registry model stands for.
+	managedRow := func(f string) bool {
 		for id, managed := range routed {
-			if !skipped[f] && managed && litellm.RowFamily(cfg, id) == f {
-				skipped[f] = true
+			if managed && litellm.RowFamily(cfg, id) == f {
+				return true
 			}
+		}
+		return false
+	}
+	// gapRow reports whether config.yaml holds a marked row of a registry
+	// model of family f that sync keeps for a data gap (litellm.RegistryGap).
+	// RowFamily answers "" for such a model — its location does not resolve
+	// to "local" — so managedRow never sees it, yet it is the row a mistyped
+	// or missing provider location leaves behind: without this a family whose
+	// only routes are its registry models' was frozen with no warning (#195).
+	gapRow := func(f string) bool {
+		for _, m := range cfg.Models {
+			if routed[m.ID] && localmodels.Family(m.ProviderID) == f && litellm.RegistryGap(cfg, m) {
+				return true
+			}
+		}
+		return false
+	}
+	// Every untrusted family with a registry local model is in skipped
+	// already; the rest are frozen only for their discovered rows and the
+	// rows of their gap models.
+	for _, f := range untrustedFamilies(cfg, snap) {
+		if !skipped[f] && (managedRow(f) || gapRow(f)) {
+			skipped[f] = true
 		}
 	}
 	fams := make([]string, 0, len(skipped))
@@ -217,11 +243,15 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 			warnings = append(warnings, fmt.Sprintf("provider %q answered, but wt cannot tell which of its registered models it is serving (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 			continue
 		}
-		if _, probed := snap.Providers[f]; !probed && gapFamily(cfg, f) {
-			// Never probed, so there is no status to report: the registry
-			// names the family but cannot say it is local (gapFamily).
-			warnings = append(warnings, fmt.Sprintf("provider %q could not be probed (its registry entry has no resolvable location); its model routes were left unchanged", f))
-			continue
+		if _, probed := snap.Providers[f]; !probed {
+			if reason := gapReason(cfg, f); reason != "" {
+				// Never probed, so there is no status to report: the registry
+				// names the family but cannot say it is local. The reason says
+				// which of the registry's gaps it is, so the user repairs the
+				// right thing.
+				warnings = append(warnings, fmt.Sprintf("provider %q could not be probed (%s); its model routes were left unchanged", f, reason))
+				continue
+			}
 		}
 		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 	}
@@ -236,7 +266,7 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 		return slices.ContainsFunc(ms, func(m config.Model) bool { return localmodels.Family(m.ProviderID) == f && keep(m) })
 	}
 	for _, f := range downs {
-		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok })
+		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok }) || managedRow(f)
 		cloud := inFamily(f, litellm.CloudModels(cfg), func(config.Model) bool { return true })
 		if !local && !cloud {
 			continue
@@ -353,24 +383,49 @@ func untrustedFamilies(cfg *config.Config, snap localmodels.Snapshot) []string {
 }
 
 // gapFamily reports whether the registry references family f unresolvably:
-// a provider row of the family with no location, or a model of the family
-// that litellm.RegistryGap drops (its provider is missing, or no location
-// resolves). The inventory skips such a family — not because it is unused,
+// a provider row of the family with no location or one that is neither
+// "local" nor "cloud", or a model of the family that litellm.RegistryGap
+// drops (its provider is missing, or its location resolves to neither). The
+// inventory skips such a family — not because it is unused,
 // but because the registry cannot say it is local — so its server may well
 // be serving, and its routes stay frozen like the gap models' own rows.
 // A family the registry references only as explicitly non-local is no gap.
-func gapFamily(cfg *config.Config, f string) bool {
+func gapFamily(cfg *config.Config, f string) bool { return gapReason(cfg, f) != "" }
+
+// gapReason is gapFamily's finding in words, or "" when the registry
+// references family f resolvably. It names the gap the user has to repair: a
+// provider entry with no location, one whose location is neither "local" nor
+// "cloud" (a typo such as "Local" — the inventory probes only an exact
+// "local", so such a family went unprobed and, before #195, unfrozen), models
+// of the family with no provider entry at all, or a model whose own location
+// override is neither. A provider entry's own problem is reported before a
+// model's, since fixing the entry fixes every model that inherits its
+// location.
+func gapReason(cfg *config.Config, f string) string {
 	for _, p := range cfg.Providers {
-		if localmodels.Family(p.ID) == f && p.Location == "" {
-			return true
+		if localmodels.Family(p.ID) != f {
+			continue
+		}
+		switch {
+		case p.Location == "":
+			return "its registry entry has no location"
+		case !litellm.KnownLocation(p.Location):
+			return fmt.Sprintf(`its registry entry has location %q; expected "local" or "cloud"`, string(p.Location))
 		}
 	}
 	for _, m := range cfg.Models {
-		if localmodels.Family(m.ProviderID) == f && litellm.RegistryGap(cfg, m) {
-			return true
+		if localmodels.Family(m.ProviderID) != f || !litellm.RegistryGap(cfg, m) {
+			continue
 		}
+		if cfg.ProviderByID(m.ProviderID) == nil {
+			return "the registry has models for it but no provider entry"
+		}
+		// The model's provider entry is of this family, so the loop above
+		// found its location to be "local" or "cloud": what is left is the
+		// model's own location override.
+		return fmt.Sprintf(`model %q has location %q; expected "local" or "cloud"`, m.ID, string(m.Location))
 	}
-	return false
+	return ""
 }
 
 func runLitellmList(out io.Writer, asJSON bool) error {

@@ -594,3 +594,33 @@ func TestStartForLaunchDoesNotWaitWhenTheStartFailed(t *testing.T) {
 		t.Errorf("waited for pending routes %d times after a failed start, want 0", waited)
 	}
 }
+
+// TestStartForLaunchHandsTheEngineTheRowsModelID pins the CLI half of #195:
+// the start hook writes a model's route under Target.ModelID, the id the row
+// shows. A discovered artifact whose name resembles a registry model's
+// ("org/name" beside "name") has its own id, and a Target without it falls
+// back to a lenient name match that routes the registry model instead — an id
+// the user never picked. The TUI's constructor is pinned in start_flow_test;
+// every other stub of lifecycleStart here discards the Target.
+func TestStartForLaunchHandsTheEngineTheRowsModelID(t *testing.T) {
+	stubSignals(t)
+	var got lifecycle.Target
+	old := lifecycleStart
+	lifecycleStart = func(_ context.Context, _ *config.Config, target lifecycle.Target, _ lifecycle.Options) error {
+		got = target
+		return nil
+	}
+	t.Cleanup(func() { lifecycleStart = old })
+	oldWait := waitPendingRoutes
+	waitPendingRoutes = func() {}
+	t.Cleanup(func() { waitPendingRoutes = oldWait })
+
+	row := startTestRow()
+	if err := startForLaunch(&config.Config{}, row, false); err != nil {
+		t.Fatal(err)
+	}
+	want := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
+	if got != want || got.ModelID == "" {
+		t.Fatalf("target = %+v, want %+v with the row's id", got, want)
+	}
+}

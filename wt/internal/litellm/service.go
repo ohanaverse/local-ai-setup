@@ -34,7 +34,7 @@ func runRecheck(o Options) (fresh []string, ok bool) {
 	}
 }
 
-// Options tunes Apply/ApplyChange/Sync.
+// Options tunes ApplyChange/Sync.
 //   - Path    — config.yaml; "" means DefaultPath().
 //   - Restart — proxy restart hook; nil means Restart. Tests inject.
 //   - Ctx     — bounds the config.yaml lock wait; nil means no bound.
@@ -82,9 +82,10 @@ type Options struct {
 	ForceRestart bool
 }
 
-// Outcome is one id's result. Action is "routed" or "unrouted" (Apply and
-// ApplyChange) — Sync further splits "routed" into "adopted" and "rewritten"
-// where its plan says so; Err is set when the id was rejected.
+// Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
+// — Sync further splits "routed" into "adopted" and "rewritten" where its
+// plan says so; Err is set when the id was rejected. A removal that removed no
+// row has no outcome.
 type Outcome struct {
 	ID     string
 	Action string
@@ -104,15 +105,6 @@ func (o Options) path() string {
 		return o.Path
 	}
 	return DefaultPath()
-}
-
-// lookup finds id's registry model.
-func lookup(cfg *config.Config, id string) (config.Model, error) {
-	i := config.IndexModelByID(cfg.Models, id)
-	if i < 0 {
-		return config.Model{}, fmt.Errorf("model %q not found in registry", id)
-	}
-	return cfg.Models[i], nil
 }
 
 // prepareModel validates m and builds its row. m is a registry model or a
@@ -186,15 +178,25 @@ func RowFamily(cfg *config.Config, id string) string {
 
 // RegistryGap reports whether registry model m is dropped from every list
 // sync manages by a data gap rather than by choice: a non-native model whose
-// provider_id names no provider, or with no location to resolve. Sync keeps
-// such a model's row until the registry is repaired (planSync), and the sync
-// command keeps the model's whole family frozen on the same predicate.
+// provider_id names no provider, with no location to resolve, or whose
+// location resolves to something that is neither "local" nor "cloud" (a typo
+// such as "Local" — #195). Sync keeps such a model's row until the registry
+// is repaired (planSync), and the sync command keeps the model's whole family
+// frozen on the same predicate.
 func RegistryGap(cfg *config.Config, m config.Model) bool {
 	if m.Native {
 		return false
 	}
-	_, err := cfg.ResolveLocation(m)
-	return cfg.ProviderByID(m.ProviderID) == nil || err != nil
+	loc, err := cfg.ResolveLocation(m)
+	return cfg.ProviderByID(m.ProviderID) == nil || err != nil || !KnownLocation(loc)
+}
+
+// KnownLocation reports whether loc is one of the two locations the registry
+// defines. wt reads the registry and does not own its format, so any other
+// value is flagged as a gap rather than guessed at: reading "Local" as local
+// would paper over a registry modelman itself may read differently.
+func KnownLocation(loc config.Location) bool {
+	return loc == config.LocationLocal || loc == config.LocationCloud
 }
 
 // isRegistryID reports whether id names a registry model. A discovered route
@@ -221,30 +223,6 @@ type plannedRemove struct {
 	markedOnly bool
 }
 
-// Apply adds routes for `add` and removes routes for `remove` in one locked
-// read-modify-write and one restart. Per-id validation failures are reported
-// in Outcomes and do not block the rest. A missing/invalid config.yaml
-// returns (Result{}, err) with nothing changed. The file is written, and the
-// proxy restarted, only when the document actually changed.
-func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) {
-	return applyPlanned(func(*File) ([]plannedAdd, []plannedRemove) {
-		out := make([]plannedAdd, len(add))
-		for i, id := range add {
-			out[i] = plannedAdd{id: id}
-			m, err := lookup(cfg, id)
-			if err == nil {
-				out[i].row, err = prepareModel(cfg, m)
-			}
-			out[i].err = err
-		}
-		rm := make([]plannedRemove, len(remove))
-		for i, id := range remove {
-			rm[i] = plannedRemove{id: id}
-		}
-		return out, rm
-	}, o)
-}
-
 // Change is one targeted route write — the lifecycle hooks' unit (#179
 // Phase B).
 //   - Add            — models to route: registry overlays or DiscoveredModels.
@@ -266,8 +244,10 @@ type Change struct {
 // ApplyChange writes ch in one locked read-modify-write and at most one
 // restart, deciding the family removals against the document as read under
 // the lock (so a route another process just wrote is seen). Per-model build
-// failures are reported in Outcomes and do not block the rest; file-level
-// failures are Apply's.
+// failures are reported in Outcomes and do not block the rest. A missing or
+// invalid config.yaml returns (Result{}, err) with nothing changed. The file
+// is written, and the proxy restarted, only when the document actually
+// changed.
 func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	return applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove) {
 		adding := map[string]bool{}
@@ -283,7 +263,9 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 		var rm []plannedRemove
 		seen := map[string]bool{}
 		drop := func(id string, markedOnly bool) {
-			if adding[id] || seen[id] {
+			// "" names no row. It must not reach removeRows, which would
+			// match it against every marked row that has no model_name.
+			if id == "" || adding[id] || seen[id] {
 				return
 			}
 			seen[id] = true
@@ -315,9 +297,10 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	}, o)
 }
 
-// applyPlanned is Apply with the add/remove decision made by plan against the
-// document as read under the lock, so callers that derive the change from the
-// current routes (Sync) never act on a snapshot another process has since
+// applyPlanned is the one locked read-modify-write every route change goes
+// through (ApplyChange, Sync). The add/remove decision is made by plan against
+// the document as read under the lock, so a caller that derives the change
+// from the current routes never acts on a snapshot another process has since
 // changed.
 func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (Result, error) {
 	path := o.path()
@@ -337,12 +320,21 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (
 		}
 		add, remove := plan(f)
 		for _, r := range remove {
+			removed := false
 			if r.markedOnly {
-				f.RemoveMarkedRows(r.id)
+				removed = f.RemoveMarkedRows(r.id)
 			} else {
-				f.RemoveRow(r.id)
+				removed = f.RemoveRow(r.id)
 			}
-			res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unrouted"})
+			// A removal that removed nothing is not an outcome. A family clear
+			// names every registry local model of the family, routed or not;
+			// recording each as "unrouted" made the Result claim routes were
+			// removed that never existed (#195). Sync's removals come from the
+			// rows themselves, so its report — what `wt litellm sync` prints
+			// and modelman reads — never held one.
+			if removed {
+				res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unrouted"})
+			}
 		}
 		for _, a := range add {
 			if a.err != nil {

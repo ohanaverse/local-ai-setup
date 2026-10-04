@@ -374,29 +374,31 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 
 // RemoveRow deletes the rows keyed by id (no-op when absent). Rows that are
 // not mappings are never ours and are left in place.
-func (f *File) RemoveRow(id string) {
-	f.removeRows(id, func(*yaml.Node) bool { return true })
+func (f *File) RemoveRow(id string) bool {
+	return f.removeRows(id, func(*yaml.Node) bool { return true })
 }
 
 // RemoveMarkedRows deletes the rows keyed by id that carry wt's marker,
 // leaving any unmarked (hand-written) row of the same name in place.
-func (f *File) RemoveMarkedRows(id string) {
-	f.removeRows(id, IsManaged)
+func (f *File) RemoveMarkedRows(id string) bool {
+	return f.removeRows(id, IsManaged)
 }
 
-func (f *File) removeRows(id string, drop func(*yaml.Node) bool) {
+func (f *File) removeRows(id string, drop func(*yaml.Node) bool) (removed bool) {
 	ml := f.modelListSeq()
 	if ml == nil {
-		return
+		return false
 	}
 	kept := ml.Content[:0]
 	for _, row := range ml.Content {
 		if row.Kind == yaml.MappingNode && rowName(row) == id && drop(row) {
+			removed = true
 			continue
 		}
 		kept = append(kept, row)
 	}
 	ml.Content = kept
+	return removed
 }
 
 func isLoopback(n *yaml.Node) bool {

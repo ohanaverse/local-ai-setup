@@ -40,7 +40,8 @@ func opts(t *testing.T, body string) (Options, *int, string) {
 // kills in-flight agent requests.
 func TestApplyRoutesRowsAndRestartsOnce(t *testing.T) {
 	o, restarts, p := opts(t, "model_list: []\n")
-	res, err := Apply(testConfig(), []string{"ollama/gemma:9b", "openrouter/x/y"}, nil, o)
+	cfg := testConfig()
+	res, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b", "openrouter/x/y")}, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,11 +63,13 @@ func TestApplyRoutesRowsAndRestartsOnce(t *testing.T) {
 // and does not restart the proxy.
 func TestApplyIsIdempotent(t *testing.T) {
 	o, restarts, _ := opts(t, "model_list: []\n")
-	if _, err := Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, o); err != nil {
+	cfg := testConfig()
+	ch := Change{Add: localFor(cfg, "ollama/gemma:9b")}
+	if _, err := ApplyChange(cfg, ch, o); err != nil {
 		t.Fatal(err)
 	}
 	*restarts = 0
-	res, err := Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, o)
+	res, err := ApplyChange(cfg, ch, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,14 +78,19 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestApplyGateRejections pins the route gate: an unknown model and a native
-// provider are each reported per id without blocking the valid ids in the
-// same batch, and a local model is routed with no "ready" check at all
+// TestApplyGateRejections pins the route gate: a model whose provider is not
+// in the registry and a native provider are each reported per id without
+// blocking the valid ids in the same batch, and a local model is routed with no "ready" check at all
 // (#179 Phase B: the live inventory, not modelman's download flag, decides
 // what is routed — a stale flag must never cost a running model its route).
 func TestApplyGateRejections(t *testing.T) {
 	o, _, _ := opts(t, "model_list: []\n")
-	res, err := Apply(testConfig(), []string{"nope/x", "claude/sonnet", "ollama/gemma:9b", "openrouter/x/y"}, nil, o)
+	cfg := testConfig()
+	add := append([]config.Model{{ID: "nope/x", ProviderID: "nope", ModelName: "x"}}, localFor(cfg, "claude/sonnet", "ollama/gemma:9b", "openrouter/x/y")...)
+	if len(add) != 4 {
+		t.Fatalf("fixture: %d models to add, want 4 (a registry id is missing from testConfig)", len(add))
+	}
+	res, err := ApplyChange(cfg, Change{Add: add}, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,41 +100,59 @@ func TestApplyGateRejections(t *testing.T) {
 			errs[oc.ID] = oc.Err.Error()
 		}
 	}
-	if len(errs) != 2 || !strings.Contains(errs["nope/x"], "not found") || !strings.Contains(errs["claude/sonnet"], "native and is not routed") {
-		t.Fatalf("errs = %v, want only the unknown and the native model rejected", errs)
+	if len(errs) != 2 || !strings.Contains(errs["nope/x"], "unknown provider") || !strings.Contains(errs["claude/sonnet"], "native and is not routed") {
+		t.Fatalf("errs = %v, want only the unknown-provider and the native model rejected", errs)
 	}
 }
 
-// TestApplyRemovesRow covers removal and that removing a stale row
-// (present in the file, unknown to the registry) still works — the exact
-// shape of the stale Qwen3.8-27B route that motivated this work. The
-// removal is reported as "unrouted".
+// TestApplyRemovesRow covers removal: a registry id's row goes whether or not
+// it carries wt's marker (wt owns the names of registry models), a stale
+// marked row whose id the registry no longer knows goes too — the shape of
+// the stale Qwen3.8-27B route that motivated this work — and each is reported
+// as "unrouted". A hand-written row under a name the registry does not know
+// is not wt's to remove (TestApplyChangeFamilyClearKeepsHandWrittenRow and
+// its neighbours pin that side).
 func TestApplyRemovesRow(t *testing.T) {
-	o, restarts, p := opts(t, baseConfig)
-	res, err := Apply(testConfig(), nil, []string{"keep/me"}, o)
+	const body = `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+  - model_name: gone/stale
+    litellm_params: {model: openai/stale}
+    model_info: {wt_managed: true}
+  - model_name: keep/me
+    litellm_params: {model: openai/gpt-4o}
+`
+	o, restarts, p := opts(t, body)
+	res, err := ApplyChange(testConfig(), Change{Remove: []string{"ollama/gemma:9b", "gone/stale", "keep/me"}}, o)
 	if err != nil || !res.Changed || *restarts != 1 {
 		t.Fatalf("err=%v changed=%v restarts=%d", err, res.Changed, *restarts)
 	}
-	if len(res.Outcomes) != 1 || res.Outcomes[0].Action != "unrouted" {
-		t.Fatalf("outcomes = %+v, want one unrouted", res.Outcomes)
+	var unrouted []string
+	for _, oc := range res.Outcomes {
+		if oc.Action == "unrouted" {
+			unrouted = append(unrouted, oc.ID)
+		}
+	}
+	if !slices.Equal(unrouted, []string{"ollama/gemma:9b", "gone/stale"}) || len(res.Outcomes) != 2 {
+		t.Fatalf("outcomes = %+v, want exactly the registry row and the stale marked row unrouted", res.Outcomes)
 	}
 	f, _ := Open(p)
-	for _, id := range f.RoutedIDs() {
-		if id == "keep/me" {
-			t.Fatal("row not removed")
-		}
+	if ids := f.RoutedIDs(); !slices.Equal(ids, []string{"keep/me"}) {
+		t.Fatalf("routed = %v, want only the hand-written row left", ids)
 	}
 }
 
 // TestApplyFileLevelFailures pins that a missing or invalid config.yaml
 // fails the whole call with a typed error and changes nothing.
 func TestApplyFileLevelFailures(t *testing.T) {
-	_, err := Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, Options{Path: t.TempDir() + "/none.yaml"})
+	cfg := testConfig()
+	ch := Change{Add: localFor(cfg, "ollama/gemma:9b")}
+	_, err := ApplyChange(cfg, ch, Options{Path: t.TempDir() + "/none.yaml"})
 	if !errors.Is(err, ErrMissing) {
 		t.Fatalf("err = %v, want ErrMissing", err)
 	}
 	p := writeConfig(t, "model_list: nope\n")
-	_, err = Apply(testConfig(), []string{"ollama/gemma:9b"}, nil, Options{Path: p})
+	_, err = ApplyChange(cfg, ch, Options{Path: p})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("err = %v, want ErrInvalid", err)
 	}
@@ -415,7 +441,7 @@ func TestApplyRejectsEmptyModelName(t *testing.T) {
 			{ID: "llamacpp/fixed", ProviderID: "llamacpp", Location: config.LocationLocal},
 		},
 	}
-	res, err := Apply(cfg, []string{"ollama/blank", "ollama/spaces", "ollama/tab", "ollama/nl", "llamacpp/fixed"}, nil, o)
+	res, err := ApplyChange(cfg, Change{Add: cfg.Models}, o)
 	if err != nil {
 		t.Fatal(err)
 	}

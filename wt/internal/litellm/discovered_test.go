@@ -539,3 +539,52 @@ func TestSyncDiscoveredIDNeverStandsInForARegistryModel(t *testing.T) {
 		t.Fatalf("rows = %v, want the stale ollama/foo route removed", got)
 	}
 }
+
+// TestApplyChangeReportsOnlyRowsItRemoved pins #195: a removal that removes
+// nothing is not an outcome. A family clear names every registry local model
+// of the family, routed or not, and used to report each as "unrouted" — so a
+// stop on a provider whose models were never routed claimed, in its Result,
+// to have unrouted them. Nothing prints those outcomes today (the lifecycle
+// hook reads only the failures), but a Result that lists removals which never
+// happened misleads the first caller that does. An empty id in Remove was
+// reported the same way.
+func TestApplyChangeReportsOnlyRowsItRemoved(t *testing.T) {
+	const body = `model_list:
+  - model_name: mtplx/org/live
+    litellm_params: {model: openai/org/live, api_base: http://localhost:8003/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8003/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "mtplx/never-routed", ProviderID: "mtplx", ModelName: "never/routed", Location: config.LocationLocal},
+			{ID: "mtplx/also-never", ProviderID: "mtplx", ModelName: "also/never", Location: config.LocationLocal},
+		},
+	}
+	o, restarts, p := opts(t, body)
+	res, err := ApplyChange(cfg, Change{Remove: []string{"", "mtplx/never-routed"}, RemoveFamilies: []string{"mtplx"}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Outcomes) != 1 || res.Outcomes[0].ID != "mtplx/org/live" || res.Outcomes[0].Action != "unrouted" {
+		t.Fatalf("outcomes = %+v, want only the one row that existed reported unrouted", res.Outcomes)
+	}
+	if !res.Changed || *restarts != 1 {
+		t.Fatalf("changed=%v restarts=%d, want the removal written and one restart", res.Changed, *restarts)
+	}
+	if rows := readRows(t, p); len(rows) != 0 {
+		t.Fatalf("rows = %v, want none left", rows)
+	}
+
+	// Nothing to remove at all: no outcome, no write, no restart.
+	*restarts = 0
+	res, err = ApplyChange(cfg, Change{Remove: []string{""}, RemoveFamilies: []string{"mtplx"}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Outcomes) != 0 || res.Changed || *restarts != 0 {
+		t.Fatalf("outcomes=%+v changed=%v restarts=%d, want a silent no-op", res.Outcomes, res.Changed, *restarts)
+	}
+}
