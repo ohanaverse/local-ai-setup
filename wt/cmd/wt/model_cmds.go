@@ -203,7 +203,9 @@ func startCmd(a *app) *cobra.Command {
 		Short: "Start a local model",
 		Long: "Start a local model (<provider>/<name>, as with -M). With no argument, shows\n" +
 			"the full model picker over every local model that is on disk or running,\n" +
-			"registered or detected (requires a TTY); picking a running model does nothing.\n\n" +
+			"registered or detected (requires a TTY).\n\n" +
+			"A model that is already running is left running; its LiteLLM route is\n" +
+			"written if it is missing.\n\n" +
 			"If the provider's single slot is occupied, asks before replacing the running\n" +
 			"model; --replace skips the question.",
 		Example: "  wt start ollama/qwen3.8:27b-mlx\n  wt start",
@@ -285,6 +287,12 @@ func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, 
 		fmt.Fprintf(out, "wt: %s is running\n", id)
 		return nil
 	case catalog.ActionLaunch:
+		// Already running, but not necessarily started by wt: write its route
+		// if it is missing, removing nothing. Unconditional, whatever the
+		// routing toggle says — the start hook writes its route the same way,
+		// and `wt start` has no agent whose route could say whether the proxy
+		// is on its path.
+		ensureRouteBeforeLaunch(cfg, row.Model)
 		fmt.Fprintf(out, "wt: %s is already running\n", id)
 		return nil
 	default: // catalog.ActionBlock: BlockReason is non-empty by definition

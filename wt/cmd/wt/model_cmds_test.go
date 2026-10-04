@@ -406,3 +406,25 @@ func TestStopInUseCountIsTotalAcrossModels(t *testing.T) {
 		t.Errorf("omlx prompt = %q, want the family total (2) counted once, not 4", asked)
 	}
 }
+
+// TestStartRunningModelRepairsRoute pins #192: `wt start` on a model that is
+// already running — possibly started outside wt — checks its LiteLLM route
+// and waits for the proxy, instead of only reporting "already running". It
+// still never calls the start driver.
+func TestStartRunningModelRepairsRoute(t *testing.T) {
+	cfg, req := startFixture(t)
+	events := stubEnsureRoute(t)
+	var out bytes.Buffer
+	if err := runStart(&out, cfg, themes.Theme{}, "ollama/a:1", false); err != nil {
+		t.Fatal(err)
+	}
+	if req.called {
+		t.Fatal("the start driver ran for a model that is already running")
+	}
+	if got := strings.Join(*events, ","); got != "ensure:ollama/a:1,wait" {
+		t.Fatalf("events = %q, want ensure:ollama/a:1,wait", got)
+	}
+	if !strings.Contains(out.String(), "already running") {
+		t.Fatalf("out = %q, want the already-running line", out.String())
+	}
+}

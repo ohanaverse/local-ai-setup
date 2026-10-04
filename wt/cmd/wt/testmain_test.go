@@ -35,6 +35,11 @@ func TestMain(m *testing.M) {
 	lifecycleStart = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("lifecycleStart not stubbed in this test")
 	}
+	// The launch-time route check (#192): an unstubbed test that launches a
+	// running local model through LiteLLM would rewrite the developer's real
+	// config.yaml and restart their proxy. Tests that assert on it call
+	// stubEnsureRoute.
+	ensureModelRoute = func(*config.Config, config.Model) bool { return false }
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.
 	releaseSession = func() {}
@@ -78,4 +83,20 @@ func stubStartDriver(t *testing.T, err error) *startRequest {
 	}
 	t.Cleanup(func() { startModel = old })
 	return req
+}
+
+// stubEnsureRoute records, in order, each launch-time route check as
+// "ensure:<model id>" and each wait for the proxy as "wait". Both seams are
+// restored on cleanup.
+func stubEnsureRoute(t *testing.T) *[]string {
+	t.Helper()
+	var events []string
+	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
+	ensureModelRoute = func(_ *config.Config, m config.Model) bool {
+		events = append(events, "ensure:"+m.ID)
+		return true
+	}
+	waitPendingRoutes = func() { events = append(events, "wait") }
+	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes = oldEnsure, oldWait })
+	return &events
 }

@@ -47,6 +47,25 @@ var confirmReplace = promptReplace
 // is not listed yet. Tests stub it to observe that ordering without a proxy.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
 
+// ensureModelRoute is a test seam over lifecycle.EnsureModelRoute. Production
+// rewrites config.yaml and restarts the LiteLLM proxy; TestMain stubs it so no
+// test touches the developer's real proxy.
+var ensureModelRoute = lifecycle.EnsureModelRoute
+
+// ensureRouteBeforeLaunch makes sure a running local model has its LiteLLM
+// route, then waits for the proxy to carry it (#192). A model wt did not
+// start — an omlx or mtplx server started by hand, an ollama model pulled
+// since the last sync — has no route until something writes one; without this
+// the launch reaches the proxy and gets "Invalid model name". It only ever
+// adds that one route: unlike the start hook it removes nothing, so a running
+// sibling's route survives. It is a no-op for a cloud model, costs one read of
+// config.yaml when the route is already there, and never fails the launch. m
+// must be a model the probe reported running: this never starts one.
+func ensureRouteBeforeLaunch(cfg *config.Config, m config.Model) {
+	ensureModelRoute(cfg, m)
+	waitPendingRoutes()
+}
+
 // osStderr is the progress stream, a seam so tests can capture it.
 var osStderr io.Writer = os.Stderr
 
