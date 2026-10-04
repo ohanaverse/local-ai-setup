@@ -24,23 +24,34 @@ import (
 // to launchDir, either does not exist or is a different file. Everything else
 // is left alone: flags (a leading "-", including "--file=x"), absolute paths
 // and "~" forms, words that name nothing from the shell (subcommands,
-// prompts), and paths both directories resolve to the same file. launchDir
+// prompts), the bare program name a command agent (shell) runs, and paths
+// both directories resolve to the same file. Both directories are compared
+// and reported with their symbolic links resolved. launchDir
 // may be relative to shellDir, or empty when the agent inherits wt's own
 // directory, in which case nothing can differ.
 func RelativeArgNotes(agent, shellDir, launchDir string, args []string) []string {
 	if shellDir == "" || launchDir == "" || len(args) == 0 {
 		return nil
 	}
+	shellDir = physicalDir(shellDir)
 	if !filepath.IsAbs(launchDir) {
 		launchDir = filepath.Join(shellDir, launchDir)
 	}
-	launchDir = filepath.Clean(launchDir)
+	launchDir = physicalDir(launchDir)
 	if sameFile(shellDir, launchDir) {
 		return nil
 	}
+	// A driver that takes the arguments as its argv (shell) runs the first one
+	// as a program. Without a separator that is a PATH lookup, never a path in
+	// either directory, so a directory that happens to share its name ("make"
+	// beside a make/ folder) says nothing.
+	_, argv := ByName(agent).(ArgSetter)
 	var notes []string
-	for _, a := range args {
+	for i, a := range args {
 		if a == "" || strings.HasPrefix(a, "-") || strings.HasPrefix(a, "~") || filepath.IsAbs(a) {
+			continue
+		}
+		if argv && i == 0 && !strings.ContainsRune(a, filepath.Separator) {
 			continue
 		}
 		fromShell := filepath.Join(shellDir, a)
@@ -61,6 +72,19 @@ func RelativeArgNotes(agent, shellDir, launchDir string, args []string) []string
 			a, agent, launchDir, where, shellDir, fromShell))
 	}
 	return notes
+}
+
+// physicalDir resolves dir's symbolic links, so that a ".." joined onto it
+// climbs the directory the kernel would. os.Getwd reports $PWD — the spelling
+// the shell arrived by, symlinks included — and filepath.Join removes ".."
+// lexically, so "../x" joined onto a symlinked directory names the symlink's
+// parent while the shell and the agent both resolve it from the target's. A
+// directory that cannot be resolved is returned cleaned, as given.
+func physicalDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return filepath.Clean(dir)
 }
 
 // sameFile reports whether a and b name the same existing file or directory.

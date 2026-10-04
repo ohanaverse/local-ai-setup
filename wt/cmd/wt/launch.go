@@ -160,12 +160,9 @@ func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool,
 // command in, which is what they meant a relative passthrough path against.
 var shellDir = os.Getwd
 
-// launchNotesOut is where pre-launch notes are printed; a seam so tests can
-// read them.
-var launchNotesOut io.Writer = os.Stderr
-
 // runLaunch is the one way a built agent command is run: it prints the
-// pre-launch notes, then hands off to runAgentCmd. The note it carries today
+// pre-launch notes (to osStderr, the seam the start progress already uses),
+// then hands off to runAgentCmd. The note it carries today
 // is agents.RelativeArgNotes — a passthrough argument that names a file from
 // the directory the command was typed in, but not from the worktree the agent
 // starts in, would otherwise fail (or open the wrong file) with nothing to
@@ -174,7 +171,7 @@ var launchNotesOut io.Writer = os.Stderr
 func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string) error {
 	if wd, err := shellDir(); err == nil {
 		for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
-			fmt.Fprintln(launchNotesOut, note)
+			fmt.Fprintln(osStderr, note)
 		}
 	}
 	return runAgentCmd(cmd, agent, m, cfg, pp)

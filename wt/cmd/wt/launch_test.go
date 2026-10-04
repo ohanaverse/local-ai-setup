@@ -1962,10 +1962,10 @@ func relativeArgFixture(t *testing.T) (launch, other string, notes *bytes.Buffer
 	t.Setenv("MODELMAN_REGISTRY", "")
 
 	notes = &bytes.Buffer{}
-	oldDir, oldOut := shellDir, launchNotesOut
+	oldDir, oldOut := shellDir, osStderr
 	shellDir = func() (string, error) { return shell, nil }
-	launchNotesOut = notes
-	t.Cleanup(func() { shellDir, launchNotesOut = oldDir, oldOut })
+	osStderr = notes
+	t.Cleanup(func() { shellDir, osStderr = oldDir, oldOut })
 	return launch, other, notes
 }
 

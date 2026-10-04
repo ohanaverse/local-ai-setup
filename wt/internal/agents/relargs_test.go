@@ -117,3 +117,57 @@ func TestRelativeArgNotesResolvesARelativeLaunchDir(t *testing.T) {
 		t.Fatalf("launch dir \"..\": notes = %q, want one", notes)
 	}
 }
+
+// TestRelativeArgNotesResolvesASymlinkedShellDir pins that ".." is climbed the
+// way the kernel climbs it. os.Getwd reports $PWD, so a shell that arrived
+// through a symlink hands wt the symlink's spelling; joining "../../other"
+// onto that lexically names the symlink's parent, where nothing exists, and
+// the real mistake would go unreported — or be reported with an absolute path
+// that is not the one the user meant.
+func TestRelativeArgNotesResolvesASymlinkedShellDir(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := filepath.Join(root, "real", "repo")
+	other := filepath.Join(root, "real", "other")
+	for _, d := range []string{filepath.Join(launch, "wt"), other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(launch, link); err != nil {
+		t.Fatal(err)
+	}
+	notes := RelativeArgNotes("opencode", filepath.Join(link, "wt"), launch, []string{"../../other"})
+	if len(notes) != 1 || !strings.Contains(notes[0], other+";") {
+		t.Fatalf("notes = %q, want one naming %s", notes, other)
+	}
+}
+
+// TestRelativeArgNotesSkipsACommandAgentsProgramName pins that the program a
+// command agent runs is not mistaken for a path: `shell-wt -- make docs` looks
+// "make" up on PATH whatever directory it starts in, so a folder of that name
+// beside the shell must not draw a note. Its other arguments, and a program
+// given as a path, are still checked.
+func TestRelativeArgNotesSkipsACommandAgentsProgramName(t *testing.T) {
+	shell, launch, _ := relArgsTree(t)
+	for _, d := range []string{"make", "scripts"} {
+		if err := os.Mkdir(filepath.Join(shell, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if notes := RelativeArgNotes("shell", shell, launch, []string{"make", "all"}); len(notes) != 0 {
+		t.Errorf("bare program name: notes = %q, want none", notes)
+	}
+	if notes := RelativeArgNotes("shell", shell, launch, []string{"cat", "make"}); len(notes) != 1 {
+		t.Errorf("later argument: notes = %q, want one", notes)
+	}
+	if notes := RelativeArgNotes("shell", shell, launch, []string{"./scripts"}); len(notes) != 1 {
+		t.Errorf("program given as a path: notes = %q, want one", notes)
+	}
+	if notes := RelativeArgNotes("claude", shell, launch, []string{"make"}); len(notes) != 1 {
+		t.Errorf("an agent's first argument: notes = %q, want one", notes)
+	}
+}

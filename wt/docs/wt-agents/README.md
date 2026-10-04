@@ -153,8 +153,10 @@ wt: note: "../../other-project" is a relative path. opencode starts in <repo>, w
 
 Launched from the picker, the note is printed when the agent takes the
 terminal, above the agent's own output. Flags (anything starting with `-`,
-including `--file=../x`), absolute paths, and words that name nothing from
-your directory are never flagged.
+including `--file=../x`), absolute paths, words that name nothing from your
+directory, and the bare program name `shell-wt` runs (`make` in
+`shell-wt -- make docs`) are never flagged. Paths in the note have their
+symbolic links resolved.
 
 ## Post-run summary line
 
