@@ -614,11 +614,15 @@ func TestStartRouteChangeWithoutModelIDKeepsTheFallback(t *testing.T) {
 	}
 }
 
-// TestEnsureRouteWritesTheStartHooksChange pins that the launch-time ensure
-// and the start hook write the same change: the model's route and, for a
-// single-model provider, its family cleared. It also pins the one line a
-// changed write prints.
-func TestEnsureRouteWritesTheStartHooksChange(t *testing.T) {
+// TestEnsureRouteAddsOnlyTheModelsRoute pins that the launch-time ensure
+// routes the model the start hook would, and removes nothing — not even a
+// single-model provider's family. Nothing was stopped on this path, and an
+// omlx/mtplx server can list sibling variants as running together: a family
+// clear here would delete a running sibling's route, so alternating launches
+// on two variants would each rewrite config.yaml, bounce the proxy and leave a
+// live session on the other with "Invalid model name". It also pins the one
+// line a changed write prints.
+func TestEnsureRouteAddsOnlyTheModelsRoute(t *testing.T) {
 	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
 	changed := EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"})
 	WaitPendingRoutes()
@@ -629,8 +633,8 @@ func TestEnsureRouteWritesTheStartHooksChange(t *testing.T) {
 		t.Fatalf("calls = %+v, want one", *calls)
 	}
 	c := (*calls)[0]
-	if !slices.Equal(c.add, []string{"mtplx/Y--Q35"}) || len(c.remove) != 0 || !slices.Equal(c.families, []string{"mtplx"}) {
-		t.Fatalf("call = %+v, want add [mtplx/Y--Q35] and the mtplx family cleared", c)
+	if !slices.Equal(c.add, []string{"mtplx/Y--Q35"}) || len(c.remove) != 0 || len(c.families) != 0 {
+		t.Fatalf("call = %+v, want add [mtplx/Y--Q35] and no removal: the ensure must not clear a running sibling's route", c)
 	}
 	if got, want := warn.String(), "wt: LiteLLM route for mtplx/Y--Q35 updated\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)

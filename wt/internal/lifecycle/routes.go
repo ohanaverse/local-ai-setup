@@ -128,17 +128,25 @@ func routeModel(cfg *config.Config, t Target) config.Model {
 // has no route until something writes one, so an agent launched on it gets
 // "Invalid model name" from the proxy.
 //
-// The change is StartRouteChange, the one the start hook writes, so the two
-// cannot name a model's route differently. Unlike Start it never starts or
-// stops anything: a caller holding a stale probe gets at worst a route for a
-// model that has since stopped, which the next sync or start removes.
+// It routes the model the start hook would (StartRouteChange's Add), so the
+// two cannot name a model's route differently — and it removes nothing. The
+// start hook also clears a single-model provider's family, which is safe
+// there because Start has just stopped or refused any occupant. The ensure
+// has no such guard: an omlx or mtplx server can list sibling variants as
+// running together, and sync routes all of them, so a clear here would delete
+// a running sibling's route and bounce the proxy on every alternating launch.
+// Stale sibling routes are left to the next start, stop or sync.
+//
+// Unlike Start it never starts or stops anything: a caller holding a stale
+// probe gets at worst a route for a model that has since stopped, which the
+// next sync or start removes.
 //
 // It never fails the caller: a failed write is a warning (applyAndReport) and
 // a missing config.yaml is silent. It reports whether config.yaml changed, and
 // says so in one line when it did. The proxy restart that a change triggers is
 // asynchronous — a caller about to use the proxy owes WaitPendingRoutes().
 func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
-	ch := StartRouteChange(cfg, t)
+	ch := litellm.Change{Add: StartRouteChange(cfg, t).Add}
 	changed := applyAndReport(ctx, cfg, ch, restartIfChanged)
 	if changed {
 		fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
