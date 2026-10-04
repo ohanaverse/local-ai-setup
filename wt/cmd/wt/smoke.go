@@ -153,12 +153,24 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		// and removes nothing; a no-op for a cloud target.
 		ensureRouteBeforeLaunch(a.cfg, m)
 	}
+	stderr := cmd.ErrOrStderr()
+	// Every row's directory, swept once more when the run ends: a row removes
+	// its own directory at once, but a background hook an agent leaves behind
+	// can write into it afterwards and bring it back. Registered before the
+	// stop flow so that it runs after it — the time the stop picker takes is
+	// time a late writer has had to finish. A directory that cannot be removed
+	// is named, since it holds whatever an unsupervised agent wrote.
+	var rowDirs []string
+	defer func() {
+		for _, d := range smoke.SweepRowDirs(rowDirs) {
+			fmt.Fprintf(stderr, "wt: could not remove the smoke directory %s\n", d)
+		}
+	}()
 	// Registered only once the start step succeeded: a failed start returns its
 	// error without an interactive stop picker burying it.
 	defer smokeStopFlow(a.cfg, jsonOut)
 
 	runID := smoke.NewRunID()
-	stderr := cmd.ErrOrStderr()
 
 	// Reuse newApp()'s already-loaded profiles.toml state instead of
 	// loading and re-validating the file a second time. If profiles.toml
@@ -176,11 +188,6 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
-	// Every row's directory, swept once more when the run ends: a row removes
-	// its own directory at once, but a background hook an agent leaves behind
-	// can write into it afterwards and bring it back.
-	var rowDirs []string
-	defer func() { smoke.SweepRowDirs(rowDirs) }()
 	for _, agentName := range agentsToRun {
 		prompt, sentinel := promptOverride, ""
 		if promptOverride == "" {
@@ -206,9 +213,15 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		rowDir, removeRowDir := cwd, func() {}
 		if !inPlace {
 			// One directory per row, so one agent's leftovers cannot reach
-			// the next agent's run.
-			if rowDir, removeRowDir, err = smoke.NewRowDir(); err != nil {
-				return false, err
+			// the next agent's run. A directory that cannot be created fails
+			// its own row: returning the error here would throw away the
+			// report of every row that has already run.
+			var dirErr error
+			if rowDir, removeRowDir, dirErr = smoke.NewRowDir(); dirErr != nil {
+				r := smoke.RowResult{Agent: agentName, Model: m.ID, Status: smoke.StatusFail, Err: dirErr}
+				logSmokeResult(stderr, r)
+				rows = append(rows, r)
+				continue
 			}
 			rowDirs = append(rowDirs, rowDir)
 		}

@@ -518,7 +518,8 @@ func NewRowDir() (dir string, cleanup func(), err error) {
 	return dir, cleanup, nil
 }
 
-const (
+// Variables rather than constants so a test can shorten sweepLimit.
+var (
 	// sweepPoll is how often SweepRowDirs re-checks the row directories.
 	sweepPoll = 100 * time.Millisecond
 	// sweepQuiet is how long every directory must have stayed gone before the
@@ -538,21 +539,30 @@ const (
 // just removed (#193). Whatever such a process writes after the sweep lands
 // in the system temp directory, never in the caller's checkout; the sweep
 // only keeps the common case tidy.
-func SweepRowDirs(dirs []string) {
+//
+// It returns the directories its last pass could not remove (an agent left a
+// read-only tree behind, say), so the caller can name them instead of leaving
+// an unsupervised agent's output behind in silence. A failed removal is
+// retried like a directory that came back: it also fails while a late writer
+// is still adding files.
+func SweepRowDirs(dirs []string) (left []string) {
 	if len(dirs) == 0 {
-		return
+		return nil
 	}
 	deadline := time.Now().Add(sweepLimit)
 	quietSince := time.Now()
 	for {
+		left = left[:0]
 		for _, d := range dirs {
 			if _, err := os.Lstat(d); err == nil {
-				_ = os.RemoveAll(d)
+				if os.RemoveAll(d) != nil {
+					left = append(left, d)
+				}
 				quietSince = time.Now()
 			}
 		}
 		if time.Since(quietSince) >= sweepQuiet || time.Now().After(deadline) {
-			return
+			return left
 		}
 		time.Sleep(sweepPoll)
 	}

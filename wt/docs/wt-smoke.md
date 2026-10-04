@@ -100,8 +100,11 @@ your checkout.
 An agent can leave a background process behind that writes into its working
 directory after it exits (a session-save hook, for example). `wt smoke`
 removes each row's directory when the row ends and sweeps them all once more
-at the end of the run; anything written later than that is left in the
-system temp directory, under a `wt-smoke-*` name.
+at the end of the run (after the stop picker); anything written later than
+that is left in the system temp directory, under a `wt-smoke-*` name. A
+directory the sweep cannot remove is named on stderr (`wt: could not remove
+the smoke directory <path>`). A row whose directory cannot be created is FAIL
+with that reason; the other rows still run and the report is still printed.
 
 The temporary directory limits where a *relative* write lands. It is not a
 sandbox: an agent with permissions off can still write to an absolute path.

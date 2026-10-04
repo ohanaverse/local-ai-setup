@@ -856,6 +856,9 @@ func TestSweepRowDirsRemovesWhatALateWriterRecreates(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanup()
+	// The sweep races a timed writer: should it ever lose, don't leave the
+	// directory behind in the system temp directory.
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -888,5 +891,37 @@ func TestSweepRowDirsReturnsPromptlyWhenNothingIsLeft(t *testing.T) {
 	SweepRowDirs([]string{dir})
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("a sweep with nothing to remove took %s", d)
+	}
+}
+
+// TestSweepRowDirsReportsWhatItCannotRemove pins the sweep's return value: a
+// directory an agent left unremovable (a read-only tree) is handed back so
+// `wt smoke` can name it, rather than an unsupervised agent's output staying
+// in the temp directory with nothing said.
+func TestSweepRowDirsReportsWhatItCannotRemove(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can remove a read-only tree")
+	}
+	oldLimit := sweepLimit
+	sweepLimit = 250 * time.Millisecond
+	t.Cleanup(func() { sweepLimit = oldLimit })
+
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	gone := filepath.Join(t.TempDir(), "gone")
+
+	left := SweepRowDirs([]string{dir, gone})
+	if len(left) != 1 || left[0] != dir {
+		t.Fatalf("left = %v, want only %s", left, dir)
 	}
 }

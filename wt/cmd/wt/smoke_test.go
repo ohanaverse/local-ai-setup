@@ -691,9 +691,9 @@ func TestSmokeCmdRunningPinEnsuresRouteBeforeRows(t *testing.T) {
 }
 
 // smokeRowDirs runs `wt smoke` on the fixture's running model with a stubbed
-// agent run and returns, per row, the directory the agent was given, whether
-// it was a git repository while the row ran, and whether it still exists once
-// the command has returned. extraArgs follow the model id.
+// agent run and returns the directory the (single) row's agent was given,
+// whether it was a git repository while the row ran, and whether it still
+// exists once the command has returned. cwdFlag passes --cwd.
 func smokeRowDirs(t *testing.T, cwdFlag bool) (dir string, wasGitRepo, existsAfter bool) {
 	t.Helper()
 	cfg := smokeFixtureConfig(t)
@@ -772,5 +772,52 @@ func TestSmokeCmdCwdFlagRunsInPlace(t *testing.T) {
 	}
 	if !existsAfter {
 		t.Fatal("smoke removed the working directory")
+	}
+}
+
+// TestSmokeCmdRowDirFailureFailsTheRow pins what a row directory that cannot
+// be created costs: that row FAILs with the reason and the report is still
+// printed. Returning the error instead would discard every row that had
+// already run — minutes of a local model's time — and leave a --json caller
+// with no report at all.
+func TestSmokeCmdRowDirFailureFailsTheRow(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	stubEnsureRoute(t)
+	oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
+	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY, smokeExit = oldRel, oldPick, oldTTY, oldExit })
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) {}
+	stdinTTY = func() bool { return false }
+	exitCode := 0
+	smokeExit = func(code int) { exitCode = code }
+	ran := false
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		ran = true
+		*cleanup = func() error { return nil }
+		return smoke.StubOutcome("ok", 0)
+	}))
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx", "--json"})
+	// Set last: a temp root that does not exist makes os.MkdirTemp fail.
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("smoke returned %v instead of reporting the row", err)
+	}
+	if ran {
+		t.Fatal("the agent ran although its row directory could not be created")
+	}
+	var report smokeJSONReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("no JSON report: %v\n%s", err, out.String())
+	}
+	if len(report.Rows) != 1 || report.Rows[0].Status != string(smoke.StatusFail) || !strings.Contains(report.Rows[0].Error, "smoke directory") {
+		t.Fatalf("rows = %+v, want one FAIL row naming the smoke directory", report.Rows)
+	}
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
 	}
 }
