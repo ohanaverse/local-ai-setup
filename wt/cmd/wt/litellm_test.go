@@ -1252,6 +1252,54 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 	}
 }
 
+// TestEnsureRouteChangeIsIdempotent pins "a launch whose route already exists
+// changes nothing" against the real litellm.ApplyChange: the Add-only change
+// the launch-time route check writes (lifecycle.EnsureRoute, #192) reports
+// Changed on the first write and not on the second, which leaves config.yaml
+// byte-for-byte as it was. Changed is what triggers the proxy restart, so a
+// second write that reported a change would bounce the proxy on every launch.
+func TestEnsureRouteChangeIsIdempotent(t *testing.T) {
+	p := litellmEnv(t, "model_list: []\n")
+	cfg := litellmTestConfig()
+	target := lifecycle.Target{ProviderID: "ollama", ModelName: "gemma:9b", ModelID: "ollama/gemma:9b"}
+	ch := litellm.Change{Add: lifecycle.StartRouteChange(cfg, target).Add}
+
+	res, err := litellm.ApplyChange(cfg, ch, litellm.Options{NoRestart: true})
+	if err != nil || !res.Changed {
+		t.Fatalf("first write: changed=%v err=%v, want the route written", res.Changed, err)
+	}
+	want := []litellm.RowInfo{{ID: "ollama/gemma:9b", Managed: true}}
+	f, err := litellm.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Rows(); !slices.Equal(got, want) {
+		t.Fatalf("rows after the first write = %v, want %v", got, want)
+	}
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err = litellm.ApplyChange(cfg, ch, litellm.Options{NoRestart: true})
+	if err != nil || res.Changed {
+		t.Fatalf("second write: changed=%v err=%v, want nothing changed", res.Changed, err)
+	}
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("config.yaml changed on the second write:\n--- before\n%s\n--- after\n%s", before, after)
+	}
+	if f, err = litellm.Open(p); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Rows(); !slices.Equal(got, want) {
+		t.Errorf("rows after the second write = %v, want %v", got, want)
+	}
+}
+
 // TestUntrustedFamilies pins which families sync freezes: every family whose
 // probe RAN and came back neither OK nor refused (Down) — partial or
 // unreachable — so their discovered routes, which carry no registry id the

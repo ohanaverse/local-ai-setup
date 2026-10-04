@@ -641,10 +641,11 @@ func TestEnsureRouteAddsOnlyTheModelsRoute(t *testing.T) {
 	}
 }
 
-// TestEnsureRouteQuietWhenNothingChanged covers a route that is already
-// there and a discovered id served by a hand-written row (ApplyChange skips
-// it): both come back unchanged, so nothing prints and the proxy is left
-// alone.
+// TestEnsureRouteQuietWhenNothingChanged pins that a write reporting no
+// change prints nothing and restarts nothing, whatever the reason it was
+// unchanged. The write is stubbed, so why ApplyChange leaves a file alone
+// (the route is already there, a hand-written row holds the name) is not
+// exercised here.
 func TestEnsureRouteQuietWhenNothingChanged(t *testing.T) {
 	_, warn := stubRoutes(t, litellm.Result{Changed: false}, nil)
 	restarts := 0

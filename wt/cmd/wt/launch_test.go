@@ -1842,6 +1842,54 @@ func TestLaunchFilteredEnsuresRouteForRunningLocalModel(t *testing.T) {
 	}
 }
 
+// TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm pins that the
+// launch-time route check (#192) is gated on the per-model resolved route,
+// not on the routing toggle. codex speaks only openai-responses, which the
+// ollama provider does not serve, so ResolveRoute forces LiteLLM with the
+// toggle off — the one case where route.Litellm and cfg.IsLitellm()
+// disagree. The agent dials the proxy, so the model's route must be checked
+// and the proxy waited for; a gate on the toggle would skip both.
+func TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		// No Protocols set: EffectiveProtocols defaults to openai-chat only,
+		// which codex's openai-responses never overlaps.
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+		Models: []config.Model{
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "codex", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	if cfg.IsLitellm() {
+		t.Fatal("fixture: the routing toggle must be off")
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/remote-only-model", Artifact: "remote-only-model", ModelName: "remote-only-model", Registered: true, Running: true},
+		},
+	})
+	events := stubEnsureRoute(t)
+
+	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered with protocol-forced litellm: %v", err)
+	}
+	if got := strings.Join(*events, ","); got != "ensure:ollama/remote-only-model,wait" {
+		t.Fatalf("events = %q, want ensure:ollama/remote-only-model,wait", got)
+	}
+}
+
 // TestLaunchFilteredSkipsEnsureOnDirectRoute pins that a launch dialing the
 // provider directly never touches config.yaml: the route it would write is
 // not on this launch's path. The provider speaks claude's wire protocol and

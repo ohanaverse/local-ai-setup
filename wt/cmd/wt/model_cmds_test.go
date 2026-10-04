@@ -217,16 +217,18 @@ func startFixture(t *testing.T) (*config.Config, *startRequest) {
 	return modelCmdConfig(), stubStartDriver(t, nil)
 }
 
-// TestStartRunningModelIsNoOp verifies `wt start` on an already-running model
-// says so and never calls the start driver — starting twice must be harmless.
-func TestStartRunningModelIsNoOp(t *testing.T) {
+// TestStartRunningModelDoesNotStartIt verifies `wt start` on an already-running
+// model says so and never calls the start driver — starting twice must be
+// harmless. It is not a no-op overall: the model's missing LiteLLM route is
+// still written (#192, TestStartRunningModelRepairsRoute).
+func TestStartRunningModelDoesNotStartIt(t *testing.T) {
 	cfg, req := startFixture(t)
 	var out bytes.Buffer
 	if err := runStart(&out, cfg, themes.Theme{}, "ollama/a:1", false); err != nil {
 		t.Fatal(err)
 	}
 	if req.called || !strings.Contains(out.String(), "already running") {
-		t.Fatalf("called = %v out = %q, want a no-op note", req.called, out.String())
+		t.Fatalf("called = %v out = %q, want the already-running note and no start", req.called, out.String())
 	}
 }
 
@@ -285,10 +287,11 @@ func TestStopUnknownProviderErrorsBeforeProbe(t *testing.T) {
 	}
 }
 
-// TestStartNoArgUsesPickerAndRunningPickIsNoOp verifies the no-arg flow needs a
-// TTY, lists every local model via the shared picker, starts an idle pick, and
-// treats a running pick as a no-op (spec: selecting a running model does nothing).
-func TestStartNoArgUsesPickerAndRunningPickIsNoOp(t *testing.T) {
+// TestStartNoArgUsesPickerAndRunningPickDoesNotStartIt verifies the no-arg flow
+// needs a TTY, lists every local model via the shared picker, starts an idle
+// pick, and never calls the start driver for a running pick (which gets only
+// the launch-time route check, #192).
+func TestStartNoArgUsesPickerAndRunningPickDoesNotStartIt(t *testing.T) {
 	cfg, req := startFixture(t)
 	oldTTY, oldPick := stdinTTY, pickStartModelTUI
 	t.Cleanup(func() { stdinTTY, pickStartModelTUI = oldTTY, oldPick })
@@ -317,7 +320,7 @@ func TestStartNoArgUsesPickerAndRunningPickIsNoOp(t *testing.T) {
 	*req = startRequest{}
 	pick = "ollama/a:1"
 	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err != nil || req.called {
-		t.Fatalf("running pick: err = %v called = %v, want a no-op", err, req.called)
+		t.Fatalf("running pick: err = %v called = %v, want no start", err, req.called)
 	}
 }
 
