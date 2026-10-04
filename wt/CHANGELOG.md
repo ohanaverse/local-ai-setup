@@ -132,8 +132,10 @@
   in the picker and in `wt smoke` — and `wt start <id>` on a running model now
   repairs the route instead of only reporting `already running`. It prints
   `wt: LiteLLM route for <id> updated` when it wrote one. A hand-written row
-  is never replaced, and nothing is written when the launch dials the provider
-  directly.
+  whose name is not a registry model id is never replaced (one named like a
+  registry id is adopted, as `wt litellm sync` does — guide 04,
+  `docs/guides/04-litellm-config.md`, Gotchas), and nothing is written when
+  the launch dials the provider directly.
 - The start hook writes a model's route under the id the picker showed. An
   artifact whose name resembles a registry model's (`org/name` beside `name`)
   was routed under the registry model's id (#195).
