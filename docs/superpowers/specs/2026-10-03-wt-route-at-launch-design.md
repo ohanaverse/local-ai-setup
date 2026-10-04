@@ -118,7 +118,7 @@ In the TUI the picker must not freeze during that restart, and the check's outpu
 - The write itself runs on the update goroutine. It is a fast locked read of `config.yaml`, plus a write when the route is missing.
 - When the write changed nothing, the launch continues at once with no extra screen.
 - When it changed the file, the picker enters a routing phase that shows `Updating the LiteLLM route for <id> — restarting the proxy (<elapsed>)`. The wait for the proxy runs in a command, and the launch continues when it finishes. The restart cannot be cancelled, so the only key is ctrl+c to quit.
-- Route output is captured while the picker owns the terminal (`lifecycle.SetRouteOutput`). It is printed on the real terminal when the agent takes it, or after wt exits if no launch happened, and its last line is shown in the picker's status line.
+- Route output is captured while the picker owns the terminal (`lifecycle.SetRouteOutput`). It is printed on the real terminal when the agent takes it, or after wt exits if no launch happened, and its last line is shown in the status line of the picker and of the resume prompt.
 
 ## Error handling
 
