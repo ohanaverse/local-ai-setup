@@ -89,15 +89,31 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 // for the same model (cmd/wt) — if the two derivations drift, every sync
 // after a start removes the hook's route and adds its own.
 func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
-	m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName)
-	if !ok {
-		m = litellm.DiscoveredModel(t.ProviderID, t.ModelName)
-	}
-	ch := litellm.Change{Add: []config.Model{m}}
+	ch := litellm.Change{Add: []config.Model{routeModel(cfg, t)}}
 	if SingleModel(t.ProviderID) {
 		ch.RemoveFamilies = []string{localmodels.Family(t.ProviderID)}
 	}
 	return ch
+}
+
+// routeModel is the model a target's route is written for. A target that
+// carries its row's id is resolved by that id alone: the registry model with
+// exactly that id, else the discovered model. ModelFor's lenient name match is
+// skipped on purpose — an artifact whose name merely resembles a registry
+// model's ("org/name" beside "name") has its own discovered id, and matching
+// it to the registry model would route an id the picker never showed (#195).
+// Only a target with no id falls back to ModelFor.
+func routeModel(cfg *config.Config, t Target) config.Model {
+	if t.ModelID != "" {
+		if i := config.IndexModelByID(cfg.Models, t.ModelID); i >= 0 {
+			return cfg.Models[i]
+		}
+		return litellm.DiscoveredModel(t.ProviderID, t.ModelName)
+	}
+	if m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName); ok {
+		return m
+	}
+	return litellm.DiscoveredModel(t.ProviderID, t.ModelName)
 }
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model

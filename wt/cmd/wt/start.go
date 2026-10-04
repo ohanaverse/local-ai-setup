@@ -147,7 +147,7 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	began := time.Now()
 	report := startProgress(id, done, began)
 
-	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName}
+	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
 	opts := lifecycle.Options{Progress: report}
 
 	err := lifecycleStart(ctx, cfg, target, opts)

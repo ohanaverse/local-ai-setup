@@ -190,7 +190,7 @@ func TestEnterOnStartRowBeginsStart(t *testing.T) {
 		t.Fatalf("startModel calls = %d, want 1", calls.len())
 	}
 	c := calls.at(0)
-	if c.target != (lifecycle.Target{ProviderID: "ollama", ModelName: "gemma4:9b"}) {
+	if c.target != (lifecycle.Target{ProviderID: "ollama", ModelName: "gemma4:9b", ModelID: "ollama/gemma4:9b"}) {
 		t.Errorf("target = %+v, want ollama/gemma4:9b pair", c.target)
 	}
 	if c.opts.AllowReplace {
@@ -302,7 +302,7 @@ func TestReplaceConfirmProceedReissuesStartWithAllowReplace(t *testing.T) {
 		t.Error("second call must have AllowReplace == true")
 	}
 	c := calls.at(1)
-	if c.target != (lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8"}) {
+	if c.target != (lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", ModelID: "omlx/qwen3.8"}) {
 		t.Errorf("second target = %+v, want the same row", c.target)
 	}
 }

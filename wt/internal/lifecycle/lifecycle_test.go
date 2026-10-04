@@ -85,22 +85,22 @@ func TestOccupantRules(t *testing.T) {
 		running("mtplx", "mtplx/m1", "Org/M1"),
 	}}
 
-	if _, ok := Occupant(Target{"ollama", "b:2b"}, snap); ok {
+	if _, ok := Occupant(Target{ProviderID: "ollama", ModelName: "b:2b"}, snap); ok {
 		t.Error("ollama must never have an occupant")
 	}
-	if occ, ok := Occupant(Target{"omlx", "Qwen-4bit"}, snap); !ok || occ.ModelID != "omlx-6bit/six" {
+	if occ, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, snap); !ok || occ.ModelID != "omlx-6bit/six" {
 		t.Errorf("omlx occupant = %+v ok=%v, want the running omlx-6bit model (one domain)", occ, ok)
 	}
-	if _, ok := Occupant(Target{"omlx", "Six-6bit"}, snap); ok {
+	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Six-6bit"}, snap); ok {
 		t.Error("the target itself (matching by lenient name) must not be its own occupant")
 	}
-	if occ, ok := Occupant(Target{"mtplx", "Org/M2"}, snap); !ok || occ.ModelID != "mtplx/m1" {
+	if occ, ok := Occupant(Target{ProviderID: "mtplx", ModelName: "Org/M2"}, snap); !ok || occ.ModelID != "mtplx/m1" {
 		t.Errorf("mtplx occupant = %+v ok=%v", occ, ok)
 	}
-	if _, ok := Occupant(Target{"mtplx", "Org/M1"}, snap); ok {
+	if _, ok := Occupant(Target{ProviderID: "mtplx", ModelName: "Org/M1"}, snap); ok {
 		t.Error("mtplx target already running must not be its own occupant")
 	}
-	if _, ok := Occupant(Target{"omlx", "Qwen-4bit"}, localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "omlx", ModelName: "Idle-4bit"}}}); ok {
+	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "omlx", ModelName: "Idle-4bit"}}}); ok {
 		t.Error("a non-running entry is not an occupant")
 	}
 }
@@ -112,7 +112,7 @@ func TestStartAlreadyRunningIsNoOp(t *testing.T) {
 	var calls []string
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/q", "Qwen-4bit")}}
 	var stages []Stage
-	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{"omlx", "Qwen-4bit"}, Options{Progress: func(s Stage) { stages = append(stages, s) }})
+	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, Options{Progress: func(s Stage) { stages = append(stages, s) }})
 	if err != nil || len(calls) != 0 || len(stages) != 0 {
 		t.Errorf("err=%v calls=%v stages=%v, want no-op", err, calls, stages)
 	}
@@ -124,7 +124,7 @@ func TestStartAlreadyRunningIsNoOp(t *testing.T) {
 func TestStartNeverReplacesSilently(t *testing.T) {
 	var calls []string
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/old", "Old-4bit")}}
-	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{"omlx", "New-4bit"}, Options{})
+	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{ProviderID: "omlx", ModelName: "New-4bit"}, Options{})
 	var occ *OccupiedError
 	if !errors.As(err, &occ) || occ.Occupant.ModelID != "omlx/old" {
 		t.Fatalf("err = %v, want *OccupiedError for omlx/old", err)
@@ -141,7 +141,7 @@ func TestStartReplacesInOrderWhenAllowed(t *testing.T) {
 	var calls []string
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("mtplx", "mtplx/old", "Org/Old")}}
 	var stages []Stage
-	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{"mtplx", "Org/New"},
+	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{ProviderID: "mtplx", ModelName: "Org/New"},
 		Options{AllowReplace: true, Progress: func(s Stage) { stages = append(stages, s) }})
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestStartReplacesInOrderWhenAllowed(t *testing.T) {
 func TestStartOllamaIgnoresOtherRunningModels(t *testing.T) {
 	var calls []string
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("ollama", "ollama/a", "a:1b")}}
-	if err := start(context.Background(), fakeEnv(snap, false, &calls), &config.Config{}, Target{"ollama", "b:2b"}, Options{}); err != nil {
+	if err := start(context.Background(), fakeEnv(snap, false, &calls), &config.Config{}, Target{ProviderID: "ollama", ModelName: "b:2b"}, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(calls, []string{"start:b:2b"}) {
@@ -176,7 +176,7 @@ func TestStartStopFailureDoesNotStart(t *testing.T) {
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/old", "Old-4bit")}}
 	e := fakeEnv(snap, true, &calls)
 	e.backends["omlx"].(*fakeBackend).stopErr = errors.New("still listening")
-	err := start(context.Background(), e, &config.Config{}, Target{"omlx", "New-4bit"}, Options{AllowReplace: true})
+	err := start(context.Background(), e, &config.Config{}, Target{ProviderID: "omlx", ModelName: "New-4bit"}, Options{AllowReplace: true})
 	if err == nil || len(calls) != 1 || calls[0] != "stop" {
 		t.Errorf("err=%v calls=%v, want an error after only a stop call", err, calls)
 	}
@@ -188,7 +188,7 @@ func TestStartStopFailureDoesNotStart(t *testing.T) {
 func TestStartUnsupportedProvider(t *testing.T) {
 	var calls []string
 	for _, id := range []string{"mlx_lm_server", "llamacpp", "nope"} {
-		err := start(context.Background(), fakeEnv(localmodels.Snapshot{}, true, &calls), &config.Config{}, Target{id, "x"}, Options{})
+		err := start(context.Background(), fakeEnv(localmodels.Snapshot{}, true, &calls), &config.Config{}, Target{ProviderID: id, ModelName: "x"}, Options{})
 		var u *UnsupportedError
 		if !errors.As(err, &u) {
 			t.Errorf("%s: err = %v, want *UnsupportedError", id, err)

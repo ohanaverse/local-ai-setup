@@ -579,3 +579,37 @@ func TestBounceRoutesLeavesConfigAlone(t *testing.T) {
 		t.Fatal("bounceRoutes did not restart the proxy")
 	}
 }
+
+// TestStartRouteChangeUsesTheRowsModelID pins #195: an artifact whose name
+// fuzzy-matches a registry model ("org/Y/Q35" ends in "/Y/Q35") is a distinct
+// model with its own discovered id. With the row's id carried in Target the
+// route is written under that id; the lenient ModelFor fallback would route
+// the registry model mtplx/Y--Q35, so the picker and the hook would disagree.
+func TestStartRouteChangeUsesTheRowsModelID(t *testing.T) {
+	cfg := routesCfg()
+	ch := StartRouteChange(cfg, Target{ProviderID: "mtplx", ModelName: "org/Y/Q35", ModelID: "mtplx/org/Y/Q35"})
+	if len(ch.Add) != 1 || ch.Add[0].ID != "mtplx/org/Y/Q35" {
+		t.Fatalf("add = %+v, want the discovered id mtplx/org/Y/Q35", ch.Add)
+	}
+	if !slices.Equal(ch.RemoveFamilies, []string{"mtplx"}) {
+		t.Errorf("families = %v, want the single-model family cleared", ch.RemoveFamilies)
+	}
+}
+
+// TestStartRouteChangeExactRegistryID pins the other half: a ModelID that IS
+// a registry id routes that registry model, whatever its ModelName spelling.
+func TestStartRouteChangeExactRegistryID(t *testing.T) {
+	ch := StartRouteChange(routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"})
+	if len(ch.Add) != 1 || ch.Add[0].ID != "mtplx/Y--Q35" {
+		t.Fatalf("add = %+v, want the registry model mtplx/Y--Q35", ch.Add)
+	}
+}
+
+// TestStartRouteChangeWithoutModelIDKeepsTheFallback pins that a Target built
+// without an id resolves as before: ModelFor, then the discovered model.
+func TestStartRouteChangeWithoutModelIDKeepsTheFallback(t *testing.T) {
+	ch := StartRouteChange(routesCfg(), Target{ProviderID: "mtplx", ModelName: "org/Y/Q35"})
+	if len(ch.Add) != 1 || ch.Add[0].ID != "mtplx/Y--Q35" {
+		t.Fatalf("add = %+v, want the fuzzy-matched registry model", ch.Add)
+	}
+}

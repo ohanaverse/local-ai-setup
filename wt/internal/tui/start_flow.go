@@ -115,7 +115,7 @@ func (m model) beginStart(it *modelItem, allowReplace bool) (model, tea.Cmd) {
 	// Any refresh still in flight predates this start; finishStart issues its own.
 	m.refreshGen++
 	id := m.startRun
-	ch := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName}, allowReplace, id)
+	ch := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, id)
 	m.start = &startState{id: id, item: it, began: time.Now(), cancel: cancel, ch: ch}
 	m.phase = phaseStarting
 	m.status = ""
