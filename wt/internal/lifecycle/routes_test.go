@@ -758,7 +758,7 @@ func TestTryEnsureModelRouteDoesNotWaitForTheLock(t *testing.T) {
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		changed, done = TryEnsureModelRoute(cfg, mdl)
+		changed, done = TryEnsureModelRouteTo(nil, cfg, mdl)
 	}()
 	select {
 	case <-returned:
@@ -768,7 +768,7 @@ func TestTryEnsureModelRouteDoesNotWaitForTheLock(t *testing.T) {
 		close(release)
 		<-held
 		<-returned
-		t.Fatal("TryEnsureModelRoute waited for a held config.yaml lock: the picker would freeze")
+		t.Fatal("TryEnsureModelRouteTo waited for a held config.yaml lock: the picker would freeze")
 	}
 	close(release)
 	<-held
@@ -801,7 +801,7 @@ func TestTryEnsureModelRouteDoesNotWaitForTheLock(t *testing.T) {
 func TestTryEnsureModelRouteRoutesWhenTheLockIsFree(t *testing.T) {
 	cfgPath, restarts, warn := realRoutes(t, "model_list: []\n")
 
-	changed, done := TryEnsureModelRoute(routesCfg(), config.Model{
+	changed, done := TryEnsureModelRouteTo(nil, routesCfg(), config.Model{
 		ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal,
 	})
 	WaitPendingRoutes()
@@ -839,7 +839,7 @@ func TestTryEnsureModelRouteGivesTheWriteNoTimeToWait(t *testing.T) {
 		}
 		return inner(cfg, ch, o)
 	}
-	TryEnsureModelRoute(routesCfg(), config.Model{
+	TryEnsureModelRouteTo(nil, routesCfg(), config.Model{
 		ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Y/Q35", Location: config.LocationLocal,
 	})
 	WaitPendingRoutes()
@@ -852,68 +852,85 @@ func TestTryEnsureModelRouteGivesTheWriteNoTimeToWait(t *testing.T) {
 	}
 }
 
-// TestSetRouteOutputRedirectsAndRestores pins the redirect the TUI picker
-// relies on (#192): while it is in place the "updated" line goes to the
-// caller's writer and not to the previous one, and after restore the previous
-// writer gets the output again. Without it the picker's route output lands on
-// Bubble Tea's alt screen and the user never sees it; a restore that did not
-// put the writer back would silence every later route warning in the process.
-func TestSetRouteOutputRedirectsAndRestores(t *testing.T) {
-	_, prev := stubRoutes(t, litellm.Result{Changed: true}, nil)
-	target := Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"}
-	const line = "wt: LiteLLM route for mtplx/Y--Q35 updated\n"
+// TestEnsureModelRouteToSendsItsOutputToTheCaller pins what the TUI picker
+// relies on (#192): a check handed a writer prints there and not on stderr —
+// the "updated" line and, as long as the caller reads only after
+// WaitPendingRoutes, what the asynchronous proxy restart prints too. A failed
+// restart is the warning that explains an "Invalid model name" launch, and it
+// is printed by a goroutine that outlives the check; under Bubble Tea's alt
+// screen stderr is where nobody would see either line. The next check, handed
+// no writer, must print on stderr as before: the writer belongs to one check,
+// not to the process. Run under -race this also pins that the restart
+// goroutine's write and the check's own do not race.
+func TestEnsureModelRouteToSendsItsOutputToTheCaller(t *testing.T) {
+	_, stderr := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	restartProxy = func(context.Context) []string { return []string{"LiteLLM proxy restart failed: boom"} }
+	mdl := config.Model{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}
+	const want = "wt: LiteLLM route for ollama/a:1 updated\nwt: LiteLLM proxy restart failed: boom\n"
 
 	var captured bytes.Buffer
-	restore := SetRouteOutput(&captured)
-	if !EnsureRoute(context.Background(), routesCfg(), target) {
+	if !EnsureModelRouteTo(&captured, routesCfg(), mdl) {
 		t.Fatal("changed = false, want true when the write changed config.yaml")
 	}
 	WaitPendingRoutes()
-	restore()
-
-	if got := captured.String(); got != line {
-		t.Fatalf("redirected output = %q, want %q", got, line)
+	if got := captured.String(); got != want {
+		t.Fatalf("the check's writer got %q, want %q", got, want)
 	}
-	if prev.Len() != 0 {
-		t.Fatalf("previous writer got %q while the redirect was in place, want nothing", prev.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr got %q, want nothing: the check was handed its own writer", stderr.String())
 	}
 
-	EnsureRoute(context.Background(), routesCfg(), target)
+	EnsureModelRoute(routesCfg(), mdl)
 	WaitPendingRoutes()
-	if got := prev.String(); got != line {
-		t.Fatalf("previous writer after restore = %q, want %q", got, line)
+	if got := stderr.String(); got != want {
+		t.Fatalf("stderr after a check with no writer = %q, want %q", got, want)
 	}
-	if got := captured.String(); got != line {
-		t.Fatalf("redirect buffer after restore = %q, want it untouched (%q)", got, line)
-	}
-	// A second restore must not put an older writer back over a newer one.
-	restore()
-	if routesWarn != prev {
-		t.Fatal("a repeated restore changed the writer")
+	if got := captured.String(); got != want {
+		t.Fatalf("the first check's writer = %q after a later check, want it untouched (%q)", got, want)
 	}
 }
 
-// TestSetRouteOutputCapturesAsyncRestartWarnings pins that the redirect also
-// catches what the asynchronous proxy restart prints, as long as the caller
-// restores only after WaitPendingRoutes: a failed restart is the warning that
-// explains an "Invalid model name" launch, and it is printed by a goroutine
-// that outlives EnsureRoute. Run under -race this also pins that the restart
-// goroutine's write and the redirect do not race.
-func TestSetRouteOutputCapturesAsyncRestartWarnings(t *testing.T) {
-	_, prev := stubRoutes(t, litellm.Result{Changed: true}, nil)
-	restartProxy = func(context.Context) []string { return []string{"LiteLLM proxy restart failed: boom"} }
+// TestRouteOutputIsNotSharedWithAnotherOperation pins the #192 review finding
+// that replaced SetRouteOutput. That redirect swapped one process-wide writer
+// for the length of a check, so it caught whatever any route operation printed
+// in that window: a start whose replace failed leaves a proxy restart in
+// flight, the user launches another, running model while it is, and the first
+// model's restart warning was collected as the second launch's note — shown in
+// its status line, in place of its own "updated" line. A check's writer now
+// travels with the check, so the unrelated restart still prints on stderr.
+func TestRouteOutputIsNotSharedWithAnotherOperation(t *testing.T) {
+	_, stderr := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var restarts atomic.Int32
+	restartProxy = func(context.Context) []string {
+		if restarts.Add(1) > 1 {
+			return nil // the check's own restart: nothing to report
+		}
+		// The other operation's restart: held open across the whole check,
+		// then failing.
+		close(entered)
+		<-release
+		return []string{"LiteLLM proxy restart failed: the other model's"}
+	}
+
+	// The other operation: a failed replace settling the occupant's removal.
+	bounceRoutes(context.Background(), routesCfg())
+	<-entered
 
 	var captured bytes.Buffer
-	restore := SetRouteOutput(&captured)
-	EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"})
-	WaitPendingRoutes()
-	restore()
-
-	want := "wt: LiteLLM route for ollama/a:1 updated\nwt: LiteLLM proxy restart failed: boom\n"
-	if got := captured.String(); got != want {
-		t.Fatalf("redirected output = %q, want %q", got, want)
+	changed, done := TryEnsureModelRouteTo(&captured, routesCfg(), config.Model{
+		ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal,
+	})
+	if !changed || !done {
+		t.Fatalf("changed = %v done = %v, want the check to write its route", changed, done)
 	}
-	if prev.Len() != 0 {
-		t.Fatalf("previous writer got %q, want the restart warning captured by the redirect", prev.String())
+	close(release)
+	WaitPendingRoutes()
+
+	if got, want := captured.String(), "wt: LiteLLM route for ollama/a:1 updated\n"; got != want {
+		t.Errorf("the check's writer got %q, want only its own line %q", got, want)
+	}
+	if got, want := stderr.String(), "wt: LiteLLM proxy restart failed: the other model's\n"; got != want {
+		t.Errorf("stderr got %q, want the other operation's warning %q", got, want)
 	}
 }

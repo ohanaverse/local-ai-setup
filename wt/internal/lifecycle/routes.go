@@ -23,60 +23,46 @@ var (
 	routesWarn   io.Writer = os.Stderr
 )
 
-// routesOutMu guards routesWarn against the one concurrent pair this package
-// has: SetRouteOutput swapping the writer while an async proxy restart
-// (bounceProxyAsync) is printing a warning. Every print goes through
-// routePrintf, which holds it for the whole write, so a writer handed to
-// SetRouteOutput is never written by two goroutines at once and is never
-// written again once the restore func has returned.
+// routesOutMu serialises every write this file makes. A route operation prints
+// from two goroutines — the caller's, and the asynchronous proxy restart it may
+// have started (bounceProxyAsync) — and both can be printing to one writer: the
+// "updated" line and a restart warning of the same check are the usual pair.
+// routePrintf holds it for the whole write, so no writer, routesWarn or a
+// caller's own, is ever written by two goroutines at once.
 var routesOutMu sync.Mutex
 
-// routePrintf is the single way this file prints: the "updated" line and every
-// route warning. It reads the current writer and writes to it under
-// routesOutMu, so a redirect cannot land between the two.
-func routePrintf(format string, args ...any) {
-	routesOutMu.Lock()
-	defer routesOutMu.Unlock()
-	fmt.Fprintf(routesWarn, format, args...)
+// routeOutKey is the context key of a route operation's own writer.
+type routeOutKey struct{}
+
+// withRouteOutput returns a context whose route operation prints to w instead
+// of routesWarn. A nil w returns ctx unchanged: the output goes to stderr.
+//
+// The writer rides on the context because that is the one thing an operation
+// hands to everything it starts: bounceProxyAsync detaches the restart from the
+// caller's cancellation with context.WithoutCancel, which keeps the context's
+// values, so the restart's warnings follow the operation that caused them to
+// the same writer. A writer installed process-wide for the length of a check
+// (what this replaced, #192 review) cannot do that: it also catches whatever an
+// unrelated operation's restart prints while it is installed, and reports it as
+// this check's.
+func withRouteOutput(ctx context.Context, w io.Writer) context.Context {
+	if w == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, routeOutKey{}, w)
 }
 
-// SetRouteOutput sends everything the route hooks print — the "updated" line
-// and every warning, including those from the asynchronous proxy restart — to
-// w until the returned restore func is called. It exists for a caller that
-// owns the terminal: the TUI picker runs under Bubble Tea's alt screen, where
-// a line written to stderr is not reliably visible and is gone once the agent
-// takes the terminal, so the picker captures this output and prints it itself
-// when the terminal is released.
-//
-// The restart's warnings are printed by a goroutine that outlives the call
-// that started it, so a caller that wants them too must call restore only
-// after WaitPendingRoutes() has returned; restoring earlier sends them to the
-// previous writer. w is written under a mutex, never concurrently, so a plain
-// bytes.Buffer will do.
-//
-// restore puts back the writer that was current when SetRouteOutput was
-// called and is safe to call more than once. Redirects therefore do not nest
-// freely: two live at once must be restored in reverse order of installation
-// (last in, first out), because restoring the earlier one first lets the later
-// restore reinstall the earlier caller's writer, which would then be written
-// again after its own restore returned. Restored in order — or with only one
-// redirect live, which is the case today: the picker is the one caller and it
-// cannot nest — w is never written after restore returns and is safe to read
-// from then on. A caller that never calls SetRouteOutput sees no change: the
-// output goes to stderr.
-func SetRouteOutput(w io.Writer) (restore func()) {
+// routePrintf is the single way this file prints: the "updated" line and every
+// route warning. It writes to the operation's own writer when ctx carries one
+// (withRouteOutput) and to routesWarn otherwise, under routesOutMu.
+func routePrintf(ctx context.Context, format string, args ...any) {
 	routesOutMu.Lock()
-	prev := routesWarn
-	routesWarn = w
-	routesOutMu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			routesOutMu.Lock()
-			routesWarn = prev
-			routesOutMu.Unlock()
-		})
+	defer routesOutMu.Unlock()
+	w := routesWarn
+	if own, ok := ctx.Value(routeOutKey{}).(io.Writer); ok {
+		w = own
 	}
+	fmt.Fprintf(w, format, args...)
 }
 
 // routeWG tracks the in-flight async proxy restarts applyAndReport started.
@@ -212,7 +198,7 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
 func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bool {
 	changed := applyAndReport(ctx, cfg, ch, restartIfChanged)
 	if changed {
-		routePrintf("wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
+		routePrintf(ctx, "wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
 	}
 	return changed
 }
@@ -235,18 +221,38 @@ func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool)
 // bounds the config.yaml lock wait so a launch cannot hang behind another wt
 // process. The caller must only pass a model the probe reported running.
 func EnsureModelRoute(cfg *config.Config, m config.Model) bool {
+	return EnsureModelRouteTo(nil, cfg, m)
+}
+
+// EnsureModelRouteTo is EnsureModelRoute with everything the check prints sent
+// to out instead of stderr: the "updated" line, every warning, and the
+// warnings of the asynchronous proxy restart the check may start. It exists
+// for a caller that owns the terminal — the TUI picker runs under Bubble Tea's
+// alt screen, where a line written to stderr is not reliably visible and is
+// gone once the agent takes the terminal, so the picker collects this output
+// and prints it itself when the terminal is released.
+//
+// Only this check's output goes to out. Another route operation in flight —
+// the restart a failed replace is still settling, say — keeps printing where
+// it always did, so a caller can report what it collected as this model's.
+//
+// out is written under a mutex, never concurrently, so a plain bytes.Buffer
+// will do. The restart's warnings are written by a goroutine that outlives
+// this call: out is safe to read only once WaitPendingRoutes() has returned,
+// and is never written after that. A nil out means stderr.
+func EnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) bool {
 	ch, ok := modelRouteChange(cfg, m)
 	if !ok {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), ensureRouteLockTimeout)
+	ctx, cancel := context.WithTimeout(withRouteOutput(context.Background(), out), ensureRouteLockTimeout)
 	defer cancel()
 	return ensureChange(ctx, cfg, ch)
 }
 
-// TryEnsureModelRoute is EnsureModelRoute for a caller that cannot stop what it
-// is doing — the TUI picker, whose update goroutine is also the one that
-// repaints the screen and answers keys. EnsureModelRoute bounds its lock wait
+// TryEnsureModelRouteTo is EnsureModelRouteTo for a caller that cannot stop
+// what it is doing — the TUI picker, whose update goroutine is also the one that
+// repaints the screen and answers keys. EnsureModelRouteTo bounds its lock wait
 // at ensureRouteLockTimeout (10s), which is a long time for a goroutine that
 // cannot redraw: the picker would freeze, ctrl+c included, and it would do so
 // *before* its routing phase had been entered, so the one screen built to cover
@@ -262,22 +268,23 @@ func EnsureModelRoute(cfg *config.Config, m config.Model) bool {
 // config.yaml was written, and is only meaningful when done is true. done ==
 // false means the check got nowhere — most often another wt holds the lock
 // mid-write, but any failure to read or write config.yaml lands here too — and
-// the caller owes a retry through EnsureModelRoute, where waiting is
+// the caller owes a retry through EnsureModelRouteTo, where waiting is
 // affordable, before it uses the proxy. That path prints nothing: the retry
-// reports, since a contended lock is not itself a warning.
-func TryEnsureModelRoute(cfg *config.Config, m config.Model) (changed, done bool) {
+// reports, since a contended lock is not itself a warning. What it does print
+// goes to out, on EnsureModelRouteTo's terms.
+func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (changed, done bool) {
 	ch, ok := modelRouteChange(cfg, m)
 	if !ok {
 		return false, true // not wt's to route: nothing to retry, nothing to say
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(withRouteOutput(context.Background(), out))
 	cancel()
 	changed, err := applyReported(ctx, cfg, ch, restartIfChanged)
 	if err != nil {
 		return false, false
 	}
 	if changed {
-		routePrintf("wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
+		routePrintf(ctx, "wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
 	}
 	return changed, true
 }
@@ -364,7 +371,7 @@ func bounceRoutes(ctx context.Context, cfg *config.Config) {
 func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
 	changed, err := applyReported(ctx, cfg, ch, mode)
 	if err != nil {
-		routePrintf("wt: LiteLLM route not updated: %v\n", err)
+		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
 	return changed
 }
@@ -372,7 +379,7 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 // applyReported is applyAndReport without the not-updated line: it returns the
 // failure instead of printing it, so a caller bound by its own deadline can
 // tell "the config.yaml lock is held" from "the write failed" and decide where
-// to say so. A contended lock is not a warning — TryEnsureModelRoute hands it
+// to say so. A contended lock is not a warning — TryEnsureModelRouteTo hands it
 // to a retry that can afford to wait (see EnsureModelRoute), and only that
 // retry, or applyAndReport, reports.
 //
@@ -406,7 +413,7 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 	}
 	for _, o := range res.Outcomes {
 		if o.Err != nil {
-			routePrintf("wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
+			routePrintf(ctx, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
 		}
 	}
 	// res.Warnings is only ever populated by ApplyChange's restart hook, which
@@ -458,11 +465,11 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// restart is expected" case to stay quiet about — suppressing them on
 		// that theory is exactly what hid this path failing silently.
 		for _, w := range restartProxy(bgCtx) {
-			routePrintf("wt: %s\n", w)
+			routePrintf(bgCtx, "wt: %s\n", w)
 		}
 		if wasUp {
 			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
-				routePrintf("wt: %v\n", err)
+				routePrintf(bgCtx, "wt: %v\n", err)
 			}
 		}
 	}()

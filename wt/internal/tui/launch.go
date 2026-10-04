@@ -33,7 +33,7 @@ var pendingSummary string
 
 // pendingRouteNotes is what the launch-time LiteLLM route check printed while
 // the alt screen was up (#192): `wt: LiteLLM route for <id> updated` and any
-// route warning, captured through setRouteOutput because stderr is not
+// route warning, collected in the check's own buffer (checkLaunchRoute) because stderr is not
 // reliably visible under the alt screen. It follows pendingSummary's
 // capture-then-emit pattern with two emit points: runAndWaitCmd prints it the
 // moment it releases the terminal, above the agent's own output, and Run()
