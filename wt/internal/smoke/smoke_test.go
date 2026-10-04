@@ -449,6 +449,101 @@ func TestRealBuildAndRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.
 	}
 }
 
+// TestRunRowFailModelFallback asserts a row whose agent could not select the
+// model under test and fell back to its own default is FAIL — even with exit
+// 0 and the sentinel in the output — with a reason naming the fallback. The
+// default model echoes the sentinel just as well, so without this rule wt
+// smoke reported PASS for a model it never exercised (pi × a discovered
+// local model, #179 Phase B host acceptance).
+func TestRunRowFailModelFallback(t *testing.T) {
+	const warn = `pi: model "ollama/x" not configured for pi, using default model`
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "WT-SMOKE-pi-run-1", ModelFallback: warn})
+	res := RunRow(&config.Config{}, "pi", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-pi-run-1", time.Second, ".", nil)
+	if res.Status != StatusFail {
+		t.Fatalf("Status = %v, want FAIL for a model fallback", res.Status)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "fell back") || !strings.Contains(res.Err.Error(), "ollama/x") || !strings.Contains(res.Err.Error(), warn) {
+		t.Fatalf("Err = %v, want it to name the fallback, the model under test and the driver's reason", res.Err)
+	}
+}
+
+// smokePiFixture points HOME at a temp dir holding pi's models.json with the
+// given content, puts a no-op fake pi on PATH, and returns a direct-mode
+// config whose only provider is ollama — so realBuildAndRun runs the real
+// pi driver (sync + Build) without touching ~/.pi or a real pi binary.
+func smokePiFixture(t *testing.T, modelsJSON string) *config.Config {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	piDir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(piDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piDir, "models.json"), []byte(modelsJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeAgentBinary(t, "pi")
+	return &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
+}
+
+// smokeDiscoveredOllama is a discovered local model: on disk, no registry
+// entry, so absent from cfg.Models.
+func smokeDiscoveredOllama() config.Model {
+	return config.Model{
+		ID:         config.DiscoveredModelID("ollama", "llama3.2:1b"),
+		ModelName:  "llama3.2:1b",
+		ProviderID: "ollama",
+		Location:   config.LocationLocal,
+		Source:     config.SourceDiscovered,
+	}
+}
+
+// TestRealBuildAndRunReportsModelFallback asserts the real seam carries the
+// driver's fallback signal into the outcome and does not run the agent: here
+// the user disabled the model's pi entry (_launch: false), so pi would run
+// its default model. Running it would spend a real request on a model the
+// row is not about, and its exit 0 + sentinel is exactly the false PASS this
+// guards against. RunRow on the same fixture must be FAIL.
+func TestRealBuildAndRunReportsModelFallback(t *testing.T) {
+	cfg := smokePiFixture(t, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[{"_launch":false,"id":"llama3.2:1b"}]}}}`)
+	var cleanup func() error
+	outcome := realBuildAndRun(cfg, "pi", smokeDiscoveredOllama(), "the prompt", t.TempDir(), time.Second, nil, &cleanup)
+	if cleanup == nil {
+		t.Fatal("realBuildAndRun never set *cleanup")
+	}
+	if !strings.Contains(outcome.ModelFallback, "using default model") {
+		t.Fatalf("ModelFallback = %q, want the driver's fallback warning", outcome.ModelFallback)
+	}
+	if outcome.Command != "" || outcome.StartErr != nil {
+		t.Fatalf("Command = %q, StartErr = %v, want the agent never started", outcome.Command, outcome.StartErr)
+	}
+	if res := RunRow(cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", time.Second, t.TempDir(), nil); res.Status != StatusFail {
+		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
+	}
+}
+
+// TestRealBuildAndRunDiscoveredModelNoFallback asserts the non-fallback case
+// is unaffected: a discovered model pi CAN select runs with --model naming
+// it, reports no fallback, and its row passes. Guards against the fallback
+// rule failing healthy rows, and pins end to end that a discovered model
+// reaches pi as itself rather than as pi's default.
+func TestRealBuildAndRunDiscoveredModelNoFallback(t *testing.T) {
+	cfg := smokePiFixture(t, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[]}}}`)
+	var cleanup func() error
+	outcome := realBuildAndRun(cfg, "pi", smokeDiscoveredOllama(), "the prompt", t.TempDir(), 10*time.Second, nil, &cleanup)
+	if outcome.ModelFallback != "" {
+		t.Fatalf("ModelFallback = %q, want none", outcome.ModelFallback)
+	}
+	if !strings.HasSuffix(outcome.Command, "--model ollama/llama3.2:1b -p the prompt") {
+		t.Fatalf("Command = %q, want it to end with \"--model ollama/llama3.2:1b -p the prompt\"", outcome.Command)
+	}
+	if res := RunRow(cfg, "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, t.TempDir(), nil); res.Status != StatusPass {
+		t.Fatalf("RunRow Status = %v, want PASS (err=%v)", res.Status, res.Err)
+	}
+}
+
 // TestNewRunIDFormat asserts NewRunID produces the "run-<8 hex chars>"
 // shape RunRow's default prompt embeds.
 func TestNewRunIDFormat(t *testing.T) {

@@ -261,7 +261,7 @@ Per-agent env/args/config shapes (direct and LiteLLM): [docs/wt-agents/](docs/wt
 |---|---|---|
 | `ProtocolDeclarer` | wire protocols → `ResolveRoute` | claude, codex, copilot, opencode, pi |
 | `Seeder` | pre-launch AGENTS.md + pointer seeding | claude, copilot |
-| `Syncer` | pre-launch sync (pi → `~/.pi/agent/models.json`) | pi |
+| `Syncer` | pre-launch sync (pi → `~/.pi/agent/models.json`: the registry models plus the launch target, so a discovered model gets its entry too) | pi |
 | `ArgSetter` | passthrough args become argv | shell |
 | `Resumer` | `ResumeFlag()` + `LatestSession(path)` | claude, opencode |
 | `OneShotRunner` | `OneShotArgs(prompt)` for `wt smoke` | claude, codex, copilot, opencode, pi, agy |
@@ -286,6 +286,7 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (absent = enabled, zero 
 `wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model via `agents.BuildLaunchCmd` (the same construction a real launch uses), reporting PASS/FAIL/SKIP. It tests whatever routing mode is live — distinct from `make test-agents`' static agent×model matrix. It **applies matching profiles** (without prompting), may start an idle local pick first (shared `startModel` driver, honours `--replace`), and runs the exit-flow stop picker after a resolved run; it never flips LiteLLM routing. With no model-id on a TTY, the picker is `tui.PickStartModel` over `smoke.Eligibility`'s cross-agent union (route-skipping, because `smoke.Candidates` already applied each agent's route rules). Progress lines go to stderr (`logSmokeStart`/`logSmokeResult`, sharing `writeSmokeFailDetail` with the final report so they can't drift). Full behavior: [docs/wt-smoke.md](docs/wt-smoke.md).
 
 - **Yolo is forced on for every agent except codex** (`internal/smoke/smoke.go`, pinned by `TestRealBuildAndRunPassesYolo`/`TestRealBuildAndRunSkipsYoloForCodex`) — no TTY can answer a permission prompt, and a model spiralling on denials burns the whole timeout. codex's `exec` never prompts, and its yolo flag would only strip its sandbox. **Cost:** other agents run in the cwd with permission checks off — inert with the sentinel prompt, genuinely unsupervised with `--prompt` or an exploring model.
+- **A model fallback is FAIL.** A driver that cannot select the model sets `LaunchCmd.ModelFallback` (pi's two "using default model" warnings); `agents.BuildLaunchCmdInfo` surfaces it, `realBuildAndRun` returns without running the agent and `RunRow` fails the row before looking at exit code or sentinel — the default model echoes the sentinel just as well. A real launch (`BuildLaunchCmd`) only warns.
 - **Timeout is location-based** (`smokeTimeout`): unset `--timeout` (flag default `0`) → 180s cloud / 900s local (unresolvable = cloud); only an explicit value is validated. Local rows are slow because agents send 12–41k-token preambles that cold-prefill at 65–95 tok/s, so a timed-out local row usually isn't a broken agent.
 - **Diagnosing a slow local row:** `/tmp/local-ai-setup-mtplx.log` has one `mtplx_openai_generation` line per *completed* request (`prompt_tokens`, `elapsed_s`) plus `memory guard`/`pressure_trim` lines; killed (timed-out) requests leave no line, and a repeat agent is fast only while its prefix is still in mtplx's session cache. Rows run sequentially.
 

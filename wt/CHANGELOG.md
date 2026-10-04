@@ -139,6 +139,20 @@
   gone since #179 Phase B: a model the provider answered for and does not
   have, and a non-running `mlx_lm_server` pairing, now have no row — see
   Changed and Removed.)
+- pi can launch a discovered local model (on disk, no registry entry). The
+  pre-launch sync of `~/.pi/agent/models.json` only wrote registry models, so
+  a discovered launch target had no entry and pi silently ran its own default
+  model instead (`pi: model "…" not configured for pi, using default model`).
+  The launch target is now always synced like a registry model: under the
+  `litellm` pi provider keyed by its discovered id when routing through
+  LiteLLM, or under the pi provider named after its registry provider keyed
+  by the artifact name when direct (#179 Phase B).
+- `wt smoke` no longer reports PASS for an agent that fell back to a
+  different model. A row whose driver could not select the model under test
+  is FAIL (`<agent> fell back to its default model instead of <id>: …`) and
+  the agent is not run — the default model echoes the sentinel just as well,
+  which is how the pi bug above passed smoke. A real launch still warns and
+  continues.
 
 ### Removed
 

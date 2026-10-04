@@ -139,6 +139,14 @@ $ wt smoke ollama/qwen3.8:27b-mlx
 `--json` emits `{"run_id", "model", "rows": [{"agent", "model", "status",
 "exit_code", "duration_ms", "command", "output", "error"}]}`.
 
+A row whose agent could not select the model under test and would run on
+its own default model instead is FAIL, with the error `<agent> fell back to
+its default model instead of <id>: <the driver's reason>`; the agent is not
+run (empty `command`). The default model would echo the sentinel just as
+well, so exit 0 plus the sentinel proves nothing there. Today only pi can
+fall back this way (see [pi-wt.md](wt-agents/pi-wt.md)); a real launch only
+warns.
+
 Exit code: `0` if every non-SKIP row PASSed, `1` if any row FAILed. SKIP
 (agent binary not installed) never affects the exit code.
 

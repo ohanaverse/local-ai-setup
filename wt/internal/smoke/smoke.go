@@ -188,6 +188,12 @@ type execOutcome struct {
 	ExitCode int
 	TimedOut bool
 	StartErr error // non-nil if the command never started (e.g. agent not installed)
+	// ModelFallback is the driver's warning when it could not select the
+	// model under test and the agent would run on its own default model
+	// (agents.LaunchInfo.ModelFallback). Non-empty means the row is FAIL
+	// whatever the exit code or output say; realBuildAndRun does not run
+	// the agent at all in that case.
+	ModelFallback string
 }
 
 // ExecOutcome is the exported alias for execOutcome, used by cross-package
@@ -289,9 +295,15 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	// in the current working directory (see docs/wt-smoke.md's
 	// "Tool-use permission" note): a --prompt override therefore runs
 	// unsupervised here too, not just the fixed sentinel prompt.
-	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, agentName != "codex", nil, cfg, nil)
+	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, cwd, agentName != "codex", nil, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
+	}
+	// The driver could not select m and the agent would answer on its own
+	// default model. Don't run it: the outcome is already FAIL (see RunRow),
+	// and a run would spend a real request on a model this row is not about.
+	if info.ModelFallback {
+		return execOutcome{ModelFallback: info.Warn}
 	}
 	d := agents.ByName(agentName)
 	osr, ok := d.(agents.OneShotRunner)
@@ -419,6 +431,14 @@ func RunRow(cfg *config.Config, agentName string, m config.Model, prompt, sentin
 		} else {
 			res.Status = StatusFail
 		}
+		return res
+	}
+	// Checked before the exit code and sentinel: an agent on its default
+	// model exits 0 and echoes the sentinel just as well, so those say
+	// nothing about the model under test.
+	if out.ModelFallback != "" {
+		res.Status = StatusFail
+		res.Err = fmt.Errorf("%s fell back to its default model instead of %s: %s", agentName, m.ID, out.ModelFallback)
 		return res
 	}
 	if out.TimedOut {
