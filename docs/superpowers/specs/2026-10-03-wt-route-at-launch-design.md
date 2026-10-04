@@ -1,0 +1,171 @@
+# wt: ensure the LiteLLM route at launch — design
+
+Date: 2026-10-03
+Issue: #192 (and one item of #195)
+Roadmap: [2026-10-03 issue roadmap](../plans/2026-10-03-issue-roadmap.md), milestone A
+
+## Problem
+
+A local model that is running, but that wt did not start, has no LiteLLM route until something runs `wt litellm sync`. Two common cases: an omlx or mtplx model started by hand, and an ollama model pulled since the last sync.
+
+wt lists such a model as launchable. Since #188 it no longer refuses it as "not in LiteLLM", so the launch goes ahead and the proxy answers `Invalid model name`.
+
+`wt start <id>` does not repair it. For a running model it prints `<id> is already running` and returns (`wt/cmd/wt/model_cmds.go:287`).
+
+## Goal
+
+Launching a running local model through wt works, whoever started it. The user never has to run `wt litellm sync` to make a model wt already lists usable.
+
+**Success criteria**
+
+- A model started outside wt launches through wt on the first try.
+- A launch whose route already exists restarts nothing.
+- wt never starts or stops a model as a side effect of this check.
+- A hand-written `config.yaml` row is never replaced.
+
+## Current behavior
+
+The route write has one home. `lifecycle.Start` calls `routeAfterStart`, which calls `applyAndReport(StartRouteChange(cfg, t), …)` (`wt/internal/lifecycle/routes.go`). `applyAndReport` writes `config.yaml` synchronously and, only when the file changed, restarts the proxy on a goroutine that `WaitPendingRoutes()` rejoins.
+
+That hook runs only when a launch path calls `lifecycle.Start`, and launch paths call it only for a row whose action is "start". A row that is already running skips it. Three hand-off points are affected:
+
+| Path | Where | Covers |
+|---|---|---|
+| Non-TUI | `launchFilteredImpl`, `wt/cmd/wt/launch.go` | `-M` pin, single auto-resolved model, rotation |
+| TUI | `proceedToLaunch`, `wt/internal/tui/app.go` | picker selection, resume prompt |
+| Smoke | `runSmoke`, `wt/cmd/wt/smoke.go`, when `t.Start()` is false | every smoke row |
+
+## Approach
+
+Add one ensure-only entry point, `lifecycle.EnsureRoute`, and call it at each hand-off point and from `wt start`.
+
+Two alternatives were rejected:
+
+- **Call `lifecycle.Start` for running rows.** `Start` is a no-op for a running model and then runs the hook, so it would work on a fresh probe. On a stale one it would start a server. Rotation and auto-resolution must never start a server (`launchableModels` in `wt/cmd/wt/resolve.go`), so this path is unsafe.
+- **Run a full sync before each local launch.** It probes every provider and can remove routes. A launch should change one route at most.
+
+## Design
+
+### `lifecycle.EnsureRoute`
+
+```go
+// EnsureRoute writes t's LiteLLM route when it is missing. It never starts or
+// stops a model and never fails the caller.
+func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) (changed bool)
+```
+
+- It applies `StartRouteChange(cfg, t)` through `applyAndReport` with `restartIfChanged`. The change is the same one the start hook writes, so the hook, the ensure and `wt litellm sync` agree on the id.
+- For a single-model provider that change also clears the family's other routes, as the start hook does. Only one model of that family can be running, so its siblings' routes are stale.
+- `ApplyChange` already skips a discovered id that has a hand-written row. `EnsureRoute` adds no rule of its own.
+- A write failure prints the existing `wt: LiteLLM route not updated: …` warning and returns false. A missing `config.yaml` (LiteLLM not set up) stays silent, as today.
+- When it adds a route it prints one line on stderr: `wt: added LiteLLM route for <id>`. When the route was present it prints nothing.
+- It returns as soon as the file is written. The caller owes `WaitPendingRoutes()` before using the proxy.
+
+### When callers invoke it
+
+A caller invokes `EnsureRoute` only when all three hold:
+
+1. The model's location is local.
+2. The probe reported it running. Every hand-off point already holds a row or a launchable list built from a probe.
+3. Its route for this agent resolves through LiteLLM (`cfg.ResolveRoute`).
+
+A cloud model, a direct route, a command agent, and routing switched off all skip the call. So does a launch that just ran `lifecycle.Start`, since the hook has already written the route.
+
+Each caller then calls `WaitPendingRoutes()` before handing off. It costs nothing when no restart is pending.
+
+### Probe trust
+
+The issue requires no write when a provider's probe is untrusted. A row marked running came from a probe that answered, so condition 2 satisfies it. An unreachable or unknown family has no running row.
+
+`EnsureRoute` does not probe again. The consequence is accepted: in the TUI the picker can stay open, and a model that stopped meanwhile gets a route written for it. For a single-model provider the same write clears its siblings' routes. That launch fails with or without the write, and the next sync or start corrects the file. Probing again would add up to 2s to every local launch.
+
+### Model id in `lifecycle.Target`
+
+```go
+type Target struct{ ProviderID, ModelName, ModelID string }
+```
+
+`ModelID` is the id the catalog row carries. Every launch and start caller sets it from the row.
+
+`StartRouteChange` resolves the model to route in this order:
+
+1. `ModelID` set and a registry model has that exact id: that model.
+2. `ModelID` set and no registry model has it: `litellm.DiscoveredModel(ProviderID, ModelName)`.
+3. `ModelID` empty: today's behavior, `litellm.ModelFor` and then the discovered model.
+
+Step 2 no longer goes through `ModelFor`'s fuzzy fallback. This fixes the #195 item where two artifacts name-match one registry entry: the inventory gives the second a discovered id, the fuzzy fallback resolved it to the registry model, and the hook and the picker disagreed. With the id carried, the hook writes the id the picker showed.
+
+Step 3 keeps a `Target` built without an id working as it does today. Both production constructors (`wt/cmd/wt/start.go`, `wt/internal/tui/start_flow.go`) build it from a row and will set the id, so step 3 is a fallback, not a supported path for new callers.
+
+The stop side (`routeRemove`) does not take a `Target` and is unchanged.
+
+### `wt start <running id>`
+
+The `ActionLaunch` branch of `runStart` calls `EnsureRoute` and `WaitPendingRoutes()`, then prints `wt: <id> is already running`. The added-route line appears above it when a route was written. `wt start` has no agent, so condition 3 becomes: LiteLLM routing is enabled.
+
+### Cost
+
+One proxy restart when the route was missing. None otherwise: one locked read of `config.yaml`.
+
+In the TUI the wait runs on the update goroutine, so the screen stops updating for the length of a restart. The existing start flow behaves the same way, for the same reason (`wt/internal/tui/start_flow.go`).
+
+## Error handling
+
+| Case | Behavior |
+|---|---|
+| `config.yaml` missing | Silent. Launch proceeds. |
+| `config.yaml` unparseable or lock wait cancelled | Warning on stderr. Launch proceeds. |
+| Row cannot be built for the model | Per-id warning on stderr. Launch proceeds. |
+| Proxy restart fails or does not come back | Existing restart warnings. Launch proceeds. |
+| Hand-written row holds the id | No write, no message. The user's row serves the name. |
+
+The launch always proceeds. A missing route then shows as the proxy's own error, as it does today.
+
+## Testing
+
+**`internal/lifecycle`**
+
+- Adds a missing route and reports changed.
+- Route present: reports unchanged, no restart.
+- Hand-written row for the id: unchanged.
+- Single-model provider: siblings' marked routes removed in the same write.
+- Write error: warning, false, no restart.
+- `StartRouteChange` with `ModelID`: exact registry id, discovered id, and the two-artifacts-one-entry case yielding two distinct ids.
+
+**`cmd/wt`**
+
+- `launchFilteredImpl` calls the ensure for a running local model routed through LiteLLM, and waits before `runAgentCmd`. It skips cloud, direct and command-agent launches, and a launch that just started the model.
+- `runStart` on a running id calls the ensure and prints both lines.
+- `runSmoke` calls the ensure when the target is already running.
+- The existing test that pins `StartRouteChange` against sync's desired id (`wt/cmd/wt/litellm_test.go`) passes `ModelID` and still holds.
+
+**`internal/tui`**
+
+- `proceedToLaunch` calls the ensure for a running local row and waits before launching. It skips the other cases.
+
+All through the existing seams (`applyRoutes`, `restartProxy`, `waitPendingRoutes`). No test starts a model or a proxy.
+
+**Live**
+
+1. Start an omlx or mtplx model by hand. Confirm `wt litellm list` lacks it.
+2. `wt -M <id>` with an agent: the added-route line prints, and the agent gets a reply.
+3. Launch again: no added-route line, no proxy restart.
+4. `wt start <id>` on a running, unrouted model: route added.
+5. TUI picker launch of the same model. This step needs the user.
+
+`make test-all` before the PR.
+
+## Docs
+
+- `docs/guides/08-maintenance-and-troubleshooting.md`: the missing-route steps no longer need `wt litellm sync` for a running local model launched through wt. The sync remains the fix for cloud models and for use outside wt.
+- `docs/guides/04-litellm-config.md`, where it lists what changes routes: add the launch.
+- `wt/docs/wt-start-stop.md`: `wt start` on a running model repairs its route.
+- `wt/CLAUDE.md`, root `CLAUDE.md` (the "Routing is derived" gotcha), and the changelog.
+
+Guides stay state-independent.
+
+## Out of scope
+
+- A cloud model with a missing route.
+- Removing stale routes at launch, beyond the sibling clear the start hook already does.
+- The other #195 items. They are milestone C.
