@@ -120,6 +120,10 @@ In the TUI the picker must not freeze during that restart, and the check's outpu
 - When it changed the file, the picker enters a routing phase that shows `Updating the LiteLLM route for <id> — restarting the proxy (<elapsed>)`. The wait for the proxy runs in a command, and the launch continues when it finishes. The restart cannot be cancelled, so the only key is ctrl+c to quit.
 - Route output is captured while the picker owns the terminal (`lifecycle.SetRouteOutput`). It is printed on the real terminal when the agent takes it, or after wt exits if no launch happened, and its last line is shown in the status line of the picker and of the resume prompt.
 
+### Picker and resume-prompt height
+
+For the status line to be visible at all, the view must fit the terminal. Before this work the model picker's view was taller than the terminal, and Bubble Tea drops lines from the top of an over-tall view, so the picker's header and status line were never shown. The model picker and the resume prompt size their lists from the lines everything else takes, so the rendered view never exceeds the terminal height, with or without a status line. This is a sizing fix only: no text, style or key hint changes.
+
 ## Error handling
 
 | Case | Behavior |
