@@ -161,6 +161,10 @@
   gives up its blank margin, then the header, then the mode line and key
   hints; the agent picker gives up its `directory:` line (below 14 lines when
   a status is showing).
+- `loading worktrees...` no longer stays on the picker after the worktrees
+  have loaded. It was the picker's initial status and nothing cleared it; it
+  went unnoticed on the agent and model pickers only because their status
+  line was off the top of the screen.
 - No picker screen is wider than the terminal. The model picker's table was
   sized two columns past the right edge, and a long status line widened the
   whole screen; lists are now sized to the columns their screen leaves, and
