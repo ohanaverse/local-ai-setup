@@ -227,8 +227,11 @@ line.
   priced model to survey (issue #116).
 - **Stop picker** (`survey.Picker`, issue #115). Offers to stop running
   local models that no live wt session is using (refcount zero, probe
-  trusted, stop backend exists). Line-typed: a number toggles, `all`/`none`,
-  Enter confirms, `q`/`esc` skips, and nothing starts selected. It is silent
+  trusted, stop backend exists). One line, applied on Enter: space-separated
+  numbers stop those models, `a` or `all` stops every listed one, and a
+  bare Enter (or `q`/`esc`) stops nothing. A line it cannot read stops
+  nothing and asks again. Anything left running can be stopped later with
+  `wt stop`. It is silent
   when nothing qualifies, when stdin is not a TTY, and for command agents.
   wt releases its own refcount entry first, or the model this session just
   used would always count as in use.

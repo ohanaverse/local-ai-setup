@@ -63,7 +63,10 @@ wt stop <target> --yes           # skip the in-use confirmation
   error.
 - No argument: the stop picker (needs a TTY). Unlike the exit-flow pickers
   it also lists models in use by other wt sessions, marked with their
-  session count.
+  session count. Type the numbers to stop, separated by spaces (`1 3`), or
+  `a` / `all` for every listed model, and press Enter; Enter on an empty
+  line stops nothing. There is no separate confirming step. A line with
+  anything else on it stops nothing and the prompt asks again.
 
 ### In-use confirmation
 

@@ -324,13 +324,25 @@ func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) e
 
 const exitFlowHeader = "Stop running local models? (none are in use by another wt session)"
 
-// chooseLabeled runs the line-typed checkbox prompt and returns the selected
-// indices in list order. Nothing starts selected, so a bare Enter, "q",
-// "esc" or an exhausted reader all skip: stopping a model costs a reload, so
-// it must be an explicit choice.
+// chooseLabeled runs the one-line prompt and returns the chosen indices in
+// list order (#139). Enter applies what was typed, with no confirming step:
+//
+//   - nothing (or "q", "esc", "skip", or an exhausted reader) stops nothing —
+//     the default, because stopping a model costs a reload and must be an
+//     explicit choice;
+//   - "a" or "all" chooses every model;
+//   - space-separated numbers choose those models, each once.
+//
+// Anything else rejects the whole line — "1 x" does not stop model 1 on a
+// typo — says which part was not understood, and asks again. It is not more
+// elaborate than that on purpose: whatever this prompt leaves running, `wt
+// stop` stops.
 func chooseLabeled(sc *bufio.Scanner, w io.Writer, header string, labels []string) []int {
-	state := make([]bool, len(labels))
-	printChoices(w, header, labels, state)
+	fmt.Fprintln(w, header)
+	for i, l := range labels {
+		fmt.Fprintf(w, "  %d  %s\n", i+1, l)
+	}
+	fmt.Fprintln(w, "  numbers (e.g. 1 2) · a = all · Enter = none")
 	for {
 		fmt.Fprint(w, "stop> ")
 		if !sc.Scan() {
@@ -338,53 +350,34 @@ func chooseLabeled(sc *bufio.Scanner, w io.Writer, header string, labels []strin
 		}
 		line := strings.ToLower(strings.TrimSpace(sc.Text()))
 		switch line {
-		case "":
-			return selectedIndices(state)
-		case "q", "esc", "skip":
+		case "", "q", "esc", "skip":
 			return nil
-		case "all", "a":
-			for i := range state {
-				state[i] = true
+		case "a", "all":
+			all := make([]int, len(labels))
+			for i := range all {
+				all[i] = i
 			}
-		case "none", "n":
-			for i := range state {
-				state[i] = false
-			}
-		default:
-			toggled := false
-			for _, f := range strings.Fields(line) {
-				if n, err := strconv.Atoi(f); err == nil && n >= 1 && n <= len(state) {
-					state[n-1] = !state[n-1]
-					toggled = true
-				}
-			}
-			if !toggled {
-				fmt.Fprintln(w, "type a number to toggle, all, none, Enter to confirm, or q to skip")
+			return all
+		}
+		chosen := make([]bool, len(labels))
+		var bad []string
+		for _, f := range strings.Fields(line) {
+			if n, err := strconv.Atoi(f); err == nil && n >= 1 && n <= len(labels) {
+				chosen[n-1] = true
 				continue
 			}
+			bad = append(bad, strconv.Quote(f))
 		}
-		printChoices(w, header, labels, state)
-	}
-}
-
-func printChoices(w io.Writer, header string, labels []string, state []bool) {
-	fmt.Fprintln(w, header)
-	for i, l := range labels {
-		mark := " "
-		if state[i] {
-			mark = "x"
+		if len(bad) > 0 {
+			fmt.Fprintf(w, "not a number from the list: %s — type numbers (e.g. 1 2), a for all, or Enter to stop nothing\n", strings.Join(bad, " "))
+			continue
 		}
-		fmt.Fprintf(w, "  %d [%s] %s\n", i+1, mark, l)
-	}
-	fmt.Fprintln(w, "  number toggles · all · none · Enter confirms · q skips")
-}
-
-func selectedIndices(state []bool) []int {
-	var out []int
-	for i, on := range state {
-		if on {
-			out = append(out, i)
+		var out []int
+		for i, on := range chosen {
+			if on {
+				out = append(out, i)
+			}
 		}
+		return out
 	}
-	return out
 }

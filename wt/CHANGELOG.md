@@ -4,6 +4,13 @@
 
 ### Changed
 
+- The stop prompt (`wt stop` with no argument, and the one after an agent
+  exits) is one line, applied on Enter (#139). Type the numbers to stop,
+  separated by spaces (`1 3`), or `a` / `all` for every listed model; Enter
+  on an empty line stops nothing. It used to be a checkbox list: a number
+  ticked a line and a second Enter confirmed. `none` is gone (Enter does
+  that), and a line with anything unreadable on it now stops nothing and
+  asks again, where it used to act on the numbers it could read.
 - `wt litellm sync` and `sync --dry-run` now warn about an ollama row whose
   `api_base` is an `os.environ/VAR` reference to a variable that is not set
   for the proxy (#211). LiteLLM resolves the reference before deciding
