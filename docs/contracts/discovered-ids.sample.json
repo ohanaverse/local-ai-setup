@@ -1,0 +1,9 @@
+{
+  "_comment": "Shared fixture for the id of an on-disk local model that has no registry entry: <family>/<artifact as the provider lists it>. Read by wt/internal/litellm/discovered_ids_fixture_test.go (Go, litellm.DiscoveredModel) and modelman/tests/contracts/test_discovered_ids_fixture.py (Python, local_control._discovered_id). The two must agree: the LiteLLM route wt writes, modelman's running flag and `modelman stop <id>`, and wt's usage and survey history all key on this string. mlx_lm_server has no case because a pairing is never discovered.",
+  "cases": [
+    {"provider": "ollama", "artifact": "llama3.2:1b", "id": "ollama/llama3.2:1b"},
+    {"provider": "omlx", "artifact": "Qwen3.8-27B-4bit", "id": "omlx/Qwen3.8-27B-4bit"},
+    {"provider": "omlx-6bit", "artifact": "Qwen3.8-27B-6bit", "id": "omlx/Qwen3.8-27B-6bit"},
+    {"provider": "mtplx", "artifact": "Youssofal/Qwen3.8-27B-MTPLX", "id": "mtplx/Youssofal/Qwen3.8-27B-MTPLX"}
+  ]
+}

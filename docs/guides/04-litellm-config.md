@@ -52,7 +52,7 @@ kickstart OK
         "id": "openrouter/qwen/qwen3.8-27b",
 ```
 
-To take a **cloud** model off the proxy, remove it from the registry (TUI `d`, guide 02) — the sync that follows drops its row. A **local** model is unrouted by stopping it (single-model providers: omlx, mtplx, mlx_lm_server); a pulled ollama model stays routed until it is removed (`ollama rm`, then a sync). Deleting only a local model's registry entry does not unroute it while it is on disk and running — it is then routed under its discovered id (the TUI's `d` also deletes the artifact, which is why it does unroute).
+To take a **cloud** model off the proxy, remove it from the registry (TUI `d`, guide 02) — the sync that follows drops its row. A **local** model is unrouted by stopping it (single-model providers: omlx, mtplx, mlx_lm_server); a pulled ollama model stays routed until it is removed (`ollama rm`, then a sync). Deleting only a local model's registry entry does not unroute it while it is on disk and running — it is then routed under its discovered id (the TUI's `d` also deletes the artifact, which is why it does unroute). An `mlx_lm_server` pairing is the exception: it has no discovered id, so deleting its entry does unroute it at the next sync, running or not.
 
 ## Steps
 

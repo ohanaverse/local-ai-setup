@@ -682,10 +682,11 @@ def _discovered_entry(match: DiscoveredModel) -> ModelEntry:
     configured): its id is `<family>/<native name>` (_discovered_id) — the
     id wt's catalog and LiteLLM route give the running model — and the
     start's one `wt litellm sync` routes it under that id. provider_id stays
-    the registry row the artifact was found through (it picks the lifecycle
-    backend and env var). `fetch.repo` lets omlx, which derives its on-disk
-    path from fetch rather than model_name, find the artifact; name-keyed
-    providers (ollama, mtplx) never read it.
+    the registry row the artifact was found through (e.g., "omlx-6bit") —
+    this INTENTIONAL mismatch with the id's family prefix ("omlx/") picks
+    the correct lifecycle backend and env var. `fetch.repo` lets omlx, which
+    derives its on-disk path from fetch rather than model_name, find the
+    artifact; name-keyed providers (ollama, mtplx) never read it.
     """
     return ModelEntry(
         id=match.model_id,

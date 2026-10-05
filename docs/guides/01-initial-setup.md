@@ -65,6 +65,21 @@ ollama pull qwen3.8:27b-mlx
 # 4. modelman setup + start a model (which routes it through LiteLLM)
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
+# FRESH MACHINE ONLY — modelman and wt both need ~/.config/local-ai/registry.toml, and nothing creates the
+# local `ollama` provider row for you (`modelman migrate` on an empty machine writes a registry with no
+# providers, and `modelman start` then answers "unknown model"). Skip this if the file exists.
+mkdir -p ~/.config/local-ai
+[ -e ~/.config/local-ai/registry.toml ] || cat > ~/.config/local-ai/registry.toml <<'TOML'
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+protocols = ["anthropic", "openai-chat"]
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:11434"
+TOML
 # uv run modelman        # TUI (interactive) — skip in one-shot mode; 'start' below is non-interactive
 uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its name or its `ollama/<name:tag>` id). No routing step: every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH); a pulled ollama model stays routed after a stop
 
