@@ -255,6 +255,28 @@ class MLXLMServerProvider(Provider):
                 paths.append(str(draft_dir))
         return frozenset(paths)
 
+    def removable_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """The subset of artifact_paths() that delete() would actually remove.
+
+        A local_path or draft_local_path directory is user-produced and
+        never removed by delete() or cleanup_partial_download(), so it is
+        excluded from the shared-artifact guard (#227).
+        """
+        paths: list[str] = []
+        # Target side: only repo-downloaded dir is removable
+        target_repo = variant.get("repo")
+        if target_repo:
+            target_dir = self._repo_dir(target_repo)
+            if target_dir is not None:
+                paths.append(str(target_dir))
+        # Draft side: only repo-downloaded dir is removable
+        draft_repo = variant.get("draft_repo")
+        if draft_repo:
+            draft_dir = self._repo_dir(draft_repo)
+            if draft_dir is not None:
+                paths.append(str(draft_dir))
+        return frozenset(paths)
+
     def _repo_dir(self, repo: str | None) -> Path | None:
         """The on-disk directory a repo-downloaded side would occupy under
         model_dir/<basename> — the artifact modelman itself creates when it

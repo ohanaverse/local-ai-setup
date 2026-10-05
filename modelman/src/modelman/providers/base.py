@@ -132,6 +132,17 @@ class Provider(ABC):
         p = self.path_of(variant)
         return frozenset([p]) if p is not None else frozenset()
 
+    def removable_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """The subset of artifact_paths() that delete() would actually remove.
+
+        Defaults to all of them. A provider whose delete() leaves some
+        artifacts alone — omlx never removes a `local_path` directory the user
+        produced by hand — narrows this, so find_shared_artifact_owner() only
+        guards (and only reports a conflict over) what is really at risk
+        (#227). It must never name a path delete() would not remove.
+        """
+        return self.artifact_paths(variant)
+
     def cleanup_partial_download(self, variant: VariantSpec) -> None:
         """Remove any on-disk remnants of a cancelled or failed download.
 

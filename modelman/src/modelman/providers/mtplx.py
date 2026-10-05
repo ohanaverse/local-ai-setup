@@ -114,6 +114,31 @@ class MTPLXProvider(Provider):
             return None
         return str(target)
 
+    def artifact_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """Return the configured model directory path, including local_path.
+
+        A local_path directory is user-produced and never removed by delete(),
+        but it must be included here so find_shared_artifact_owner() can detect
+        when a downloaded entry shares a directory with a local_path entry.
+        """
+        local_path = variant.get("local_path")
+        if local_path:
+            return frozenset([local_path])
+        target = self._target_dir(variant)
+        if target is not None:
+            return frozenset([str(target)])
+        return frozenset()
+
+    def removable_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """The subset of artifact_paths() that delete() would actually remove.
+
+        A local_path directory is user-produced and never removed by delete(),
+        so it is excluded from the shared-artifact guard (#227).
+        """
+        if _is_local_path_entry(variant):
+            return frozenset()
+        return self.artifact_paths(variant)
+
     def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
         """Remove the cached model directory under ~/.mtplx/models.
 

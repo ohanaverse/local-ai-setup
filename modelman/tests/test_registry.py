@@ -1402,3 +1402,36 @@ def test_shared_artifact_owner_ignores_a_different_repo_on_the_sibling_row(tmp_p
         provider = _row_provider(registry, entry.provider_id)
         variant = model_entry_to_variant(entry)
         assert find_shared_artifact_owner(registry, provider, variant) is None, entry.id
+
+
+def test_shared_artifact_owner_compares_only_what_delete_would_remove(tmp_path):
+    # #227 and its neighbour. One directory, used by a downloaded entry (repo
+    # basename "qwen" in the pool) and by a local_path entry pointing at that
+    # same directory. Deleting the local_path entry removes nothing, so it has
+    # no conflict to report. Deleting the DOWNLOADED entry would rmtree the
+    # directory the local_path entry uses — that one is still a conflict: what
+    # is compared is the deleting entry's removable paths against everything
+    # the other entry lives in.
+    from modelman.providers.omlx import OMLXProvider
+
+    pool = tmp_path / "pool"
+    (pool / "qwen").mkdir(parents=True)
+    (pool / "qwen" / "weights.safetensors").write_bytes(b"x")
+    downloaded = ModelEntry(
+        id="omlx/dl", family="f", provider_id="omlx", model_name="dl", fetch=Fetch(repo="org/qwen")
+    )
+    local = ModelEntry(
+        id="omlx/local",
+        family="f",
+        provider_id="omlx",
+        model_name="local",
+        fetch=Fetch(local_path=str(pool / "qwen")),
+    )
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", model_dir=str(pool))],
+        models=[downloaded, local],
+    )
+    provider = OMLXProvider({"model_dir": str(pool)})
+    assert find_shared_artifact_owner(registry, provider, model_entry_to_variant(local)) is None
+    owner = find_shared_artifact_owner(registry, provider, model_entry_to_variant(downloaded))
+    assert owner is not None and owner.id == "omlx/local"

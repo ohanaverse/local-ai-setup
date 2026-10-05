@@ -29,6 +29,7 @@ from modelman.registry import (
     ProviderEntry,
     Registry,
     load_registry,
+    model_entry_to_variant,
     save_registry,
 )
 from modelman.state import (
@@ -1884,3 +1885,91 @@ def test_apply_persists_prior_deletes_when_download_raises_keyboardinterrupt(tmp
     provider.delete.assert_called_once()  # the delete really ran
     reloaded = load_registry(reg_path)
     assert all(m.id != "ollama/a" for m in reloaded.models)  # and is persisted
+
+
+def test_apply_delete_of_a_local_path_entry_reports_no_shared_artifact(tmp_path):
+    """#227: an omlx entry whose fetch.local_path names a user-produced
+    directory is never removed by delete() — modelman did not create it. The
+    shared-artifact guard exists to stop a real rmtree, so it has nothing to
+    protect here; it still fired when a second entry used the same directory
+    and printed "artifact shared with … — not removed", a failure line for a
+    conflict that could not happen. With the real provider: no failure, the
+    directory untouched, the registry and state rows dropped as usual."""
+    from modelman.providers.omlx import OMLXProvider
+
+    user_dir = tmp_path / "converted"
+    user_dir.mkdir()
+    (user_dir / "weights.safetensors").write_bytes(b"x")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+
+    def entry(model_id: str) -> ModelEntry:
+        return ModelEntry(
+            id=model_id,
+            family="f",
+            provider_id="omlx",
+            model_name=model_id.split("/")[1],
+            fetch=Fetch(local_path=str(user_dir)),
+        )
+
+    a, b = entry("omlx/a"), entry("omlx/b")
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a, b],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True))
+    provider = OMLXProvider({"model_dir": str(tmp_path / "pool")})
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"omlx": provider},
+        deletes=[("omlx/a", model_entry_to_variant(a))],
+    )
+    pending.apply()
+
+    assert pending.failures == []
+    assert (user_dir / "weights.safetensors").exists()
+    assert all(m.id != "omlx/a" for m in reg.models)
+    assert "omlx/a" not in state.models
+
+
+def test_apply_delete_still_refuses_a_shared_downloaded_artifact_with_the_real_provider(tmp_path):
+    """The other side of #227, so the fix cannot loosen the guard: two omlx
+    entries whose repos share a basename share one DOWNLOADED directory, which
+    delete() would rmtree. That is still refused, and the directory kept."""
+    from modelman.providers.omlx import OMLXProvider
+
+    pool = tmp_path / "pool"
+    (pool / "qwen").mkdir(parents=True)
+    (pool / "qwen" / "weights.safetensors").write_bytes(b"x")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    a = ModelEntry(
+        id="omlx/a", family="f", provider_id="omlx", model_name="a", fetch=Fetch(repo="org1/qwen")
+    )
+    b = ModelEntry(
+        id="omlx/b", family="f", provider_id="omlx", model_name="b", fetch=Fetch(repo="org2/qwen")
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a, b],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True))
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"omlx": OMLXProvider({"model_dir": str(pool)})},
+        deletes=[("omlx/a", model_entry_to_variant(a))],
+    )
+    pending.apply()
+
+    assert any("shared with omlx/b" in f for f in pending.failures)
+    assert (pool / "qwen" / "weights.safetensors").exists()
