@@ -15,13 +15,21 @@
   model that is on disk but not loaded is a start row, and Enter or `-M`
   loads it as before.
   - No configuration is needed when omlx has nothing loaded or everything
-    loaded: its `/health` answers that without a key.
+    loaded: its `/health` answers that without a key. Its counts answer
+    "everything" only when the list carries the whole pool — a hidden model
+    is counted without being listed — so that case asks the status endpoint,
+    which wants the key when one is set.
+  - A 503 `/health` answer is not an outage: omlx 503s while its pinned
+    models preload, and the counts ride the 503 body. With zero built there,
+    wt still asks the status endpoint, because loaded_count cannot see a
+    model that is mid-load — so a sync inside the preload window routes the
+    models omlx is loading, instead of unrouting everything.
   - When only some models are loaded, wt needs omlx's `/v1/models/status`,
     which wants the server's API key if one is set. Give it through
     `auth.secret_ref` on the registry's omlx provider. Without it wt cannot
     tell which model is loaded: the family's running state is untrusted, so
-    `wt litellm sync` leaves omlx routes as they are (with its usual
-    warning) and a start asks before replacing.
+    `wt litellm sync` leaves omlx routes as they are, with a warning that
+    carries the reason and the repair, and a start asks before replacing.
   - wt still treats omlx as holding one model: a start replaces what is
     loaded and a stop stops the service.
 - Follow-ups to the ollama `api_base` repair (#206):

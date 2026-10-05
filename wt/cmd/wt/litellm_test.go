@@ -1733,6 +1733,28 @@ func TestSyncProbeWarningIgnoresHandWrittenRows(t *testing.T) {
 	}
 }
 
+// TestSyncProbeWarningCarriesTheProbeError pins that the probe warning carries
+// the probe's error when it has one: the status says only "partial", but the
+// error names the repair — a mixed omlx pool whose status endpoint wants the
+// server's key is actionable ("set auth.secret_ref ...") in a way "probe did
+// not succeed" is not. Snapshots without an error keep the plain wording, so
+// hand-built ones read as they always did.
+func TestSyncProbeWarningCarriesTheProbeError(t *testing.T) {
+	cfg := litellmTestConfig()
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusPartial},
+		ProbeFailures: map[string]error{
+			"omlx": fmt.Errorf("omlx has 1 of 2 models loaded and would not say which (set auth.secret_ref on the registry's omlx provider if the server has an API key): GET http://localhost:8000/v1/models/status: status 401"),
+		},
+	}
+	routed := map[string]bool{"omlx/stray-model": true}
+	untouched, warns := syncUntouchedAndWarnings(cfg, snap, routed)
+	want := []string{`provider "omlx" probe did not succeed (status "partial"): omlx has 1 of 2 models loaded and would not say which (set auth.secret_ref on the registry's omlx provider if the server has an API key): GET http://localhost:8000/v1/models/status: status 401; its model routes were left unchanged`}
+	if len(untouched) != 0 || !slices.Equal(warns, want) {
+		t.Fatalf("untouched = %v, warnings = %q; want none and only the warning with the probe error", untouched, warns)
+	}
+}
+
 // TestSyncAndStartHookAgreeWhenOmlxListsAnUnloadedSibling pins the fix for
 // #201, end to end through the real inventory and a server that answers as
 // omlx does: /v1/models lists every model in its pool, loaded or not. wt read

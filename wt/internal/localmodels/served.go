@@ -55,7 +55,10 @@ func familyAPIKey(cfg *config.Config, family string) string {
 // What omlx does report, in order of what it costs to ask:
 //
 //   - /health, no key: the pool's model_count and loaded_count. Zero loaded is
-//     "nothing", exactly. All loaded is "everything listed" — but only when
+//     "nothing", exactly, on a healthy (2xx) answer; a 503 answer carries the
+//     same counts while pinned models preload, and loaded_count cannot see a
+//     model mid-load, so zero built there is not settled until status has said
+//     none is loading either. All loaded is "everything listed" — but only when
 //     the list has as many models as the pool, since a hidden model is counted
 //     and not listed.
 //   - /v1/models/status: each model's loaded and is_loading flags, by its
@@ -87,7 +90,12 @@ func omlxLoaded(client *http.Client, origin, key string) ([]string, error) {
 	if health.Pool == nil {
 		return nil, err
 	}
-	if health.Pool.Loaded == 0 {
+	// Zero loaded on a healthy answer settles it. On a 503 it does not:
+	// loaded_count counts engines already built, so a pinned model mid-load
+	// would read as "nothing" here and a sync in that preload window would
+	// drop every omlx route for models omlx is about to serve — status sees
+	// is_loading, so ask it before settling.
+	if health.Pool.Loaded == 0 && code >= 200 && code < 300 {
 		return nil, nil
 	}
 	if health.Pool.Loaded == health.Pool.Models {

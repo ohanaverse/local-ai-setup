@@ -260,7 +260,14 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 				continue
 			}
 		}
-		warnings = append(warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
+		line := fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f])
+		if err := snap.ProbeFailures[f]; err != nil {
+			// The status alone cannot say what to repair: the probe error's
+			// text can — omlx's "set auth.secret_ref on the registry's omlx
+			// provider" hint lives in the error alone, so surface it here.
+			line = fmt.Sprintf("provider %q probe did not succeed (status %q): %v; its model routes were left unchanged", f, snap.Providers[f], err)
+		}
+		warnings = append(warnings, line)
 	}
 	downs := make([]string, 0, len(snap.Down))
 	for f := range snap.Down {

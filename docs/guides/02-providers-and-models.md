@@ -98,7 +98,7 @@ base_url = "http://localhost:8000"
 secret_ref = "OMLX_API_KEY"   # env-var name, os.environ/NAME, an exec: helper, or the literal key
 ```
 
-The key is the `auth.api_key` value in `~/.omlx/settings.json`. This is a hand edit — modelman has no screen for a provider's auth, but it keeps the line when it rewrites the file. Nothing needs setting while omlx has no models loaded or all of them loaded: it answers that without a key.
+The key is the `auth.api_key` value in `~/.omlx/settings.json`. This is a hand edit — modelman has no screen for a provider's auth, but it keeps the line when it rewrites the file. Nothing needs setting while omlx has no models loaded, or all of them loaded with `/v1/models` still listing the whole pool: its `/health` answers those without a key. A hidden model is counted in the pool but not listed, so "everything loaded" with one hidden is provable by the status endpoint alone — that case wants the key.
 
 Providers also declare a `protocols` field — the list of wire protocols the provider serves (`"anthropic"`, `"openai-chat"`, `"openai-responses"`; default `["openai-chat"]`). Ollama's discovered entry serves `["anthropic","openai-chat"]`. wt compares an agent's protocols against the provider's to pick direct-vs-LiteLLM routing ([06-wt-agents-and-models](06-wt-agents-and-models.md) §4).
 

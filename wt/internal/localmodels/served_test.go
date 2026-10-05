@@ -15,12 +15,15 @@ import (
 // with no key; /v1/models/status names the loaded ones but is management-auth,
 // so with key set it wants that Bearer token.
 type fakeOmlx struct {
-	listed     []string        // /v1/models
-	pool       map[string]bool // every pool model -> loaded
-	loading    string          // a pool model that is mid-load
-	key        string          // required by /v1/models/status when set
-	noHealth   bool            // an omlx old enough to have no /health
-	statusHits int
+	listed []string        // /v1/models
+	pool   map[string]bool // every pool model -> loaded
+	// loading is a pool model that is mid-load; healthStatus is /health's
+	// status code (0 = 200; omlx answers 503 while pinned models preload).
+	loading      string
+	healthStatus int
+	key          string // required by /v1/models/status when set
+	noHealth     bool   // an omlx old enough to have no /health
+	statusHits   int
 }
 
 func (f *fakeOmlx) serve(t *testing.T) string {
@@ -37,6 +40,9 @@ func (f *fakeOmlx) serve(t *testing.T) string {
 		if f.noHealth {
 			http.NotFound(w, r)
 			return
+		}
+		if f.healthStatus != 0 && f.healthStatus != http.StatusOK {
+			w.WriteHeader(f.healthStatus)
 		}
 		loaded := 0
 		for _, l := range f.pool {
@@ -99,6 +105,11 @@ func TestServedIDsOmlxCountsOnlyLoadedModels(t *testing.T) {
 		{"one loaded, one loading", fakeOmlx{listed: []string{"A", "B", "C"}, pool: map[string]bool{"A": true, "B": false, "C": false}, loading: "B"}, []string{"A", "B"}, 1},
 		// An omlx with no /health predates the counts: the list is all wt has.
 		{"no /health endpoint", fakeOmlx{listed: []string{"A", "B"}, pool: map[string]bool{"A": false, "B": false}, noHealth: true}, []string{"A", "B"}, 0},
+		// /health 503s while pinned models preload: its counts say nothing is
+		// built, but loaded_count cannot see a model mid-load, so zero built
+		// does not settle "nothing" until status has said no one is loading.
+		{"503 while preloading, status says none loading", fakeOmlx{listed: []string{"A", "B"}, pool: map[string]bool{"A": false, "B": false}, healthStatus: http.StatusServiceUnavailable}, nil, 1},
+		{"503 while preloading, one model mid-load", fakeOmlx{listed: []string{"A", "B"}, pool: map[string]bool{"A": false, "B": false}, loading: "B", healthStatus: http.StatusServiceUnavailable}, []string{"B"}, 1},
 	} {
 		srv := tc.srv
 		got, err := ServedIDs(omlxCfgAt(srv.serve(t), ""), testClient, "omlx")
