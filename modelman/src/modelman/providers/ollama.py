@@ -247,6 +247,11 @@ class OllamaProvider(Provider):
             if not line or line.startswith("NAME"):
                 continue
             parts = line.split()
+            # A cloud model the account can reach is listed too, with "-" for
+            # a size: nothing is on disk, so it is not a local model (wt's
+            # inventory leaves these out as well).
+            if len(parts) >= 3 and parts[2] == "-":
+                continue
             if len(parts) >= 1:
                 models.append(
                     {

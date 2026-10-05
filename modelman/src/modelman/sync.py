@@ -9,6 +9,7 @@ and docs/superpowers/specs/2026-08-28-modelman-sync-modeldir-reconcile-design.md
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -114,18 +115,47 @@ def _ollama_downloaded(registry: Registry, sizes: dict[str, int]) -> dict[str, t
     return downloaded
 
 
-def _ensure_provider_entries(registry: Registry) -> list[str]:
-    """Create default entries for reconcilable providers referenced by models
-    but missing from the registry.
+# The command that shows a default local provider is installed. mlx_lm_server
+# has none of its own (it is a module run from omlx's bundled Python), so it
+# only ever gets a row from a model that references it.
+_LOCAL_PROVIDER_COMMANDS: dict[str, str] = {"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx"}
 
-    Repairs a `providers = []` registry (models referencing a provider with
-    no entry) so wt's fail-closed validation accepts it. Returns the ids of
-    the provider entries added. Each entry is a fresh instance (via
-    registry.default_provider_entry) so mutating one registry never corrupts
-    the shared default.
+
+def _installed_local_providers() -> list[str]:
+    """The default local providers whose command is on PATH."""
+    return [pid for pid, cmd in _LOCAL_PROVIDER_COMMANDS.items() if shutil.which(cmd)]
+
+
+def _ensure_provider_entries(registry: Registry) -> list[str]:
+    """Create default entries for the reconcilable providers that are missing
+    from the registry and are either referenced by a model or installed on
+    this machine.
+
+    Referenced: repairs a `providers = []` registry (models referencing a
+    provider with no entry) so wt's fail-closed validation accepts it.
+    Installed: on a fresh machine no model references anything yet, and
+    without a provider row a pulled model is unknown to `modelman start` and
+    invisible to wt — so a local provider whose command is on PATH gets its
+    row too. One that is not installed does not: wt would probe a server the
+    machine does not have. Nor does an installed `omlx` when an `omlx-6bit`
+    row exists: the two are one server, so the tool already has its row, and
+    a second one (with the default model_dir) would change which row
+    discovery and the running-flag probe use.
+
+    There is deliberately no opt-out: a row deleted by hand for an installed
+    tool comes back on the next sync.
+
+    Returns the ids of the provider entries added. Each entry is a fresh
+    instance (via registry.default_provider_entry) so mutating one registry
+    never corrupts the shared default.
     """
     referenced = {m.provider_id for m in registry.models}
     existing = {p.id for p in registry.providers}
+    referenced.update(
+        pid
+        for pid in _installed_local_providers()
+        if not (pid == "omlx" and "omlx-6bit" in existing)
+    )
     added: list[str] = []
     for pid in DEFAULT_PROVIDER_IDS:
         if pid in referenced and pid not in existing:

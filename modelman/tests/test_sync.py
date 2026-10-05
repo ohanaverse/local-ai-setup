@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from modelman import sync as sync_module
 from modelman.providers.base import Provider, VariantSpec
 from modelman.providers.ollama import _parse_ollama_list_sizes
 from modelman.registry import (
@@ -638,3 +639,54 @@ def test_reconcile_leaves_cloud_model_state_alone():
     result = reconcile(registry, state, {})
     assert result.downloaded == [] and result.not_downloaded == []
     assert state.get("ollama/x:cloud") == ModelState(ready=True)
+
+
+def test_ensure_provider_entries_adds_installed_local_providers():
+    # #194: on a fresh machine nothing created a provider row. `modelman
+    # migrate` wrote `providers = []`, `modelman sync` only added a row for a
+    # provider some model already referenced, and with no ollama row a pulled
+    # model was "unknown model" to `modelman start` and invisible to wt. A
+    # local provider whose tool is installed now gets its default row, in the
+    # templates' order, next to the referenced ones; existing rows are kept.
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="mine")],
+        models=[
+            ModelEntry(
+                id="mlx_lm_server/p", family="p", provider_id="mlx_lm_server", model_name="p"
+            )
+        ],
+    )
+    with patch(
+        "modelman.sync._installed_local_providers", return_value=["mtplx", "ollama", "omlx"]
+    ):
+        added = _ensure_provider_entries(registry)
+    assert added == ["ollama", "mlx_lm_server", "mtplx"]
+    assert [p.id for p in registry.providers] == ["omlx", "ollama", "mlx_lm_server", "mtplx"]
+    assert registry.providers[0].name == "mine"
+    assert registry.providers[1].auth.base_url == "http://localhost:11434"
+
+
+# conftest replaces the PATH lookup with "none installed" for the whole suite;
+# the test below is about the lookup, so it keeps the real one (bound here at
+# import, before any fixture runs).
+_REAL_INSTALLED_LOCAL_PROVIDERS = sync_module._installed_local_providers
+
+
+def test_installed_local_providers_asks_for_each_tool():
+    # A provider counts as installed when its command is on PATH. A tool that
+    # is not there gets no row: wt would probe a server the machine lacks.
+    with patch(
+        "modelman.sync.shutil.which", side_effect=lambda b: "/bin/x" if b == "omlx" else None
+    ):
+        assert _REAL_INSTALLED_LOCAL_PROVIDERS() == ["omlx"]
+
+
+def test_ensure_provider_entries_does_not_add_omlx_beside_an_omlx_6bit_row():
+    # #194 review: omlx and omlx-6bit are one server. An `omlx-6bit`-only
+    # registry is already set up for the installed `omlx` tool; adding an
+    # `omlx` row too (with the default model_dir) changed which row discovery
+    # and the running-flag probe use.
+    registry = Registry(providers=[ProviderEntry(id="omlx-6bit", name="mine")], models=[])
+    with patch("modelman.sync._installed_local_providers", return_value=["omlx"]):
+        assert _ensure_provider_entries(registry) == []
+    assert [p.id for p in registry.providers] == ["omlx-6bit"]

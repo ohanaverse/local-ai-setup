@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from modelman import local_control
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     DiscoveredModel,
@@ -2271,3 +2272,352 @@ def test_discovered_models_lists_an_artifact_once_per_discovered_id():
     assert sorted(d.model_id for d in found) == ["omlx/Other-6bit", "omlx/Shared-4bit"]
     shared = next(d for d in found if d.variant_id == "Shared-4bit")
     assert shared.provider_id == "omlx"
+
+
+# --- #194 follow-ups ---------------------------------------------------
+
+
+def _ollama_model(model_id: str, name: str) -> ModelEntry:
+    return ModelEntry(
+        id=model_id, family="f", provider_id="ollama", model_name=name, location="local"
+    )
+
+
+# conftest replaces the pulled check with a no-op for the whole suite; these
+# tests are about the check, so they put the real one back.
+_REAL_REQUIRE_OLLAMA_PULLED = local_control._require_ollama_pulled
+
+
+def _start_with_ollama_tags(registry, model_id, state_path, tags, asked=None):
+    """start_local_model with the real pulled check and `/api/tags` answering
+    `tags` (None = no usable answer)."""
+
+    def fake_json(url: str, timeout: float = 2.0):
+        if asked is not None:
+            asked.append(url)
+        return tags
+
+    with (
+        patch("modelman.local_control._http_json", fake_json),
+        patch("modelman.local_control._require_ollama_pulled", _REAL_REQUIRE_OLLAMA_PULLED),
+    ):
+        return start_local_model(registry, model_id, state_path)
+
+
+def test_start_refuses_a_registered_ollama_model_that_is_not_pulled(tmp_path):
+    # #194 (#18): ollama's start is flag-only, so starting a registered model
+    # that was never pulled printed "Started", flagged it running and routed
+    # nothing — wt routes an ollama model only while it is pulled. Refuse it
+    # and name the command that fixes it; nothing is flagged.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/ghost:1b", "ghost:1b"))
+    state_path = _state_path(tmp_path)
+    with pytest.raises(LocalControlError, match="not pulled — ollama pull ghost:1b"):
+        _start_with_ollama_tags(
+            registry, "ollama/ghost:1b", state_path, {"models": [{"name": "other:1b"}]}
+        )
+    assert load_state(state_path).models == {}
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        None,  # refused, timed out, or not JSON
+        {"error": "boom"},  # answered, but not a tags listing
+        {"models": None},
+    ],
+)
+def test_start_does_not_refuse_ollama_when_presence_is_unknown(tmp_path, tags):
+    # The refusal needs a positive "not pulled". A tags read that gives no
+    # usable listing is "unknown", and the start goes ahead as before rather
+    # than blocking on a flaky probe.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/ghost:1b", "ghost:1b"))
+    state_path = _state_path(tmp_path)
+    result = _start_with_ollama_tags(registry, "ollama/ghost:1b", state_path, tags)
+    assert result.model_id == "ollama/ghost:1b"
+
+
+def test_start_ollama_pull_check_asks_the_configured_origin(tmp_path):
+    # The pull check used to run the local `ollama list` CLI while the daemon
+    # check and wt read the provider row's base_url — so with ollama on
+    # another host or port, a model pulled THERE was refused as "not pulled"
+    # because the local daemon did not have it. Both checks ask the same
+    # `/api/tags` now, and the local CLI is not consulted at all.
+    registry = _registry()
+    registry.providers[0].auth = AuthConfig(type="none", base_url="http://127.0.0.1:12345/v1")
+    registry.models.append(_ollama_model("ollama/remote:1b", "remote:1b"))
+    state_path = _state_path(tmp_path)
+    asked: list[str] = []
+    local_cli = {"ollama": [{"variant_id": "other:1b", "path": "ollama:other:1b", "size_bytes": 1}]}
+    with _patch_provider_local_models(local_cli):
+        result = _start_with_ollama_tags(
+            registry,
+            "ollama/remote:1b",
+            state_path,
+            {"models": [{"name": "remote:1b"}]},
+            asked,
+        )
+    assert result.model_id == "ollama/remote:1b"
+    assert asked == ["http://127.0.0.1:12345/api/tags"]
+
+
+def test_start_ollama_pull_check_reads_tags_the_way_wt_does(tmp_path):
+    # Mirrors wt's ollamaModelNames + OllamaNameMatches: an untagged overlay
+    # owns the pulled ":latest", and an entry with a remote_host is an
+    # ollama.com cloud model — nothing is on disk, so it is not "pulled".
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/llama3.2", "llama3.2"))
+    registry.models.append(_ollama_model("ollama/cloudy:1b", "cloudy:1b"))
+    state_path = _state_path(tmp_path)
+    tags = {
+        "models": [
+            {"name": "llama3.2:latest"},
+            {"name": "cloudy:1b", "remote_host": "https://ollama.com:443"},
+        ]
+    }
+    assert _start_with_ollama_tags(registry, "ollama/llama3.2", state_path, tags).model_id == (
+        "ollama/llama3.2"
+    )
+    with pytest.raises(LocalControlError, match="not pulled — ollama pull cloudy:1b"):
+        _start_with_ollama_tags(registry, "ollama/cloudy:1b", state_path, tags)
+
+
+def test_start_exact_discovered_id_beats_a_registered_models_name(tmp_path):
+    # #194: with overlay ollama/qwen3:8b and a pulled someuser/qwen3:8b, the
+    # listing prints the second as `ollama/someuser/qwen3:8b` — but typing
+    # that started the REGISTERED model, because the registered-name step
+    # matches on the name's tail and ran first. The exact discovered id wins.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/qwen3:8b", "qwen3:8b"))
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {"variant_id": "qwen3:8b", "path": "ollama:qwen3:8b", "size_bytes": 1},
+            {
+                "variant_id": "someuser/qwen3:8b",
+                "path": "ollama:someuser/qwen3:8b",
+                "size_bytes": 2,
+            },
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        assert (
+            start_local_model(registry, "ollama/someuser/qwen3:8b", state_path).model_id
+            == "ollama/someuser/qwen3:8b"
+        )
+        # The registered model is still reached by its own id and its name.
+        assert start_local_model(registry, "qwen3:8b", state_path).model_id == "ollama/qwen3:8b"
+
+
+def test_start_bare_repo_id_whose_org_is_a_cloud_provider_id(tmp_path):
+    # #194: a typed "<prefix>/<rest>" is refused when <prefix> names a
+    # provider, since the prefix then says WHERE the model is. That check
+    # counted cloud provider ids too, so a bare repo id whose org happens to
+    # equal one ("openrouter/…" here) was refused although no local model can
+    # live on a cloud provider. Typed in full, such a name is the artifact's
+    # name. (A cloud prefix in front of a SHORTER artifact name is still not
+    # that artifact — test_start_wrong_family_prefix_never_starts_… pins it.)
+    registry = _registry()
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {
+                "variant_id": "openrouter/tiny:1b",
+                "path": "ollama:openrouter/tiny:1b",
+                "size_bytes": 1,
+            }
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        result = start_local_model(registry, "openrouter/tiny:1b", state_path)
+    assert result.model_id == "ollama/openrouter/tiny:1b"
+    # A LOCAL provider prefix still says where: no silent cross-provider guess.
+    mapping = {"ollama": [{"variant_id": "foo", "path": "ollama:foo", "size_bytes": 1}]}
+    with (
+        _patch_provider_local_models(mapping),
+        pytest.raises(LocalControlError, match="unknown model"),
+    ):
+        start_local_model(registry, "omlx/foo", state_path)
+
+
+def test_stop_of_a_discovered_model_leaves_no_state_row(tmp_path):
+    # #194: a discovered model has no registry entry, so its modelman.toml row
+    # exists only to carry the running flag. Stopping it left an all-default
+    # `[model_state."<id>"]` row behind for good. A row that says nothing is
+    # removed; one that still carries data (a cached size) is kept.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/disc:1b", ModelState(running=True))
+    store.set("ollama/sized:1b", ModelState(running=True, size_bytes=5))
+    save_state(store, state_path)
+    with patch("modelman.local_control._stop_ollama_model"):
+        stop_local_model("ollama/disc:1b", state_path)
+        stop_local_model("ollama/sized:1b", state_path)
+    models = load_state(state_path).models
+    assert "ollama/disc:1b" not in models
+    assert models["ollama/sized:1b"] == ModelState(running=False, size_bytes=5)
+
+
+def test_stop_all_leaves_no_all_default_state_rows(tmp_path):
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/disc:1b", ModelState(running=True))
+    save_state(store, state_path)
+    with patch("modelman.local_control.stop_all_local_providers"):
+        stop_all_local_models(state_path)
+    assert load_state(state_path).models == {}
+
+
+def test_listing_omits_an_artifact_whose_discovered_id_is_a_registry_id():
+    # #194: registry `ollama/foo` names artifact "bar"; an artifact "foo" is
+    # also on disk. Its discovered id would be `ollama/foo` — the registered
+    # model's id — so it can be neither started (start refuses, naming the
+    # clash) nor routed (wt drops it). Listing it under Discovered offered an
+    # id that then failed, and the TUI's "+" row would register a duplicate id.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/foo", "bar"))
+    mapping = {
+        "ollama": [
+            {"variant_id": "foo", "path": "ollama:foo", "size_bytes": 1},
+            {"variant_id": "free", "path": "ollama:free", "size_bytes": 2},
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        assert [d.model_id for d in discover_unregistered_models(registry)] == ["ollama/free"]
+        listed = inventory_local_models(registry, StateStore()).discovered
+        assert [d.model_id for d in listed] == ["ollama/free"]
+        # Starting it by name still explains the clash instead of "unknown model".
+        with pytest.raises(LocalControlError, match="already the id of a registered model"):
+            start_local_model(registry, "foo", None)
+
+
+def test_listing_omits_ollama_cloud_entries():
+    # `ollama list` also prints the cloud models the account can reach, with
+    # "-" for a size: nothing is on disk, and wt's inventory leaves them out.
+    # modelman listed them as discovered local models that could be "started".
+    from modelman.providers.ollama import OllamaProvider
+
+    out = (
+        "NAME                        ID            SIZE     MODIFIED\n"
+        "qwen3.6:35b-mlx             e92a3e94bbca  23 GB    5 hours ago\n"
+        "nemotron-3-nano:30b-cloud   2fd759a2eb63  -        3 days ago\n"
+    )
+    runner = MagicMock(return_value=MagicMock(stdout=out, returncode=0))
+    names = [m["variant_id"] for m in OllamaProvider({}).list_local(runner=runner)]
+    assert names == ["qwen3.6:35b-mlx"]
+
+
+@pytest.mark.parametrize(
+    ("registered_name", "typed", "want"),
+    [
+        # A pulled model's full name, namespace included, is that model — not
+        # the registered one its tail happens to spell.
+        ("qwen3:8b", "someuser/qwen3:8b", "ollama/someuser/qwen3:8b"),
+        # ...also when the namespace is a cloud provider's id.
+        ("qwen3:8b", "openrouter/qwen3:8b", "ollama/openrouter/qwen3:8b"),
+        # And the reverse: a bare name is not a registered namespaced model.
+        ("someuser/qwen3:8b", "qwen3:8b", "ollama/qwen3:8b"),
+    ],
+)
+def test_start_ollama_native_name_is_exact_not_a_tail_match(tmp_path, registered_name, typed, want):
+    # #194 made the exact discovered ID beat the registered-name step, which
+    # compared name tails. The NAME the listing shows next to it still went
+    # through that step: `modelman start someuser/qwen3:8b` started the
+    # registered `qwen3:8b`. An ollama name is exact (wt's OllamaNameMatches;
+    # _artifact_matches here) — a namespace is part of it.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/registered", registered_name))
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {"variant_id": name, "path": f"ollama:{name}", "size_bytes": 1}
+            for name in (registered_name, want.removeprefix("ollama/"))
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        assert start_local_model(registry, typed, state_path).model_id == want
+        # The registered model is still reached by its name, bare or prefixed.
+        for spelling in (registered_name, f"ollama/{registered_name}"):
+            assert start_local_model(registry, spelling, state_path).model_id == "ollama/registered"
+
+
+def test_start_prefix_of_a_legacy_location_provider_row_is_a_local_claim(tmp_path):
+    # A provider row with no `location` is local (is_local_location) — the
+    # legacy spelling. Its id as a typed prefix therefore says WHERE the model
+    # is, exactly like a `location = "local"` row's: it must not fall into the
+    # cloud-prefix exception and start another provider's artifact.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="legacybox", name="Legacy", location=None, auth=AuthConfig(type="none"))
+    )
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [{"variant_id": "legacybox/foo", "path": "ollama:legacybox/foo", "size_bytes": 1}]
+    }
+    with (
+        _patch_provider_local_models(mapping),
+        pytest.raises(LocalControlError, match="unknown model"),
+    ):
+        start_local_model(registry, "legacybox/foo", state_path)
+    assert load_state(state_path).models == {}
+
+
+def test_stale_flag_clear_leaves_no_all_default_state_row(tmp_path):
+    # The row-dropping clear covers every flag clear, not only the stops: a
+    # discovered model whose process died (running_model_ids' probe), or that
+    # a start on the same single-model provider replaced, lost its flag
+    # through _clear_stale_running_flag and kept an empty row for good.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("mtplx/Org/gone", ModelState(running=True))
+    store.set("mtplx/Org/sized", ModelState(running=True, size_bytes=5))
+    save_state(store, state_path)
+    with patch("modelman.local_control._probe_running", return_value=False):
+        assert running_model_ids(registry, load_state(state_path), state_path) == []
+    models = load_state(state_path).models
+    assert "mtplx/Org/gone" not in models
+    assert models["mtplx/Org/sized"] == ModelState(running=False, size_bytes=5)
+
+
+def test_start_bare_name_that_is_exactly_one_artifact_is_not_ambiguous(tmp_path):
+    # #194 review: with `qwen3:8b` and `someuser/qwen3:8b` both pulled and
+    # unregistered, the lenient tail match found both and `modelman start
+    # qwen3:8b` failed as ambiguous — though one of them is named exactly.
+    # An exact name beats a tail match, slash or no slash.
+    registry = _registry()
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {"variant_id": "qwen3:8b", "path": "ollama:qwen3:8b", "size_bytes": 1},
+            {
+                "variant_id": "someuser/qwen3:8b",
+                "path": "ollama:someuser/qwen3:8b",
+                "size_bytes": 1,
+            },
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        result = start_local_model(registry, "qwen3:8b", state_path)
+    assert result.model_id == "ollama/qwen3:8b"
+
+
+def test_resolving_a_registered_repo_id_lists_no_provider():
+    # #194 review: an exact discovered id is `<local family>/<name>`, so only
+    # a typed name with such a prefix can be one. A registered model's repo id
+    # ("org/model-a") has a "/" too, and used to pay for an `ollama list` plus
+    # the omlx and mtplx directory scans before its registry match.
+    registry = _registry()
+    with (
+        patch("modelman.local_control.model_has_local_artifact", return_value=True),
+        patch(
+            "modelman.local_control._find_discovered",
+            side_effect=AssertionError("listed the providers"),
+        ),
+    ):
+        model = local_control._resolve_local_model(registry, "org/model-a")
+    assert model.id == "omlx/model-a"

@@ -217,11 +217,10 @@ The TUI has a single screen:
   dialog, so you just pick a family to register it — the explicit way to
   give a discovered model an overlay; nothing registers one implicitly. The
   `+` row shows RUNNING `●` while the model runs (started with
-  `modelman start <artifact>`; `s` does not act on a `+` row). Known
-  follow-up: this `+`-row form derives the new id with every `/` in the name
-  spelled `--` (`mtplx/org--name`), not the convention above, so an MTPLX
-  model registered from its `+` row gets an id that differs from its
-  discovered id (the `a` add form keeps the slash for MTPLX). LOC is an icon
+  `modelman start <artifact>`; `s` does not act on a `+` row). The
+  `+`-row form registers the model under its discovered id
+  (`<family>/<artifact>`, e.g. `mtplx/org/name`), so registering it changes
+  neither its route nor its usage history. LOC is an icon
   (↗ cloud / ▤ local / `—` when unknown), and
   RUNNING shows `●` for a local model modelman started (verified by a
   live probe when the TUI opens) and `-` otherwise; COST

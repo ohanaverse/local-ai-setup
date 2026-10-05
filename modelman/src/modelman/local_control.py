@@ -279,6 +279,12 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str]:
     return []
 
 
+def _ollama_origin(provider: ProviderEntry | None) -> str:
+    """The origin the ollama provider row points at — the one wt probes."""
+    origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
+    return origin or _DEFAULT_BASE_ORIGIN["ollama"]
+
+
 def _require_ollama_daemon(provider: ProviderEntry | None) -> None:
     """Raise unless the ollama daemon answers at the origin wt would probe.
 
@@ -294,13 +300,57 @@ def _require_ollama_daemon(provider: ProviderEntry | None) -> None:
     Asks `/api/tags` — the endpoint wt's own ollama probe reads — so the two
     always describe the same server.
     """
-    origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
-    base = origin or _DEFAULT_BASE_ORIGIN["ollama"]
+    base = _ollama_origin(provider)
     if not _http_answers(f"{base}/api/tags"):
         raise LocalControlError(
             f"the ollama daemon is not answering at {base} — start it "
             "(the Ollama app, or `ollama serve`) and retry"
         )
+
+
+def _require_ollama_pulled(provider: ProviderEntry | None, model: ModelEntry) -> None:
+    """Raise unless ollama has `model` pulled — or cannot say.
+
+    Ollama's start is flag-only (see _probe_running), so nothing else notices
+    a model that was never pulled: the start "succeeded", the flag read as
+    running, and wt — which routes an ollama model only while it is pulled —
+    wrote no route. The refusal needs a positive "not pulled": a tags read
+    that gives no usable listing is unknown, and the start goes ahead as
+    before.
+
+    Reads `/api/tags` at the provider row's origin, as _require_ollama_daemon
+    and wt's probe do, and parses it as wt does (ollamaModelNames: an entry
+    with a remote_host is an ollama.com cloud model, not a pulled one;
+    OllamaNameMatches for the implicit ":latest"). The local `ollama list`
+    CLI is not the authority: with base_url on another host or port it
+    describes a different server, and refused a model wt would have routed.
+    """
+    body = _http_json(f"{_ollama_origin(provider)}/api/tags")
+    listed = body.get("models") if body else None
+    if not isinstance(listed, list):
+        return
+    for item in listed:
+        if not isinstance(item, dict) or item.get("remote_host"):
+            continue
+        name = item.get("name")
+        if isinstance(name, str) and _ollama_name_matches(name, model.model_name):
+            return
+    raise LocalControlError(f"{model.id} is not pulled — ollama pull {model.model_name}")
+
+
+def _clear_running_flag(fresh: StateStore, model_id: str) -> None:
+    """Clear `model_id`'s running flag in `fresh`, dropping the row when that
+    leaves it saying nothing. A discovered model has no registry entry, so
+    its row exists only to carry the flag; left behind, an all-default row
+    stayed in modelman.toml for good."""
+    existing = fresh.models.get(model_id)
+    if existing is None or not existing.running:
+        return
+    cleared = replace(existing, running=False)
+    if cleared == ModelState():
+        del fresh.models[model_id]
+    else:
+        fresh.models[model_id] = cleared
 
 
 def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
@@ -322,9 +372,7 @@ def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
         return
     try:
         with locked_state(state_path) as fresh:
-            fresh_existing = fresh.models.get(model_id)
-            if fresh_existing is not None and fresh_existing.running:
-                fresh.models[model_id] = replace(fresh_existing, running=False)
+            _clear_running_flag(fresh, model_id)
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
 
@@ -638,7 +686,18 @@ def discover_unregistered_models(
     """
     if local_map is None:
         local_map, _unqueryable = _provider_local_models(registry)
-    return _discovered_models(registry, local_map)
+    return _listable(registry, _discovered_models(registry, local_map))
+
+
+def _listable(registry: Registry, discovered: list[DiscoveredModel]) -> list[DiscoveredModel]:
+    """`discovered` minus the artifacts whose discovered id is already the id
+    of a registry model that names a different artifact. Such an artifact can
+    be neither started (_resolve_local_model refuses, naming the clash) nor
+    routed (wt drops the colliding entry), and registering it from the TUI
+    would write a duplicate id — so no listing offers it. _find_discovered
+    keeps it, which is how that refusal still gets to explain itself."""
+    taken = {m.id for m in registry.models}
+    return [d for d in discovered if d.model_id not in taken]
 
 
 def _find_discovered(registry: Registry, name: str) -> list[DiscoveredModel]:
@@ -699,14 +758,23 @@ def _discovered_entry(match: DiscoveredModel) -> ModelEntry:
     )
 
 
+def _names_a_local_provider(registry: Registry, prefix: str) -> bool:
+    """Whether `prefix` (the text before a typed id's first "/") is a local
+    provider family or a local provider row id. A row with a legacy empty
+    location is local (is_local_location), as everywhere else."""
+    return (
+        prefix == _OMLX_FAMILY
+        or prefix in SUPPORTED_PROVIDER_IDS
+        or any(p.id == prefix and is_local_location(p.location) for p in registry.providers)
+    )
+
+
 def _names_a_provider(registry: Registry, prefix: str) -> bool:
     """Whether `prefix` (the text before a typed id's first "/") is a
     provider family or a provider row id rather than part of a model name
     (an mtplx/omlx repo id's org segment)."""
-    return (
-        prefix == _OMLX_FAMILY
-        or prefix in SUPPORTED_PROVIDER_IDS
-        or any(p.id == prefix for p in registry.providers)
+    return _names_a_local_provider(registry, prefix) or any(
+        p.id == prefix for p in registry.providers
     )
 
 
@@ -714,23 +782,29 @@ def _typed_name_matches(model: ModelEntry, typed: str) -> bool:
     """Whether what the user typed names registered `model` by its native
     provider-side name.
 
-    _name_matches, not ==: the name a user types comes from the provider's
-    spelling (the discovered listing prints omlx's directory basename,
-    "Qwen3.8-27B-4bit") while model_name holds the registry's (the full repo
-    id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison missed that
-    model and fell through to the discovered-artifact step, starting an
-    already-registered artifact under a second id.
+    omlx and mtplx: _name_matches, not ==: the name a user types comes from
+    the provider's spelling (the discovered listing prints omlx's directory
+    basename, "Qwen3.8-27B-4bit") while model_name holds the registry's (the
+    full repo id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison
+    missed that model and fell through to the discovered-artifact step,
+    starting an already-registered artifact under a second id.
 
-    For ollama also the implicit ":latest" tag (_ollama_name_matches): an
-    overlay named "llama3.2" owns the pulled "llama3.2:latest", which the
-    listing would otherwise have printed as `ollama/llama3.2:latest` — so
-    both that spelling and the bare one resolve to the overlay.
+    ollama: the name is exact, as in _artifact_matches — a user namespace is
+    part of it, so a typed "someuser/qwen3:8b" is NOT a registered "qwen3:8b"
+    (a tail match started the registered model in place of the pulled one the
+    user named, and "qwen3:8b" started a registered "someuser/qwen3:8b").
+    Accepted: the name itself, with or without the `ollama/` family prefix,
+    and the implicit ":latest" tag (_ollama_name_matches) — an overlay named
+    "llama3.2" owns the pulled "llama3.2:latest", which the listing would
+    otherwise have printed as `ollama/llama3.2:latest`, so both that spelling
+    and the bare one resolve to the overlay.
     """
-    if _name_matches(model.model_name, typed):
-        return True
     if model.provider_id != "ollama":
-        return False
-    return _ollama_name_matches(typed.removeprefix("ollama/"), model.model_name)
+        return _name_matches(model.model_name, typed)
+    return any(
+        _ollama_name_matches(name, model.model_name)
+        for name in (typed, typed.removeprefix("ollama/"))
+    )
 
 
 def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
@@ -745,13 +819,30 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
     except KeyError:
         pass
 
+    # An exact discovered id is an id, not a name: it is what the listing
+    # printed for that artifact, so it wins before the lenient name match
+    # below — which for omlx and mtplx compares name tails, and would hand
+    # `mtplx/Org/Name` to a registered omlx `Name`. Only a typed
+    # "<local family>/<name>" can be one, so a bare name or a repo id
+    # ("mlx-community/Name") costs no provider listing here.
+    discovered: list[DiscoveredModel] | None = None
+    exact: list[DiscoveredModel] = []
+    prefix, slash, _ = model_id.partition("/")
+    if slash and _names_a_local_provider(registry, prefix):
+        discovered = _find_discovered(registry, model_id)
+        exact = [d for d in discovered if d.model_id == model_id]
+
     providers_by_id = _provider_by_id(registry)
-    native_matches = [
-        m
-        for m in registry.models
-        if _typed_name_matches(m, model_id)
-        and model_has_local_artifact(m, providers_by_id.get(m.provider_id))
-    ]
+    native_matches = (
+        []
+        if exact
+        else [
+            m
+            for m in registry.models
+            if _typed_name_matches(m, model_id)
+            and model_has_local_artifact(m, providers_by_id.get(m.provider_id))
+        ]
+    )
     if len(native_matches) == 1:
         return native_matches[0]
     if len(native_matches) > 1:
@@ -764,13 +855,26 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
     # `ollama/shared` also matches mtplx's `shared`, and `omlx/foo` matches
     # an artifact `foo` only ollama has. The exact discovered id therefore
     # wins outright, whatever else matched.
-    discovered = _find_discovered(registry, model_id)
-    exact = [d for d in discovered if d.model_id == model_id]
+    if discovered is None:
+        discovered = _find_discovered(registry, model_id)
     if exact:
         match = exact[0]
     else:
         ids = ", ".join(sorted(d.model_id for d in discovered))
-        prefix, slash, _ = model_id.partition("/")
+        # An artifact named exactly what was typed beats the tail matches:
+        # `qwen3:8b` is the pulled `qwen3:8b`, not also `someuser/qwen3:8b`.
+        # That holds for a typed name with a "/" too. A repo id or user
+        # namespace can begin with a CLOUD provider's id ("openai/whisper"
+        # while an `openai` provider exists). No local model lives on a cloud
+        # provider, so when the typed text is an artifact's whole name it is
+        # that name, not a claim about where the model is. A local family
+        # prefix stays a claim either way, and a cloud prefix in front of a
+        # shorter artifact name ("openrouter/foo" for `foo`) is still not
+        # that artifact.
+        if not slash or not _names_a_local_provider(registry, prefix):
+            named_in_full = [d for d in discovered if d.variant_id == model_id]
+            if named_in_full:
+                discovered, slash = named_in_full, ""
         if not discovered or (slash and _names_a_provider(registry, prefix)):
             # A typed provider/family prefix says WHERE the model is. With no
             # artifact under exactly that id, starting the same-named one on
@@ -849,7 +953,7 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
             size = state.get(model.id).size_bytes
         downloaded.append(InventoryEntry(model_id=model.id, running=running, size_bytes=size))
 
-    discovered = _discovered_models(registry, local_map)
+    discovered = _listable(registry, _discovered_models(registry, local_map))
     for found in discovered:
         # A model started without a registry entry is flagged under its
         # discovered id; verify it exactly as a registered row is above.
@@ -924,10 +1028,12 @@ def running_model_ids(
             # A flagged id that no registry entry owns but that is spelled the
             # REGISTERED way (the id's "/" → "--": "mtplx/org--name"): the
             # server reports the repo id ("org/name"), so the spelling above
-            # can never name-match it. This is where register-a-discovered-
-            # artifact leaves the running flag (screens/models.py record()),
-            # and it stays on disk through a Discard, which rolls the entry
-            # back — verify against the repo-id spelling (wt's mtplxRepoID /
+            # can never name-match it. Before #194 this is where registering a
+            # discovered artifact from its `+` row left the running flag, and
+            # it stayed on disk through a Discard, which rolls the entry back.
+            # The `+` row registers under the discovered id now, so only a
+            # modelman.toml written before that still holds such a row —
+            # verify it against the repo-id spelling (wt's mtplxRepoID /
             # MTPLXProvider._repo_id) before declaring the flag stale, or the
             # next TUI mount clears a serving model's flag.
             verified.append(model_id)
@@ -996,6 +1102,7 @@ def start_local_model(
     # routes on a machine whose daemon is not there.
     if model.provider_id == "ollama":
         _require_ollama_daemon(provider)
+        _require_ollama_pulled(provider, model)
 
     extra_args: tuple[str, ...] = ()
     env: dict[str, str] | None = None
@@ -1162,9 +1269,7 @@ def stop_local_model(
             raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
 
     with locked_state(state_path) as fresh:
-        existing = fresh.models.get(model_id)
-        if existing is not None and existing.running:
-            fresh.models[model_id] = replace(existing, running=False)
+        _clear_running_flag(fresh, model_id)
     return StopResult(stopped_model_id=model_id, warnings=sync_routes(litellm_path=litellm_path))
 
 
@@ -1186,7 +1291,5 @@ def stop_all_local_models(
 
     with locked_state(state_path) as fresh:
         for mid in running_ids:
-            existing = fresh.models.get(mid)
-            if existing is not None and existing.running:
-                fresh.models[mid] = replace(existing, running=False)
+            _clear_running_flag(fresh, mid)
     return StopAllResult(stopped=running_ids, warnings=sync_routes(litellm_path=litellm_path))
