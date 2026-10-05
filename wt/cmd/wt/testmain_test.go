@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -21,6 +23,10 @@ import (
 // hook rewrite the real config.yaml). Tests that need a probe result call
 // stubProbeInventory; tests that exercise a start call stubStartDriver.
 func TestMain(m *testing.M) {
+	// No test may read or write the developer's real config directory —
+	// config.IsolateConfigHomeForTest carries the full rationale. A test that
+	// sets its own XDG_CONFIG_HOME still wins.
+	_, rmConfigHome := config.IsolateConfigHomeForTest()
 	probeInventory = localmodels.OnDiskSnapshotForTest
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests
@@ -51,7 +57,9 @@ func TestMain(m *testing.M) {
 	}
 	stopPickerAll = func(*config.Config) bool { return false }
 	confirmStop = func(string) (bool, error) { return false, nil }
-	os.Exit(m.Run())
+	code := m.Run()
+	rmConfigHome()
+	os.Exit(code)
 }
 
 // startRequest records what a stubbed start driver was asked to do.
@@ -105,4 +113,21 @@ func stubEnsureRoute(t *testing.T) *[]string {
 	osStderr = io.Discard
 	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes, osStderr = oldEnsure, oldWait, oldOut })
 	return &events
+}
+
+// TestConfigHomeIsNotTheDevelopersOwn pins TestMain's throwaway config home:
+// everything wt keeps under its config directory — rotation.state, usage.jsonl,
+// refcount.jsonl, profile backups and locks — resolves into a temp directory
+// for this package's tests, never ~/.config. Without it a test that launches a
+// stub agent rewrites the developer's real rotation state on every run.
+func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	for _, pair := range [][2]string{{"config.Dir()", config.Dir()}, {"config.RegistryPath()", config.RegistryPath()}} {
+		if strings.HasPrefix(pair[1], filepath.Join(home, ".config")) || !strings.Contains(pair[1], "wt-test-config-") {
+			t.Errorf("%s = %s, want a path under this package's throwaway config home", pair[0], pair[1])
+		}
+	}
 }
