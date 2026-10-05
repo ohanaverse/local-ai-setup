@@ -62,6 +62,21 @@ def _default_litellm_config(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_wt_config(monkeypatch, tmp_path):
+    """Point modelman at an empty wt config directory.
+
+    modelman reads wt's ~/.config/agent-wt for two things: the agent list
+    (the model screen registers a native provider row per agent on mount,
+    registry.sync_agent_providers) and the usage/rotation state. Left at the
+    default, a test's outcome depended on the developer's own wt setup — on a
+    machine with agents configured, mounting the model screen rewrote the
+    test's registry.toml, which CI (no wt config) never saw. A test that needs
+    a wt config sets MODELMAN_WT_DIR itself and wins.
+    """
+    monkeypatch.setenv("MODELMAN_WT_DIR", str(tmp_path / "no-agent-wt"))
+
+
+@pytest.fixture(autouse=True)
 def _never_call_real_ollama(monkeypatch):
     """The full suite must never shell out to the user's live `ollama`
     daemon. Redirect the module-level default runners in
