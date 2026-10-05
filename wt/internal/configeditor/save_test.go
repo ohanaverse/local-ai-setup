@@ -39,7 +39,7 @@ func TestSave_AtomicWrite(t *testing.T) {
 
 	// Process the save message.
 	got, _ := m.Update(save)
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.dirty {
 		t.Error("expected dirty=false after successful save")
 	}
@@ -78,7 +78,7 @@ func TestSave_ValidationFails_BlocksWrite(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("expected nil command when validation fails")
 	}
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.status == "" {
 		t.Fatal("expected validation error in status")
 	}
@@ -112,7 +112,7 @@ func TestSave_DirtyFlag_TogglesOn(t *testing.T) {
 	_, cmd := m.handleSave()
 	msg := cmd()
 	got, _ := m.Update(msg)
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.dirty {
 		t.Error("expected dirty=false after successful save")
 	}
@@ -134,7 +134,7 @@ func TestSave_SavingFlagResetsAfterError(t *testing.T) {
 	_, cmd := m.handleSave()
 	msg := cmd()
 	got, _ := m.Update(msg)
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.saving {
 		t.Error("expected saving=false after failed save")
 	}
@@ -151,7 +151,7 @@ func TestSave_ConcurrentRequests_Deduplicated(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected first save command")
 	}
-	m2 := got.(model)
+	m2 := got.(*model)
 	if !m2.saving {
 		t.Fatal("expected saving=true after dispatching save")
 	}
@@ -160,7 +160,7 @@ func TestSave_ConcurrentRequests_Deduplicated(t *testing.T) {
 	if cmd2 != nil {
 		t.Fatal("expected second save request to be ignored")
 	}
-	m3 := got2.(model)
+	m3 := got2.(*model)
 	if !m3.saving {
 		t.Fatal("expected saving to remain true")
 	}
@@ -266,7 +266,7 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 	_, cmd := m.handleSave()
 	msg := cmd()
 	got, _ := m.Update(msg)
-	m2 := got.(model)
+	m2 := got.(*model)
 	if !m2.dirty {
 		t.Error("expected dirty=true after failed save")
 	}

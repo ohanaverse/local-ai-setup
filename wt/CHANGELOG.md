@@ -4,6 +4,14 @@
 
 ### Changed
 
+- `wt config` now says where to fix a mistyped `location` (#209). The editor
+  opens on an invalid config so it can be repaired, but a location error is
+  in `registry.toml`, which the editor cannot edit, and its status line
+  showed only the raw error. It now ends with the same `(fix the entry in
+  <path to registry.toml>)` hint the other commands print. The status line
+  also wraps to the terminal's width: it was drawn as one line and cut off at
+  the right edge, so on an 80-column terminal the end of a long error —
+  where the hint is — was never visible.
 - An omlx model is "running" only when omlx has it loaded (#201). omlx's
   `/v1/models` lists every model in its model directory, loaded or not, and
   wt read that list as running: with the omlx service up, every omlx model on

@@ -33,7 +33,7 @@ var saveCmd = func(cfg *config.Config) tea.Cmd {
 // handleSave validates the in-memory config and dispatches an async save.
 // It ignores additional save requests while one is already in flight to
 // prevent concurrent writes to the same temporary file.
-func (m model) handleSave() (tea.Model, tea.Cmd) {
+func (m *model) handleSave() (tea.Model, tea.Cmd) {
 	if !m.dirty {
 		return m, nil
 	}
