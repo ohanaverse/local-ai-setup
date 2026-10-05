@@ -117,7 +117,9 @@ func TestLitellmSyncRefusesOnConfigError(t *testing.T) {
 // removes its models' routes nor restarts the proxy, and prints a warning
 // naming the family. Otherwise a down ollama daemon wipes every ollama route.
 func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
-	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b, additional_drop_params: [reasoning_effort]}\n" +
+	// The row carries an api_base so the write has nothing to repair (#202):
+	// this test is about the family's routes being left alone.
+	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b, api_base: \"http://localhost:11434\", additional_drop_params: [reasoning_effort]}\n" +
 		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
 	p := litellmEnv(t, body)
 	stubProbeInventory(t, localmodels.Snapshot{
@@ -606,6 +608,7 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 		Add:    []string{"openrouter/x/y", "ollama/llama3.2:3b"},
 		Adopt:  []string{"ollama/gemma:9b"},
 		Remove: []string{"openrouter/old"},
+		Repair: []string{"ollama/mine"},
 		Errors: []litellm.Outcome{{ID: "ghost/m", Err: errors.New(`unknown provider "ghost"`)}},
 	}
 	var out, errOut bytes.Buffer
@@ -673,6 +676,8 @@ func TestLitellmSyncJSONMatchesContract(t *testing.T) {
     model_info: {wt_managed: true}
   - model_name: openrouter/adopt
     litellm_params: {model: openrouter/adopt}
+  - model_name: ollama/mine
+    litellm_params: {model: ollama_chat/mine}
 `)
 	cfg := litellmCloudTestConfig()
 	for _, id := range []string{"adopt", "new", "bad"} {
@@ -1674,19 +1679,26 @@ litellm_settings:
 	if err := json.Unmarshal(out.Bytes(), &real); err != nil {
 		t.Fatalf("sync: not JSON: %q", out.String())
 	}
-	var added, removed []string
+	var added, removed, repaired []string
 	for _, oc := range real.Outcomes {
 		switch oc.Action {
 		case "routed":
 			added = append(added, oc.ID)
 		case "unrouted":
 			removed = append(removed, oc.ID)
+		case "api_base set":
+			repaired = append(repaired, oc.ID)
 		default:
 			t.Errorf("unexpected outcome %+v", oc)
 		}
 	}
 	if !slices.Equal(added, dry.Plan.Add) || !slices.Equal(removed, dry.Plan.Remove) {
 		t.Errorf("real sync routed %v unrouted %v, dry run planned add %v remove %v", added, removed, dry.Plan.Add, dry.Plan.Remove)
+	}
+	// The hand-written ollama/q8 row has no api_base: the write fills it
+	// (#202), and the dry run must have said so.
+	if want := []string{"ollama/q8"}; !slices.Equal(repaired, want) || !slices.Equal(dry.Plan.Repair, want) {
+		t.Errorf("real sync set api_base on %v, dry run planned %v; want %v for both", repaired, dry.Plan.Repair, want)
 	}
 	if !slices.Equal(real.Warnings, dry.Warnings) || len(dry.Warnings) != 1 {
 		t.Errorf("warnings: real %q, dry run %q; want the same single omlx probe warning", real.Warnings, dry.Warnings)
@@ -1783,5 +1795,27 @@ func TestSyncAndStartHookDisagreeWhenASingleModelServerListsSiblings(t *testing.
 	sync()
 	if got := rows(); !slices.Equal(got, both) {
 		t.Fatalf("after the next sync rows = %v, want the sibling routed again %v", got, both)
+	}
+}
+
+// TestSyncReportsTheAPIBaseRepairInText pins the human-readable lines for the
+// api_base repair (#202): a dry run says which rows the write would change,
+// and the real sync says which it changed — these can be rows the user wrote
+// by hand, so the change must be visible both before and after.
+func TestSyncReportsTheAPIBaseRepairInText(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if err := reportSyncPlan(&out, &errOut, litellm.SyncPlan{Repair: []string{"ollama/q8"}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "ollama/q8: would set api_base\n") {
+		t.Errorf("dry run printed %q, want the would-set line", got)
+	}
+	out.Reset()
+	res := litellm.Result{Outcomes: []litellm.Outcome{{ID: "ollama/q8", Action: "api_base set"}}, Changed: true}
+	if err := reportLitellm(&out, &errOut, res, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "ollama/q8: api_base set\n" {
+		t.Errorf("sync printed %q, want %q", got, "ollama/q8: api_base set\n")
 	}
 }

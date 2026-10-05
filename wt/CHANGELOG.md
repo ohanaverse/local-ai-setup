@@ -148,6 +148,18 @@
 
 ### Fixed
 
+- A local ollama model no longer stays loaded after wt stops it (#202). The
+  cause was a second Ollama server: LiteLLM runs `ollama serve` itself at
+  proxy startup for every ollama row in `config.yaml` that has no `api_base`,
+  and with Ollama already running that server shares port 11434, bound to
+  `127.0.0.1` beside the first one's wildcard socket. Clients then reached
+  one or the other depending on how `localhost` resolved, a model was loaded
+  in both, and wt unloaded it in the one it could see and reported `done`.
+  wt now gives an ollama row with no `api_base` the registry's ollama address
+  whenever it writes `config.yaml` — **on hand-written rows too**, that one
+  field, and only when it is empty — and reports it (`<id>: api_base set`;
+  `would set api_base` in a dry run). A row that names its own address is
+  left alone.
 - wt prints a note when an argument after `--` is a relative path that
   resolves differently for the agent than for you. An agent starts in the
   worktree wt launches it in, so `opencode-wt -- ../../other`, typed in a

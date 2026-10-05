@@ -133,10 +133,11 @@ func TestApplyChangeRemovesFamilyMarkedRows(t *testing.T) {
 // handWrittenLlama is the reference host's hand-written ollama row whose
 // name is exactly the discovered id of the pulled llama3.2:3b, carrying a
 // hand-set timeout, in a file every earlier wt write already normalised
-// (litellm_settings and the ollama drop params), so any change is the row.
+// (litellm_settings, the ollama drop params, and the api_base wt fills on an
+// ollama row that has none — #202), so any change is the row.
 const handWrittenLlama = `model_list:
   - model_name: ollama/llama3.2:3b
-    litellm_params: {model: ollama_chat/llama3.2:3b, timeout: 600, additional_drop_params: [reasoning_effort]}
+    litellm_params: {model: ollama_chat/llama3.2:3b, api_base: "http://localhost:11434", timeout: 600, additional_drop_params: [reasoning_effort]}
 litellm_settings:
   drop_params: true
   use_chat_completions_url_for_anthropic_messages: true
@@ -244,7 +245,7 @@ func TestApplyPlannedNeverWritesNilRow(t *testing.T) {
 	}
 	res, err := applyPlanned(func(*File) ([]plannedAdd, []plannedRemove) {
 		return []plannedAdd{{id: "omlx/no-row"}, {id: cfg.Models[0].ID, row: good}}, nil
-	}, o)
+	}, o, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +270,7 @@ func TestApplyChangeIgnoresEmptyFamily(t *testing.T) {
 	cfg.Models = append(cfg.Models, config.Model{ID: "llamacpp/local", ProviderID: "llamacpp", ModelName: "local", Location: config.LocationLocal})
 	const body = `model_list:
   - model_name: ollama/glm:cloud
-    litellm_params: {model: ollama_chat/glm:cloud, additional_drop_params: [reasoning_effort]}
+    litellm_params: {model: ollama_chat/glm:cloud, api_base: "http://localhost:11434", additional_drop_params: [reasoning_effort]}
     model_info: {wt_managed: true}
   - model_name: openrouter/x/y
     litellm_params: {model: openrouter/x/y}

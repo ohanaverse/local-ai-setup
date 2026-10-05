@@ -176,6 +176,16 @@ func RowFamily(cfg *config.Config, id string) string {
 	return localmodels.Family(prefix)
 }
 
+// OllamaAPIBase is the address wt gives an ollama row: the registry ollama
+// provider's base_url, the same value BuildEntry writes for the rows wt builds
+// itself. "" when the registry has no ollama provider or it names no address.
+func OllamaAPIBase(cfg *config.Config) string {
+	if p := cfg.ProviderByID("ollama"); p != nil {
+		return p.Auth.BaseURL
+	}
+	return ""
+}
+
 // RegistryGap reports whether registry model m is dropped from every list
 // sync manages by a data gap rather than by choice: a non-native model whose
 // provider_id names no provider, with no location to resolve, or whose
@@ -294,7 +304,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			}
 		}
 		return add, rm
-	}, o)
+	}, o, OllamaAPIBase(cfg))
 }
 
 // applyPlanned is the one locked read-modify-write every route change goes
@@ -302,7 +312,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 // the document as read under the lock, so a caller that derives the change
 // from the current routes never acts on a snapshot another process has since
 // changed.
-func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (Result, error) {
+func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, ollamaBase string) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -352,6 +362,9 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (
 				return err
 			}
 			res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Action: "routed"})
+		}
+		for _, id := range f.EnsureOllamaAPIBase(ollamaBase) {
+			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "api_base set"})
 		}
 		f.EnsureSettings()
 		if !f.Changed() {
@@ -425,7 +438,10 @@ type SyncPlan struct {
 	Adopt   []string
 	Rewrite []string
 	Remove  []string
-	Errors  []Outcome
+	// Repair names the ollama rows, hand-written ones included, whose empty
+	// api_base the write will fill (File.EnsureOllamaAPIBase).
+	Repair []string
+	Errors []Outcome
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -618,6 +634,11 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 			}
 		}
 	}
+	// The write also fills an empty api_base on ollama rows; a dry run says
+	// which, since those can be rows the user wrote by hand.
+	if OllamaAPIBase(cfg) != "" {
+		plan.Repair = f.OllamaRowsMissingAPIBase()
+	}
 	return plan, built
 }
 
@@ -727,7 +748,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 			rm = append(rm, plannedRemove{id: id, markedOnly: plan.markedOnly[id]})
 		}
 		return add, rm
-	}, o)
+	}, o, OllamaAPIBase(cfg))
 	if err != nil {
 		return res, err
 	}

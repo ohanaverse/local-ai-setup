@@ -422,6 +422,68 @@ func isLoopback(n *yaml.Node) bool {
 	return loopbackHosts[strings.ToLower(u.Hostname())]
 }
 
+// ollamaRowsMissingAPIBase returns the litellm_params of every row whose model
+// is an ollama one (the "ollama/" or "ollama_chat/" prefix) and whose
+// api_base is absent, null or empty, with the row's name.
+func (f *File) ollamaRowsMissingAPIBase() (names []string, params []*yaml.Node) {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil, nil
+	}
+	for _, row := range ml.Content {
+		p := mapGet(row, "litellm_params")
+		if p == nil || p.Kind != yaml.MappingNode {
+			continue
+		}
+		model := mapGet(p, "model")
+		if model == nil || model.Kind != yaml.ScalarNode {
+			continue
+		}
+		if !strings.HasPrefix(model.Value, "ollama/") && !strings.HasPrefix(model.Value, "ollama_chat/") {
+			continue
+		}
+		base := mapGet(p, "api_base")
+		if base != nil && !isNull(base) && !(base.Kind == yaml.ScalarNode && strings.TrimSpace(base.Value) == "") {
+			continue
+		}
+		names = append(names, rowName(row))
+		params = append(params, p)
+	}
+	return names, params
+}
+
+// OllamaRowsMissingAPIBase names the rows EnsureOllamaAPIBase would repair.
+func (f *File) OllamaRowsMissingAPIBase() []string {
+	names, _ := f.ollamaRowsMissingAPIBase()
+	return names
+}
+
+// EnsureOllamaAPIBase gives every ollama row with no api_base the address
+// base, and returns the names of the rows it changed (#202).
+//
+// It exists because of what LiteLLM does with such a row: at proxy startup,
+// for each model that names ollama and has no api_base, it runs `ollama serve`
+// itself. On a machine where ollama is already running, that second server
+// binds 127.0.0.1:11434 beside the first one's wildcard socket, and from then
+// on a client reaches one or the other depending on whether "localhost"
+// resolved to IPv4 or IPv6. A model gets loaded in both; wt stops it in the
+// one it can see and reports success while the other copy stays resident.
+//
+// So this repairs hand-written rows too — the one field, and only when it is
+// empty: a row that names an address of its own is the user's choice and is
+// never touched, and a repaired row stays unmarked, still the user's. base is
+// the registry's ollama address; with none to give (""), nothing is changed.
+func (f *File) EnsureOllamaAPIBase(base string) []string {
+	if base == "" {
+		return nil
+	}
+	names, params := f.ollamaRowsMissingAPIBase()
+	for _, p := range params {
+		mapSet(p, "api_base", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: base})
+	}
+	return names
+}
+
 // EnsureSettings applies the launcher-required LiteLLM settings: two
 // value-enforced litellm_settings keys, plus presence-based per-row params
 // (additional_drop_params on ollama_chat/ rows, use_chat_completions_api on
