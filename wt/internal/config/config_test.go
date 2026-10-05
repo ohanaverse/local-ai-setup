@@ -1247,7 +1247,12 @@ func TestDiscoveredModelID(t *testing.T) {
 	if got := DiscoveredModelID("omlx", "Qwen3.8-27B-4bit"); got != "omlx/Qwen3.8-27B-4bit" {
 		t.Errorf("got %q", got)
 	}
-	if got := DiscoveredModelID("mtplx", "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"); got != "mtplx/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality" {
+	// omlx-6bit shares the omlx family
+	if got := DiscoveredModelID("omlx-6bit", "Qwen3.8-27B-6bit"); got != "omlx/Qwen3.8-27B-6bit" {
+		t.Errorf("got %q", got)
+	}
+	// mtplx artifact is the repo id form (org/name), not the directory form (org--name)
+	if got := DiscoveredModelID("mtplx", "Youssofal/Qwen3.8-27B-MTPLX"); got != "mtplx/Youssofal/Qwen3.8-27B-MTPLX" {
 		t.Errorf("got %q", got)
 	}
 }

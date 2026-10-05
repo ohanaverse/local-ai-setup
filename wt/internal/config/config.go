@@ -783,11 +783,21 @@ func (m Model) HasTag(tag string) bool {
 }
 
 // DiscoveredModelID is the usage/survey id for a local model found on disk
-// with no registry entry: "<provider>/<artifact name as the provider lists
+// with no registry entry: "<family>/<artifact name as the provider lists
 // it>". Registry-matched models keep their registry id instead; callers do
 // that lookup before falling back to this.
 func DiscoveredModelID(providerID, artifactName string) string {
-	return providerID + "/" + artifactName
+	return discoveredFamily(providerID) + "/" + artifactName
+}
+
+// discoveredFamily maps a registry provider id to its probe family.
+// Mirrors internal/localmodels.familyOf: omlx and omlx-6bit share "omlx";
+// every other local provider is its own family.
+func discoveredFamily(providerID string) string {
+	if providerID == "omlx" || providerID == "omlx-6bit" {
+		return "omlx"
+	}
+	return providerID
 }
 
 // ModelsWithTag returns models whose tags include tag.

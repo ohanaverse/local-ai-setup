@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // TestDiscoveredModelIDMatchesContractFixture pins wt's id for an on-disk
@@ -28,9 +31,22 @@ func TestDiscoveredModelIDMatchesContractFixture(t *testing.T) {
 		t.Fatal("fixture has no cases")
 	}
 	for _, c := range doc.Cases {
+		// Verify DiscoveredModel (the public API that applies Family)
 		m := DiscoveredModel(c.Provider, c.Artifact)
 		if m.ID != c.ID || m.ModelName != c.Artifact || m.ProviderID != c.Provider {
 			t.Errorf("DiscoveredModel(%q, %q) = id %q name %q provider %q, want id %q", c.Provider, c.Artifact, m.ID, m.ModelName, m.ProviderID, c.ID)
+		}
+		// Also verify config.DiscoveredModelID directly (public function used
+		// in catalog.go, resolve.go, survey) — it must apply Family too.
+		got := config.DiscoveredModelID(c.Provider, c.Artifact)
+		if got != c.ID {
+			t.Errorf("config.DiscoveredModelID(%q, %q) = %q, want %q", c.Provider, c.Artifact, got, c.ID)
+		}
+		// Verify localmodels.Family mapping matches the fixture's expectation
+		family := localmodels.Family(c.Provider)
+		expected := family + "/" + c.Artifact
+		if expected != c.ID {
+			t.Errorf("localmodels.Family(%q)=%q + artifact => %q, but fixture expects %q", c.Provider, family, expected, c.ID)
 		}
 	}
 }
