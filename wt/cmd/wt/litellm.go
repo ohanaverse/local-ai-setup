@@ -151,7 +151,9 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 		if err != nil {
 			return err
 		}
-		return reportSyncPlan(out, errOut, plan, probeWarns, asJSON)
+		// Same order as the real sync: what the write would leave behind,
+		// then the probe warnings.
+		return reportSyncPlan(out, errOut, plan, append(slices.Clone(plan.Warnings), probeWarns...), asJSON)
 	}
 	res, err := litellm.Sync(cfg, desired, o)
 	if err != nil {

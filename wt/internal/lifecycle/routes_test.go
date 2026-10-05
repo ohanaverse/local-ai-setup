@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +29,12 @@ func routesCfg() *config.Config {
 			{ID: "mtplx/Y--Q27", ProviderID: "mtplx", ModelName: "Y/Q27", Location: config.LocationLocal},
 		},
 	}
+}
+
+// wrote is the Result of a write that added or rewrote id's own row — what
+// the launch-time check's "route for <id> updated" line is printed for.
+func wrote(id string) litellm.Result {
+	return litellm.Result{Changed: true, Outcomes: []litellm.Outcome{{ID: id, Action: "routed", Written: true}}}
 }
 
 // routeCall is one recorded route write: the added ids, the explicit
@@ -622,7 +630,7 @@ func TestStartRouteChangeWithoutModelIDKeepsTheFallback(t *testing.T) {
 // live session on the other with "Invalid model name". It also pins the one
 // line a changed write prints.
 func TestEnsureRouteAddsOnlyTheModelsRoute(t *testing.T) {
-	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	calls, warn := stubRoutes(t, wrote("mtplx/Y--Q35"), nil)
 	changed := EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"})
 	WaitPendingRoutes()
 	if !changed {
@@ -649,7 +657,7 @@ func TestEnsureRouteAddsOnlyTheModelsRoute(t *testing.T) {
 // "updated" line. That line stays last: it is what the picker's status shows.
 func TestRouteWriteReportsTheAPIBaseRepair(t *testing.T) {
 	res := litellm.Result{Changed: true, Outcomes: []litellm.Outcome{
-		{ID: "ollama/a:1", Action: "routed"},
+		{ID: "ollama/a:1", Action: "routed", Written: true},
 		{ID: "ollama/q8", Action: litellm.ActionAPIBaseSet},
 	}}
 	_, warn := stubRoutes(t, res, nil)
@@ -659,6 +667,92 @@ func TestRouteWriteReportsTheAPIBaseRepair(t *testing.T) {
 	if got := warn.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
+}
+
+// TestEnsureRouteSaysUpdatedOnlyForItsOwnRoute pins #206: a launch prints
+// "route for <id> updated" only when that model's own row was added or
+// rewritten. Any write also fills other rows' api_base and enforces settings,
+// and the line used to be printed for every write that changed the file — so a
+// launch announced a route change for a model whose route was byte-identical,
+// and printed "updated" right beside that model's own "not updated". What the
+// write did is said by the line already printed for it; when there is none
+// (an enforced setting), one line names the file, since the launch is about to
+// wait for a proxy restart either way. Both forms of the check print the same.
+func TestEnsureRouteSaysUpdatedOnlyForItsOwnRoute(t *testing.T) {
+	const id = "ollama/a:1"
+	mdl := config.Model{ID: id, ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}
+	for _, tc := range []struct {
+		name     string
+		outcomes []litellm.Outcome
+		want     string
+	}{
+		{"its own row written", []litellm.Outcome{{ID: id, Action: "routed", Written: true}}, "wt: LiteLLM route for ollama/a:1 updated\n"},
+		{"only another row repaired", []litellm.Outcome{{ID: id, Action: "routed"}, {ID: "ollama/q8", Action: litellm.ActionAPIBaseSet}}, "wt: LiteLLM route for ollama/q8: api_base set\n"},
+		{"only a setting enforced", []litellm.Outcome{{ID: id, Action: "routed"}}, "wt: LiteLLM config.yaml updated\n"},
+		{"left to a hand-written row", nil, "wt: LiteLLM config.yaml updated\n"},
+		{"its row could not be built", []litellm.Outcome{{ID: id, Err: errors.New("no key")}}, "wt: LiteLLM route for ollama/a:1 not updated: no key\n"},
+		{"another model's row written", []litellm.Outcome{{ID: id, Action: "routed"}, {ID: "ollama/b:1", Action: "routed", Written: true}}, "wt: LiteLLM config.yaml updated\n"},
+	} {
+		res := litellm.Result{Changed: true, Outcomes: tc.outcomes}
+		_, warn := stubRoutes(t, res, nil)
+		if !EnsureModelRoute(routesCfg(), mdl) {
+			t.Errorf("%s: changed = false, want true: the file changed and the proxy restarts", tc.name)
+		}
+		WaitPendingRoutes()
+		if got := warn.String(); got != tc.want {
+			t.Errorf("%s: blocking check printed %q, want %q", tc.name, got, tc.want)
+		}
+		var out bytes.Buffer
+		if changed, done := TryEnsureModelRouteTo(&out, routesCfg(), mdl); !changed || !done {
+			t.Errorf("%s: changed=%v done=%v, want both true", tc.name, changed, done)
+		}
+		WaitPendingRoutes()
+		if got := out.String(); got != tc.want {
+			t.Errorf("%s: non-blocking check printed %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestEnsureRouteUpdatedLineAgainstTheRealWriter runs the same rule through
+// litellm.ApplyChange and a real config.yaml, so it rests on what the writer
+// actually reports rather than on a stubbed Result: the first launch writes
+// the route, a launch that only repairs another row or only restores a setting
+// rewrites the file and restarts the proxy without claiming the route changed,
+// and a launch with nothing to do is silent.
+func TestEnsureRouteUpdatedLineAgainstTheRealWriter(t *testing.T) {
+	seed := "model_list:\n  - model_name: hand/other\n    litellm_params:\n      model: ollama/other\n      api_base: http://h:1\n"
+	path, restarts, warn := realRoutes(t, seed)
+	tg := Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}
+	launch := func(label string, edit func(string) string, wantRestart bool, want string) {
+		t.Helper()
+		if edit != nil {
+			b, _ := os.ReadFile(path)
+			after := edit(string(b))
+			if after == string(b) {
+				t.Fatalf("%s: the fixture edit matched nothing", label)
+			}
+			if err := os.WriteFile(path, []byte(after), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		warn.Reset()
+		n := restarts()
+		changed := EnsureRoute(context.Background(), routesCfg(), tg)
+		WaitPendingRoutes()
+		if changed != wantRestart || (restarts()-n == 1) != wantRestart {
+			t.Errorf("%s: changed=%v restarts=+%d, want changed=%v", label, changed, restarts()-n, wantRestart)
+		}
+		if got := warn.String(); got != want {
+			t.Errorf("%s: printed %q, want %q", label, got, want)
+		}
+	}
+	launch("first launch", nil, true, "wt: LiteLLM route for ollama/a:1 updated\n")
+	launch("nothing to do", nil, false, "")
+	launch("another row repaired", func(s string) string { return strings.Replace(s, "      api_base: http://h:1\n", "", 1) },
+		true, "wt: LiteLLM route for hand/other: api_base set\n")
+	launch("a setting enforced", func(s string) string {
+		return strings.Replace(s, "  use_chat_completions_url_for_anthropic_messages: true\n", "", 1)
+	}, true, "wt: LiteLLM config.yaml updated\n")
 }
 
 // TestEnsureRouteQuietWhenNothingChanged pins that a write reporting no
@@ -883,7 +977,7 @@ func TestTryEnsureModelRouteGivesTheWriteNoTimeToWait(t *testing.T) {
 // not to the process. Run under -race this also pins that the restart
 // goroutine's write and the check's own do not race.
 func TestEnsureModelRouteToSendsItsOutputToTheCaller(t *testing.T) {
-	_, stderr := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	_, stderr := stubRoutes(t, wrote("ollama/a:1"), nil)
 	restartProxy = func(context.Context) []string { return []string{"LiteLLM proxy restart failed: boom"} }
 	mdl := config.Model{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}
 	const want = "wt: LiteLLM route for ollama/a:1 updated\nwt: LiteLLM proxy restart failed: boom\n"
@@ -919,7 +1013,7 @@ func TestEnsureModelRouteToSendsItsOutputToTheCaller(t *testing.T) {
 // its status line, in place of its own "updated" line. A check's writer now
 // travels with the check, so the unrelated restart still prints on stderr.
 func TestRouteOutputIsNotSharedWithAnotherOperation(t *testing.T) {
-	_, stderr := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	_, stderr := stubRoutes(t, wrote("ollama/a:1"), nil)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var restarts atomic.Int32
 	restartProxy = func(context.Context) []string {

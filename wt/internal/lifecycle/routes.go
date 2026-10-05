@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -192,15 +193,45 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
 }
 
 // ensureChange is EnsureRoute's body for a change already built: it writes it,
-// reports whether config.yaml changed, and says so in one line when it did.
-// One change builder serving every launch-time check is what keeps a model from
-// being routed under one id by one caller and another id by the next.
+// reports whether config.yaml changed, and says so in one line when it did
+// (reportEnsured). One change builder serving every launch-time check is what
+// keeps a model from being routed under one id by one caller and another id by
+// the next.
 func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bool {
-	changed := applyAndReport(ctx, cfg, ch, restartIfChanged)
-	if changed {
-		routePrintf(ctx, "wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged)
+	if err != nil {
+		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
-	return changed
+	reportEnsured(ctx, w, ch.Add[0].ID)
+	return w.changed
+}
+
+// routeWrite is what one route write did: whether config.yaml changed, the ids
+// whose own row was added or differs from the one on disk, and whether a line
+// about this write has already been printed.
+type routeWrite struct {
+	changed bool
+	rows    []string
+	said    bool
+}
+
+// reportEnsured prints the one line a launch-time check owes for a write that
+// changed config.yaml. A write also repairs other rows' api_base and enforces
+// settings, so "changed" does not mean id's route changed (#206): "route for
+// <id> updated" is printed only when id's own row was written. Otherwise the
+// line that explains the write is the one applyReported already printed (the
+// repaired row's "api_base set", or why id's row could not be built) — and
+// when there is none, as for an enforced setting, the write is named as what
+// it was, because the caller is about to wait for a proxy restart and that
+// wait must not come unexplained.
+func reportEnsured(ctx context.Context, w routeWrite, id string) {
+	switch {
+	case !w.changed:
+	case slices.Contains(w.rows, id):
+		routePrintf(ctx, "wt: LiteLLM route for %s updated\n", id)
+	case !w.said:
+		routePrintf(ctx, "wt: LiteLLM config.yaml updated\n")
+	}
 }
 
 // modelRouteChange is the route change a launch row's model needs, and whether
@@ -279,14 +310,12 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 	}
 	ctx, cancel := context.WithCancel(withRouteOutput(context.Background(), out))
 	cancel()
-	changed, err := applyReported(ctx, cfg, ch, restartIfChanged)
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged)
 	if err != nil {
 		return false, false
 	}
-	if changed {
-		routePrintf(ctx, "wt: LiteLLM route for %s updated\n", ch.Add[0].ID)
-	}
-	return changed, true
+	reportEnsured(ctx, w, ch.Add[0].ID)
+	return w.changed, true
 }
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model
@@ -364,15 +393,15 @@ func bounceRoutes(ctx context.Context, cfg *config.Config) {
 // (see WaitPendingRoutes) because the agent they hand off to dials the model
 // through the proxy.
 func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
-	changed, err := applyReported(ctx, cfg, ch, mode)
+	w, err := applyReported(ctx, cfg, ch, mode)
 	if err != nil {
 		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
-	return changed
+	return w.changed
 }
 
-// applyReported is applyAndReport without the not-updated line: it returns the
-// failure instead of printing it, so a caller bound by its own deadline can
+// applyReported is applyAndReport without the not-updated line: it returns
+// what the write did (routeWrite) and the failure instead of printing it, so a caller bound by its own deadline can
 // tell "the config.yaml lock is held" from "the write failed" and decide where
 // to say so. A contended lock is not a warning — TryEnsureModelRouteTo hands it
 // to a retry that can afford to wait (see EnsureModelRoute), and only that
@@ -382,7 +411,7 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 // LiteLLM not set up), a restartForced mode settles the earlier deferred write
 // even when this one failed (or the proxy keeps serving the dead occupant's
 // route), and the restart itself runs asynchronously.
-func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) (bool, error) {
+func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) (routeWrite, error) {
 	res, err := applyRoutes(cfg, ch, litellm.Options{
 		// The restart is always deferred here: the caller decides whether to
 		// restart, and runs that restart asynchronously, below.
@@ -402,15 +431,21 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 			bounceProxyAsync(ctx, cfg)
 		}
 		if errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
-			return false, nil
+			return routeWrite{}, nil
 		}
-		return false, err
+		return routeWrite{}, err
 	}
+	w := routeWrite{changed: res.Changed}
 	for _, o := range res.Outcomes {
+		if o.Written {
+			w.rows = append(w.rows, o.ID)
+		}
 		switch {
 		case o.Err != nil:
+			w.said = true
 			routePrintf(ctx, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
 		case o.Action == litellm.ActionAPIBaseSet:
+			w.said = true
 			// Any write repairs an ollama row with no api_base (#202), and the
 			// row can be one the user wrote by hand that this start, stop or
 			// launch never named. `wt litellm sync` prints it; a write made
@@ -424,7 +459,7 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 	if restart {
 		bounceProxyAsync(ctx, cfg)
 	}
-	return res.Changed, nil
+	return w, nil
 }
 
 // bounceProxyAsync restarts the LiteLLM proxy — and, when one was listening,

@@ -80,6 +80,12 @@ type Options struct {
 	// ForceRestart restarts the proxy even when this call changed nothing —
 	// the settling restart for a run of earlier NoRestart writes.
 	ForceRestart bool
+	// reportOllamaServe asks the write to also collect the rows LiteLLM starts
+	// its own `ollama serve` for (Result.ollamaServe; Sync publishes them in
+	// Result.Warnings). Unexported, and set by Sync alone: the scan is per-write
+	// work, and no other caller reports what it finds — a start, stop or launch
+	// is not the place to hear about a row it never named.
+	reportOllamaServe bool
 }
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
@@ -88,10 +94,18 @@ type Options struct {
 // the write filled (any write: the row need not be one the change named); Err
 // is set when the id was rejected. A removal that removed no row has no
 // outcome.
+//
+// ID is the row's model_name; a repaired row that has none is named by
+// rowLabel instead, never by "". Written is set on a "routed" (or "adopted",
+// "rewritten") outcome whose row was added or differs from the one read:
+// every row a change sets is reported as routed, identical or not, and
+// Result.Changed is about the whole file, so Written is the only thing that
+// says the id's own route changed (#206).
 type Outcome struct {
-	ID     string
-	Action string
-	Err    error
+	ID      string
+	Action  string
+	Err     error
+	Written bool
 }
 
 // ActionAPIBaseSet is the Outcome action for a row File.EnsureOllamaAPIBase
@@ -99,11 +113,17 @@ type Outcome struct {
 const ActionAPIBaseSet = "api_base set"
 
 // Result reports a batch: per-id outcomes, whether config.yaml was written,
-// and non-fatal warnings (restart failures).
+// and non-fatal warnings (restart failures; from Sync, also the rows LiteLLM
+// starts its own `ollama serve` for).
 type Result struct {
 	Outcomes []Outcome
 	Changed  bool
 	Warnings []string
+	// ollamaServe is File.ollamaServeWarnings for the document as written, and
+	// is filled only when Options.reportOllamaServe is set. Only Sync sets it,
+	// and only Sync publishes it, in Warnings: a start, stop or launch is not
+	// the place to hear about a row it never named.
+	ollamaServe []string
 }
 
 func (o Options) path() string {
@@ -184,12 +204,15 @@ func RowFamily(cfg *config.Config, id string) string {
 
 // OllamaAPIBase is the address wt gives an ollama row: the registry ollama
 // provider's base_url, the same value BuildEntry writes for the rows wt builds
-// itself. "" when the registry has no ollama provider or it names no address.
+// itself. When the registry has no ollama provider, or it names no address,
+// that is config.OllamaBaseURL — the address wt itself dials for ollama then
+// (localmodels.FamilyOrigin) — and never "": a row left without an api_base
+// is what makes LiteLLM start a second `ollama serve` (#202, #206).
 func OllamaAPIBase(cfg *config.Config) string {
-	if p := cfg.ProviderByID("ollama"); p != nil {
+	if p := cfg.ProviderByID("ollama"); p != nil && p.Auth.BaseURL != "" {
 		return p.Auth.BaseURL
 	}
-	return ""
+	return config.OllamaBaseURL
 }
 
 // RegistryGap reports whether registry model m is dropped from every list
@@ -327,10 +350,30 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, o
 			return err
 		}
 		add, remove := plan(f)
+		// Written is only ever set on a "routed" outcome — an id the plan adds —
+		// so a plan that adds nothing owes no digests. Marshaling every row of
+		// model_list twice is the write path's most expensive step, and the
+		// removal-only writes (every stop, every single-model family clear) have
+		// no routed outcome to describe.
+		var before map[string]string
+		if len(add) > 0 {
+			before = f.rowDigests()
+		}
 		if res.Outcomes, err = applyTo(f, add, remove, ollamaBase); err != nil {
 			return err
 		}
 		f.EnsureSettings()
+		if len(add) > 0 {
+			after := f.rowDigests()
+			for i, oc := range res.Outcomes {
+				res.Outcomes[i].Written = oc.Action == "routed" && before[oc.ID] != after[oc.ID]
+			}
+		}
+		// The scan runs after the repair (applyTo), so what it finds is the rows
+		// the repair does not reach. Only a caller that reports it pays for it.
+		if o.reportOllamaServe {
+			res.ollamaServe = f.ollamaServeWarnings()
+		}
 		if !f.Changed() {
 			return nil
 		}
@@ -454,7 +497,11 @@ type SyncPlan struct {
 	// api_base the write will fill (File.EnsureOllamaAPIBase). Only PlanSync
 	// fills it: the real sync reports each repair as an Outcome.
 	Repair []string
-	Errors []Outcome
+	// Warnings names the rows the write leaves in a state LiteLLM starts its
+	// own `ollama serve` for (File.ollamaServeWarnings). Only PlanSync fills
+	// it: the real sync puts them in Result.Warnings.
+	Warnings []string
+	Errors   []Outcome
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -725,6 +772,7 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 			plan.Repair = append(plan.Repair, oc.ID)
 		}
 	}
+	plan.Warnings = f.ollamaServeWarnings()
 	return plan, nil
 }
 
@@ -772,6 +820,9 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // reported with Err.
 func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	var plan SyncPlan
+	// The one caller that reports the rows LiteLLM starts its own `ollama serve`
+	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
+	o.reportOllamaServe = true
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove) {
 		p, built := planSync(cfg, f, local, o)
 		plan = p
@@ -795,6 +846,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		}
 	}
 	res.Outcomes = append(res.Outcomes, plan.Errors...)
+	res.Warnings = append(res.Warnings, res.ollamaServe...)
 	return res, nil
 }
 

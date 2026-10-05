@@ -1819,3 +1819,42 @@ func TestSyncReportsTheAPIBaseRepairInText(t *testing.T) {
 		t.Errorf("sync printed %q, want %q", got, "ollama/q8: api_base set\n")
 	}
 }
+
+// TestLitellmSyncWarnsAboutAnOllamaServeRow pins #206 at the command: `wt
+// litellm sync` and its dry run both name a hand-written row LiteLLM starts
+// its own `ollama serve` for and wt cannot repair (the word ollama in a model
+// that is not an ollama/ one, no api_base), in JSON `warnings` and as a
+// stderr `warning:` line. The dry run must say it too, or it promises a clean
+// run the real sync does not deliver; neither changes the row or fails.
+func TestLitellmSyncWarnsAboutAnOllamaServeRow(t *testing.T) {
+	body := "model_list:\n  - model_name: hand/proxy\n    litellm_params:\n      model: openai/ollama-proxy\n"
+	p := litellmEnv(t, body)
+	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	const want = `row "hand/proxy" (model openai/ollama-proxy) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`
+	for _, dryRun := range []bool{true, false} {
+		var out, errOut bytes.Buffer
+		if err := runLitellmSync(&out, &errOut, litellmCloudTestConfig(), true, dryRun); err != nil {
+			t.Fatalf("dryRun=%v: %v", dryRun, err)
+		}
+		var doc struct {
+			Warnings []string `json:"warnings"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+			t.Fatalf("dryRun=%v: not JSON: %v\n%s", dryRun, err, out.String())
+		}
+		if !slices.Equal(doc.Warnings, []string{want}) {
+			t.Errorf("dryRun=%v: warnings = %q, want [%q]", dryRun, doc.Warnings, want)
+		}
+		out.Reset()
+		errOut.Reset()
+		if err := runLitellmSync(&out, &errOut, litellmCloudTestConfig(), false, dryRun); err != nil {
+			t.Fatalf("dryRun=%v text: %v", dryRun, err)
+		}
+		if got := errOut.String(); got != "warning: "+want+"\n" {
+			t.Errorf("dryRun=%v: stderr = %q, want the warning line", dryRun, got)
+		}
+	}
+	if after, _ := os.ReadFile(p); !strings.Contains(string(after), "model: openai/ollama-proxy\n") || strings.Contains(string(after), "hand/proxy\n    litellm_params:\n      model: openai/ollama-proxy\n      api_base") {
+		t.Errorf("sync changed the row it only warns about:\n%s", after)
+	}
+}
