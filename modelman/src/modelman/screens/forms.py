@@ -26,7 +26,20 @@ from ..registry import Cost, _cost_from_dict, _cost_to_dict
 # mlx_lm_server is included because its target side uses the same repo
 # format, even though its form kind is "dual-model" rather than
 # "local-only".
-HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server", "mtplx")
+# `omlx-6bit` is omlx's alias row (providers/registry.py `_ALIASES`); it is
+# listed here so the add/edit dialog treats it as omlx's local HF-repo kind
+# instead of falling through to "cloud-only" and storing a repo-less,
+# cloud-locked entry — the raw-id-gate class #224/#225 fixed for delete and
+# sync. Kept as an explicit id beside the canonical ones (rather than
+# resolved) because this is a classification table of provider ids, like
+# providers/lifecycle's ENV_VAR_BY_PROVIDER, not a server comparison.
+HF_REPO_PROVIDERS: tuple[str, ...] = (
+    "llamacpp",
+    "omlx",
+    "omlx-6bit",
+    "mlx_lm_server",
+    "mtplx",
+)
 
 # Subset of HF_REPO_PROVIDERS whose "local-only" form also offers a
 # mutually-exclusive local-path Input for user-produced artifacts. MTPLX is

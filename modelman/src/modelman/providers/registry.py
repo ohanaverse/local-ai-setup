@@ -17,9 +17,13 @@ class ProviderRegistry:
     _providers: dict[str, type[Provider]] = {}
 
     @classmethod
-    def _resolve(cls, name: str) -> str:
+    def resolve(cls, name: str) -> str:
         """`name`, or the class name it is an alias for when nothing is
-        registered under `name` itself (a registered class always wins)."""
+        registered under `name` itself (a registered class always wins).
+
+        Two registry rows that resolve to the same name are the same server:
+        callers that must treat them as one (the shared-artifact guard, sync's
+        model-directory reconcile) compare this, never the row ids."""
         if name in cls._providers:
             return name
         return _ALIASES.get(name, name)
@@ -32,7 +36,7 @@ class ProviderRegistry:
 
     @classmethod
     def get(cls, name: str, config: dict) -> Provider:
-        resolved = cls._resolve(name)
+        resolved = cls.resolve(name)
         if resolved not in cls._providers:
             raise KeyError(f"Unknown provider: {name}. Registered: {list(cls._providers)}")
         return cls._providers[resolved](config)
@@ -49,4 +53,4 @@ class ProviderRegistry:
         instance — for callers that only need to read a class-level
         capability flag (e.g. Provider.manages_own_cache). An alias row
         (`omlx-6bit`) answers with the class of the server it names."""
-        return cls._providers.get(cls._resolve(name))
+        return cls._providers.get(cls.resolve(name))
