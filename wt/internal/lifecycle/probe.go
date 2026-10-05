@@ -255,7 +255,9 @@ func (e *env) liveServed(ctx context.Context, cfg *config.Config, family string)
 	responded, timedOut := e.probe(ctx, modelsURL, e.prebindTimeout)
 	switch {
 	case responded:
-		ids, err := localmodels.FetchModelIDsErr(e.probeClient, modelsURL)
+		// The same question the inventory asks, so the two agree: for omlx,
+		// the models it has loaded, not every model it lists (#201).
+		ids, err := localmodels.ServedIDs(cfg, e.probeClient, family)
 		if err != nil {
 			return nil, false
 		}

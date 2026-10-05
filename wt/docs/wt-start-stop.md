@@ -20,6 +20,11 @@ wt stop <target> --yes           # skip the in-use confirmation
 - Idle model: started through the same driver as `wt -M` (progress on
   stderr, Ctrl+C cancels). If the provider's single slot is occupied wt
   asks before replacing the running model; `--replace` skips the question.
+- omlx: "running" means loaded. The omlx service lists every model in its
+  directory whether or not it is loaded, so an omlx model that is on disk but
+  not loaded is idle and is started (loaded) like any other. If omlx has some
+  models loaded and others not, and the server has an API key, wt needs that
+  key to see which: set `auth.secret_ref` on the registry's omlx provider.
 - Already running: the model is left running. Its LiteLLM route is written
   if it is missing (`wt: LiteLLM route for <id> updated` on stderr), then wt
   prints `wt: <id> is already running` and exits 0.

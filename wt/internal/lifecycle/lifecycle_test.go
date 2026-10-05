@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -383,6 +384,64 @@ func TestStartProceedsWhenServerReportsNoModel(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, []string{"start:b"}) {
 		t.Errorf("calls = %v, want [start:b]", calls)
+	}
+}
+
+// omlxListing is an omlx server whose /v1/models lists a and b — its whole
+// pool, as omlx does — with loaded of them loaded according to /health, and a
+// /v1/models/status that refuses to say which (the server has an API key wt
+// was not given).
+func omlxListing(t *testing.T, loaded int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"a"},{"id":"b"}]}`)
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"engine_pool":{"model_count":2,"loaded_count":%d}}`, loaded)
+	})
+	mux.HandleFunc("/v1/models/status", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "API key required", http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestStartIntoAnIdleOmlxThatListsItsPool pins #201 for the occupancy check:
+// an omlx service that is up with nothing loaded still lists every model in
+// its pool, and wt read the listed sibling as the occupant — so starting a
+// model into an idle server asked to "replace" one that was never loaded, and
+// with --replace stopped the service to do it. The live re-probe now asks what
+// is loaded, finds nothing, and the start proceeds.
+func TestStartIntoAnIdleOmlxThatListsItsPool(t *testing.T) {
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	cfg := provCfg("omlx", omlxListing(t, 0).URL)
+	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
+		t.Fatalf("start into an idle omlx = %v, want nil: a listed, unloaded model is not an occupant", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"start:b"}) {
+		t.Errorf("calls = %v, want [start:b]", calls)
+	}
+}
+
+// TestStartAsksWhenOmlxWillNotSayWhatIsLoaded pins the other side: when omlx
+// has one of its two models loaded and will not say which, the answer is
+// unknown — *OccupancyUnknownError, touching nothing — not "empty". Guessing
+// empty would start the target on top of a model that may be serving a
+// session, which on omlx can evict it.
+func TestStartAsksWhenOmlxWillNotSayWhatIsLoaded(t *testing.T) {
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	cfg := provCfg("omlx", omlxListing(t, 1).URL)
+	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
+	var unknown *OccupancyUnknownError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("start = %v, want *OccupancyUnknownError", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("start touched the provider (%v) without knowing what it serves", calls)
 	}
 }
 

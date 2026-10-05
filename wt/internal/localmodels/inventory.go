@@ -88,6 +88,12 @@ type Snapshot struct {
 	// registered pairings, none of which name-matches a served id. Their
 	// Status is StatusPartial; this only lets callers say why.
 	Ambiguous map[string]bool
+	// ProbeFailures carries a probed family's probe error beside its
+	// non-ok status, so a caller can show the reason rather than only the
+	// status: the status says "partial", while the error text names the
+	// repair — omlx's "set auth.secret_ref ..." hint lives in the error
+	// alone.
+	ProbeFailures map[string]error
 }
 
 // Inventory probes every local provider in the registry concurrently and
@@ -159,6 +165,7 @@ type source struct {
 	loaded     []string // names serving right now
 	registered int      // local registry models in this family
 	down       bool     // the server refused the connection (nothing listening)
+	probeErr   error    // the probe failure, for a caller that shows the reason
 }
 
 func (s *source) matchArtifact(artifact, modelName string) bool {
@@ -331,15 +338,18 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.down = refused(err)
 		}
 	case "omlx", "mtplx":
-		// A failed /v1/models must not read as "nothing is loaded": for a
+		// What the server is serving comes from ServedIDs, which for omlx is
+		// the models it has loaded, not everything /v1/models lists (#201).
+		// A failed probe must not read as "nothing is loaded": for a
 		// single-model family that turns an unanswerable probe into permission to
 		// replace a model that may well be serving. StatusPartial records the same
 		// "Running flags are not trustworthy" state ollama already uses for a
 		// failed /api/ps.
-		loaded, err := FetchModelIDsErr(client, origin+"/v1/models")
+		loaded, err := ServedIDs(cfg, client, family)
 		if err != nil {
 			s.status = StatusPartial
 			s.down = refused(err)
+			s.probeErr = err
 		}
 		s.loaded = loaded
 		def := defaultOmlxDir
@@ -426,7 +436,12 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 	}
 	wg.Wait()
 
-	snap := Snapshot{Providers: map[string]Status{}, Down: map[string]bool{}, Ambiguous: map[string]bool{}}
+	snap := Snapshot{
+		Providers:     map[string]Status{},
+		Down:          map[string]bool{},
+		Ambiguous:     map[string]bool{},
+		ProbeFailures: map[string]error{},
+	}
 	sources := map[string]*source{}
 	for i, f := range families {
 		sources[f] = results[i]
@@ -434,6 +449,9 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		snap.Providers[f] = results[i].status
 		if results[i].down {
 			snap.Down[f] = true
+		}
+		if results[i].probeErr != nil {
+			snap.ProbeFailures[f] = results[i].probeErr
 		}
 	}
 

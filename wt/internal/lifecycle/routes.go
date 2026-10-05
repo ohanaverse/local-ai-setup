@@ -175,9 +175,10 @@ func routeModel(cfg *config.Config, t Target) config.Model {
 // two cannot name a model's route differently — and it removes nothing. The
 // start hook also clears a single-model provider's family, which is safe
 // there because Start has just stopped or refused any occupant. The ensure
-// has no such guard: an omlx or mtplx server can list sibling variants as
-// running together, and sync routes all of them, so a clear here would delete
-// a running sibling's route and bounce the proxy on every alternating launch.
+// has no such guard: an omlx server can hold two models loaded at once (the
+// probe reports the loaded ones — localmodels.ServedIDs, #201 — and sync
+// routes each of them), so a clear here would delete a running sibling's
+// route and bounce the proxy on every alternating launch.
 // Stale sibling routes are left to the next start, stop or sync.
 //
 // Unlike Start it never starts or stops anything: a caller holding a stale

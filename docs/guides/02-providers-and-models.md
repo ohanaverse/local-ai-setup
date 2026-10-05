@@ -86,6 +86,20 @@ secret_ref = "sk-or-v1-..."
 
 wt resolves `secret_ref` — an env-var name (or `os.environ/NAME`), an `exec:` helper command, or a literal key — and writes the result as `api_key` into each of the provider's LiteLLM `model_list` entries (`wt/internal/litellm/entry.go`); never commit a real `sk-or-v1-…` value to any repo — the README's `"sk-or-v1-..."` placeholder above is the shape. An env-var ref must be set in the shell that runs the sync, or wt reports `resolved empty` and keeps the existing rows. `location = "cloud"` is what makes this provider's models routable without a download.
 
+**A key for a local omlx server.** omlx can require an API key for its management endpoints while leaving inference open, and wt needs one of those endpoints to tell which omlx models are loaded when only some of them are ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md), Gotchas). Give wt the key by adding a `secret_ref` to the omlx provider — one key for the server, however many models it holds; `omlx` and `omlx-6bit` are the same server, so the `omlx` entry is enough. `type` stays `"none"`: wt uses the key only for that probe and does not send it on inference requests.
+
+```toml
+[[providers]]
+id = "omlx"
+# ...
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8000"
+secret_ref = "OMLX_API_KEY"   # env-var name, os.environ/NAME, an exec: helper, or the literal key
+```
+
+The key is the `auth.api_key` value in `~/.omlx/settings.json`. This is a hand edit — modelman has no screen for a provider's auth, but it keeps the line when it rewrites the file. Nothing needs setting while omlx has no models loaded, or all of them loaded with `/v1/models` still listing the whole pool: its `/health` answers those without a key. A hidden model is counted in the pool but not listed, so "everything loaded" with one hidden is provable by the status endpoint alone — that case wants the key.
+
 Providers also declare a `protocols` field — the list of wire protocols the provider serves (`"anthropic"`, `"openai-chat"`, `"openai-responses"`; default `["openai-chat"]`). Ollama's discovered entry serves `["anthropic","openai-chat"]`. wt compares an agent's protocols against the provider's to pick direct-vs-LiteLLM routing ([06-wt-agents-and-models](06-wt-agents-and-models.md) §4).
 
 Validate the file after editing (read-only registry load):

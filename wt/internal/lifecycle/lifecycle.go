@@ -346,9 +346,12 @@ func Startable(providerID string) bool {
 // name.
 func CanStop(providerID string) bool { return Startable(providerID) }
 
-// SingleModel reports whether providerID's family serves one model per
-// process, so stopping any of its models stops the whole provider (and every
-// sibling variant it lists as running).
+// SingleModel reports whether wt treats providerID's family as serving one
+// model per process, so stopping any of its models stops the whole provider
+// (and every sibling it has loaded). For mtplx that is literally true. omlx is
+// really a pool that can hold several models; wt still starts into it by
+// replacing the occupant and stops it by stopping the service, and reads its
+// running models from what is loaded, not from what it lists (#201).
 func SingleModel(providerID string) bool {
 	b := backendsByFamily[localmodels.Family(providerID)]
 	return b != nil && b.singleModel()

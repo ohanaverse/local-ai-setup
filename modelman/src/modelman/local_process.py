@@ -51,6 +51,27 @@ def http_models_ids(url: str, timeout: float = 2.0) -> list[str]:
     ]
 
 
+def http_json(url: str, timeout: float = 2.0) -> dict | None:
+    """The JSON object `url` answers with, or None on any error (connection
+    refused, timeout, non-JSON or non-object body). A non-2xx answer's body is
+    still read: omlx's /health carries its pool counts on a 503 too."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — localhost probe
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read()
+        except OSError:
+            return None
+    except (OSError, ValueError):
+        return None
+    try:
+        data = json.loads(raw.decode())
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def http_answers(url: str, timeout: float = 2.0) -> bool:
     """Whether `url` answered at all: any HTTP status counts as an answer, a
     refused connection / unresolvable host / timeout does not.
