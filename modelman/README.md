@@ -187,9 +187,8 @@ on-disk artifact no registry entry claims (its discovered id or bare artifact
 name) — started as-is, no registration needed. The discovered id is
 `<family>/<artifact>`: `ollama/<name:tag>`, `omlx/<model directory name>`,
 `mtplx/<org>/<name>` (MTPLX keeps the `/`). On a registry whose only
-omlx-family row is `omlx-6bit`, modelman cannot list or start unregistered
-omlx artifacts (wt still lists and routes them as `omlx/<dir>`) — add an
-`omlx` provider row, or start the model with `wt start`. It is the id wt lists and routes
+omlx-family row is `omlx-6bit`, an unregistered omlx artifact is still listed
+and started as `omlx/<dir>`, through that row. It is the id wt lists and routes
 the model under, the id `modelman stop` takes, and the id `modelman start`
 with no argument prints in its `Discovered` section — with `(running)` beside
 a model modelman started that a live probe confirms. A registry entry for a

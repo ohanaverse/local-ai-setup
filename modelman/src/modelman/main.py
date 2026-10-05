@@ -336,11 +336,16 @@ def run_tui() -> None:
     from .app import ModelmanApp
 
     before = _file_digest(_default_registry_path())
-    queued = ModelmanApp().run()
+    app = ModelmanApp()
+    queued = app.run()
     if queued is None:
         # Add/edit write registry.toml immediately and queue nothing; route
-        # what they changed (#179). run_queued_ops syncs on its own.
-        if _file_digest(_default_registry_path()) != before:
+        # what they changed (#179). run_queued_ops syncs on its own. A Discard
+        # that put back a registry the session had written leaves the file as
+        # it was and says so instead (ModelmanApp.route_sync_owed, #194).
+        if _file_digest(_default_registry_path()) != before or getattr(
+            app, "route_sync_owed", False
+        ):
             _sync_routes_and_warn()
         return
     if run_queued_ops(queued):

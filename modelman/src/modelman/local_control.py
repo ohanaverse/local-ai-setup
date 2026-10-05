@@ -460,8 +460,8 @@ def _provider_by_id(registry: Registry) -> dict[str, ProviderEntry]:
 
 def _provider_instance(registry: Registry, provider_id: str) -> Provider | None:
     """A live Provider for `provider_id`, or None when it cannot be built (no
-    registry.toml row, nothing registered under that id — e.g. a hand-edited
-    "omlx-6bit" row today — or construction raised).
+    registry.toml row, no class for that id or the server it is an alias of
+    (ProviderRegistry resolves `omlx-6bit` to omlx's), or construction raised).
 
     None always means "this provider cannot be asked", never "this provider
     reports nothing": every caller has to keep those apart (see
