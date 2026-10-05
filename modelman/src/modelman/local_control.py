@@ -574,9 +574,10 @@ def _provider_local_models(
     design, not reported as failures: they have no on-disk artifacts to
     discover. A local provider whose class opts out via
     Provider.supports_discovery (mlx_lm_server's pairing, retired llamacpp)
-    is skipped the same way. A local provider id with NO registered class
-    (e.g. a hand-edited "omlx-6bit" row) falls through to the unqueryable
-    path below, same as any other provider construction failure.
+    is skipped the same way. A local provider id with NO registered class —
+    and no alias to one (ProviderRegistry resolves `omlx-6bit` to omlx's,
+    #194) — falls through to the unqueryable path below, same as any other
+    provider construction failure.
     """
     found: dict[tuple[str, str], LocalModel] = {}
     unqueryable: set[str] = set()
