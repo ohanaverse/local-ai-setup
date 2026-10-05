@@ -78,21 +78,10 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 // process. Tests that need local rows call stubInventory; tests that exercise
 // the start flow call stubStartModel.
 func TestMain(m *testing.M) {
-	// No test may read or write the developer's real config directory. A test
-	// that launches, records usage, takes a profile lock or loads the config
-	// without pointing XDG_CONFIG_HOME somewhere of its own used to land in
-	// ~/.config/agent-wt: every run of this package rewrote the real
-	// rotation.state (so the picker's last-launched marker pointed at a test
-	// model) and appended test launches to the real usage.jsonl. The whole
-	// package gets a throwaway config home; a test that sets its own still
-	// wins. MODELMAN_REGISTRY is cleared for the same reason: it would send
-	// config.Load to the developer's registry whatever XDG says.
-	cfgHome, err := os.MkdirTemp("", "wt-test-config-")
-	if err != nil {
-		panic(err)
-	}
-	os.Setenv("XDG_CONFIG_HOME", cfgHome)
-	os.Unsetenv("MODELMAN_REGISTRY")
+	// No test may read or write the developer's real config directory —
+	// config.IsolateConfigHomeForTest carries the full rationale. A test that
+	// sets its own XDG_CONFIG_HOME still wins.
+	_, rmConfigHome := config.IsolateConfigHomeForTest()
 	runInventory = localmodels.OnDiskSnapshotForTest
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
@@ -109,7 +98,7 @@ func TestMain(m *testing.M) {
 	releaseSession = func() {}
 	runStopPhase = func(*config.Config) {}
 	code := m.Run()
-	os.RemoveAll(cfgHome)
+	rmConfigHome()
 	os.Exit(code)
 }
 
@@ -293,9 +282,9 @@ func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
 	if err != nil {
 		t.Skip("no home directory")
 	}
-	for name, p := range map[string]string{"config.Dir()": config.Dir(), "config.RegistryPath()": config.RegistryPath()} {
-		if strings.HasPrefix(p, filepath.Join(home, ".config")) || !strings.Contains(p, "wt-test-config-") {
-			t.Errorf("%s = %s, want a path under this package's throwaway config home", name, p)
+	for _, pair := range [][2]string{{"config.Dir()", config.Dir()}, {"config.RegistryPath()", config.RegistryPath()}} {
+		if strings.HasPrefix(pair[1], filepath.Join(home, ".config")) || !strings.Contains(pair[1], "wt-test-config-") {
+			t.Errorf("%s = %s, want a path under this package's throwaway config home", pair[0], pair[1])
 		}
 	}
 }
