@@ -438,16 +438,27 @@ def sync() -> None:
     # stopped during the sync was recorded running again, one started was
     # recorded stopped, and a discovered model's row (dropped by its stop)
     # came back (#231).
-    with locked_state() as fresh:
-        for mid in (*result.downloaded, *result.not_downloaded):
-            seen = state.get(mid)
-            fresh.models[mid] = replace(
-                fresh.get(mid),
-                ready=seen.ready,
-                disk_path=seen.disk_path,
-                size_bytes=seen.size_bytes,
-            )
-        fresh.families.update(state.families)
+    #
+    # Families are left alone: run_sync never touches them, so its snapshot
+    # holds nothing to write — and merging `state.families` back whole would
+    # resurrect a legacy family row a concurrent `delete-family` just dropped,
+    # the same stale-snapshot hazard the model merge above exists to avoid
+    # (#231). `locked_state` already round-trips whatever families are on disk.
+    try:
+        with locked_state() as fresh:
+            for mid in (*result.downloaded, *result.not_downloaded):
+                seen = state.get(mid)
+                fresh.models[mid] = replace(
+                    fresh.get(mid),
+                    ready=seen.ready,
+                    disk_path=seen.disk_path,
+                    size_bytes=seen.size_bytes,
+                )
+    except OSError as exc:
+        # No registry repair is saved either — the state write must land first,
+        # and the repair is idempotent and re-runs on the next sync.
+        typer.echo(f"error: failed to save state: {exc}", err=True)
+        raise typer.Exit(1) from exc
     # Always persist the registry, not just when providers_added is non-empty:
     # run_sync also calls backfill_provider_defaults, which mutates existing
     # provider entries in place (e.g. filling a missing auth.base_url) even

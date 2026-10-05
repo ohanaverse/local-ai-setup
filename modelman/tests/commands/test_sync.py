@@ -74,6 +74,21 @@ def test_sync_command_reports_error_when_registry_save_fails(tmp_path, monkeypat
         assert "failed to save registry" in result.output
 
 
+def test_sync_command_reports_error_when_state_save_fails(tmp_path, monkeypatch):
+    # The state merge is written before the registry repair; a failure to save
+    # modelman.toml (e.g. read-only directory) must surface as a clean error +
+    # non-zero exit, not an unhandled traceback — the same shape as the
+    # registry-save path right below it.
+    _seed_registry(tmp_path, monkeypatch)
+    with patch("modelman.main.run_sync") as run_sync:
+        run_sync.return_value = SyncResult()
+        with patch("modelman.state.save_state", side_effect=OSError("read-only")):
+            runner = CliRunner()
+            result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "failed to save state" in result.output
+
+
 def test_sync_command_syncs_routes_once_after_saving_registry(tmp_path, monkeypatch, wt_calls):
     # `modelman sync` saves registry.toml after backfill_provider_defaults
     # (which can fill an auth.base_url or add a provider entry), so it must
