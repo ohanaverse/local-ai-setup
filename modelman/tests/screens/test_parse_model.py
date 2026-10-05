@@ -181,6 +181,23 @@ def test_hf_repo_providers_single_source_of_truth():
     assert "mlx_lm_server" in forms.HF_REPO_PROVIDERS
 
 
+def test_omlx_6bit_alias_row_parses_as_its_server():
+    """`omlx-6bit` is omlx's alias row (#194), so a model added or edited on
+    it is a local HF-repo entry exactly like one on `omlx`. Left out of the
+    HF set it fell through to "cloud-only" and stored a repo-less,
+    cloud-locked entry — never local, so never reconciled, and a download
+    then failed with "missing repo". Regression guard for the raw-id-gate
+    class #224/#225 cover."""
+    assert "omlx-6bit" in forms.HF_REPO_PROVIDERS
+    assert default_form_kind("omlx-6bit") == "local-only"
+    assert parse_model("omlx-6bit", "org/repo") == ("org/repo", "org/repo", "")
+    assert parse_model("omlx-6bit", "org/repo/weights.safetensors") == (
+        "org/repo/weights.safetensors",
+        "org/repo",
+        "weights.safetensors",
+    )
+
+
 # ---------------------------------------------------------------------------
 # parse_dual_model: mlx_lm_server target+draft pairing (4 inputs)
 # ---------------------------------------------------------------------------

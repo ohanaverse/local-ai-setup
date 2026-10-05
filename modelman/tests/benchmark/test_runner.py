@@ -160,6 +160,24 @@ def test_discover_targets_remote_providers_excluded():
     assert targets == []
 
 
+def test_discover_targets_includes_omlx_6bit_alias_row():
+    """An entry on the `omlx-6bit` row is a local target: LOCAL_PROVIDERS is
+    derived from the canonical provider ids, so the row must be resolved
+    before the membership test. Compared raw, `omlx-6bit` matched nothing and
+    the model vanished from discovery — `--model omlx-6bit/a` and a `--family`
+    holding only 6-bit rows both came back empty and run_benchmark raised
+    "no benchmark targets found", even though isolation already supports the
+    id. The target keeps the raw row id: isolation keys on it to name the
+    exact omlx variant in the warmup."""
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx-6bit", name="oMLX (6-bit)", location="local")],
+        models=[ModelEntry(id="omlx-6bit/a", family="f", provider_id="omlx-6bit", model_name="a")],
+    )
+    by_family = discover_targets(registry, family="f")
+    assert [t.model_id for t in by_family] == ["omlx-6bit/a"]
+    assert by_family[0].provider_id == "omlx-6bit"
+
+
 def test_mlx_lm_server_pairing_args_normalizes_paths_but_not_repo_ids():
     """mlx_lm_server_pairing_args must expand/normalize local_path values (stable
     isolation keys across equivalent path spellings) but forward HF repo ids
