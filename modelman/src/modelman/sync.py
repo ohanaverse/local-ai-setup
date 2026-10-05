@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 # Import the providers package to ensure ProviderRegistry is populated.
@@ -29,7 +29,7 @@ from .registry import (
     provider_config,
     sync_agent_providers,
 )
-from .state import ModelState, StateStore
+from .state import StateStore
 
 # Providers `modelman sync` reconciles against the filesystem. ollama has its
 # own discovery path (`ollama list`); every other reconcilable provider stores
@@ -255,26 +255,19 @@ def reconcile(
             m.location, m.provider_id, registry, missing_provider_is_local=True
         ):
             continue
+        # Only what reconcile observes is written — ready, disk_path and
+        # size_bytes. The rest of the row is kept: rebuilding it reset
+        # `running` to its default, so every sync recorded every registered
+        # local model as stopped (#231). Whether a model that is gone from
+        # disk can still be running is the probe's call
+        # (local_control._clear_stale_running_flag), not a side effect here.
+        current = state.get(m.id)
         if m.id in downloaded:
             disk_path, size = downloaded[m.id]
-            state.set(
-                m.id,
-                ModelState(
-                    ready=True,
-                    disk_path=disk_path,
-                    size_bytes=size,
-                ),
-            )
+            state.set(m.id, replace(current, ready=True, disk_path=disk_path, size_bytes=size))
             result.downloaded.append(m.id)
         else:
-            state.set(
-                m.id,
-                ModelState(
-                    ready=False,
-                    disk_path=None,
-                    size_bytes=None,
-                ),
-            )
+            state.set(m.id, replace(current, ready=False, disk_path=None, size_bytes=None))
             result.not_downloaded.append(m.id)
     return result
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -430,9 +431,34 @@ def sync() -> None:
     # the (potentially slow) provider scans — a whole-file save would
     # revert [local].running_model (or any other key) written concurrently
     # (same merge shape migrate uses).
-    with locked_state() as fresh:
-        fresh.models.update(state.models)
-        fresh.families.update(state.families)
+    #
+    # And merge only what sync observed, only for the models it reconciled:
+    # ready, disk_path and size_bytes. `state` is as old as the scans, so
+    # writing its rows back whole undid whatever happened meanwhile — a model
+    # stopped during the sync was recorded running again, one started was
+    # recorded stopped, and a discovered model's row (dropped by its stop)
+    # came back (#231).
+    #
+    # Families are left alone: run_sync never touches them, so its snapshot
+    # holds nothing to write — and merging `state.families` back whole would
+    # resurrect a legacy family row a concurrent `delete-family` just dropped,
+    # the same stale-snapshot hazard the model merge above exists to avoid
+    # (#231). `locked_state` already round-trips whatever families are on disk.
+    try:
+        with locked_state() as fresh:
+            for mid in (*result.downloaded, *result.not_downloaded):
+                seen = state.get(mid)
+                fresh.models[mid] = replace(
+                    fresh.get(mid),
+                    ready=seen.ready,
+                    disk_path=seen.disk_path,
+                    size_bytes=seen.size_bytes,
+                )
+    except OSError as exc:
+        # No registry repair is saved either — the state write must land first,
+        # and the repair is idempotent and re-runs on the next sync.
+        typer.echo(f"error: failed to save state: {exc}", err=True)
+        raise typer.Exit(1) from exc
     # Always persist the registry, not just when providers_added is non-empty:
     # run_sync also calls backfill_provider_defaults, which mutates existing
     # provider entries in place (e.g. filling a missing auth.base_url) even
