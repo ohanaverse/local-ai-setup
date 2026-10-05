@@ -49,3 +49,20 @@ jobs:
       # "(cached)"), so without it this step replays the step above and guards
       # nothing.
       - run: GOMAXPROCS=1 go test -count=1 ./...
+      # No test may create the real config directories. A fresh runner has
+      # none, so finding one here means a test wrote under the home directory
+      # instead of a temp one — on a developer's machine that same test
+      # rewrites live state (wt's rotation.state and usage.jsonl were being
+      # overwritten by every `go test` until #221). Checked right after the
+      # tests, before any later step could create them for its own reasons.
+      - name: Tests left the real config directories alone
+        run: |
+          status=0
+          for d in "$HOME/.config/agent-wt" "$HOME/.config/local-ai" "$HOME/.config/litellm"; do
+            if [ -e "$d" ]; then
+              echo "::error::the test run created $d"
+              ls -la "$d"
+              status=1
+            fi
+          done
+          exit $status
