@@ -264,7 +264,7 @@ func TestStopPickerListsModelsWithoutCheckboxes(t *testing.T) {
 		runningEntry("ollama", "ollama/a", "a"), runningEntry("ollama", "ollama/b", "b")}}}
 	var out bytes.Buffer
 	runStopPicker(strings.NewReader("\n"), &out, &config.Config{}, h.deps())
-	want := exitFlowHeader + "\n  1  ollama/a\n  2  ollama/b\n  numbers (e.g. 1 2) · a = all · Enter = none\nstop> "
+	want := exitFlowHeader + "\n  1  ollama/a\n  2  ollama/b\n  numbers (e.g. 1 2) · a = all · q = skip · Enter = none\nstop> "
 	if out.String() != want {
 		t.Errorf("prompt = %q\nwant     %q", out.String(), want)
 	}
@@ -283,8 +283,8 @@ func TestPickerNoopWhenNotTTY(t *testing.T) {
 
 // TestStopPickerDrainsAfterReadingOnEveryExit verifies the paste-residue drain
 // runs after the picker has read, on every path that consumed input. A pasted
-// block whose first line is "q"/"esc", or whose first line is blank (Enter with
-// nothing ticked), leaves every later line in the kernel's TTY input queue,
+// block whose first line is "q"/"esc", or whose first line is blank (a bare
+// Enter), leaves every later line in the kernel's TTY input queue,
 // where the parent shell runs them as commands once wt exits — the hazard the
 // drain exists to prevent. Asserting the ordering (not just the count) is what
 // stops a future refactor from draining before the prompt and eating input the

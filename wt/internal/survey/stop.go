@@ -224,8 +224,8 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	defer cancel()
 	// The picker read lines the same way the survey did; drop any paste
 	// residue so it cannot run as shell commands after wt exits. Deferred so it
-	// also runs on the skip paths below: "q"/"esc", or an Enter with nothing
-	// ticked, leave just as much residue queued as a confirmed stop does.
+	// also runs on the skip paths below: "q"/"esc", or a bare Enter, leave just
+	// as much residue queued as a confirmed stop does.
 	defer flushTTY()
 	// The menu read blocks in a syscall a signal does not interrupt (the runtime
 	// restarts it), so it runs on its own goroutine and the picker races it
@@ -342,7 +342,7 @@ func chooseLabeled(sc *bufio.Scanner, w io.Writer, header string, labels []strin
 	for i, l := range labels {
 		fmt.Fprintf(w, "  %d  %s\n", i+1, l)
 	}
-	fmt.Fprintln(w, "  numbers (e.g. 1 2) · a = all · Enter = none")
+	fmt.Fprintln(w, "  numbers (e.g. 1 2) · a = all · q = skip · Enter = none")
 	for {
 		fmt.Fprint(w, "stop> ")
 		if !sc.Scan() {
