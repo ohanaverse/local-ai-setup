@@ -28,6 +28,15 @@ var flushTTY = realFlushTTY
 
 func realFlushTTY() { _ = drainTTYInput(int(os.Stdin.Fd())) }
 
+// Enabled says whether the post-session survey is asked. It is off
+// (2026-10-05, #136): the questions were skipped often, and the speed rating
+// in particular barely told models apart, so the survey is paused while what
+// replaces it is decided. Everything else is kept on purpose — the questions,
+// the store, `wt stats` and the picker's SURVEY column, which go on reporting
+// the answers already recorded — so bringing the survey back is this one
+// value. A var, not a const, so the package's tests can run the kept code.
+var Enabled = false
+
 // answer identifies the Q1 verdict.
 type answer int
 
@@ -37,7 +46,8 @@ const (
 	answerYes
 )
 
-// PromptRun runs the up-to-four-question post-session survey against r/w,
+// PromptRun runs the up-to-four-question post-session survey against r/w —
+// when the survey is Enabled; while it is off this is a no-op returning "" —
 // records the answer via store, and returns the accumulated after-survey
 // stats block for the caller to print (it does not print it, so the launch
 // paths can order it after the model-stopping picker and summary). It is a
@@ -46,7 +56,7 @@ const (
 // the model is native (issue #116) — the single guard both the TUI and
 // non-TUI launch paths rely on.
 func PromptRun(r io.Reader, w io.Writer, store Store, agent string, m config.Model) string {
-	if !stdinTTY() || m.ID == "" || m.Native {
+	if !Enabled || !stdinTTY() || m.ID == "" || m.Native {
 		return ""
 	}
 	scanner := bufio.NewScanner(r)
