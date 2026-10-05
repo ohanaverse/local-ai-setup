@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -227,11 +228,17 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	// also runs on the skip paths below: "q"/"esc", or a bare Enter, leave just
 	// as much residue queued as a confirmed stop does.
 	defer flushTTY()
+	// The reader goroutine below and this one both write to w: it prints the
+	// prompt, and a signal landing before the read is answered prints
+	// "cancelled" here. One serialized writer keeps their lines whole —
+	// unserialized, a signal arriving mid-prompt interleaves the two on a
+	// terminal and races outright when w is a test's bytes.Buffer.
+	w = &lockedWriter{w: w}
 	// The menu read blocks in a syscall a signal does not interrupt (the runtime
 	// restarts it), so it runs on its own goroutine and the picker races it
 	// against the context. A cancelled menu abandons that goroutine still
-	// blocked in Scan: harmless, wt exits shortly after and it never writes to w
-	// again (it only prints between reads).
+	// blocked in Scan: harmless, wt exits shortly after. It is still printing
+	// the prompt until it gets there, which is the race lockedWriter covers.
 	answer := make(chan []int, 1)
 	go func() { answer <- chooseLabeled(bufio.NewScanner(r), w, header, labels) }()
 	var selected []int
@@ -323,6 +330,22 @@ func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) e
 }
 
 const exitFlowHeader = "Stop running local models? (none are in use by another wt session)"
+
+// lockedWriter serializes writes to one writer from the picker's two
+// goroutines: the reader printing the prompt (the header and list, then one
+// line per rejected answer) and the picker printing "cancelled" when a signal
+// wins the race. It keeps each write whole rather than ordering the two, which
+// is all a terminal needs and is what makes a shared bytes.Buffer race-free.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (lw *lockedWriter) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.w.Write(p)
+}
 
 // chooseLabeled runs the one-line prompt and returns the chosen indices in
 // list order (#139). Enter applies what was typed, with no confirming step:

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -498,17 +499,20 @@ func TestReleaseSessionWarnsWhenReleaseFails(t *testing.T) {
 	}
 }
 
-// blockingReader cancels the picker's context on its first Read and then blocks
-// forever — the shape of Ctrl+C landing while the user sits at the "stop>"
-// prompt with nothing typed. Cancelling from inside Read guarantees the menu has
-// already been printed, so the test never races the picker's own writes.
+// blockingReader signals its first Read and then blocks until released — the
+// shape of Ctrl+C landing while the user sits at the "stop>" prompt with nothing
+// typed. The first Read comes after every prompt line is written (chooseLabeled
+// prints the header, the list and the hint, then the prompt, and only then
+// scans), so waiting on read is how the test knows the reader goroutine is done
+// writing and can read the output buffer without racing it.
 type blockingReader struct {
-	cancel context.CancelFunc
-	block  chan struct{}
+	read  chan struct{}
+	block chan struct{}
+	once  sync.Once
 }
 
 func (b *blockingReader) Read([]byte) (int, error) {
-	b.cancel()
+	b.once.Do(func() { close(b.read) })
 	<-b.block
 	return 0, io.EOF
 }
@@ -518,30 +522,45 @@ func (b *blockingReader) Read([]byte) (int, error) {
 // deferred TTY drain. Without it the default SIGINT disposition killed wt before
 // the summary, the stats and the drain, leaving paste residue queued to run as
 // shell commands.
+//
+// It also pins the picker's shared writer: the context is cancelled *before* the
+// picker starts, so the picker prints "cancelled" while the reader goroutine may
+// still be printing the menu — the one window where the two really are writing
+// at once. Unserialized, -race reports that; cancelling from inside Read, as
+// this test used to, ordered the reader's writes before the cancellation and
+// so could never have caught it.
 func TestStopPickerCtrlCAtMenuSkipsAndDrains(t *testing.T) {
 	prev, prevFlush := stopSignalCtx, flushTTY
 	t.Cleanup(func() { stopSignalCtx, flushTTY = prev, prevFlush })
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	stopSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	flushes := 0
 	flushTTY = func() { flushes++ }
+	// Cancelled up front, and the reader never answers, so the select's ctx case
+	// is the only ready one: with a readable answer both would be ready and the
+	// scheduler would choose between them.
+	cancel()
 
 	h := &stopHarness{
 		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
 			runningEntry("ollama", "ollama/a", "a"),
 		}},
 	}
-	rd := &blockingReader{cancel: cancel, block: make(chan struct{})}
-	defer close(rd.block)
+	rd := &blockingReader{read: make(chan struct{}), block: make(chan struct{})}
+	t.Cleanup(func() { close(rd.block) })
 	var out bytes.Buffer
 	runStopPicker(rd, &out, &config.Config{}, h.deps())
+	<-rd.read
 
 	if len(h.stops) != 0 {
 		t.Errorf("stops = %v, want none after a cancelled menu", h.stops)
 	}
 	if !strings.Contains(out.String(), "cancelled") {
 		t.Errorf("output = %q, want a cancelled line", out.String())
+	}
+	if !strings.Contains(out.String(), exitFlowHeader) {
+		t.Errorf("output = %q, want the menu printed before the cancellation", out.String())
 	}
 	if flushes != 1 {
 		t.Errorf("flushes = %d, want 1: the drain must still run", flushes)
