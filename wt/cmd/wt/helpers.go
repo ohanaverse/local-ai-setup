@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -93,6 +95,17 @@ func isStdinTTY() bool {
 // stdinTTY is a test seam wrapping isStdinTTY. Production code uses the real
 // terminal check; tests override it to control the TTY state deterministically.
 var stdinTTY = isStdinTTY
+
+// configError words a config load or validation error for the user, with a
+// hint that names where to fix it. Most problems are in wt's own config.toml,
+// which `wt config` edits. A mistyped location is in registry.toml, modelman's
+// file, which `wt config` cannot repair — so that one names the file instead.
+func configError(err error) error {
+	if errors.Is(err, config.ErrLocation) {
+		return fmt.Errorf("config error: %w (fix the entry in %s)", err, config.RegistryPath())
+	}
+	return fmt.Errorf("config error: %w (run `wt config` to repair)", err)
+}
 
 // errPickerNeedsTTY is returned by the rootCmd RunE when an unpinned launch
 // path would otherwise try to open the interactive picker (Bubble Tea's

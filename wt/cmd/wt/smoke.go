@@ -104,7 +104,7 @@ var smokeSignalCtx = func() (context.Context, context.CancelFunc) {
 // so the deferred stop flow runs before the caller sets the exit code.
 func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err error) {
 	if a.cfgErr != nil {
-		return false, fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+		return false, configError(a.cfgErr)
 	}
 
 	var modelID string

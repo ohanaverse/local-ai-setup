@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 )
 
@@ -274,4 +276,39 @@ func claudeStateDir(t *testing.T, home, workdir string) string {
 	}
 	t.Setenv("HOME", home)
 	return sd.StateDir(workdir)
+}
+
+// TestConfigErrorHintNamesTheFileToFix pins the hint on a config error. A
+// mistyped location is a registry problem, and registry.toml is modelman's
+// file: `wt config` edits wt's own config.toml and cannot repair it, so
+// telling the user to run it sent them to the wrong place (#200). Every other
+// config error keeps the existing hint.
+func TestConfigErrorHintNamesTheFileToFix(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "omlx", Location: "Local"}},
+		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}},
+	}
+	err := configError(cfg.Validate())
+	if err == nil {
+		t.Fatal("configError(nil-free validation error) = nil")
+	}
+	got := err.Error()
+	for _, want := range []string{`config error: provider "omlx" has location "Local"; expected "local" or "cloud"`, "/tmp/somewhere/registry.toml"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("error %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "wt config") {
+		t.Errorf("error %q still sends the user to `wt config`, which cannot edit the registry", got)
+	}
+	if !errors.Is(err, config.ErrLocation) {
+		t.Errorf("the wrapped error is lost: errors.Is(err, config.ErrLocation) = false")
+	}
+
+	other := configError(errors.New("default_tag must not be empty"))
+	if got := other.Error(); got != "config error: default_tag must not be empty (run `wt config` to repair)" {
+		t.Errorf("another config error = %q, want the existing hint unchanged", got)
+	}
 }

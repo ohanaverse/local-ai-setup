@@ -1284,3 +1284,97 @@ func TestValidate_ModelNameRequired(t *testing.T) {
 		t.Errorf("Validate() = %v, want an error naming model_name", err)
 	}
 }
+
+// locationTypoConfig is a registry with the two typos #200 is about: a
+// provider entry whose location is "Cloud", and a model that sets "Local" on
+// an otherwise healthy local provider. A third model overrides the mistyped
+// provider's location with a valid one of its own.
+func locationTypoConfig() *Config {
+	return &Config{
+		DefaultTag: "code",
+		Providers: []Provider{
+			{ID: "ollama", Location: LocationLocal},
+			{ID: "acme", Location: "Cloud"},
+		},
+		Models: []Model{
+			{ID: "ollama/good", ProviderID: "ollama", ModelName: "good"},
+			{ID: "ollama/typo", ProviderID: "ollama", ModelName: "typo", Location: "Local"},
+			{ID: "acme/inherits", ProviderID: "acme", ModelName: "inherits"},
+			{ID: "acme/overrides", ProviderID: "acme", ModelName: "overrides", Location: LocationCloud},
+		},
+		Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama", "acme"}}},
+	}
+}
+
+// TestResolveLocationRejectsAnUnknownValue pins #200: a location that is
+// neither "local" nor "cloud" is not a location. ResolveLocation used to hand
+// back whatever string was set, so "Local" or "Cloud" resolved without error
+// and each consumer then decided for itself what a third kind of location
+// meant: the catalog offered the model, sync put it in neither its local nor
+// its cloud set and never routed it, and the launch failed at the proxy with
+// "Invalid model name". An unknown value now fails the way a missing one
+// does, in an error that names the entry and the value — so every consumer
+// that already fails closed on a missing location agrees about a mistyped one.
+func TestResolveLocationRejectsAnUnknownValue(t *testing.T) {
+	cfg := locationTypoConfig()
+	for id, wantErr := range map[string]string{
+		"ollama/good":    "",
+		"acme/overrides": "",
+		"ollama/typo":    `model "ollama/typo" has location "Local"; expected "local" or "cloud"`,
+		"acme/inherits":  `model "acme/inherits": provider "acme" has location "Cloud"; expected "local" or "cloud"`,
+	} {
+		m := cfg.Models[IndexModelByID(cfg.Models, id)]
+		loc, err := cfg.ResolveLocation(m)
+		switch {
+		case wantErr == "" && (err != nil || !loc.Valid()):
+			t.Errorf("%s: loc = %q err = %v, want a valid location", id, loc, err)
+		case wantErr != "" && (err == nil || err.Error() != wantErr):
+			t.Errorf("%s: err = %v, want %q", id, err, wantErr)
+		case wantErr != "" && loc != "":
+			t.Errorf("%s: loc = %q beside the error, want none", id, loc)
+		}
+	}
+}
+
+// TestLocationTypoIsOutOfTheCatalog pins the consequence the user sees: a
+// model whose location cannot be trusted is not offered, exactly like one
+// with no location at all. It used to be offered and then fail at launch.
+func TestLocationTypoIsOutOfTheCatalog(t *testing.T) {
+	cfg := locationTypoConfig()
+	for id, want := range map[string]bool{"ollama/good": true, "acme/overrides": true, "ollama/typo": false, "acme/inherits": false} {
+		if got := cfg.InCatalog(cfg.Models[IndexModelByID(cfg.Models, id)]); got != want {
+			t.Errorf("InCatalog(%s) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+// TestValidateReportsEveryMistypedLocation pins that validation names each
+// mistyped entry — the provider itself, even though one of its models
+// overrides it and another has none, and the model with its own typo — so
+// fixing what the first message names does not just reveal the next.
+func TestValidateReportsEveryMistypedLocation(t *testing.T) {
+	err := locationTypoConfig().ValidateAll()
+	if err == nil {
+		t.Fatal("ValidateAll() = nil, want the mistyped locations reported")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		`provider "acme" has location "Cloud"; expected "local" or "cloud"`,
+		`model "ollama/typo" has location "Local"; expected "local" or "cloud"`,
+		`model "acme/inherits": provider "acme" has location "Cloud"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("validation errors lack %q:\n%s", want, got)
+		}
+	}
+	for _, id := range []string{"ollama/good", "acme/overrides"} {
+		if strings.Contains(got, `"`+id+`"`) {
+			t.Errorf("validation errors name the healthy model %s:\n%s", id, got)
+		}
+	}
+	// A provider entry with no models is still checked.
+	lone := &Config{DefaultTag: "code", Providers: []Provider{{ID: "idle", Location: "remote"}}}
+	if err := lone.ValidateAll(); err == nil || !strings.Contains(err.Error(), `provider "idle" has location "remote"`) {
+		t.Errorf("a mistyped provider with no models: err = %v, want it reported", err)
+	}
+}
