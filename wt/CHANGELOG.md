@@ -14,7 +14,8 @@
   (`~/Library/LaunchAgents/local.litellm.proxy.plist`, or `WT_LITELLM_PLIST`),
   not from the shell wt runs in; wt's own environment is used only when
   `WT_LITELLM_RESTART_CMD` is set or the plist cannot be read, and the
-  warning names which it consulted. The row is never rewritten.
+  warning names which it consulted. The row is never rewritten. A bare
+  `os.environ/` with no variable name is reported in its own words (#218).
 - `wt config` now says where to fix a mistyped `location` (#209). The editor
   opens on an invalid config so it can be repaired, but a location error is
   in `registry.toml`, which the editor cannot edit, and its status line

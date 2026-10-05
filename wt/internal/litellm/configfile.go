@@ -483,6 +483,8 @@ func mergedGetDepth(m *yaml.Node, key string, depth int) *yaml.Node {
 // never touched, and a repaired row stays unmarked, still the user's. base is
 // OllamaAPIBase's answer, which is never empty; given "", nothing is changed.
 // A row with no model_name is repaired like any other and named by rowLabel.
+// An empty value that carries a YAML anchor (`api_base: &base ""`) is the one
+// exception to the repair: see the note at the write.
 func (f *File) EnsureOllamaAPIBase(base string) []string {
 	ml := f.modelListSeq()
 	if base == "" || ml == nil {
@@ -502,6 +504,14 @@ func (f *File) EnsureOllamaAPIBase(base string) []string {
 			continue
 		}
 		if b := mergedGet(p, "api_base"); b != nil && !isNull(b) && !(b.Kind == yaml.ScalarNode && strings.TrimSpace(b.Value) == "") {
+			continue
+		}
+		// The row's own empty value may carry an anchor that other rows
+		// alias. Replacing the node would drop the anchor and leave those
+		// aliases pointing at nothing — a file that no longer parses — and
+		// keeping it would hand the ollama address to every row that
+		// aliases it. Left as written; a null one is in the sync's warnings.
+		if own := mapGet(p, "api_base"); own != nil && own.Anchor != "" {
 			continue
 		}
 		mapSet(p, "api_base", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: base})
@@ -543,9 +553,9 @@ func rowLabel(row *yaml.Node, model string) string {
 // never rewritten, an ollama/ row included: a variable may point at another
 // server on purpose, and the ollama address written over it would hide that.
 //
-// A whole value spelled as a YAML alias — `litellm_params: *params`, or
-// `api_base: *base` — is resolved the same way LiteLLM's loader resolves it,
-// so aliasing cannot hide a row from the scan.
+// A whole value spelled as a YAML alias — `litellm_params: *params`,
+// `model: *model` or `api_base: *base` — is resolved the same way LiteLLM's
+// loader resolves it, so aliasing cannot hide a row from the scan.
 func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 	ml := f.modelListSeq()
 	if ml == nil {
@@ -563,7 +573,7 @@ func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 		if p == nil || p.Kind != yaml.MappingNode {
 			continue
 		}
-		model := mergedGet(p, "model")
+		model := aliasGet(mergedGet(p, "model"))
 		if model == nil || model.Kind != yaml.ScalarNode || !strings.Contains(model.Value, "ollama") {
 			continue
 		}
@@ -572,8 +582,23 @@ func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 			out = append(out, fmt.Sprintf(`row %q (model %s) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`, rowLabel(row, model.Value), model.Value))
 			continue
 		}
-		if b.Kind == yaml.ScalarNode {
-			if name, isRef := strings.CutPrefix(b.Value, "os.environ/"); isRef && !env.IsSet(name) {
+		if b.Kind == yaml.ScalarNode && strings.HasPrefix(b.Value, "os.environ/") {
+			// The variable LiteLLM looks up is the value with every
+			// "os.environ/" dropped, not only the leading one (get_secret:
+			// secret_name.replace("os.environ/", "")).
+			name := strings.ReplaceAll(b.Value, "os.environ/", "")
+			switch {
+			case name != "" && env.IsSet(name):
+				// Set for the proxy: the row names an address.
+			case strings.TrimSpace(name) == "":
+				// The prefix with no variable after it, or only spaces. No
+				// variable is named "" and LiteLLM gets None, so it is the
+				// same trigger — but there is no name to report as unset, and
+				// the sentence for a named variable would print three holes
+				// (#218).
+				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base os.environ/ with no variable name: LiteLLM resolves that to None and starts its own "ollama serve" for it at proxy startup; give the row an address or spell os.environ/<VAR>`,
+					rowLabel(row, model.Value), model.Value))
+			default:
 				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base %s, and %s is not set in %s: LiteLLM starts its own "ollama serve" for it at proxy startup; set %s for the proxy or give the row an address`,
 					rowLabel(row, model.Value), model.Value, b.Value, name, env.Source, name))
 			}
