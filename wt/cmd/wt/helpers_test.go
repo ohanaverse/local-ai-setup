@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 )
 
