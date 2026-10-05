@@ -126,11 +126,6 @@ def _installed_local_providers() -> list[str]:
     return [pid for pid, cmd in _LOCAL_PROVIDER_COMMANDS.items() if shutil.which(cmd)]
 
 
-# The test suite replaces _installed_local_providers with "none installed" so
-# no test depends on the developer's PATH; this keeps the real one reachable.
-_REAL_INSTALLED_LOCAL_PROVIDERS = _installed_local_providers
-
-
 def _ensure_provider_entries(registry: Registry) -> list[str]:
     """Create default entries for the reconcilable providers that are missing
     from the registry and are either referenced by a model or installed on

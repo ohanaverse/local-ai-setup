@@ -1844,6 +1844,67 @@ async def test_action_toggle_running_confirms_then_stops_a_running_model(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_stop_clears_the_running_column_when_the_state_row_is_dropped(tmp_path, monkeypatch):
+    # #194: a stop deletes the modelman.toml row when the running flag was all
+    # it held. Here the disk row is exactly that — `ready` lives only in
+    # memory, put there by the mount reconcile — so after the stop the row is
+    # gone from disk. The flag resync walked the DISK rows only, never saw
+    # this id, and left the in-memory flag set: RUNNING stayed ● and the next
+    # `s` offered to stop a model that was already stopped.
+    from unittest.mock import MagicMock
+
+    from modelman import local_control
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(running=True))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr(
+        "modelman.screens.models.running_model_ids",
+        lambda registry, state, state_path=None: [m for m, s in state.models.items() if s.running],
+    )
+    monkeypatch.setattr("modelman.local_control._stop_ollama_model", lambda *a, **k: None)
+
+    stopped = {}
+    real_stop = local_control.stop_local_model
+
+    def stop_and_record(model_id, state_path=None, **kwargs):
+        result = real_stop(model_id, state_path, **kwargs)
+        stopped["id"] = model_id
+        return result
+
+    monkeypatch.setattr("modelman.screens.models.stop_local_model", stop_and_record)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        screen = app.screen
+        assert screen.state.get("ollama/a").running
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
+        for _ in range(200):
+            await pilot.pause()
+            if stopped.get("id") == "ollama/a" and not screen._lifecycle_worker_busy():
+                break
+        assert stopped["id"] == "ollama/a"
+        assert "ollama/a" not in load_state(state_path).models
+        assert not screen.state.get("ollama/a").running
+
+
+@pytest.mark.asyncio
 async def test_action_toggle_running_stop_cancelled_does_not_stop(tmp_path, monkeypatch):
     # Dismissing the stop confirm dialog ('n') must not call
     # stop_local_model at all.

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from modelman import sync as sync_module
 from modelman.providers.base import Provider, VariantSpec
 from modelman.providers.ollama import _parse_ollama_list_sizes
 from modelman.registry import (
@@ -665,12 +666,16 @@ def test_ensure_provider_entries_adds_installed_local_providers():
     assert registry.providers[1].auth.base_url == "http://localhost:11434"
 
 
+# conftest replaces the PATH lookup with "none installed" for the whole suite;
+# the test below is about the lookup, so it keeps the real one (bound here at
+# import, before any fixture runs).
+_REAL_INSTALLED_LOCAL_PROVIDERS = sync_module._installed_local_providers
+
+
 def test_installed_local_providers_asks_for_each_tool():
     # A provider counts as installed when its command is on PATH. A tool that
     # is not there gets no row: wt would probe a server the machine lacks.
-    from modelman import sync as sync_module
-
     with patch(
         "modelman.sync.shutil.which", side_effect=lambda b: "/bin/x" if b == "omlx" else None
     ):
-        assert sync_module._REAL_INSTALLED_LOCAL_PROVIDERS() == ["omlx"]
+        assert _REAL_INSTALLED_LOCAL_PROVIDERS() == ["omlx"]

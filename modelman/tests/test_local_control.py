@@ -2444,3 +2444,79 @@ def test_listing_omits_ollama_cloud_entries():
     runner = MagicMock(return_value=MagicMock(stdout=out, returncode=0))
     names = [m["variant_id"] for m in OllamaProvider({}).list_local(runner=runner)]
     assert names == ["qwen3.6:35b-mlx"]
+
+
+@pytest.mark.parametrize(
+    ("registered_name", "typed", "want"),
+    [
+        # A pulled model's full name, namespace included, is that model — not
+        # the registered one its tail happens to spell.
+        ("qwen3:8b", "someuser/qwen3:8b", "ollama/someuser/qwen3:8b"),
+        # ...also when the namespace is a cloud provider's id.
+        ("qwen3:8b", "openrouter/qwen3:8b", "ollama/openrouter/qwen3:8b"),
+        # And the reverse: a bare name is not a registered namespaced model.
+        ("someuser/qwen3:8b", "qwen3:8b", "ollama/qwen3:8b"),
+    ],
+)
+def test_start_ollama_native_name_is_exact_not_a_tail_match(tmp_path, registered_name, typed, want):
+    # #194 made the exact discovered ID beat the registered-name step, which
+    # compared name tails. The NAME the listing shows next to it still went
+    # through that step: `modelman start someuser/qwen3:8b` started the
+    # registered `qwen3:8b`. An ollama name is exact (wt's OllamaNameMatches;
+    # _artifact_matches here) — a namespace is part of it.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/registered", registered_name))
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {"variant_id": name, "path": f"ollama:{name}", "size_bytes": 1}
+            for name in (registered_name, want.removeprefix("ollama/"))
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        assert start_local_model(registry, typed, state_path).model_id == want
+        # The registered model is still reached by its name, bare or prefixed.
+        for spelling in (registered_name, f"ollama/{registered_name}"):
+            assert start_local_model(registry, spelling, state_path).model_id == "ollama/registered"
+
+
+def test_start_prefix_of_a_legacy_location_provider_row_is_a_local_claim(tmp_path):
+    # A provider row with no `location` is local (is_local_location) — the
+    # legacy spelling. Its id as a typed prefix therefore says WHERE the model
+    # is, exactly like a `location = "local"` row's: it must not fall into the
+    # cloud-prefix exception and start another provider's artifact.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="legacybox", name="Legacy", location=None, auth=AuthConfig(type="none"))
+    )
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [{"variant_id": "legacybox/foo", "path": "ollama:legacybox/foo", "size_bytes": 1}]
+    }
+    with (
+        _patch_provider_local_models(mapping),
+        pytest.raises(LocalControlError, match="unknown model"),
+    ):
+        start_local_model(registry, "legacybox/foo", state_path)
+    assert load_state(state_path).models == {}
+
+
+def test_stale_flag_clear_leaves_no_all_default_state_row(tmp_path):
+    # The row-dropping clear covers every flag clear, not only the stops: a
+    # discovered model whose process died (running_model_ids' probe), or that
+    # a start on the same single-model provider replaced, lost its flag
+    # through _clear_stale_running_flag and kept an empty row for good.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("mtplx/Org/gone", ModelState(running=True))
+    store.set("mtplx/Org/sized", ModelState(running=True, size_bytes=5))
+    save_state(store, state_path)
+    with patch("modelman.local_control._probe_running", return_value=False):
+        assert running_model_ids(registry, load_state(state_path), state_path) == []
+    models = load_state(state_path).models
+    assert "mtplx/Org/gone" not in models
+    assert models["mtplx/Org/sized"] == ModelState(running=False, size_bytes=5)

@@ -352,9 +352,7 @@ def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
         return
     try:
         with locked_state(state_path) as fresh:
-            fresh_existing = fresh.models.get(model_id)
-            if fresh_existing is not None and fresh_existing.running:
-                fresh.models[model_id] = replace(fresh_existing, running=False)
+            _clear_running_flag(fresh, model_id)
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
 
@@ -740,13 +738,14 @@ def _discovered_entry(match: DiscoveredModel) -> ModelEntry:
     )
 
 
-def _names_a_local_provider(prefix: str, registry: Registry) -> bool:
+def _names_a_local_provider(registry: Registry, prefix: str) -> bool:
     """Whether `prefix` (the text before a typed id's first "/") is a local
-    provider family or a local provider row id."""
+    provider family or a local provider row id. A row with a legacy empty
+    location is local (is_local_location), as everywhere else."""
     return (
         prefix == _OMLX_FAMILY
         or prefix in SUPPORTED_PROVIDER_IDS
-        or any(p.id == prefix and p.location == "local" for p in registry.providers)
+        or any(p.id == prefix and is_local_location(p.location) for p in registry.providers)
     )
 
 
@@ -754,7 +753,7 @@ def _names_a_provider(registry: Registry, prefix: str) -> bool:
     """Whether `prefix` (the text before a typed id's first "/") is a
     provider family or a provider row id rather than part of a model name
     (an mtplx/omlx repo id's org segment)."""
-    return _names_a_local_provider(prefix, registry) or any(
+    return _names_a_local_provider(registry, prefix) or any(
         p.id == prefix for p in registry.providers
     )
 
@@ -763,23 +762,29 @@ def _typed_name_matches(model: ModelEntry, typed: str) -> bool:
     """Whether what the user typed names registered `model` by its native
     provider-side name.
 
-    _name_matches, not ==: the name a user types comes from the provider's
-    spelling (the discovered listing prints omlx's directory basename,
-    "Qwen3.8-27B-4bit") while model_name holds the registry's (the full repo
-    id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison missed that
-    model and fell through to the discovered-artifact step, starting an
-    already-registered artifact under a second id.
+    omlx and mtplx: _name_matches, not ==: the name a user types comes from
+    the provider's spelling (the discovered listing prints omlx's directory
+    basename, "Qwen3.8-27B-4bit") while model_name holds the registry's (the
+    full repo id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison
+    missed that model and fell through to the discovered-artifact step,
+    starting an already-registered artifact under a second id.
 
-    For ollama also the implicit ":latest" tag (_ollama_name_matches): an
-    overlay named "llama3.2" owns the pulled "llama3.2:latest", which the
-    listing would otherwise have printed as `ollama/llama3.2:latest` — so
-    both that spelling and the bare one resolve to the overlay.
+    ollama: the name is exact, as in _artifact_matches — a user namespace is
+    part of it, so a typed "someuser/qwen3:8b" is NOT a registered "qwen3:8b"
+    (a tail match started the registered model in place of the pulled one the
+    user named, and "qwen3:8b" started a registered "someuser/qwen3:8b").
+    Accepted: the name itself, with or without the `ollama/` family prefix,
+    and the implicit ":latest" tag (_ollama_name_matches) — an overlay named
+    "llama3.2" owns the pulled "llama3.2:latest", which the listing would
+    otherwise have printed as `ollama/llama3.2:latest`, so both that spelling
+    and the bare one resolve to the overlay.
     """
-    if _name_matches(model.model_name, typed):
-        return True
     if model.provider_id != "ollama":
-        return False
-    return _ollama_name_matches(typed.removeprefix("ollama/"), model.model_name)
+        return _name_matches(model.model_name, typed)
+    return any(
+        _ollama_name_matches(name, model.model_name)
+        for name in (typed, typed.removeprefix("ollama/"))
+    )
 
 
 def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
@@ -796,8 +801,8 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
 
     # An exact discovered id is an id, not a name: it is what the listing
     # printed for that artifact, so it wins before the lenient name match
-    # below — which compares name tails, and would hand
-    # `ollama/someuser/qwen3:8b` to a registered `qwen3:8b`. Only a typed
+    # below — which for omlx and mtplx compares name tails, and would hand
+    # `mtplx/Org/Name` to a registered omlx `Name`. Only a typed
     # "<family>/<name>" can be one, so a bare name costs no provider listing
     # here.
     discovered: list[DiscoveredModel] | None = None
@@ -843,7 +848,7 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
         # local family prefix stays a claim either way, and a cloud prefix in
         # front of a shorter artifact name ("openrouter/foo" for `foo`) is
         # still not that artifact.
-        if slash and not _names_a_local_provider(prefix, registry):
+        if slash and not _names_a_local_provider(registry, prefix):
             named_in_full = [d for d in discovered if d.variant_id == model_id]
             if named_in_full:
                 discovered, slash = named_in_full, ""
@@ -1000,10 +1005,12 @@ def running_model_ids(
             # A flagged id that no registry entry owns but that is spelled the
             # REGISTERED way (the id's "/" → "--": "mtplx/org--name"): the
             # server reports the repo id ("org/name"), so the spelling above
-            # can never name-match it. This is where register-a-discovered-
-            # artifact leaves the running flag (screens/models.py record()),
-            # and it stays on disk through a Discard, which rolls the entry
-            # back — verify against the repo-id spelling (wt's mtplxRepoID /
+            # can never name-match it. Before #194 this is where registering a
+            # discovered artifact from its `+` row left the running flag, and
+            # it stayed on disk through a Discard, which rolls the entry back.
+            # The `+` row registers under the discovered id now, so only a
+            # modelman.toml written before that still holds such a row —
+            # verify it against the repo-id spelling (wt's mtplxRepoID /
             # MTPLXProvider._repo_id) before declaring the flag stale, or the
             # next TUI mount clears a serving model's flag.
             verified.append(model_id)

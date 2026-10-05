@@ -652,8 +652,17 @@ class ModelScreen(Screen[None]):
         queue is applied on exit), silently reverting the READY/SIZE/path
         columns after the first `s` press. Hence this targeted
         resync of only that flag.
+
+        A row missing from disk reads `running = false`: a stop drops the
+        row altogether when the flag was all it held
+        (local_control._clear_running_flag), and the in-memory copy — which
+        still carries the reconcile's ready/size — would otherwise keep
+        showing RUNNING ● for a model that was just stopped.
         """
         fresh = load_state(self.state_path)
+        for model_id, held in self.state.models.items():
+            if held.running and model_id not in fresh.models:
+                self.state.models[model_id] = replace(held, running=False)
         for model_id, fresh_state in fresh.models.items():
             current = self.state.models.get(model_id)
             if current is None:
