@@ -80,6 +80,12 @@ type Options struct {
 	// ForceRestart restarts the proxy even when this call changed nothing —
 	// the settling restart for a run of earlier NoRestart writes.
 	ForceRestart bool
+	// reportOllamaServe asks the write to also collect the rows LiteLLM starts
+	// its own `ollama serve` for (Result.ollamaServe; Sync publishes them in
+	// Result.Warnings). Unexported, and set by Sync alone: the scan is per-write
+	// work, and no other caller reports what it finds — a start, stop or launch
+	// is not the place to hear about a row it never named.
+	reportOllamaServe bool
 }
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
@@ -113,9 +119,10 @@ type Result struct {
 	Outcomes []Outcome
 	Changed  bool
 	Warnings []string
-	// ollamaServe is File.ollamaServeWarnings for the document as written.
-	// Only Sync publishes it, in Warnings: a start, stop or launch is not the
-	// place to hear about a row it never named.
+	// ollamaServe is File.ollamaServeWarnings for the document as written, and
+	// is filled only when Options.reportOllamaServe is set. Only Sync sets it,
+	// and only Sync publishes it, in Warnings: a start, stop or launch is not
+	// the place to hear about a row it never named.
 	ollamaServe []string
 }
 
@@ -343,16 +350,30 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, o
 			return err
 		}
 		add, remove := plan(f)
-		before := f.rowDigests()
+		// Written is only ever set on a "routed" outcome — an id the plan adds —
+		// so a plan that adds nothing owes no digests. Marshaling every row of
+		// model_list twice is the write path's most expensive step, and the
+		// removal-only writes (every stop, every single-model family clear) have
+		// no routed outcome to describe.
+		var before map[string]string
+		if len(add) > 0 {
+			before = f.rowDigests()
+		}
 		if res.Outcomes, err = applyTo(f, add, remove, ollamaBase); err != nil {
 			return err
 		}
 		f.EnsureSettings()
-		after := f.rowDigests()
-		for i, oc := range res.Outcomes {
-			res.Outcomes[i].Written = oc.Action == "routed" && before[oc.ID] != after[oc.ID]
+		if len(add) > 0 {
+			after := f.rowDigests()
+			for i, oc := range res.Outcomes {
+				res.Outcomes[i].Written = oc.Action == "routed" && before[oc.ID] != after[oc.ID]
+			}
 		}
-		res.ollamaServe = f.ollamaServeWarnings()
+		// The scan runs after the repair (applyTo), so what it finds is the rows
+		// the repair does not reach. Only a caller that reports it pays for it.
+		if o.reportOllamaServe {
+			res.ollamaServe = f.ollamaServeWarnings()
+		}
 		if !f.Changed() {
 			return nil
 		}
@@ -799,6 +820,9 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // reported with Err.
 func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	var plan SyncPlan
+	// The one caller that reports the rows LiteLLM starts its own `ollama serve`
+	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
+	o.reportOllamaServe = true
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove) {
 		p, built := planSync(cfg, f, local, o)
 		plan = p

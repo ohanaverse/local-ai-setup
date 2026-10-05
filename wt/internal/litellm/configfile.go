@@ -559,7 +559,8 @@ func (f *File) ollamaServeWarnings() []string {
 
 // rowDigests maps each model_name to the encoded text of its rows, in order.
 // Two digests taken around a write say which names' rows it changed, which
-// File.Changed — a whole-document comparison — cannot.
+// File.Changed — a whole-document comparison — cannot. applyPlanned takes them
+// only when the plan adds a row, the only outcome Written is set on.
 func (f *File) rowDigests() map[string]string {
 	ml := f.modelListSeq()
 	if ml == nil {
