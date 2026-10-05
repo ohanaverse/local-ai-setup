@@ -534,7 +534,15 @@ func rowLabel(row *yaml.Node, model string) string {
 // or ollama_chat/ one (openai/ollama-proxy), which wt cannot give an address
 // because the ollama one would be wrong for them (#206). Sync reports these;
 // it never changes them.
-func (f *File) ollamaServeWarnings() []string {
+//
+// An api_base written `os.environ/VAR` is resolved by LiteLLM before that
+// test, and an unset variable resolves to None (#211) — so the row is the
+// same trigger, though it looks as if it names an address. env says whether
+// VAR is set for the proxy (ProxyEnv: the LaunchAgent's environment, not
+// wt's). Such a row is reported, naming the variable and where wt looked, and
+// never rewritten, an ollama/ row included: a variable may point at another
+// server on purpose, and the ollama address written over it would hide that.
+func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 	ml := f.modelListSeq()
 	if ml == nil {
 		return nil
@@ -550,6 +558,11 @@ func (f *File) ollamaServeWarnings() []string {
 			continue
 		}
 		if b := mergedGet(p, "api_base"); b != nil && !isNull(b) {
+			name, isRef := strings.CutPrefix(b.Value, "os.environ/")
+			if b.Kind == yaml.ScalarNode && isRef && !env.IsSet(name) {
+				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base %s, and %s is not set in %s: LiteLLM starts its own "ollama serve" for it at proxy startup; set %s for the proxy or give the row an address`,
+					rowLabel(row, model.Value), model.Value, b.Value, name, env.Source, name))
+			}
 			continue
 		}
 		out = append(out, fmt.Sprintf(`row %q (model %s) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`, rowLabel(row, model.Value), model.Value))
