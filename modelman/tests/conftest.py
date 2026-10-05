@@ -76,6 +76,9 @@ def _never_call_real_ollama(monkeypatch):
     # _probe_running/_ollama_loaded_names explicitly.
     monkeypatch.setattr("modelman.local_control._ollama_loaded_names", lambda: [])
     monkeypatch.setattr("modelman.local_control._http_models_ids", lambda url, timeout=2.0: [])
+    # ...and the omlx probe's /health read (wt#201); None = no counts, so the
+    # probe falls back to the (stubbed, empty) list.
+    monkeypatch.setattr("modelman.local_control._http_json", lambda url, timeout=2.0: None)
     # ...and start_local_model's ollama daemon-reachability check, which would
     # otherwise GET the developer's real localhost:11434 — a daemon that is up
     # on the dev machine and down in CI, i.e. machine-dependent tests. Stubbed

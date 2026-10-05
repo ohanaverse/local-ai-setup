@@ -4,6 +4,26 @@
 
 ### Changed
 
+- An omlx model is "running" only when omlx has it loaded (#201). omlx's
+  `/v1/models` lists every model in its model directory, loaded or not, and
+  wt read that list as running: with the omlx service up, every omlx model on
+  disk showed as running in the picker, launched without being started, was
+  routed by `wt litellm sync` and offered by the stop picker; with two models
+  on disk, sync and `wt start` kept undoing each other's routes, restarting
+  the LiteLLM proxy each time; and a start into an idle server asked to
+  replace a model that was not loaded. wt now asks omlx what is loaded. A
+  model that is on disk but not loaded is a start row, and Enter or `-M`
+  loads it as before.
+  - No configuration is needed when omlx has nothing loaded or everything
+    loaded: its `/health` answers that without a key.
+  - When only some models are loaded, wt needs omlx's `/v1/models/status`,
+    which wants the server's API key if one is set. Give it through
+    `auth.secret_ref` on the registry's omlx provider. Without it wt cannot
+    tell which model is loaded: the family's running state is untrusted, so
+    `wt litellm sync` leaves omlx routes as they are (with its usual
+    warning) and a start asks before replacing.
+  - wt still treats omlx as holding one model: a start replaces what is
+    loaded and a stop stops the service.
 - Follow-ups to the ollama `api_base` repair (#206):
   - `wt litellm sync` and `sync --dry-run` now warn about a row LiteLLM starts
     its own `ollama serve` for that wt does not repair. LiteLLM's test is the

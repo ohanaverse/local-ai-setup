@@ -52,6 +52,7 @@ from .benchmark.isolation import (
 from .litellm import sync_routes
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_answers as _http_answers
+from .local_process import http_json as _http_json
 from .local_process import http_models_ids as _http_models_ids
 from .providers.base import LocalModel, Provider, _Runner
 from .providers.mtplx import MTPLX_BASE
@@ -234,6 +235,8 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     if not base:
         return False
     ids = _http_models_ids(f"{base}/v1/models")
+    if provider_id in ("omlx", "omlx-6bit"):
+        ids = _omlx_loaded(base, ids)
     if provider_id == "mlx_lm_server":
         # One target+draft pairing per process (the lifecycle's
         # mlx_lm_server backend is the only thing that starts one): the
@@ -244,6 +247,36 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
         # `modelman start` into an unnecessary reload.
         return bool(ids)
     return any(_name_matches(served, model_name) for served in ids)
+
+
+def _omlx_loaded(base: str, listed: list[str]) -> list[str]:
+    """The ids among `listed` (omlx's /v1/models) that are actually loaded.
+
+    omlx's /v1/models lists every model in its engine pool — the whole model
+    directory, minus hidden ones — loaded or not (wt#201), so on its own it
+    reads every omlx model as running while the service is up. /health gives
+    the pool's counts without a key:
+
+    - nothing loaded -> nothing is running;
+    - every pool model loaded, and the list is the whole pool -> the list;
+    - anything else (some loaded; or all loaded but a hidden model makes the
+      list shorter than the pool) -> [] : only the key-protected
+      /v1/models/status says which, and modelman does not ask it. Not-running
+      is _probe_running's safe direction. wt's probe (localmodels.ServedIDs)
+      does ask, with the registry's secret_ref.
+
+    An omlx whose /health gives no pool counts predates them: `listed` is all
+    there is, as before."""
+    health = _http_json(f"{base}/health")
+    pool = health.get("engine_pool") if health else None
+    if not isinstance(pool, dict):
+        return listed
+    loaded, count = pool.get("loaded_count"), pool.get("model_count")
+    if not isinstance(loaded, int) or not isinstance(count, int):
+        return listed
+    if loaded and loaded == count == len(listed):
+        return listed
+    return []
 
 
 def _require_ollama_daemon(provider: ProviderEntry | None) -> None:

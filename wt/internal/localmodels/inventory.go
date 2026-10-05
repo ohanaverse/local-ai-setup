@@ -331,12 +331,14 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.down = refused(err)
 		}
 	case "omlx", "mtplx":
-		// A failed /v1/models must not read as "nothing is loaded": for a
+		// What the server is serving comes from ServedIDs, which for omlx is
+		// the models it has loaded, not everything /v1/models lists (#201).
+		// A failed probe must not read as "nothing is loaded": for a
 		// single-model family that turns an unanswerable probe into permission to
 		// replace a model that may well be serving. StatusPartial records the same
 		// "Running flags are not trustworthy" state ollama already uses for a
 		// failed /api/ps.
-		loaded, err := FetchModelIDsErr(client, origin+"/v1/models")
+		loaded, err := ServedIDs(cfg, client, family)
 		if err != nil {
 			s.status = StatusPartial
 			s.down = refused(err)

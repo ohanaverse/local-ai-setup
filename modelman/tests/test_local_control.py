@@ -2189,3 +2189,58 @@ def test_start_refuses_a_discovered_id_that_is_a_registry_models_id(tmp_path):
     assert "already" in str(excinfo.value) and "bar" in str(excinfo.value)
     mock_isolate.assert_not_called()
     assert load_state(state_path).models == {}
+
+
+def _omlx_probe(listed, health):
+    """_probe_running for omlx/A against a server listing `listed` on
+    /v1/models and answering /health with `health` (None = no answer)."""
+    with (
+        patch("modelman.local_control._http_models_ids", return_value=listed),
+        patch("modelman.local_control._http_json", return_value=health),
+    ):
+        return _probe_running("omlx", "A", "http://localhost:8000")
+
+
+def test_probe_running_omlx_listed_but_unloaded_is_not_running():
+    # wt#201: omlx's /v1/models lists every model in its pool, loaded or not,
+    # so a listed model read as "running" for as long as the service was up —
+    # and `modelman start` on it was a no-op exactly when a load was needed.
+    # /health carries the pool's counts with no key: nothing loaded means not
+    # running, whatever the list says.
+    idle = {"status": "healthy", "engine_pool": {"model_count": 2, "loaded_count": 0}}
+    assert _omlx_probe(["A", "B"], idle) is False
+
+
+def test_probe_running_omlx_all_loaded_reads_the_list():
+    # Every pool model loaded and every one listed: the list is the answer.
+    full = {"engine_pool": {"model_count": 2, "loaded_count": 2}}
+    assert _omlx_probe(["A", "B"], full) is True
+    # A hidden model is counted but not listed, so the list is not the pool
+    # and "all loaded" cannot be read off it.
+    assert _omlx_probe(["A"], full) is False
+
+
+def test_probe_running_omlx_mixed_pool_is_not_running():
+    # Some loaded, not all: only the key-protected status endpoint says which,
+    # and modelman does not ask it. False is the safe direction here (see
+    # _probe_running): a start then reloads rather than silently doing nothing.
+    mixed = {"engine_pool": {"model_count": 2, "loaded_count": 1}}
+    assert _omlx_probe(["A", "B"], mixed) is False
+
+
+def test_probe_running_omlx_without_health_counts_falls_back_to_the_list():
+    # An omlx with no /health, or one whose answer has no pool counts,
+    # predates the counts: the list is all there is, as before.
+    assert _omlx_probe(["A"], None) is True
+    assert _omlx_probe(["A"], {"status": "healthy"}) is True
+    assert _omlx_probe(["B"], None) is False
+
+
+def test_probe_running_mtplx_does_not_consult_health():
+    # Only omlx lists a pool; an mtplx process serves one model, so its list
+    # is already what is loaded.
+    with (
+        patch("modelman.local_control._http_models_ids", return_value=["Org/Q"]),
+        patch("modelman.local_control._http_json", side_effect=AssertionError("asked /health")),
+    ):
+        assert _probe_running("mtplx", "Org/Q", "http://localhost:8003") is True

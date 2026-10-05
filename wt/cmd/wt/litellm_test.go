@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1732,33 +1733,53 @@ func TestSyncProbeWarningIgnoresHandWrittenRows(t *testing.T) {
 	}
 }
 
-// TestSyncAndStartHookDisagreeWhenASingleModelServerListsSiblings pins a known
-// disagreement, on purpose, so that the day it becomes reachable it is a
-// conscious change and not a surprise (#195). Sync routes every local model
-// the probe reports running. The start hook treats a single-model family as
-// holding one model and clears the family's other routes. If one single-model
-// server ever reported two models running, the two would undo each other: sync
-// routes both, a start of one removes the other, the next sync puts it back —
-// one proxy restart each time.
+// TestSyncAndStartHookAgreeWhenOmlxListsAnUnloadedSibling pins the fix for
+// #201, end to end through the real inventory and a server that answers as
+// omlx does: /v1/models lists every model in its pool, loaded or not. wt read
+// that list as "running", so sync routed both models, the start hook — which
+// treats omlx as holding one model — removed the sibling's route, and the next
+// sync put it back: one config.yaml write and proxy restart each time. The
+// probe now counts only what omlx has loaded, so sync routes the loaded model
+// alone and the start hook has nothing to undo.
 //
-// It is reachable on omlx as soon as its model directory holds two models:
-// omlx's /v1/models lists every model in its pool, loaded or not (the load
-// state is only on /v1/models/status), and the probe reads every listed id as
-// running. An mtplx process serves one model, so it cannot happen there. The
-// launch-time route check does not take part: it only adds (#192). A fix means
-// deciding whether the start hook should keep listed siblings, or the probe
-// should count only the loaded occupant.
-func TestSyncAndStartHookDisagreeWhenASingleModelServerListsSiblings(t *testing.T) {
+// What is left, deliberately: omlx can hold two models loaded at once, and
+// then sync (routes both) and the start hook (keeps one) still differ. wt
+// itself never produces that state — it replaces the occupant — so it needs a
+// second model loaded behind wt's back.
+func TestSyncAndStartHookAgreeWhenOmlxListsAnUnloadedSibling(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
-	cfg := litellmTestConfig()
-	cfg.Providers = append(cfg.Providers, config.Provider{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "omlx", ModelID: config.DiscoveredModelID("omlx", "org/A-4bit"), ModelName: "org/A-4bit", Artifact: "org/A-4bit", ArtifactKnown: true, Running: true},
-			{ProviderID: "omlx", ModelID: config.DiscoveredModelID("omlx", "org/B-4bit"), ModelName: "org/B-4bit", Artifact: "org/B-4bit", ArtifactKnown: true, Running: true},
-		},
+	dir := t.TempDir()
+	for _, m := range []string{"A-4bit", "B-4bit"} {
+		if err := os.MkdirAll(filepath.Join(dir, m), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, m, "config.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"A-4bit"},{"id":"B-4bit"}]}`)
 	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"healthy","engine_pool":{"model_count":2,"loaded_count":1}}`)
+	})
+	mux.HandleFunc("/v1/models/status", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"models":[{"id":"A-4bit","loaded":true},{"id":"B-4bit","loaded":false}]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	omlx := config.Provider{ID: "omlx", Location: config.LocationLocal, ModelDir: dir, Auth: config.AuthConfig{Type: "none", BaseURL: srv.URL}}
+	// The real probe, against the omlx provider alone (the test config's
+	// ollama provider would be dialed for real).
+	snap := localmodels.Inventory(&config.Config{Providers: []config.Provider{omlx}})
+	if snap.Providers["omlx"] != localmodels.StatusOK || len(snap.Entries) != 2 {
+		t.Fatalf("inventory = %+v, want omlx ok with both models on disk", snap)
+	}
+	snap.Providers["ollama"] = localmodels.StatusOK
+	stubProbeInventory(t, snap)
+	cfg := litellmTestConfig()
+	cfg.Providers = append(cfg.Providers, omlx)
 	rows := func() []string {
 		t.Helper()
 		f, err := litellm.Open(p)
@@ -1772,29 +1793,36 @@ func TestSyncAndStartHookDisagreeWhenASingleModelServerListsSiblings(t *testing.
 		slices.Sort(ids)
 		return ids
 	}
-	sync := func() {
+	sync := func() bool {
 		t.Helper()
 		var out, errOut bytes.Buffer
 		if err := runLitellmSync(&out, &errOut, cfg, true, false); err != nil {
 			t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
 		}
+		var doc struct {
+			Changed bool `json:"changed"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, out.String())
+		}
+		return doc.Changed
 	}
-	both := []string{"omlx/org/A-4bit", "omlx/org/B-4bit"}
+	loaded := []string{"omlx/A-4bit"}
 
 	sync()
-	if got := rows(); !slices.Equal(got, both) {
-		t.Fatalf("after sync rows = %v, want both running siblings routed %v", got, both)
+	if got := rows(); !slices.Equal(got, loaded) {
+		t.Fatalf("after sync rows = %v, want only the loaded model %v: a listed, unloaded sibling is not running", got, loaded)
 	}
-	ch := lifecycle.StartRouteChange(cfg, lifecycle.Target{ProviderID: "omlx", ModelName: "org/A-4bit", ModelID: "omlx/org/A-4bit"})
-	if _, err := litellm.ApplyChange(cfg, ch, litellm.Options{NoRestart: true}); err != nil {
+	ch := lifecycle.StartRouteChange(cfg, lifecycle.Target{ProviderID: "omlx", ModelName: "A-4bit", ModelID: "omlx/A-4bit"})
+	res, err := litellm.ApplyChange(cfg, ch, litellm.Options{NoRestart: true})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := rows(); !slices.Equal(got, both[:1]) {
-		t.Fatalf("after the start hook rows = %v, want only the started model %v", got, both[:1])
+	if got := rows(); res.Changed || !slices.Equal(got, loaded) {
+		t.Fatalf("after the start hook changed=%v rows = %v, want nothing to undo and %v", res.Changed, got, loaded)
 	}
-	sync()
-	if got := rows(); !slices.Equal(got, both) {
-		t.Fatalf("after the next sync rows = %v, want the sibling routed again %v", got, both)
+	if sync() {
+		t.Fatalf("the next sync rewrote config.yaml (rows %v); sync and the start hook must agree", rows())
 	}
 }
 
