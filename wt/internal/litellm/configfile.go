@@ -481,7 +481,8 @@ func mergedGetDepth(m *yaml.Node, key string, depth int) *yaml.Node {
 // So this repairs hand-written rows too — the one field, and only when it is
 // empty: a row that names an address of its own is the user's choice and is
 // never touched, and a repaired row stays unmarked, still the user's. base is
-// the registry's ollama address; with none to give (""), nothing is changed.
+// OllamaAPIBase's answer, which is never empty; given "", nothing is changed.
+// A row with no model_name is repaired like any other and named by rowLabel.
 func (f *File) EnsureOllamaAPIBase(base string) []string {
 	ml := f.modelListSeq()
 	if base == "" || ml == nil {
@@ -506,11 +507,77 @@ func (f *File) EnsureOllamaAPIBase(base string) []string {
 		mapSet(p, "api_base", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: base})
 		// Two rows may share a model_name; the report names it once, as
 		// planSync does for a removal.
-		if name := rowName(row); !slices.Contains(names, name) {
+		if name := rowLabel(row, model.Value); !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}
 	return names
+}
+
+// rowLabel is what a report calls a row: its model_name, or — for a row that
+// has none — a label saying so and naming its model. "" would print as
+// ": api_base set" and reach `sync --json` as an empty id (#206); the bare
+// model value would be mistaken for the row of that name.
+func rowLabel(row *yaml.Node, model string) string {
+	if name := rowName(row); name != "" {
+		return name
+	}
+	return "(no model_name: " + model + ")"
+}
+
+// ollamaServeWarnings names every row LiteLLM starts its own `ollama serve`
+// for at proxy startup, in LiteLLM's own terms (proxy_server.py): the word
+// "ollama" anywhere in litellm_params.model and an api_base that is None —
+// absent or null, read through merge keys as LiteLLM's loader resolves them;
+// an empty string is not None. Called after EnsureOllamaAPIBase, what is left
+// is the rows that repair does not reach: ones whose model is not an ollama/
+// or ollama_chat/ one (openai/ollama-proxy), which wt cannot give an address
+// because the ollama one would be wrong for them (#206). Sync reports these;
+// it never changes them.
+func (f *File) ollamaServeWarnings() []string {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	var out []string
+	for _, row := range ml.Content {
+		p := mapGet(row, "litellm_params")
+		if p == nil || p.Kind != yaml.MappingNode {
+			continue
+		}
+		model := mergedGet(p, "model")
+		if model == nil || model.Kind != yaml.ScalarNode || !strings.Contains(model.Value, "ollama") {
+			continue
+		}
+		if b := mergedGet(p, "api_base"); b != nil && !isNull(b) {
+			continue
+		}
+		out = append(out, fmt.Sprintf(`row %q (model %s) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`, rowLabel(row, model.Value), model.Value))
+	}
+	return out
+}
+
+// rowDigests maps each model_name to the encoded text of its rows, in order.
+// Two digests taken around a write say which names' rows it changed, which
+// File.Changed — a whole-document comparison — cannot.
+func (f *File) rowDigests() map[string]string {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, row := range ml.Content {
+		if row.Kind != yaml.MappingNode {
+			continue
+		}
+		b, err := yaml.Marshal(row)
+		if err != nil {
+			// Unencodable rows cannot be compared; Save refuses the document.
+			b = []byte("unencodable")
+		}
+		out[rowName(row)] += string(b) + "\x00"
+	}
+	return out
 }
 
 // EnsureSettings applies the launcher-required LiteLLM settings: two

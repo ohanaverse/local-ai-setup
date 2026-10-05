@@ -4,6 +4,30 @@
 
 ### Changed
 
+- Follow-ups to the ollama `api_base` repair (#206):
+  - `wt litellm sync` and `sync --dry-run` now warn about a row LiteLLM starts
+    its own `ollama serve` for that wt does not repair. LiteLLM's test is the
+    word `ollama` anywhere in the model with no `api_base` (`openai/ollama-proxy`),
+    wider than the `ollama/` and `ollama_chat/` rows wt fills in; wt leaves
+    such a row alone, since the ollama address would be wrong for it, and
+    prints `warning: row "<name>" (model <model>) has no api_base: …` (JSON:
+    in `warnings`) until the row is given one.
+  - When the registry's ollama provider has no `base_url`, or there is no
+    ollama provider, wt now uses `http://localhost:11434` — the address it
+    already dials in that case — both for the repair and for the ollama rows
+    it writes itself. It used to repair nothing and write its own ollama rows
+    with no `api_base`, each of which made LiteLLM start a second server.
+  - A repaired row that has no `model_name` is reported as
+    `(no model_name: <model>)` instead of with an empty id (`: api_base set`,
+    `{"id": ""}`).
+  - A launch prints `wt: LiteLLM route for <id> updated` only when that
+    model's own route was added or rewritten. It used to print it whenever
+    the write changed `config.yaml`, so a launch that only filled another
+    row's `api_base` or restored a `litellm_settings` key claimed a route
+    change, and a model whose row could not be built got `updated` beside
+    its own `not updated`. Such a launch now prints the line for what it did
+    (`… <other id>: api_base set`), or `wt: LiteLLM config.yaml updated` when
+    there is nothing more specific; the proxy restart is unchanged.
 - A `location` that is neither `local` nor `cloud` is now rejected (#200).
   `"Local"` or `"Cloud"` used to pass as a third kind of location: the model
   was offered, `wt litellm sync` put it in neither its local nor its cloud set

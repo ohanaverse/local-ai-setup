@@ -88,10 +88,18 @@ type Options struct {
 // the write filled (any write: the row need not be one the change named); Err
 // is set when the id was rejected. A removal that removed no row has no
 // outcome.
+//
+// ID is the row's model_name; a repaired row that has none is named by
+// rowLabel instead, never by "". Written is set on a "routed" (or "adopted",
+// "rewritten") outcome whose row was added or differs from the one read:
+// every row a change sets is reported as routed, identical or not, and
+// Result.Changed is about the whole file, so Written is the only thing that
+// says the id's own route changed (#206).
 type Outcome struct {
-	ID     string
-	Action string
-	Err    error
+	ID      string
+	Action  string
+	Err     error
+	Written bool
 }
 
 // ActionAPIBaseSet is the Outcome action for a row File.EnsureOllamaAPIBase
@@ -99,11 +107,16 @@ type Outcome struct {
 const ActionAPIBaseSet = "api_base set"
 
 // Result reports a batch: per-id outcomes, whether config.yaml was written,
-// and non-fatal warnings (restart failures).
+// and non-fatal warnings (restart failures; from Sync, also the rows LiteLLM
+// starts its own `ollama serve` for).
 type Result struct {
 	Outcomes []Outcome
 	Changed  bool
 	Warnings []string
+	// ollamaServe is File.ollamaServeWarnings for the document as written.
+	// Only Sync publishes it, in Warnings: a start, stop or launch is not the
+	// place to hear about a row it never named.
+	ollamaServe []string
 }
 
 func (o Options) path() string {
@@ -184,12 +197,15 @@ func RowFamily(cfg *config.Config, id string) string {
 
 // OllamaAPIBase is the address wt gives an ollama row: the registry ollama
 // provider's base_url, the same value BuildEntry writes for the rows wt builds
-// itself. "" when the registry has no ollama provider or it names no address.
+// itself. When the registry has no ollama provider, or it names no address,
+// that is config.OllamaBaseURL — the address wt itself dials for ollama then
+// (localmodels.FamilyOrigin) — and never "": a row left without an api_base
+// is what makes LiteLLM start a second `ollama serve` (#202, #206).
 func OllamaAPIBase(cfg *config.Config) string {
-	if p := cfg.ProviderByID("ollama"); p != nil {
+	if p := cfg.ProviderByID("ollama"); p != nil && p.Auth.BaseURL != "" {
 		return p.Auth.BaseURL
 	}
-	return ""
+	return config.OllamaBaseURL
 }
 
 // RegistryGap reports whether registry model m is dropped from every list
@@ -327,10 +343,16 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, o
 			return err
 		}
 		add, remove := plan(f)
+		before := f.rowDigests()
 		if res.Outcomes, err = applyTo(f, add, remove, ollamaBase); err != nil {
 			return err
 		}
 		f.EnsureSettings()
+		after := f.rowDigests()
+		for i, oc := range res.Outcomes {
+			res.Outcomes[i].Written = oc.Action == "routed" && before[oc.ID] != after[oc.ID]
+		}
+		res.ollamaServe = f.ollamaServeWarnings()
 		if !f.Changed() {
 			return nil
 		}
@@ -454,7 +476,11 @@ type SyncPlan struct {
 	// api_base the write will fill (File.EnsureOllamaAPIBase). Only PlanSync
 	// fills it: the real sync reports each repair as an Outcome.
 	Repair []string
-	Errors []Outcome
+	// Warnings names the rows the write leaves in a state LiteLLM starts its
+	// own `ollama serve` for (File.ollamaServeWarnings). Only PlanSync fills
+	// it: the real sync puts them in Result.Warnings.
+	Warnings []string
+	Errors   []Outcome
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -725,6 +751,7 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 			plan.Repair = append(plan.Repair, oc.ID)
 		}
 	}
+	plan.Warnings = f.ollamaServeWarnings()
 	return plan, nil
 }
 
@@ -795,6 +822,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		}
 	}
 	res.Outcomes = append(res.Outcomes, plan.Errors...)
+	res.Warnings = append(res.Warnings, res.ollamaServe...)
 	return res, nil
 }
 

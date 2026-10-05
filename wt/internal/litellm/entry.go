@@ -109,7 +109,13 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 		model = pol.Prefix + m.ModelName
 	}
 	params := []kv{{"model", model}}
-	if base := p.Auth.BaseURL; base != "" {
+	base := p.Auth.BaseURL
+	if base == "" && p.ID == "ollama" {
+		// An ollama row with no api_base makes LiteLLM start its own `ollama
+		// serve` (#202); OllamaAPIBase gives the repair this same default.
+		base = config.OllamaBaseURL
+	}
+	if base != "" {
 		if pol.V1Base {
 			base = config.BaseOrigin(base) + "/v1"
 		}
