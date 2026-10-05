@@ -605,6 +605,55 @@ async def test_modelform_discovered_mode_submits_without_parse_model():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "artifact", "want_id"),
+    [
+        # mtplx lists a repo id; the old form spelled its "/" as "--".
+        ("mtplx", "Org/Name-MTPLX", "mtplx/Org/Name-MTPLX"),
+        # A user-namespaced ollama model.
+        ("ollama", "someuser/qwen3:8b", "ollama/someuser/qwen3:8b"),
+        # Found through the omlx-6bit row: the id is the FAMILY's.
+        ("omlx-6bit", "Qwen3.8-27B-6bit", "omlx/Qwen3.8-27B-6bit"),
+    ],
+)
+async def test_modelform_discovered_mode_registers_under_the_discovered_id(
+    provider, artifact, want_id
+):
+    # #194: the "+" row registers an on-disk model wt already lists, routes
+    # and keeps usage/survey history for under its discovered id
+    # `<family>/<artifact>`. The form derived its own id instead — every "/"
+    # as "--", the provider row rather than the family — so registering a
+    # model started a second history key and (mtplx) an id unlike the one the
+    # `a` form writes. It now registers under the discovered id itself; the
+    # provider row the artifact was found through is kept as the provider.
+    from modelman.local_control import DiscoveredModel
+
+    discovered = DiscoveredModel(provider_id=provider, variant_id=artifact, path="/x", size_bytes=1)
+    assert discovered.model_id == want_id
+    form = ModelForm(
+        providers=[provider],
+        discovered=discovered,
+        families=["fam"],
+        family="fam",
+        provider_kinds={provider: "local-only"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        await _submit(app, pilot)
+        await pilot.pause()
+
+    assert dismissed and dismissed[0] is not None, "form did not dismiss with a result"
+    spec = dismissed[0].spec
+    assert spec["id"] == want_id
+    assert spec["provider"] == provider
+    assert spec["name"] == artifact
+
+
+@pytest.mark.asyncio
 async def test_modelform_normal_add_still_defaults_source_curated():
     # Every existing add/edit path must keep producing "curated" — only
     # the new discovered path should ever produce "discovered".

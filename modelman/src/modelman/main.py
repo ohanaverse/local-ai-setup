@@ -40,7 +40,7 @@ from .registry import (
     save_registry,
 )
 from .state import _default_state_path, load_state, locked_state
-from .sync import SyncError
+from .sync import SyncError, _ensure_provider_entries
 from .sync import sync as run_sync
 from .usage.cli import usage_app
 
@@ -378,6 +378,10 @@ def migrate(
         wt_config_path=Path(wt_config).expanduser(),
     )
 
+    # A fresh machine has nothing to import, and the registry would be written
+    # with no providers at all; give the installed local providers their rows
+    # (the same repair `modelman sync` makes).
+    providers_added = _ensure_provider_entries(result.registry)
     save_registry(result.registry)
     # Merge rather than overwrite: `migrate` is re-run as a repair step (see
     # wt/CLAUDE.md's "unknown provider" note), and result.state is a fresh
@@ -400,6 +404,8 @@ def migrate(
         f"Migrated {len(result.registry.providers)} providers and "
         f"{len(result.registry.models)} models."
     )
+    if providers_added:
+        typer.echo(f"Added provider entries: {', '.join(providers_added)}")
     # registry.toml was rewritten; route what it now configures (#179).
     _sync_routes_and_warn()
 
@@ -545,9 +551,10 @@ def start(
         "Omit to list local models.",
     ),
 ) -> None:
-    """Stop any running local model and start model_id, recording it as
-    the single local model wt's picker may offer. Idempotent when
-    model_id's marker still matches a probe of the running process.
+    """Start model_id as a running local model, alongside any already
+    running. Only a model on the same single-model provider (omlx, mtplx,
+    mlx_lm_server) is stopped to make room. Idempotent when model_id is
+    already running and a probe confirms it.
 
     model_id may be a registry id, an existing model's native
     provider-side name, or the native name of a model a provider has on

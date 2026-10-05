@@ -1499,12 +1499,14 @@ async def test_register_discovered_model_persists_ready_state_to_disk(tmp_path, 
 @pytest.mark.parametrize(
     ("provider_id", "variant_id", "discovered_id", "entry_id"),
     [
-        # ollama/omlx: the registered id IS the discovered id, so the row the
-        # running flag lives on is the row the registration writes.
+        # The registered id IS the discovered id (#194), so the row the
+        # running flag lives on is the row the registration writes — for a
+        # plain name, for mtplx's repo id (once registered as `Org--…`, on a
+        # different row the flag had to be moved to), and for an artifact
+        # found through the omlx-6bit row, whose id is the family's.
         ("omlx", "Qwen3.8-27B-4bit", "omlx/Qwen3.8-27B-4bit", "omlx/Qwen3.8-27B-4bit"),
-        # mtplx: the registered id spells "/" as "--", so the flag sits on a
-        # DIFFERENT row and has to move with the model.
-        ("mtplx", "Org/Qwen-MTPLX", "mtplx/Org/Qwen-MTPLX", "mtplx/Org--Qwen-MTPLX"),
+        ("mtplx", "Org/Qwen-MTPLX", "mtplx/Org/Qwen-MTPLX", "mtplx/Org/Qwen-MTPLX"),
+        ("omlx-6bit", "Qwen3.8-27B-6bit", "omlx/Qwen3.8-27B-6bit", "omlx/Qwen3.8-27B-6bit"),
     ],
 )
 async def test_register_discovered_model_keeps_the_running_flag(

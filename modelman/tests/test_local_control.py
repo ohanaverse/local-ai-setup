@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from modelman import local_control
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     DiscoveredModel,
@@ -2271,3 +2272,175 @@ def test_discovered_models_lists_an_artifact_once_per_discovered_id():
     assert sorted(d.model_id for d in found) == ["omlx/Other-6bit", "omlx/Shared-4bit"]
     shared = next(d for d in found if d.variant_id == "Shared-4bit")
     assert shared.provider_id == "omlx"
+
+
+# --- #194 follow-ups ---------------------------------------------------
+
+
+def _ollama_model(model_id: str, name: str) -> ModelEntry:
+    return ModelEntry(
+        id=model_id, family="f", provider_id="ollama", model_name=name, location="local"
+    )
+
+
+# conftest replaces the pulled check with a no-op for the whole suite; these
+# two tests are about the check, so they put the real one back.
+_REAL_REQUIRE_OLLAMA_PULLED = local_control._require_ollama_pulled
+
+
+def test_start_refuses_a_registered_ollama_model_that_is_not_pulled(tmp_path):
+    # #194 (#18): ollama's start is flag-only, so starting a registered model
+    # that was never pulled printed "Started", flagged it running and routed
+    # nothing — wt routes an ollama model only while it is pulled. Refuse it
+    # and name the command that fixes it; nothing is flagged.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/ghost:1b", "ghost:1b"))
+    state_path = _state_path(tmp_path)
+    mapping = {"ollama": [{"variant_id": "other:1b", "path": "ollama:other:1b", "size_bytes": 1}]}
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control._require_ollama_pulled", _REAL_REQUIRE_OLLAMA_PULLED),
+        pytest.raises(LocalControlError, match="not pulled — ollama pull ghost:1b"),
+    ):
+        start_local_model(registry, "ollama/ghost:1b", state_path)
+    assert load_state(state_path).models == {}
+
+
+def test_start_does_not_refuse_ollama_when_presence_is_unknown(tmp_path):
+    # The refusal needs a positive "not on disk". A provider that cannot be
+    # asked (no provider class, or `ollama list` failing) is "unknown", and
+    # the start goes ahead as before rather than blocking on a flaky probe.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/ghost:1b", "ghost:1b"))
+    state_path = _state_path(tmp_path)
+    with (
+        patch("modelman.local_control.ProviderRegistry.get_class", return_value=None),
+        patch("modelman.local_control._require_ollama_pulled", _REAL_REQUIRE_OLLAMA_PULLED),
+    ):
+        result = start_local_model(registry, "ollama/ghost:1b", state_path)
+    assert result.model_id == "ollama/ghost:1b"
+
+
+def test_start_exact_discovered_id_beats_a_registered_models_name(tmp_path):
+    # #194: with overlay ollama/qwen3:8b and a pulled someuser/qwen3:8b, the
+    # listing prints the second as `ollama/someuser/qwen3:8b` — but typing
+    # that started the REGISTERED model, because the registered-name step
+    # matches on the name's tail and ran first. The exact discovered id wins.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/qwen3:8b", "qwen3:8b"))
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {"variant_id": "qwen3:8b", "path": "ollama:qwen3:8b", "size_bytes": 1},
+            {
+                "variant_id": "someuser/qwen3:8b",
+                "path": "ollama:someuser/qwen3:8b",
+                "size_bytes": 2,
+            },
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        assert (
+            start_local_model(registry, "ollama/someuser/qwen3:8b", state_path).model_id
+            == "ollama/someuser/qwen3:8b"
+        )
+        # The registered model is still reached by its own id and its name.
+        assert start_local_model(registry, "qwen3:8b", state_path).model_id == "ollama/qwen3:8b"
+
+
+def test_start_bare_repo_id_whose_org_is_a_cloud_provider_id(tmp_path):
+    # #194: a typed "<prefix>/<rest>" is refused when <prefix> names a
+    # provider, since the prefix then says WHERE the model is. That check
+    # counted cloud provider ids too, so a bare repo id whose org happens to
+    # equal one ("openrouter/…" here) was refused although no local model can
+    # live on a cloud provider. Typed in full, such a name is the artifact's
+    # name. (A cloud prefix in front of a SHORTER artifact name is still not
+    # that artifact — test_start_wrong_family_prefix_never_starts_… pins it.)
+    registry = _registry()
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {
+                "variant_id": "openrouter/tiny:1b",
+                "path": "ollama:openrouter/tiny:1b",
+                "size_bytes": 1,
+            }
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        result = start_local_model(registry, "openrouter/tiny:1b", state_path)
+    assert result.model_id == "ollama/openrouter/tiny:1b"
+    # A LOCAL provider prefix still says where: no silent cross-provider guess.
+    mapping = {"ollama": [{"variant_id": "foo", "path": "ollama:foo", "size_bytes": 1}]}
+    with (
+        _patch_provider_local_models(mapping),
+        pytest.raises(LocalControlError, match="unknown model"),
+    ):
+        start_local_model(registry, "omlx/foo", state_path)
+
+
+def test_stop_of_a_discovered_model_leaves_no_state_row(tmp_path):
+    # #194: a discovered model has no registry entry, so its modelman.toml row
+    # exists only to carry the running flag. Stopping it left an all-default
+    # `[model_state."<id>"]` row behind for good. A row that says nothing is
+    # removed; one that still carries data (a cached size) is kept.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/disc:1b", ModelState(running=True))
+    store.set("ollama/sized:1b", ModelState(running=True, size_bytes=5))
+    save_state(store, state_path)
+    with patch("modelman.local_control._stop_ollama_model"):
+        stop_local_model("ollama/disc:1b", state_path)
+        stop_local_model("ollama/sized:1b", state_path)
+    models = load_state(state_path).models
+    assert "ollama/disc:1b" not in models
+    assert models["ollama/sized:1b"] == ModelState(running=False, size_bytes=5)
+
+
+def test_stop_all_leaves_no_all_default_state_rows(tmp_path):
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/disc:1b", ModelState(running=True))
+    save_state(store, state_path)
+    with patch("modelman.local_control.stop_all_local_providers"):
+        stop_all_local_models(state_path)
+    assert load_state(state_path).models == {}
+
+
+def test_listing_omits_an_artifact_whose_discovered_id_is_a_registry_id():
+    # #194: registry `ollama/foo` names artifact "bar"; an artifact "foo" is
+    # also on disk. Its discovered id would be `ollama/foo` — the registered
+    # model's id — so it can be neither started (start refuses, naming the
+    # clash) nor routed (wt drops it). Listing it under Discovered offered an
+    # id that then failed, and the TUI's "+" row would register a duplicate id.
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/foo", "bar"))
+    mapping = {
+        "ollama": [
+            {"variant_id": "foo", "path": "ollama:foo", "size_bytes": 1},
+            {"variant_id": "free", "path": "ollama:free", "size_bytes": 2},
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        assert [d.model_id for d in discover_unregistered_models(registry)] == ["ollama/free"]
+        listed = inventory_local_models(registry, StateStore()).discovered
+        assert [d.model_id for d in listed] == ["ollama/free"]
+        # Starting it by name still explains the clash instead of "unknown model".
+        with pytest.raises(LocalControlError, match="already the id of a registered model"):
+            start_local_model(registry, "foo", None)
+
+
+def test_listing_omits_ollama_cloud_entries():
+    # `ollama list` also prints the cloud models the account can reach, with
+    # "-" for a size: nothing is on disk, and wt's inventory leaves them out.
+    # modelman listed them as discovered local models that could be "started".
+    from modelman.providers.ollama import OllamaProvider
+
+    out = (
+        "NAME                        ID            SIZE     MODIFIED\n"
+        "qwen3.6:35b-mlx             e92a3e94bbca  23 GB    5 hours ago\n"
+        "nemotron-3-nano:30b-cloud   2fd759a2eb63  -        3 days ago\n"
+    )
+    runner = MagicMock(return_value=MagicMock(stdout=out, returncode=0))
+    names = [m["variant_id"] for m in OllamaProvider({}).list_local(runner=runner)]
+    assert names == ["qwen3.6:35b-mlx"]

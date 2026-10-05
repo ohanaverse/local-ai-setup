@@ -1117,9 +1117,12 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         scan already verified the artifact's identity, and for omlx in
         particular the reported name is a bare directory basename with
         no HF org segment, which parse_model() would reject outright.
-        The id spells a "/" in the reported name as "--"; fetch.repo is the
-        reported name, so omlx (which derives its on-disk path from
-        fetch.repo) can find the artifact again.
+        The id is the artifact's discovered id (`<family>/<name as the
+        provider lists it>`, DiscoveredModel.model_id) — the id wt already
+        lists, routes and keeps usage/survey history for, so registering the
+        model changes none of that. fetch.repo is the reported name, so omlx
+        (which derives its on-disk path from fetch.repo) can find the
+        artifact again.
         """
         assert self._discovered is not None
         discovered = self._discovered
@@ -1132,7 +1135,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         self._clear_error()
 
         quantization = self.query_one("#quantization", Input).value.strip() or None
-        vid = f"{discovered.provider_id}/{discovered.variant_id.replace('/', '--')}"
+        vid = discovered.model_id
         spec: VariantSpec = {
             "id": vid,
             "provider": discovered.provider_id,

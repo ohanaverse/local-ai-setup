@@ -638,3 +638,39 @@ def test_reconcile_leaves_cloud_model_state_alone():
     result = reconcile(registry, state, {})
     assert result.downloaded == [] and result.not_downloaded == []
     assert state.get("ollama/x:cloud") == ModelState(ready=True)
+
+
+def test_ensure_provider_entries_adds_installed_local_providers():
+    # #194: on a fresh machine nothing created a provider row. `modelman
+    # migrate` wrote `providers = []`, `modelman sync` only added a row for a
+    # provider some model already referenced, and with no ollama row a pulled
+    # model was "unknown model" to `modelman start` and invisible to wt. A
+    # local provider whose tool is installed now gets its default row, in the
+    # templates' order, next to the referenced ones; existing rows are kept.
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="mine")],
+        models=[
+            ModelEntry(
+                id="mlx_lm_server/p", family="p", provider_id="mlx_lm_server", model_name="p"
+            )
+        ],
+    )
+    with patch(
+        "modelman.sync._installed_local_providers", return_value=["mtplx", "ollama", "omlx"]
+    ):
+        added = _ensure_provider_entries(registry)
+    assert added == ["ollama", "mlx_lm_server", "mtplx"]
+    assert [p.id for p in registry.providers] == ["omlx", "ollama", "mlx_lm_server", "mtplx"]
+    assert registry.providers[0].name == "mine"
+    assert registry.providers[1].auth.base_url == "http://localhost:11434"
+
+
+def test_installed_local_providers_asks_for_each_tool():
+    # A provider counts as installed when its command is on PATH. A tool that
+    # is not there gets no row: wt would probe a server the machine lacks.
+    from modelman import sync as sync_module
+
+    with patch(
+        "modelman.sync.shutil.which", side_effect=lambda b: "/bin/x" if b == "omlx" else None
+    ):
+        assert sync_module._REAL_INSTALLED_LOCAL_PROVIDERS() == ["omlx"]

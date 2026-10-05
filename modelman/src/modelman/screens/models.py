@@ -835,6 +835,7 @@ class ModelScreen(Screen[None]):
         entry = self._append_new_model_entry(result.spec, result.family, result.source)
         if entry is None:
             return
+
         # Already on disk — the artifact came from the provider's own
         # filesystem scan, so record it as ready directly (mirroring
         # what the reconcile worker already does for known models)
@@ -853,15 +854,11 @@ class ModelScreen(Screen[None]):
         # model with no registry entry under its discovered id (#179 Phase
         # B). So this merges into the existing row rather than replacing it
         # — a fresh ModelState would reset `running` while the model keeps
-        # serving, hiding it from `modelman stop` — and when the registered
-        # id differs from the discovered one (mtplx: `org--name` vs
-        # `org/name`) the flag moves to the new id, leaving no twin behind.
-        discovered_id = discovered.model_id
-
+        # serving, hiding it from `modelman stop`. The entry is registered
+        # under the discovered id itself (ModelForm._submit_discovered), so
+        # the flag is already on the row this writes.
         def record(store: StateStore) -> None:
             running = store.get(entry.id).running
-            if discovered_id != entry.id and discovered_id in store.models:
-                running = running or store.models.pop(discovered_id).running
             store.set(
                 entry.id,
                 replace(
