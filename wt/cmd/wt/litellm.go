@@ -414,7 +414,7 @@ func gapReason(cfg *config.Config, f string) string {
 		switch {
 		case p.Location == "":
 			return "its registry entry has no location"
-		case !litellm.KnownLocation(p.Location):
+		case !p.Location.Valid():
 			return fmt.Sprintf(`its registry entry has location %q; expected "local" or "cloud"`, string(p.Location))
 		}
 	}

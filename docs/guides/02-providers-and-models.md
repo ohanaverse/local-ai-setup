@@ -124,6 +124,8 @@ supports_function_calling = true
 supports_vision = true
 ```
 
+**`location` must be exactly `local` or `cloud`**, on a provider entry and on a model that sets its own. Anything else — `Local`, `Cloud`, a stray space — is not a location, and `wt` treats it like a missing one: the affected models are not offered, `wt litellm sync` keeps their existing rows and warns, and `wt`, `wt start`, `wt stop` and `wt smoke` stop with `config error: provider "<id>" has location "<value>"; expected "local" or "cloud" (fix the entry in <registry path>)` until it is corrected. One mistyped entry therefore stops every launch, not only that model's. modelman does not check the value: it reads anything that is not exactly `local` as not local.
+
 (The `location`/`source`/`tags` keys appear on every TUI-written row and load fine — the README's minimal model example omits them. `source = "discovered"` marks a registry entry modelman registered from an on-disk artifact; it is an overlay like any other, not to be confused with a *discovered model* below, which has no entry at all.)
 
 **`id` is the route name; `model_name` is what the provider is asked for.** The LiteLLM row wt builds uses the registry `id` as its `model_name` (the client-facing id) and the provider prefix plus the registry `model_name` as the upstream model. Keep the two in agreement: when they disagree (a stale suffix left on the id, a typo in either), the route table shows exactly that — wt rebuilds its rows from the registry on every sync, so a hand-correction in `config.yaml` no longer hides the mismatch. Fix it here, in the registry entry. Renaming an `id` renames the route, so anything that references the old id (agent configs, scripts) must follow.

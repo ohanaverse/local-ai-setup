@@ -704,6 +704,13 @@ func (c *Config) validate() []error {
 			errs = append(errs, fmt.Errorf("duplicate provider id %q", p.ID))
 		}
 		provIDs[p.ID] = true
+		// A provider entry may leave its location out (its models then need
+		// their own), but a value that is set must be a location — checked
+		// here as well as per model, so an entry with no models, or one whose
+		// models all override it, is still reported.
+		if p.Location != "" && !p.Location.Valid() {
+			errs = append(errs, providerLocationError(p))
+		}
 	}
 
 	// Models
@@ -889,11 +896,35 @@ func (c *Config) AgentByName(name string) (*Agent, error) {
 	return nil, fmt.Errorf("agent %q not found", name)
 }
 
+// ErrLocation marks an error about a registry entry's location: none where
+// one is needed is reported elsewhere, this is a value that is set and is not
+// a location. Callers use it to point the user at registry.toml, which wt
+// reads but `wt config` does not edit.
+var ErrLocation = errors.New("invalid location")
+
+// Valid reports whether l is one of the two locations the registry defines.
+// The registry is modelman's file and wt only reads it, so any other value —
+// a typo such as "Local", a word from some other scheme — is not interpreted:
+// reading "Local" as local would paper over a file that modelman itself reads
+// differently (anything that is not exactly "local" is not local to it).
+func (l Location) Valid() bool { return l == LocationLocal || l == LocationCloud }
+
 // ResolveLocation returns the effective location for a model.
 // Model location takes precedence; falls back to provider location.
-// Returns an error if neither is set or the provider is unknown.
+// Returns an error if neither is set, the provider is unknown, or the value
+// that applies is not a location (#200).
+//
+// That last case is why callers can rely on the result: a non-nil error means
+// "wt cannot say where this model runs", and every consumer treats it the same
+// way — out of the catalog, out of the inventory, a gap for sync, a validation
+// error. A mistyped value used to resolve without error, as itself, and each
+// consumer then drew its own conclusion from a location that was neither local
+// nor cloud: the model was offered, never routed, and failed at launch.
 func (c *Config) ResolveLocation(m Model) (Location, error) {
 	if m.Location != "" {
+		if !m.Location.Valid() {
+			return "", locationError(fmt.Sprintf(`model %q has location %q; expected "local" or "cloud"`, m.ID, string(m.Location)))
+		}
 		return m.Location, nil
 	}
 	p := c.ProviderByID(m.ProviderID)
@@ -901,10 +932,29 @@ func (c *Config) ResolveLocation(m Model) (Location, error) {
 		return "", fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID)
 	}
 	if p.Location != "" {
+		if !p.Location.Valid() {
+			return "", fmt.Errorf("model %q: %w", m.ID, providerLocationError(*p))
+		}
 		return p.Location, nil
 	}
 	return "", fmt.Errorf("model %q: no location on model or provider %q", m.ID, p.ID)
 }
+
+// providerLocationError is the error for a provider entry whose location is
+// set but is not a location. One wording, for validation and for the models
+// that inherit it.
+func providerLocationError(p Provider) error {
+	return locationError(fmt.Sprintf(`provider %q has location %q; expected "local" or "cloud"`, p.ID, string(p.Location)))
+}
+
+// locationErr carries a location error's own wording while matching
+// ErrLocation, so the message stays exactly what the user should read.
+type locationErr struct{ msg string }
+
+func (e locationErr) Error() string        { return e.msg }
+func (e locationErr) Is(target error) bool { return target == ErrLocation }
+
+func locationError(msg string) error { return locationErr{msg: msg} }
 
 // UpsertAgent adds a when oldName is empty, or updates the agent named
 // oldName. It validates name, supported providers, and default provider.

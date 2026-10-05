@@ -60,7 +60,7 @@ func stopCmd(a *app) *cobra.Command {
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+				return configError(a.cfgErr)
 			}
 			arg := ""
 			if len(args) > 0 {
@@ -212,7 +212,7 @@ func startCmd(a *app) *cobra.Command {
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+				return configError(a.cfgErr)
 			}
 			id := ""
 			if len(args) > 0 {

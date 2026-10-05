@@ -194,25 +194,17 @@ func OllamaAPIBase(cfg *config.Config) string {
 
 // RegistryGap reports whether registry model m is dropped from every list
 // sync manages by a data gap rather than by choice: a non-native model whose
-// provider_id names no provider, with no location to resolve, or whose
-// location resolves to something that is neither "local" nor "cloud" (a typo
-// such as "Local" — #195). Sync keeps such a model's row until the registry
-// is repaired (planSync), and the sync command keeps the model's whole family
-// frozen on the same predicate.
+// provider_id names no provider, or whose location cannot be resolved — none
+// set, or a value that is neither "local" nor "cloud" (a typo such as
+// "Local"). config.ResolveLocation is the one judge of that (#200). Sync keeps
+// such a model's row until the registry is repaired (planSync), and the sync
+// command keeps the model's whole family frozen on the same predicate.
 func RegistryGap(cfg *config.Config, m config.Model) bool {
 	if m.Native {
 		return false
 	}
-	loc, err := cfg.ResolveLocation(m)
-	return cfg.ProviderByID(m.ProviderID) == nil || err != nil || !KnownLocation(loc)
-}
-
-// KnownLocation reports whether loc is one of the two locations the registry
-// defines. wt reads the registry and does not own its format, so any other
-// value is flagged as a gap rather than guessed at: reading "Local" as local
-// would paper over a registry modelman itself may read differently.
-func KnownLocation(loc config.Location) bool {
-	return loc == config.LocationLocal || loc == config.LocationCloud
+	_, err := cfg.ResolveLocation(m)
+	return cfg.ProviderByID(m.ProviderID) == nil || err != nil
 }
 
 // isRegistryID reports whether id names a registry model. A discovered route

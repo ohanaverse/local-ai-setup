@@ -4,6 +4,17 @@
 
 ### Changed
 
+- A `location` that is neither `local` nor `cloud` is now rejected (#200).
+  `"Local"` or `"Cloud"` used to pass as a third kind of location: the model
+  was offered, `wt litellm sync` put it in neither its local nor its cloud set
+  and never routed it, and the launch failed at the proxy with `Invalid model
+  name`. A mistyped value is now treated exactly like a missing one — the
+  model is not offered, sync keeps its rows and warns, and `wt`, `wt start`,
+  `wt stop` and `wt smoke` stop with `config error: provider "<id>" has
+  location "<value>"; expected "local" or "cloud"` until `registry.toml` is
+  fixed. **One mistyped entry stops every launch**, as a missing location
+  already did. The message names the registry file to edit; `wt config`
+  cannot repair it.
 - wt no longer resumes an agent session by itself, on any launch path
   (#198, #204). Every launch starts the agent fresh: no session lookup, no
   resume flag, and the picker's "Resume previous session?" prompt is gone.

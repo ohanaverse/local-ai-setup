@@ -332,7 +332,7 @@ func rootCmd() *cobra.Command {
 			// else — a config.toml/registry.toml that exists but does not
 			// parse — still fails closed with the repair hint.
 			if a.cfgErr != nil && !errors.Is(a.cfgErr, config.ErrRegistryMissing) {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+				return configError(a.cfgErr)
 			}
 
 			// Fast-fail on unknown agent names. Without this, a typo'd -A surfaces

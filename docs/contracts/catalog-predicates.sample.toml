@@ -43,6 +43,19 @@ type = "api_key"
 base_url = "https://acme.example/v1"
 secret_ref = "ACME_API_KEY"
 
+# A provider whose location is mistyped (#200): neither "local" nor "cloud",
+# so it is not a location. Its model is out of the catalog, is not routed, and
+# is not OpenRouter-priced (the rule keys on an exact "cloud").
+[[providers]]
+id = "typo"
+name = "Mistyped location"
+location = "Cloud"
+
+[providers.auth]
+type = "api_key"
+base_url = "https://typo.example/v1"
+secret_ref = "sk-fixture"
+
 [[models]]
 id = "openrouter/vendor-x"
 family = "fixture"
@@ -84,3 +97,19 @@ family = "fixture"
 provider_id = "ollama"
 model_name = "local:1"
 location = "local"
+
+# Inherits the mistyped provider location above: not in the catalog.
+[[models]]
+id = "typo/model-t"
+family = "fixture"
+provider_id = "typo"
+model_name = "model-t"
+
+# A model-level typo on an otherwise healthy local provider (#200): the
+# model's own location wins over the provider's, and it is not a location.
+[[models]]
+id = "ollama/typo:1"
+family = "fixture"
+provider_id = "ollama"
+model_name = "typo:1"
+location = "Local"
