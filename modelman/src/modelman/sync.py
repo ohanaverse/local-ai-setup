@@ -137,15 +137,25 @@ def _ensure_provider_entries(registry: Registry) -> list[str]:
     without a provider row a pulled model is unknown to `modelman start` and
     invisible to wt — so a local provider whose command is on PATH gets its
     row too. One that is not installed does not: wt would probe a server the
-    machine does not have.
+    machine does not have. Nor does an installed `omlx` when an `omlx-6bit`
+    row exists: the two are one server, so the tool already has its row, and
+    a second one (with the default model_dir) would change which row
+    discovery and the running-flag probe use.
+
+    There is deliberately no opt-out: a row deleted by hand for an installed
+    tool comes back on the next sync.
 
     Returns the ids of the provider entries added. Each entry is a fresh
     instance (via registry.default_provider_entry) so mutating one registry
     never corrupts the shared default.
     """
     referenced = {m.provider_id for m in registry.models}
-    referenced.update(_installed_local_providers())
     existing = {p.id for p in registry.providers}
+    referenced.update(
+        pid
+        for pid in _installed_local_providers()
+        if not (pid == "omlx" and "omlx-6bit" in existing)
+    )
     added: list[str] = []
     for pid in DEFAULT_PROVIDER_IDS:
         if pid in referenced and pid not in existing:

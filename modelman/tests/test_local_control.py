@@ -2582,3 +2582,42 @@ def test_stale_flag_clear_leaves_no_all_default_state_row(tmp_path):
     models = load_state(state_path).models
     assert "mtplx/Org/gone" not in models
     assert models["mtplx/Org/sized"] == ModelState(running=False, size_bytes=5)
+
+
+def test_start_bare_name_that_is_exactly_one_artifact_is_not_ambiguous(tmp_path):
+    # #194 review: with `qwen3:8b` and `someuser/qwen3:8b` both pulled and
+    # unregistered, the lenient tail match found both and `modelman start
+    # qwen3:8b` failed as ambiguous — though one of them is named exactly.
+    # An exact name beats a tail match, slash or no slash.
+    registry = _registry()
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [
+            {"variant_id": "qwen3:8b", "path": "ollama:qwen3:8b", "size_bytes": 1},
+            {
+                "variant_id": "someuser/qwen3:8b",
+                "path": "ollama:someuser/qwen3:8b",
+                "size_bytes": 1,
+            },
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        result = start_local_model(registry, "qwen3:8b", state_path)
+    assert result.model_id == "ollama/qwen3:8b"
+
+
+def test_resolving_a_registered_repo_id_lists_no_provider():
+    # #194 review: an exact discovered id is `<local family>/<name>`, so only
+    # a typed name with such a prefix can be one. A registered model's repo id
+    # ("org/model-a") has a "/" too, and used to pay for an `ollama list` plus
+    # the omlx and mtplx directory scans before its registry match.
+    registry = _registry()
+    with (
+        patch("modelman.local_control.model_has_local_artifact", return_value=True),
+        patch(
+            "modelman.local_control._find_discovered",
+            side_effect=AssertionError("listed the providers"),
+        ),
+    ):
+        model = local_control._resolve_local_model(registry, "org/model-a")
+    assert model.id == "omlx/model-a"

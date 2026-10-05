@@ -823,11 +823,12 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
     # printed for that artifact, so it wins before the lenient name match
     # below — which for omlx and mtplx compares name tails, and would hand
     # `mtplx/Org/Name` to a registered omlx `Name`. Only a typed
-    # "<family>/<name>" can be one, so a bare name costs no provider listing
-    # here.
+    # "<local family>/<name>" can be one, so a bare name or a repo id
+    # ("mlx-community/Name") costs no provider listing here.
     discovered: list[DiscoveredModel] | None = None
     exact: list[DiscoveredModel] = []
-    if "/" in model_id:
+    prefix, slash, _ = model_id.partition("/")
+    if slash and _names_a_local_provider(registry, prefix):
         discovered = _find_discovered(registry, model_id)
         exact = [d for d in discovered if d.model_id == model_id]
 
@@ -860,15 +861,17 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
         match = exact[0]
     else:
         ids = ", ".join(sorted(d.model_id for d in discovered))
-        prefix, slash, _ = model_id.partition("/")
-        # A repo id or user namespace can begin with a CLOUD provider's id
-        # ("openai/whisper" while an `openai` provider exists). No local model
-        # lives on a cloud provider, so when the typed text is an artifact's
-        # whole name it is that name, not a claim about where the model is. A
-        # local family prefix stays a claim either way, and a cloud prefix in
-        # front of a shorter artifact name ("openrouter/foo" for `foo`) is
-        # still not that artifact.
-        if slash and not _names_a_local_provider(registry, prefix):
+        # An artifact named exactly what was typed beats the tail matches:
+        # `qwen3:8b` is the pulled `qwen3:8b`, not also `someuser/qwen3:8b`.
+        # That holds for a typed name with a "/" too. A repo id or user
+        # namespace can begin with a CLOUD provider's id ("openai/whisper"
+        # while an `openai` provider exists). No local model lives on a cloud
+        # provider, so when the typed text is an artifact's whole name it is
+        # that name, not a claim about where the model is. A local family
+        # prefix stays a claim either way, and a cloud prefix in front of a
+        # shorter artifact name ("openrouter/foo" for `foo`) is still not
+        # that artifact.
+        if not slash or not _names_a_local_provider(registry, prefix):
             named_in_full = [d for d in discovered if d.variant_id == model_id]
             if named_in_full:
                 discovered, slash = named_in_full, ""

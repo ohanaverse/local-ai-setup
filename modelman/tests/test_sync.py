@@ -679,3 +679,14 @@ def test_installed_local_providers_asks_for_each_tool():
         "modelman.sync.shutil.which", side_effect=lambda b: "/bin/x" if b == "omlx" else None
     ):
         assert _REAL_INSTALLED_LOCAL_PROVIDERS() == ["omlx"]
+
+
+def test_ensure_provider_entries_does_not_add_omlx_beside_an_omlx_6bit_row():
+    # #194 review: omlx and omlx-6bit are one server. An `omlx-6bit`-only
+    # registry is already set up for the installed `omlx` tool; adding an
+    # `omlx` row too (with the default model_dir) changed which row discovery
+    # and the running-flag probe use.
+    registry = Registry(providers=[ProviderEntry(id="omlx-6bit", name="mine")], models=[])
+    with patch("modelman.sync._installed_local_providers", return_value=["omlx"]):
+        assert _ensure_provider_entries(registry) == []
+    assert [p.id for p in registry.providers] == ["omlx-6bit"]
