@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // ollamaBaseBody is the shape that caused #202: three hand-written ollama rows
@@ -463,5 +464,76 @@ litellm_settings:
 	b, _ := os.ReadFile(p)
 	if n := strings.Count(string(b), "http://localhost:11434"); n != 2 {
 		t.Errorf("config names http://localhost:11434 %d times, want both rows repaired:\n%s", n, b)
+	}
+}
+
+// TestOllamaAPIBaseLeavesAnAnchoredValueAlone pins that the repair never
+// replaces an empty or null api_base that carries a YAML anchor. The new value
+// would take the place of the node the anchor is on, and every `*name`
+// elsewhere would then refer to an anchor the file no longer defines: wt saved
+// a config.yaml that does not parse, and the proxy restart the same write
+// triggers could not load it. Keeping the anchor on the new value is no
+// answer either — the ollama address would reach every row that aliases it,
+// an openai/ one included. So the row is left as written, the file still
+// parses, and the null spelling — the one LiteLLM starts `ollama serve` for —
+// is named by the sync's warning instead, alias row and all. An anchor on a
+// value the row only inherits through a merge key is not in the way: the
+// repair writes a key of the row's own beside the merge.
+func TestOllamaAPIBaseLeavesAnAnchoredValueAlone(t *testing.T) {
+	const body = `defaults: &defaults
+  api_base: &inherited ""
+model_list:
+  - model_name: hand/empty-anchor
+    litellm_params: {model: ollama/far:1b, api_base: &eb ""}
+  - model_name: hand/empty-alias
+    litellm_params: {model: openai/elsewhere, api_base: *eb}
+  - model_name: hand/null-anchor
+    litellm_params: {model: ollama/far:2b, api_base: &nb ~}
+  - model_name: hand/null-alias
+    litellm_params: {model: ollama/far:3b, api_base: *nb}
+  - model_name: hand/merged
+    litellm_params:
+      <<: *defaults
+      model: ollama/far:4b
+  - model_name: hand/inherited-alias
+    litellm_params: {model: openai/elsewhere, api_base: *inherited}
+`
+	f, err := Open(writeConfig(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.EnsureOllamaAPIBase("http://localhost:11434"), []string{"hand/merged"}; !slices.Equal(got, want) {
+		t.Errorf("repaired %q, want %q", got, want)
+	}
+	out := enc(t, f)
+	var doc struct {
+		Rows []struct {
+			Name   string         `yaml:"model_name"`
+			Params map[string]any `yaml:"litellm_params"`
+		} `yaml:"model_list"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("the repaired config no longer parses: %v\n%s", err, out)
+	}
+	want := map[string]any{
+		"hand/empty-anchor":    "",
+		"hand/empty-alias":     "",
+		"hand/null-anchor":     nil,
+		"hand/null-alias":      nil,
+		"hand/merged":          "http://localhost:11434",
+		"hand/inherited-alias": "",
+	}
+	for _, r := range doc.Rows {
+		if got := r.Params["api_base"]; got != want[r.Name] {
+			t.Errorf("%s: api_base = %#v, want %#v", r.Name, got, want[r.Name])
+		}
+	}
+	const tail = ` has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`
+	warn := []string{
+		`row "hand/null-anchor" (model ollama/far:2b)` + tail,
+		`row "hand/null-alias" (model ollama/far:3b)` + tail,
+	}
+	if got := f.ollamaServeWarnings(ProxyEnv{}); !slices.Equal(got, warn) {
+		t.Errorf("warnings = %q\nwant %q", got, warn)
 	}
 }

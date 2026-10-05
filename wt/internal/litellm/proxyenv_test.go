@@ -228,21 +228,26 @@ func TestSyncWarnsThroughYAMLAliases(t *testing.T) {
 // reads the variable "" and gets None), so the warning must fire. But it was
 // worded for a named variable and interpolated the empty name three times:
 // "and  is not set in … set  for the proxy". The no-name case has its own
-// sentence, which says what is wrong with the value and names no variable.
-// The named case beside it keeps its wording.
+// sentence, which says what is wrong with the value and names no variable —
+// a name of only spaces included, which would print the same holes. The named
+// case beside it keeps its wording.
 func TestSyncWarnsAboutAnEnvironRefWithNoName(t *testing.T) {
 	plist := writePlist(t, proxyPlist)
 	body := `model_list:
   - model_name: hand/typo
     litellm_params: {model: ollama/far:1b, api_base: os.environ/}
+  - model_name: hand/spaces
+    litellm_params: {model: openai/ollama-proxy, api_base: "os.environ/  "}
   - model_name: hand/unset
     litellm_params: {model: openai/ollama-proxy, api_base: os.environ/OLLAMA_BASE_UNSET}
 litellm_settings:
   drop_params: true
   use_chat_completions_url_for_anthropic_messages: true
 `
+	const noName = ` has api_base os.environ/ with no variable name: LiteLLM resolves that to None and starts its own "ollama serve" for it at proxy startup; give the row an address or spell os.environ/<VAR>`
 	want := []string{
-		`row "hand/typo" (model ollama/far:1b) has api_base os.environ/ with no variable name: LiteLLM resolves that to None and starts its own "ollama serve" for it at proxy startup; give the row an address or spell os.environ/<VAR>`,
+		`row "hand/typo" (model ollama/far:1b)` + noName,
+		`row "hand/spaces" (model openai/ollama-proxy)` + noName,
 		`row "hand/unset" (model openai/ollama-proxy) has api_base os.environ/OLLAMA_BASE_UNSET, and OLLAMA_BASE_UNSET is not set in the proxy LaunchAgent's EnvironmentVariables (` + plist + `): LiteLLM starts its own "ollama serve" for it at proxy startup; set OLLAMA_BASE_UNSET for the proxy or give the row an address`,
 	}
 	o, _, p := opts(t, body)
@@ -268,5 +273,40 @@ litellm_settings:
 	// Checked, never rewritten — on an ollama/ row too.
 	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "api_base: os.environ/}") {
 		t.Errorf("sync rewrote the no-name reference:\n%s", b)
+	}
+}
+
+// TestOllamaServeWarningsLookUpWhatLiteLLMLooksUp pins the scan to LiteLLM's
+// own reading of a row, where a shortcut would warn about a working row or
+// stay silent about a broken one. LiteLLM drops every "os.environ/" from the
+// value before the lookup, so a doubled prefix names the variable after it; a
+// name of only spaces is a real variable when the proxy has one; and a model
+// written as a YAML alias is still a model that names ollama. A warning that
+// claims a second `ollama serve` for a row LiteLLM resolves is noise the user
+// learns to ignore, and a missed row is the unexplained second server.
+func TestOllamaServeWarningsLookUpWhatLiteLLMLooksUp(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: doubled/set
+    litellm_params: {model: openai/ollama-proxy, api_base: os.environ/os.environ/IN_ENV}
+  - model_name: doubled/unset
+    litellm_params: {model: openai/ollama-proxy, api_base: os.environ/os.environ/NOT_IN_ENV}
+  - model_name: doubled/bare
+    litellm_params: {model: openai/ollama-proxy, api_base: os.environ/os.environ/}
+  - model_name: spaces/set
+    litellm_params: {model: &model openai/ollama-proxy, api_base: "os.environ/  "}
+  - model_name: alias/model
+    litellm_params: {model: *model}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := ProxyEnv{Source: "the test environment", vars: map[string]string{"IN_ENV": "http://box:11434", "  ": "http://box:11434"}}
+	want := []string{
+		`row "doubled/unset" (model openai/ollama-proxy) has api_base os.environ/os.environ/NOT_IN_ENV, and NOT_IN_ENV is not set in the test environment: LiteLLM starts its own "ollama serve" for it at proxy startup; set NOT_IN_ENV for the proxy or give the row an address`,
+		`row "doubled/bare" (model openai/ollama-proxy) has api_base os.environ/ with no variable name: LiteLLM resolves that to None and starts its own "ollama serve" for it at proxy startup; give the row an address or spell os.environ/<VAR>`,
+		`row "alias/model" (model openai/ollama-proxy) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`,
+	}
+	if got := f.ollamaServeWarnings(env); !slices.Equal(got, want) {
+		t.Errorf("warnings = %q\nwant %q", got, want)
 	}
 }
