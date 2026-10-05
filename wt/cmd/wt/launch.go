@@ -103,21 +103,6 @@ func askYesNoDefault(r io.Reader, def bool) (bool, error) {
 	}
 }
 
-// buildCommandForModel builds the exec.Cmd for a model-driven agent, with the
-// passthrough args appended. It is extracted so tests can assert command shape
-// without exec'ing an agent. It never resumes a session: that is the agent's
-// to manage, through its own flags in extraArgs (see agents.BuildLaunchCmd).
-func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
-}
-
-// buildCommandForCommand builds the exec.Cmd for a command-like agent (e.g.
-// shell). It runs in the requested worktree; the -M warning lives in
-// launchFiltered where the pinnedSupplied signal is available.
-func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, cfg, extraArgs)
-}
-
 // buildFilteredCmd is the build-only core of launchFiltered: it resolves the
 // model (or detects a command agent) and constructs the launch command for
 // worktreePath without running it. It is extracted so tests can assert the
@@ -129,13 +114,13 @@ func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo
 func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, extraArgs []string) (config.Model, *exec.Cmd, error) {
 	m, _, err := resolveModel(agent, cfg, tags, family, pinned)
 	if errors.Is(err, errCommandAgent) {
-		cmd, berr := buildCommandForCommand(agent, worktreePath, cfg, yolo, extraArgs)
+		cmd, berr := agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, cfg, extraArgs)
 		return config.Model{}, cmd, berr
 	}
 	if err != nil {
 		return config.Model{}, nil, err
 	}
-	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)
+	cmd, berr := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
 	return m, cmd, berr
 }
 
@@ -190,9 +175,9 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if pinnedSupplied {
 			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
 		}
-		// buildFilteredCmd dispatches command agents to buildCommandForCommand
-		// with the real worktreePath (not "."), so shell-wt -W foo runs in the
-		// worktree. runAgentCmd then wires stdio and execs it.
+		// buildFilteredCmd gives command agents the real worktreePath (not
+		// "."), so shell-wt -W foo runs in the worktree. runAgentCmd then
+		// wires stdio and execs it.
 		_, cmd, err := buildFilteredCmd(agent, worktreePath, cfg, yolo, "", "", "", extraArgs)
 		if err != nil {
 			return err
@@ -231,8 +216,8 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	}
 
 	// Fail fast if the selected ollama model is not available locally.
-	// This runs before session lookup and full command construction so we
-	// don't waste work on a model we can't launch. The check is skipped when
+	// This runs before full command construction so we don't waste work on a
+	// model we can't launch. The check is skipped when
 	// this agent×model pairing will actually route through LiteLLM (any
 	// upstream may serve the model) and when the model is not served by
 	// ollama at all — ollamacheck only probes the local ollama daemon. Uses
@@ -241,7 +226,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	// when the toggle is off, and the toggle-only check spuriously blocked
 	// that case on an unready-locally ollama model that would launch fine
 	// once forced through the proxy. Route resolution errors are ignored
-	// here — buildCommandForModel resolves the same route again and
+	// here — agents.BuildLaunchCmd resolves the same route again and
 	// surfaces the error properly.
 	route, _ := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
 	if !route.Litellm && ollamacheck.IsOllamaModel(m) {
@@ -259,7 +244,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		}
 	}
 
-	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)
+	cmd, berr := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
 	if berr != nil {
 		return berr
 	}

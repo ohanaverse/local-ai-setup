@@ -121,7 +121,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch from live `catalog` rows; a `-M` pin on a start row starts it |
 | `cmd/wt/start.go` | `startForLaunch` — non-TUI start driver: stderr progress, Ctrl+C cancel, replace confirmation, `allowReplace` |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers; TTY seams and picker-TTY errors |
-| `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered`, `runAgentCmd`; profile apply (`applyProfileForLaunch`, `applyResolvedProfile`) |
+| `cmd/wt/launch.go` | `buildFilteredCmd`, `launchFiltered` (`launchFilteredImpl`), `launchPassthroughImpl`, `runAgentCmd`; profile apply (`applyProfileForLaunch`, `applyResolvedProfile`) |
 | `cmd/wt/stats.go` | `wt stats` — read-only report over `survey.jsonl` |
 | `cmd/wt/model_cmds.go` | `wt start` / `wt stop` |
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |

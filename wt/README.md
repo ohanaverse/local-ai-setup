@@ -189,7 +189,7 @@ go vet ./...       # Vet
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
 | `cmd/wt/commands.go` | Subcommand constructors: `rotate` (debug helper) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
-| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd`, `launchFiltered`, `launchPassthroughImpl`, `runAgentCmd` |
 | `internal/config/` | Config loading, model registry types (joined from modelman's `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
