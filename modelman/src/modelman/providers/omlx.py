@@ -152,6 +152,14 @@ class OMLXProvider(Provider):
             return None
         return str(target)
 
+    def removable_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """Nothing for a local_path entry: delete() and
+        cleanup_partial_download() both leave a user-produced directory
+        alone, so there is nothing for the shared-artifact guard to protect."""
+        if _is_local_path_entry(variant):
+            return frozenset()
+        return self.artifact_paths(variant)
+
     def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
         """Remove the model directory (~/.omlx/models/<repo-basename>).
 

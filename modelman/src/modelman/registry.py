@@ -562,6 +562,10 @@ def find_shared_artifact_owner(
     provider has no artifact_paths or the paths can't be resolved —
     callers treat that as "no conflict" and proceed with the normal delete.
 
+    Only the paths the provider's delete() would really remove are compared
+    (Provider.removable_paths): an entry whose delete is a no-op shares
+    nothing that can be lost.
+
     "Another entry" includes one on a sibling row of the same server (an
     `omlx-6bit` entry and an `omlx` entry), compared through each row's own
     settings.
@@ -577,6 +581,19 @@ def find_shared_artifact_owner(
         mine = artifact_paths(variant)
     except Exception:  # noqa: BLE001
         return None
+    # Only what delete() would actually remove is at risk (#227): an omlx
+    # `local_path` directory is never removed, so sharing it is no conflict
+    # and must not be reported as one. A provider that does not say (or a
+    # test double answering with something that is not a set) guards all of
+    # its paths, as before.
+    removable_paths = getattr(provider, "removable_paths", None)
+    if callable(removable_paths):
+        try:
+            removable = removable_paths(variant)
+        except Exception:  # noqa: BLE001
+            removable = None
+        if isinstance(removable, (set, frozenset)):
+            mine = mine & removable
     if not mine:
         return None
     # Entries on another registry row of the SAME server count too (#224):
