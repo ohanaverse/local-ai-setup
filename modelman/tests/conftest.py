@@ -80,11 +80,11 @@ def _never_call_real_ollama(monkeypatch):
     # probe falls back to the (stubbed, empty) list.
     monkeypatch.setattr("modelman.local_control._http_json", lambda url, timeout=2.0: None)
     # ...and start_local_model's "is this ollama model pulled?" check, which
-    # would otherwise ask `ollama list` (stubbed above to "nothing there") and
-    # refuse every ollama start in the suite. The tests of the check itself
-    # patch the real function back in.
+    # would otherwise GET the developer's real /api/tags — machine-dependent,
+    # like the daemon check below. The tests of the check itself patch the
+    # real function back in, with _http_json answering the tags.
     monkeypatch.setattr(
-        "modelman.local_control._require_ollama_pulled", lambda registry, model: None
+        "modelman.local_control._require_ollama_pulled", lambda provider, model: None
     )
     # ...and sync's "which local providers are installed here?" PATH lookup,
     # which would make provider rows depend on the machine running the suite.

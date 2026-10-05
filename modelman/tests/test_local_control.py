@@ -2284,8 +2284,24 @@ def _ollama_model(model_id: str, name: str) -> ModelEntry:
 
 
 # conftest replaces the pulled check with a no-op for the whole suite; these
-# two tests are about the check, so they put the real one back.
+# tests are about the check, so they put the real one back.
 _REAL_REQUIRE_OLLAMA_PULLED = local_control._require_ollama_pulled
+
+
+def _start_with_ollama_tags(registry, model_id, state_path, tags, asked=None):
+    """start_local_model with the real pulled check and `/api/tags` answering
+    `tags` (None = no usable answer)."""
+
+    def fake_json(url: str, timeout: float = 2.0):
+        if asked is not None:
+            asked.append(url)
+        return tags
+
+    with (
+        patch("modelman.local_control._http_json", fake_json),
+        patch("modelman.local_control._require_ollama_pulled", _REAL_REQUIRE_OLLAMA_PULLED),
+    ):
+        return start_local_model(registry, model_id, state_path)
 
 
 def test_start_refuses_a_registered_ollama_model_that_is_not_pulled(tmp_path):
@@ -2296,29 +2312,75 @@ def test_start_refuses_a_registered_ollama_model_that_is_not_pulled(tmp_path):
     registry = _registry()
     registry.models.append(_ollama_model("ollama/ghost:1b", "ghost:1b"))
     state_path = _state_path(tmp_path)
-    mapping = {"ollama": [{"variant_id": "other:1b", "path": "ollama:other:1b", "size_bytes": 1}]}
-    with (
-        _patch_provider_local_models(mapping),
-        patch("modelman.local_control._require_ollama_pulled", _REAL_REQUIRE_OLLAMA_PULLED),
-        pytest.raises(LocalControlError, match="not pulled — ollama pull ghost:1b"),
-    ):
-        start_local_model(registry, "ollama/ghost:1b", state_path)
+    with pytest.raises(LocalControlError, match="not pulled — ollama pull ghost:1b"):
+        _start_with_ollama_tags(
+            registry, "ollama/ghost:1b", state_path, {"models": [{"name": "other:1b"}]}
+        )
     assert load_state(state_path).models == {}
 
 
-def test_start_does_not_refuse_ollama_when_presence_is_unknown(tmp_path):
-    # The refusal needs a positive "not on disk". A provider that cannot be
-    # asked (no provider class, or `ollama list` failing) is "unknown", and
-    # the start goes ahead as before rather than blocking on a flaky probe.
+@pytest.mark.parametrize(
+    "tags",
+    [
+        None,  # refused, timed out, or not JSON
+        {"error": "boom"},  # answered, but not a tags listing
+        {"models": None},
+    ],
+)
+def test_start_does_not_refuse_ollama_when_presence_is_unknown(tmp_path, tags):
+    # The refusal needs a positive "not pulled". A tags read that gives no
+    # usable listing is "unknown", and the start goes ahead as before rather
+    # than blocking on a flaky probe.
     registry = _registry()
     registry.models.append(_ollama_model("ollama/ghost:1b", "ghost:1b"))
     state_path = _state_path(tmp_path)
-    with (
-        patch("modelman.local_control.ProviderRegistry.get_class", return_value=None),
-        patch("modelman.local_control._require_ollama_pulled", _REAL_REQUIRE_OLLAMA_PULLED),
-    ):
-        result = start_local_model(registry, "ollama/ghost:1b", state_path)
+    result = _start_with_ollama_tags(registry, "ollama/ghost:1b", state_path, tags)
     assert result.model_id == "ollama/ghost:1b"
+
+
+def test_start_ollama_pull_check_asks_the_configured_origin(tmp_path):
+    # The pull check used to run the local `ollama list` CLI while the daemon
+    # check and wt read the provider row's base_url — so with ollama on
+    # another host or port, a model pulled THERE was refused as "not pulled"
+    # because the local daemon did not have it. Both checks ask the same
+    # `/api/tags` now, and the local CLI is not consulted at all.
+    registry = _registry()
+    registry.providers[0].auth = AuthConfig(type="none", base_url="http://127.0.0.1:12345/v1")
+    registry.models.append(_ollama_model("ollama/remote:1b", "remote:1b"))
+    state_path = _state_path(tmp_path)
+    asked: list[str] = []
+    local_cli = {"ollama": [{"variant_id": "other:1b", "path": "ollama:other:1b", "size_bytes": 1}]}
+    with _patch_provider_local_models(local_cli):
+        result = _start_with_ollama_tags(
+            registry,
+            "ollama/remote:1b",
+            state_path,
+            {"models": [{"name": "remote:1b"}]},
+            asked,
+        )
+    assert result.model_id == "ollama/remote:1b"
+    assert asked == ["http://127.0.0.1:12345/api/tags"]
+
+
+def test_start_ollama_pull_check_reads_tags_the_way_wt_does(tmp_path):
+    # Mirrors wt's ollamaModelNames + OllamaNameMatches: an untagged overlay
+    # owns the pulled ":latest", and an entry with a remote_host is an
+    # ollama.com cloud model — nothing is on disk, so it is not "pulled".
+    registry = _registry()
+    registry.models.append(_ollama_model("ollama/llama3.2", "llama3.2"))
+    registry.models.append(_ollama_model("ollama/cloudy:1b", "cloudy:1b"))
+    state_path = _state_path(tmp_path)
+    tags = {
+        "models": [
+            {"name": "llama3.2:latest"},
+            {"name": "cloudy:1b", "remote_host": "https://ollama.com:443"},
+        ]
+    }
+    assert _start_with_ollama_tags(registry, "ollama/llama3.2", state_path, tags).model_id == (
+        "ollama/llama3.2"
+    )
+    with pytest.raises(LocalControlError, match="not pulled — ollama pull cloudy:1b"):
+        _start_with_ollama_tags(registry, "ollama/cloudy:1b", state_path, tags)
 
 
 def test_start_exact_discovered_id_beats_a_registered_models_name(tmp_path):

@@ -279,6 +279,12 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str]:
     return []
 
 
+def _ollama_origin(provider: ProviderEntry | None) -> str:
+    """The origin the ollama provider row points at — the one wt probes."""
+    origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
+    return origin or _DEFAULT_BASE_ORIGIN["ollama"]
+
+
 def _require_ollama_daemon(provider: ProviderEntry | None) -> None:
     """Raise unless the ollama daemon answers at the origin wt would probe.
 
@@ -294,8 +300,7 @@ def _require_ollama_daemon(provider: ProviderEntry | None) -> None:
     Asks `/api/tags` — the endpoint wt's own ollama probe reads — so the two
     always describe the same server.
     """
-    origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
-    base = origin or _DEFAULT_BASE_ORIGIN["ollama"]
+    base = _ollama_origin(provider)
     if not _http_answers(f"{base}/api/tags"):
         raise LocalControlError(
             f"the ollama daemon is not answering at {base} — start it "
@@ -303,18 +308,33 @@ def _require_ollama_daemon(provider: ProviderEntry | None) -> None:
         )
 
 
-def _require_ollama_pulled(registry: Registry, model: ModelEntry) -> None:
-    """Raise unless ollama has `model` pulled — or cannot be asked.
+def _require_ollama_pulled(provider: ProviderEntry | None, model: ModelEntry) -> None:
+    """Raise unless ollama has `model` pulled — or cannot say.
 
     Ollama's start is flag-only (see _probe_running), so nothing else notices
     a model that was never pulled: the start "succeeded", the flag read as
     running, and wt — which routes an ollama model only while it is pulled —
-    wrote no route. The refusal needs a positive "not on disk": a provider
-    that cannot be queried is unknown, and the start goes ahead as before.
+    wrote no route. The refusal needs a positive "not pulled": a tags read
+    that gives no usable listing is unknown, and the start goes ahead as
+    before.
+
+    Reads `/api/tags` at the provider row's origin, as _require_ollama_daemon
+    and wt's probe do, and parses it as wt does (ollamaModelNames: an entry
+    with a remote_host is an ollama.com cloud model, not a pulled one;
+    OllamaNameMatches for the implicit ":latest"). The local `ollama list`
+    CLI is not the authority: with base_url on another host or port it
+    describes a different server, and refused a model wt would have routed.
     """
-    presence = _registered_presence(registry, [model])
-    if model.id in presence.on_disk or model.provider_id in presence.unqueryable:
+    body = _http_json(f"{_ollama_origin(provider)}/api/tags")
+    listed = body.get("models") if body else None
+    if not isinstance(listed, list):
         return
+    for item in listed:
+        if not isinstance(item, dict) or item.get("remote_host"):
+            continue
+        name = item.get("name")
+        if isinstance(name, str) and _ollama_name_matches(name, model.model_name):
+            return
     raise LocalControlError(f"{model.id} is not pulled — ollama pull {model.model_name}")
 
 
@@ -1079,7 +1099,7 @@ def start_local_model(
     # routes on a machine whose daemon is not there.
     if model.provider_id == "ollama":
         _require_ollama_daemon(provider)
-        _require_ollama_pulled(registry, model)
+        _require_ollama_pulled(provider, model)
 
     extra_args: tuple[str, ...] = ()
     env: dict[str, str] | None = None
