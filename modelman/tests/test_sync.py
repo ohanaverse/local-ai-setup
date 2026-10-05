@@ -772,3 +772,33 @@ def test_sync_end_to_end_reconciles_an_omlx_6bit_row(tmp_path):
     assert gone.ready is False and gone.disk_path is None, gone
     assert "omlx-6bit/org--Six" in result.downloaded
     assert "omlx-6bit/org--Gone" in result.not_downloaded
+
+
+def test_reconcile_keeps_the_running_flag():
+    # #231: reconcile observes three things — ready, disk_path, size_bytes —
+    # and rebuilt the whole row to record them, which reset `running` to its
+    # default. Every `modelman sync` therefore marked every registered local
+    # model as stopped: `modelman stop` refused ("is not running") and the
+    # TUI and the other-running warning lost sight of a model still serving.
+    # Reconcile changes what it observes and nothing else, in both branches:
+    # whether a model that vanished from disk can still be running is the
+    # probe's call (_clear_stale_running_flag), not a side effect of this.
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", location="local")],
+        models=[
+            ModelEntry(id="ollama/here", family="f", provider_id="ollama", model_name="here"),
+            ModelEntry(id="ollama/gone", family="f", provider_id="ollama", model_name="gone"),
+        ],
+    )
+    state = StateStore()
+    state.set("ollama/here", ModelState(ready=False, running=True))
+    state.set(
+        "ollama/gone", ModelState(ready=True, disk_path="ollama:gone", size_bytes=9, running=True)
+    )
+    reconcile(registry, state, {"ollama/here": ("ollama:here", 5)})
+    assert state.get("ollama/here") == ModelState(
+        ready=True, disk_path="ollama:here", size_bytes=5, running=True
+    )
+    assert state.get("ollama/gone") == ModelState(
+        ready=False, disk_path=None, size_bytes=None, running=True
+    )

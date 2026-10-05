@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -430,8 +431,22 @@ def sync() -> None:
     # the (potentially slow) provider scans — a whole-file save would
     # revert [local].running_model (or any other key) written concurrently
     # (same merge shape migrate uses).
+    #
+    # And merge only what sync observed, only for the models it reconciled:
+    # ready, disk_path and size_bytes. `state` is as old as the scans, so
+    # writing its rows back whole undid whatever happened meanwhile — a model
+    # stopped during the sync was recorded running again, one started was
+    # recorded stopped, and a discovered model's row (dropped by its stop)
+    # came back (#231).
     with locked_state() as fresh:
-        fresh.models.update(state.models)
+        for mid in (*result.downloaded, *result.not_downloaded):
+            seen = state.get(mid)
+            fresh.models[mid] = replace(
+                fresh.get(mid),
+                ready=seen.ready,
+                disk_path=seen.disk_path,
+                size_bytes=seen.size_bytes,
+            )
         fresh.families.update(state.families)
     # Always persist the registry, not just when providers_added is non-empty:
     # run_sync also calls backfill_provider_defaults, which mutates existing
