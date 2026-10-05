@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -109,16 +111,16 @@ func TestStopPickerSilentWhenNothingToOffer(t *testing.T) {
 	}
 	for name, h := range cases {
 		var out bytes.Buffer
-		runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
+		runStopPicker(strings.NewReader("all\n"), &out, &config.Config{}, h.deps())
 		if out.Len() != 0 || len(h.stops) != 0 {
 			t.Errorf("%s: output = %q stops = %v, want none", name, out.String(), h.stops)
 		}
 	}
 }
 
-// TestStopPickerStopsOnlySelected verifies toggling by number then Enter
-// stops exactly the ticked models, and a model another session uses is never
-// offered or stopped (issue #115's "ref count zero" rule).
+// TestStopPickerStopsOnlySelected verifies a typed number stops exactly that
+// model, and a model another session uses is never offered or stopped (issue
+// #115's "ref count zero" rule).
 func TestStopPickerStopsOnlySelected(t *testing.T) {
 	h := &stopHarness{
 		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
@@ -129,7 +131,7 @@ func TestStopPickerStopsOnlySelected(t *testing.T) {
 		counts: map[string]int{"ollama/busy": 2},
 	}
 	var out bytes.Buffer
-	runStopPicker(strings.NewReader("2\n\n"), &out, &config.Config{}, h.deps())
+	runStopPicker(strings.NewReader("2\n"), &out, &config.Config{}, h.deps())
 	if len(h.stops) != 1 || h.stops[0] != "omlx|b" {
 		t.Fatalf("stops = %v, want [omlx|b]", h.stops)
 	}
@@ -141,11 +143,11 @@ func TestStopPickerStopsOnlySelected(t *testing.T) {
 	}
 }
 
-// TestStopPickerSkipPaths verifies Enter with nothing selected, "q", "esc"
-// and an exhausted reader all stop nothing: nothing is pre-selected, because
+// TestStopPickerSkipPaths verifies a bare Enter, "q", "esc", "skip" and an
+// exhausted reader all stop nothing: the default is to stop nothing, because
 // stopping costs a model reload and must be an explicit choice.
 func TestStopPickerSkipPaths(t *testing.T) {
-	for _, input := range []string{"\n", "q\n", "esc\n", "", "all\nnone\n\n"} {
+	for _, input := range []string{"\n", "   \n", "q\n", "esc\n", "skip\n", ""} {
 		h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
 			runningEntry("ollama", "ollama/a", "a")}}}
 		var out bytes.Buffer
@@ -168,7 +170,7 @@ func TestStopPickerAllAndFailureContinues(t *testing.T) {
 		failOn: "a",
 	}
 	var out bytes.Buffer
-	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
+	runStopPicker(strings.NewReader("all\n"), &out, &config.Config{}, h.deps())
 	if len(h.stops) != 2 {
 		t.Fatalf("stops = %v, want both attempted", h.stops)
 	}
@@ -178,19 +180,94 @@ func TestStopPickerAllAndFailureContinues(t *testing.T) {
 	}
 }
 
-// TestStopPickerInvalidInputReprompts verifies junk and out-of-range numbers
-// re-prompt with a hint instead of toggling or exiting, so a typo cannot stop
-// the wrong model.
-func TestStopPickerInvalidInputReprompts(t *testing.T) {
-	h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
-		runningEntry("ollama", "ollama/a", "a")}}}
-	var out bytes.Buffer
-	runStopPicker(strings.NewReader("zzz\n9\nq\n"), &out, &config.Config{}, h.deps())
-	if len(h.stops) != 0 {
-		t.Fatalf("stops = %v, want none", h.stops)
+// TestStopPickerEnterAppliesTheLine pins the one-line prompt (#139): Enter
+// applies what was typed, with no second Enter to confirm. Space-separated
+// numbers stop those models, in list order and each once however they were
+// typed; "a" or "all" stops every offered model. The prompt used to be a
+// checkbox list — a number only ticked a line and a further Enter confirmed —
+// which was two steps for the common "stop this one" and three inputs for two
+// models typed one at a time.
+func TestStopPickerEnterAppliesTheLine(t *testing.T) {
+	for input, want := range map[string][]string{
+		"1\n":      {"ollama|a"},
+		"1 3\n":    {"ollama|a", "ollama|c"},
+		"3 1 1\n":  {"ollama|a", "ollama|c"},
+		" 2  3 \n": {"ollama|b", "ollama|c"},
+		"a\n":      {"ollama|a", "ollama|b", "ollama|c"},
+		"all\n":    {"ollama|a", "ollama|b", "ollama|c"},
+		"ALL\n":    {"ollama|a", "ollama|b", "ollama|c"},
+	} {
+		h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("ollama", "ollama/a", "a"),
+			runningEntry("ollama", "ollama/b", "b"),
+			runningEntry("ollama", "ollama/c", "c"),
+		}}}
+		var out bytes.Buffer
+		// Only one line is supplied: a prompt that still waited for a
+		// confirming Enter would hit the end of input and stop nothing.
+		runStopPicker(strings.NewReader(input), &out, &config.Config{}, h.deps())
+		if !slices.Equal(h.stops, want) {
+			t.Errorf("input %q: stops = %v, want %v", input, h.stops, want)
+		}
+		if strings.Count(out.String(), "stop> ") != 1 {
+			t.Errorf("input %q: prompted %d times, want once:\n%s", input, strings.Count(out.String(), "stop> "), out.String())
+		}
 	}
-	if strings.Count(out.String(), "type a number to toggle") != 2 {
-		t.Errorf("output = %q, want two hints", out.String())
+}
+
+// TestStopPickerInvalidInputReprompts verifies a line with anything on it that
+// is not a listed number (or "a"/"all" alone) stops nothing, says which part
+// it did not understand and asks again — the whole line, so "1 x" does not
+// stop model 1 on a typo. The next valid line is applied as usual.
+func TestStopPickerInvalidInputReprompts(t *testing.T) {
+	for input, bad := range map[string]string{
+		"zzz\n":   `"zzz"`,
+		"9\n":     `"9"`,
+		"0\n":     `"0"`,
+		"-1\n":    `"-1"`,
+		"1 x\n":   `"x"`,
+		"1,2\n":   `"1,2"`,
+		"all 2\n": `"all"`,
+		"none\n":  `"none"`,
+		"1 7 8\n": `"7" "8"`,
+	} {
+		h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("ollama", "ollama/a", "a"),
+			runningEntry("ollama", "ollama/b", "b"),
+		}}}
+		var out bytes.Buffer
+		runStopPicker(strings.NewReader(input), &out, &config.Config{}, h.deps())
+		if len(h.stops) != 0 {
+			t.Errorf("input %q: stops = %v, want none", input, h.stops)
+		}
+		want := "not a number from the list: " + bad + " — type numbers (e.g. 1 2), a for all, or Enter to stop nothing\n"
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("input %q: output lacks %q:\n%s", input, want, out.String())
+		}
+		if strings.Count(out.String(), "stop> ") != 2 {
+			t.Errorf("input %q: prompted %d times, want twice (the retry)", input, strings.Count(out.String(), "stop> "))
+		}
+	}
+	h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+		runningEntry("ollama", "ollama/a", "a"), runningEntry("ollama", "ollama/b", "b")}}}
+	var out bytes.Buffer
+	runStopPicker(strings.NewReader("9\n2\n"), &out, &config.Config{}, h.deps())
+	if !slices.Equal(h.stops, []string{"ollama|b"}) {
+		t.Errorf("a valid line after a rejected one: stops = %v, want [ollama|b]", h.stops)
+	}
+}
+
+// TestStopPickerListsModelsWithoutCheckboxes pins what the prompt shows: the
+// numbered models and one line saying what can be typed. There is no ticked
+// state to draw any more, so no "[ ]" boxes, and the list is printed once.
+func TestStopPickerListsModelsWithoutCheckboxes(t *testing.T) {
+	h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+		runningEntry("ollama", "ollama/a", "a"), runningEntry("ollama", "ollama/b", "b")}}}
+	var out bytes.Buffer
+	runStopPicker(strings.NewReader("\n"), &out, &config.Config{}, h.deps())
+	want := exitFlowHeader + "\n  1  ollama/a\n  2  ollama/b\n  numbers (e.g. 1 2) · a = all · q = skip · Enter = none\nstop> "
+	if out.String() != want {
+		t.Errorf("prompt = %q\nwant     %q", out.String(), want)
 	}
 }
 
@@ -199,7 +276,7 @@ func TestStopPickerInvalidInputReprompts(t *testing.T) {
 func TestPickerNoopWhenNotTTY(t *testing.T) {
 	withTTY(t, false)
 	var out bytes.Buffer
-	Picker(strings.NewReader("all\n\n"), &out, &config.Config{})
+	Picker(strings.NewReader("all\n"), &out, &config.Config{})
 	if out.Len() != 0 {
 		t.Fatalf("output = %q, want empty", out.String())
 	}
@@ -207,8 +284,8 @@ func TestPickerNoopWhenNotTTY(t *testing.T) {
 
 // TestStopPickerDrainsAfterReadingOnEveryExit verifies the paste-residue drain
 // runs after the picker has read, on every path that consumed input. A pasted
-// block whose first line is "q"/"esc", or whose first line is blank (Enter with
-// nothing ticked), leaves every later line in the kernel's TTY input queue,
+// block whose first line is "q"/"esc", or whose first line is blank (a bare
+// Enter), leaves every later line in the kernel's TTY input queue,
 // where the parent shell runs them as commands once wt exits — the hazard the
 // drain exists to prevent. Asserting the ordering (not just the count) is what
 // stops a future refactor from draining before the prompt and eating input the
@@ -217,7 +294,7 @@ func TestStopPickerDrainsAfterReadingOnEveryExit(t *testing.T) {
 	prevFlush := flushTTY
 	t.Cleanup(func() { flushTTY = prevFlush })
 
-	for _, input := range []string{"\n", "q\n", "esc\n", "1\n\n"} {
+	for _, input := range []string{"\n", "q\n", "esc\n", "1\n"} {
 		flushes := 0
 		src := &readTrackingReader{r: strings.NewReader(input)}
 		flushTTY = func() {
@@ -298,7 +375,7 @@ func TestStopPickerStopIsCancellable(t *testing.T) {
 		cancel:   cancel,
 	}
 	var out bytes.Buffer
-	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
+	runStopPicker(strings.NewReader("all\n"), &out, &config.Config{}, h.deps())
 
 	if h.ctxSeen == nil || h.ctxSeen.Done() == nil {
 		t.Error("stop ran on a context with no cancellation path (context.Background)")
@@ -344,7 +421,7 @@ func TestStopPickerCancelledLastStopReportsCancelled(t *testing.T) {
 		cancelFails: true,
 	}
 	var out bytes.Buffer
-	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
+	runStopPicker(strings.NewReader("all\n"), &out, &config.Config{}, h.deps())
 
 	if h.ctxSeen == nil || h.ctxSeen.Done() == nil {
 		t.Error("stop ran on a context with no cancellation path (context.Background)")
@@ -422,17 +499,20 @@ func TestReleaseSessionWarnsWhenReleaseFails(t *testing.T) {
 	}
 }
 
-// blockingReader cancels the picker's context on its first Read and then blocks
-// forever — the shape of Ctrl+C landing while the user sits at the "stop>"
-// prompt with nothing typed. Cancelling from inside Read guarantees the menu has
-// already been printed, so the test never races the picker's own writes.
+// blockingReader signals its first Read and then blocks until released — the
+// shape of Ctrl+C landing while the user sits at the "stop>" prompt with nothing
+// typed. The first Read comes after every prompt line is written (chooseLabeled
+// prints the header, the list and the hint, then the prompt, and only then
+// scans), so waiting on read is how the test knows the reader goroutine is done
+// writing and can read the output buffer without racing it.
 type blockingReader struct {
-	cancel context.CancelFunc
-	block  chan struct{}
+	read  chan struct{}
+	block chan struct{}
+	once  sync.Once
 }
 
 func (b *blockingReader) Read([]byte) (int, error) {
-	b.cancel()
+	b.once.Do(func() { close(b.read) })
 	<-b.block
 	return 0, io.EOF
 }
@@ -442,30 +522,45 @@ func (b *blockingReader) Read([]byte) (int, error) {
 // deferred TTY drain. Without it the default SIGINT disposition killed wt before
 // the summary, the stats and the drain, leaving paste residue queued to run as
 // shell commands.
+//
+// It also pins the picker's shared writer: the context is cancelled *before* the
+// picker starts, so the picker prints "cancelled" while the reader goroutine may
+// still be printing the menu — the one window where the two really are writing
+// at once. Unserialized, -race reports that; cancelling from inside Read, as
+// this test used to, ordered the reader's writes before the cancellation and
+// so could never have caught it.
 func TestStopPickerCtrlCAtMenuSkipsAndDrains(t *testing.T) {
 	prev, prevFlush := stopSignalCtx, flushTTY
 	t.Cleanup(func() { stopSignalCtx, flushTTY = prev, prevFlush })
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	stopSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	flushes := 0
 	flushTTY = func() { flushes++ }
+	// Cancelled up front, and the reader never answers, so the select's ctx case
+	// is the only ready one: with a readable answer both would be ready and the
+	// scheduler would choose between them.
+	cancel()
 
 	h := &stopHarness{
 		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
 			runningEntry("ollama", "ollama/a", "a"),
 		}},
 	}
-	rd := &blockingReader{cancel: cancel, block: make(chan struct{})}
-	defer close(rd.block)
+	rd := &blockingReader{read: make(chan struct{}), block: make(chan struct{})}
+	t.Cleanup(func() { close(rd.block) })
 	var out bytes.Buffer
 	runStopPicker(rd, &out, &config.Config{}, h.deps())
+	<-rd.read
 
 	if len(h.stops) != 0 {
 		t.Errorf("stops = %v, want none after a cancelled menu", h.stops)
 	}
 	if !strings.Contains(out.String(), "cancelled") {
 		t.Errorf("output = %q, want a cancelled line", out.String())
+	}
+	if !strings.Contains(out.String(), exitFlowHeader) {
+		t.Errorf("output = %q, want the menu printed before the cancellation", out.String())
 	}
 	if flushes != 1 {
 		t.Errorf("flushes = %d, want 1: the drain must still run", flushes)
@@ -508,7 +603,7 @@ func TestStopPickerIncludeInUseMarksSessions(t *testing.T) {
 		counts: map[string]int{"ollama/busy": 2},
 	}
 	var out bytes.Buffer
-	runStopPickerWith(strings.NewReader("1\n\n"), &out, &config.Config{}, h.deps(), Options{IncludeInUse: true})
+	runStopPickerWith(strings.NewReader("1\n"), &out, &config.Config{}, h.deps(), Options{IncludeInUse: true})
 	if !strings.Contains(out.String(), "ollama/busy (2 sessions)") {
 		t.Errorf("output = %q, want the session count next to the model", out.String())
 	}
