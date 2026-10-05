@@ -1,15 +1,10 @@
 package agents
 
 import (
-	"encoding/json"
 	"fmt"
-	"os/exec"
-	"strings"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 func init() { register("opencode", func() Driver { return opencodeDriver{} }) }
@@ -33,65 +28,6 @@ type opencodeDriver struct{}
 func (opencodeDriver) YoloFlag() string { return "--auto=true" }
 
 func (opencodeDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
-
-func (opencodeDriver) ResumeFlag() string { return "--session" }
-
-// opencodeDBQuery is the seam LatestSession reads opencode's session table
-// through. Tests replace it; production runs realOpenCodeDBQuery.
-var opencodeDBQuery = realOpenCodeDBQuery
-
-// realOpenCodeDBQuery runs SQL against opencode's database via `opencode db`.
-//
-// Going through opencode instead of a bare `sqlite3` binary is deliberate.
-// opencode resolves its own database location — honoring the OPENCODE_DB
-// override and the per-channel `opencode-<channel>.db` filename — and opens it
-// with its own bundled SQLite, so wt neither reproduces the path rules nor has
-// to get WAL handling right. A missing `sqlite3` CLI, meanwhile, used to make
-// every opencode launch fail. `--format json` keeps the rows parseable without
-// inventing a separator. opencode creates its data directory when none exists,
-// which is the same thing it does on first run; callers only reach this from a
-// launch of opencode itself.
-func realOpenCodeDBQuery(sql string) ([]byte, error) {
-	out, err := exec.Command("opencode", "db", sql, "--format", "json").Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
-			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
-		}
-		return nil, err
-	}
-	return out, nil
-}
-
-// LatestSession returns the newest top-level, unarchived opencode session
-// recorded for exactly path. opencode keeps sessions in SQLite (the session
-// table), not the old storage/session/<project-id>/*.json files (#162).
-// Keying on the session's own directory column, rather than on opencode's
-// project id, matches how claude's lookup is per-worktree-path: a project id
-// is shared by every worktree of a repo, so a project-keyed lookup would offer
-// another worktree's conversation. An empty result means opencode has no
-// session for this path — no session, no error.
-func (opencodeDriver) LatestSession(path string) (*session.Session, error) {
-	query := "select id, time_updated from session where directory = '" +
-		strings.ReplaceAll(path, "'", "''") +
-		"' and parent_id is null and time_archived is null" +
-		" order by time_updated desc limit 1"
-	out, err := opencodeDBQuery(query)
-	if err != nil {
-		return nil, fmt.Errorf("reading opencode sessions: %w", err)
-	}
-	var rows []struct {
-		ID      string `json:"id"`
-		Updated int64  `json:"time_updated"`
-	}
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("reading opencode sessions: unexpected output %q: %w",
-			strings.TrimSpace(string(out)), err)
-	}
-	if len(rows) == 0 || rows[0].ID == "" {
-		return nil, nil
-	}
-	return &session.Session{ID: rows[0].ID, MTime: time.UnixMilli(rows[0].Updated)}, nil
-}
 
 // OpenCode routes through a wt-declared custom provider
 // (@ai-sdk/openai-compatible, chat completions wire) in both gateway and

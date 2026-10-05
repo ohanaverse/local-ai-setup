@@ -83,7 +83,7 @@ func ExpandHome(path string) (string, error) { return expandHome(path) }
 // decoder; model_info is decoded into Model.ModelInfo and merged into the
 // LiteLLM rows wt writes; model_dir and auth fields are parsed into the
 // provider data, and auth.type drives Model.Native — the single source of
-// truth for native-ness, consumed by driver dispatch and resume-skip.
+// truth for native-ness, consumed by driver dispatch and route resolution.
 //
 // Fail-closed: a missing or malformed registry is an error — wt has no
 // editor for this file; seed it once with `modelman migrate`.

@@ -26,7 +26,7 @@ reconcile which is current before relying on either.
    - `Build(m config.Model, yolo bool, r Route) LaunchCmd` — dial from the resolved `Route` (base origin, API key, model ref); never hardcode a provider endpoint
    - `YoloFlag() string`
    - `Protocols() []Protocol` (the `ProtocolDeclarer` capability) — the wire protocols the agent speaks; this drives route resolution
-2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `Resumer`, `StateDirer` (if the agent keeps per-working-directory state, so `wt smoke` can remove it for its temporary directories)
+2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `StateDirer` (if the agent keeps per-working-directory state, so `wt smoke` can remove it for its temporary directories)
 3. Register in `internal/agents/catalog.go` via `AddEntry()` or `MustAdd()`
 4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
 5. Update the driver table in `wt/CLAUDE.md`
@@ -34,6 +34,6 @@ reconcile which is current before relying on either.
 **Key gotchas:**
 - The model ref comes from `Route.ModelRef` — `ResolveRoute` already picked `m.ID` (litellm/forced) or `m.ModelName` (direct); don't re-derive it
 - If the agent's protocol is served by no local provider (empty intersection in `ResolveRoute`), it always routes through LiteLLM and wt prints the forced-LiteLLM stderr notice — codex is the current example
-- If implementing `Resumer`, add session path logic to `internal/session`
+- Don't add session handling: wt never resumes a session (there is no `Resumer` capability and no `internal/session` package). The user continues a conversation with the agent's own flags after `--`, which `BuildLaunchCmd` appends unchanged
 - Test both routing modes (direct/litellm) if the agent will route through LiteLLM
 - **`Build` must start with `if m.Native { return <bare LaunchCmd> }`.** Every existing driver (claude, codex, copilot, pi, opencode) does this so the unconfigured-agent passthrough sentinel (`config.Model{Native: true, ModelName: "native"}`, issue #147) launches the bare binary with no `--model`/gateway env. Forgetting it emits provider env vars pointing at an empty base URL instead of a plain command — write a `Test<Name>NativeBypass` test (see `opencode_test.go`'s `TestOpenCodeNativeBypass`) to pin it.

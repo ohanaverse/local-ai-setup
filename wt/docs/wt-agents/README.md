@@ -151,8 +151,10 @@ reaches opencode in `<repo>`, where `../../other-project` names a different
 place, and fails with `Failed to change directory`. Pass an absolute path, or
 check where you ended up.
 
-Session resume follows the same directory: a prior session is offered (or, with
-no picker, resumed) only when you launch from the directory it was started in.
+`wt` never resumes a session; that is the agent's to do, with its own flags
+after `--` (`claude-wt -- --continue`, `opencode-wt -- --continue`). The agent
+looks for sessions in the directory it starts in, so the table above also
+says which directory's conversations a `--continue` finds.
 
 `wt` does not rewrite the argument: it cannot tell a path from any other word,
 and a prompt may contain something that only looks like one. When an argument

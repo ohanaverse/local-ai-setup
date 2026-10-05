@@ -736,7 +736,7 @@ func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 }
 
 // TestNoOllamaWarnForNonOllamaModel asserts that non-ollama models skip the
-// availability check and proceed directly to launch/resume.
+// availability check and proceed directly to launch.
 func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
 	requireBinary(t, "claude")
 	cfg := &config.Config{
@@ -758,7 +758,7 @@ func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
 	if mm.phase == phaseOllamaWarn {
 		t.Fatal("expected no ollama warn for non-ollama model")
 	}
-	// Should have produced a command (either launch or resume prompt).
+	// Should have produced the launch command.
 	if cmd == nil {
 		t.Fatal("expected a command from enter on non-ollama model")
 	}

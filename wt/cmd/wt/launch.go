@@ -17,7 +17,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -104,35 +103,19 @@ func askYesNoDefault(r io.Reader, def bool) (bool, error) {
 	}
 }
 
-// buildLaunch constructs the agent command for the given model and worktree,
-// appending passthrough args and a resume flag when a prior session exists.
-// It is a thin wrapper around agents.BuildLaunchCmd so tests can assert the
-// command shape without exec'ing an agent.
-func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
-}
-
-// buildCommandForModel performs session lookup and builds the exec.Cmd for a
-// model-driven agent. It is extracted so tests can assert command shape without
-// exec'ing an agent.
+// buildCommandForModel builds the exec.Cmd for a model-driven agent, with the
+// passthrough args appended. It is extracted so tests can assert command shape
+// without exec'ing an agent. It never resumes a session: that is the agent's
+// to manage, through its own flags in extraArgs (see agents.BuildLaunchCmd).
 func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	// Native models launch fresh: resuming a session would restore the
-	// session's stored model, overriding the user's "native" choice. Skip
-	// the session lookup so no --resume/--session flag is ever appended.
-	// A failed lookup warns and launches fresh rather than failing — the TUI
-	// reaches the same helper, so the two paths cannot disagree about it.
-	sess, warning := agents.ResumeSession(agent, m.Native, worktreePath)
-	if warning != "" {
-		fmt.Fprintln(os.Stderr, "wt: "+warning)
-	}
-	return buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
 }
 
 // buildCommandForCommand builds the exec.Cmd for a command-like agent (e.g.
 // shell). It runs in the requested worktree; the -M warning lives in
 // launchFiltered where the pinnedSupplied signal is available.
 func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, nil, cfg, extraArgs)
+	return agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, cfg, extraArgs)
 }
 
 // buildFilteredCmd is the build-only core of launchFiltered: it resolves the

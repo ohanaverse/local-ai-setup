@@ -191,7 +191,7 @@ func (m *model) modelFrames() []listFrame {
 				footer = "\n" + clip(dimStyle.Render(fmt.Sprintf("%s\n[↑/↓] navigate   [enter] launch or start   [q] quit", mode)), inner)
 			}
 			body := header + listView + footer
-			// A launch/config/session/ollama error set on the model phase must be
+			// A launch/config/ollama error set on the model phase must be
 			// visible; phaseModelView previously dropped m.status, making a failed
 			// launch look like "nothing happens" when Enter was pressed.
 			if m.status != "" {
@@ -222,20 +222,6 @@ func (m *model) agentFrames() []listFrame {
 		}
 	}
 	return []listFrame{build(true), build(false)}
-}
-
-// resumeFrame is the resume prompt's layout: the status line above its
-// choices, in the picker's style and position — it is the route check's note
-// and any resume warning, which the user would otherwise only see after
-// backing out to the picker — and the key hints below.
-func (m *model) resumeFrame() listFrame {
-	return func(listView string) string {
-		body := listView + "\n" + clip("[enter] choose   [esc] back", m.width)
-		if m.status != "" {
-			body = clip(ErrorStyle(m.theme).Render(m.status), m.width) + "\n\n" + body
-		}
-		return body
-	}
 }
 
 // worktreeFrame is the worktree list's layout: a reload error or a status
@@ -285,8 +271,6 @@ func (m *model) fitLists() {
 		m.fitTo(&m.replace.choices, m.choiceFrame())
 	case phaseAgent:
 		m.fitTo(&m.agentList, m.agentFrames()...)
-	case phaseResume:
-		m.fitTo(&m.resume.choices, m.resumeFrame())
 	case phaseOllamaWarn:
 		m.fitTo(&m.ollamaWarnModel, m.choiceFrame())
 	}

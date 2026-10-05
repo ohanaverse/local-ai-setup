@@ -72,15 +72,17 @@ The builtin `openai` provider is not usable for LiteLLM-routed models: opencode 
 
 `wt --yolo -A opencode` launches `opencode --auto=true`. opencode describes `--auto` as "auto-approve permissions that are not explicitly denied": it is **not** an unconditional skip — a permission your opencode config sets to `deny` stays denied, and only what would otherwise prompt is approved. (opencode 1.18 has no `--dangerously-skip-permissions`; passing it prints the usage text and exits 1.)
 
-wt attaches the value (`=true`) because `--auto` is declared per opencode command: bare and directly in front of a subcommand, it swallows it — `opencode --auto run …` never reaches `run` and instead starts the TUI with `run` as the project directory. `--auto=true` cannot take the next argument, so the flag leads every form: the interactive launch (`opencode --auto=true [<passthrough args>] [--session <id>]` — passthrough args come before the resume flag), a passthrough subcommand (`wt --yolo -A opencode -- run "<prompt>"` → `opencode --auto=true run "<prompt>"`), and `wt smoke`'s one-shot (`opencode --auto=true run <prompt>`).
+wt attaches the value (`=true`) because `--auto` is declared per opencode command: bare and directly in front of a subcommand, it swallows it — `opencode --auto run …` never reaches `run` and instead starts the TUI with `run` as the project directory. `--auto=true` cannot take the next argument, so the flag leads every form: the interactive launch (`opencode --auto=true [<passthrough args>]`), a passthrough subcommand (`wt --yolo -A opencode -- run "<prompt>"` → `opencode --auto=true run "<prompt>"`), and `wt smoke`'s one-shot (`opencode --auto=true run <prompt>`).
 
-## Session resume
+## Sessions
 
-`wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--session <id>` automatically.
+`wt` leaves sessions to OpenCode: every launch starts fresh, and `wt` never looks one up, prompts about one, or adds a resume flag. To continue a conversation, pass opencode's own flags after `--`; `wt` hands them over unchanged on every launch path, the picker included.
 
-Sessions are found by querying opencode's own database through `opencode db <sql> --format json` — the newest top-level, unarchived row in the `session` table whose `directory` column is **exactly the worktree path**. That is deliberately *not* the project id: every worktree of a repo shares one opencode project, so a project-keyed lookup would offer a different worktree's conversation. Going through opencode's `db` subcommand (rather than a bare `sqlite3`) also means opencode resolves its own database location — including the `OPENCODE_DB` override and the per-channel `opencode-<channel>.db` filename — and reads it with its bundled SQLite, so `-wal` contents are visible.
+| Continue the latest | A specific session | Fork it |
+|---|---|---|
+| `opencode-wt -- --continue` | `opencode-wt -- --session <id>` | `opencode-wt -- --continue --fork` |
 
-A failed lookup never blocks a launch: `wt` warns (`resume check failed, starting fresh: …`) and starts a new session, identically on the TUI and non-TUI paths (see `agents.ResumeSession`).
+`wt` used to resume the newest session by itself. That made a launch fail when the resumed session had stored a different model (#198), and appended a one-shot run to whichever conversation was newest, including one another process was using (#204). Whether a resumed session's stored model overrides the chosen one is opencode's behaviour; `wt` does not guard against it.
 
 ## Agent init
 
@@ -92,4 +94,4 @@ OpenCode reads `AGENTS.md` natively and also has its own `/init` command for pro
 
 ## Verified on this machine
 
-Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`; session resume re-verified 2026-09-30 against opencode v1.18.26, whose `session list`/`db` subcommands and `session.directory` column back the mechanism above. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode); the earlier project-id/`git rev-list` note was superseded by the SQLite session store. The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.
+Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode). The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.

@@ -3,11 +3,10 @@ package agents
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 func init() {
@@ -26,19 +25,20 @@ func (claudeDriver) InstructionPointers() []InstructionPointer {
 	}
 }
 
-func (claudeDriver) ResumeFlag() string { return "--resume" }
-
 // StateDir is claude's per-project directory (transcripts and memory).
 func (claudeDriver) StateDir(path string) string {
-	return filepath.Join(os.Getenv("HOME"), ".claude", "projects", session.Slug(path))
+	return filepath.Join(os.Getenv("HOME"), ".claude", "projects", claudeProjectSlug(path))
 }
 
-func (claudeDriver) LatestSession(path string) (*session.Session, error) {
-	return session.LatestByExt(claudeDriver{}.StateDir(path), ".jsonl", func(f os.FileInfo) string {
-		return strings.TrimSuffix(f.Name(), ".jsonl")
-	})
-}
+// claudeNonSlug matches every character claude replaces when it names a
+// project directory after a working directory.
+var claudeNonSlug = regexp.MustCompile(`[^a-zA-Z0-9-]`)
 
+// claudeProjectSlug converts an absolute path to claude's project directory
+// name: every character outside [a-zA-Z0-9-] becomes '-'.
+func claudeProjectSlug(path string) string {
+	return claudeNonSlug.ReplaceAllString(path, "-")
+}
 func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	args := []string{}
 	if yolo {

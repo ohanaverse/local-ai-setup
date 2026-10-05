@@ -27,7 +27,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -40,19 +39,12 @@ const (
 	phaseList           phase = iota // worktree list (lesson 13)
 	phaseAgent                       // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
 	phaseModel                       // agent+model picker (lesson 14 + lesson 15 merged)
-	phaseResume                      // resume prompt (lesson 16)
 	phaseOllamaWarn                  // confirm before launching with unavailable ollama model
 	phaseNewWorktree                 // create-new-worktree prompt
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 )
-
-// resumeModel holds the resume-prompt state for phaseResume (lesson 16).
-type resumeModel struct {
-	session *session.Session
-	choices list.Model
-}
 
 // model holds the entire UI state.
 type model struct {
@@ -92,15 +84,14 @@ type model struct {
 	agentList list.Model // bubble/list of agent+command items (PR 2)
 
 	// launch state (lesson 16)
-	selectedPath string   // worktree path chosen in lesson 13
-	prePath      string   // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
-	yolo         bool     // pass skip-permissions flag to the agent
-	allowReplace bool     // --replace mode: the -M start path may stop a running occupant without the dialog
-	extraArgs    []string // user passthrough args after --
-	initialAgent string   // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
-	pinnedModel  string   // model from --model flag; "" = no model pinned (model picker is shown)
-	resume       resumeModel
-	launchModel  config.Model // highlighted model captured when entering phaseResume; launched from the resume choices
+	selectedPath string       // worktree path chosen in lesson 13
+	prePath      string       // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
+	yolo         bool         // pass skip-permissions flag to the agent
+	allowReplace bool         // --replace mode: the -M start path may stop a running occupant without the dialog
+	extraArgs    []string     // user passthrough args after --
+	initialAgent string       // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
+	pinnedModel  string       // model from --model flag; "" = no model pinned (model picker is shown)
+	launchModel  config.Model // the model being launched, captured when the launch began (the routing phase finishes an Update later)
 
 	// filter inputs (PR 3b): -T/--tags and -F/--family values from the CLI;
 	// forwarded to the model screen so the picker can pre-filter the catalog.
@@ -126,16 +117,6 @@ type model struct {
 	// freezing the picker.
 	routing  *routingState // in-flight route check (phaseRouting); nil when idle
 	routeRun int           // monotonically increasing run id; stale messages are dropped by id
-	// routeNote is the status line the current launch attempt's route check
-	// left ("" for none). It is kept apart from m.status because status is
-	// overwritten and cleared by other things: launchSelected joins it with a
-	// resume warning, and esc from the resume prompt — which clears the status
-	// so stale text does not follow the user back — puts it back, since the
-	// route was written whether or not the launch goes ahead. proceedToLaunch
-	// resets it together with m.status at the start of every launch attempt,
-	// so neither the field nor the text it put on screen outlives the attempt
-	// it belongs to.
-	routeNote string
 
 	// new-worktree prompt (this lesson)
 	newInput         textinput.Model
@@ -388,14 +369,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				m.status = ""
 				return m, nil
 			}
-			if m.phase == phaseResume {
-				m.phase = phaseModel
-				// Everything else in the status belonged to the prompt being
-				// left (a resume warning), but the route note is still true:
-				// the route was written. Empty when there was no note.
-				m.status = m.routeNote
-				return m, nil
-			}
 			if m.phase == phaseOllamaWarn {
 				m.phase = phaseModel
 				m.status = ""
@@ -525,8 +498,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				}
 				// Check ollama availability before launching. Rotation is
 				// NOT recorded here: the user can still cancel the ollama
-				// warning or the resume prompt, or the check can fail, and
-				// in none of those cases did a launch happen. Recording
+				// warning, or the check can fail, and in neither case did
+				// a launch happen. Recording
 				// lives in launchAndRecord, the single commit point. The
 				// check is skipped when this agent×model pairing will
 				// actually route through LiteLLM (any upstream may serve
@@ -551,28 +524,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					}
 				}
 				return m.proceedToLaunch()
-			case phaseResume:
-				if item, ok := m.resume.choices.SelectedItem().(choiceItem); ok {
-					switch item.choice {
-					case cancelChoice:
-						m.phase = phaseModel
-						return m, nil
-					case freshChoice:
-						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
-						if err != nil {
-							m.status = "launch failed: " + err.Error()
-							return m, nil
-						}
-						return m.launchAndRecord(cmd)
-					case resumeChoice:
-						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
-						if err != nil {
-							m.status = "launch failed: " + err.Error()
-							return m, nil
-						}
-						return m.launchAndRecord(cmd)
-					}
-				}
 			case phaseOllamaWarn:
 				if item, ok := m.ollamaWarnModel.SelectedItem().(choiceItem); ok {
 					switch item.choice {
@@ -634,11 +585,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.list, cmd = m.list.Update(msg)
 		return m, cmd
 	}
-	if m.phase == phaseResume && m.width > 0 && m.height > 0 {
-		var cmd tea.Cmd
-		m.resume.choices, cmd = m.resume.choices.Update(msg)
-		return m, cmd
-	}
 	if m.phase == phaseOllamaWarn && m.width > 0 && m.height > 0 {
 		var cmd tea.Cmd
 		m.ollamaWarnModel, cmd = m.ollamaWarnModel.Update(msg)
@@ -673,12 +619,6 @@ func (m model) View() string {
 			body += "\n[enter] create   [esc] cancel"
 		}
 		return body
-	}
-	if m.phase == phaseResume {
-		if m.width <= 0 || m.height <= 0 {
-			return "resume prompt (waiting for window size)"
-		}
-		return m.resumeFrame()(m.resume.choices.View())
 	}
 	if m.phase == phaseOllamaWarn {
 		if m.width <= 0 || m.height <= 0 {
@@ -723,12 +663,12 @@ func (m model) View() string {
 }
 
 // launchCommand builds and runs a command (no model layer) — e.g. the shell
-// driver — in the selected worktree, skipping the model screen, ollama
-// check, and session resume. name is the picked command's driver name; the
+// driver — in the selected worktree, skipping the model screen and the
+// ollama check. name is the picked command's driver name; the
 // same BuildLaunchCmd path as agents is used, so a future command driver
 // launches by its own name rather than being hardcoded to "shell".
 func (m model) launchCommand(name string) (model, tea.Cmd) {
-	cmd, err := launchAgent(name, config.Model{}, m.selectedPath, false, nil, m.cfg, m.extraArgs)
+	cmd, err := launchAgent(name, config.Model{}, m.selectedPath, false, m.cfg, m.extraArgs)
 	if err != nil {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
@@ -831,10 +771,9 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 
 // enterModelPhase builds the selector table for the agent and either
 // transitions to phaseModel or, when exactly one launchable row exists, skips
-// the picker. The skip path reuses proceedToLaunch so the session-resume prompt
-// and the global rotation recording still run — the rotation only advances
-// after the user resolves the resume prompt, so a cancel there leaves
-// rotation untouched.
+// the picker. The skip path reuses proceedToLaunch so the launch-time route
+// check and the global rotation recording still run, exactly as for a row
+// picked by hand.
 //
 // models is the agent's eligible list; local models that are not
 // running appear as start rows (Enter runs the lifecycle engine; only blocked
@@ -1129,16 +1068,13 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 		m.status = "no model selected"
 		return m.refreshTable()
 	}
-	// Capture the model so launchAndRecord records exactly this pick in
-	// both the no-session and resume paths, without re-reading the picker.
+	// Capture the model so launchAndRecord records exactly this pick, also
+	// when the launch continues from the routing phase an Update later,
+	// without re-reading the picker.
 	m.launchModel = highlighted.model
-	// A new attempt: a note left by an earlier one is not about this launch,
-	// and neither is whatever the status line still shows — the note esc kept
-	// from the last resume prompt, or an older error. The resume prompt and
-	// the picker both render m.status, so leaving it would put another
-	// model's route line on this attempt's screens. No caller sets a status
-	// just before calling this that is meant to survive it.
-	m.routeNote = ""
+	// A new attempt: whatever the status line still shows — an older error —
+	// is not about this launch, and the picker renders m.status. No caller sets a status just before calling
+	// this that is meant to survive it.
 	m.status = ""
 	// A launch row is a model that was already running, and wt may not be
 	// what started it, so its LiteLLM route may not exist yet. A row this
@@ -1156,12 +1092,9 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	return m.checkLaunchRoute(highlighted.model)
 }
 
-// launchSelected launches m.launchModel: it checks for a prior session and
-// either launches the agent directly or transitions to the resume prompt. It
-// reads m.launchModel rather than the picker's cursor because it also runs
-// from the routing phase's completion message, an Update later than the one
-// that picked the row. m.routeNote, the status line a route check left, is
-// kept beside a resume warning rather than replaced by it.
+// launchSelected launches m.launchModel. It reads m.launchModel rather than the
+// picker's cursor because it also runs from the routing phase's completion
+// message, an Update later than the one that picked the row.
 // Every path that bails back to the picker re-probes the table: this is reached
 // from the start flow, where the table was built before the attempt, so a start
 // that succeeded and then failed to launch would otherwise leave the picker
@@ -1169,47 +1102,23 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 // deferred to a command, so paying for it on the paths that did not start
 // anything costs nothing on the update loop.
 func (m model) launchSelected() (model, tea.Cmd) {
-	// Native models launch fresh: resuming a session would restore the
-	// session's stored model, silently overriding the user's "native" choice
-	// (and, for claude, routing a gateway model at the real Anthropic API).
-	// A failed lookup warns in the status line and still launches: resume is a
-	// convenience, and refusing to launch over it left the user unable to
-	// start the agent at all (opencode #162). The lookup itself is shared with
-	// the non-TUI path via agents.ResumeSession so the two cannot disagree.
-	sess, warning := resumeSession(m.agent, m.launchModel.Native, m.selectedPath)
-	if warning != "" {
-		// The route note is already in the status line; a warning must not
-		// push it out, so both are shown.
-		if m.routeNote != "" {
-			warning = m.routeNote + "; " + warning
-		}
-		m.status = warning
+	// wt starts the agent fresh. Whether to continue an earlier conversation
+	// is the agent's business: the user says so with the agent's own flags
+	// after `--` (m.extraArgs), which launchAgent passes through unchanged.
+	cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.cfg, m.extraArgs)
+	if err != nil {
+		m.status = "launch failed: " + err.Error()
+		return m.refreshTable()
 	}
-	if sess == nil {
-		cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
-		if err != nil {
-			m.status = "launch failed: " + err.Error()
-			return m.refreshTable()
-		}
-		return m.launchAndRecord(cmd)
-	}
-	m.phase = phaseResume
-	m.resume.session = sess
-	m.resume.choices = list.New(buildResumeChoices(sess), ThemedListDelegate(m.theme), m.width-2, m.height-2)
-	m.resume.choices.Title = "Resume previous session?"
-	// The status (a route note, a resume warning) is already set: leave room
-	// for it now, for a caller that renders before the next Update.
-	m.fitLists()
-	return m, nil
+	return m.launchAndRecord(cmd)
 }
 
 // launchAndRecord records the model as last-launched (so the next picker
 // entry advances rotation), records a live-session refcount entry for the
 // model picker's "in use" column, and then runs the agent. Recording
 // happens here — the single commit point reached only after the ollama
-// check and resume prompt have been satisfied — so a cancelled ollama
-// warning, a cancelled resume prompt, or a failed ollama check never
-// advances the rotation or the refcount. Both state writes are
+// check has been satisfied — so a cancelled ollama warning or a failed
+// ollama check never advances the rotation or the refcount. Both state writes are
 // best-effort: a failure of either (or both) surfaces in m.status and the
 // launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {

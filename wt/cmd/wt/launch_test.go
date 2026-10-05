@@ -10,9 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
@@ -20,7 +20,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -28,99 +27,12 @@ import (
 // clear error rather than a nil command. Without this the launch path could
 // dereference a nil driver.
 func TestBuildLaunchUnknownAgent(t *testing.T) {
-	_, err := buildLaunch("not-an-agent", config.Model{}, "/tmp", false, nil, nil, nil)
+	_, err := buildCommandForModel("not-an-agent", config.Model{}, "/tmp", nil, false, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
 	if !strings.Contains(err.Error(), "unknown agent") {
 		t.Errorf("error = %q, want 'unknown agent'", err.Error())
-	}
-}
-
-// TestBuildLaunchClaudeResume asserts that a claude launch with a session
-// appends --resume <id>. This is the non-TUI resume wiring that the bash
-// claude-wt wrapper used to do. The model is a provider-hosted (non-native)
-// model: native models must never resume (see TestBuildLaunchNativeSkipsResume).
-func TestBuildLaunchClaudeResume(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--resume abc-123") {
-		t.Errorf("args = %q, want --resume abc-123", got)
-	}
-}
-
-// TestBuildLaunchNativeSkipsResume asserts that a native model (e.g.
-// claude/native) never appends --resume, even when a session is supplied.
-// Native models launch with no model override, so resuming a session would
-// restore the session's stored model and silently override the user's
-// "native" choice — the exact bug where selecting claude/native launched
-// claude with a prior session's kimi-k2.7-code:cloud model.
-func TestBuildLaunchNativeSkipsResume(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native", Native: true}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, native model must not resume", got)
-	}
-}
-
-// TestBuildLaunchOpenCodeResume asserts that an opencode launch with a session
-// appends --session <id>.
-func TestBuildLaunchOpenCodeResume(t *testing.T) {
-	if _, err := exec.LookPath("opencode"); err != nil {
-		t.Skip("opencode not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--session proj-123.json") {
-		t.Errorf("args = %q, want --session proj-123.json", got)
-	}
-}
-
-// TestBuildLaunchNoSessionOmitsResume asserts that a nil session injects no
-// resume/session flag on a non-native model. This is the "start fresh" path
-// — and the test deliberately uses a non-native model so it exercises only
-// the sess==nil short-circuit. Native-model behavior is pinned separately:
-// TestBuildLaunchNativeSkipsResume covers native+session, and
-// TestBuildLaunchCmdNativeSkipsResume in the agents package pins the
-// defense-in-depth `!m.Native` guard directly.
-func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, cfg, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, should not contain resume/session flags", got)
 	}
 }
 
@@ -169,7 +81,7 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 		},
 	}
 	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
-	cmd, err := buildLaunch("pi", m, "/tmp", false, nil, cfg, nil)
+	cmd, err := buildCommandForModel("pi", m, "/tmp", cfg, false, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -2020,5 +1932,107 @@ func TestLaunchStaysQuietWithoutAMistakenPath(t *testing.T) {
 	}
 	if notes.Len() != 0 {
 		t.Fatalf("notes = %q, want none", notes.String())
+	}
+}
+
+// agentSessionFixture sets up what used to make wt resume by itself: a fake
+// `claude` that records its arguments, a HOME holding a prior claude session
+// for the launch directory, and a non-native model on a direct route. It
+// returns the launch directory, the config, and a reader for the arguments
+// the agent was started with.
+func agentSessionFixture(t *testing.T) (launch string, cfg *config.Config, args func() []string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch = filepath.Join(root, "repo")
+	home := filepath.Join(root, "home")
+	argv := filepath.Join(root, "argv")
+	binDir := filepath.Join(root, "bin")
+	projects := claudeStateDir(t, home, launch)
+	for _, d := range []string{launch, binDir, projects} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The prior session wt used to find: the newest .jsonl in the project dir.
+	if err := os.WriteFile(filepath.Join(projects, "0000aaaa-prior-session.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + argv + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
+	t.Setenv("MODELMAN_REGISTRY", "")
+	oldDir := shellDir
+	shellDir = func() (string, error) { return launch, nil }
+	t.Cleanup(func() { shellDir = oldDir })
+
+	cfg = &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m", Tags: []string{"code"}}},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"omlx"}}},
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/m", Artifact: "m", ModelName: "m", Registered: true, Running: true, ArtifactKnown: true},
+		},
+	})
+	return launch, cfg, func() []string {
+		t.Helper()
+		b, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatalf("the agent was not run: %v", err)
+		}
+		return strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	}
+}
+
+// TestLaunchLeavesSessionsToTheAgent pins that wt never resumes a session by
+// itself (#198, #204). It used to look up the newest session recorded for the
+// launch directory and add the agent's resume flag without being asked, so a
+// one-shot run appended to the user's last conversation — whichever session
+// was newest, including one another process was still using — and an opencode
+// launch failed when the resumed session had stored a different model. Whether
+// to continue a conversation is the agent's business: wt starts it fresh.
+func TestLaunchLeavesSessionsToTheAgent(t *testing.T) {
+	launch, cfg, args := agentSessionFixture(t)
+	if err := launchFiltered("claude", launch, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	got := args()
+	for _, a := range got {
+		if a == "--resume" || a == "--continue" || a == "--session" || strings.Contains(a, "prior-session") {
+			t.Fatalf("agent started with %q: wt resumed a session nobody asked for (args %v)", a, got)
+		}
+	}
+}
+
+// TestLaunchPassesTheUsersResumeFlagsThrough pins the other half: resuming is
+// done with the agent's own flags after `--`, and wt hands them over
+// unchanged and in order — after its own flags, so a yolo launch still works.
+func TestLaunchPassesTheUsersResumeFlagsThrough(t *testing.T) {
+	launch, cfg, args := agentSessionFixture(t)
+	extra := []string{"--resume", "1234abcd-chosen-by-the-user", "--fork-session"}
+	if err := launchFiltered("claude", launch, cfg, true, "", "", "", false, extra, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	got := args()
+	if n := len(got); n < len(extra) || !slices.Equal(got[n-len(extra):], extra) {
+		t.Fatalf("args = %v, want them to end with the user's %v", got, extra)
+	}
+	if n := strings.Count(strings.Join(got, " "), "--resume"); n != 1 {
+		t.Fatalf("args = %v, want exactly the one --resume the user passed", got)
+	}
+	if !slices.Contains(got, "--dangerously-skip-permissions") {
+		t.Errorf("args = %v, want the yolo flag kept alongside the passthrough", got)
 	}
 }

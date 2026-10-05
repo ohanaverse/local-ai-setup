@@ -1,16 +1,13 @@
 package tui
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -256,42 +253,10 @@ func TestPhaseAgentEnterSkipsPickerWhenSingleModel(t *testing.T) {
 	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := gotModel.(model)
 	if nm.phase == phaseModel {
-		t.Fatalf("phase = phaseModel; want picker-skip (phaseResume or launch cmd)")
+		t.Fatalf("phase = phaseModel; want the picker skipped and the launch command returned")
 	}
 	if cmd == nil {
 		t.Fatal("expected launch cmd from single-model skip; got nil")
-	}
-}
-
-// TestPhaseAgentEnterSingleModelShowsResumePrompt asserts that when the
-// eligible list is one model AND a prior claude session exists, the skip
-// path goes to phaseResume (the resume prompt still applies — skipping
-// the picker doesn't bypass the user's choice between resume/fresh).
-func TestPhaseAgentEnterSingleModelShowsResumePrompt(t *testing.T) {
-	tempStateDir(t)
-	stubUsageStore(t)
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	repo := t.TempDir()
-	slug := session.Slug(repo)
-	sessDir := filepath.Join(homeDir, ".claude", "projects", slug)
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessDir, "session.jsonl"), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
-
-	m := buildModelInPhaseAgent(t, singleModelConfig())
-	m.selectedPath = repo
-
-	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	nm := gotModel.(model)
-	if nm.phase != phaseResume {
-		t.Fatalf("phase = %v, want phaseResume (skip must still run session check)", nm.phase)
-	}
-	if cmd != nil {
-		t.Errorf("expected no cmd while showing resume prompt, got %v", cmd)
 	}
 }
 

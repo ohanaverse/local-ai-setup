@@ -317,7 +317,7 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 	// temporary directory (NewRowDir) unless --cwd was passed.
 	yolo := agentName != "codex"
 	// Built with no directory: it is set below, once the agent is known to run.
-	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, "", yolo, nil, cfg, nil)
+	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, "", yolo, cfg, nil)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}

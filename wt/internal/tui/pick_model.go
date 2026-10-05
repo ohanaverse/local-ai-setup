@@ -11,7 +11,7 @@ import (
 // pickModel is a minimal standalone Bubble Tea program that shows the same
 // selector table buildTable produces for the main TUI's agent flow, for
 // callers (e.g. wt smoke) that need a one-off model pick without the full
-// worktree->agent->model->resume->launch state machine. Unlike that flow, the
+// worktree->agent->model->launch state machine. Unlike that flow, the
 // list here is never scoped to a single agent, so its survey segment is
 // always empty (agent-specific) and undiscovered models are hidden (wt smoke
 // only shows the models it passes in). A per-row exception marker can still
