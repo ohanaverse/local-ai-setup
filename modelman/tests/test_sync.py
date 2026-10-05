@@ -690,3 +690,85 @@ def test_ensure_provider_entries_does_not_add_omlx_beside_an_omlx_6bit_row():
     with patch("modelman.sync._installed_local_providers", return_value=["omlx"]):
         assert _ensure_provider_entries(registry) == []
     assert [p.id for p in registry.providers] == ["omlx-6bit"]
+
+
+def test_modeldir_reconcile_covers_an_omlx_6bit_row(tmp_path):
+    # #225: `modelman sync` reconciles model-directory providers, but decided
+    # which rows those are from a fixed list of ids that `omlx-6bit` is not
+    # in. Since #194 that row resolves to omlx's class everywhere else (the
+    # TUI's reconcile included), so sync alone skipped its entries: a model
+    # on an omlx-6bit row never got its on-disk state recorded by sync. The
+    # row is chosen by the class it resolves to.
+    model_dir = tmp_path / "models"
+    (model_dir / "Six").mkdir(parents=True)
+    (model_dir / "Six" / "weights.safetensors").write_bytes(b"x" * 10)
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="omlx-6bit", name="oMLX 6-bit", model_dir=str(model_dir)),
+            ProviderEntry(id="openrouter", name="OpenRouter", location="cloud"),
+        ],
+        models=[
+            ModelEntry(
+                id="omlx-6bit/org--Six",
+                family="f",
+                provider_id="omlx-6bit",
+                model_name="org/Six",
+                fetch=Fetch(repo="org/Six"),
+            ),
+            ModelEntry(
+                id="omlx-6bit/org--Gone",
+                family="f",
+                provider_id="omlx-6bit",
+                model_name="org/Gone",
+                fetch=Fetch(repo="org/Gone"),
+            ),
+        ],
+    )
+    providers = _modeldir_providers(registry)
+    assert set(providers) == {"omlx-6bit"}
+    downloaded = list_modeldir(registry, providers)
+    assert set(downloaded) == {"omlx-6bit/org--Six"}
+    assert downloaded["omlx-6bit/org--Six"][0] == str(model_dir / "Six")
+
+
+def test_sync_end_to_end_reconciles_an_omlx_6bit_row(tmp_path):
+    # #225, through sync() itself: the model-directory listing was one gate
+    # and reconcile() had a second fixed-id list of its own, so fixing the
+    # first alone still left every omlx-6bit entry untouched. The case the
+    # issue names: an artifact deleted by hand leaves ready/disk_path/size
+    # stale after `modelman sync`. Both directions are checked — an on-disk
+    # model is recorded ready, a missing one is cleared.
+    model_dir = tmp_path / "models"
+    (model_dir / "Six").mkdir(parents=True)
+    (model_dir / "Six" / "weights.safetensors").write_bytes(b"x" * 10)
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx-6bit", name="oMLX 6-bit", model_dir=str(model_dir))],
+        models=[
+            ModelEntry(
+                id="omlx-6bit/org--Six",
+                family="f",
+                provider_id="omlx-6bit",
+                model_name="org/Six",
+                location="local",
+                fetch=Fetch(repo="org/Six"),
+            ),
+            ModelEntry(
+                id="omlx-6bit/org--Gone",
+                family="f",
+                provider_id="omlx-6bit",
+                model_name="org/Gone",
+                location="local",
+                fetch=Fetch(repo="org/Gone"),
+            ),
+        ],
+    )
+    state = StateStore()
+    state.set("omlx-6bit/org--Gone", ModelState(ready=True, disk_path="/old/Gone", size_bytes=5))
+    runner = MagicMock(return_value=_result(0, "NAME ID SIZE MODIFIED\n"))
+    result = sync(registry, state, runner=runner)
+    assert state.get("omlx-6bit/org--Six").ready is True
+    assert state.get("omlx-6bit/org--Six").disk_path == str(model_dir / "Six")
+    gone = state.get("omlx-6bit/org--Gone")
+    assert gone.ready is False and gone.disk_path is None, gone
+    assert "omlx-6bit/org--Six" in result.downloaded
+    assert "omlx-6bit/org--Gone" in result.not_downloaded

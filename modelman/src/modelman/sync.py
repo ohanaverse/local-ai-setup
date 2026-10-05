@@ -190,13 +190,20 @@ def _modeldir_providers(registry: Registry) -> dict[str, Provider]:
     per-model directory. The set is defined by MODELDIR_PROVIDER_IDS.
     """
     provider_instances: dict[str, Provider] = {}
-    for provider_id in MODELDIR_PROVIDER_IDS:
-        try:
-            entry = registry.provider(provider_id)
-        except KeyError:
+    for entry in registry.providers:
+        if not _is_modeldir_row(entry.id):
             continue
-        provider_instances[provider_id] = ProviderRegistry.get(provider_id, provider_config(entry))
+        provider_instances[entry.id] = ProviderRegistry.get(entry.id, provider_config(entry))
     return provider_instances
+
+
+def _is_modeldir_row(provider_id: str) -> bool:
+    """Whether registry row `provider_id` is a model-directory provider: by
+    the class it resolves to, not its raw id, so a second row for the same
+    server (`omlx-6bit`, which is omlx's) is reconciled like the first. The
+    TUI's reconcile already resolved rows this way; a fixed id list here made
+    `modelman sync` alone skip those entries (#225)."""
+    return ProviderRegistry.resolve(provider_id) in MODELDIR_PROVIDER_IDS
 
 
 def list_modeldir(
@@ -205,7 +212,7 @@ def list_modeldir(
     """Return {model_id: (disk_path, size_bytes)} for downloaded model-dir models."""
     downloaded: dict[str, tuple[str, int]] = {}
     for m in registry.models:
-        if m.provider_id not in MODELDIR_PROVIDER_IDS:
+        if not _is_modeldir_row(m.provider_id):
             continue
         provider = provider_instances.get(m.provider_id)
         if provider is None:
@@ -240,7 +247,11 @@ def reconcile(
     """
     result = SyncResult()
     for m in registry.models:
-        if m.provider_id not in RECONCILABLE_PROVIDERS or not is_model_local(
+        # By the class the row resolves to, like _is_modeldir_row: an entry on
+        # an `omlx-6bit` row is omlx's and is reconciled with it (#225).
+        if ProviderRegistry.resolve(
+            m.provider_id
+        ) not in RECONCILABLE_PROVIDERS or not is_model_local(
             m.location, m.provider_id, registry, missing_provider_is_local=True
         ):
             continue

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
 from .providers.mtplx import MTPLX_V1_BASE
+from .providers.registry import ProviderRegistry
 from .time_pricing import TimePrice, parse_time_prices, time_price_to_dict
 
 if TYPE_CHECKING:
@@ -561,6 +562,10 @@ def find_shared_artifact_owner(
     provider has no artifact_paths or the paths can't be resolved —
     callers treat that as "no conflict" and proceed with the normal delete.
 
+    "Another entry" includes one on a sibling row of the same server (an
+    `omlx-6bit` entry and an `omlx` entry), compared through each row's own
+    settings.
+
     Shared by queue.py's delete/ready-off steps and its cancelled-download
     cleanup (_cleanup_partial_download) — all three remove an on-disk
     artifact and must not do so when another registry entry still owns it.
@@ -574,16 +579,46 @@ def find_shared_artifact_owner(
         return None
     if not mine:
         return None
+    # Entries on another registry row of the SAME server count too (#224):
+    # `omlx` and `omlx-6bit` are two rows over one model directory, so an
+    # entry on either can own the directory the other is about to remove. A
+    # sibling's paths are resolved through ITS OWN row's provider — its own
+    # model_dir — never through the deleting row's: two rows pointed at
+    # different directories share nothing.
+    my_server = ProviderRegistry.resolve(variant["provider"])
+    siblings: dict[str, Any] = {}
     for m in registry.models:
-        if m.id == variant["id"] or m.provider_id != variant["provider"]:
+        if m.id == variant["id"]:
+            continue
+        if m.provider_id == variant["provider"]:
+            their_paths = artifact_paths
+        elif ProviderRegistry.resolve(m.provider_id) == my_server:
+            if m.provider_id not in siblings:
+                siblings[m.provider_id] = _sibling_artifact_paths(registry, m.provider_id)
+            their_paths = siblings[m.provider_id]
+            if their_paths is None:
+                continue
+        else:
             continue
         try:
-            theirs = artifact_paths(model_entry_to_variant(m))
+            theirs = their_paths(model_entry_to_variant(m))
         except Exception:  # noqa: BLE001
             continue
         if mine & theirs:
             return m
     return None
+
+
+def _sibling_artifact_paths(registry: Registry, provider_id: str) -> Any:
+    """artifact_paths of the provider built for registry row `provider_id`,
+    or None when that row is missing or its provider cannot be built."""
+    try:
+        row = registry.provider(provider_id)
+        provider = ProviderRegistry.get(provider_id, provider_config(row))
+    except Exception:  # noqa: BLE001
+        return None
+    fn = getattr(provider, "artifact_paths", None)
+    return fn if callable(fn) else None
 
 
 def _fetch_to_dict(f: Fetch) -> dict[str, Any]:

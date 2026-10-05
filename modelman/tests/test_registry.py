@@ -1312,3 +1312,93 @@ windows = [{ days = ["sat"], start = "00:00", end = "24:00" }]
     )
     with pytest.raises(RegistryError, match="Model `m` cost .*IANA"):
         load_registry(path)
+
+
+def _two_row_omlx_registry(dir_omlx, dir_6bit, *, same_repo: bool = True) -> Registry:
+    """An `omlx` row and an `omlx-6bit` row — one server, two registry rows —
+    each with one entry. `same_repo` gives both entries the same repo
+    basename, which is what omlx keys its model directory on."""
+    return Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", location="local", model_dir=str(dir_omlx)),
+            ProviderEntry(
+                id="omlx-6bit", name="oMLX 6-bit", location="local", model_dir=str(dir_6bit)
+            ),
+        ],
+        models=[
+            ModelEntry(
+                id="omlx/org--Shared",
+                family="f",
+                provider_id="omlx",
+                model_name="org/Shared",
+                fetch=Fetch(repo="org/Shared"),
+            ),
+            ModelEntry(
+                id="omlx-6bit/org--Shared" if same_repo else "omlx-6bit/org--Other",
+                family="f",
+                provider_id="omlx-6bit",
+                model_name="org/Shared" if same_repo else "org/Other",
+                fetch=Fetch(repo="org/Shared" if same_repo else "org/Other"),
+            ),
+        ],
+    )
+
+
+def _row_provider(registry: Registry, row_id: str):
+    import modelman.providers  # noqa: F401 — registers the provider classes
+    from modelman.providers.registry import ProviderRegistry
+    from modelman.registry import provider_config
+
+    return ProviderRegistry.get(row_id, provider_config(registry.provider(row_id)))
+
+
+def test_shared_artifact_owner_is_found_on_a_sibling_omlx_row(tmp_path):
+    # #224: `omlx` and `omlx-6bit` are two registry rows for ONE server and,
+    # by default, one model directory keyed on the repo basename. The guard
+    # that stops a delete when another entry still owns the directory only
+    # looked at entries on the SAME row — and since #194 an omlx-6bit entry
+    # can reach OMLXProvider.delete(), which rmtree's that directory. With the
+    # same repo registered once under each row, deleting either must be
+    # refused on behalf of the other.
+    pool = tmp_path / "pool"
+    (pool / "Shared").mkdir(parents=True)
+    (pool / "Shared" / "weights.safetensors").write_bytes(b"x")
+    registry = _two_row_omlx_registry(pool, pool)
+    by_id = {m.id: m for m in registry.models}
+    for deleting, owner in (
+        ("omlx-6bit/org--Shared", "omlx/org--Shared"),
+        ("omlx/org--Shared", "omlx-6bit/org--Shared"),
+    ):
+        entry = by_id[deleting]
+        provider = _row_provider(registry, entry.provider_id)
+        found = find_shared_artifact_owner(registry, provider, model_entry_to_variant(entry))
+        assert found is not None and found.id == owner, (deleting, found)
+
+
+def test_shared_artifact_owner_resolves_a_sibling_through_its_own_row(tmp_path):
+    # The sibling's directory is worked out with the SIBLING row's settings,
+    # not the deleting row's. Two rows with different model_dirs holding the
+    # same repo basename are two different directories: neither blocks the
+    # other. (Resolving the sibling through the deleting row's model_dir
+    # would see one shared path here and refuse a perfectly safe delete.)
+    dir_a, dir_b = tmp_path / "a", tmp_path / "b"
+    for d in (dir_a, dir_b):
+        (d / "Shared").mkdir(parents=True)
+        (d / "Shared" / "weights.safetensors").write_bytes(b"x")
+    registry = _two_row_omlx_registry(dir_a, dir_b)
+    for entry in registry.models:
+        provider = _row_provider(registry, entry.provider_id)
+        variant = model_entry_to_variant(entry)
+        assert find_shared_artifact_owner(registry, provider, variant) is None, entry.id
+
+
+def test_shared_artifact_owner_ignores_a_different_repo_on_the_sibling_row(tmp_path):
+    pool = tmp_path / "pool"
+    for name in ("Shared", "Other"):
+        (pool / name).mkdir(parents=True)
+        (pool / name / "weights.safetensors").write_bytes(b"x")
+    registry = _two_row_omlx_registry(pool, pool, same_repo=False)
+    for entry in registry.models:
+        provider = _row_provider(registry, entry.provider_id)
+        variant = model_entry_to_variant(entry)
+        assert find_shared_artifact_owner(registry, provider, variant) is None, entry.id
