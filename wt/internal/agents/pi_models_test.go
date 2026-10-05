@@ -1086,6 +1086,58 @@ func TestSyncModelsTargetAlreadyCoveredChangesNothing(t *testing.T) {
 	}
 }
 
+// TestSyncedModelsAddsOnlyAnUncoveredTarget pins the "covered" rule itself
+// (#195). TestSyncModelsTargetAlreadyCoveredChangesNothing cannot: the entry
+// writers skip a key that is already present, so with the rule deleted a
+// registry-model target is appended, written to the same key, and the file
+// comes out identical. What the rule decides is visible here — the model set
+// — and in the one case the writers cannot absorb: a target that is the same
+// provider-side model as a registry entry under a different id, which would
+// otherwise get a second litellm entry for a model the catalog already has.
+func TestSyncedModelsAddsOnlyAnUncoveredTarget(t *testing.T) {
+	cfg := discoveredCfg()
+	reg := cfg.Models[0]
+	sameModelOtherID := config.Model{ID: "ollama/alias", ProviderID: reg.ProviderID, ModelName: reg.ModelName, Location: config.LocationLocal}
+	for name, target := range map[string]config.Model{
+		"a registry model":                       reg,
+		"the same provider-side model, new id":   sameModelOtherID,
+		"a native model":                         {ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Native: true},
+		"a target with no model name":            {ID: "ollama/x", ProviderID: "ollama"},
+		"the zero model (no launch in progress)": {},
+	} {
+		if got := syncedModels(cfg, target); len(got) != len(cfg.Models) {
+			t.Errorf("%s: synced %d models, want the registry's %d — the target is covered", name, len(got), len(cfg.Models))
+		}
+	}
+	discovered := config.Model{ID: "ollama/llama3.2:1b", ProviderID: "ollama", ModelName: "llama3.2:1b", Location: config.LocationLocal}
+	got := syncedModels(cfg, discovered)
+	if len(got) != len(cfg.Models)+1 || got[len(got)-1].ID != discovered.ID {
+		t.Fatalf("discovered target: synced %+v, want the registry models plus the target", got)
+	}
+	if len(cfg.Models) != 1 {
+		t.Fatalf("syncedModels grew cfg.Models to %d", len(cfg.Models))
+	}
+
+	// The same rule, seen in the file: through LiteLLM an entry is keyed by
+	// id, so only the covered check keeps the alias from getting one.
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	sync := func(target config.Model) string {
+		path := filepath.Join(t.TempDir(), "models.json")
+		writeFile(t, path, emptyPiModels)
+		if err := syncModels(cfg, path, target, Route{}); err != nil {
+			t.Fatalf("syncModels: %v", err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	if base, got := sync(config.Model{}), sync(sameModelOtherID); got != base || strings.Contains(got, "ollama/alias") {
+		t.Errorf("a target the registry already serves under another id changed the file:\nno target: %s\nalias:     %s", base, got)
+	}
+}
+
 // TestSyncModelsDirectDiscoveredTargetSkipsProviderWithoutBaseURL verifies a
 // discovered target whose provider has no registry row, or a row with no
 // base_url, writes nothing — the same skip registry models get. A block

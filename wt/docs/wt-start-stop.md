@@ -34,6 +34,10 @@ wt stop <target> --yes           # skip the in-use confirmation
 - No lifecycle backend (mlx_lm_server): exits 1 with the `modelman start`
   hint. A stopped mlx_lm_server pairing is not listed in the picker, so
   that message is reached only by naming the model.
+- A provider wt cannot probe (retired llamacpp): a registry model of it is
+  still listed, as a row that cannot be selected, since wt can neither
+  see whether it is on disk nor start it. `wt start <id>` exits 1 with
+  `local model "<id>" is not running — start it with \`modelman start <id>\``.
 - A started model is routed under its registry id, or its discovered id
   (`<family>/<artifact>`) when it has no registry entry; starting or
   stopping an omlx/mtplx model clears that provider family's routes — the

@@ -2244,3 +2244,30 @@ def test_probe_running_mtplx_does_not_consult_health():
         patch("modelman.local_control._http_json", side_effect=AssertionError("asked /health")),
     ):
         assert _probe_running("mtplx", "Org/Q", "http://localhost:8003") is True
+
+
+def test_discovered_models_lists_an_artifact_once_per_discovered_id():
+    # wt#195: omlx and omlx-6bit are two registry rows for one server and one
+    # model directory, so both rows list every artifact in it. The discovered
+    # id is per FAMILY ("omlx/<name>" for both), and the TUI's "+" rows,
+    # `modelman start`'s listing and name resolution all key on it: without
+    # the dedup one model directory shows as two rows and a bare name is
+    # "ambiguous" between two spellings of the same id. One entry survives,
+    # under the provider row that sorts first.
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", location="local", auth=AuthConfig(type="none")),
+            ProviderEntry(
+                id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none")
+            ),
+        ]
+    )
+    local_map = {
+        ("omlx-6bit", "Shared-4bit"): {"path": "/m/Shared-4bit", "size_bytes": 7},
+        ("omlx", "Shared-4bit"): {"path": "/m/Shared-4bit", "size_bytes": 7},
+        ("omlx-6bit", "Other-6bit"): {"path": "/m/Other-6bit", "size_bytes": 9},
+    }
+    found = discover_unregistered_models(registry, local_map)
+    assert sorted(d.model_id for d in found) == ["omlx/Other-6bit", "omlx/Shared-4bit"]
+    shared = next(d for d in found if d.variant_id == "Shared-4bit")
+    assert shared.provider_id == "omlx"
