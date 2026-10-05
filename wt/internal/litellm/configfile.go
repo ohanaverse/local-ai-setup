@@ -542,14 +542,24 @@ func rowLabel(row *yaml.Node, model string) string {
 // wt's). Such a row is reported, naming the variable and where wt looked, and
 // never rewritten, an ollama/ row included: a variable may point at another
 // server on purpose, and the ollama address written over it would hide that.
+//
+// A whole value spelled as a YAML alias — `litellm_params: *params`, or
+// `api_base: *base` — is resolved the same way LiteLLM's loader resolves it,
+// so aliasing cannot hide a row from the scan.
 func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 	ml := f.modelListSeq()
 	if ml == nil {
 		return nil
 	}
+	aliasGet := func(n *yaml.Node) *yaml.Node {
+		if n != nil && n.Kind == yaml.AliasNode && n.Alias != nil {
+			return n.Alias
+		}
+		return n
+	}
 	var out []string
 	for _, row := range ml.Content {
-		p := mapGet(row, "litellm_params")
+		p := aliasGet(mapGet(row, "litellm_params"))
 		if p == nil || p.Kind != yaml.MappingNode {
 			continue
 		}
@@ -557,15 +567,17 @@ func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 		if model == nil || model.Kind != yaml.ScalarNode || !strings.Contains(model.Value, "ollama") {
 			continue
 		}
-		if b := mergedGet(p, "api_base"); b != nil && !isNull(b) {
-			name, isRef := strings.CutPrefix(b.Value, "os.environ/")
-			if b.Kind == yaml.ScalarNode && isRef && !env.IsSet(name) {
+		b := aliasGet(mergedGet(p, "api_base"))
+		if b == nil || isNull(b) {
+			out = append(out, fmt.Sprintf(`row %q (model %s) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`, rowLabel(row, model.Value), model.Value))
+			continue
+		}
+		if b.Kind == yaml.ScalarNode {
+			if name, isRef := strings.CutPrefix(b.Value, "os.environ/"); isRef && !env.IsSet(name) {
 				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base %s, and %s is not set in %s: LiteLLM starts its own "ollama serve" for it at proxy startup; set %s for the proxy or give the row an address`,
 					rowLabel(row, model.Value), model.Value, b.Value, name, env.Source, name))
 			}
-			continue
 		}
-		out = append(out, fmt.Sprintf(`row %q (model %s) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`, rowLabel(row, model.Value), model.Value))
 	}
 	return out
 }

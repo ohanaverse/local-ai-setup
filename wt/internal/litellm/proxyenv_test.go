@@ -159,3 +159,66 @@ func TestSyncWarnsAboutAnUnsetEnvironAPIBase(t *testing.T) {
 		t.Errorf("config holds the reference %d times, want all 3 kept — sync must not rewrite one:\n%s", n, b)
 	}
 }
+
+// aliasBody holds the same trigger spelled through YAML anchors and aliases.
+// `&name value` only names a node — it parses as an ordinary mapping or
+// scalar, exactly like the literal spelling — so the two anchor rows here are
+// controls. `*name` is the alias: a yaml.AliasNode whose .Value holds the
+// anchor name, which the scan must resolve (.Alias) the way LiteLLM's YAML
+// loader resolves it in kind. A row hidden behind an alias would otherwise
+// skip the unset-variable warning and its second `ollama serve` would go
+// unexplained. The rows are left alone: no row is rewritten, whatever the
+// value references.
+const aliasBody = `model_list:
+  - model_name: hand/anchor-params
+    litellm_params: &params
+      model: openai/ollama-proxy
+      api_base: os.environ/OLLAMA_BASE_UNSET
+  - model_name: hand/params-alias
+    litellm_params: *params
+  - model_name: hand/anchor-base
+    litellm_params:
+      model: ollama_chat/far:1b
+      api_base: &base os.environ/OLLAMA_BASE_UNSET
+  - model_name: hand/base-alias
+    litellm_params:
+      model: ollama_chat/far:2b
+      api_base: *base
+`
+
+// TestSyncWarnsThroughYAMLAliases pins the alias spellings of #211: a row
+// whose litellm_params or whose api_base is an alias to an unset
+// os.environ/VAR warns like the literal spelling does — the same second
+// `ollama serve` would run — and sync rewrites no row.
+func TestSyncWarnsThroughYAMLAliases(t *testing.T) {
+	plist := writePlist(t, proxyPlist)
+	cfg := testConfig()
+	const tail = `: LiteLLM starts its own "ollama serve" for it at proxy startup; set OLLAMA_BASE_UNSET for the proxy or give the row an address`
+	where := "the proxy LaunchAgent's EnvironmentVariables (" + plist + ")"
+	ref := " has api_base os.environ/OLLAMA_BASE_UNSET, and OLLAMA_BASE_UNSET is not set in " + where + tail
+	want := []string{
+		`row "hand/anchor-params" (model openai/ollama-proxy)` + ref,
+		`row "hand/params-alias" (model openai/ollama-proxy)` + ref,
+		`row "hand/anchor-base" (model ollama_chat/far:1b)` + ref,
+		`row "hand/base-alias" (model ollama_chat/far:2b)` + ref,
+	}
+	o, _, p := opts(t, aliasBody)
+	plan, err := PlanSync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Warnings, want) || len(plan.Repair) != 0 {
+		t.Errorf("dry run: warnings = %q repair = %v\nwant warnings %q and no repair", plan.Warnings, plan.Repair, want)
+	}
+	res, err := Sync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Warnings, want) {
+		t.Errorf("sync warnings = %q, want %q", res.Warnings, want)
+	}
+	b, _ := os.ReadFile(p)
+	if n := strings.Count(string(b), "os.environ/OLLAMA_BASE_UNSET"); n != 2 {
+		t.Errorf("config holds the reference %d times, want both anchor definitions kept — the alias rows spell *params/*base and sync must not rewrite one:\n%s", n, b)
+	}
+}

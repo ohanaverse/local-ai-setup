@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // defaultProxyPlist is the LaunchAgent the fallback restart command
 // kickstarts (fallbackRestartCmd): the process whose environment LiteLLM's
-// `os.environ/…` config references are resolved in.
-const defaultProxyPlist = "~/Library/LaunchAgents/local.litellm.proxy.plist"
+// `os.environ/…` config references are resolved in. A LaunchAgent's filename
+// is its Label, so the path derives from proxyLabel (restart.go) and cannot
+// drift from the command that kickstarts the agent.
+const defaultProxyPlist = "~/Library/LaunchAgents/" + proxyLabel + ".plist"
 
 // ProxyEnv answers "is this variable set for the LiteLLM proxy?", and says
 // where it looked.
@@ -45,21 +48,32 @@ func (e ProxyEnv) IsSet(name string) bool {
 }
 
 // ProxyPlistPath is the proxy's LaunchAgent plist: WT_LITELLM_PLIST, else the
-// one the default restart command kickstarts.
+// one the default restart command kickstarts. A leading "~" is expanded the
+// way every wt path override is (config.ExpandHome, the helper
+// MODELMAN_REGISTRY uses); on an error there the literal path stays, which
+// the caller below reads with a failure and answers wt's own environment to.
 func ProxyPlistPath() string {
 	p := os.Getenv("WT_LITELLM_PLIST")
 	if p == "" {
 		p = defaultProxyPlist
 	}
-	if len(p) >= 2 && p[:2] == "~/" {
-		if home, err := os.UserHomeDir(); err == nil {
-			p = filepath.Join(home, p[2:])
-		}
+	if expanded, err := config.ExpandHome(p); err == nil {
+		p = expanded
 	}
 	return p
 }
 
-// LoadProxyEnv reads the environment the proxy runs with: the LaunchAgent
+// loadProxyEnv is the package var seam wt's test conventions use for
+// machine-touching behavior (wt/CLAUDE.md): production code calls the var,
+// tests swap it — the real one reads a file under the user's home, which no
+// test should probe unswapped.
+var loadProxyEnv = realLoadProxyEnv
+
+// LoadProxyEnv reads the environment the proxy runs with; see
+// realLoadProxyEnv for what that means.
+func LoadProxyEnv() ProxyEnv { return loadProxyEnv() }
+
+// realLoadProxyEnv reads the environment the proxy runs with: the LaunchAgent
 // plist's EnvironmentVariables. A readable plist without that key is an
 // answer — nothing is set. wt's own environment stands in only when the plist
 // cannot answer: a restart command is configured (WT_LITELLM_RESTART_CMD or
@@ -68,7 +82,7 @@ func ProxyPlistPath() string {
 //
 // Not consulted: variables given to launchd itself (`launchctl setenv`),
 // which a LaunchAgent also inherits.
-func LoadProxyEnv() ProxyEnv {
+func realLoadProxyEnv() ProxyEnv {
 	ambient := ProxyEnv{Source: "wt's own environment", ambient: true}
 	if RestartCommand() != fallbackRestartCmd {
 		return ambient
