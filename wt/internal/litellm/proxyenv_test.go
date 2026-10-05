@@ -222,3 +222,51 @@ func TestSyncWarnsThroughYAMLAliases(t *testing.T) {
 		t.Errorf("config holds the reference %d times, want both anchor definitions kept — the alias rows spell *params/*base and sync must not rewrite one:\n%s", n, b)
 	}
 }
+
+// TestSyncWarnsAboutAnEnvironRefWithNoName pins #218. `api_base: os.environ/`
+// — the prefix with no variable after it — is still LiteLLM's trigger (it
+// reads the variable "" and gets None), so the warning must fire. But it was
+// worded for a named variable and interpolated the empty name three times:
+// "and  is not set in … set  for the proxy". The no-name case has its own
+// sentence, which says what is wrong with the value and names no variable.
+// The named case beside it keeps its wording.
+func TestSyncWarnsAboutAnEnvironRefWithNoName(t *testing.T) {
+	plist := writePlist(t, proxyPlist)
+	body := `model_list:
+  - model_name: hand/typo
+    litellm_params: {model: ollama/far:1b, api_base: os.environ/}
+  - model_name: hand/unset
+    litellm_params: {model: openai/ollama-proxy, api_base: os.environ/OLLAMA_BASE_UNSET}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	want := []string{
+		`row "hand/typo" (model ollama/far:1b) has api_base os.environ/ with no variable name: LiteLLM resolves that to None and starts its own "ollama serve" for it at proxy startup; give the row an address or spell os.environ/<VAR>`,
+		`row "hand/unset" (model openai/ollama-proxy) has api_base os.environ/OLLAMA_BASE_UNSET, and OLLAMA_BASE_UNSET is not set in the proxy LaunchAgent's EnvironmentVariables (` + plist + `): LiteLLM starts its own "ollama serve" for it at proxy startup; set OLLAMA_BASE_UNSET for the proxy or give the row an address`,
+	}
+	o, _, p := opts(t, body)
+	plan, err := PlanSync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.Warnings, want) {
+		t.Errorf("dry run warnings = %q\nwant %q", plan.Warnings, want)
+	}
+	res, err := Sync(testConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Warnings, want) {
+		t.Errorf("sync warnings = %q\nwant %q", res.Warnings, want)
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "  ") {
+			t.Errorf("warning has a doubled space, the mark of an empty name interpolated: %q", w)
+		}
+	}
+	// Checked, never rewritten — on an ollama/ row too.
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "api_base: os.environ/}") {
+		t.Errorf("sync rewrote the no-name reference:\n%s", b)
+	}
+}

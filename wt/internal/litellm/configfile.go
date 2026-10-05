@@ -573,7 +573,17 @@ func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 			continue
 		}
 		if b.Kind == yaml.ScalarNode {
-			if name, isRef := strings.CutPrefix(b.Value, "os.environ/"); isRef && !env.IsSet(name) {
+			name, isRef := strings.CutPrefix(b.Value, "os.environ/")
+			switch {
+			case !isRef:
+			case strings.TrimSpace(name) == "":
+				// The prefix with no variable after it. LiteLLM reads the
+				// variable "" and gets None, so it is the same trigger — but
+				// there is no name to report as unset, and the sentence for a
+				// named variable would print three holes (#218).
+				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base os.environ/ with no variable name: LiteLLM resolves that to None and starts its own "ollama serve" for it at proxy startup; give the row an address or spell os.environ/<VAR>`,
+					rowLabel(row, model.Value), model.Value))
+			case !env.IsSet(name):
 				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base %s, and %s is not set in %s: LiteLLM starts its own "ollama serve" for it at proxy startup; set %s for the proxy or give the row an address`,
 					rowLabel(row, model.Value), model.Value, b.Value, name, env.Source, name))
 			}
