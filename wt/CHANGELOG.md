@@ -158,8 +158,9 @@
   wt now gives an ollama row with no `api_base` the registry's ollama address
   whenever it writes `config.yaml` — **on hand-written rows too**, that one
   field, and only when it is empty — and reports it (`<id>: api_base set`;
-  `would set api_base` in a dry run). A row that names its own address is
-  left alone.
+  `would set api_base` in a dry run; `wt: LiteLLM route for <id>: api_base
+  set` when a start, stop or launch makes the write). A row that names its
+  own address, or inherits one through a YAML merge key, is left alone.
 - wt prints a note when an argument after `--` is a relative path that
   resolves differently for the agent than for you. An agent starts in the
   worktree wt launches it in, so `opencode-wt -- ../../other`, typed in a

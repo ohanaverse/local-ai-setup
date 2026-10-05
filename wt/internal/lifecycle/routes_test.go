@@ -640,6 +640,27 @@ func TestEnsureRouteAddsOnlyTheModelsRoute(t *testing.T) {
 	}
 }
 
+// TestRouteWriteReportsTheAPIBaseRepair pins that a start, stop or launch
+// says so when its write fills an ollama row's empty api_base (#202). Any
+// write of config.yaml makes that repair, and the row is usually one the user
+// wrote by hand that the operation never named: only `wt litellm sync` listed
+// it, so the first write after an upgrade — most often a launch — changed a
+// hand-written row with nothing on screen but the launched model's own
+// "updated" line. That line stays last: it is what the picker's status shows.
+func TestRouteWriteReportsTheAPIBaseRepair(t *testing.T) {
+	res := litellm.Result{Changed: true, Outcomes: []litellm.Outcome{
+		{ID: "ollama/a:1", Action: "routed"},
+		{ID: "ollama/q8", Action: litellm.ActionAPIBaseSet},
+	}}
+	_, warn := stubRoutes(t, res, nil)
+	EnsureRoute(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"})
+	WaitPendingRoutes()
+	want := "wt: LiteLLM route for ollama/q8: api_base set\nwt: LiteLLM route for ollama/a:1 updated\n"
+	if got := warn.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 // TestEnsureRouteQuietWhenNothingChanged pins that a write reporting no
 // change prints nothing and restarts nothing, whatever the reason it was
 // unchanged. The write is stubbed, so why ApplyChange leaves a file alone
