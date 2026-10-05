@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -101,8 +100,8 @@ var stdinTTY = isStdinTTY
 // which `wt config` edits. A mistyped location is in registry.toml, modelman's
 // file, which `wt config` cannot repair — so that one names the file instead.
 func configError(err error) error {
-	if errors.Is(err, config.ErrLocation) {
-		return fmt.Errorf("config error: %w (fix the entry in %s)", err, config.RegistryPath())
+	if hint := config.RegistryFixHint(err); hint != "" {
+		return fmt.Errorf("config error: %w (%s)", err, hint)
 	}
 	return fmt.Errorf("config error: %w (run `wt config` to repair)", err)
 }

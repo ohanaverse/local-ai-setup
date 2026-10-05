@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
@@ -83,7 +84,49 @@ func (m model) Init() tea.Cmd {
 	}
 }
 
+// Update handles a message and then re-fits the list: the status line can
+// appear, change length or clear on any message, and the list owes it the
+// rows it takes (fitList).
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if nm, ok := next.(model); ok && nm.ready {
+		nm.fitList()
+		return nm, cmd
+	}
+	return next, cmd
+}
+
+// statusBlock is the status as it is drawn: wrapped to the terminal's width,
+// "" when there is none. A terminal cuts a too-wide line at its right edge,
+// and what a status ends with is often the part that matters — a location
+// error ends with the file to fix (#209).
+func (m model) statusBlock() string {
+	if m.status == "" {
+		return ""
+	}
+	if m.width <= 0 {
+		return m.status
+	}
+	return lipgloss.NewStyle().Width(m.width).Render(m.status)
+}
+
+// fitList sizes the agents list to the rows left under the title and the
+// status. A one-line status fits the two spare rows the list has always left;
+// each further line a wrapped status takes comes out of the list, so the view
+// is never taller than the terminal — Bubble Tea drops a too-tall view's top
+// lines, which here are the title and the status itself.
+func (m *model) fitList() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+	h := m.height - 4
+	if s := m.statusBlock(); s != "" {
+		h -= lipgloss.Height(s) - 1
+	}
+	m.list.SetSize(m.width-2, max(h, 1))
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -102,6 +145,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg = msg.cfg
 		if msg.err != nil {
 			m.status = "config load/validation error: " + msg.err.Error()
+			// This editor writes config.toml. An error whose repair is in
+			// registry.toml must say so here of all places: the user opened
+			// this screen to fix it.
+			if hint := config.RegistryFixHint(msg.err); hint != "" {
+				m.status += " (" + hint + ")"
+			}
 		}
 		m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 		return m, nil
@@ -220,8 +269,8 @@ func (m model) View() string {
 		return "You have unsaved changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel\n"
 	default:
 		var status string
-		if m.status != "" {
-			status = m.status + "\n\n"
+		if s := m.statusBlock(); s != "" {
+			status = s + "\n\n"
 		}
 		return "Agents (providers/models are managed by modelman)\n\n" + status + m.list.View()
 	}

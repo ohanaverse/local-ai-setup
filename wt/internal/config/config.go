@@ -912,6 +912,19 @@ func (c *Config) AgentByName(name string) (*Agent, error) {
 // reads but `wt config` does not edit.
 var ErrLocation = errors.New("invalid location")
 
+// RegistryFixHint is the hint for a config error whose repair is in
+// registry.toml — modelman's file, which `wt config` cannot edit — or "" for
+// any other error (and nil). Today that is a location error (ErrLocation). It
+// is the one source of the wording, so the commands that refuse to run on such
+// an error and the editor that opens on it name the same file the same way
+// (#209).
+func RegistryFixHint(err error) string {
+	if errors.Is(err, ErrLocation) {
+		return "fix the entry in " + RegistryPath()
+	}
+	return ""
+}
+
 // Valid reports whether l is one of the two locations the registry defines.
 // The registry is modelman's file and wt only reads it, so any other value —
 // a typo such as "Local", a word from some other scheme — is not interpreted:
