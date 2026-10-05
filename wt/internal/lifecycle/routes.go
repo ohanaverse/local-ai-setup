@@ -407,8 +407,15 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 		return false, err
 	}
 	for _, o := range res.Outcomes {
-		if o.Err != nil {
+		switch {
+		case o.Err != nil:
 			routePrintf(ctx, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
+		case o.Action == litellm.ActionAPIBaseSet:
+			// Any write repairs an ollama row with no api_base (#202), and the
+			// row can be one the user wrote by hand that this start, stop or
+			// launch never named. `wt litellm sync` prints it; a write made
+			// here must not change such a row without saying so.
+			routePrintf(ctx, "wt: LiteLLM route for %s: api_base set\n", o.ID)
 		}
 	}
 	// res.Warnings is only ever populated by ApplyChange's restart hook, which

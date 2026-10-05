@@ -14,6 +14,7 @@
       {"id": "openrouter/adopt", "action": "adopted"},
       {"id": "openrouter/new", "action": "routed"},
       {"id": "ollama/llama3.2:3b", "action": "routed"},
+      {"id": "ollama/mine", "action": "api_base set"},
       {"id": "openrouter/bad", "error": "model \"openrouter/bad\": empty model_name"}
     ],
     "changed": true,
@@ -26,6 +27,7 @@
       "adopt": ["ollama/gemma:9b"],
       "rewrite": [],
       "remove": ["openrouter/old"],
+      "repair": ["ollama/mine"],
       "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}]
     },
     "warnings": []

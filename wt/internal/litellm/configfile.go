@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -420,6 +421,96 @@ func isLoopback(n *yaml.Node) bool {
 		}
 	}
 	return loopbackHosts[strings.ToLower(u.Hostname())]
+}
+
+// mergeDepth bounds how many "<<" merges mergedGet follows from one mapping. A
+// real config nests one or two; the bound only keeps an anchor that merges
+// itself from recursing without end.
+const mergeDepth = 8
+
+// mergedGet is mapGet that also looks through the mapping's YAML merge keys
+// ("<<: *defaults", or a list of them), nearest first: a key the mapping names
+// itself wins, then each merged mapping in order. That is the value the YAML
+// loader LiteLLM reads config.yaml with hands it, so a key supplied by a merge
+// is present as far as the proxy is concerned even though the row does not
+// spell it.
+func mergedGet(m *yaml.Node, key string) *yaml.Node {
+	return mergedGetDepth(m, key, mergeDepth)
+}
+
+func mergedGetDepth(m *yaml.Node, key string, depth int) *yaml.Node {
+	if v := mapGet(m, key); v != nil || m == nil || m.Kind != yaml.MappingNode || depth == 0 {
+		return v
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if k := m.Content[i]; k.Kind != yaml.ScalarNode || k.Tag != "!!merge" {
+			continue
+		}
+		sources := []*yaml.Node{m.Content[i+1]}
+		if sources[0].Kind == yaml.SequenceNode {
+			sources = sources[0].Content
+		}
+		for _, s := range sources {
+			if s.Kind == yaml.AliasNode {
+				s = s.Alias
+			}
+			if v := mergedGetDepth(s, key, depth-1); v != nil {
+				return v
+			}
+		}
+	}
+	return nil
+}
+
+// EnsureOllamaAPIBase gives every ollama row with no api_base the address
+// base, and returns the names of the rows it changed (#202), each once. A row
+// is an ollama one when its model has the "ollama/" or "ollama_chat/" prefix,
+// and has no api_base when the key is absent, null or empty. Both are read
+// through YAML merge keys (mergedGet): a row that takes its api_base from
+// "<<: *defaults" names an address, and writing one beside the merge would
+// override it.
+//
+// It exists because of what LiteLLM does with such a row: at proxy startup,
+// for each model that names ollama and has no api_base, it runs `ollama serve`
+// itself. On a machine where ollama is already running, that second server
+// binds 127.0.0.1:11434 beside the first one's wildcard socket, and from then
+// on a client reaches one or the other depending on whether "localhost"
+// resolved to IPv4 or IPv6. A model gets loaded in both; wt stops it in the
+// one it can see and reports success while the other copy stays resident.
+//
+// So this repairs hand-written rows too — the one field, and only when it is
+// empty: a row that names an address of its own is the user's choice and is
+// never touched, and a repaired row stays unmarked, still the user's. base is
+// the registry's ollama address; with none to give (""), nothing is changed.
+func (f *File) EnsureOllamaAPIBase(base string) []string {
+	ml := f.modelListSeq()
+	if base == "" || ml == nil {
+		return nil
+	}
+	var names []string
+	for _, row := range ml.Content {
+		p := mapGet(row, "litellm_params")
+		if p == nil || p.Kind != yaml.MappingNode {
+			continue
+		}
+		model := mergedGet(p, "model")
+		if model == nil || model.Kind != yaml.ScalarNode {
+			continue
+		}
+		if !strings.HasPrefix(model.Value, "ollama/") && !strings.HasPrefix(model.Value, "ollama_chat/") {
+			continue
+		}
+		if b := mergedGet(p, "api_base"); b != nil && !isNull(b) && !(b.Kind == yaml.ScalarNode && strings.TrimSpace(b.Value) == "") {
+			continue
+		}
+		mapSet(p, "api_base", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: base})
+		// Two rows may share a model_name; the report names it once, as
+		// planSync does for a removal.
+		if name := rowName(row); !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // EnsureSettings applies the launcher-required LiteLLM settings: two

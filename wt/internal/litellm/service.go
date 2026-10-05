@@ -84,13 +84,19 @@ type Options struct {
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
 // — Sync further splits "routed" into "adopted" and "rewritten" where its
-// plan says so; Err is set when the id was rejected. A removal that removed no
-// row has no outcome.
+// plan says so — or ActionAPIBaseSet for an ollama row whose empty api_base
+// the write filled (any write: the row need not be one the change named); Err
+// is set when the id was rejected. A removal that removed no row has no
+// outcome.
 type Outcome struct {
 	ID     string
 	Action string
 	Err    error
 }
+
+// ActionAPIBaseSet is the Outcome action for a row File.EnsureOllamaAPIBase
+// repaired (#202). It is part of `wt litellm sync --json`'s contract.
+const ActionAPIBaseSet = "api_base set"
 
 // Result reports a batch: per-id outcomes, whether config.yaml was written,
 // and non-fatal warnings (restart failures).
@@ -174,6 +180,16 @@ func RowFamily(cfg *config.Config, id string) string {
 		return ""
 	}
 	return localmodels.Family(prefix)
+}
+
+// OllamaAPIBase is the address wt gives an ollama row: the registry ollama
+// provider's base_url, the same value BuildEntry writes for the rows wt builds
+// itself. "" when the registry has no ollama provider or it names no address.
+func OllamaAPIBase(cfg *config.Config) string {
+	if p := cfg.ProviderByID("ollama"); p != nil {
+		return p.Auth.BaseURL
+	}
+	return ""
 }
 
 // RegistryGap reports whether registry model m is dropped from every list
@@ -294,7 +310,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			}
 		}
 		return add, rm
-	}, o)
+	}, o, OllamaAPIBase(cfg))
 }
 
 // applyPlanned is the one locked read-modify-write every route change goes
@@ -302,7 +318,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 // the document as read under the lock, so a caller that derives the change
 // from the current routes never acts on a snapshot another process has since
 // changed.
-func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (Result, error) {
+func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, ollamaBase string) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -319,39 +335,8 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (
 			return err
 		}
 		add, remove := plan(f)
-		for _, r := range remove {
-			removed := false
-			if r.markedOnly {
-				removed = f.RemoveMarkedRows(r.id)
-			} else {
-				removed = f.RemoveRow(r.id)
-			}
-			// A removal that removed nothing is not an outcome. A family clear
-			// names every registry local model of the family, routed or not;
-			// recording each as "unrouted" made the Result claim routes were
-			// removed that never existed (#195). Sync's removals come from the
-			// rows themselves, so its report — what `wt litellm sync` prints
-			// and modelman reads — never held one.
-			if removed {
-				res.Outcomes = append(res.Outcomes, Outcome{ID: r.id, Action: "unrouted"})
-			}
-		}
-		for _, a := range add {
-			if a.err != nil {
-				res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: a.err})
-				continue
-			}
-			// A plan owes every add a row or an error. One with neither is a
-			// planner bug; report it against its id rather than hand SetRow a
-			// nil node, which would break the whole document.
-			if a.row == nil {
-				res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Err: fmt.Errorf("model %q: no row was built", a.id)})
-				continue
-			}
-			if err := f.SetRow(a.id, a.row); err != nil {
-				return err
-			}
-			res.Outcomes = append(res.Outcomes, Outcome{ID: a.id, Action: "routed"})
+		if res.Outcomes, err = applyTo(f, add, remove, ollamaBase); err != nil {
+			return err
 		}
 		f.EnsureSettings()
 		if !f.Changed() {
@@ -374,6 +359,54 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options) (
 		res.Warnings = restart()
 	}
 	return res, nil
+}
+
+// applyTo carries a plan out on f in memory and returns what it did: the
+// removals, the adds, then the api_base repair (File.EnsureOllamaAPIBase) on
+// the rows that are left. It writes nothing to disk. applyPlanned saves the
+// result; PlanSync runs it on a File it then discards, so the repairs a dry
+// run lists are read off the same document the real sync would write — a row
+// the plan replaces or removes is not also reported as repaired.
+func applyTo(f *File, add []plannedAdd, remove []plannedRemove, ollamaBase string) ([]Outcome, error) {
+	var out []Outcome
+	for _, r := range remove {
+		removed := false
+		if r.markedOnly {
+			removed = f.RemoveMarkedRows(r.id)
+		} else {
+			removed = f.RemoveRow(r.id)
+		}
+		// A removal that removed nothing is not an outcome. A family clear
+		// names every registry local model of the family, routed or not;
+		// recording each as "unrouted" made the Result claim routes were
+		// removed that never existed (#195). Sync's removals come from the
+		// rows themselves, so its report — what `wt litellm sync` prints
+		// and modelman reads — never held one.
+		if removed {
+			out = append(out, Outcome{ID: r.id, Action: "unrouted"})
+		}
+	}
+	for _, a := range add {
+		if a.err != nil {
+			out = append(out, Outcome{ID: a.id, Err: a.err})
+			continue
+		}
+		// A plan owes every add a row or an error. One with neither is a
+		// planner bug; report it against its id rather than hand SetRow a
+		// nil node, which would break the whole document.
+		if a.row == nil {
+			out = append(out, Outcome{ID: a.id, Err: fmt.Errorf("model %q: no row was built", a.id)})
+			continue
+		}
+		if err := f.SetRow(a.id, a.row); err != nil {
+			return nil, err
+		}
+		out = append(out, Outcome{ID: a.id, Action: "routed"})
+	}
+	for _, id := range f.EnsureOllamaAPIBase(ollamaBase) {
+		out = append(out, Outcome{ID: id, Action: ActionAPIBaseSet})
+	}
+	return out, nil
 }
 
 // routeableModels lists the registry models whose location resolves to loc —
@@ -425,7 +458,11 @@ type SyncPlan struct {
 	Adopt   []string
 	Rewrite []string
 	Remove  []string
-	Errors  []Outcome
+	// Repair names the ollama rows, hand-written ones included, whose empty
+	// api_base the write will fill (File.EnsureOllamaAPIBase). Only PlanSync
+	// fills it: the real sync reports each repair as an Outcome.
+	Repair []string
+	Errors []Outcome
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -621,6 +658,20 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 	return plan, built
 }
 
+// planned turns the plan into the adds and removals applyTo carries out,
+// handing each add the row planSync already built for it.
+func (plan SyncPlan) planned(built map[string]*yaml.Node) ([]plannedAdd, []plannedRemove) {
+	add := make([]plannedAdd, 0, len(plan.Add))
+	for _, id := range plan.Add {
+		add = append(add, plannedAdd{id: id, row: built[id]})
+	}
+	rm := make([]plannedRemove, 0, len(plan.Remove))
+	for _, id := range plan.Remove {
+		rm = append(rm, plannedRemove{id: id, markedOnly: plan.markedOnly[id]})
+	}
+	return add, rm
+}
+
 // providerCredErr is id's provider's credential error, resolved at most once
 // per memo; nil for providers whose policy takes no secret_ref (prepare
 // reports any other problem).
@@ -665,7 +716,23 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	if err := f.checkModelList(); err != nil {
 		return SyncPlan{}, err
 	}
-	plan, _ := planSync(cfg, f, local, o)
+	plan, built := planSync(cfg, f, local, o)
+	// The write also fills an empty api_base on ollama rows, and those can be
+	// rows the user wrote by hand, so a dry run says which. They are found by
+	// carrying the plan out on f, which is never saved: a row the plan adopts,
+	// rewrites or removes is gone or rebuilt by the time the repair looks, and
+	// listing it would promise an "api_base set" line the real sync never
+	// prints.
+	add, rm := plan.planned(built)
+	done, err := applyTo(f, add, rm, OllamaAPIBase(cfg))
+	if err != nil {
+		return SyncPlan{}, err
+	}
+	for _, oc := range done {
+		if oc.Action == ActionAPIBaseSet {
+			plan.Repair = append(plan.Repair, oc.ID)
+		}
+	}
 	return plan, nil
 }
 
@@ -708,7 +775,8 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // whose model_list is not a list is refused (ErrInvalid) before anything is
 // planned or written, whatever the plan turns out to be — PlanSync checks the
 // same shape, so a dry run and a real sync always agree. Outcome actions:
-// "routed", "adopted", "rewritten", "unrouted"; per-id build failures are
+// "routed", "adopted", "rewritten", "unrouted", and ActionAPIBaseSet for an
+// ollama row whose empty api_base the write filled; per-id build failures are
 // reported with Err.
 func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	var plan SyncPlan
@@ -718,16 +786,8 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		// The plan already built every changed row while comparing it with the
 		// row on disk; hand the rows through so the write path does not
 		// prepare each one a second time.
-		add := make([]plannedAdd, 0, len(plan.Add))
-		for _, id := range plan.Add {
-			add = append(add, plannedAdd{id: id, row: built[id]})
-		}
-		rm := make([]plannedRemove, 0, len(plan.Remove))
-		for _, id := range plan.Remove {
-			rm = append(rm, plannedRemove{id: id, markedOnly: plan.markedOnly[id]})
-		}
-		return add, rm
-	}, o)
+		return plan.planned(built)
+	}, o, OllamaAPIBase(cfg))
 	if err != nil {
 		return res, err
 	}

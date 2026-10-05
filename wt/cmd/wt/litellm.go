@@ -73,6 +73,7 @@ type syncPlanJSON struct {
 		Adopt   []string             `json:"adopt"`
 		Rewrite []string             `json:"rewrite"`
 		Remove  []string             `json:"remove"`
+		Repair  []string             `json:"repair"`
 		Errors  []litellmOutcomeJSON `json:"errors"`
 	} `json:"plan"`
 	Warnings []string `json:"warnings"`
@@ -87,6 +88,7 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []str
 	doc.Plan.Adopt = append([]string{}, plan.Adopt...)
 	doc.Plan.Rewrite = append([]string{}, plan.Rewrite...)
 	doc.Plan.Remove = append([]string{}, plan.Remove...)
+	doc.Plan.Repair = append([]string{}, plan.Repair...)
 	doc.Plan.Errors = []litellmOutcomeJSON{}
 	for _, e := range plan.Errors {
 		doc.Plan.Errors = append(doc.Plan.Errors, litellmOutcomeJSON{ID: e.ID, Error: e.Err.Error()})
@@ -108,6 +110,9 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []str
 		}
 		for _, id := range plan.Remove {
 			fmt.Fprintf(out, "%s: would unroute\n", id)
+		}
+		for _, id := range plan.Repair {
+			fmt.Fprintf(out, "%s: would set api_base\n", id)
 		}
 		for _, e := range doc.Plan.Errors {
 			fmt.Fprintf(errOut, "%s: %s\n", e.ID, e.Error)
