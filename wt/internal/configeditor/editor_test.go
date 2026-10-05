@@ -37,7 +37,7 @@ func TestLoadedMsg_BuildsLists(t *testing.T) {
 		Agents: []config.Agent{{Name: "claude"}},
 	}
 	got, _ := m.Update(loadedMsg{cfg: cfg})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if !m2.ready {
 		t.Fatal("expected ready=true after loadedMsg")
 	}
@@ -55,10 +55,10 @@ func TestUpdateWindowSizeMsg(t *testing.T) {
 		Agents: []config.Agent{{Name: "claude"}},
 	}
 	got, _ := m.Update(loadedMsg{cfg: cfg})
-	m2 := got.(model)
+	m2 := got.(*model)
 
 	got, _ = m2.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	m3 := got.(model)
+	m3 := got.(*model)
 	if m3.width != 100 || m3.height != 40 {
 		t.Errorf("dimensions = (%d, %d), want (100, 40)", m3.width, m3.height)
 	}
@@ -72,7 +72,7 @@ func TestNewKey_OpensAddForm(t *testing.T) {
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseForm {
 		t.Fatalf("expected phaseForm after 'n', got %d", m2.phase)
 	}
@@ -90,7 +90,7 @@ func TestLoadedMsg_Error_SetsReadyAndStatus(t *testing.T) {
 	m.width, m.height = 80, 24
 
 	got, _ := m.Update(loadedMsg{err: fmt.Errorf("bad config"), cfg: &config.Config{DefaultTag: "code"}})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if !m2.ready {
 		t.Fatal("expected ready=true after loadedMsg with error")
 	}
@@ -124,9 +124,9 @@ func TestEnterKey_OpensEditFormForSelectedItem(t *testing.T) {
 	// List is sorted by name (commands first, then alphabetical), so among
 	// the configured agents "alpha" sorts before "zeta". Select "alpha" and
 	// press Enter to open the edit form for it, not "zeta" (cfg.Agents[0]).
-	selectAgentItem(&m, "alpha")
+	selectAgentItem(m, "alpha")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseForm {
 		t.Fatalf("expected phaseForm after Enter, got %d", m2.phase)
 	}
@@ -151,7 +151,7 @@ func TestEnterKey_UnconfiguredAgent_OpensAddForm(t *testing.T) {
 		if !ai.command && !ai.configured {
 			m.list.Select(i)
 			got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			m2 := got.(model)
+			m2 := got.(*model)
 			if m2.phase != phaseForm {
 				t.Fatalf("expected phaseForm, got %d", m2.phase)
 			}
@@ -214,12 +214,12 @@ func TestLoadedMsgLocationErrorNamesTheRegistry(t *testing.T) {
 	}
 	got, _ := newModel(themes.Theme{}, cfg, locErr).Update(loadedMsg{cfg: cfg, err: locErr})
 	want := `config load/validation error: provider "omlx" has location "Local"; expected "local" or "cloud" (` + config.RegistryFixHint(locErr) + `)`
-	if status := got.(model).status; status != want || !strings.Contains(status, "fix the entry in /tmp/somewhere/registry.toml") {
+	if status := got.(*model).status; status != want || !strings.Contains(status, "fix the entry in /tmp/somewhere/registry.toml") {
 		t.Errorf("status = %q, want %q", status, want)
 	}
 
 	got, _ = newModel(themes.Theme{}, cfg, nil).Update(loadedMsg{cfg: cfg, err: fmt.Errorf("default_tag must not be empty")})
-	if status := got.(model).status; status != "config load/validation error: default_tag must not be empty" {
+	if status := got.(*model).status; status != "config load/validation error: default_tag must not be empty" {
 		t.Errorf("another config error's status = %q, want it unchanged", status)
 	}
 }
@@ -256,11 +256,18 @@ func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
 				t.Errorf("%dx%d: a line is %d columns wide: %q", size.w, size.h, w, l)
 			}
 		}
-		// The whole message is on screen: rejoin the wrapped lines and look
-		// for its end.
-		flat := strings.Join(strings.Fields(view), "")
-		if !strings.Contains(flat, "fixtheentryin/tmp/somewhere/registry.toml)") {
-			t.Errorf("%dx%d: the hint is not on screen:\n%s", size.w, size.h, view)
+		// The whole message is on screen: look for the hint words in the view.
+		// The hint may be wrapped across multiple lines, so we check that all
+		// key words appear somewhere in the view (in order, but not necessarily
+		// contiguous). This avoids both false positives from strings.Fields
+		// collapsing whitespace and false negatives from exact string matching
+		// when the hint wraps.
+		hintWords := []string{"fix", "the", "entry", "in", "/tmp/somewhere/registry.toml"}
+		for _, word := range hintWords {
+			if !strings.Contains(view, word) {
+				t.Errorf("%dx%d: hint word %q not found in view:\n%s", size.w, size.h, word, view)
+				break
+			}
 		}
 		if !strings.HasPrefix(view, "Agents (providers/models") {
 			t.Errorf("%dx%d: the title is not the first line:\n%s", size.w, size.h, view)

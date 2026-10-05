@@ -32,7 +32,7 @@ func TestQuit_DirtyPrompts(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("expected nil cmd, got %v", cmd)
 	}
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseQuit {
 		t.Fatalf("expected phaseQuit, got %d", m2.phase)
 	}
@@ -59,8 +59,8 @@ func TestQuitPrompt_Save(t *testing.T) {
 	}
 	// Process the save message.
 	msg := cmd()
-	got2, cmd2 := got.(model).Update(msg)
-	m2 := got2.(model)
+	got2, cmd2 := got.(*model).Update(msg)
+	m2 := got2.(*model)
 	if m2.dirty {
 		t.Error("expected dirty=false after save-and-quit")
 	}
@@ -91,7 +91,7 @@ func TestQuitPrompt_Cancel(t *testing.T) {
 	m.dirty = true
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseList {
 		t.Fatalf("expected phaseList, got %d", m2.phase)
 	}
@@ -102,7 +102,7 @@ func TestQuitPrompt_Cancel(t *testing.T) {
 	// Also test Esc.
 	m.phase = phaseQuit
 	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m3 := got.(model)
+	m3 := got.(*model)
 	if m3.phase != phaseList {
 		t.Fatalf("expected phaseList after Esc, got %d", m3.phase)
 	}

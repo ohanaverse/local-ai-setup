@@ -46,6 +46,13 @@ type model struct {
 	saving bool   // prevents duplicate save dispatches
 	cfgErr error  // captured at construction for the initial loadedMsg
 
+	// cachedStatusBlock caches the rendered status block to avoid double rendering
+	// and re-creating lipgloss.Style on every call.
+	cachedStatusBlock string
+	// cachedStatusWidth is the width at which cachedStatusBlock was rendered;
+	// it is invalidated when m.width changes.
+	cachedStatusWidth int
+
 	list list.Model
 
 	// delete state
@@ -70,14 +77,14 @@ type model struct {
 	agInstalled            bool   // cached result for agInstalledName
 }
 
-func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) model {
-	return model{theme: theme, cfg: cfg, cfgErr: cfgErr}
+func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) *model {
+	return &model{theme: theme, cfg: cfg, cfgErr: cfgErr}
 }
 
 // Init emits the loaded config immediately. The config is supplied by the
 // caller (cmd/wt) rather than reloaded inside the TUI, so a validation error
 // can be surfaced without hanging on the "Loading config..." screen.
-func (m model) Init() tea.Cmd {
+func (m *model) Init() tea.Cmd {
 	return func() tea.Msg {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
@@ -87,9 +94,13 @@ func (m model) Init() tea.Cmd {
 // Update handles a message and then re-fits the list: the status line can
 // appear, change length or clear on any message, and the list owes it the
 // rows it takes (fitList).
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// The inner update always returns *model (the concrete type), so the type
+// assertion is safe. Using a pointer receiver for update and returning
+// *model makes this explicit and avoids a panic if a future change returns
+// a different tea.Model implementation.
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
-	if nm, ok := next.(model); ok && nm.ready {
+	if nm, ok := next.(*model); ok && nm.ready {
 		nm.fitList()
 		return nm, cmd
 	}
@@ -100,14 +111,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // "" when there is none. A terminal cuts a too-wide line at its right edge,
 // and what a status ends with is often the part that matters — a location
 // error ends with the file to fix (#209).
-func (m model) statusBlock() string {
+// The rendered block is cached and only re-rendered when width or status changes.
+func (m *model) statusBlock() string {
 	if m.status == "" {
+		m.cachedStatusBlock = ""
+		m.cachedStatusWidth = m.width
 		return ""
 	}
 	if m.width <= 0 {
+		m.cachedStatusBlock = m.status
+		m.cachedStatusWidth = m.width
 		return m.status
 	}
-	return lipgloss.NewStyle().Width(m.width).Render(m.status)
+	// Re-render only if width or status changed
+	if m.cachedStatusWidth != m.width {
+		m.cachedStatusBlock = lipgloss.NewStyle().Width(m.width).Render(m.status)
+		m.cachedStatusWidth = m.width
+	}
+	return m.cachedStatusBlock
 }
 
 // fitList sizes the agents list to the rows left under the title and the
@@ -115,6 +136,9 @@ func (m model) statusBlock() string {
 // each further line a wrapped status takes comes out of the list, so the view
 // is never taller than the terminal — Bubble Tea drops a too-tall view's top
 // lines, which here are the title and the status itself.
+// Minimum viable list height is 3 rows (1 item + 2 margins) to avoid layout
+// issues where the list would render off-screen or Bubble Tea would drop the
+// title/status from the top.
 func (m *model) fitList() {
 	if m.width <= 0 || m.height <= 0 {
 		return
@@ -123,10 +147,16 @@ func (m *model) fitList() {
 	if s := m.statusBlock(); s != "" {
 		h -= lipgloss.Height(s) - 1
 	}
-	m.list.SetSize(m.width-2, max(h, 1))
+	// Minimum 3 rows for a viable list: 1 item + top/bottom margin that
+	// bubbles list uses internally. If h < 3, the list would be too small
+	// and Bubble Tea would drop lines from the top (title/status).
+	if h < 3 {
+		h = 3
+	}
+	m.list.SetSize(m.width-2, h)
 }
 
-func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -153,16 +183,23 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
+		// Call fitList immediately after setting status to ensure the list
+		// height accounts for any wrapped status (e.g. location error hint).
+		// Without this, the first render after loadedMsg could have the list
+		// at the wrong height if the hint makes status exceed terminal width.
+		m.fitList()
 		return m, nil
 	case saveMsg:
 		m.saving = false
 		if msg.err != nil {
 			m.status = "save failed: " + msg.err.Error()
+			m.fitList()
 			m.quitting = false
 			return m, nil
 		}
 		m.dirty = false
 		m.status = "saved"
+		m.fitList()
 		if m.quitting {
 			m.quitting = false
 			return m, tea.Quit
@@ -204,14 +241,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.ready {
 				if it, ok := m.list.SelectedItem().(agentItem); ok {
 					if !it.command && it.configured {
-						enterDelete(&m, it.agent.Name)
+						enterDelete(m, it.agent.Name)
 					}
 				}
 			}
 			return m, nil
 		case "n":
 			if m.ready {
-				enterAgentForm(&m, config.Agent{}, true)
+				enterAgentForm(m, config.Agent{}, true)
 			}
 			return m, nil
 		case "enter":
@@ -220,7 +257,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if it.command {
 						return m, nil
 					}
-					enterAgentForm(&m, it.agent, !it.configured)
+					enterAgentForm(m, it.agent, !it.configured)
 				}
 			}
 			return m, nil
@@ -239,7 +276,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleQuitUpdate processes keys in the unsaved-changes quit prompt.
-func (m model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "y", "Y":
@@ -256,7 +293,7 @@ func (m model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) View() string {
+func (m *model) View() string {
 	if !m.ready {
 		return "Loading config..."
 	}
@@ -288,7 +325,7 @@ func (m *model) resizeFormInputs() {
 }
 
 // formView dispatches to the appropriate form renderer.
-func (m model) formView() string {
+func (m *model) formView() string {
 	if m.formKind == formAgent {
 		return m.agentFormView()
 	}
@@ -296,7 +333,7 @@ func (m model) formView() string {
 }
 
 // handleFormUpdate dispatches to the appropriate form update handler.
-func (m model) handleFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) handleFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.formKind == formAgent {
 		return m.handleAgentFormUpdate(msg)
 	}

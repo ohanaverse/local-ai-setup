@@ -20,7 +20,7 @@ func enterDelete(m *model, id string) {
 }
 
 // handleDeleteUpdate processes keys in the delete confirmation prompt.
-func (m model) handleDeleteUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) handleDeleteUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "y", "Y":
@@ -35,7 +35,7 @@ func (m model) handleDeleteUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // confirmDelete removes the agent and rebuilds the list.
-func (m model) confirmDelete() (tea.Model, tea.Cmd) {
+func (m *model) confirmDelete() (tea.Model, tea.Cmd) {
 	if m.deleteTarget.id == "" {
 		m.phase = phaseList
 		return m, nil
@@ -51,7 +51,7 @@ func (m model) confirmDelete() (tea.Model, tea.Cmd) {
 }
 
 // deleteView renders the delete confirmation prompt.
-func (m model) deleteView() string {
+func (m *model) deleteView() string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Delete agent %q? [y/N]\n", m.deleteTarget.id))
 	if m.deleteError != "" {

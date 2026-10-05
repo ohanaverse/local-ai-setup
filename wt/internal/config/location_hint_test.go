@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -30,4 +31,29 @@ func TestRegistryFixHint(t *testing.T) {
 	if got := RegistryFixHint(nil); got != "" {
 		t.Errorf("nil: hint = %q, want none", got)
 	}
+}
+
+// TestRegistryFixHint_ExpandHomeFailure tests the case where expandHome fails
+// (e.g., HOME is unset). When this happens, RegistryPath writes to stderr and
+// falls back to the literal path. The hint should still show the literal path
+// so the user sees something actionable, even if it's not fully expanded.
+func TestRegistryFixHint_ExpandHomeFailure(t *testing.T) {
+	// Unset HOME and set MODELMAN_REGISTRY to a tilde path
+	t.Setenv("HOME", "")
+	t.Setenv("MODELMAN_REGISTRY", "~/custom/registry.toml")
+
+	cfg := &Config{DefaultTag: "code", Providers: []Provider{{ID: "omlx", Location: "Local"}}}
+	err := cfg.Validate()
+	if !errors.Is(err, ErrLocation) {
+		t.Fatalf("fixture error = %v, want a location error", err)
+	}
+
+	// The hint should contain the literal path since expandHome fails
+	hint := RegistryFixHint(err)
+	if !strings.Contains(hint, "~/custom/registry.toml") {
+		t.Errorf("hint = %q should contain literal tilde path when HOME is unset", hint)
+	}
+
+	// Restore HOME
+	t.Setenv("HOME", "/tmp/restored")
 }

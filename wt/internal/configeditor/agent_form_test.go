@@ -16,13 +16,13 @@ func TestAgentForm_Add_Success(t *testing.T) {
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{},
 	}
-	enterAgentForm(&m, config.Agent{}, true)
+	enterAgentForm(m, config.Agent{}, true)
 	m.agName.SetValue("foo")
 	m.agProvidersInput.SetValue("agy")
 	m.agDefaultProviderInput.SetValue("agy")
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseList {
 		t.Fatalf("expected phaseList after save, got %d", m2.phase)
 	}
@@ -50,13 +50,13 @@ func TestAgentForm_DefaultProvider_Constrained(t *testing.T) {
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{},
 	}
-	enterAgentForm(&m, config.Agent{}, true)
+	enterAgentForm(m, config.Agent{}, true)
 	m.agName.SetValue("foo")
 	m.agProvidersInput.SetValue("agy, claude")
 	m.agDefaultProviderInput.SetValue("codex") // not in supported
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseForm {
 		t.Fatalf("expected to stay in form, got phase %d", m2.phase)
 	}
@@ -74,12 +74,12 @@ func TestAgentForm_NoProviders_BlocksSave(t *testing.T) {
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{},
 	}
-	enterAgentForm(&m, config.Agent{}, true)
+	enterAgentForm(m, config.Agent{}, true)
 	m.agName.SetValue("foo")
 	m.agProvidersInput.SetValue("")
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseForm {
 		t.Fatalf("expected to stay in form, got phase %d", m2.phase)
 	}
@@ -97,12 +97,12 @@ func TestAgentForm_RenameExisting(t *testing.T) {
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{{Name: "old", SupportedProviders: []string{"agy"}}},
 	}
-	enterAgentForm(&m, m.cfg.Agents[0], false)
+	enterAgentForm(m, m.cfg.Agents[0], false)
 	m.agName.SetValue("new")
 	m.agProvidersInput.SetValue("agy")
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseList {
 		t.Fatalf("expected phaseList after rename, got %d", m2.phase)
 	}
@@ -119,7 +119,7 @@ func TestAgentForm_RenameExisting(t *testing.T) {
 func TestAgentForm_InstalledReadOnly(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{}, nil)
 	m.cfg = &config.Config{}
-	enterAgentForm(&m, config.Agent{Name: "claude"}, false)
+	enterAgentForm(m, config.Agent{Name: "claude"}, false)
 	view := m.agentFormView()
 	// The installed field should show the checkmark or x, but no cursor.
 	if strings.Contains(view, "[") && strings.Contains(view, "]") {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -99,7 +100,12 @@ var stdinTTY = isStdinTTY
 // hint that names where to fix it. Most problems are in wt's own config.toml,
 // which `wt config` edits. A mistyped location is in registry.toml, modelman's
 // file, which `wt config` cannot repair — so that one names the file instead.
+// ErrRegistryMissing is a special case: the registry is missing entirely, so
+// there's nothing to edit; the hint should say to seed it with modelman.
 func configError(err error) error {
+	if errors.Is(err, config.ErrRegistryMissing) {
+		return fmt.Errorf("config error: %w (seed the registry with `modelman migrate`)", err)
+	}
 	if hint := config.RegistryFixHint(err); hint != "" {
 		return fmt.Errorf("config error: %w (%s)", err, hint)
 	}

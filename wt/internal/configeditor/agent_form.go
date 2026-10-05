@@ -49,7 +49,7 @@ func (m *model) refreshAgentInstalled() {
 }
 
 // handleAgentFormUpdate processes keys in the agent form.
-func (m model) handleAgentFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) handleAgentFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -104,7 +104,7 @@ func (m *model) focusAgentField() {
 }
 
 // saveAgentForm validates and applies the agent form to cfg.
-func (m model) saveAgentForm() (tea.Model, tea.Cmd) {
+func (m *model) saveAgentForm() (tea.Model, tea.Cmd) {
 	updated := m.agEdit
 	updated.Name = strings.TrimSpace(m.agName.Value())
 	updated.SupportedProviders = config.ParseFilterList(m.agProvidersInput.Value())
@@ -136,7 +136,7 @@ func (m model) saveAgentForm() (tea.Model, tea.Cmd) {
 }
 
 // agentFormView renders the agent add/edit form.
-func (m model) agentFormView() string {
+func (m *model) agentFormView() string {
 	installedStr := "✗ not installed"
 	if m.agInstalled {
 		installedStr = "✓ installed"
