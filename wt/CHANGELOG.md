@@ -4,6 +4,17 @@
 
 ### Changed
 
+- `wt litellm sync` and `sync --dry-run` now warn about an ollama row whose
+  `api_base` is an `os.environ/VAR` reference to a variable that is not set
+  for the proxy (#211). LiteLLM resolves the reference before deciding
+  whether to start its own `ollama serve`, and an unset variable counts as no
+  `api_base` — the second-server problem of #202, which wt neither repaired
+  nor reported for this spelling. "Set for the proxy" is read from the proxy
+  LaunchAgent's `EnvironmentVariables`
+  (`~/Library/LaunchAgents/local.litellm.proxy.plist`, or `WT_LITELLM_PLIST`),
+  not from the shell wt runs in; wt's own environment is used only when
+  `WT_LITELLM_RESTART_CMD` is set or the plist cannot be read, and the
+  warning names which it consulted. The row is never rewritten.
 - `wt config` now says where to fix a mistyped `location` (#209). The editor
   opens on an invalid config so it can be repaired, but a location error is
   in `registry.toml`, which the editor cannot edit, and its status line

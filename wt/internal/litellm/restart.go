@@ -13,10 +13,16 @@ import (
 	"time"
 )
 
+// proxyLabel is the proxy LaunchAgent's Label. The agent the fallback restart
+// command kickstarts and the plist wt reads the proxy's environment from
+// (defaultProxyPlist, proxyenv.go) name the same job — both derive from this
+// constant so they cannot drift apart.
+const proxyLabel = "local.litellm.proxy"
+
 // fallbackRestartCmd bounces the launchd-managed proxy. Used when no restart
 // env var is set, because non-interactive launches (agents, worktree
 // launchers) do not inherit interactive-shell exports.
-const fallbackRestartCmd = "launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"
+const fallbackRestartCmd = "launchctl kickstart -k gui/$(id -u)/" + proxyLabel
 
 // runShell runs a shell command; a package var so tests never execute the
 // real restart command.

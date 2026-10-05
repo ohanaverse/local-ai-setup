@@ -372,7 +372,7 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, o
 		// The scan runs after the repair (applyTo), so what it finds is the rows
 		// the repair does not reach. Only a caller that reports it pays for it.
 		if o.reportOllamaServe {
-			res.ollamaServe = f.ollamaServeWarnings()
+			res.ollamaServe = f.ollamaServeWarnings(loadProxyEnv())
 		}
 		if !f.Changed() {
 			return nil
@@ -772,7 +772,7 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 			plan.Repair = append(plan.Repair, oc.ID)
 		}
 	}
-	plan.Warnings = f.ollamaServeWarnings()
+	plan.Warnings = f.ollamaServeWarnings(loadProxyEnv())
 	return plan, nil
 }
 
