@@ -514,3 +514,45 @@ def test_print_event_recognizes_every_tag_queue_emits(capsys):
         print_event(f"{verb}|a|b|c")
     err = capsys.readouterr().err
     assert "unhandled event" not in err, err
+
+
+def test_run_tui_syncs_after_a_discard_that_reverted_the_registry(tmp_path, monkeypatch, wt_calls):
+    """#194 (#17): add a model, start it, Discard. The start routed the model
+    under its new registry id; Discard restores registry.toml byte for byte,
+    so the before/after comparison sees no change and the route for an id the
+    registry no longer has stayed until some later sync. The app says a sync
+    is owed and the exit runs it — once."""
+    reg = tmp_path / "registry.toml"
+    reg.write_text("models = []\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg))
+
+    class FakeApp:
+        route_sync_owed = True
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr("modelman.app.ModelmanApp", FakeApp)
+    from modelman.main import run_tui
+
+    run_tui()
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
+def test_run_tui_changed_registry_and_owed_sync_is_still_one_sync(tmp_path, monkeypatch, wt_calls):
+    reg = tmp_path / "registry.toml"
+    reg.write_text("models = []\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg))
+
+    class FakeApp:
+        route_sync_owed = True
+
+        def run(self):
+            reg.write_text("models = []\n# edited\n")
+            return None
+
+    monkeypatch.setattr("modelman.app.ModelmanApp", FakeApp)
+    from modelman.main import run_tui
+
+    run_tui()
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]

@@ -1320,6 +1320,11 @@ async def test_discard_persists_state_cleanup_for_session_added_model(
     assert not any(m.id == added_id for m in reg_after.models)
     state_after = load_state(state_path)
     assert added_id not in state_after.models
+    # #194 (#17): the registry was written during the session and Discard put
+    # it back, so on disk it looks untouched — but a model started in between
+    # was routed under the id that no longer exists. The exit path must be
+    # told a route sync is owed; comparing the file before and after cannot.
+    assert app.route_sync_owed is True
 
 
 @pytest.mark.asyncio

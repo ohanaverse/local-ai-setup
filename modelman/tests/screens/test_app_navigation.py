@@ -660,6 +660,9 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
         # Discard now exits the app too (ModelScreen was the app's only
         # screen; there's nothing left to pop back to).
         assert app.return_value is None
+        # Only a queued toggle was discarded: registry.toml was never written
+        # this session, so there is no route to put right and no sync is owed.
+        assert app.route_sync_owed is False
 
     from modelman.state import load_state
 

@@ -235,6 +235,9 @@ class ModelScreen(Screen[None]):
         self.registry = registry
         self.state = state
         self.registry_path = registry_path
+        # Whether an add or edit saved registry.toml during this session
+        # (see _on_exit_confirm's discard branch).
+        self._registry_saved = False
         self.state_path = state_path
         # Last `wt litellm status` (None = wt unreachable); refreshed only on
         # mount and after a toggle so keystrokes never spawn wt.
@@ -790,6 +793,7 @@ class ModelScreen(Screen[None]):
             entry.pricing_updated_at = _now_iso()
         self.registry.models.append(entry)
         save_registry(self.registry, self.registry_path)
+        self._registry_saved = True
         self._last_provider_used = variant["provider"]
         return entry
 
@@ -990,6 +994,7 @@ class ModelScreen(Screen[None]):
         # dialog stay queued as moves and are applied (and saved) at
         # apply time, as before.
         save_registry(self.registry, self.registry_path)
+        self._registry_saved = True
         if result.family != old_entry.family:
             self.queued_moves[updated["id"]] = result.family
         else:
@@ -1107,7 +1112,16 @@ class ModelScreen(Screen[None]):
             # (_on_edit_model) — restoring the in-memory snapshot alone
             # would leave a discarded edit persisted on disk, so write the
             # restored registry back out too.
+            #
+            # If this session had written the registry (an add or an edit),
+            # anything started meanwhile was routed from it — a model added,
+            # started and now discarded has a route under an id that is gone.
+            # The exit path compares the file before and after the whole
+            # session, sees no difference, and would not sync; tell it one is
+            # owed (#194). A discard of queued toggles alone owes nothing.
             save_registry(self.registry, self.registry_path)
+            if self._registry_saved:
+                self.app.route_sync_owed = True  # type: ignore[attr-defined]
             self.queued_ready.clear()
             self.queued_deletes.clear()
             self.queued_moves.clear()

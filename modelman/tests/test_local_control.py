@@ -1963,12 +1963,14 @@ def test_start_discovered_artifact_on_an_omlx_6bit_only_registry_uses_the_family
     assert load_state(state_path).get("omlx/Qwen3.8-27B-6bit").running is False
 
 
-def test_start_on_an_omlx_6bit_only_registry_finds_nothing_with_the_real_providers(tmp_path):
-    # What modelman's discovery ACTUALLY yields today for that registry: no
-    # Provider class is registered under "omlx-6bit", so the row cannot be
-    # enumerated and an unregistered omlx artifact is simply unknown — no
-    # `omlx-6bit/<name>` id (which would differ from wt's `omlx/<name>`) can
-    # be produced, and nothing is flagged.
+def test_start_on_an_omlx_6bit_only_registry_with_the_real_providers(tmp_path):
+    # #194: no Provider class is registered under "omlx-6bit" — it is the
+    # omlx server reached through a second registry row — so a registry whose
+    # only omlx-family row is `omlx-6bit` could not be enumerated at all:
+    # modelman reported the row unqueryable and an unregistered omlx artifact
+    # was "unknown model", while wt listed and routed it as `omlx/<name>`.
+    # The row is now asked through its family's class (OMLXProvider) with its
+    # own settings, here the real provider scanning a real model directory.
     model_dir = _omlx_model_dir(tmp_path, basename="Qwen3.8-27B-6bit")
     registry = Registry(
         providers=[
@@ -1982,14 +1984,39 @@ def test_start_on_an_omlx_6bit_only_registry_finds_nothing_with_the_real_provide
         ],
     )
     state_path = _state_path(tmp_path)
-    assert inventory_local_models(registry, StateStore()).unqueryable_providers == ["omlx-6bit"]
-    with (
-        patch("modelman.local_control.isolate_provider") as mock_isolate,
-        pytest.raises(LocalControlError, match="unknown model"),
-    ):
-        start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
-    mock_isolate.assert_not_called()
-    assert load_state(state_path).models == {}
+    inventory = inventory_local_models(registry, StateStore())
+    assert inventory.unqueryable_providers == []
+    assert [(d.model_id, d.provider_id) for d in inventory.discovered] == [
+        ("omlx/Qwen3.8-27B-6bit", "omlx-6bit")
+    ]
+    with patch("modelman.local_control.isolate_provider") as mock_isolate:
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx-6bit",
+            model="Qwen3.8-27B-6bit",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
+        )
+        result = start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
+    # wt's id (the family's), driven through the row that exists.
+    assert result.model_id == "omlx/Qwen3.8-27B-6bit"
+    mock_isolate.assert_called_once_with(
+        "omlx-6bit", env={"LLM_ISOLATE_OMLX_6BIT_MODEL": "Qwen3.8-27B-6bit"}, solo=True
+    )
+    assert load_state(state_path).get("omlx/Qwen3.8-27B-6bit").running is True
+
+
+def test_a_provider_row_with_no_class_and_no_family_class_is_unqueryable():
+    # The family fallback is for a second row of a known server. A row whose
+    # id names nothing modelman has code for stays "cannot be asked" — never
+    # "reports nothing", which would list its registered models as missing.
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="mystery", name="?", location="local", auth=AuthConfig(type="none"))
+        ],
+        models=[ModelEntry(id="mystery/m", family="f", provider_id="mystery", model_name="m")],
+    )
+    assert inventory_local_models(registry, StateStore()).unqueryable_providers == ["mystery"]
 
 
 def test_start_full_discovered_id_disambiguates_a_name_two_providers_share(tmp_path):

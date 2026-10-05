@@ -30,6 +30,11 @@ class ModelmanApp(App[QueuedOps | None]):
         # by ModelScreen.action_back to decide whether to show a stale-pricing
         # reminder in the exit confirmation dialog.
         self._price_refresh_skipped_or_failed = False
+        # Set by ModelScreen when a Discard put back a registry.toml this
+        # session had written. run_tui reads it after the app exits: the file
+        # then looks untouched, but a model started in between was routed
+        # under an id the registry no longer has (#194).
+        self.route_sync_owed = False
         # Load user preferences (theme, etc.) before any widget
         # mounts so the first frame uses the right colors. A missing
         # file returns defaults; a corrupted file falls back to

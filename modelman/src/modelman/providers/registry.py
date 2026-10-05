@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from .base import Provider
 
+# A registry provider row that is a second name for a server another class
+# already drives. `omlx-6bit` is the omlx server reached through its own row
+# (wt's localmodels.Family maps it the same way): it has no class of its own,
+# so without this a registry whose only omlx row is `omlx-6bit` could not be
+# listed, reconciled or downloaded into at all (#194). The row's own settings
+# (its model_dir) are still what the instance is built with.
+_ALIASES: dict[str, str] = {"omlx-6bit": "omlx"}
+
 
 class ProviderRegistry:
     _providers: dict[str, type[Provider]] = {}
+
+    @classmethod
+    def _resolve(cls, name: str) -> str:
+        """`name`, or the class name it is an alias for when nothing is
+        registered under `name` itself (a registered class always wins)."""
+        if name in cls._providers:
+            return name
+        return _ALIASES.get(name, name)
 
     @classmethod
     def register(cls, provider_cls: type[Provider]) -> None:
@@ -16,9 +32,10 @@ class ProviderRegistry:
 
     @classmethod
     def get(cls, name: str, config: dict) -> Provider:
-        if name not in cls._providers:
+        resolved = cls._resolve(name)
+        if resolved not in cls._providers:
             raise KeyError(f"Unknown provider: {name}. Registered: {list(cls._providers)}")
-        return cls._providers[name](config)
+        return cls._providers[resolved](config)
 
     @classmethod
     def available(cls) -> list[str]:
@@ -30,5 +47,6 @@ class ProviderRegistry:
 
         Unlike get(), this doesn't require a config dict or construct an
         instance — for callers that only need to read a class-level
-        capability flag (e.g. Provider.manages_own_cache)."""
-        return cls._providers.get(name)
+        capability flag (e.g. Provider.manages_own_cache). An alias row
+        (`omlx-6bit`) answers with the class of the server it names."""
+        return cls._providers.get(cls._resolve(name))
