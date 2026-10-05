@@ -63,8 +63,9 @@ wire-level truth before believing its error text:
    its retry-exhausted banner; `codex exec -c 'model_providers.…' …` with
    `RUST_LOG=debug` shows the request path, but the real status text is on the
    **server** side (litellm logs). Do not read "high demand" as throttling.
-5. **`wt --cwd` avoids worktree churn** for launch tests; use a throwaway
-   `-W <name>` when session-resume lookup must not find a prior session.
+5. **`wt --cwd` avoids worktree churn** for launch tests. Every launch
+   starts the agent fresh (`wt` never resumes a session), so a test needs no
+   throwaway worktree to avoid an earlier conversation.
 
 ## Per-driver lessons
 

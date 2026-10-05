@@ -1,20 +1,22 @@
 # wt
 
-Launch AI coding agent CLIs in git worktrees with model rotation and session resume.
+Launch AI coding agent CLIs in git worktrees with model rotation.
 
 The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models by tag, and launches the selected agent. The `bin/*-wt` shims are thin wrappers (`claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). See `docs/superpowers/specs/` for design docs.
 
 ## Supported agents
 
-| Launcher | Agent | Model rotation | Session resume |
-|---|---|---|---|
-| `claude-wt` | Claude Code | Yes | Yes |
-| `codex-wt` | OpenAI Codex CLI | Yes | No |
-| `copilot-wt` | GitHub Copilot CLI | Yes | No |
-| `opencode-wt` | OpenCode | Yes | Yes |
-| `pi-wt` | pi-coding-agent | Yes | No |
-| `agy-wt` | Antigravity CLI | No | No |
-| `shell-wt` | Shell command | No | No |
+| Launcher | Agent | Model rotation |
+|---|---|---|
+| `claude-wt` | Claude Code | Yes |
+| `codex-wt` | OpenAI Codex CLI | Yes |
+| `copilot-wt` | GitHub Copilot CLI | Yes |
+| `opencode-wt` | OpenCode | Yes |
+| `pi-wt` | pi-coding-agent | Yes |
+| `agy-wt` | Antigravity CLI | No |
+| `shell-wt` | Shell command | No |
+
+`wt` does not resume sessions for any agent — see [Sessions are the agent's own](#sessions-are-the-agents-own).
 
 ## Installation
 
@@ -67,7 +69,7 @@ All launchers support:
 | Flag | Description |
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip TUI |
-| `--cwd` | Launch in the current directory; skips the TUI picker. A prior resume-capable session started in that directory still auto-resumes. |
+| `--cwd` | Launch in the current directory; skips the TUI picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |
@@ -144,9 +146,18 @@ Launchers auto-install a `block-main-commit` pre-commit hook on every invocation
 - `WT_SKIP_MAIN_BLOCK=1` env var (CI/automation)
 - `<launcher> --no-guard` (removes the hook)
 
-## Session resume (`claude-wt`, `opencode-wt`)
+## Sessions are the agent's own
 
-When a prior Claude Code or OpenCode session exists for the worktree path, the launcher resumes it. In the TUI flow this is an interactive prompt; in the non-TUI launch paths (`--cwd`, `-W`) the resume flag is appended automatically with no prompt. Native-provider models always launch fresh in both flows — resuming would restore the session's stored model over the native choice.
+`wt` never resumes a session: every launch starts the agent fresh, with no lookup, no prompt and no resume flag. To continue a conversation, pass the agent's own flags after `--`; `wt` hands them over unchanged on every launch path, the picker included.
+
+| | Continue the latest | A specific session | Fork it |
+|---|---|---|---|
+| claude | `claude-wt -- --continue` | `claude-wt -- --resume <id>` | `claude-wt -- --continue --fork-session` |
+| opencode | `opencode-wt -- --continue` | `opencode-wt -- --session <id>` | `opencode-wt -- --continue --fork` |
+
+claude's `--continue` means the most recent conversation in the current directory, and `wt` starts the agent in the worktree (or, with `--cwd`, the directory the command was typed in), so it finds the sessions for that directory.
+
+`wt` used to resume the newest session by itself. That appended a one-shot run (`-- -p "..."`) to whichever conversation was newest, including one another process was using (#204), and made an opencode launch fail when the resumed session had stored a different model (#198). Whether a resumed session's stored model overrides the chosen one is the agent's behaviour; `wt` does not guard against it, and native models are not special-cased.
 
 ## Post-run summary line
 
@@ -178,15 +189,14 @@ go vet ./...       # Vet
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
 | `cmd/wt/commands.go` | Subcommand constructors: `rotate` (debug helper) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
-| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd`, `launchFiltered`, `launchPassthroughImpl`, `runAgentCmd` |
 | `internal/config/` | Config loading, model registry types (joined from modelman's `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
-| `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch |
 | `internal/ollamacheck/` | Ollama model availability check before launch |
 | `docs/superpowers/specs/` | Design specs |
 | `docs/superpowers/plans/` | Implementation plans |
@@ -216,6 +226,6 @@ make clean        # Remove build artifacts
 ## Architecture
 
 - `bin/*-wt` — thin shims that `exec wt --agent <name>`
-- `cmd/wt/` — unified Go tool: cobra CLI, Bubble Tea TUI, model registry, rotation, guard, init seeding, session resume
+- `cmd/wt/` — unified Go tool: cobra CLI, Bubble Tea TUI, model registry, rotation, guard, init seeding
 
 See `CLAUDE.md` for the full architecture documentation.

@@ -131,7 +131,7 @@ func withFilter(t *testing.T, m model, state string) model {
 // list used to be sized to the window minus two each way while the header,
 // footer, padding and status added six to eight lines and four columns, so the
 // top of the screen (the header, and every status the picker ever set: start
-// errors, "cancelled", resume warnings, the route note) was pushed off a real
+// errors, "cancelled", a blocked row's reason) was pushed off a real
 // terminal and the table's last two columns were cut at its right edge.
 //
 // One combination cannot show everything: 12 lines with a status. The table
@@ -548,9 +548,6 @@ func TestLongStatusStaysWithinTheTerminal(t *testing.T) {
 			t.Errorf("width %d: view is %d lines, want 24 — the status must stay one line", width, got)
 		}
 
-		r, _ := resumePromptFixture(t, width, 24, long+"\n")
-		assertFits(t, "resume prompt, long status", r.View(), width, 24)
-
 		a := buildModelInPhaseAgent(t, singleModelConfig())
 		a.selectedPath = "/tmp/" + strings.Repeat("deep/", 40)
 		a.status = long
@@ -602,12 +599,6 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 			return m
 		})
 	}
-	resume := func(output string) sizedView {
-		return modelPhase(func(t *testing.T, width, height int) model {
-			m, _ := resumePromptFixture(t, width, height, output)
-			return m
-		})
-	}
 	phases := []struct {
 		name string
 		view sizedView
@@ -619,8 +610,6 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		{"agent picker, status", agentPicker(layoutStatus)},
 		{"model picker", modelPicker("")},
 		{"model picker, status", modelPicker(layoutStatus)},
-		{"resume prompt", resume("")},
-		{"resume prompt, status", resume(layoutStatus + "\n")},
 		{"ollama warning", modelPhase(func(t *testing.T, width, height int) model {
 			m := model{cfg: &config.Config{}, theme: themes.Default, phase: phaseOllamaWarn, width: width, height: height}
 			m.ollamaWarnModel = list.New(buildOllamaChoices(), ThemedListDelegate(m.theme), 78, 22)

@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 // launchDoneMsg is emitted after the agent subprocess exits.
@@ -95,12 +94,13 @@ type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model) (cleanup f
 // graceful-degradation posture for a missing/disabled profiles.toml.
 var profileApplier ProfileApplier
 
-// launchAgent builds the command for agent/model in worktreePath, optionally
-// appending passthrough args and a resume flag for claude or opencode. It
-// delegates to agents.BuildLaunchCmd so the launch construction logic lives
-// in one place.
-func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	cmd, err := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+// launchAgent builds the command for agent/model in worktreePath, appending
+// any passthrough args unchanged, and queues the pre-launch notes about the
+// built command. It never adds a resume flag: sessions are the agent's to
+// manage (see agents.BuildLaunchCmd). It delegates to agents.BuildLaunchCmd
+// so the launch construction logic lives in one place.
+func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	cmd, err := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
 	if err == nil {
 		queueLaunchNotes(agent, cmd, extraArgs)
 	}
@@ -135,13 +135,6 @@ func queueLaunchNotes(agent string, cmd *exec.Cmd, extraArgs []string) {
 // mirroring launchAgent above — used for an agent with no config.toml entry
 // (issue #147).
 var buildPassthrough = agents.BuildPassthroughCmd
-
-// resumeSession is a test seam wrapping agents.ResumeSession — the single
-// session lookup both launch paths share. The TUI and the non-TUI path used to
-// disagree about what a failed lookup means (abort the launch vs. silently
-// launch fresh), so the decision lives in agents.ResumeSession and is reached
-// through here.
-var resumeSession = agents.ResumeSession
 
 // runAndWaitCmd releases the TUI, runs the agent with stdio wired to the
 // terminal, restores the TUI, captures the post-run summary line into
@@ -208,17 +201,8 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 	}
 }
 
-// resumeOption identifies a choice in the resume prompt.
-type resumeOption int
-
-const (
-	resumeChoice resumeOption = iota
-	freshChoice
-	cancelChoice
-)
-
-// choiceItem adapts a prompt choice to list.Item. The three prompt screens
-// (resume, guard, ollama) share this single type; each keeps its own named
+// choiceItem adapts a prompt choice to list.Item. The prompt screens (guard,
+// ollama, replace) share this single type; each keeps its own named
 // choice enum, stored in the any-typed choice field.
 type choiceItem struct {
 	choice any
@@ -229,25 +213,6 @@ type choiceItem struct {
 func (c choiceItem) FilterValue() string { return c.title }
 func (c choiceItem) Title() string       { return c.title }
 func (c choiceItem) Description() string { return c.desc }
-
-// buildResumeChoices creates the resume prompt list items. The first item is
-// the default cursor position for bubbles/list, so Start fresh is placed at
-// index 0 to match the user's "default to start fresh" preference — Resume is
-// offered but opt-in, and Cancel backs out without launching.
-func buildResumeChoices(sess *session.Session) []list.Item {
-	items := []list.Item{
-		choiceItem{choice: freshChoice, title: "Start fresh", desc: "Launch without resuming a session"},
-		choiceItem{choice: cancelChoice, title: "Cancel", desc: "Return to agent+model screen"},
-	}
-	if sess != nil {
-		items = append(items, choiceItem{
-			choice: resumeChoice,
-			title:  fmt.Sprintf("Resume %s", sess.ID),
-			desc:   session.RelativeTime(sess.MTime),
-		})
-	}
-	return items
-}
 
 // ollamaChoice identifies a choice in the ollama availability prompt.
 type ollamaChoice int

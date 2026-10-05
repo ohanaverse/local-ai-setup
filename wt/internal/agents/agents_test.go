@@ -8,10 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 func nativeModel(agent string) config.Model {
@@ -485,7 +483,7 @@ func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
 	register("_test_regular", func() Driver { return regularTestDriver{} })
 	t.Cleanup(func() { delete(registry, "_test_regular") })
 
-	cmd, err := BuildLaunchCmd("_test_regular", config.Model{}, "/tmp", false, nil, &config.Config{}, []string{"--foo", "--bar"})
+	cmd, err := BuildLaunchCmd("_test_regular", config.Model{}, "/tmp", false, &config.Config{}, []string{"--foo", "--bar"})
 	if err != nil {
 		t.Fatalf("BuildLaunchCmd: %v", err)
 	}
@@ -504,7 +502,7 @@ func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
 // were also appended to cmd.Args the shell would receive duplicate arguments,
 // causing the command to malform or fail at runtime.
 func TestBuildLaunchCmdShellNoDoubleAppend(t *testing.T) {
-	cmd, err := BuildLaunchCmd("shell", config.Model{}, "/tmp", false, nil, &config.Config{}, []string{"echo", "hello"})
+	cmd, err := BuildLaunchCmd("shell", config.Model{}, "/tmp", false, &config.Config{}, []string{"echo", "hello"})
 	if err != nil {
 		t.Fatalf("BuildLaunchCmd: %v", err)
 	}
@@ -786,106 +784,6 @@ func TestCopilotNativeProviderNamed(t *testing.T) {
 	}
 }
 
-// TestBuildLaunchCmdNativeSkipsResume pins the !m.Native defense-in-depth
-// guard at the package level. The wrapper-level TestBuildLaunchNativeSkipsResume
-// in cmd/wt covers the same contract end-to-end, but if a refactor drops the
-// `!m.Native` clause from BuildLaunchCmd itself, this test is the only
-// direct pin — without it the bug could regress silently if the wrapper test
-// is later deleted or rewritten as a perceived duplicate. Without this guard,
-// resuming a session would restore the session's stored model and silently
-// override the user's "native" choice (for claude, routing a gateway model at
-// the real Anthropic API).
-func TestBuildLaunchCmdNativeSkipsResume(t *testing.T) {
-	if !Installed("claude") {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cmd, err := BuildLaunchCmd("claude", nativeModel("claude"), "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, &config.Config{}, nil)
-	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, native model must not resume", got)
-	}
-}
-
-// TestBuildLaunchCmdNamedNativeSkipsResume pins the broadened §5 resume-skip
-// predicate for a *named* native-provider model (claude/opus, ModelName
-// "opus", Native true), not just the claude/native sentinel. The sentinel
-// tests (TestBuildLaunchCmdNativeSkipsResume and its cmd/wt + tui wrappers)
-// would still pass if the predicate regressed from !m.Native back to
-// !m.IsNative() — which only checks ModelName == "native" — so this test is
-// the guard that a named native model, which the old IsNative() would have
-// missed, is not resumed.
-func TestBuildLaunchCmdNamedNativeSkipsResume(t *testing.T) {
-	if !Installed("claude") {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cmd, err := BuildLaunchCmd("claude", namedNativeModel("claude", "opus"), "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, &config.Config{}, nil)
-	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, named native model must not resume", got)
-	}
-}
-
-// TestBuildLaunchCmdResumeNonNative pins the inverse: a non-native model with
-// a non-nil session must append --resume. Together with
-// TestBuildLaunchCmdNativeSkipsResume, this locks both halves of the
-// `sess != nil && !m.Native` guard so neither clause can drift.
-func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
-	if !Installed("claude") {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := BuildLaunchCmd("claude",
-		config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"},
-		"/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--resume abc-123") {
-		t.Errorf("args = %q, want --resume abc-123", got)
-	}
-}
-
-// TestResumerCapability asserts which drivers implement the Resumer
-// optional capability. claude and opencode support session resume; the
-// other agents do not. This is the contract that lets shared code stop
-// switching on the agent name.
-func TestResumerCapability(t *testing.T) {
-	cases := []struct {
-		agent     string
-		resumable bool
-	}{
-		{"claude", true},
-		{"opencode", true},
-		{"codex", false},
-		{"copilot", false},
-		{"pi", false},
-		{"agy", false},
-		{"shell", false},
-	}
-	for _, c := range cases {
-		d := ByName(c.agent)
-		if d == nil {
-			t.Fatalf("unknown agent: %s", c.agent)
-		}
-		_, got := d.(Resumer)
-		if got != c.resumable {
-			t.Errorf("agent %q Resumer = %v, want %v", c.agent, got, c.resumable)
-		}
-	}
-}
-
 // TestSeederCapability asserts which drivers implement the Seeder
 // optional capability. claude and copilot create instruction pointer
 // files; other agents do not.
@@ -1040,5 +938,46 @@ func TestCommandSetsPWDToTheWorkdir(t *testing.T) {
 	}
 	if len(pwd) != 1 || pwd[0] != "PWD=/work/tree" {
 		t.Fatalf("PWD entries = %v, want exactly PWD=/work/tree", pwd)
+	}
+}
+
+// TestBuildLaunchCmdLeavesSessionsToTheAgent pins, for both agents that can
+// resume, that wt adds no resume flag of its own and hands the user's over
+// unchanged (#198, #204). wt used to append the agent's resume flag and the
+// newest session id it could find for the directory, on every non-native
+// launch: a one-shot run then wrote into the user's last conversation, an
+// opencode launch failed when that session had stored another model, and a
+// user who passed their own flag got two. The flags come after wt's own, so a
+// yolo launch keeps working — for opencode, where a bare flag in front of a
+// subcommand would swallow it, that order is what makes `--continue` a flag
+// and not the yolo flag's value.
+func TestBuildLaunchCmdLeavesSessionsToTheAgent(t *testing.T) {
+	dir := t.TempDir()
+	for _, bin := range []string{"claude", "opencode"} {
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	native := config.Model{Native: true, ModelName: "native"}
+	for _, tc := range []struct {
+		agent string
+		extra []string
+		want  []string
+	}{
+		{"claude", nil, []string{"--dangerously-skip-permissions"}},
+		{"claude", []string{"--continue"}, []string{"--dangerously-skip-permissions", "--continue"}},
+		{"claude", []string{"--resume", "abc123", "--fork-session"}, []string{"--dangerously-skip-permissions", "--resume", "abc123", "--fork-session"}},
+		{"opencode", nil, []string{"--auto=true"}},
+		{"opencode", []string{"--continue"}, []string{"--auto=true", "--continue"}},
+		{"opencode", []string{"--session", "ses_1", "--fork"}, []string{"--auto=true", "--session", "ses_1", "--fork"}},
+	} {
+		cmd, err := BuildLaunchCmd(tc.agent, native, t.TempDir(), true, nil, tc.extra)
+		if err != nil {
+			t.Fatalf("%s %v: %v", tc.agent, tc.extra, err)
+		}
+		if got := cmd.Args[1:]; !slices.Equal(got, tc.want) {
+			t.Errorf("%s with %v: args = %v, want %v", tc.agent, tc.extra, got, tc.want)
+		}
 	}
 }

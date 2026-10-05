@@ -13,7 +13,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 	"github.com/spf13/cobra"
@@ -289,32 +288,6 @@ func rootCmd() *cobra.Command {
 				return nil
 			}
 
-			if agent, _ := cmd.Flags().GetString("debug-session"); agent != "" {
-				root, err := worktree.RepoRoot()
-				if err != nil {
-					return fmt.Errorf("not in a git repo: %w", err)
-				}
-				d := agents.ByName(agent)
-				if d == nil {
-					return fmt.Errorf("unknown agent: %s", agent)
-				}
-				r, ok := d.(agents.Resumer)
-				if !ok {
-					fmt.Printf("%s: no resume support\n", agent)
-					return nil
-				}
-				s, err := r.LatestSession(root)
-				if err != nil {
-					return err
-				}
-				if s == nil {
-					fmt.Println("(no sessions)")
-					return nil
-				}
-				fmt.Printf("resume %s (last %s)\n", s.ID, session.RelativeTime(s.MTime))
-				return nil
-			}
-
 			if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
 				root, err := worktree.RepoRoot()
 				if err != nil {
@@ -396,7 +369,8 @@ func rootCmd() *cobra.Command {
 			// --cwd: launch in the current directory — the one launch that
 			// does not move to a checkout's root, so a relative path after
 			// `--` means the same thing to the agent as it did to the user.
-			// Session resume follows: it is looked up for this directory.
+			// The agent starts here too, so a `-- --continue` finds the
+			// sessions of this directory.
 			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
 				root, err := worktree.RepoRoot()
 				if err != nil {
@@ -446,7 +420,6 @@ func rootCmd() *cobra.Command {
 
 	// Test-only flags.
 	cmd.Flags().Bool("debug-worktrees", false, "List worktrees and branches (test helper)")
-	cmd.Flags().String("debug-session", "", "Print newest session for an agent (claude|opencode) (test helper)")
 
 	// Seed agent instruction files and exit (no agent binary required).
 	cmd.Flags().Bool("init", false, "Seed agent instruction files and exit")

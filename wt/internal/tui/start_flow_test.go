@@ -21,7 +21,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -1061,14 +1060,13 @@ func TestLaunchWithRouteAlreadyPresentLaunchesAtOnce(t *testing.T) {
 }
 
 // TestRouteCheckOutputIsKept pins that what the route check prints is not
-// lost under the alt screen: the captured text lands in pendingRouteNotes (for
-// the real terminal) and its last line in the status line (for a user who ends
-// up on a picker screen instead of in the agent). Both paths are covered — a
-// changed route, whose output arrives with the routing command's message, and
-// an unchanged one that still warned — plus a two-line capture, where the
-// restart's warning is the line worth showing and the notes keep both. The
-// flow is steered to the resume prompt so the status is the check's own and
-// not a launch failure's.
+// lost under the alt screen: the captured text lands in pendingRouteNotes, to
+// be printed on the real terminal once it is released. Both paths are covered
+// — a changed route, whose output arrives with the routing command's message,
+// and an unchanged one that still warned — plus a two-line capture, where the
+// notes keep both lines. The launch that follows is made to fail (the
+// fixture's unknown agent), which is also the one case where the user stays on
+// a picker screen: its status is the failure, and the notes are still kept.
 func TestRouteCheckOutputIsKept(t *testing.T) {
 	const restartWarning = "wt: LiteLLM proxy did not come back\n"
 	const writeWarning = "wt: LiteLLM route not updated: boom\n"
@@ -1076,91 +1074,48 @@ func TestRouteCheckOutputIsKept(t *testing.T) {
 		name                     string
 		changed                  bool
 		ensureOutput, waitOutput string
-		wantStatus               string
 	}{
-		{name: "changed", changed: true, ensureOutput: routeUpdatedLine, wantStatus: "wt: LiteLLM route for omlx/qwen3.8 updated"},
-		{name: "changed, restart warned", changed: true, ensureOutput: routeUpdatedLine, waitOutput: restartWarning, wantStatus: "wt: LiteLLM proxy did not come back"},
-		{name: "unchanged, write warned", changed: false, ensureOutput: writeWarning, wantStatus: "wt: LiteLLM route not updated: boom"},
+		{name: "changed", changed: true, ensureOutput: routeUpdatedLine},
+		{name: "changed, restart warned", changed: true, ensureOutput: routeUpdatedLine, waitOutput: restartWarning},
+		{name: "unchanged, write warned", changed: false, ensureOutput: writeWarning},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := launchRowFixture(t, "omlx/qwen3.8")
 			stub := stubEnsureRoute(t)
 			stub.changed, stub.ensureOutput, stub.waitOutput = tc.changed, tc.ensureOutput, tc.waitOutput
 			stubRouteNotes(t)
-			prev := resumeSession
-			resumeSession = func(string, bool, string) (*session.Session, string) {
-				return &session.Session{ID: "ses_prev"}, ""
-			}
-			t.Cleanup(func() { resumeSession = prev })
 
 			next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 			if tc.changed {
 				next, _ = updateMsg(next, routeDoneFrom(t, cmd))
 			}
 
-			if next.phase != phaseResume {
-				t.Fatalf("phase = %v, want the resume prompt the flow was steered to", next.phase)
-			}
 			if want := tc.ensureOutput + tc.waitOutput; pendingRouteNotes != want {
 				t.Fatalf("pendingRouteNotes = %q, want %q", pendingRouteNotes, want)
 			}
-			if next.status != tc.wantStatus {
-				t.Fatalf("status = %q, want the last captured line %q", next.status, tc.wantStatus)
+			if !strings.Contains(next.status, "launch failed") {
+				t.Fatalf("status = %q, want the launch to have been attempted after the check", next.status)
 			}
 		})
 	}
 }
 
-// TestRouteCheckSilentLeavesNotesAndStatusAlone pins the quiet case: a check
-// that printed nothing adds nothing to the notes and does not touch the status
-// line, so an ordinary launch looks exactly as it did before the capture.
-func TestRouteCheckSilentLeavesNotesAndStatusAlone(t *testing.T) {
+// TestRouteCheckSilentLeavesNoNotes pins the quiet case: a check that printed
+// nothing adds nothing to the notes, so an ordinary launch prints nothing
+// extra on the terminal.
+func TestRouteCheckSilentLeavesNoNotes(t *testing.T) {
 	m := launchRowFixture(t, "omlx/qwen3.8")
 	stub := stubEnsureRoute(t)
 	stub.changed = false
 	stubRouteNotes(t)
-	prev := resumeSession
-	resumeSession = func(string, bool, string) (*session.Session, string) {
-		return &session.Session{ID: "ses_prev"}, ""
-	}
-	t.Cleanup(func() { resumeSession = prev })
 
 	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 
-	if pendingRouteNotes != "" || next.status != "" {
-		t.Fatalf("pendingRouteNotes = %q status = %q, want both empty for a silent check", pendingRouteNotes, next.status)
+	if pendingRouteNotes != "" {
+		t.Fatalf("pendingRouteNotes = %q, want empty for a silent check", pendingRouteNotes)
 	}
-}
-
-// TestRouteNoteKeptBesideResumeWarning pins that a failed resume lookup's
-// warning does not push the route note out of the status line: both are shown,
-// joined with "; ". Either one alone would hide the other's reason from a user
-// looking at the picker.
-func TestRouteNoteKeptBesideResumeWarning(t *testing.T) {
-	truePath, err := exec.LookPath("true")
-	if err != nil {
-		t.Skip("`true` not available")
-	}
-	m := launchRowFixture(t, "omlx/qwen3.8")
-	t.Cleanup(agents.RegisterTest("wt-stub", func() agents.Driver { return stubDriver{path: truePath} }))
-	m.agent = "wt-stub" // a launch that succeeds, so no "launch failed" replaces the status
-	stub := stubEnsureRoute(t)
-	stub.ensureOutput = routeUpdatedLine
-	stubRouteNotes(t)
-	prev := resumeSession
-	resumeSession = func(string, bool, string) (*session.Session, string) {
-		return nil, "resume check failed, starting fresh: boom"
-	}
-	t.Cleanup(func() { resumeSession = prev })
-
-	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	next, launch := updateMsg(routing, routeDoneFrom(t, cmd))
-
-	if launch == nil {
-		t.Fatalf("no launch command; status = %q", next.status)
-	}
-	if want := "wt: LiteLLM route for omlx/qwen3.8 updated; resume check failed, starting fresh: boom"; next.status != want {
-		t.Fatalf("status = %q, want %q", next.status, want)
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted", next.status)
 	}
 }
 
@@ -1478,231 +1433,24 @@ func TestQuitDuringRoutingSettlesAcrossGoroutines(t *testing.T) {
 	}
 }
 
-// TestResumePromptShowsTheRouteNote pins that the route check's note is on
-// screen at the resume prompt, where a launch with a prior session stops: the
-// prompt used to render only its choices, so the "updated" line or a route
-// warning was invisible until the user backed out. It covers a written route
-// (through the routing phase) and an unchanged write that warned, a resume
-// warning shown beside the note, and esc — which clears the rest of the status
-// but must keep the note on the picker, since the route was written whether or
-// not the launch goes ahead.
-func TestResumePromptShowsTheRouteNote(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		changed       bool
-		output        string
-		resumeWarning string
-		wantNote      string
-	}{
-		{name: "route written", changed: true, output: routeUpdatedLine, wantNote: "wt: LiteLLM route for omlx/qwen3.8 updated"},
-		{name: "route written, resume warned", changed: true, output: routeUpdatedLine, resumeWarning: "resume check was slow", wantNote: "wt: LiteLLM route for omlx/qwen3.8 updated"},
-		{name: "unchanged write warned", changed: false, output: "wt: LiteLLM route not updated: boom\n", wantNote: "wt: LiteLLM route not updated: boom"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := launchRowFixture(t, "omlx/qwen3.8")
-			stub := stubEnsureRoute(t)
-			stub.changed, stub.ensureOutput = tc.changed, tc.output
-			stubRouteNotes(t)
-			prev := resumeSession
-			resumeSession = func(string, bool, string) (*session.Session, string) {
-				return &session.Session{ID: "ses_prev"}, tc.resumeWarning
-			}
-			t.Cleanup(func() { resumeSession = prev })
-
-			next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-			if tc.changed {
-				next, _ = updateMsg(next, routeDoneFrom(t, cmd))
-			}
-			if next.phase != phaseResume {
-				t.Fatalf("phase = %v, want the resume prompt", next.phase)
-			}
-
-			view := next.View()
-			if !strings.Contains(view, tc.wantNote) {
-				t.Errorf("resume view = %q, want it to show the route note %q", view, tc.wantNote)
-			}
-			if tc.resumeWarning != "" && !strings.Contains(view, tc.resumeWarning) {
-				t.Errorf("resume view = %q, want the resume warning %q beside the note", view, tc.resumeWarning)
-			}
-			if !strings.Contains(view, "Resume previous session?") {
-				t.Errorf("resume view = %q, want the prompt itself still rendered", view)
-			}
-
-			back, _ := updateMsg(next, tea.KeyMsg{Type: tea.KeyEsc})
-			if back.phase != phaseModel {
-				t.Fatalf("phase after esc = %v, want the picker", back.phase)
-			}
-			if back.status != tc.wantNote {
-				t.Errorf("status after esc = %q, want only the route note %q", back.status, tc.wantNote)
-			}
-			if picker := back.View(); !strings.Contains(picker, tc.wantNote) {
-				t.Errorf("picker view after esc = %q, want it to still show %q", picker, tc.wantNote)
-			}
-		})
-	}
-}
-
-// TestEscFromResumePromptStillClearsOtherStatus pins the other half of the esc
-// rule: with no route note, esc from the resume prompt clears the status as it
-// always did, and a note from an earlier launch attempt does not come back on
-// a later one that printed nothing. Stale text following the user between
-// screens is the bug the clearing exists to prevent.
-func TestEscFromResumePromptStillClearsOtherStatus(t *testing.T) {
-	m := launchRowFixture(t, "omlx/qwen3.8")
-	stub := stubEnsureRoute(t)
-	stub.changed, stub.ensureOutput = false, "wt: LiteLLM route not updated: boom\n"
-	stubRouteNotes(t)
-	prev := resumeSession
-	resumeSession = func(string, bool, string) (*session.Session, string) {
-		return &session.Session{ID: "ses_prev"}, "resume check was slow"
-	}
-	t.Cleanup(func() { resumeSession = prev })
-
-	first, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	back, _ := updateMsg(first, tea.KeyMsg{Type: tea.KeyEsc})
-	if back.status != "wt: LiteLLM route not updated: boom" {
-		t.Fatalf("status after esc = %q, want the first attempt's note", back.status)
-	}
-
-	stub.ensureOutput = "" // the second attempt's check is silent
-	second, _ := updateMsg(back, tea.KeyMsg{Type: tea.KeyEnter})
-	if second.phase != phaseResume || second.status != "resume check was slow" {
-		t.Fatalf("phase = %v status = %q, want the resume prompt with only its own warning", second.phase, second.status)
-	}
-	back, _ = updateMsg(second, tea.KeyMsg{Type: tea.KeyEsc})
-	if back.status != "" {
-		t.Fatalf("status after esc = %q, want it cleared: no route note belongs to this attempt", back.status)
-	}
-}
-
-// resumePromptFixture lands on the resume prompt for omlx/qwen3.8 in a window
-// of the given size, after a route check that printed output ("" for a silent
-// one) without changing config.yaml. A prior session always exists.
-func resumePromptFixture(t *testing.T, width, height int, output string) (model, *routeStub) {
-	t.Helper()
-	m := launchRowFixture(t, "omlx/qwen3.8")
-	m.width, m.height = width, height
-	stub := stubEnsureRoute(t)
-	stub.changed, stub.ensureOutput = false, output
-	stubRouteNotes(t)
-	prev := resumeSession
-	resumeSession = func(string, bool, string) (*session.Session, string) {
-		return &session.Session{ID: "ses_prev"}, ""
-	}
-	t.Cleanup(func() { resumeSession = prev })
-	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if next.phase != phaseResume {
-		t.Fatalf("phase = %v, want the resume prompt", next.phase)
-	}
-	return next, stub
-}
-
-// TestResumeViewFitsTheTerminal pins that the resume prompt never renders more
-// lines than the terminal has, with or without a status line. Bubble Tea drops
-// lines from the top of a view that is too tall, and the status is the top
-// line: a view one line over shows the prompt and silently loses the route
-// note it was changed to show. Asserting on the View() string alone cannot see
-// that, so the line count is checked against the window height.
-func TestResumeViewFitsTheTerminal(t *testing.T) {
-	const note = "wt: LiteLLM route not updated: boom"
-	for _, height := range []int{12, 24, 50} {
-		for _, output := range []string{"", note + "\n"} {
-			m, _ := resumePromptFixture(t, 80, height, output)
-
-			view := m.View()
-
-			if got := lipgloss.Height(view); got > height {
-				t.Errorf("height %d, status %q: view is %d lines, want at most %d", height, m.status, got, height)
-			}
-			if !strings.Contains(view, "[enter] choose") {
-				t.Errorf("height %d: view = %q, want the key hint", height, view)
-			}
-			if output != "" && !strings.HasPrefix(view, ErrorStyle(m.theme).Render(note)+"\n") {
-				t.Errorf("height %d: view = %q, want the note as its first line", height, view)
-			}
-			if output == "" && strings.Contains(view, "wt: LiteLLM") {
-				t.Errorf("height %d: view = %q, want no note for a silent check", height, view)
-			}
-		}
-	}
-}
-
-// TestResumeViewFitsAfterResizeAndNewStatus pins the two ways the fit can
-// break while the prompt is already up: the window is resized, and a status
-// appears that was not there on entry (a launch from the prompt fails). In
-// both the list must be re-sized, or the top line — the status — is lost.
-func TestResumeViewFitsAfterResizeAndNewStatus(t *testing.T) {
-	const note = "wt: LiteLLM route not updated: boom"
-	m, _ := resumePromptFixture(t, 80, 24, note+"\n")
-	for _, height := range []int{12, 50, 24} {
-		resized, _ := updateMsg(m, tea.WindowSizeMsg{Width: 100, Height: height})
-		view := resized.View()
-		if got := lipgloss.Height(view); got > height {
-			t.Errorf("resized to %d: view is %d lines, want at most %d", height, got, height)
-		}
-		if !strings.Contains(view, note) {
-			t.Errorf("resized to %d: view = %q, want the note still shown", height, view)
-		}
-	}
-
-	// No status on entry; "Start fresh" (the default choice) then fails to
-	// launch, because the fixture's agent has no driver.
-	quiet, _ := resumePromptFixture(t, 80, 24, "")
-	if before := lipgloss.Height(quiet.View()); before > 24 {
-		t.Fatalf("view without a status is %d lines, want at most 24", before)
-	}
-	failed, _ := updateMsg(quiet, tea.KeyMsg{Type: tea.KeyEnter})
-	if failed.phase != phaseResume || !strings.Contains(failed.status, "launch failed") {
-		t.Fatalf("phase = %v status = %q, want a failed launch left on the resume prompt", failed.phase, failed.status)
-	}
-	view := failed.View()
-	if got := lipgloss.Height(view); got > 24 {
-		t.Errorf("view with the new status is %d lines, want at most 24", got)
-	}
-	if !strings.Contains(view, "launch failed") {
-		t.Errorf("view = %q, want the launch failure shown", view)
-	}
-}
-
-// TestLaunchAttemptStartsWithAClearStatus pins that nothing an earlier launch
-// attempt left in the status line shows up on a later attempt's screens. The
-// route note is kept across esc from the resume prompt, and the resume prompt
-// renders the status — so without a reset at the start of each attempt the
-// next prompt, for a different model or for the same one, would announce a
-// route update that did not happen on this launch.
+// TestLaunchAttemptStartsWithAClearStatus pins that nothing an earlier screen
+// left in the status line follows the user into a launch. The routing screen
+// is the place to see it: it is entered by the same Update that begins the
+// attempt, before anything else can overwrite the status.
 func TestLaunchAttemptStartsWithAClearStatus(t *testing.T) {
-	const note = "wt: LiteLLM route for omlx/qwen3.8 updated"
-	for name, nextRow := range map[string]string{
-		"another row":  "claude/opus",
-		"the same row": "omlx/qwen3.8",
-	} {
-		t.Run(name, func(t *testing.T) {
-			first, stub := resumePromptFixture(t, 80, 24, routeUpdatedLine)
-			back, _ := updateMsg(first, tea.KeyMsg{Type: tea.KeyEsc})
-			if back.status != note {
-				t.Fatalf("status after esc = %q, want the first attempt's note", back.status)
-			}
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.changed = true
+	stubRouteNotes(t)
+	m.status = "ollama/other: not on disk — ollama pull other"
 
-			// The second attempt: a silent check (or none, for the native
-			// row) and no resume warning.
-			stub.ensureOutput = ""
-			back.models.Select(indexOfID(back, nextRow))
-			second, _ := updateMsg(back, tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 
-			if second.phase != phaseResume || second.launchModel.ID != nextRow {
-				t.Fatalf("phase = %v launchModel = %s, want the resume prompt for %s", second.phase, second.launchModel.ID, nextRow)
-			}
-			if second.status != "" || second.routeNote != "" {
-				t.Fatalf("status = %q routeNote = %q, want both empty: the earlier attempt's note is stale", second.status, second.routeNote)
-			}
-			if view := second.View(); strings.Contains(view, "wt: LiteLLM") {
-				t.Fatalf("resume view = %q, want no route note from the earlier attempt", view)
-			}
-			again, _ := updateMsg(second, tea.KeyMsg{Type: tea.KeyEsc})
-			if again.status != "" {
-				t.Fatalf("status after the second esc = %q, want empty", again.status)
-			}
-		})
+	if next.phase != phaseRouting {
+		t.Fatalf("phase = %v, want the routing screen", next.phase)
+	}
+	if next.status != "" {
+		t.Fatalf("status = %q, want the earlier screen's text cleared when the launch began", next.status)
 	}
 }
 

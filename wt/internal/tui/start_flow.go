@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,26 +164,12 @@ func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
 
 // recordRouteNotes keeps what a launch-time route check printed: it appends
 // the text to pendingRouteNotes, which is printed on the real terminal once the
-// alt screen is released, and puts the last non-empty line in the status line
-// for a user who lands on the resume prompt or back on the picker instead of
-// in the agent. The same line is kept in m.routeNote, so launchSelected can
-// show it beside a resume warning and esc from the resume prompt can keep it.
-// A check that printed nothing leaves both alone.
+// alt screen is released — above the agent's output, or after wt exits when
+// the launch did not happen. It does not go in the status line: the launch
+// follows at once, so the only picker screen the user can land on next is the
+// one a failed launch returns to, whose status is that failure.
 func (m *model) recordRouteNotes(notes string) {
-	if notes == "" {
-		return
-	}
 	pendingRouteNotes += notes
-	note := ""
-	for _, line := range strings.Split(notes, "\n") {
-		if strings.TrimSpace(line) != "" {
-			note = strings.TrimSpace(line)
-		}
-	}
-	if note != "" {
-		m.routeNote = note
-		m.status = note
-	}
 }
 
 // handleRouteKey handles keys in phaseRouting. The route is already written

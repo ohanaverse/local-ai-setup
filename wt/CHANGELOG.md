@@ -4,11 +4,26 @@
 
 ### Changed
 
+- wt no longer resumes an agent session by itself, on any launch path
+  (#198, #204). Every launch starts the agent fresh: no session lookup, no
+  resume flag, and the picker's "Resume previous session?" prompt is gone.
+  To continue a conversation, pass the agent's own flags after `--`, which
+  wt hands over unchanged, in the picker too: `claude-wt -- --continue`
+  (or `-- --resume <id>`, or `-- --continue --fork-session` to fork) and
+  `opencode-wt -- --continue` (or `-- --session <id>`, or
+  `-- --continue --fork`). The automatic resume appended a one-shot run
+  (`-- -p "..."`) to whichever conversation was newest, including one another
+  process was using (#204), and made an opencode launch fail when the resumed
+  session had stored a different model (#198). The `--debug-session <agent>`
+  flag is removed. Native models are no longer special-cased for resume:
+  whether a resumed session's stored model overrides the chosen one is the
+  agent's behaviour, and wt does not guard against it.
 - `--cwd` launches the agent in the directory you typed the command in, not
   at the root of the current checkout. A relative path after `--` then means
   what you meant. `-W` and the worktree picker still start at a worktree's
-  root. Session resume is per directory, so a session started at the repo
-  root is offered only when you launch from the root.
+  root. The agent looks for its sessions in the directory it starts in, so
+  `-- --continue` finds a session started at the repo root only when you
+  launch from the root.
 - `wt smoke` runs each agent in its own fresh temporary git repository, removed
   when the row ends, instead of the current directory (#193). Smoke runs
   agents with permission checks off, and a model's stray tool call had written
@@ -141,10 +156,8 @@
 - Model picker now honors `-T` and `-F` filters from the CLI: only
   models matching the agent + tag set + family set are eligible.
 - When the eligible list contains exactly one model, the model picker is
-  skipped and the agent launches (or the resume prompt appears, if a
-  prior session exists). Reuses the existing session-check and
-  rotation-recording flow, so cancelling the resume prompt leaves
-  rotation untouched.
+  skipped and the agent launches. Reuses the picker's own launch and
+  rotation-recording flow.
 
 ### Fixed
 

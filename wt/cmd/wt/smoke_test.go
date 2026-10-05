@@ -22,7 +22,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -904,7 +903,7 @@ func TestSmokeCmdRemovesTheAgentStateDir(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-		stateDir = filepath.Join(home, ".claude", "projects", session.Slug(real))
+		stateDir = claudeStateDir(t, home, real)
 		if err := os.MkdirAll(filepath.Join(stateDir, "memory"), 0o755); err != nil {
 			t.Error(err)
 		}

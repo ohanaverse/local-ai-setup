@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 )
 
@@ -259,4 +260,18 @@ func TestPickerSkippedOutsideTTY(t *testing.T) {
 	if !strings.Contains(err.Error(), "-A") {
 		t.Errorf("error %q doesn't mention -A flag", err.Error())
 	}
+}
+
+// claudeStateDir is the directory claude keeps a project's transcripts in for
+// a working directory, under home. It asks the driver rather than rebuilding
+// the path, so a test cannot disagree with wt about where claude's state is.
+// HOME must not be changed between this call and the code under test.
+func claudeStateDir(t *testing.T, home, workdir string) string {
+	t.Helper()
+	sd, ok := agents.ByName("claude").(agents.StateDirer)
+	if !ok {
+		t.Fatal("the claude driver no longer reports a state directory")
+	}
+	t.Setenv("HOME", home)
+	return sd.StateDir(workdir)
 }

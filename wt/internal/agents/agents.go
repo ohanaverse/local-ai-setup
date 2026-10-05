@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 // LaunchCmd describes a fully-built process to exec.
@@ -96,22 +95,6 @@ type ArgSetter interface {
 // changes to IsCommand or its callers.
 type Commanded interface {
 	IsCommand() bool
-}
-
-// Resumer is an optional Driver capability for agents that support
-// resuming a previous session. Drivers that do not implement Resumer are
-// assumed to have no session-resume support.
-type Resumer interface {
-	// ResumeFlag is the CLI flag the agent expects before the session ID.
-	// Examples: "--resume" for claude, "--session" for opencode.
-	ResumeFlag() string
-
-	// LatestSession returns the most recently modified resumable session
-	// for the worktree at path, or nil if none exists. Errors indicate
-	// a lookup failure (e.g. an unreadable session store). Callers should not
-	// call this directly — go through ResumeSession, which turns a failure
-	// into a warning and a fresh launch, identically on both launch paths.
-	LatestSession(path string) (*session.Session, error)
 }
 
 // OneShotRunner is an optional Driver capability for agents that can run a
@@ -320,15 +303,23 @@ func IsCommand(name string) bool {
 }
 
 // BuildLaunchCmd resolves the agent driver, runs any pre-launch sync, builds
-// the exec.Cmd, appends passthrough args, and adds a resume flag when a prior
-// session is provided. It is the single shared launch constructor used by both
-// the non-TUI launch path (cmd/wt) and the TUI launch path (internal/tui).
+// the exec.Cmd and appends passthrough args. It is the single shared launch
+// constructor used by both the non-TUI launch path (cmd/wt) and the TUI launch
+// path (internal/tui).
 //
 // extraArgs are user-supplied args after `--`. For regular agents they are
 // appended to the agent's command. For agents implementing ArgSetter (e.g.
 // shell), the args are passed via SetArgs and not appended again.
-func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	cmd, _, err := BuildLaunchCmdInfo(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+//
+// It never resumes a session. wt used to look up an agent's newest session
+// for the worktree and add the agent's resume flag itself; that appended a
+// one-shot run to whatever conversation was newest (#204), broke a launch
+// whose resumed session had stored another model (#198), and doubled the flag
+// when the user passed their own. Sessions are the agent's to manage: a user
+// who wants one continued says so in extraArgs, with the agent's own flags
+// (`-- --continue`, `-- --resume <id>`, `-- --session <id>`).
+func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	cmd, _, err := BuildLaunchCmdInfo(agent, m, worktreePath, yolo, cfg, extraArgs)
 	return cmd, err
 }
 
@@ -344,14 +335,14 @@ type LaunchInfo struct {
 // BuildLaunchCmdInfo is BuildLaunchCmd plus the LaunchInfo of the command it
 // built. A real launch ignores the info (a fallback only warns); wt smoke
 // reads it to fail a row whose agent would answer on a different model.
-func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
+func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
 	var info LaunchInfo
 	d := ByName(agent)
 	if d == nil {
 		return nil, info, fmt.Errorf("unknown agent: %s", agent)
 	}
-	// Guard nil cfg (used by some command-level tests that only care
-	// about resume/session wiring). A nil config resolves as direct mode.
+	// Guard nil cfg (BuildPassthroughCmd and some command-level tests pass
+	// none). A nil config resolves as direct mode.
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -381,15 +372,6 @@ func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo 
 	// Append passthrough args for regular agents.
 	if len(extraArgs) > 0 {
 		cmd.Args = append(cmd.Args, extraArgs...)
-	}
-	// Native models launch with no model override, so resuming a session
-	// would restore the session's stored model and silently override the
-	// user's "native" choice (for claude, routing a gateway model at the
-	// real Anthropic API). Skip the resume flag for native models.
-	if sess != nil && !m.Native {
-		if r, ok := d.(Resumer); ok {
-			cmd.Args = append(cmd.Args, r.ResumeFlag(), sess.ID)
-		}
 	}
 	return cmd, info, nil
 }

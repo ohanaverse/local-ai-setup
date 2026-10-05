@@ -8,7 +8,7 @@ import (
 
 // ThemedListDelegate returns a list.DefaultDelegate whose Normal/Selected
 // styles are themed. This is the single styling point for every picker
-// list in the TUI (worktree list, agent list, model list, resume/guard/
+// list in the TUI (worktree list, agent list, model list, guard/
 // ollama choice lists). Exported so internal/ollamaconfig can reuse it.
 // Tests continue to use list.NewDefaultDelegate() because they assert
 // model state, not rendered colors.
