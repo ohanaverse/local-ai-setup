@@ -4,6 +4,12 @@
 
 ### Changed
 
+- The post-session survey is switched off (#136). wt no longer asks "did it
+  work?", speed, quality and task after a session, and prints no
+  after-survey stats block. The code is kept behind `survey.Enabled`
+  (`false`) so it can be brought back. `wt stats` and the picker's SURVEY
+  column still show the answers already recorded, which drop out as they
+  pass the 30-day window. The stop prompt is unaffected.
 - The stop prompt (`wt stop` with no argument, and the one after an agent
   exits) is one line, applied on Enter (#139). Type the numbers to stop,
   separated by spaces (`1 3`), or `a` / `all` for every listed model; Enter

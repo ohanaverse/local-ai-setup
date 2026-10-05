@@ -219,7 +219,10 @@ last so the prompts cannot scroll it away:
 Both the survey and the stop picker therefore run **before** the summary
 line.
 
-- **Survey.** Prompts up to four questions on the parent terminal (did it
+- **Survey — currently switched off.** wt does not ask it (`survey.Enabled`
+  is `false` since 2026-10-05, #136), so a session goes straight to the stop
+  picker and there is no after-survey block. The code is kept and the survey
+  may return; when on, it behaves as follows. Prompts up to four questions on the parent terminal (did it
   work? speed 1-5? quality 1-5? — and on non-skip answers, what task were
   you doing), each answerable with Enter to skip. It silently does nothing
   when stdin is not a TTY, when the launch had no model (command agents

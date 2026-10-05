@@ -228,3 +228,23 @@ func TestPromptRunRatingReprompts(t *testing.T) {
 		t.Errorf("output = %q, want a reprompt message for the invalid \"9\"", out.String())
 	}
 }
+
+// TestSurveyIsSwitchedOff pins the decision of 2026-10-05 (#136): the
+// post-session survey is not asked. The questions, the store and the reports
+// are all still here — the survey may come back — but with Enabled false a
+// session ends without a single prompt, nothing is recorded, and there is no
+// after-survey block to print. The binary ships with it false.
+func TestSurveyIsSwitchedOff(t *testing.T) {
+	if shippedEnabled {
+		t.Fatal("survey.Enabled is true in the shipped binary; the survey is meant to be off until it is deliberately brought back")
+	}
+	withTTY(t, true)
+	Enabled = false
+	t.Cleanup(func() { Enabled = true })
+	store := NewStoreAt(t.TempDir())
+	var out bytes.Buffer
+	got := PromptRun(strings.NewReader("y\n5\n5\ntask\n"), &out, store, "claude", config.Model{ID: "ollama/x", ModelName: "x"})
+	if got != "" || out.Len() != 0 || len(store.Events()) != 0 {
+		t.Errorf("disabled survey: stats=%q output=%q events=%d, want nothing asked, printed or recorded", got, out.String(), len(store.Events()))
+	}
+}

@@ -1,5 +1,9 @@
 # `wt stats`
 
+> The post-session survey is switched off for now (#136), so no new answers
+> are recorded. `wt stats` still reports the answers already collected; rows
+> drop out as they pass the 30-day window.
+
 Reports accumulated post-session survey stats: did an agent×model combo
 work, how fast, how good. wt collects this data via the post-session
 survey prompt (see [wt-agents/README.md#post-run-summary-line](./wt-agents/README.md#post-run-summary-line));
