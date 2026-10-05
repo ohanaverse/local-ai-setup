@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -21,6 +23,21 @@ import (
 // hook rewrite the real config.yaml). Tests that need a probe result call
 // stubProbeInventory; tests that exercise a start call stubStartDriver.
 func TestMain(m *testing.M) {
+	// No test may read or write the developer's real config directory. A test
+	// that launches, records usage, takes a profile lock or loads the config
+	// without pointing XDG_CONFIG_HOME somewhere of its own used to land in
+	// ~/.config/agent-wt: every run of this package rewrote the real
+	// rotation.state (so the picker's last-launched marker pointed at a test
+	// model) and appended test launches to the real usage.jsonl. The whole
+	// package gets a throwaway config home; a test that sets its own still
+	// wins. MODELMAN_REGISTRY is cleared for the same reason: it would send
+	// config.Load to the developer's registry whatever XDG says.
+	cfgHome, err := os.MkdirTemp("", "wt-test-config-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("XDG_CONFIG_HOME", cfgHome)
+	os.Unsetenv("MODELMAN_REGISTRY")
 	probeInventory = localmodels.OnDiskSnapshotForTest
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests
@@ -51,7 +68,9 @@ func TestMain(m *testing.M) {
 	}
 	stopPickerAll = func(*config.Config) bool { return false }
 	confirmStop = func(string) (bool, error) { return false, nil }
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(cfgHome)
+	os.Exit(code)
 }
 
 // startRequest records what a stubbed start driver was asked to do.
@@ -105,4 +124,21 @@ func stubEnsureRoute(t *testing.T) *[]string {
 	osStderr = io.Discard
 	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes, osStderr = oldEnsure, oldWait, oldOut })
 	return &events
+}
+
+// TestConfigHomeIsNotTheDevelopersOwn pins TestMain's throwaway config home:
+// everything wt keeps under its config directory — rotation.state, usage.jsonl,
+// refcount.jsonl, profile backups and locks — resolves into a temp directory
+// for this package's tests, never ~/.config. Without it a test that launches a
+// stub agent rewrites the developer's real rotation state on every run.
+func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	for name, p := range map[string]string{"config.Dir()": config.Dir(), "config.RegistryPath()": config.RegistryPath()} {
+		if strings.HasPrefix(p, filepath.Join(home, ".config")) || !strings.Contains(p, "wt-test-config-") {
+			t.Errorf("%s = %s, want a path under this package's throwaway config home", name, p)
+		}
+	}
 }
