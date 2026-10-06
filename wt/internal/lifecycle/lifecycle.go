@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -40,12 +41,22 @@ type Options struct {
 	Progress     func(Stage)
 }
 
-// OccupiedError means starting the target would replace a running model and
-// AllowReplace was false. Nothing was touched.
-type OccupiedError struct{ Occupant localmodels.Entry }
+// OccupiedError means starting the target would displace running models and
+// AllowReplace was false. Nothing was touched. An Exclusive server has exactly
+// one occupant; a Pool can have several.
+type OccupiedError struct{ Occupants []localmodels.Entry }
+
+// IDs lists the occupants' model ids, in the order they would go.
+func (e *OccupiedError) IDs() []string {
+	ids := make([]string, len(e.Occupants))
+	for i, o := range e.Occupants {
+		ids[i] = o.ModelID
+	}
+	return ids
+}
 
 func (e *OccupiedError) Error() string {
-	return fmt.Sprintf("starting this model would stop %s, which is running — confirm to replace it", e.Occupant.ModelID)
+	return fmt.Sprintf("starting this model would stop %s — confirm to replace", strings.Join(e.IDs(), ", "))
 }
 
 // DaemonDownError means the provider's daemon is not answering.
@@ -171,58 +182,36 @@ var backendsByFamily = map[string]backend{
 	"mtplx":  mtplxBackend{},
 }
 
-// Occupant reports the running model that starting t would replace: none for
-// ollama (multi-tenant) or unsupported providers; on omlx/omlx-6bit (one
-// domain) and mtplx, any running model of the family other than t itself. It
-// also reports none when the snapshot's probe for the family failed, because a
-// caller acting on that false would replace a model it never saw.
-func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
-	family := localmodels.Family(t.ProviderID)
-	if b := backendsByFamily[family]; b == nil || b.tenancy() != Exclusive {
-		return localmodels.Entry{}, false
+// resolveEvictions decides which running models starting t would displace. It
+// prefers the snapshot, which is free, and re-probes the server only when the
+// snapshot's probe could not be trusted — the case that used to read as "no
+// occupant" and let a start evict the running model. The re-probe has no
+// sizes, so on a Pool every other loaded model is a victim. unknown reports
+// that even the re-probe could not tell; the caller must then require
+// AllowReplace.
+func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family string, t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, unknown bool) {
+	b := e.backends[family]
+	if b == nil {
+		return nil, false
 	}
-	if !ProbeTrusted(snap, family) {
-		return localmodels.Entry{}, false
+	ten := b.tenancy()
+	if v, known := evictions(ten, family, t, snap); known {
+		return v, false
 	}
-	for _, en := range snap.Entries {
-		if !en.Running || localmodels.Family(en.ProviderID) != family {
-			continue
-		}
-		if SameModel(family, en.ModelName, t.ModelName) {
-			continue
-		}
-		return en, true
-	}
-	return localmodels.Entry{}, false
-}
-
-// resolveOccupant decides whether starting t would replace a running model of a
-// single-model family. It prefers the snapshot, which is free, and re-probes
-// the server only when the snapshot's probe could not be trusted — the case
-// that used to read as "no occupant" and let a start evict the running model.
-// unknown reports that even the re-probe could not tell; the caller must then
-// require AllowReplace.
-func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family string, t Target, snap localmodels.Snapshot) (occ localmodels.Entry, has, unknown bool) {
-	if b := e.backends[family]; b == nil || b.tenancy() != Exclusive {
-		return localmodels.Entry{}, false, false
-	}
-	if occ, ok := Occupant(t, snap); ok {
-		return occ, true, false
-	}
-	if ProbeTrusted(snap, family) {
-		return localmodels.Entry{}, false, false
-	}
-	ids, known := e.liveServed(ctx, cfg, family)
+	served, known := e.liveServed(ctx, cfg, family)
 	if !known {
-		return localmodels.Entry{}, false, true
+		return nil, true
 	}
-	for _, id := range ids {
+	for _, id := range served {
 		if SameModel(family, id, t.ModelName) {
 			continue // the target itself is already served: not an occupant
 		}
-		return localmodels.Entry{ProviderID: t.ProviderID, ModelID: id, ModelName: id, Running: true}, true, false
+		victims = append(victims, localmodels.Entry{ProviderID: t.ProviderID, ModelID: id, ModelName: id, Running: true})
+		if ten == Exclusive {
+			break
+		}
 	}
-	return localmodels.Entry{}, false, false
+	return victims, false
 }
 
 // Start starts t. It is a no-op when live Inventory shows t already running,
@@ -265,15 +254,16 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if isRunning(snap, family, t) {
 		return nil
 	}
-	if occ, has, unknown := e.resolveOccupant(ctx, cfg, family, t, snap); unknown {
-		if !opts.AllowReplace {
-			origin, _ := localmodels.FamilyOrigin(cfg, family)
-			return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
-		}
-	} else if has {
-		if !opts.AllowReplace {
-			return &OccupiedError{Occupant: occ}
-		}
+	victims, unknown := e.resolveEvictions(ctx, cfg, family, t, snap)
+	if unknown && !opts.AllowReplace {
+		origin, _ := localmodels.FamilyOrigin(cfg, family)
+		return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
+	}
+	if len(victims) > 0 && !opts.AllowReplace {
+		return &OccupiedError{Occupants: victims}
+	}
+	if b.tenancy() == Exclusive && len(victims) > 0 {
+		occ := victims[0]
 		report(StageStoppingOccupant)
 		if err := b.stop(ctx, e, cfg); err != nil {
 			return fmt.Errorf("stopping %s before starting %s: %w", occ.ModelID, t.ModelName, err)

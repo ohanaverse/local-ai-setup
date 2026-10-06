@@ -96,22 +96,22 @@ func TestOccupantRules(t *testing.T) {
 		running("mtplx", "mtplx/m1", "Org/M1"),
 	}}
 
-	if _, ok := Occupant(Target{ProviderID: "ollama", ModelName: "b:2b"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "ollama", ModelName: "b:2b"}, snap); len(v) != 0 {
 		t.Error("ollama must never have an occupant")
 	}
-	if occ, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, snap); !ok || occ.ModelID != "omlx-6bit/six" {
-		t.Errorf("omlx occupant = %+v ok=%v, want the running omlx-6bit model (one domain)", occ, ok)
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, snap); len(v) == 0 || v[0].ModelID != "omlx-6bit/six" {
+		t.Errorf("omlx occupant = %+v, want the running omlx-6bit model (one domain)", v)
 	}
-	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Six-6bit"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "Six-6bit"}, snap); len(v) != 0 {
 		t.Error("the target itself (matching by lenient name) must not be its own occupant")
 	}
-	if occ, ok := Occupant(Target{ProviderID: "mtplx", ModelName: "Org/M2"}, snap); !ok || occ.ModelID != "mtplx/m1" {
-		t.Errorf("mtplx occupant = %+v ok=%v", occ, ok)
+	if v, _ := Evictions(Target{ProviderID: "mtplx", ModelName: "Org/M2"}, snap); len(v) == 0 || v[0].ModelID != "mtplx/m1" {
+		t.Errorf("mtplx occupant = %+v", v)
 	}
-	if _, ok := Occupant(Target{ProviderID: "mtplx", ModelName: "Org/M1"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "mtplx", ModelName: "Org/M1"}, snap); len(v) != 0 {
 		t.Error("mtplx target already running must not be its own occupant")
 	}
-	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "omlx", ModelName: "Idle-4bit"}}}); ok {
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "omlx", ModelName: "Idle-4bit"}}}); len(v) != 0 {
 		t.Error("a non-running entry is not an occupant")
 	}
 }
@@ -137,7 +137,7 @@ func TestStartNeverReplacesSilently(t *testing.T) {
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/old", "Old-4bit")}}
 	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{ProviderID: "omlx", ModelName: "New-4bit"}, Options{})
 	var occ *OccupiedError
-	if !errors.As(err, &occ) || occ.Occupant.ModelID != "omlx/old" {
+	if !errors.As(err, &occ) || occ.IDs()[0] != "omlx/old" {
 		t.Fatalf("err = %v, want *OccupiedError for omlx/old", err)
 	}
 	if len(calls) != 0 {
@@ -214,7 +214,7 @@ func TestTypedErrorMessages(t *testing.T) {
 		err  error
 		want string
 	}{
-		{&OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}, "omlx/old"},
+		{&OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}, "omlx/old"},
 		{&DaemonDownError{Provider: "ollama", Origin: "http://localhost:11434"}, "http://localhost:11434"},
 		{&BinaryMissingError{Binary: "mtplx"}, "mtplx"},
 		{&PortBusyError{Port: 8003}, "8003"},
@@ -257,7 +257,8 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 	}
 	for family, b := range backendsByFamily {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}
-		_, ok := Occupant(Target{ProviderID: family, ModelName: "wanted"}, snap)
+		v, _ := Evictions(Target{ProviderID: family, ModelName: "wanted"}, snap)
+		ok := len(v) > 0
 		if ok != (b.tenancy() == Exclusive) {
 			t.Errorf("family %s: Occupant reported an occupant=%v but tenancy()=%v", family, ok, b.tenancy())
 		}
@@ -279,9 +280,9 @@ func TestOccupantUnregisteredFamilyHasNoOccupant(t *testing.T) {
 			running("omlx", "omlx/other", "other"),  // an unrelated family
 			running(id, id+"/occupant", "occupant"), // this family: the occupant if the guard were gone
 		}}
-		occ, ok := Occupant(Target{ProviderID: id, ModelName: "wanted"}, snap)
-		if ok {
-			t.Errorf("%s: Occupant = %+v, want no occupant — wt has no backend for this family, so there is nothing to replace", id, occ)
+		occ, _ := Evictions(Target{ProviderID: id, ModelName: "wanted"}, snap)
+		if len(occ) > 0 {
+			t.Errorf("%s: Evictions = %+v, want no occupant — wt has no backend for this family, so there is nothing to replace", id, occ)
 		}
 	}
 }
@@ -370,8 +371,8 @@ func TestStartFindsOccupantTheSnapshotMissed(t *testing.T) {
 	if !errors.As(err, &occ) {
 		t.Fatalf("start over a live occupant = %v, want *OccupiedError", err)
 	}
-	if !containsFold(occ.Occupant.ModelID, "a") {
-		t.Errorf("occupant = %q, want the model the server reports (a)", occ.Occupant.ModelID)
+	if !containsFold(occ.IDs()[0], "a") {
+		t.Errorf("occupant = %q, want the model the server reports (a)", occ.IDs()[0])
 	}
 	if len(calls) != 0 {
 		t.Errorf("start touched the provider (%v) without AllowReplace", calls)
@@ -485,7 +486,7 @@ func TestOccupantIgnoresUntrustworthySnapshot(t *testing.T) {
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial},
 		Entries:   []localmodels.Entry{running("omlx", "omlx/a", "a")},
 	}
-	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "b"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "b"}, snap); len(v) != 0 {
 		t.Error("Occupant must not report an occupant from an untrustworthy probe")
 	}
 }

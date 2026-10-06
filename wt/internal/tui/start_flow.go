@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -412,7 +413,7 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	title := ""
 	switch {
 	case errors.As(msg.err, &occ):
-		title = fmt.Sprintf("Starting %s will stop %s, which is running", st.item.model.ID, occ.Occupant.ModelID)
+		title = fmt.Sprintf("Starting %s will stop %s", st.item.model.ID, strings.Join(occ.IDs(), ", "))
 	case errors.As(msg.err, &unk):
 		title = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
 	default:

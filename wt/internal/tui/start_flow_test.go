@@ -232,7 +232,7 @@ func TestEnterOnStartRowBeginsStart(t *testing.T) {
 func TestOccupiedOpensReplaceConfirmWithCancelDefault(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 	})
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
@@ -290,7 +290,7 @@ func TestUnknownOccupancyOpensReplaceConfirm(t *testing.T) {
 func TestReplaceConfirmProceedReissuesStartWithAllowReplace(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 	})
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
@@ -321,7 +321,7 @@ func TestReplaceConfirmProceedReissuesStartWithAllowReplace(t *testing.T) {
 func TestReplaceConfirmCancelDoesNotStart(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 	})
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
@@ -461,7 +461,7 @@ func TestStartFailureRefreshesTable(t *testing.T) {
 
 	stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
 		if confirm {
-			return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+			return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 		}
 		return errors.New("boom")
 	})

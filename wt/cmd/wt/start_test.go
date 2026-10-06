@@ -78,7 +78,7 @@ func TestStartForLaunchSucceedsWithoutReplace(t *testing.T) {
 // running model the user was never told about.
 func TestStartForLaunchRetriesOccupiedOnlyWithReplace(t *testing.T) {
 	stubSignals(t)
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ, nil})
 
 	if err := startForLaunch(&config.Config{}, startTestRow(), true); err != nil {
@@ -102,7 +102,7 @@ func TestStartForLaunchNonInteractiveOccupiedRefuses(t *testing.T) {
 	oldConfirm := confirmReplace
 	confirmReplace = func(string) (bool, error) { asked = true; return true, nil }
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ})
 
 	err := startForLaunch(&config.Config{}, startTestRow(), false)
@@ -136,7 +136,7 @@ func TestStartForLaunchTTYDeclineKeepsRunningModel(t *testing.T) {
 		return false, nil
 	}
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ})
 
 	err := startForLaunch(&config.Config{}, startTestRow(), false)
@@ -159,7 +159,7 @@ func TestStartForLaunchTTYConfirmReplaces(t *testing.T) {
 	oldConfirm := confirmReplace
 	confirmReplace = func(string) (bool, error) { return true, nil }
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ, nil})
 
 	if err := startForLaunch(&config.Config{}, startTestRow(), false); err != nil {
@@ -453,7 +453,7 @@ func TestStartForLaunchCtrlCAbortsReplacePrompt(t *testing.T) {
 		return false, nil
 	}
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ})
 
 	err := startForLaunch(&config.Config{}, startTestRow(), false)
