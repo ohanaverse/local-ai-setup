@@ -153,8 +153,8 @@ def _listed_name(name: str, listed: Container[str]) -> str | None:
     `ollama show x` resolves `x` to `x:latest`, while `ollama list` reports
     the literal tag — so a name with no tag segment of its own also matches
     its `:latest` row. The one rule for both reconcile paths (resolve_local
-    here, sync._ollama_downloaded): they clear a running flag on absence
-    (#233), so they must agree on what absent means."""
+    here, sync._ollama_downloaded), so they agree on what absent means and
+    a pulled model is never recorded as not ready by one of them."""
     if name in listed:
         return name
     if ":" not in name.rsplit("/", 1)[-1] and f"{name}:latest" in listed:
@@ -164,9 +164,6 @@ def _listed_name(name: str, listed: Container[str]) -> str | None:
 
 class OllamaProvider(Provider):
     name = "ollama"
-    # `ollama ps` lists only models loaded right now, and a started model is
-    # not loaded until its first request — see local_control._probe_running.
-    running_flag_is_probed = False
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
@@ -302,7 +299,7 @@ class OllamaProvider(Provider):
         listing from a failed command is not "nothing is pulled". Callers
         degrade a raising batch to the per-variant path, where
         is_downloaded() draws the same unknown-vs-absent line — reading the
-        failure as all-absent made reconcile clear every running flag (#233).
+        failure as all-absent recorded every pulled model as not ready.
         """
         r = (runner or _default_runner)(["ollama", "list"], capture_output=True, text=True)
         if r.returncode != 0:

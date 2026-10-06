@@ -22,7 +22,6 @@ from ..formatting import format_size
 from ..litellm import sync_routes
 from ..local_control import (
     LocalControlError,
-    _clear_stale_running_flag,
     _provider_local_models,
     discover_unregistered_models,
     running_model_ids,
@@ -348,12 +347,7 @@ class ModelScreen(Screen[None]):
         than once per call.
         """
         local_map, _unqueryable = _provider_local_models(self.registry)
-        gone_ids = reconcile_model_state(self.registry.models, self.registry, self.state, local_map)
-        # Reconcile cleared these in self.state only: an ollama model gone
-        # from disk, whose flag the probe below trusts as set and so would
-        # never clear (#233). Persist them the way a probed-stale flag is.
-        for model_id in gone_ids:
-            _clear_stale_running_flag(model_id, self.state_path)
+        reconcile_model_state(self.registry.models, self.registry, self.state, local_map)
         # Self-heal the running flag the same way ready/disk_path already
         # are: a model flagged running whose process actually died (crash,
         # manual kill outside modelman) must not keep showing RUNNING=●
@@ -361,7 +355,7 @@ class ModelScreen(Screen[None]):
         # clears any stale flag as a side effect; anything it doesn't
         # return is not verified running, so it gets cleared here too.
         verified = set(running_model_ids(self.registry, self.state, self.state_path))
-        stale_ids = gone_ids + [
+        stale_ids = [
             model_id
             for model_id, model_state in self.state.models.items()
             if model_state.running and model_id not in verified

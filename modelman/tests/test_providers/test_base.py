@@ -81,16 +81,3 @@ def test_cleanup_partial_download_default_is_noop():
 
     p = _NoopProvider({})
     p.cleanup_partial_download({"id": "x", "provider": "noop"})  # must not raise
-
-
-def test_running_flag_is_probed_for_every_provider_but_ollama():
-    # #233: one capability, two readers — the probe that trusts ollama's flag
-    # as-is, and the reconcile that therefore has to clear it itself. An alias
-    # row answers for its server; an unknown provider is assumed probed, so
-    # nothing clears a flag on the strength of a row modelman cannot identify.
-    import modelman.providers  # noqa: F401  (registers the provider classes)
-    from modelman.providers.registry import ProviderRegistry
-
-    assert ProviderRegistry.running_flag_is_probed("ollama") is False
-    for provider_id in ("omlx", "omlx-6bit", "mtplx", "mlx_lm_server", "no-such-provider"):
-        assert ProviderRegistry.running_flag_is_probed(provider_id) is True, provider_id

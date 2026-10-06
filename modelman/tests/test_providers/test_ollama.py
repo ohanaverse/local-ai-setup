@@ -226,7 +226,7 @@ def test_resolve_local_tagged_name_never_double_falls_back(mock_runner):
 def test_resolve_local_raises_when_ollama_list_fails(mock_runner):
     """A failed `ollama list` (daemon down) prints nothing, and nothing listed
     read as every variant absent — which reconcile takes as an observation and
-    clears the running flag on (#233). It must be unknown, not absent: raise,
+    records as not ready. It must be unknown, not absent: raise,
     as is_downloaded() does, so callers fall back to the per-variant path."""
     from modelman.providers.ollama import OllamaProvider
 

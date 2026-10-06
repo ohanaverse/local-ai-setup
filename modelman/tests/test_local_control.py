@@ -1036,17 +1036,71 @@ def test_name_matches_lenient_prefix_strict_variant_tail():
     assert not _name_matches("other-model", "qwen3.8:27b-mlx")
 
 
-def test_probe_running_ollama_is_exempt_from_live_verification():
-    # Ollama's start is deliberately flag-only (no warmup — it lazy-loads
-    # on first request), so `ollama ps` (which lists only currently-LOADED
-    # models) would read a freshly-flagged-but-never-requested model as
-    # not-running the moment anything probes it, permanently self-clearing
-    # a flag that was never wrong. Ollama must always probe as running,
-    # regardless of what `ollama ps` (_ollama_loaded_names) reports.
-    with patch("modelman.local_control._ollama_loaded_names", return_value=[]):
+def _tags(*names, cloud=()):
+    return {
+        "models": [{"name": n} for n in names]
+        + [{"name": n, "remote_host": "https://ollama.com"} for n in cloud]
+    }
+
+
+def test_probe_running_ollama_means_still_pulled():
+    # #242. Ollama's start is flag-only (no warmup — it lazy-loads on first
+    # request), so "loaded" (`ollama ps`) is the wrong question: it would
+    # clear the flag of a model started and not yet requested. "Still
+    # pulled" is the right one — a model that is gone cannot be served, and
+    # nothing else would ever clear its flag (#233).
+    seen = []
+
+    def tags(url, timeout=2.0):
+        seen.append(url)
+        return _tags("here:8b", "plain:latest", cloud=["hosted:cloud"])
+
+    with (
+        patch("modelman.local_control._http_json", tags),
+        patch("modelman.local_control._ollama_loaded_names", return_value=[]),
+    ):
+        assert _probe_running("ollama", "here:8b", None) is True
+        assert _probe_running("ollama", "plain", None) is True  # implicit :latest
+        assert _probe_running("ollama", "gone:8b", None) is False
+        # An ollama.com stub is not a pulled model (as wt reads it).
+        assert _probe_running("ollama", "hosted:cloud", None) is False
+        # Asked at the provider row's origin, not the local CLI: with
+        # base_url on another host that is the server the model is on.
+        assert _probe_running("ollama", "here:8b", "http://elsewhere:11434") is True
+    assert seen[0] == "http://localhost:11434/api/tags"
+    assert seen[-1] == "http://elsewhere:11434/api/tags"
+
+
+@pytest.mark.parametrize("answer", [None, {}, {"models": "nope"}], ids=["down", "empty", "junk"])
+def test_probe_running_ollama_keeps_the_flag_when_the_daemon_cannot_say(answer):
+    # Only a listing that positively lacks the model clears the flag. A
+    # daemon that is down or answers nonsense is unknown, and unknown stays
+    # running: restarting ollama must not stop every started model.
+    with patch("modelman.local_control._http_json", return_value=answer):
         assert _probe_running("ollama", "anything", None) is True
-    with patch("modelman.local_control._ollama_loaded_names", side_effect=RuntimeError("boom")):
-        assert _probe_running("ollama", "anything", None) is True
+
+
+def test_running_model_ids_clears_an_unregistered_ollama_model_that_is_gone(tmp_path):
+    # #242: a model started with no registry entry is flagged under its
+    # discovered id. Reconcile walks the registry and never saw it, so after
+    # `ollama rm` its flag stayed for good — in start's other-running warning
+    # and in `stop --all`.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/somemodel:7b", ModelState(running=True))
+    store.set("ollama/kept:1b", ModelState(running=True))
+    save_state(store, state_path)
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", location="local")], models=[]
+    )
+
+    with patch("modelman.local_control._http_json", return_value=_tags("kept:1b")):
+        verified = running_model_ids(registry, store, state_path)
+
+    assert verified == ["ollama/kept:1b"]
+    on_disk = load_state(state_path)
+    assert on_disk.get("ollama/somemodel:7b").running is False
+    assert on_disk.get("ollama/kept:1b").running is True
 
 
 def test_start_mtplx_isolates_without_env_var(tmp_path):
@@ -1308,12 +1362,8 @@ def _patch_provider_local_models(mapping: dict[str, list[dict]]):
     fixtures further down.
     """
 
-    # The real class where there is one: capability flags are read off it
-    # (Provider.running_flag_is_probed, #233).
-    real_get_class = local_control.ProviderRegistry.get_class
-
     def get_class(name):
-        return (real_get_class(name) or object) if name in mapping else None
+        return object if name in mapping else None
 
     def get(name, config):
         by_name = {lm["variant_id"]: lm for lm in mapping.get(name, [])}

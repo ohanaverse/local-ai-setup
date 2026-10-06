@@ -464,6 +464,10 @@ async def test_reconcile_stops_an_ollama_model_that_is_gone(tmp_path, monkeypatc
     stub.is_downloaded.return_value = False
     stub.list_local.return_value = []
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    # The daemon answers, and the model is not among what is pulled (#242).
+    monkeypatch.setattr(
+        "modelman.local_control._http_json", lambda url, timeout=2.0: {"models": []}
+    )
 
     from modelman.app import ModelmanApp
     from modelman.state import load_state as _load_state
