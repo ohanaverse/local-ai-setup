@@ -70,6 +70,15 @@ class Provider(ABC):
     # is retired (llamacpp).
     supports_discovery: bool = True
 
+    # True for a provider whose one server holds several loaded models at
+    # once (omlx, #213): a start loads beside the others and may evict
+    # some, and which ones depends on sizes only wt reads. The TUI's `s`
+    # key reads this to ask wt for a start plan before confirming, instead
+    # of hardcoding provider ids. False for a provider that serves one
+    # model per process (the occupant is named instead) or that lazy-loads
+    # on request (ollama).
+    pooled: bool = False
+
     def __init__(self, config: dict):
         self.config = config
 

@@ -113,6 +113,7 @@ def _is_local_path_entry(variant: VariantSpec) -> bool:
 
 class OMLXProvider(Provider):
     name = "omlx"
+    pooled = True
 
     def __init__(self, options: dict[str, Any]) -> None:
         super().__init__(options)

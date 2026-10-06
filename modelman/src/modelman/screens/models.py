@@ -24,12 +24,12 @@ from ..local_control import (
     LocalControlError,
     _provider_local_models,
     discover_unregistered_models,
-    is_omlx_family,
     running_model_ids,
     same_provider_occupant,
     start_local_model,
     stop_local_model,
 )
+from ..providers import ProviderRegistry
 from ..queue import QueuedOps
 from ..registry import (
     DEFAULT_PROVIDER_IDS,
@@ -623,7 +623,8 @@ class ModelScreen(Screen[None]):
             return
 
         others = [m for m in self.state.models if m != mid and self.state.models[m].running]
-        if is_omlx_family(entry.provider_id):
+        provider_cls = ProviderRegistry.get_class(entry.provider_id)
+        if provider_cls is not None and provider_cls.pooled:
             # omlx is a pool (#213): what a start would unload depends on
             # sizes only wt reads, so ask wt for its plan first. It is a
             # subprocess and a probe round, so it runs in a worker.

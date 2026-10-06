@@ -98,13 +98,6 @@ _DEFAULT_BASE_ORIGIN = {
 _OMLX_PROVIDER_IDS: frozenset[str] = frozenset({"omlx", "omlx-6bit"})
 
 
-def is_omlx_family(provider_id: str) -> bool:
-    """Whether `provider_id` is one of the registry rows that stand for the
-    omlx server (omlx, omlx-6bit) — for a caller outside this module that
-    must treat the two as one pool."""
-    return provider_id in _OMLX_PROVIDER_IDS
-
-
 # The omlx family's registry provider rows, in the order wt picks one to
 # stand for the family (wt/internal/localmodels/inventory.go's familyIDs /
 # familyProviderID): plain `omlx` first, `omlx-6bit` on a registry that
@@ -268,7 +261,7 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
         # No address to ask: nothing is known about a provider modelman has
         # no origin for, and no flag was set by starting one.
         return False
-    if is_omlx_family(provider_id):
+    if provider_id in _OMLX_PROVIDER_IDS:
         loaded = _omlx_pool(base)
         if loaded is None:
             return None
@@ -1452,6 +1445,11 @@ def stop_local_model(
     (#179). No-op when it isn't running. Raises LocalControlError for an
     unknown provider id embedded in model_id's prefix.
 
+    "Running" is the flag for every provider but omlx. An omlx model with no
+    flag is still asked of wt (_stop_unflagged_omlx): its start takes wt's
+    word for what is loaded, and a start whose bridge call timed out, or a
+    `wt start`, leaves a loaded model modelman has no flag for.
+
     An omlx model is unloaded through wt (_stop_omlx_via_wt): the omlx
     service and the other models it has loaded stay up, and their flags
     are left alone (#213). `registry` is read only there, and only when wt
@@ -1465,10 +1463,14 @@ def stop_local_model(
     """
     state = load_state(state_path)
     current = state.get(model_id)
-    if not current.running:
-        return StopResult(stopped_model_id=None)
-
     provider_id = model_id.split("/", 1)[0]
+    if not current.running:
+        if provider_id not in _OMLX_PROVIDER_IDS or not _stop_unflagged_omlx(model_id):
+            return StopResult(stopped_model_id=None)
+        return StopResult(
+            stopped_model_id=model_id, warnings=sync_routes(litellm_path=litellm_path)
+        )
+
     if provider_id == "ollama":
         model_name = model_id.split("/", 1)[1]
         _stop_ollama_model(model_name)
@@ -1535,6 +1537,23 @@ def _omlx_side_names(model_id: str, registry: Registry | None) -> tuple[tuple[st
     if "--" in tail:
         return (tail, tail.replace("--", "/")), True
     return (tail,), True
+
+
+def _stop_unflagged_omlx(model_id: str) -> bool:
+    """Ask wt to unload an omlx model modelman has no running flag for;
+    whether it did.
+
+    wt refusing because the model is not running (or is unknown to it) is
+    the plain "not running" here: there is no flag for a wrong refusal to
+    clear, so the pool read that backs one in _stop_omlx_via_wt is not
+    needed. Any other failure is an error, as there."""
+    try:
+        wt_bridge.stop(model_id)
+    except wt_bridge.WtBridgeError as exc:
+        if any(tail in str(exc) for tail in _WT_NOT_RUNNING):
+            return False
+        raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
+    return True
 
 
 def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:

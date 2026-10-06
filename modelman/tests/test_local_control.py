@@ -3146,11 +3146,16 @@ def test_start_omlx_timeout_says_the_model_may_still_be_loading(tmp_path, monkey
     assert state.get("omlx/a").running and not state.get("omlx/b").running
 
 
-def test_is_omlx_family_covers_both_omlx_rows():
-    # omlx and omlx-6bit are one server; every other provider is not it.
-    assert local_control.is_omlx_family("omlx") and local_control.is_omlx_family("omlx-6bit")
-    assert not local_control.is_omlx_family("mtplx")
-    assert not local_control.is_omlx_family("ollama")
+def test_pooled_capability_covers_both_omlx_rows():
+    # omlx and omlx-6bit are one server, a pool; the TUI's `s` key asks wt
+    # for a start plan on this capability, never on a provider id.
+    from modelman.providers import ProviderRegistry
+
+    def pooled(provider_id):
+        return ProviderRegistry.get_class(provider_id).pooled
+
+    assert pooled("omlx") and pooled("omlx-6bit")
+    assert not pooled("mtplx") and not pooled("ollama") and not pooled("mlx_lm_server")
 
 
 def _stub_wt_stop(monkeypatch, error=None, served=(), refused=False):
@@ -3207,6 +3212,45 @@ def test_stop_omlx_clears_the_flag_of_a_model_wt_says_is_not_running(tmp_path, m
 
 
 _WT_SAYS_NOT_RUNNING = wt_bridge.WtBridgeError('model "omlx/a" is not running')
+
+
+def test_stop_omlx_asks_wt_about_a_model_modelman_has_no_flag_for(tmp_path, monkeypatch):
+    # A start whose bridge call timed out sets no flag while the load goes on
+    # ("may still be loading in omlx"), and `wt start` sets none at all. The
+    # start path takes wt's word for what is loaded, so the stop must too:
+    # answering "is not running" from the flag left the model resident.
+    state_path = _state_path(tmp_path, {"omlx/b": True})
+    calls, _ = _stub_wt_stop(monkeypatch)
+
+    with patch("modelman.local_control.sync_routes", return_value=[]) as sync:
+        result = stop_local_model("omlx/a", state_path)
+
+    assert calls == ["omlx/a"] and result.stopped_model_id == "omlx/a"
+    sync.assert_called_once()
+    state = load_state(state_path)
+    assert "omlx/a" not in state.models and state.get("omlx/b").running
+
+
+def test_stop_omlx_unflagged_is_a_noop_when_wt_says_it_is_not_running(tmp_path, monkeypatch):
+    # No flag to guard, so wt's refusal needs no pool read to back it: the
+    # answer is the plain "not running", with no sync and no state row.
+    state_path = _state_path(tmp_path, {})
+    calls, _ = _stub_wt_stop(monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None)
+
+    with patch("modelman.local_control.sync_routes") as sync:
+        result = stop_local_model("omlx/a", state_path)
+
+    assert calls == ["omlx/a"] and result.stopped_model_id is None
+    sync.assert_not_called()
+    assert "omlx/a" not in load_state(state_path).models
+
+
+def test_stop_omlx_unflagged_surfaces_any_other_wt_failure(tmp_path, monkeypatch):
+    state_path = _state_path(tmp_path, {})
+    _stub_wt_stop(monkeypatch, error=wt_bridge.WtBridgeError("unload timed out"))
+
+    with pytest.raises(LocalControlError, match="failed to stop omlx/a: unload timed out"):
+        stop_local_model("omlx/a", state_path)
 
 
 def test_stop_omlx_keeps_the_flag_when_the_pool_cannot_be_read(tmp_path, monkeypatch):

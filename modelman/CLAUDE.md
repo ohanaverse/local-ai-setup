@@ -96,7 +96,7 @@ Read `docs/internals/registry-and-state.md` before changing any of these, `sync.
 
 ### Provider plugin system
 
-`providers/base.py` — `Provider` ABC; capability class attributes (`manages_own_cache`, `supports_discovery`) replace hard-coded provider ids. `providers/registry.py` — `ProviderRegistry`; each provider module registers at import time, so import from `modelman.providers`.
+`providers/base.py` — `Provider` ABC; capability class attributes (`manages_own_cache`, `supports_discovery`, `pooled`) replace hard-coded provider ids. `providers/registry.py` — `ProviderRegistry`; each provider module registers at import time, so import from `modelman.providers`.
 
 - **Every `Provider` method that shells out must accept an optional `runner` arg** — the autouse `_never_call_real_ollama` fixture patches only module-level default runners.
 - `omlx-6bit` resolves to omlx's class (`_ALIASES`): two rows that resolve to the same class are one server.
@@ -115,7 +115,7 @@ Module map and primitives: `docs/internals/providers.md`.
 
 ### Local-model lifecycle
 
-`modelman start <id>` / `stop <id>` / `stop --all` and the TUI's `s` key are the sanctioned non-benchmark start/stop paths (`local_control.py`). **Per-provider process limits:** multiple local models may run concurrently across providers (advisory only). ollama is multi-tenant; omlx is a pool that can hold several loaded models, and its start and stop go through `wt` (`wt start --json`, `wt stop`; modelman needs a `wt` that has them), so starting an omlx model leaves the others loaded unless omlx evicts and `modelman stop <omlx model>` unloads just that one; mtplx and mlx_lm_server serve one model per process, so starting a different model replaces the occupant. `omlx`/`omlx-6bit` are ONE server (shared port 8000). `modelman stop --all` and `modelman provider isolate|stop|restore` (benchmarks) still halt or restart the omlx service through the Python backend.
+`modelman start <id>` / `stop <id>` / `stop --all` and the TUI's `s` key are the sanctioned non-benchmark start/stop paths (`local_control.py`). **Per-provider process limits:** multiple local models may run concurrently across providers (advisory only). ollama is multi-tenant; omlx is a pool that can hold several loaded models, and its start and stop go through `wt` (`wt start --json`, `wt stop`; modelman needs a `wt` that has them), so starting an omlx model leaves the others loaded unless omlx evicts and `modelman stop <omlx model>` unloads just that one — asked of wt even for a model modelman has no running flag for; mtplx and mlx_lm_server serve one model per process, so starting a different model replaces the occupant. `omlx`/`omlx-6bit` are ONE server (shared port 8000). `modelman stop --all` and `modelman provider isolate|stop|restore` (benchmarks) still halt or restart the omlx service through the Python backend.
 
 - Every start and stop closes with one `wt litellm sync`, after its state writes and outside the lock; sync warnings never fail the operation.
 - An occupant's flag is cleared only after its teardown is confirmed. An omlx start sets its target's flag and clears the flags of the ids wt reports `unloaded`; a failed start changes no flag, and an omlx stop wt refuses clears one only when the pool wt reads does not hold the model ("cannot say" never clears one — only a refused connection at the registry's omlx origin does). The omlx probe likewise answers "cannot say" when nothing answered; only a refused connection reads as "nothing loaded".
