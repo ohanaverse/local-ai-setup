@@ -176,6 +176,67 @@ def test_reconcile_model_state_clears_ready_when_artifact_missing(monkeypatch):
     assert result.size_bytes is None
 
 
+def test_reconcile_model_state_stops_an_ollama_model_that_is_gone(monkeypatch):
+    """#233: the TUI's reconcile is a second path beside sync.reconcile, and
+    the same rule holds — an ollama model observed absent cannot be running,
+    and no probe will ever say so. The cleared ids are returned so the caller
+    can persist them."""
+    models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
+    reg, state, stub = _seed(monkeypatch, models=models)
+    state.set("ollama/a", ModelState(ready=True, running=True))
+    stub.is_downloaded.return_value = False
+
+    cleared = reconcile_model_state(models, reg, state)
+
+    assert state.get("ollama/a").running is False
+    assert cleared == ["ollama/a"]
+
+
+def test_reconcile_model_state_keeps_the_flag_when_absence_was_not_observed(monkeypatch):
+    """A provider that could not be asked (daemon down) is recorded not ready,
+    as before, but that is not an observation that the model is gone: the
+    running flag stays."""
+    models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
+    reg, state, stub = _seed(monkeypatch, models=models)
+    state.set("ollama/a", ModelState(ready=True, running=True))
+    stub.is_downloaded.side_effect = RuntimeError("daemon down")
+
+    cleared = reconcile_model_state(models, reg, state)
+
+    assert state.get("ollama/a").ready is False
+    assert state.get("ollama/a").running is True
+    assert cleared == []
+
+
+def test_reconcile_model_state_keeps_the_flag_when_the_ollama_daemon_is_down(monkeypatch):
+    """The same rule through the real OllamaProvider, whose batch path is the
+    one ollama actually takes: with the daemon down `ollama list` fails and
+    prints nothing, which resolve_local read as "nothing is pulled" — an
+    aligned all-absent answer, so every running ollama flag was cleared."""
+    import subprocess
+
+    def daemon_down(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 1, "", "Error: could not connect to ollama app, is it running?"
+        )
+
+    monkeypatch.setattr("modelman.providers.ollama._default_runner", daemon_down)
+    models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a:1b")]
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"), location="local")
+        ],
+        models=models,
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=True))
+
+    cleared = reconcile_model_state(models, reg, state)
+
+    assert state.get("ollama/a").running is True
+    assert cleared == []
+
+
 def test_reconcile_model_state_misaligned_batch_degrades_to_per_model(monkeypatch):
     """The batch contract requires a list aligned with the specs: a
     resolve_local() that returns the wrong length (provider bug) must

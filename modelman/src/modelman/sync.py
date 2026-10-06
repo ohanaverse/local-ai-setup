@@ -17,7 +17,7 @@ from typing import Any, Protocol
 # Import the providers package to ensure ProviderRegistry is populated.
 from . import providers  # noqa: F401
 from .providers.base import Provider, VariantSpec
-from .providers.ollama import _parse_ollama_list_sizes
+from .providers.ollama import _listed_name, _parse_ollama_list_sizes
 from .providers.registry import ProviderRegistry
 from .registry import (
     _DEFAULT_PROVIDER_TEMPLATES,
@@ -103,15 +103,18 @@ def _ollama_downloaded(registry: Registry, sizes: dict[str, int]) -> dict[str, t
     """Map ollama list output to {model_id: (disk_path, size_bytes)}.
 
     Only configured ollama models are returned; unconfigured models in `sizes`
-    are ignored.
+    are ignored. A tagless registry name matches its `:latest` row, as the
+    TUI's reconcile (OllamaProvider.resolve_local) and `modelman start` read
+    it: reconcile clears the running flag of a model that is not here (#233),
+    so a pulled `x:latest` must not read as a missing `x`.
     """
     downloaded: dict[str, tuple[str, int]] = {}
     for m in registry.models:
         if m.provider_id != "ollama":
             continue
-        size = sizes.get(m.model_name)
-        if size is not None:
-            downloaded[m.id] = (f"ollama:{m.model_name}", size)
+        listed = _listed_name(m.model_name, sizes)
+        if listed is not None:
+            downloaded[m.id] = (f"ollama:{listed}", sizes[listed])
     return downloaded
 
 
@@ -233,6 +236,9 @@ class SyncResult:
     downloaded: list[str] = field(default_factory=list)
     not_downloaded: list[str] = field(default_factory=list)
     providers_added: list[str] = field(default_factory=list)
+    # Models whose running flag reconcile cleared because they are gone from
+    # disk and no probe would (see reconcile). A subset of not_downloaded.
+    running_cleared: list[str] = field(default_factory=list)
 
 
 def reconcile(
@@ -260,16 +266,34 @@ def reconcile(
         # `running` to its default, so every sync recorded every registered
         # local model as stopped (#231). Whether a model that is gone from
         # disk can still be running is the probe's call
-        # (local_control._clear_stale_running_flag), not a side effect here.
+        # (local_control._clear_stale_running_flag) — where there is a probe.
         current = state.get(m.id)
         if m.id in downloaded:
             disk_path, size = downloaded[m.id]
             state.set(m.id, replace(current, ready=True, disk_path=disk_path, size_bytes=size))
             result.downloaded.append(m.id)
         else:
-            state.set(m.id, replace(current, ready=False, disk_path=None, size_bytes=None))
+            gone = replace(current, ready=False, disk_path=None, size_bytes=None)
+            if stops_when_gone(m.provider_id, current.running):
+                gone = replace(gone, running=False)
+                result.running_cleared.append(m.id)
+            state.set(m.id, gone)
             result.not_downloaded.append(m.id)
     return result
+
+
+def stops_when_gone(provider_id: str, running: bool) -> bool:
+    """Whether a model flagged `running` that reconcile has just observed
+    absent from disk must have the flag cleared here (#233).
+
+    Only for a provider whose flag no probe confirms (ollama): nothing else
+    would ever clear it, and a model that is not pulled cannot be served. For
+    every other provider the flag stays — a server can go on serving weights
+    whose directory was removed, and its probe decides. Shared by both
+    reconcile paths (reconcile here, screens.reconcile_model_state) so they
+    cannot disagree. The caller must have OBSERVED the absence: a provider
+    that could not be asked is not an observation."""
+    return running and not ProviderRegistry.running_flag_is_probed(provider_id)
 
 
 def sync(

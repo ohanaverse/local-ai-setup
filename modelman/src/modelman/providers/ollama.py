@@ -6,7 +6,7 @@ import contextlib
 import re
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from typing import Any
 
 from .base import LocalModel, Provider, VariantSpec, _Runner
@@ -146,8 +146,27 @@ def _parse_ollama_list_sizes(stdout: str) -> dict[str, int]:
     return sizes
 
 
+def _listed_name(name: str, listed: Container[str]) -> str | None:
+    """The name among `listed` (`ollama list`'s NAME column) that registry
+    name `name` is pulled as, or None when it is not pulled.
+
+    `ollama show x` resolves `x` to `x:latest`, while `ollama list` reports
+    the literal tag — so a name with no tag segment of its own also matches
+    its `:latest` row. The one rule for both reconcile paths (resolve_local
+    here, sync._ollama_downloaded): they clear a running flag on absence
+    (#233), so they must agree on what absent means."""
+    if name in listed:
+        return name
+    if ":" not in name.rsplit("/", 1)[-1] and f"{name}:latest" in listed:
+        return f"{name}:latest"
+    return None
+
+
 class OllamaProvider(Provider):
     name = "ollama"
+    # `ollama ps` lists only models loaded right now, and a started model is
+    # not loaded until its first request — see local_control._probe_running.
+    running_flag_is_probed = False
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
@@ -278,8 +297,18 @@ class OllamaProvider(Provider):
         sizes are keyed on. `ollama rm`/`ollama pull` work on the same
         names, so the presence check never disagrees with the delete step
         that may follow it.
+
+        Raises when `ollama list` itself fails (daemon down): an empty
+        listing from a failed command is not "nothing is pulled". Callers
+        degrade a raising batch to the per-variant path, where
+        is_downloaded() draws the same unknown-vs-absent line — reading the
+        failure as all-absent made reconcile clear every running flag (#233).
         """
         r = (runner or _default_runner)(["ollama", "list"], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"`ollama list` failed (exit {r.returncode}): {(r.stderr or '').strip()}"
+            )
         sizes = _parse_ollama_list_sizes(r.stdout)
         listed: dict[str, LocalModel] = {}
         for line in r.stdout.splitlines():
@@ -297,14 +326,8 @@ class OllamaProvider(Provider):
             }
         results: list[LocalModel | None] = []
         for variant in variants:
-            name = variant["name"]
-            hit = listed.get(name)
-            if hit is None and ":" not in name.rsplit("/", 1)[-1]:
-                # `ollama show x` resolves `x` to `x:latest`; `ollama list`
-                # reports the literal tag. Only default when the name
-                # carries no tag segment of its own.
-                hit = listed.get(f"{name}:latest")
-            results.append(hit)
+            found = _listed_name(variant["name"], listed)
+            results.append(listed[found] if found is not None else None)
         return results
 
 

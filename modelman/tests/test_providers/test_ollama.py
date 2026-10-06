@@ -223,6 +223,20 @@ def test_resolve_local_tagged_name_never_double_falls_back(mock_runner):
     assert results[0] is None
 
 
+def test_resolve_local_raises_when_ollama_list_fails(mock_runner):
+    """A failed `ollama list` (daemon down) prints nothing, and nothing listed
+    read as every variant absent — which reconcile takes as an observation and
+    clears the running flag on (#233). It must be unknown, not absent: raise,
+    as is_downloaded() does, so callers fall back to the per-variant path."""
+    from modelman.providers.ollama import OllamaProvider
+
+    runner = mock_runner(returncode=1, stderr="Error: could not connect to ollama app")
+    with pytest.raises(RuntimeError, match="ollama list"):
+        OllamaProvider({}).resolve_local(
+            [{"id": "x", "provider": "ollama", "name": "x:1b"}], runner=runner
+        )
+
+
 def test_base_provider_resolve_local_is_none():
     """The base Provider must not implement resolve_local: a default
     'loop over the per-variant methods' implementation would defeat the

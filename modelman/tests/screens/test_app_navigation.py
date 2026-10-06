@@ -440,6 +440,47 @@ async def test_reconcile_self_heal_syncs_routes_for_the_dead_model(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_reconcile_stops_an_ollama_model_that_is_gone(tmp_path, monkeypatch, wt_calls):
+    """#233 on the screen: an ollama model flagged running whose artifact is
+    gone kept its RUNNING ● — the mount reconcile clears only what the probe
+    does not verify, and ollama's probe verifies everything. The flag must be
+    cleared in the screen's state and in modelman.toml, with the route sync a
+    cleared flag always brings."""
+    from unittest.mock import MagicMock
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
+
+    store = StateStore()
+    store.set("ollama/o35", ModelState(ready=True, running=True))
+    save_state(store, state_path)
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = False
+    stub.list_local.return_value = []
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+    from modelman.state import load_state as _load_state
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            await pilot.pause()
+            if any(call[:1] == ["sync"] for call in wt_calls):
+                break
+        assert app.screen.state.get("ollama/o35").running is False
+
+    assert _load_state(state_path).get("ollama/o35").running is False
+    assert any(call[:1] == ["sync"] for call in wt_calls), wt_calls
+
+
+@pytest.mark.asyncio
 async def test_reconcile_with_nothing_stale_runs_no_sync(tmp_path, monkeypatch, wt_calls):
     """The reconcile runs on every mount, so the sync above must be gated on
     actually having found a dead model: a healthy mount must not bounce the

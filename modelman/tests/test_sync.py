@@ -179,6 +179,29 @@ def test_ollama_downloaded_ignores_unconfigured_models():
     assert _ollama_downloaded(registry, {"a": 1024}) == {}
 
 
+def test_a_tagless_ollama_model_pulled_as_latest_is_downloaded_and_keeps_its_flag():
+    # `ollama list` reports `x:latest` for a model registered as `x`. The
+    # TUI's reconcile and `modelman start` both read that as pulled; an exact
+    # lookup here read it as gone, and since #233 "gone" clears the running
+    # flag — so every `modelman sync` stopped a started tagless model.
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", location="local")],
+        models=[
+            ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x"),
+            ModelEntry(id="ollama/y", family="f", provider_id="ollama", model_name="y:9b"),
+        ],
+    )
+    # A tagged name is looked up exactly: `y:latest` is not `y:9b`.
+    downloaded = _ollama_downloaded(registry, {"x:latest": 5, "y:latest": 7})
+    assert downloaded == {"ollama/x": ("ollama:x:latest", 5)}
+
+    state = StateStore()
+    state.set("ollama/x", ModelState(ready=True, running=True))
+    result = reconcile(registry, state, downloaded)
+    assert state.get("ollama/x").running is True
+    assert result.running_cleared == []
+
+
 def test_reconcile_downloaded_model():
     registry = Registry(
         models=[
@@ -780,9 +803,10 @@ def test_reconcile_keeps_the_running_flag():
     # default. Every `modelman sync` therefore marked every registered local
     # model as stopped: `modelman stop` refused ("is not running") and the
     # TUI and the other-running warning lost sight of a model still serving.
-    # Reconcile changes what it observes and nothing else, in both branches:
-    # whether a model that vanished from disk can still be running is the
-    # probe's call (_clear_stale_running_flag), not a side effect of this.
+    # Reconcile changes what it observes and nothing else — with one
+    # exception, for the model that is gone (#233): ollama's running flag is
+    # never confirmed by a probe, so nothing else would ever clear it, and a
+    # model that is not pulled cannot be served.
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="O", location="local")],
         models=[
@@ -795,10 +819,29 @@ def test_reconcile_keeps_the_running_flag():
     state.set(
         "ollama/gone", ModelState(ready=True, disk_path="ollama:gone", size_bytes=9, running=True)
     )
-    reconcile(registry, state, {"ollama/here": ("ollama:here", 5)})
+    result = reconcile(registry, state, {"ollama/here": ("ollama:here", 5)})
     assert state.get("ollama/here") == ModelState(
         ready=True, disk_path="ollama:here", size_bytes=5, running=True
     )
     assert state.get("ollama/gone") == ModelState(
+        ready=False, disk_path=None, size_bytes=None, running=False
+    )
+    assert result.running_cleared == ["ollama/gone"]
+
+
+def test_reconcile_leaves_a_probed_providers_flag_to_the_probe():
+    # The other side of #233. A model-dir server can go on serving weights
+    # whose directory was removed, and its running flag is confirmed by a live
+    # probe (local_control.running_model_ids), which clears it when the server
+    # really is down. Reconcile must not pre-empt that on absence alone.
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="O", location="local")],
+        models=[ModelEntry(id="omlx/gone", family="f", provider_id="omlx", model_name="gone")],
+    )
+    state = StateStore()
+    state.set("omlx/gone", ModelState(ready=True, disk_path="/m/gone", size_bytes=9, running=True))
+    result = reconcile(registry, state, {})
+    assert state.get("omlx/gone") == ModelState(
         ready=False, disk_path=None, size_bytes=None, running=True
     )
+    assert result.running_cleared == []
