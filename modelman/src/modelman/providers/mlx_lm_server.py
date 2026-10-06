@@ -26,6 +26,17 @@ def _model_dir(config: dict) -> Path:
     return Path(os.path.expanduser(raw))
 
 
+def _same_dir(directory: Path, local_path: Any) -> bool:
+    """Whether `local_path` (as stored on a variant) names `directory`."""
+    if not isinstance(local_path, str) or not local_path:
+        return False
+    other = _resolve_local_path(local_path)
+    try:
+        return os.path.samefile(directory, other)
+    except OSError:
+        return os.path.realpath(directory) == os.path.realpath(other)
+
+
 def _resolve_local_path(raw: str) -> Path:
     """Normalize a user-supplied local_path the same way
     modelman.benchmark.isolation._normalize_pairing_arg does (expanduser +
@@ -294,8 +305,10 @@ class MLXLMServerProvider(Provider):
             target = self._target_dir(variant)
             if target is not None:
                 dirs.append(target)
-        elif target_repo is not None:
-            # local_path precedence: only the repo-downloaded dir is removable.
+        elif target_repo is not None and not _same_dir(target_repo, variant.get("local_path")):
+            # local_path precedence: only the repo-downloaded dir is removable
+            # — unless the local_path IS that dir (#241), which is then the
+            # user's to keep like any other local_path.
             dirs.append(target_repo)
         # draft side
         draft_repo = self._repo_dir(variant.get("draft_repo"))
@@ -303,7 +316,7 @@ class MLXLMServerProvider(Provider):
             draft = self._draft_dir(variant)
             if draft is not None:
                 dirs.append(draft)
-        elif draft_repo is not None:
+        elif draft_repo is not None and not _same_dir(draft_repo, variant.get("draft_local_path")):
             dirs.append(draft_repo)
         return list(dict.fromkeys(dirs))
 

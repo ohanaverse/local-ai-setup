@@ -587,9 +587,10 @@ def find_shared_artifact_owner(
     can be lost. Both sides are resolved to real directories first, so the
     spelling of a path does not matter.
 
-    "Another entry" includes one on a sibling row of the same server (an
-    `omlx-6bit` entry and an `omlx` entry), compared through each row's own
-    settings.
+    "Another entry" is any other entry in the registry, on any provider,
+    compared through its own row's settings; it owns what is removed when
+    one of its paths is the same directory, inside it, or a parent of it
+    (#241).
 
     Shared by queue.py's delete/ready-off steps and its cancelled-download
     cleanup (_cleanup_partial_download) — all three remove an on-disk
@@ -618,35 +619,59 @@ def find_shared_artifact_owner(
             return None
     if not mine:
         return None
-    mine = _canonical_paths(mine)
-    # Entries on another registry row of the SAME server count too (#224):
-    # `omlx` and `omlx-6bit` are two rows over one model directory, so an
-    # entry on either can own the directory the other is about to remove. A
-    # sibling's paths are resolved through ITS OWN row's provider — its own
+    # Every other entry in the registry is a possible owner, whichever
+    # provider it is on (#241): omlx and mlx_lm_server both read MLX
+    # directories, and a `local_path` can name any directory at all. An entry
+    # on another row is asked through ITS OWN row's provider — its own
     # model_dir — never through the deleting row's: two rows pointed at
-    # different directories share nothing.
-    my_server = ProviderRegistry.resolve(variant["provider"])
-    siblings: dict[str, Any] = {}
+    # different directories share nothing (#224).
+    others: dict[str, Any] = {variant["provider"]: artifact_paths}
     for m in registry.models:
         if m.id == variant["id"]:
             continue
-        if m.provider_id == variant["provider"]:
-            their_paths = artifact_paths
-        elif ProviderRegistry.resolve(m.provider_id) == my_server:
-            if m.provider_id not in siblings:
-                siblings[m.provider_id] = _sibling_artifact_paths(registry, m.provider_id)
-            their_paths = siblings[m.provider_id]
-            if their_paths is None:
-                continue
-        else:
+        if m.provider_id not in others:
+            others[m.provider_id] = _row_artifact_paths(registry, m.provider_id)
+        their_paths = others[m.provider_id]
+        if their_paths is None:
             continue
         try:
-            theirs = their_paths(model_entry_to_variant(m))
+            if _paths_overlap(mine, their_paths(model_entry_to_variant(m))):
+                return m
         except Exception:  # noqa: BLE001
             continue
-        if mine & _canonical_paths(theirs):
-            return m
     return None
+
+
+def _paths_overlap(removable: Any, theirs: Any) -> bool:
+    """Whether removing the directories in `removable` would take anything in
+    `theirs` with it: one of theirs is the same directory as one removed,
+    inside one (a quantize output written beside its source), or contains
+    one (#241). The last is the cautious reading — an entry naming a parent
+    loses part of what it points at, and a refused delete can be undone where
+    an rmtree cannot.
+
+    Nesting is tested on the same keys as equality (_canonical_paths) for a
+    path and each of its parents, never on string prefixes: `models/M2` is
+    not inside `models/M`, and on a case-insensitive volume `models/m/out` is
+    inside `models/M`."""
+    removable_keys = _canonical_paths(removable)
+    their_keys = _canonical_paths(theirs)
+    return bool(
+        removable_keys & their_keys
+        or removable_keys & _canonical_paths(_parents(theirs))
+        or their_keys & _canonical_paths(_parents(removable))
+    )
+
+
+def _parents(paths: Any) -> list[str]:
+    """Every directory above each of `paths`, resolved. Non-strings (a test
+    double's stand-in for a path) have none."""
+    found: list[str] = []
+    for p in paths:
+        if isinstance(p, str):
+            real = Path(os.path.realpath(os.path.expanduser(p)))
+            found.extend(str(parent) for parent in real.parents)
+    return found
 
 
 def _canonical_paths(paths: Any) -> frozenset[Any]:
@@ -674,7 +699,7 @@ def _canonical_paths(paths: Any) -> frozenset[Any]:
     return frozenset(keys)
 
 
-def _sibling_artifact_paths(registry: Registry, provider_id: str) -> Any:
+def _row_artifact_paths(registry: Registry, provider_id: str) -> Any:
     """artifact_paths of the provider built for registry row `provider_id`,
     or None when that row is missing or its provider cannot be built."""
     try:
