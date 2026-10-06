@@ -21,7 +21,7 @@ type fakeOmlx struct {
 	// status code (0 = 200; omlx answers 503 while pinned models preload).
 	loading      string
 	healthStatus int
-	key          string // required by /v1/models/status when set
+	key          string // required by /v1/models and /v1/models/status when set
 	noHealth     bool   // an omlx old enough to have no /health
 	statusHits   int
 }
@@ -30,6 +30,10 @@ func (f *fakeOmlx) serve(t *testing.T) string {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		if f.key != "" && r.Header.Get("Authorization") != "Bearer "+f.key {
+			http.Error(w, `{"error":{"message":"API key required"}}`, http.StatusUnauthorized)
+			return
+		}
 		data := []map[string]string{}
 		for _, id := range f.listed {
 			data = append(data, map[string]string{"id": id})
@@ -125,8 +129,8 @@ func TestServedIDsOmlxCountsOnlyLoadedModels(t *testing.T) {
 }
 
 // TestServedIDsOmlxNeedsTheKeyOnlyForAMixedPool pins the key handling. omlx's
-// status endpoint wants the server's API key when one is set (the list and
-// /health do not), and wt has one only if the registry's omlx provider names
+// status endpoint wants the server's API key when one is set (as its list
+// does; /health does not), and wt has one only if the registry's omlx provider names
 // a secret_ref. Without it a mixed pool is an error — the caller's "running
 // state is not trustworthy" — never a guess: reporting nothing loaded would
 // let a start replace a serving model unasked, and reporting everything
@@ -152,6 +156,27 @@ func TestServedIDsOmlxNeedsTheKeyOnlyForAMixedPool(t *testing.T) {
 	idle := &fakeOmlx{listed: []string{"A"}, pool: map[string]bool{"A": false}, key: "sk-omlx"}
 	if ids, err := ServedIDs(omlxCfgAt(idle.serve(t), ""), testClient, "omlx"); err != nil || len(ids) != 0 || idle.statusHits != 0 {
 		t.Errorf("idle pool, no key: served = %v err = %v status asked %d times, want none, nil, 0", ids, err, idle.statusHits)
+	}
+}
+
+// TestServedIDsOmlxFullyLoadedKeyedPool pins what a real keyed omlx (0.7.0)
+// showed: with every pool model loaded wt reads /v1/models, which such a
+// server refuses without the key. That refusal was returned as the answer —
+// "no usable answer" for the commonest keyed state, a one-model pool with its
+// model loaded — where status, asked with the key, says exactly what is
+// loaded.
+func TestServedIDsOmlxFullyLoadedKeyedPool(t *testing.T) {
+	t.Setenv("WT_TEST_OMLX_KEY", "sk-omlx")
+	srv := &fakeOmlx{listed: []string{"A", "B"}, pool: map[string]bool{"A": true, "B": true}, key: "sk-omlx"}
+	ids, err := ServedIDs(omlxCfgAt(srv.serve(t), "os.environ/WT_TEST_OMLX_KEY"), testClient, "omlx")
+	slices.Sort(ids)
+	if err != nil || !slices.Equal(ids, []string{"A", "B"}) {
+		t.Errorf("keyed, all loaded: served = %v err = %v, want [A B]", ids, err)
+	}
+	// Without the key nothing can say, and that is still an error.
+	srv = &fakeOmlx{listed: []string{"A"}, pool: map[string]bool{"A": true}, key: "sk-omlx"}
+	if ids, err := ServedIDs(omlxCfgAt(srv.serve(t), ""), testClient, "omlx"); err == nil {
+		t.Errorf("keyed, all loaded, no key: served = %v with no error, want an error", ids)
 	}
 }
 

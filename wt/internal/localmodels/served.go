@@ -63,8 +63,9 @@ func familyAPIKey(cfg *config.Config, family string) string {
 //     and not listed.
 //   - /v1/models/status: each model's loaded and is_loading flags, by its
 //     on-disk id. It is behind omlx's management auth, which wants the
-//     server's API key whenever one is set, so key (the registry's secret_ref
-//     for the family, "" if none) is sent when there is one. A model mid-load
+//     server's API key whenever one is set — as /v1/models itself does on
+//     such a server — so key (the registry's secret_ref for the family, ""
+//     if none) is sent when there is one. A model mid-load
 //     counts: it occupies the server as much as a loaded one.
 //
 // When the counts are mixed and status does not answer, the result is an
@@ -98,12 +99,12 @@ func omlxLoaded(client *http.Client, origin, key string) ([]string, error) {
 	if health.Pool.Loaded == 0 && code >= 200 && code < 300 {
 		return nil, nil
 	}
+	// A list that does not answer is not the end: an omlx with an API key
+	// refuses /v1/models without it (omlx 0.7.0), and status below is asked
+	// with the key. A server that is really gone fails there too.
 	if health.Pool.Loaded == health.Pool.Models {
 		listed, err := FetchModelIDsErr(client, origin+"/v1/models")
-		if err != nil {
-			return nil, err
-		}
-		if len(listed) == health.Pool.Models {
+		if err == nil && len(listed) == health.Pool.Models {
 			return listed, nil
 		}
 	}
