@@ -392,7 +392,12 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.status = StatusUnreachable
 			return s
 		}
-		names, err := scanModelDirs(dir)
+		// omlx discovers models two levels deep; mtplx's directory is flat.
+		scan := scanOmlxModels
+		if family == "mtplx" {
+			scan = scanModelDirs
+		}
+		names, err := scan(dir)
 		if err != nil {
 			s.status = StatusUnreachable
 			return s

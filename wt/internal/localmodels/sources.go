@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -82,6 +83,95 @@ func scanModelDirs(dir string) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// scanOmlxModels lists the models in omlx's model directory under the ids
+// omlx serves them by, following omlx's own discovery (omlx 0.7.0,
+// model_discovery.py discover_models). omlx looks two levels deep. For each
+// subdirectory of dir (as scanModelDirs lists them: symlinks to directories
+// followed, dot-prefixed ones skipped):
+//
+//   - it holds adapter_config.json: a LoRA adapter, not a model;
+//   - else it holds config.json: a model, named after the directory;
+//   - else it is an organization folder: each of its subdirectories that holds
+//     config.json and no adapter_config.json is a model, named after that
+//     CHILD directory. The folder itself is never a model, and one with no
+//     such child contributes nothing.
+//
+// A name found twice is listed once. When nothing was found and dir itself
+// holds config.json, dir is the one model, named after itself. A missing dir
+// is "no models", not an error.
+//
+// Not covered: omlx also resolves Hugging Face hub cache entries
+// (models--Org--Name/snapshots/<hash>/) under id rules of its own. Such an
+// entry is not listed here.
+//
+// The names are sorted. They must equal the ids of omlx's /v1/models/status,
+// since Pool.Find, matchArtifact and the load and unload requests match on
+// them.
+func scanOmlxModels(dir string) ([]string, error) {
+	tops, err := scanModelDirs(dir)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	// isModel reports whether p is a model directory; adapter is true for a
+	// LoRA adapter, which is not one whatever else it holds.
+	isModel := func(p string) (model, adapter bool) {
+		if fileExists(filepath.Join(p, "adapter_config.json")) {
+			return false, true
+		}
+		return fileExists(filepath.Join(p, "config.json")), false
+	}
+	for _, top := range tops {
+		p := filepath.Join(dir, top)
+		model, adapter := isModel(p)
+		switch {
+		case adapter:
+		case model:
+			add(top)
+		case isHFCacheEntry(p):
+		default:
+			// An organization folder. One that cannot be read holds no
+			// model wt can name, as for omlx.
+			children, err := scanModelDirs(p)
+			if err != nil {
+				continue
+			}
+			for _, child := range children {
+				if model, _ := isModel(filepath.Join(p, child)); model {
+					add(child)
+				}
+			}
+		}
+	}
+	if len(names) == 0 && fileExists(filepath.Join(dir, "config.json")) {
+		return []string{filepath.Base(dir)}, nil
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// isHFCacheEntry reports whether p is a Hugging Face hub cache entry
+// (models--Org--Name with a snapshots directory).
+func isHFCacheEntry(p string) bool {
+	if !strings.HasPrefix(filepath.Base(p), "models--") {
+		return false
+	}
+	st, err := os.Stat(filepath.Join(p, "snapshots"))
+	return err == nil && st.IsDir()
 }
 
 // mtplxRepoID maps an MTPLX "<org>--<model>" directory name to "org/model"

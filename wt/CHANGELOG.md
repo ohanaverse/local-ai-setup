@@ -17,6 +17,12 @@
 
 ### Fixed
 
+- omlx models inside an organization folder are found (#213). wt now scans
+  omlx's model directory two levels deep, as omlx does, so a model at
+  `<model dir>/mlx-community/<model>` is listed under the name omlx serves
+  it by and can be started and stopped. The folder itself is no longer
+  listed as a model, and neither is a LoRA adapter or a directory with no
+  `config.json`.
 - `wt start` can start a model on an omlx that has an API key (#256). The
   warmup request now carries the key the registry's omlx provider names
   (`auth.secret_ref`), as the "what is loaded" probe already did; it used to

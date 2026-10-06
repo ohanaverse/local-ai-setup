@@ -217,7 +217,7 @@ func TestServedIDsOtherFamiliesReadTheList(t *testing.T) {
 // trustworthy" state, and is not Down.
 func TestInventoryOmlxListedButUnloadedIsNotRunning(t *testing.T) {
 	dir := t.TempDir()
-	mkdirs(t, dir, "A", "B")
+	mkOmlxModels(t, dir, "A", "B")
 	models := []config.Model{{ID: "omlx/A", ProviderID: "omlx", ModelName: "A"}, {ID: "omlx/B", ProviderID: "omlx", ModelName: "B"}}
 	run := func(f *fakeOmlx) Snapshot {
 		return inventory(&config.Config{Providers: []config.Provider{localProvider("omlx", f.serve(t), dir)}, Models: models}, testClient)

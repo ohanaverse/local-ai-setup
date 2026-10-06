@@ -62,12 +62,23 @@ func localProvider(id, baseURL, modelDir string) config.Provider {
 	return config.Provider{ID: id, Location: config.LocationLocal, ModelDir: modelDir, Auth: config.AuthConfig{Type: "none", BaseURL: baseURL}}
 }
 
+// mkdirs creates bare directories: mtplx's flat model layout. An omlx model
+// needs a config.json too (mkOmlxModels).
 func mkdirs(t *testing.T, root string, names ...string) {
 	t.Helper()
 	for _, n := range names {
 		if err := os.Mkdir(filepath.Join(root, n), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// mkOmlxModels creates omlx model directories under root: each a directory
+// holding a config.json, which is what omlx takes for a model.
+func mkOmlxModels(t *testing.T, root string, names ...string) {
+	t.Helper()
+	if err := MakeOmlxModelsForTest(root, names...); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -113,7 +124,7 @@ func TestInventoryDefaultModelDirViaExportedInventory(t *testing.T) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mkdirs(t, root, "Qwen3.8-27B-4bit")
+	mkOmlxModels(t, root, "Qwen3.8-27B-4bit")
 	srv := modelsServer(t, "Qwen3.8-27B-4bit")
 	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx", srv.URL, "")}}
 
@@ -131,7 +142,7 @@ func TestInventoryDefaultModelDirViaExportedInventory(t *testing.T) {
 // so usage/survey history stays keyed on the registry id (sub-project 1).
 func TestInventoryRegisteredMatchKeepsRegistryID(t *testing.T) {
 	root := t.TempDir()
-	mkdirs(t, root, "Qwen3.8-27B-4bit", "Qwen3.8-27B-8bit")
+	mkOmlxModels(t, root, "Qwen3.8-27B-4bit", "Qwen3.8-27B-8bit")
 	srv := modelsServer(t, "Qwen3.8-27B-4bit")
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("omlx", srv.URL, root)},
@@ -239,7 +250,7 @@ func TestInventoryProviderDownDoesNotFailOthers(t *testing.T) {
 	deadURL := dead.URL
 	dead.Close()
 	root := t.TempDir()
-	mkdirs(t, root, "Qwen3.8-27B-4bit")
+	mkOmlxModels(t, root, "Qwen3.8-27B-4bit")
 	up := modelsServer(t)
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("ollama", deadURL, ""), localProvider("omlx", up.URL, root)},
@@ -263,7 +274,7 @@ func TestInventoryProviderDownDoesNotFailOthers(t *testing.T) {
 // one physical server).
 func TestInventoryOmlx6bitRowSharesServerAndDirs(t *testing.T) {
 	root := t.TempDir()
-	mkdirs(t, root, "Ornith-1.5-35B-A3B-MLX-6bit")
+	mkOmlxModels(t, root, "Ornith-1.5-35B-A3B-MLX-6bit")
 	srv := modelsServer(t, "Ornith-1.5-35B-A3B-MLX-6bit")
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("omlx", srv.URL, root), localProvider("omlx-6bit", srv.URL, "")},
@@ -546,7 +557,7 @@ func TestInventoryOllamaPsFailureIsPartial(t *testing.T) {
 // would be unroutable on this registry.
 func TestInventoryOmlx6bitOnlyStillScansDir(t *testing.T) {
 	root := t.TempDir()
-	mkdirs(t, root, "Some-Model-6bit")
+	mkOmlxModels(t, root, "Some-Model-6bit")
 	srv := modelsServer(t)
 	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx-6bit", srv.URL, root)}}
 	snap := inventory(cfg, testClient)
@@ -659,7 +670,7 @@ func TestRoutesFollowArtifact(t *testing.T) {
 // replace the model that daemon is serving.
 func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
 	dir := t.TempDir()
-	mkdirs(t, dir, "some-model")
+	mkOmlxModels(t, dir, "some-model")
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusInternalServerError)
 	}))
@@ -685,7 +696,7 @@ func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
 // conflating "erroring" with "not running" would delete a live route.
 func TestInventoryDownOnlyForRefusedConnections(t *testing.T) {
 	dir := t.TempDir()
-	mkdirs(t, dir, "some-model")
+	mkOmlxModels(t, dir, "some-model")
 	gone := modelsServer(t)
 	goneURL := gone.URL
 	gone.Close()
@@ -715,7 +726,7 @@ func TestInventoryDownOnlyForRefusedConnections(t *testing.T) {
 // loaded", which must start normally without a confirmation prompt.
 func TestInventoryOmlxEmptyAnswerIsOK(t *testing.T) {
 	dir := t.TempDir()
-	mkdirs(t, dir, "some-model")
+	mkOmlxModels(t, dir, "some-model")
 	up := modelsServer(t) // answers {"data":[]}
 	defer up.Close()
 	cfg := &config.Config{
@@ -760,5 +771,31 @@ func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
 	// The registry-free default still resolves to the family default.
 	if origin, port, err = FamilyOriginPort(&config.Config{}, "omlx"); err != nil || port != 8000 {
 		t.Errorf("default omlx: origin=%q port=%d err=%v, want 8000 and no error", origin, port, err)
+	}
+}
+
+// TestInventoryFindsAnOmlxModelInsideAnOrganizationFolder pins the bug found
+// on a real machine: a model at <model dir>/mlx-community/Qwen3.6-35B-A3B-6bit
+// is served by omlx as Qwen3.6-35B-A3B-6bit, but wt listed the organization
+// folder as a model ("omlx/mlx-community") and never saw the real one, so it
+// could be neither started nor stopped through wt. The nested model must come
+// out under its own name, running when omlx reports it loaded.
+func TestInventoryFindsAnOmlxModelInsideAnOrganizationFolder(t *testing.T) {
+	dir := t.TempDir()
+	mkOmlxModels(t, dir, "mlx-community/Qwen3.6-35B-A3B-6bit", "Flat-4bit")
+	srv := &fakeOmlx{
+		listed: []string{"Qwen3.6-35B-A3B-6bit", "Flat-4bit"},
+		pool:   map[string]bool{"Qwen3.6-35B-A3B-6bit": true, "Flat-4bit": false},
+	}
+	snap := inventory(&config.Config{Providers: []config.Provider{localProvider("omlx", srv.serve(t), dir)}}, testClient)
+	e, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Qwen3.6-35B-A3B-6bit"))
+	if !ok || !e.Running || e.Artifact != "Qwen3.6-35B-A3B-6bit" {
+		t.Errorf("nested model = %+v ok=%v, want a running entry named after the model directory; entries = %+v", e, ok, snap.Entries)
+	}
+	if _, ok := byModelID(snap, config.DiscoveredModelID("omlx", "mlx-community")); ok {
+		t.Errorf("the organization folder is listed as a model: %+v", snap.Entries)
+	}
+	if f, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Flat-4bit")); !ok || f.Running {
+		t.Errorf("flat model = %+v ok=%v, want listed and not running", f, ok)
 	}
 }

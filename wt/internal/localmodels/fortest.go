@@ -1,6 +1,11 @@
 package localmodels
 
-import "github.com/ohanaverse/local-ai-setup/wt/internal/config"
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+)
 
 // OnDiskSnapshotForTest is the default inventory stub for tests outside this
 // package: every registry local model is on disk (artifact = its model_name)
@@ -27,4 +32,22 @@ func OnDiskSnapshotForTest(cfg *config.Config) Snapshot {
 		snap.Entries = append(snap.Entries, e)
 	}
 	return snap
+}
+
+// MakeOmlxModelsForTest creates, under root, one omlx model directory per
+// name: a directory holding a config.json, which is what omlx (and so wt's
+// scan) takes for a model. A name may be nested ("org/Model"). Exported for
+// the same reason as OnDiskSnapshotForTest: other packages' tests build omlx
+// model directories too, and a bare directory is no longer a model.
+func MakeOmlxModelsForTest(root string, names ...string) error {
+	for _, n := range names {
+		dir := filepath.Join(root, filepath.FromSlash(n))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
