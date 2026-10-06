@@ -57,6 +57,22 @@ if TYPE_CHECKING:
     from ..providers.base import VariantSpec
 
 
+def pool_start_note(plan: wt_bridge.StartPlan | None) -> str:
+    """The line the start dialog adds for an omlx model, from wt's dry-run
+    plan: which loaded models the start would unload. Empty when the model
+    fits beside them. A missing or unknown plan says so — "could not tell"
+    is never shown as "nothing will be unloaded"."""
+    if plan is None or plan.status == "unknown":
+        return "\nwt could not tell which omlx models this would unload."
+    if plan.status != "would_unload" or not plan.would_unload:
+        return ""
+    names = ", ".join(
+        f"{u.id} (in use by {u.sessions} wt session(s))" if u.sessions else u.id
+        for u in plan.would_unload
+    )
+    return f"\nStarting this will unload {names} to make room."
+
+
 def _now_iso() -> str:
     """UTC timestamp for pricing_updated_at — second precision, no
     microseconds, so it round-trips cleanly through TOML."""
@@ -569,7 +585,10 @@ class ModelScreen(Screen[None]):
         to race it, since Textual cannot cancel a live `thread=True`
         worker (see action_back's force-quit dialog for the same
         constraint)."""
-        return any(w.name in ("model-start", "model-stop") and w.is_running for w in self.workers)
+        return any(
+            w.name in ("model-start", "model-stop", "model-start-plan") and w.is_running
+            for w in self.workers
+        )
 
     def action_toggle_running(self) -> None:
         entry = self._current_entry()
@@ -596,28 +615,46 @@ class ModelScreen(Screen[None]):
             return
 
         others = [m for m in self.state.models if m != mid and self.state.models[m].running]
-        if others:
-            # Design §4: a same-provider replacement is never a silent
-            # surprise. omlx/mtplx/mlx_lm_server can only serve one model
-            # per process, so starting this one stops that provider's
-            # current occupant — name it explicitly, on top of the generic
-            # "N others running" advisory (which also covers unrelated
-            # providers, where nothing is replaced).
-            occupant = same_provider_occupant(self.registry, self.state, mid, entry.provider_id)
-            replacement_note = (
-                f"\nStarting this will also stop {occupant}, since {entry.provider_id} "
-                "can only serve one model at a time."
-                if occupant is not None
+        if entry.provider_id in ("omlx", "omlx-6bit"):
+            # omlx is a pool (#213): what a start would unload depends on
+            # sizes only wt reads, so ask wt for its plan first. It is a
+            # subprocess and a probe round, so it runs in a worker.
+            self.app.notify(f"Checking what starting {mid} would unload…")
+            self.run_worker(
+                lambda: self._plan_then_confirm(mid, others),
+                thread=True,
+                exclusive=False,
+                name="model-start-plan",
+                description=f"Planning the start of {mid}",
+            )
+            return
+        # Design §4: a same-provider replacement is never a silent surprise.
+        # mtplx and mlx_lm_server serve one model per process, so starting
+        # this one stops that provider's occupant — name it explicitly.
+        occupant = same_provider_occupant(self.registry, self.state, mid, entry.provider_id)
+        note = (
+            f"\nStarting this will also stop {occupant}, since {entry.provider_id} "
+            "can only serve one model at a time."
+            if occupant is not None
+            else ""
+        )
+        self._confirm_start(mid, others, note)
+
+    def _plan_then_confirm(self, mid: str, others: list[str]) -> None:
+        note = pool_start_note(wt_bridge.start_plan(mid))
+        self.app.call_from_thread(self._confirm_start, mid, others, note)
+
+    def _confirm_start(self, mid: str, others: list[str], note: str) -> None:
+        """Every start is confirmed (it is slow: a load, a proxy restart);
+        the message adds who else is running and what the start displaces."""
+        if others or note:
+            running = (
+                f"{len(others)} other local model(s) already running: {', '.join(sorted(others))}."
+                if others
                 else ""
             )
-            message = (
-                f"{len(others)} other local model(s) already running: {', '.join(sorted(others))}."
-                f"{replacement_note}\n"
-                f"Start {mid} anyway?"
-            )
+            message = f"{running}{note}\nStart {mid} anyway?".lstrip("\n")
         else:
-            # Starting is disruptive/slow too (a warmup, a proxy restart)
-            # — every start is confirmed, not just a replacement.
             message = f"Start {mid}?"
         self.app.push_screen(ConfirmModal(message), lambda ok: self._on_start_confirmed(mid, ok))
 
@@ -687,6 +724,12 @@ class ModelScreen(Screen[None]):
             f"{model_id} is already running." if result.already_running else f"Started {model_id}."
         )
         self.app.call_from_thread(self.app.notify, message)
+        if result.unloaded:
+            self.app.call_from_thread(
+                self.app.notify,
+                f"omlx unloaded to make room: {', '.join(result.unloaded)}",
+                severity="warning",
+            )
         for warning in result.warnings:
             self.app.call_from_thread(self.app.notify, warning, severity="warning")
         self.app.call_from_thread(self.reload)
