@@ -2545,6 +2545,27 @@ def test_probe_running_omlx_mixed_pool_asks_status_without_a_key():
     assert _omlx_probe_with_status(loading) is True
 
 
+def test_running_model_ids_reads_the_omlx_pool_once_for_all_its_models(tmp_path):
+    # A pool holds several flagged models, and its answer is the same for
+    # each. Read per model, a keyed omlx cost one `wt served` subprocess per
+    # flagged model on every TUI mount and `modelman sync`.
+    state_path = _state_path(tmp_path, {"omlx/a": True, "omlx/b": True})
+    refused = {"detail": "Invalid API key"}
+    with (
+        patch("modelman.local_control._http_models_ids", return_value=[]) as listed,
+        patch("modelman.local_control._http_json", return_value=refused),
+        patch("modelman.local_control.wt_bridge.served_ids", return_value=["A-4bit"]) as wt_served,
+    ):
+        running = running_model_ids(_omlx_pool_registry(), load_state(state_path), state_path)
+        assert running == ["omlx/a"]
+        wt_served.assert_called_once_with("omlx")
+        listed.assert_called_once()
+        # The memo ends with the pass: the next probe reads the pool again.
+        assert _probe_running("omlx", "org/A-4bit", None) is True
+        assert wt_served.call_count == 2
+    assert not load_state(state_path).get("omlx/b").running
+
+
 def test_probe_running_omlx_asks_wt_when_status_wants_a_key():
     # An omlx with an API key refuses status without it, and modelman
     # resolves no secret_ref. wt does, so it is asked — and its answer
@@ -3326,6 +3347,35 @@ def test_stop_omlx_keeps_the_flag_of_a_discovered_model_omlx_reports_loaded(tmp_
             stop_local_model("omlx/Stray-4bit", state_path, registry=registry)
 
         assert load_state(state_path).get("omlx/Stray-4bit").running
+
+
+def test_stop_omlx_keeps_the_flag_of_an_unregistered_registry_style_id(tmp_path, monkeypatch):
+    # A flag left under a registry-spelled id (`omlx/org--Name`) whose row has
+    # since been removed: wt no longer knows the id, and the tail is the repo
+    # id with "/" → "--", not the directory omlx serves ("Gone-4bit"). Read
+    # as a directory name it was "not in the pool", and the stop cleared the
+    # flag of a model omlx still had loaded.
+    state_path = _state_path(tmp_path, {"omlx/org--Gone-4bit": True})
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/org--Gone-4bit"'),
+        served=["Gone-4bit", "B-4bit"],
+    )
+
+    with pytest.raises(LocalControlError, match="omlx reports it loaded"):
+        stop_local_model("omlx/org--Gone-4bit", state_path, registry=_omlx_pool_registry())
+
+    assert load_state(state_path).get("omlx/org--Gone-4bit").running
+
+    # ...and once omlx no longer holds it under either spelling, the flag goes.
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/org--Gone-4bit"'),
+        served=["B-4bit"],
+    )
+    result = stop_local_model("omlx/org--Gone-4bit", state_path, registry=_omlx_pool_registry())
+    assert result.stopped_model_id == "omlx/org--Gone-4bit"
+    assert not load_state(state_path).get("omlx/org--Gone-4bit").running
 
 
 def test_stop_omlx_clears_the_flag_when_the_pool_is_empty(tmp_path, monkeypatch):

@@ -38,6 +38,8 @@ from __future__ import annotations
 import contextlib
 import subprocess
 from collections import defaultdict
+from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -266,12 +268,13 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
         # No address to ask: nothing is known about a provider modelman has
         # no origin for, and no flag was set by starting one.
         return False
-    ids = _http_models_ids(f"{base}/v1/models")
     if is_omlx_family(provider_id):
-        loaded = _omlx_loaded(base, ids)
+        loaded = _omlx_pool(base)
         if loaded is None:
             return None
         ids = loaded
+    else:
+        ids = _http_models_ids(f"{base}/v1/models")
     if provider_id == "mlx_lm_server":
         # One target+draft pairing per process (the lifecycle's
         # mlx_lm_server backend is the only thing that starts one): the
@@ -282,6 +285,40 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
         # `modelman start` into an unnecessary reload.
         return bool(ids)
     return any(_name_matches(served, model_name) for served in ids)
+
+
+# The omlx pool as read during one pass over the flagged models, by origin.
+# The pool's answer is the same for every model in it, and reading it can
+# cost a `wt served` subprocess (a keyed omlx) or a round of timeouts (an omlx
+# busy loading a model) — once per flagged model, when a pool holds several.
+# None outside a pass: every other probe reads the pool afresh.
+_omlx_pool_memo: ContextVar[dict[str, list[str] | None] | None] = ContextVar(
+    "_omlx_pool_memo", default=None
+)
+
+
+@contextlib.contextmanager
+def _one_omlx_pool_read() -> Iterator[None]:
+    """For the pass this wraps (it also decorates a function), the omlx pool
+    is read once per origin and every omlx probe in the pass answers from
+    that one read — "cannot say" included."""
+    token = _omlx_pool_memo.set({})
+    try:
+        yield
+    finally:
+        _omlx_pool_memo.reset(token)
+
+
+def _omlx_pool(base: str) -> list[str] | None:
+    """_omlx_loaded() for the omlx at `base`, read once per pass inside
+    _one_omlx_pool_read() and afresh outside one."""
+    memo = _omlx_pool_memo.get()
+    if memo is not None and base in memo:
+        return memo[base]
+    loaded = _omlx_loaded(base, _http_models_ids(f"{base}/v1/models"))
+    if memo is not None:
+        memo[base] = loaded
+    return loaded
 
 
 def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
@@ -991,6 +1028,7 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
     return _discovered_entry(match)
 
 
+@_one_omlx_pool_read()
 def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelInventory:
     """Live, three-way view of local models: registered models split into
     downloaded/not-downloaded by asking each provider whether its artifact is
@@ -1084,6 +1122,7 @@ def _flagged_target(
     return None
 
 
+@_one_omlx_pool_read()
 def running_model_ids(
     registry: Registry,
     state: StateStore,
@@ -1472,8 +1511,8 @@ def _omlx_origin(registry: Registry) -> str:
     return _DEFAULT_BASE_ORIGIN[_OMLX_FAMILY]
 
 
-def _omlx_side_name(model_id: str, registry: Registry | None) -> tuple[str, bool]:
-    """(the name omlx serves `model_id` under, whether that name can be
+def _omlx_side_names(model_id: str, registry: Registry | None) -> tuple[tuple[str, ...], bool]:
+    """(the names omlx may serve `model_id` under, whether they can be
     trusted).
 
     A registry model's is its model_name. Any other id is a discovered one,
@@ -1481,12 +1520,21 @@ def _omlx_side_name(model_id: str, registry: Registry | None) -> tuple[str, bool
     only a registry can say the id is not one of its own: a registry id is
     spelled `omlx/org--name`, and that tail is no directory name. So without
     a registry the tail is a guess, good for finding the model among the
-    served ids and never for concluding it is absent from them."""
+    served ids and never for concluding it is absent from them.
+
+    A registry that has no row for an id spelled the registered way (the row
+    was removed while the model ran) leaves the same doubt, so that tail is
+    also read as the repo id it encodes ("--" → "/"), as running_model_ids
+    reads such a flag: omlx may still hold the model under that name."""
     tail = model_id.partition("/")[2]
     if registry is None:
-        return tail, False
+        return (tail,), False
     model = next((m for m in registry.models if m.id == model_id), None)
-    return (model.model_name if model is not None else tail), True
+    if model is not None:
+        return (model.model_name,), True
+    if "--" in tail:
+        return (tail, tail.replace("--", "/")), True
+    return (tail,), True
 
 
 def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:
@@ -1497,7 +1545,7 @@ def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:
     not yet a fact about the pool: the refusal also comes from a pool wt
     could not read at that moment, and from an id it could not map. So the
     pool is read (`wt served omlx`) and the model looked for in it, by the
-    name omlx serves it under (_omlx_side_name):
+    name omlx serves it under (_omlx_side_names):
 
     - the pool lists the model: wt refused to stop a model omlx has loaded.
       An error; the flag stays.
@@ -1536,8 +1584,8 @@ def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:
             "provider so one model can be unloaded; or run `modelman stop --all` to stop "
             "the omlx service."
         )
-    name, name_known = _omlx_side_name(model_id, registry)
-    if any(_name_matches(served_id, name) for served_id in served):
+    names, name_known = _omlx_side_names(model_id, registry)
+    if any(_name_matches(served_id, name) for served_id in served for name in names):
         raise LocalControlError(
             f"wt refused to stop {model_id}, but omlx reports it loaded — retry, or run "
             "`modelman stop --all` to stop the omlx service."

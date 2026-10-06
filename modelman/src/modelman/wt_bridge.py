@@ -293,13 +293,16 @@ def warm(provider: str, model: str, timeout: float = WARM_TIMEOUT) -> None:
         raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
 
 
-# Above wt's own warmup budget (600s) plus its route write and proxy wait, so
-# a model that never loads is wt's failure to report, not a kill from here.
-START_TIMEOUT = 660.0
+# Above wt's whole start budget, so a model that never loads is wt's failure
+# to report, not a kill from here: bringing a stopped omlx up (its
+# portUpTimeout, 90s), the load (warmupTimeout, 600s), then the route write
+# and proxy wait (10s + 30s).
+START_TIMEOUT = 780.0
 # A dry run: one inventory probe round.
 PLAN_TIMEOUT = 30.0
-# Above wt's unload budget (its loadTimeout, 300s).
-STOP_TIMEOUT = 330.0
+# Above wt's unload budget (its loadTimeout, 300s) plus the route write and
+# proxy wait that follow it (10s + 30s).
+STOP_TIMEOUT = 360.0
 
 _PLAN_STATUSES = frozenset({"running", "fits", "would_unload", "unknown"})
 _OUTCOME_STATUSES = frozenset({"started", "already_running"})
@@ -344,7 +347,14 @@ def parse_start_plan(stdout: str) -> StartPlan:
     (pinned by docs/contracts/wt-start-cli.sample.json)."""
     doc = _json_object(stdout)
     status, model_id, rows = doc.get("status"), doc.get("id"), doc.get("would_unload")
-    if status not in _PLAN_STATUSES or not isinstance(model_id, str) or not isinstance(rows, list):
+    # isinstance first: a non-string status (a list, an object) is unhashable,
+    # and the set lookup would raise TypeError past every ValueError handler.
+    if (
+        not isinstance(status, str)
+        or status not in _PLAN_STATUSES
+        or not isinstance(model_id, str)
+        or not isinstance(rows, list)
+    ):
         raise ValueError("not a wt start plan")
     unload: list[PlanUnload] = []
     for row in rows:
@@ -362,7 +372,8 @@ def parse_start_outcome(stdout: str) -> StartOutcome:
     doc = _json_object(stdout)
     status, model_id, unloaded = doc.get("status"), doc.get("id"), doc.get("unloaded")
     if (
-        status not in _OUTCOME_STATUSES
+        not isinstance(status, str)
+        or status not in _OUTCOME_STATUSES
         or not isinstance(model_id, str)
         or not isinstance(unloaded, list)
         or not all(isinstance(u, str) for u in unloaded)

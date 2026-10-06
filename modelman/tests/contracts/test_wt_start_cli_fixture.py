@@ -42,7 +42,19 @@ def test_result_shapes_parse():
 
 
 @pytest.mark.parametrize(
-    "bad", ["", "not json", "[]", '{"id": "x"}', '{"id": "x", "status": "nope"}']
+    "bad",
+    [
+        "",
+        "not json",
+        "[]",
+        '{"id": "x"}',
+        '{"id": "x", "status": "nope"}',
+        # An unhashable status must be a ValueError too, not a TypeError from
+        # the set lookup: the callers catch only ValueError, and anything else
+        # takes the TUI's start worker down.
+        '{"id": "x", "status": [], "would_unload": [], "unloaded": []}',
+        '{"id": "x", "status": {}, "would_unload": [], "unloaded": []}',
+    ],
 )
 def test_unknown_shapes_are_rejected(bad):
     # An older wt, or one that failed before printing, must read as "no
