@@ -94,6 +94,24 @@ class RegistryNotFoundError(RegistryError):
     cannot be read, which a caller must never treat as empty and overwrite."""
 
 
+class RegistryPathError(RegistryError):
+    """Raised when the registry path is a symlink to a file that is not there.
+
+    Distinct from RegistryNotFoundError, which it looks like at the filesystem
+    level (`Path.exists()` is False for both): a link is a user's pointer at
+    where their registry lives — a dotfiles checkout, a file on a volume that
+    is not mounted right now — so a caller must neither read it as empty nor
+    write over it, which would shadow the real registry when the target comes
+    back (#248). Carries the two names to report: the link and what it points
+    at.
+    """
+
+    def __init__(self, link: Path, target: str) -> None:
+        self.link = link
+        self.target = target
+        super().__init__(f"{link} is a symlink to {target}, which does not exist")
+
+
 def _default_registry_path() -> Path:
     """Compute the registry path lazily so env overrides work in tests.
 
@@ -456,12 +474,17 @@ def unreadable_registry_message(exc: BaseException) -> str:
     is there: the file that was read — the pre-XDG one when XDG_CONFIG_HOME
     is set and holds no registry yet — and why. The caller adds what to run
     again. Not for RegistryNotFoundError, which is no failure to read."""
+    if isinstance(exc, RegistryPathError):
+        # A dangling symlink carries the path to report, because looking the
+        # path up again is exactly what just failed (#248).
+        return f"cannot read {exc.link}: {exc} — fix or move it aside"
     try:
         unreadable = _registry_read_path()
-    except (RegistryNotFoundError, OSError):
+    except (RegistryError, OSError):
         # OSError: looking for the file is what failed (a directory that
         # cannot be searched), and it fails here as it did in load_registry.
-        # Raising it again would turn the caller's report into a traceback.
+        # RegistryError: the same, for a path that no longer resolves.
+        # Raising either again would turn the caller's report into a traceback.
         unreadable = _default_registry_path()
     return f"cannot read {unreadable}: {exc} — fix or move it aside"
 
@@ -469,8 +492,15 @@ def unreadable_registry_message(exc: BaseException) -> str:
 def _registry_read_path(path: Path | None = None) -> Path:
     """The file load_registry reads — not always _default_registry_path():
     see the pre-XDG fallback below. A caller reporting on a registry it could
-    not read names this one. Raises RegistryNotFoundError when there is none."""
+    not read names this one. Raises RegistryNotFoundError when there is none,
+    RegistryPathError when it is a link to a file that is not there."""
     registry_path = Path(path) if path else _default_registry_path()
+    # Before exists(), which is False both for a dangling symlink and for
+    # nothing at all — and a link is a pointer at where the registry lives,
+    # not an absent registry, so it is refused rather than fallen back from
+    # (#248). A link that resolves reads through as any other file does.
+    if registry_path.is_symlink() and not registry_path.exists():
+        raise RegistryPathError(registry_path, os.readlink(registry_path))
     if registry_path.exists():
         return registry_path
     # Fall back to the pre-XDG location for users who created a registry
@@ -760,7 +790,16 @@ def _write_registry(registry: Registry, path: Path) -> None:
     The write half of save_registry, split out so locked_registry() can save
     under the same lock without calling save_registry() (which would deadlock
     on a non-reentrant lock).
+
+    Refuses to write when ``path`` is a symlink to a file that is not there:
+    os.replace() swaps the link itself for a regular file, so a volume that
+    unmounted while this process held a registry loaded would be shadowed by
+    the empty one written in its place (#248). A link that resolves is a
+    normal save (the link is still replaced by the file it pointed at; the
+    content is what the user was editing either way).
     """
+    if path.is_symlink() and not path.exists():
+        raise RegistryPathError(path, os.readlink(path))
     payload = {
         "providers": [_provider_to_dict(p) for p in registry.providers],
         "families": [_family_to_dict(f) for f in registry.families],

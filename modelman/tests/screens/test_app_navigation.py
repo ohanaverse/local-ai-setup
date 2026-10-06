@@ -2205,6 +2205,34 @@ async def test_app_refuses_to_open_an_unreadable_registry(tmp_path, monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_app_refuses_to_open_a_dangling_registry_symlink(tmp_path, monkeypatch):
+    """#248: `Path.exists()` is False for a symlink to a missing file, so a
+    registry that lives on an unmounted volume or in a checkout that moved
+    took the missing-registry branch: an empty model list with no message, and
+    the first save replaced the link with a regular file. The app must stop
+    instead, naming the link and what it points at, with nothing mounted that
+    could save over it."""
+    registry_path = tmp_path / "registry.toml"
+    target = tmp_path / "moved-away" / "registry.toml"
+    registry_path.symlink_to(target)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.models import ModelScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not isinstance(app.screen, ModelScreen)
+
+    assert app.return_code == 1
+    assert str(registry_path) in app.registry_error
+    assert str(target) in app.registry_error
+    assert registry_path.is_symlink() and not target.exists()
+
+
+@pytest.mark.asyncio
 async def test_app_opens_empty_when_there_is_no_registry(tmp_path, monkeypatch):
     """The fresh install the empty-registry fallback is for still works."""
     monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "registry.toml"))
