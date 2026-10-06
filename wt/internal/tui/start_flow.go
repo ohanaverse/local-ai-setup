@@ -107,6 +107,12 @@ func routeTick(id int) tea.Cmd {
 //   - Free lock, route written: the proxy is restarting, which takes 10–20 s.
 //     Waiting for it here would freeze the picker with no status, so the model
 //     enters phaseRouting and the wait runs in the returned command.
+//   - Free lock, but a cloud model's row is missing: building it resolves the
+//     provider's secret_ref, and an exec: helper runs synchronously, for up to
+//     15 s (#253) — a wait this goroutine cannot pay either, so the check
+//     defers the build (and reports it unfinished) and the command behind
+//     phaseRouting makes it again where waiting is affordable. Same shape as a
+//     contended lock, for the same reason.
 //   - Contended lock: nothing was written and nothing is yet known, so the
 //     command re-runs the whole check with the wait it is allowed to pay there,
 //     then waits for the restart that check may start.
