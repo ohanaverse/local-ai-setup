@@ -324,3 +324,32 @@ def test_served_ids_is_unknown_whenever_wt_gives_no_answer(monkeypatch, result):
 def test_served_ids_is_unknown_without_wt_on_path(monkeypatch):
     monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: None)
     assert wt_bridge.served_ids("omlx") is None
+
+
+def test_warm_runs_wt_warm_and_reports_its_failure(monkeypatch):
+    """`wt warm <provider> <model>` is the keyed warmup modelman cannot do
+    itself (#256). Unlike served_ids this is an action: a failure raises, with
+    wt's own line, and the timeout outlasts wt's warmup budget."""
+    seen = []
+    result = {"cp": _cp("Qwen-4bit is loaded on omlx\n")}
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs.get("timeout")))
+        return result["cp"]
+
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: "/usr/local/bin/wt")
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+
+    wt_bridge.warm("omlx", "Qwen-4bit")
+    assert seen == [(["wt", "warm", "omlx", "Qwen-4bit"], wt_bridge.WARM_TIMEOUT)]
+    assert wt_bridge.WARM_TIMEOUT > 600
+
+    result["cp"] = _cp(returncode=1, stderr="Error: x wants an API key\nwt: x wants an API key\n")
+    with pytest.raises(wt_bridge.WtBridgeError, match="x wants an API key"):
+        wt_bridge.warm("omlx", "Qwen-4bit")
+
+
+def test_warm_without_wt_on_path(monkeypatch):
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: None)
+    with pytest.raises(wt_bridge.WtNotFoundError):
+        wt_bridge.warm("omlx", "Qwen-4bit")

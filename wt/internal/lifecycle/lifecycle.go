@@ -80,6 +80,22 @@ func (e *OccupancyUnknownError) Error() string {
 	return fmt.Sprintf("cannot tell whether %s at %s is already serving a model — confirm before replacing it", e.ProviderID, e.Origin)
 }
 
+// KeyRefusedError means a provider's server refused a request for want of a
+// valid API key (HTTP 401 or 403). Waiting does not change that answer, so a
+// warmup stops on it instead of polling to its timeout.
+type KeyRefusedError struct {
+	URL     string
+	KeySent bool   // the registry named a key and it was sent
+	Detail  string // the server's own answer
+}
+
+func (e *KeyRefusedError) Error() string {
+	if e.KeySent {
+		return fmt.Sprintf("%s refused the API key the registry provider's auth.secret_ref names (%s)", e.URL, e.Detail)
+	}
+	return fmt.Sprintf("%s wants an API key (%s): set auth.secret_ref on the registry's provider", e.URL, e.Detail)
+}
+
 // UnsupportedError means wt has no lifecycle backend for the provider.
 type UnsupportedError struct{ ProviderID string }
 

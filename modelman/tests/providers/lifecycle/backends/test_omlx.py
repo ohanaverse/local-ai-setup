@@ -305,3 +305,57 @@ def test_restore_4bit_raises_lifecycle_error_when_it_never_comes_back():
         pytest.raises(LifecycleError, match="omlx did not come back up"),
     ):
         OMLX_4BIT.restore()
+
+
+def test_warm_asks_wt_when_omlx_refuses_the_keyless_warmup():
+    """#256: an omlx with an API key refuses modelman's keyless warmup, and
+    modelman resolves no secret_ref — wt does. So the refusal hands the
+    warmup to `wt warm omlx <model>`, which sends the registry's key."""
+    from modelman.providers.lifecycle.backends.base import StartPlan
+    from modelman.providers.lifecycle.probe import WarmupRefusedError
+
+    plan = StartPlan(model="org/Qwen-4bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "modelman.providers.lifecycle.backends.base.warmup",
+            side_effect=WarmupRefusedError("HTTP 401: API key required"),
+        ),
+        patch("modelman.providers.lifecycle.backends.omlx.wt_bridge.warm") as wt_warm,
+    ):
+        OMLX_6BIT.warm(plan)
+    wt_warm.assert_called_once_with("omlx", "org/Qwen-4bit")
+
+
+def test_warm_does_not_involve_wt_on_a_keyless_omlx():
+    from modelman.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen-4bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch("modelman.providers.lifecycle.backends.base.warmup") as keyless,
+        patch("modelman.providers.lifecycle.backends.omlx.wt_bridge.warm") as wt_warm,
+    ):
+        OMLX_4BIT.warm(plan)
+    keyless.assert_called_once()
+    wt_warm.assert_not_called()
+
+
+def test_warm_reports_wts_reason_when_the_keyed_warmup_fails_too():
+    """wt's message names the fix (auth.secret_ref), so it is what the user
+    sees — as a LifecycleError, which isolate() turns into its envelope."""
+    from modelman import wt_bridge
+    from modelman.providers.lifecycle.backends.base import StartPlan
+    from modelman.providers.lifecycle.probe import WarmupRefusedError
+
+    plan = StartPlan(model="Qwen-4bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "modelman.providers.lifecycle.backends.base.warmup",
+            side_effect=WarmupRefusedError("HTTP 401"),
+        ),
+        patch(
+            "modelman.providers.lifecycle.backends.omlx.wt_bridge.warm",
+            side_effect=wt_bridge.WtBridgeError("wants an API key: set auth.secret_ref"),
+        ),
+        pytest.raises(LifecycleError, match="refused the keyless warmup.*set auth.secret_ref"),
+    ):
+        OMLX_4BIT.warm(plan)

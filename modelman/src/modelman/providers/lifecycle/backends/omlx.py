@@ -24,7 +24,9 @@ import contextlib
 import shutil
 import subprocess
 
+from .... import wt_bridge
 from .. import probe
+from ..envelope import LifecycleError
 from .base import Backend, StartPlan
 
 OMLX_PORT = 8000
@@ -69,6 +71,27 @@ class OmlxBackend(Backend):
         # here too would warm the model twice per isolate() (a real bug
         # fixed alongside this port: see orchestrate.isolate()'s docstring).
         subprocess.run(["omlx", "start"], capture_output=True, check=False)
+
+    def warm(self, plan: StartPlan) -> None:
+        """The keyless warmup, and `wt warm` when omlx refuses it (#256).
+
+        An omlx started with an API key answers 401 to a keyless chat
+        completion. The key is the registry omlx provider's auth.secret_ref,
+        which only wt resolves, so the refusal hands this one step to wt
+        rather than teach modelman to resolve secrets. An omlx with no key —
+        or one that allows unauthenticated inference — never gets here.
+        """
+        try:
+            super().warm(plan)
+        except probe.WarmupRefusedError:
+            try:
+                wt_bridge.warm("omlx", plan.model)
+            except wt_bridge.WtBridgeError as exc:
+                # wt's message carries the server's answer and the setting
+                # to change; repeating the keyless refusal adds nothing.
+                raise LifecycleError(
+                    f"omlx refused the keyless warmup, and the one through wt failed: {exc}"
+                ) from exc
 
     def stop_and_wait(self) -> str | None:
         # bash: `silence_stdout omlx stop || true` — output discarded,

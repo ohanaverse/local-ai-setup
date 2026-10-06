@@ -77,5 +77,5 @@ func (ollamaBackend) start(ctx context.Context, e *env, cfg *config.Config, t Ta
 		return &DaemonDownError{Provider: "ollama", Origin: origin}
 	}
 	report(StageWarming)
-	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, health, e.warmupTimeout)
+	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, health, "", e.warmupTimeout)
 }

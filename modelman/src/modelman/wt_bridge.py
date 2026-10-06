@@ -1,4 +1,4 @@
-"""Subprocess bridge to `wt litellm ...` (and the `wt served` probe).
+"""Subprocess bridge to `wt litellm ...` (and `wt served` / `wt warm`).
 
 wt owns LiteLLM management (config.yaml routes, proxy restart, routing
 state); modelman calls these primitives instead of keeping its own copy of
@@ -260,3 +260,34 @@ def served_ids(provider: str, timeout: float = SERVED_TIMEOUT) -> list[str] | No
     if not isinstance(served, list):
         return None
     return [s for s in served if isinstance(s, str)]
+
+
+# Above wt's own warmup budget (lifecycle's warmupTimeout, 600s), so a model
+# that never loads is wt's failure to report, not a kill from here.
+WARM_TIMEOUT = 630.0
+
+
+def warm(provider: str, model: str, timeout: float = WARM_TIMEOUT) -> None:
+    """Have wt load `model` into `provider`'s running server (`wt warm`).
+
+    wt is asked because it resolves the registry's secret_ref: an omlx with
+    an API key refuses the keyless warmup modelman sends itself (#256).
+    Raises WtBridgeError with wt's own message when the model did not load.
+    """
+    ensure_wt()
+    try:
+        proc = subprocess.run(
+            ["wt", "warm", provider, model],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise WtBridgeTimeoutError(f"wt warm timed out after {timeout:g}s") from None
+    except FileNotFoundError:
+        raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
+    except OSError as e:
+        raise WtBridgeError(f"wt warm could not run: {type(e).__name__}") from None
+    if proc.returncode != 0:
+        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))

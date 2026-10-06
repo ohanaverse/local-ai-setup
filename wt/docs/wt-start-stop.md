@@ -104,6 +104,20 @@ loads on request, so it has no "serving now".
 `modelman` asks this when its own keyless probe of a partly loaded omlx pool
 is refused, since only wt resolves a `secret_ref`.
 
+## `wt warm <provider> <model>`
+
+Loads a model into an **omlx** server that is already running, with one
+one-token request — the warmup step of `wt start` by itself. Nothing is
+started, stopped or routed. `<model>` is the name omlx serves the model under
+(its directory name), or a repo id ending in it.
+
+When the server has an API key, wt sends the one the registry's omlx provider
+row names (`auth.secret_ref`). A server that refuses the request (401/403)
+fails the command at once, saying whether a key is missing or was refused.
+
+`modelman start` asks this when omlx refuses its own keyless warmup, since
+only wt resolves a `secret_ref`. To start a model yourself, use `wt start`.
+
 ## Exit codes
 
 `0` on success, when there was nothing to start or stop (already running —
