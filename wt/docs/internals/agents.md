@@ -1,0 +1,41 @@
+# wt agent drivers and routes
+
+Internals reference for `wt/`, reached from [`wt/CLAUDE.md`](../../CLAUDE.md). Backticked paths are relative to `wt/` unless they start with `../`.
+
+## Agents (Go)
+
+Each agent registers a `Driver` (`Build(m config.Model, yolo bool, r config.Route) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)` is the shared constructor for both launch paths — it resolves one `config.Route` via `cfg.ResolveRoute(m, agents.ProtocolsFor(agent))` and hands it to `Build`; drivers must not bypass it.
+
+`Route` carries `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the provider's own `auth.base_url` (key from `auth.secret_ref` via `ResolveSecret`); litellm/forced routes dial the `[litellm]` url/key.
+
+**Agent protocols.** Agents declare wire protocols via `ProtocolDeclarer`; providers declare what they serve (`Provider.protocols`, default `openai-chat`). An empty intersection sets `Forced = true` — LiteLLM regardless of the toggle.
+
+| Agent | Declared protocols |
+|---|---|
+| claude | `anthropic` |
+| codex | `openai-responses` |
+| copilot, opencode, pi | `openai-chat` |
+| agy, shell | none — agy is a native passthrough, shell a command runner |
+
+Consequence: **codex always routes through LiteLLM** (no local provider serves `openai-responses`), and `BuildLaunchCmd` prints the forced-LiteLLM notice on every direct-mode launch; claude × openrouter is forced the same way. litellm ≤ 1.98.0 cannot serve codex without a workaround — see [docs/wt-agents/codex-wt.md](../wt-agents/codex-wt.md).
+
+**Model id contract** (resolved centrally in `ResolveRoute`): litellm/forced routes set `Route.ModelRef` to the **registry id** (`m.ID`, e.g. `ollama/qwen3.8:27b-mlx` — LiteLLM's `model_list` key); direct routes use the **provider-side name** (`m.ModelName`). `Route.Display` is always `m.ModelName`. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use distinct `ID`/`ModelName` so a wrong id can't slip through.
+
+**copilot must use the chat-completions wire (`WIRE_API=completions`)** — its `responses` wire drops leading characters through the OpenAI-compatible bridge (verified direct and via LiteLLM). This deliberately diverges from `ollama launch copilot`, which prescribes `responses`.
+
+Per-agent env/args/config shapes (direct and LiteLLM): [docs/wt-agents/](../wt-agents/) `{claude,codex,copilot,opencode,pi,agy,shell}-wt.md`. Notable: **agy is not a command agent** (`IsCommand("agy")` is false), so `-A agy` without `-M` errors "multiple models match" when >1 agy model is eligible.
+
+**Optional capabilities** (type assertions in `BuildLaunchCmd`):
+
+| Capability | Purpose | Implemented by |
+|---|---|---|
+| `ProtocolDeclarer` | wire protocols → `ResolveRoute` | claude, codex, copilot, opencode, pi |
+| `Seeder` | pre-launch AGENTS.md + pointer seeding | claude, copilot |
+| `Syncer` | pre-launch sync, given the launch target and its resolved route (pi → `~/.pi/agent/models.json`: the registry models plus the launch target, so a discovered model gets its entry too, written where the route makes `Build` look — `litellm` for a protocol-forced route even with the toggle off) | pi |
+| `ArgSetter` | passthrough args become argv | shell |
+| `OneShotRunner` | `OneShotArgs(prompt)` for `wt smoke` | claude, codex, copilot, opencode, pi, agy |
+| `StateDirer` | `StateDir(path)` — the agent's own per-working-directory state, which `wt smoke` removes for a temporary row directory | claude, pi |
+
+**Pre-launch `ollamacheck.Check`** (both paths: `cmd/wt/launch.go`, `internal/tui/app.go`) runs only when the model's *resolved route* is direct and the model is ollama (`!route.Litellm && ollamacheck.IsOllamaModel(m)`) — not the raw toggle, so a protocol-forced route (codex+ollama) isn't spuriously blocked. It shells out to `ollama list`. The TUI start flow skips it for a model it just loaded.
+
+New driver: see the `adding-a-wt-agent` skill.
