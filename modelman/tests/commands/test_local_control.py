@@ -384,6 +384,43 @@ def test_start_command_warns_but_proceeds_when_others_running(tmp_path, monkeypa
     assert load_state(path=state_path).get("ollama/x").running is True
 
 
+def test_start_command_prints_what_omlx_unloaded(tmp_path, monkeypatch):
+    # #213: when the new model does not fit, omlx unloads others to make room
+    # and wt reports them. The user must be told which models went, and the
+    # models that went must stop reading as running.
+    from modelman import wt_bridge
+
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(
+        '[[providers]]\nid = "omlx"\nname = "oMLX"\nlocation = "local"\n'
+        'auth = { type = "none" }\n\n'
+        '[[models]]\nid = "omlx/a"\nfamily = "f"\nprovider_id = "omlx"\n'
+        'model_name = "org/A-4bit"\nlocation = "local"\n\n'
+        '[[models]]\nid = "omlx/b"\nfamily = "f"\nprovider_id = "omlx"\n'
+        'model_name = "org/B-4bit"\nlocation = "local"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text('[model_state."omlx/a"]\nready = true\nrunning = true\n')
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    monkeypatch.setattr(
+        wt_bridge,
+        "start",
+        lambda model_id, *, replace, timeout=0.0: wt_bridge.StartOutcome(
+            id=model_id, status="started", unloaded=["omlx/a"]
+        ),
+    )
+
+    result = runner.invoke(app, ["start", "omlx/b"])
+
+    assert result.exit_code == 0, result.output
+    assert "Started omlx/b." in result.output
+    assert "omlx unloaded to make room: omlx/a" in result.output
+    state = load_state(path=state_path)
+    assert state.get("omlx/b").running is True
+    assert state.get("omlx/a").running is False
+
+
 def test_stop_command_with_id_stops_one(tmp_path, monkeypatch):
     # `modelman stop <id>` must stop only the named model, leaving any other
     # running local model (and its flag) untouched - this is the targeted

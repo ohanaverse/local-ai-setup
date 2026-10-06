@@ -713,9 +713,11 @@ def start(
     ),
 ) -> None:
     """Start model_id as a running local model, alongside any already
-    running. Only a model on the same single-model provider (omlx, mtplx,
-    mlx_lm_server) is stopped to make room. Idempotent when model_id is
-    already running and a probe confirms it.
+    running. Only a model on the same single-model provider (mtplx,
+    mlx_lm_server) is stopped to make room; an omlx model loads beside the
+    ones omlx already holds, and any omlx had to unload for room are
+    printed. Idempotent when model_id is already running and a probe
+    confirms it.
 
     model_id may be a registry id, an existing model's native
     provider-side name, or the native name of a model a provider has on
@@ -775,6 +777,8 @@ def start(
         typer.echo(f"{result.model_id} is already running.")
     else:
         typer.echo(f"Started {result.model_id}.")
+    if result.unloaded:
+        typer.echo(f"omlx unloaded to make room: {', '.join(result.unloaded)}")
     if result.other_running:
         typer.echo(
             f"warning: {len(result.other_running)} other local model(s) already running: "
