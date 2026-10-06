@@ -450,24 +450,31 @@ def _derive_native(registry: Registry) -> None:
         m.native = m.provider_id in native_ids
 
 
-def load_registry(path: Path | None = None) -> Registry:
+def _registry_read_path(path: Path | None = None) -> Path:
+    """The file load_registry reads — not always _default_registry_path():
+    see the pre-XDG fallback below. A caller reporting on a registry it could
+    not read names this one. Raises RegistryNotFoundError when there is none."""
     registry_path = Path(path) if path else _default_registry_path()
-    if not registry_path.exists():
-        # Fall back to the pre-XDG location for users who created a registry
-        # before the XDG alignment and have XDG_CONFIG_HOME set. The next
-        # save_registry writes to the canonical (XDG) path, migrating it.
-        # Not past MODELMAN_REGISTRY: that names the file outright, and a
-        # missing one there is missing, not "use the one in ~/.config".
-        legacy = Path("~/.config/local-ai/registry.toml").expanduser()
-        if (
-            path is None
-            and not os.environ.get("MODELMAN_REGISTRY")
-            and registry_path != legacy
-            and legacy.exists()
-        ):
-            registry_path = legacy
-        else:
-            raise RegistryNotFoundError(f"Registry file not found: {registry_path}")
+    if registry_path.exists():
+        return registry_path
+    # Fall back to the pre-XDG location for users who created a registry
+    # before the XDG alignment and have XDG_CONFIG_HOME set. The next
+    # save_registry writes to the canonical (XDG) path, migrating it.
+    # Not past MODELMAN_REGISTRY: that names the file outright, and a
+    # missing one there is missing, not "use the one in ~/.config".
+    legacy = Path("~/.config/local-ai/registry.toml").expanduser()
+    if (
+        path is None
+        and not os.environ.get("MODELMAN_REGISTRY")
+        and registry_path != legacy
+        and legacy.exists()
+    ):
+        return legacy
+    raise RegistryNotFoundError(f"Registry file not found: {registry_path}")
+
+
+def load_registry(path: Path | None = None) -> Registry:
+    registry_path = _registry_read_path(path)
     with open(registry_path, "rb") as f:
         raw = tomllib.load(f)
     registry = Registry(

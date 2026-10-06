@@ -365,8 +365,9 @@ The legacy files are read-only inputs and are not written by the TUI.
 
 It is safe to re-run as a repair: an existing `registry.toml` is read first,
 and only providers, families and models it does not already have are added.
-An entry already there is kept as it is. A `registry.toml` that cannot be
-read stops the command, and nothing is written.
+An entry already there is kept as it is, and so is the state `modelman.toml`
+already holds for a model. A `registry.toml` that cannot be read stops the
+command, and nothing is written.
 
 ### Benchmarking
 

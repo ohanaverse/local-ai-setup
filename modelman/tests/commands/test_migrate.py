@@ -215,3 +215,99 @@ def test_migrate_leaves_an_unreadable_registry_alone(tmp_path, monkeypatch, wt_c
     assert "registry.toml" in result.output
     assert registry_path.read_text() == "[[models]\nthis is not toml"
     assert wt_calls == []
+
+
+def test_migrate_reports_a_wrongly_shaped_registry_instead_of_a_traceback(
+    tmp_path, monkeypatch, wt_calls
+):
+    """Valid TOML whose values have the wrong shape (a hand edit) fails in the
+    parser with a TypeError/ValueError, and bytes that are not UTF-8 with a
+    UnicodeDecodeError — none of them a RegistryError or a TOMLDecodeError.
+    Each is still "cannot read": the same message, and the file left alone."""
+    registry_path = _fresh_machine(tmp_path, monkeypatch)
+    for content in (
+        b"providers = 3\n",
+        b'[[providers]]\nid = "ollama"\nauth = "none"\n',
+        b'[[models]]\nid = "a"\nfamily = "a"\nprovider_id = "ollama"\n'
+        b'model_name = "a"\nmodel_info = "x"\n',
+        b"\xff\xfe not utf-8",
+    ):
+        registry_path.write_bytes(content)
+
+        result = CliRunner().invoke(app, ["migrate"])
+
+        assert result.exit_code == 1, content
+        assert f"error: cannot read {registry_path}" in result.output, content
+        assert registry_path.read_bytes() == content
+    assert wt_calls == []
+
+
+def test_migrate_names_the_pre_xdg_registry_it_could_not_read(tmp_path, monkeypatch):
+    """With XDG_CONFIG_HOME set and no registry there, the one that is read is
+    the pre-XDG file in ~/.config. When that one is unreadable the message
+    must name it, not the XDG path where there is nothing to fix."""
+    _fresh_machine(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("MODELMAN_REGISTRY")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    legacy = home / ".config" / "local-ai" / "registry.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("[[models]\nthis is not toml")
+
+    result = CliRunner().invoke(app, ["migrate"])
+
+    assert result.exit_code == 1
+    assert f"error: cannot read {legacy}" in result.output
+    assert not (tmp_path / "xdg" / "local-ai" / "registry.toml").exists()
+
+
+def test_migrate_rerun_keeps_the_state_of_a_model_it_imports_again(tmp_path, monkeypatch):
+    """The legacy download markers are as stale as the legacy registry
+    entries: a re-run must not put `ready`/`disk_path` back to what they were
+    at the first migrate, or drop the `running` flag of a model that is up."""
+    from modelman.manifest import FamilyManifest, VariantSpec, save_manifest
+
+    _fresh_machine(tmp_path, monkeypatch)
+    family_dir = tmp_path / "families"
+    family_dir.mkdir()
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(family_dir))
+    manifest = FamilyManifest(
+        family="qwen",
+        variants=[VariantSpec(id="q1", provider="omlx", name="qwen-4bit", repo="org/qwen-4bit")],
+    )
+    manifest.downloaded["q1"] = {"local_path": "/old/qwen-4bit"}
+    save_manifest(manifest, family_dir / "qwen.yaml")
+    state_path = tmp_path / "modelman.toml"
+
+    assert CliRunner().invoke(app, ["migrate"]).exit_code == 0
+    first = load_state(state_path).get("omlx/qwen-4bit")
+    assert (first.ready, first.disk_path) == (True, "/old/qwen-4bit")
+
+    with locked_state(state_path) as state:
+        state.set(
+            "omlx/qwen-4bit",
+            ModelState(ready=True, disk_path="/new/qwen-4bit", size_bytes=7, running=True),
+        )
+
+    assert CliRunner().invoke(app, ["migrate"]).exit_code == 0
+
+    assert load_state(state_path).get("omlx/qwen-4bit") == ModelState(
+        ready=True, disk_path="/new/qwen-4bit", size_bytes=7, running=True
+    )
+
+
+def test_merge_imported_adds_an_id_the_import_repeats_only_once():
+    """wt's config.toml is imported entry by entry with no check on model
+    ids, so the import itself can carry one twice; "does not already have"
+    covers what this same merge just added."""
+    from modelman.main import _merge_imported
+    from modelman.registry import Registry
+
+    def model():
+        return ModelEntry(id="ollama/x", family="x", provider_id="ollama", model_name="x:latest")
+
+    registry = Registry()
+
+    assert _merge_imported(registry, Registry(models=[model(), model()])) == (0, 1)
+    assert [m.id for m in registry.models] == ["ollama/x"]

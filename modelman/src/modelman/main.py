@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -36,9 +35,9 @@ from .providers.registry import ProviderRegistry
 from .queue import PendingChanges, QueuedOps
 from .registry import (
     Registry,
-    RegistryError,
     RegistryNotFoundError,
     _default_registry_path,
+    _registry_read_path,
     load_registry,
     model_entry_to_variant,
     provider_config,
@@ -381,10 +380,16 @@ def _merge_imported(registry: Registry, imported: Registry) -> tuple[int, int]:
     registry.providers.extend(new_providers)
     family_names = {f.name for f in registry.families}
     registry.families.extend(f for f in imported.families if f.name not in family_names)
+    # One at a time, against a growing set: the import does not check wt's
+    # model ids against each other, so it can carry the same one twice.
     model_ids = {m.id for m in registry.models}
-    new_models = [m for m in imported.models if m.id not in model_ids]
-    registry.models.extend(new_models)
-    return len(new_providers), len(new_models)
+    models_added = 0
+    for m in imported.models:
+        if m.id not in model_ids:
+            model_ids.add(m.id)
+            registry.models.append(m)
+            models_added += 1
+    return len(new_providers), models_added
 
 
 @app.command()
@@ -402,14 +407,23 @@ def migrate(
     # re-run as a repair step (see wt/CLAUDE.md's "unknown provider" note), and
     # the import below starts from nothing, so saving its result outright
     # deleted every model added since the first run (#234). One that cannot be
-    # read is not the same as none — stop rather than overwrite it.
+    # read is not the same as none — stop rather than overwrite it. That is
+    # every other failure, not a list of them: a hand-edited file fails in the
+    # parser as readily with a TypeError or ValueError (valid TOML, wrong
+    # shape) or a UnicodeDecodeError as with a RegistryError.
     try:
         registry = load_registry()
     except RegistryNotFoundError:
         registry = Registry()
-    except (RegistryError, tomllib.TOMLDecodeError, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001
+        # The file that was read, which is the pre-XDG one when
+        # XDG_CONFIG_HOME is set and holds no registry yet.
+        try:
+            unreadable = _registry_read_path()
+        except RegistryNotFoundError:
+            unreadable = _default_registry_path()
         typer.echo(
-            f"error: cannot read {_default_registry_path()}: {exc} — "
+            f"error: cannot read {unreadable}: {exc} — "
             "fix or move it aside, then run `modelman migrate` again",
             err=True,
         )
@@ -432,9 +446,15 @@ def migrate(
     # StateStore that's empty except for whatever this run's legacy
     # family-manifest import produced. Overwriting modelman.toml with it
     # outright would wipe [litellm] and every other model's ready/running
-    # state on every repair re-run.
+    # state on every repair re-run. A model that already has a row keeps it,
+    # for the same reason its registry entry is kept: the legacy download
+    # marker is the stale side, and replacing the row with it would put
+    # ready/disk_path back to what they were at the first migrate and drop
+    # the running flag of a model that is up.
     with locked_state() as state:
-        state.models.update(result.state.models)
+        for model_id, model_state in result.state.models.items():
+            if model_id not in state.models:
+                state.set(model_id, model_state)
         state.families.update(result.state.families)
 
     # One-time import of wt's legacy [gateway] block into modelman's
