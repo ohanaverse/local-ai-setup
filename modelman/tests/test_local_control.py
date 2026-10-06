@@ -472,12 +472,12 @@ def test_start_isolate_failure_does_not_clear_concurrent_writes(tmp_path):
     assert state.get("mtplx/org/model-a").running is False
 
 
-def test_stop_clears_flag_and_stops_provider(tmp_path, monkeypatch):
+def test_stop_omlx_clears_flag_without_stopping_the_provider(tmp_path, monkeypatch):
     # An omlx model's stop goes to wt, which unloads that one model (#213);
     # stop_provider() — `omlx stop`, halting the whole service — is not run.
     # The model's flag is cleared on success.
     state_path = _state_path(tmp_path, {"omlx/model-a": True})
-    calls = _stub_wt_stop(monkeypatch)
+    calls, _ = _stub_wt_stop(monkeypatch)
     with patch("modelman.local_control.stop_provider") as mock_stop:
         result = stop_local_model("omlx/model-a", state_path)
     assert calls == ["omlx/model-a"]
@@ -2081,7 +2081,7 @@ def test_start_discovered_artifact_on_an_omlx_6bit_only_registry_uses_the_family
     # omlx-6bit model or otherwise.
     assert same_provider_occupant(registry, state, "omlx-6bit/registered", "omlx-6bit") is None
 
-    stop_calls = _stub_wt_stop(monkeypatch)
+    stop_calls, _ = _stub_wt_stop(monkeypatch)
     with patch("modelman.local_control.stop_provider") as mock_stop:
         stopped = stop_local_model("omlx/Qwen3.8-27B-6bit", state_path)
     assert stop_calls == ["omlx/Qwen3.8-27B-6bit"]
@@ -2964,24 +2964,32 @@ def test_start_omlx_failure_includes_sync_warnings(tmp_path, monkeypatch):
     assert "may not be synced" in str(excinfo.value)
 
 
-def _stub_wt_stop(monkeypatch, error=None, served=()):
+def _stub_wt_stop(monkeypatch, error=None, served=(), refused=False):
+    """Stub wt's stop and its pool read, and the refused-connection check.
+    Returns (stop targets, urls the refused check was made against)."""
     calls: list[str] = []
+    refused_urls: list[str] = []
 
     def fake(target, timeout=0.0):
         calls.append(target)
         if error is not None:
             raise error
 
+    def fake_refused(url, timeout=0.0):
+        refused_urls.append(url)
+        return refused
+
     monkeypatch.setattr(local_control.wt_bridge, "stop", fake)
     monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda provider, timeout=0.0: served)
-    return calls
+    monkeypatch.setattr(local_control, "_connection_refused", fake_refused)
+    return calls, refused_urls
 
 
 def test_stop_omlx_unloads_one_model_through_wt(tmp_path, monkeypatch):
     # #213: stopping one omlx model must leave its siblings loaded and
     # flagged. modelman used to run `omlx stop`, halting every loaded model.
     state_path = _state_path(tmp_path, {"omlx/a": True, "omlx/b": True})
-    calls = _stub_wt_stop(monkeypatch)
+    calls, _ = _stub_wt_stop(monkeypatch)
     stop_provider = MagicMock()
     monkeypatch.setattr(local_control, "stop_provider", stop_provider)
 
@@ -3009,34 +3017,112 @@ def test_stop_omlx_clears_the_flag_of_a_model_wt_says_is_not_running(tmp_path, m
     assert not load_state(state_path).get("omlx/a").running
 
 
+_WT_SAYS_NOT_RUNNING = wt_bridge.WtBridgeError('model "omlx/a" is not running')
+
+
 def test_stop_omlx_keeps_the_flag_when_the_pool_cannot_be_read(tmp_path, monkeypatch):
     # #249's rule: "cannot say" is not "stopped". A keyed omlx whose key the
     # registry does not name makes wt call the model not running while it is
     # loaded; clearing the flag would leave a resident model nothing records.
+    # omlx is up here (its port accepts the connection), so nothing shows the
+    # model is gone.
     state_path = _state_path(tmp_path, {"omlx/a": True})
-    _stub_wt_stop(
-        monkeypatch, error=wt_bridge.WtBridgeError('model "omlx/a" is not running'), served=None
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=False
     )
-    monkeypatch.setattr(local_control, "_http_json", lambda url: {"status": "healthy"})
 
     with pytest.raises(LocalControlError, match="secret_ref") as exc:
-        stop_local_model("omlx/a", state_path)
+        stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
 
     assert "modelman stop --all" in str(exc.value)
+    assert refused_urls == ["http://localhost:8000/health"]  # it did look
     assert load_state(state_path).get("omlx/a").running
 
 
-def test_stop_omlx_clears_the_flag_when_omlx_is_down(tmp_path, monkeypatch):
-    # omlx is not answering at all: nothing is loaded, so a flagged model is
-    # stopped. The user must be able to clear a flag left by a crashed server.
+def test_stop_omlx_clears_the_flag_when_omlx_refuses_the_connection(tmp_path, monkeypatch):
+    # Nothing listens on omlx's port: no server, so nothing is loaded, and a
+    # flagged model is stopped. The user must be able to clear a flag left by
+    # a crashed server. Asked at the origin the registry gives omlx — here
+    # none, so the default.
     state_path = _state_path(tmp_path, {"omlx/a": True})
-    _stub_wt_stop(
-        monkeypatch, error=wt_bridge.WtBridgeError('model "omlx/a" is not running'), served=None
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=True
     )
-    monkeypatch.setattr(local_control, "_http_json", lambda url: None)
 
-    assert stop_local_model("omlx/a", state_path).stopped_model_id == "omlx/a"
+    result = stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
+
+    assert result.stopped_model_id == "omlx/a"
+    assert refused_urls == ["http://localhost:8000/health"]
     assert not load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_asks_the_registrys_origin_whether_omlx_is_down(tmp_path, monkeypatch):
+    # An omlx on another host or port: a refused connection at localhost:8000
+    # says nothing about it. Asking there cleared the flag of a loaded model
+    # on every stop.
+    registry = _omlx_pool_registry()
+    registry.providers[0].auth = AuthConfig(type="none", base_url="http://10.0.0.5:9000/v1")
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=False
+    )
+
+    with pytest.raises(LocalControlError, match="cannot tell whether omlx/a is loaded"):
+        stop_local_model("omlx/a", state_path, registry=registry)
+
+    assert refused_urls == ["http://10.0.0.5:9000/health"]
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_origin_comes_from_the_omlx_6bit_row_when_it_is_the_only_one(
+    tmp_path, monkeypatch
+):
+    # omlx and omlx-6bit are one server; a registry may define only the
+    # omlx-6bit row, and a discovered model's id is `omlx/<name>` either way.
+    registry = _omlx_6bit_only_registry()
+    registry.providers[0].auth = AuthConfig(type="none", base_url="http://10.0.0.5:9000")
+    state_path = _state_path(tmp_path, {"omlx/Stray-6bit": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/Stray-6bit"'),
+        served=None,
+        refused=True,
+    )
+
+    assert stop_local_model("omlx/Stray-6bit", state_path, registry=registry).stopped_model_id
+    assert refused_urls == ["http://10.0.0.5:9000/health"]
+
+
+def test_stop_omlx_without_a_registry_never_takes_the_down_shortcut(tmp_path, monkeypatch):
+    # No registry, no origin to ask: even a refused connection at the default
+    # port proves nothing, so the flag stays and the user is told.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=True
+    )
+
+    with pytest.raises(LocalControlError, match="cannot tell whether omlx/a is loaded"):
+        stop_local_model("omlx/a", state_path)
+
+    assert refused_urls == []
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_clears_the_flag_of_a_model_wt_no_longer_knows(tmp_path, monkeypatch):
+    # A discovered omlx model (no registry row) that is no longer loaded is
+    # not "not running" to wt but unknown: it lists such a model only while
+    # it runs. With the pool readable that is the same answer.
+    state_path = _state_path(tmp_path, {"omlx/Stray-4bit": True})
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/Stray-4bit"'),
+        served=["B-4bit"],
+    )
+
+    result = stop_local_model("omlx/Stray-4bit", state_path)
+
+    assert result.stopped_model_id == "omlx/Stray-4bit"
+    assert not load_state(state_path).get("omlx/Stray-4bit").running
 
 
 def test_stop_omlx_surfaces_any_other_wt_failure(tmp_path, monkeypatch):

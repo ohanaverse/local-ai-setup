@@ -56,7 +56,7 @@ from .benchmark.isolation import (
     stop_provider,
 )
 from .litellm import sync_routes
-from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
+from .local_process import connection_refused as _connection_refused
 from .local_process import http_answers as _http_answers
 from .local_process import http_json as _http_json
 from .local_process import http_models_ids as _http_models_ids
@@ -1196,7 +1196,6 @@ def start_local_model(
         return _start_omlx_via_wt(resolved_id, state_path, litellm_path)
 
     extra_args: tuple[str, ...] = ()
-    env: dict[str, str] | None = None
     if model.provider_id == "mlx_lm_server":
         try:
             target, draft = mlx_lm_server_pairing_args(
@@ -1211,8 +1210,6 @@ def start_local_model(
         extra_args = (target, draft)
     elif model.provider_id == "mtplx":
         extra_args = (model.model_name,)
-    elif model.provider_id != "ollama":
-        env = {_ENV_VAR_BY_PROVIDER[model.provider_id]: model.model_name}
 
     probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
 
@@ -1265,7 +1262,10 @@ def start_local_model(
         # failure is reported: the occupant's route must not keep pointing
         # at a dead backend.
         try:
-            result = isolate_provider(model.provider_id, *extra_args, env=env, solo=True)
+            # No env override: mlx_lm_server and mtplx take their model as
+            # positional args, and the providers that take it from an
+            # LLM_ISOLATE_*_MODEL variable (omlx) no longer start here.
+            result = isolate_provider(model.provider_id, *extra_args, env=None, solo=True)
         except BenchmarkError as exc:
             _clear_stale_running_flag(resolved_id, state_path)
             raise LocalControlError(
@@ -1378,7 +1378,11 @@ def _start_omlx_via_wt(
 
 
 def stop_local_model(
-    model_id: str, state_path: Path | None = None, *, litellm_path: Path | None = None
+    model_id: str,
+    state_path: Path | None = None,
+    *,
+    litellm_path: Path | None = None,
+    registry: Registry | None = None,
 ) -> StopResult:
     """Stop exactly one running local model, clear its running flag, then
     run one `wt litellm sync` so LiteLLM's routes follow the new live state
@@ -1387,7 +1391,9 @@ def stop_local_model(
 
     An omlx model is unloaded through wt (_stop_omlx_via_wt): the omlx
     service and the other models it has loaded stay up, and their flags
-    are left alone (#213).
+    are left alone (#213). `registry` is read only there, and only to find
+    omlx's origin when wt cannot say whether the model is loaded; without
+    it that case is always an error (see _stop_omlx_via_wt).
 
     The sync runs AFTER the stop and the flag clear: wt probes the
     providers itself, so the process must already be gone.
@@ -1408,7 +1414,7 @@ def stop_local_model(
         if not result.ok:
             raise LocalControlError(f"failed to stop {model_id}: {result.error}")
     elif provider_id in _OMLX_PROVIDER_IDS:
-        _stop_omlx_via_wt(model_id)
+        _stop_omlx_via_wt(model_id, registry)
     else:
         try:
             stop_provider(provider_id)
@@ -1426,7 +1432,21 @@ def stop_local_model(
 _WT_NOT_RUNNING = ("is not running", "unknown model")
 
 
-def _stop_omlx_via_wt(model_id: str) -> None:
+def _omlx_origin(registry: Registry) -> str:
+    """The origin of the omlx server as `registry` gives it: the base_url of
+    the row that stands for the family (plain `omlx` first, as wt's
+    familyProviderID picks it), or omlx's default when the row names none."""
+    providers_by_id = _provider_by_id(registry)
+    for provider_id in _OMLX_FAMILY_PROVIDER_IDS:
+        provider = providers_by_id.get(provider_id)
+        if provider is None:
+            continue
+        origin = base_origin(provider.auth.base_url) if provider.auth else None
+        return origin or _DEFAULT_BASE_ORIGIN[_OMLX_FAMILY]
+    return _DEFAULT_BASE_ORIGIN[_OMLX_FAMILY]
+
+
+def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:
     """Unload one omlx model through `wt stop <id> --yes`; the service and
     its other loaded models stay up (#213).
 
@@ -1438,11 +1458,16 @@ def _stop_omlx_via_wt(model_id: str) -> None:
     - wt cannot (a keyed omlx whose key the registry does not name): the
       model may well be loaded. That is "cannot say", which must never clear
       a flag (#249), so it is an error telling the user how to proceed.
-      Unless omlx itself is not answering: then nothing is loaded.
 
-    The health read uses omlx's default origin: this function has only the
-    id, and a registry base_url override is rare enough not to load the
-    registry for."""
+    The one exception to the second case is an omlx that is positively not
+    there: the connection to its origin is REFUSED, so no server is running
+    and nothing is loaded — a flag left by a crashed server can be cleared.
+    Only a refusal counts. A timeout, a reset or an unusable answer comes
+    just as well from an omlx that is busy loading a model, and reading
+    those as "down" cleared the flag of a model still resident. The origin
+    is the registry's (_omlx_origin): a refusal at the default port says
+    nothing about an omlx on another host or port. With no registry there
+    is no origin to ask, so the exception is not taken."""
     try:
         wt_bridge.stop(model_id)
         return
@@ -1451,7 +1476,7 @@ def _stop_omlx_via_wt(model_id: str) -> None:
             raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
     if wt_bridge.served_ids(_OMLX_FAMILY) is not None:
         return
-    if _http_json(f"{_DEFAULT_BASE_ORIGIN[_OMLX_FAMILY]}/health") is None:
+    if registry is not None and _connection_refused(f"{_omlx_origin(registry)}/health"):
         return
     raise LocalControlError(
         f"cannot tell whether {model_id} is loaded: wt could not read the omlx pool. "

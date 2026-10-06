@@ -1881,6 +1881,7 @@ async def test_action_toggle_running_confirms_then_stops_a_running_model(tmp_pat
     stopped = {}
 
     def fake_stop(model_id, state_path=None, **kwargs):
+        stopped["registry"] = kwargs.get("registry")
         stopped["id"] = model_id
         return StopResult(stopped_model_id=model_id)
 
@@ -1901,6 +1902,9 @@ async def test_action_toggle_running_confirms_then_stops_a_running_model(tmp_pat
             if stopped.get("id") == "ollama/a":
                 break
     assert stopped["id"] == "ollama/a"
+    # The screen's registry goes with the stop: an omlx stop reads omlx's
+    # origin from it when wt cannot say whether the model is loaded (#213).
+    assert [m.id for m in stopped["registry"].models] == ["ollama/a"]
 
 
 @pytest.mark.asyncio

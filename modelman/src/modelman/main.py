@@ -212,6 +212,23 @@ def _load_registry_or_exit() -> Registry:
         raise typer.Exit(1) from exc
 
 
+def _load_registry_for_stop() -> Registry | None:
+    """The registry for `modelman stop <id>`, or None when it cannot be read.
+
+    A stop needs no registry to stop a model: it is read for one thing, the
+    omlx server's origin, when wt cannot say whether an omlx model is loaded
+    (local_control._stop_omlx_via_wt). So an unreadable registry must not
+    fail the command — the stop goes ahead without it, and that one case
+    then reports that it cannot tell. A registry that is not there is an
+    empty one, as for every other command."""
+    try:
+        return load_registry()
+    except RegistryNotFoundError:
+        return Registry()
+    except Exception:  # noqa: BLE001 — as _load_registry_or_exit: any parse failure
+        return None
+
+
 def run_queued_ops(queued: QueuedOps) -> bool:
     """Apply a QueuedOps returned by the TUI against fresh on-disk state.
 
@@ -830,7 +847,7 @@ def stop(
     # out for mypy, which can't infer that from the two independent ifs.
     assert model_id is not None
     try:
-        result = stop_local_model(model_id)
+        result = stop_local_model(model_id, registry=_load_registry_for_stop())
     except LocalControlError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc

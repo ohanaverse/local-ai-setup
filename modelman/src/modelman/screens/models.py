@@ -693,7 +693,7 @@ class ModelScreen(Screen[None]):
 
     def _do_stop(self, model_id: str) -> None:
         try:
-            result = stop_local_model(model_id, self.state_path)
+            result = stop_local_model(model_id, self.state_path, registry=self.registry)
         except LocalControlError as exc:
             self.app.call_from_thread(
                 self.app.notify, f"Failed to stop {model_id}: {exc}", severity="error"

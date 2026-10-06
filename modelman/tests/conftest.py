@@ -115,6 +115,13 @@ def _never_call_real_ollama(monkeypatch):
     # on the dev machine and down in CI, i.e. machine-dependent tests. Stubbed
     # to "answering"; the tests of the down path patch it to False.
     monkeypatch.setattr("modelman.local_control._http_answers", lambda url, timeout=2.0: True)
+    # ...and stop_local_model's "is omlx positively down?" check (#213), which
+    # would otherwise dial the developer's real omlx port. Stubbed to "not
+    # refused" — the answer that clears no flag; the tests of the check patch
+    # it, and tests/test_local_process.py tests the real function.
+    monkeypatch.setattr(
+        "modelman.local_control._connection_refused", lambda url, timeout=2.0: False
+    )
     monkeypatch.setattr(
         "modelman.providers.lifecycle.backends.ollama._loaded_model_names",
         lambda: [],
