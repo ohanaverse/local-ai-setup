@@ -133,13 +133,15 @@ class Provider(ABC):
         return frozenset([p]) if p is not None else frozenset()
 
     def removable_paths(self, variant: VariantSpec) -> frozenset[str]:
-        """The subset of artifact_paths() that delete() would actually remove.
+        """Every path delete() would actually remove.
 
-        Defaults to all of them. A provider whose delete() leaves some
+        Defaults to artifact_paths(). A provider whose delete() leaves some
         artifacts alone — omlx never removes a `local_path` directory the user
         produced by hand — narrows this, so find_shared_artifact_owner() only
         guards (and only reports a conflict over) what is really at risk
-        (#227). It must never name a path delete() would not remove.
+        (#227). One whose delete() removes a directory the entry does not
+        live in names that too (#229). It must name exactly what delete()
+        removes: a path left out is one the guard never protects.
         """
         return self.artifact_paths(variant)
 

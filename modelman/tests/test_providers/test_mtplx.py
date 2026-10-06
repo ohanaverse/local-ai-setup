@@ -167,22 +167,6 @@ def test_removable_paths_is_exactly_what_delete_removes(tmp_path):
     assert p.removable_paths(_local_variant("Org/M", str(user))) == frozenset()
 
 
-def _mtplx_owner(provider, deleting, other):
-    from modelman.registry import (
-        ProviderEntry,
-        Registry,
-        find_shared_artifact_owner,
-        model_entry_to_variant,
-    )
-
-    registry = Registry(
-        providers=[ProviderEntry(id="mtplx", name="MTPLX", location="local")],
-        models=[deleting, other],
-    )
-    found = find_shared_artifact_owner(registry, provider, model_entry_to_variant(deleting))
-    return found.id if found else None
-
-
 def _mtplx_entry(model_id: str, name: str, local_path: str | None = None):
     from modelman.registry import Fetch, ModelEntry
 
@@ -195,18 +179,18 @@ def _mtplx_entry(model_id: str, name: str, local_path: str | None = None):
     )
 
 
-def test_guard_reports_nothing_for_two_entries_on_one_local_path(tmp_path):
+def test_guard_reports_nothing_for_two_entries_on_one_local_path(tmp_path, shared_owner):
     # #227: neither delete removes the user's directory, so there is no
     # conflict to report from either side.
     p = MTPLXProvider({"model_dir": str(tmp_path / "models")})
     user = str(tmp_path / "user-model")
     a = _mtplx_entry("mtplx/a", "Org/A", user)
     b = _mtplx_entry("mtplx/b", "Org/B", user)
-    assert _mtplx_owner(p, a, b) is None
-    assert _mtplx_owner(p, b, a) is None
+    assert shared_owner(p, a, b) is None
+    assert shared_owner(p, b, a) is None
 
 
-def test_guard_refuses_a_cached_delete_another_entry_depends_on(tmp_path):
+def test_guard_refuses_a_cached_delete_another_entry_depends_on(tmp_path, shared_owner):
     # Two entries naming the same model share one cache directory, and a
     # local_path entry can point INTO the cache: in both cases deleting the
     # cached entry would rmtree what the other one uses.
@@ -214,8 +198,22 @@ def test_guard_refuses_a_cached_delete_another_entry_depends_on(tmp_path):
     p = MTPLXProvider({"model_dir": str(models)})
     a = _mtplx_entry("mtplx/a", "Org/M")
     twin = _mtplx_entry("mtplx/twin", "Org/M")
-    assert _mtplx_owner(p, a, twin) == "mtplx/twin"
+    assert shared_owner(p, a, twin) == "mtplx/twin"
     pointing_in = _mtplx_entry("mtplx/local", "Org/Elsewhere", str(models / "Org--M"))
-    assert _mtplx_owner(p, a, pointing_in) == "mtplx/local"
+    assert shared_owner(p, a, pointing_in) == "mtplx/local"
     # The local_path entry's own delete removes nothing of the cached one's.
-    assert _mtplx_owner(p, pointing_in, a) is None
+    assert shared_owner(p, pointing_in, a) is None
+
+
+def test_guard_sees_a_local_path_however_it_is_spelled(tmp_path, shared_owner, respell):
+    # #235: the paths were compared as strings, so a local_path naming the
+    # cache directory any other way than the string MTPLX derives for it was
+    # not seen as an owner, and deleting the cached entry removed it.
+    models = tmp_path / "models"
+    (models / "Org--M").mkdir(parents=True)
+    (models / "Org--M" / "weights.safetensors").write_bytes(b"x")
+    p = MTPLXProvider({"model_dir": str(models)})
+    cached = _mtplx_entry("mtplx/a", "Org/M")
+    pointing_in = _mtplx_entry("mtplx/local", "Org/Elsewhere", respell(models / "Org--M"))
+    assert shared_owner(p, cached, pointing_in) == "mtplx/local"
+    assert shared_owner(p, pointing_in, cached) is None

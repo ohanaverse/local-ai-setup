@@ -466,3 +466,26 @@ def test_cleanup_partial_download_local_path_is_noop_directory_still_exists(tmp_
 
     assert local_dir.exists()
     assert (local_dir / "model.safetensors").exists()
+
+
+def test_guard_sees_a_local_path_however_it_is_spelled(tmp_path, shared_owner, respell):
+    # #235: see the same test for mtplx. omlx's Path(local_path) only dropped
+    # a trailing slash.
+    from modelman.registry import Fetch, ModelEntry
+
+    pool = tmp_path / "pool"
+    (pool / "qwen").mkdir(parents=True)
+    (pool / "qwen" / "weights.safetensors").write_bytes(b"x")
+    provider = OMLXProvider({"model_dir": str(pool)})
+    downloaded = ModelEntry(
+        id="omlx/dl", family="f", provider_id="omlx", model_name="dl", fetch=Fetch(repo="org/qwen")
+    )
+    local = ModelEntry(
+        id="omlx/local",
+        family="f",
+        provider_id="omlx",
+        model_name="local",
+        fetch=Fetch(local_path=respell(pool / "qwen")),
+    )
+    assert shared_owner(provider, downloaded, local) == "omlx/local"
+    assert shared_owner(provider, local, downloaded) is None

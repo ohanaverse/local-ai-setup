@@ -562,9 +562,11 @@ def find_shared_artifact_owner(
     provider has no artifact_paths or the paths can't be resolved —
     callers treat that as "no conflict" and proceed with the normal delete.
 
-    Only the paths the provider's delete() would really remove are compared
-    (Provider.removable_paths): an entry whose delete is a no-op shares
-    nothing that can be lost.
+    What is compared is the set the provider's delete() would really remove
+    (Provider.removable_paths) against everywhere each other entry lives
+    (artifact_paths): an entry whose delete is a no-op shares nothing that
+    can be lost. Both sides are resolved to real directories first, so the
+    spelling of a path does not matter.
 
     "Another entry" includes one on a sibling row of the same server (an
     `omlx-6bit` entry and an `omlx` entry), compared through each row's own
@@ -577,25 +579,29 @@ def find_shared_artifact_owner(
     artifact_paths = getattr(provider, "artifact_paths", None)
     if not callable(artifact_paths):
         return None
-    try:
-        mine = artifact_paths(variant)
-    except Exception:  # noqa: BLE001
-        return None
     # Only what delete() would actually remove is at risk (#227): an omlx
     # `local_path` directory is never removed, so sharing it is no conflict
-    # and must not be reported as one. A provider that does not say (or a
-    # test double answering with something that is not a set) guards all of
-    # its paths, as before.
+    # and must not be reported as one. And it is the whole of what is at
+    # risk, wherever the entry itself lives (#229): an mlx_lm_server side
+    # with both a repo and a local_path lives in the local_path and removes
+    # the repo's download. A provider that does not say (or a test double
+    # answering with something that is not a set) guards every path it
+    # lives in.
+    mine = None
     removable_paths = getattr(provider, "removable_paths", None)
     if callable(removable_paths):
         try:
-            removable = removable_paths(variant)
+            mine = removable_paths(variant)
         except Exception:  # noqa: BLE001
-            removable = None
-        if isinstance(removable, (set, frozenset)):
-            mine = mine & removable
+            mine = None
+    if not isinstance(mine, (set, frozenset)):
+        try:
+            mine = artifact_paths(variant)
+        except Exception:  # noqa: BLE001
+            return None
     if not mine:
         return None
+    mine = _canonical_paths(mine)
     # Entries on another registry row of the SAME server count too (#224):
     # `omlx` and `omlx-6bit` are two rows over one model directory, so an
     # entry on either can own the directory the other is about to remove. A
@@ -621,9 +627,20 @@ def find_shared_artifact_owner(
             theirs = their_paths(model_entry_to_variant(m))
         except Exception:  # noqa: BLE001
             continue
-        if mine & theirs:
+        if mine & _canonical_paths(theirs):
             return m
     return None
+
+
+def _canonical_paths(paths: Any) -> frozenset[Any]:
+    """`paths` with each one resolved to the directory it names, so that two
+    spellings of one directory compare equal (#235): `~` expanded, relative
+    and `..` segments and a trailing slash collapsed, symlinks followed. A
+    `local_path` is stored as typed, and the providers hand it over that way.
+    Anything that is not a string is passed through untouched."""
+    return frozenset(
+        os.path.realpath(os.path.expanduser(p)) if isinstance(p, str) else p for p in paths
+    )
 
 
 def _sibling_artifact_paths(registry: Registry, provider_id: str) -> Any:
