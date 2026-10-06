@@ -15,6 +15,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // This file drives the PUBLIC wrappers (Start, Stop, StopModelDeferred +
@@ -302,7 +303,7 @@ func TestStopRouteRemovalSymmetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owed, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1"); err != nil || owed {
+	if owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/a:1", ModelName: "a:1"}); err != nil || owed {
 		t.Fatalf("StopModelDeferred(ollama) = (%v, %v), want (false, nil): stop leaves an ollama route in place", owed, err)
 	}
 	WaitPendingRoutes()
@@ -310,7 +311,7 @@ func TestStopRouteRemovalSymmetry(t *testing.T) {
 		t.Fatalf("ollama stop rewrote config.yaml:\n%s", after)
 	}
 
-	if owed, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil || !owed {
+	if owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"}); err != nil || !owed {
 		t.Fatalf("StopModelDeferred(mtplx) = (%v, %v), want (true, nil)", owed, err)
 	}
 	SettleRoutes(context.Background(), cfg)
@@ -567,8 +568,8 @@ func TestStopModelDeferredBatchRestartsOnce(t *testing.T) {
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 
 	owed := false
-	for _, s := range []struct{ provider, name string }{{"ollama", "a:1"}, {"ollama", "b:1"}, {"mtplx", "Y/Q35"}} {
-		o, err := StopModelDeferred(context.Background(), cfg, s.provider, s.name)
+	for _, s := range []struct{ provider, id, name string }{{"ollama", "ollama/a:1", "a:1"}, {"ollama", "ollama/b:1", "b:1"}, {"mtplx", "mtplx/Y--Q35", "Y/Q35"}} {
+		o, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: s.provider, ModelID: s.id, ModelName: s.name})
 		if err != nil {
 			t.Fatalf("StopModelDeferred(%s %s): %v", s.provider, s.name, err)
 		}
@@ -605,10 +606,11 @@ func TestStopModelDeferredNothingRoutedOwesNothing(t *testing.T) {
 	// The first write may still change the file: every write ensures
 	// LiteLLM's launcher-required litellm_settings keys, which this minimal
 	// fixture lacks. Only the second write sees a file in normal form.
-	if _, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil {
+	mtplxY := localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"}
+	if _, err := StopModelDeferred(context.Background(), cfg, mtplxY); err != nil {
 		t.Fatalf("first StopModelDeferred: %v", err)
 	}
-	owed, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35")
+	owed, err := StopModelDeferred(context.Background(), cfg, mtplxY)
 	if err != nil || owed {
 		t.Fatalf("StopModelDeferred = (%v, %v), want (false, nil)", owed, err)
 	}
@@ -629,7 +631,7 @@ func TestStopModelDeferredFailedStopWritesNothing(t *testing.T) {
 	var calls []string
 	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, stopErr: errors.New("boom")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
-	owed, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35")
+	owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"})
 	if err == nil || owed {
 		t.Fatalf("StopModelDeferred = (%v, %v), want (false, error)", owed, err)
 	}

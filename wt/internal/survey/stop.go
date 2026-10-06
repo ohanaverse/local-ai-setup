@@ -27,7 +27,7 @@ type stopDeps struct {
 	counts    func(modelIDs []string) map[string]int
 	// stop stops one model and writes its route removal without restarting
 	// the proxy; restartOwed reports that settle must run (issue #142).
-	stop   func(ctx context.Context, cfg *config.Config, providerID, modelName string) (restartOwed bool, err error)
+	stop   func(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error)
 	settle func(ctx context.Context, cfg *config.Config)
 }
 
@@ -295,7 +295,10 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 			fmt.Fprintln(w, "done")
 			continue
 		}
-		owed, err := d.stop(ctx, cfg, e.ProviderID, e.ModelName)
+		// The whole entry goes through: its ModelID is the route id the
+		// removal must use, so an omlx model whose name merely ends in a
+		// sibling's cannot have the sibling's route removed instead (#195).
+		owed, err := d.stop(ctx, cfg, e)
 		restartOwed = restartOwed || owed
 		if err != nil {
 			if ctx.Err() != nil {

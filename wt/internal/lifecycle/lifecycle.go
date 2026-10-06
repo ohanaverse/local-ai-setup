@@ -372,12 +372,15 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 	return b.stop(ctx, e, cfg)
 }
 
-// StopModelDeferred stops one running model (modelName is the provider-side
-// name) and writes its route removal, leaving the LiteLLM proxy restart to the
-// caller (issue #142). On ollama it unloads just that model; on an Exclusive
-// provider (mtplx) it stops the provider's sole occupant; on a Pool (omlx) it
-// unloads that one model, leaving the service and its loaded siblings up and
-// routed. The caller must only pass a model live Inventory reported running.
+// StopModelDeferred stops one running model and writes its route removal,
+// leaving the LiteLLM proxy restart to the caller (issue #142). en is the
+// inventory entry: ProviderID and ModelName name what to stop, ModelID the
+// route id its row was built under, which the removal needs to tell the model
+// from a sibling whose name merely resembles it (poolRouteIDs, #195). On ollama
+// it unloads just that model; on an Exclusive provider (mtplx) it stops the
+// provider's sole occupant; on a Pool (omlx) it unloads that one model, leaving
+// the service and its loaded siblings up and routed. The caller must only pass
+// a model live Inventory reported running.
 //
 // restartOwed reports that a removal was written and the proxy therefore still
 // needs its restart: the caller must call SettleRoutes once after the last stop
@@ -386,11 +389,11 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 // restart. One settling bounce replaces N overlapping restarts, each of which
 // killed the proxy the previous one had just brought up. A failed stop writes
 // nothing and owes nothing.
-func StopModelDeferred(ctx context.Context, cfg *config.Config, providerID, modelName string) (restartOwed bool, err error) {
-	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
+func StopModelDeferred(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error) {
+	if err := stopModel(ctx, defaultEnv(), cfg, en.ProviderID, en.ModelName); err != nil {
 		return false, err
 	}
-	return routeRemoveModel(ctx, cfg, localmodels.Entry{ProviderID: providerID, ModelName: modelName}, restartDeferred), nil
+	return routeRemoveModel(ctx, cfg, en, restartDeferred), nil
 }
 
 // SettleRoutes restarts the LiteLLM proxy (and waits for it, asynchronously —

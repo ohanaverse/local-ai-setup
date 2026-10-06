@@ -54,18 +54,18 @@ func (h *stopHarness) deps() stopDeps {
 			}
 			return out
 		},
-		stop: func(ctx context.Context, _ *config.Config, provider, name string) (bool, error) {
+		stop: func(ctx context.Context, _ *config.Config, en localmodels.Entry) (bool, error) {
 			if h.ctxSeen == nil {
 				h.ctxSeen = ctx
 			}
-			h.stops = append(h.stops, provider+"|"+name)
-			if h.cancel != nil && name == h.cancelOn {
+			h.stops = append(h.stops, en.ProviderID+"|"+en.ModelName)
+			if h.cancel != nil && en.ModelName == h.cancelOn {
 				h.cancel()
 				if h.cancelFails {
 					return false, ctx.Err()
 				}
 			}
-			if name == h.failOn {
+			if en.ModelName == h.failOn {
 				return false, errors.New("boom")
 			}
 			return !h.notOwed, nil

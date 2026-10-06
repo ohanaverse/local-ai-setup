@@ -38,9 +38,18 @@ func (p Pool) LoadedIDs() []string {
 	return ids
 }
 
-// Find returns the pool model a provider-side name denotes, by the same
-// lenient match the inventory uses for omlx artifacts.
+// Find returns the pool model a provider-side name denotes. An exact id wins;
+// otherwise it falls back to the same lenient match the inventory uses for
+// omlx artifacts. Exact first keeps a name that merely ends in a pooled model's
+// id ("org/A" beside "A", #195) from resolving to that other model: the callers
+// here load and unload by what Find returns, so the lenient pass alone would
+// act on the wrong model.
 func (p Pool) Find(name string) (PoolModel, bool) {
+	for _, m := range p.Models {
+		if m.ID == name {
+			return m, true
+		}
+	}
 	for _, m := range p.Models {
 		if NameMatches(m.ID, name) {
 			return m, true

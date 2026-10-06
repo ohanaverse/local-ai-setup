@@ -412,6 +412,14 @@ func routeRemoveModel(ctx context.Context, cfg *config.Config, en localmodels.En
 // An entry built by the occupancy re-probe carries the server's raw id as
 // ModelID, which is no route id, so ModelID is used only when it differs from
 // the name.
+//
+// An entry with an id of its own is matched by name exactly: ModelFor's lenient
+// match would let an artifact that merely resembles a registry model's
+// ("org/name" beside "name", #195) pull in that other model's row, removing the
+// route of a sibling omlx still has loaded — whose sessions then get "Invalid
+// model name" — and leaving this model's own row behind. That is the same rule
+// routeModel follows for the write. Only an entry with no id of its own (the
+// raw served name the occupancy re-probe carries) falls back to ModelFor.
 func poolRouteIDs(cfg *config.Config, en localmodels.Entry) []string {
 	var ids []string
 	add := func(id string) {
@@ -419,10 +427,19 @@ func poolRouteIDs(cfg *config.Config, en localmodels.Entry) []string {
 			ids = append(ids, id)
 		}
 	}
-	if en.ModelID != en.ModelName {
+	own := en.ModelID != "" && en.ModelID != en.ModelName
+	if own {
 		add(en.ModelID)
 	}
 	for _, providerID := range localmodels.FamilyProviderIDs(localmodels.Family(en.ProviderID)) {
+		if own {
+			for _, m := range cfg.Models {
+				if m.ProviderID == providerID && m.ModelName == en.ModelName {
+					add(m.ID)
+				}
+			}
+			continue
+		}
 		if m, ok := litellm.ModelFor(cfg, providerID, en.ModelName); ok {
 			add(m.ID)
 		}

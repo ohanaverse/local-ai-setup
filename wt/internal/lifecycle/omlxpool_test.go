@@ -451,6 +451,23 @@ func TestPoolRouteChanges(t *testing.T) {
 	}
 }
 
+// TestPoolRouteIDsDoesNotMatchASiblingByNameSuffix pins #195 on the removal
+// side: an omlx model whose directory merely resembles a registry model's
+// ("A" and "org/A" are two models in one pool) has an id of its own, and a stop
+// of one must not remove the other's route. ModelFor's lenient match ("org/A"
+// ends in "/A") would remove the route of a model omlx still has loaded, and
+// its sessions would get "Invalid model name" from the proxy.
+func TestPoolRouteIDsDoesNotMatchASiblingByNameSuffix(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+		Models:    []config.Model{{ID: "omlx/orgA", ProviderID: "omlx", ModelName: "org/A", Location: config.LocationLocal}},
+	}
+	disc := localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/A", ModelName: "A"}
+	if got := poolRouteIDs(cfg, disc); !reflect.DeepEqual(got, []string{"omlx/A"}) {
+		t.Errorf("route ids for A with a registry row for org/A = %v, want its own id only", got)
+	}
+}
+
 // TestStopModelDeferredOnPoolKeepsSiblingRoutes drives the public stop through
 // the real omlx backend and the real litellm.ApplyChange: stopping one omlx
 // model unloads it and removes its row only. The family sweep an Exclusive
@@ -481,7 +498,7 @@ func TestStopModelDeferredOnPoolKeepsSiblingRoutes(t *testing.T) {
 			{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal},
 		},
 	}
-	owed, err := StopModelDeferred(context.Background(), cfg, "omlx", "org/A")
+	owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/a", ModelName: "org/A"})
 	if err != nil || !owed {
 		t.Fatalf("StopModelDeferred = (%v, %v), want (true, nil)", owed, err)
 	}

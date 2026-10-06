@@ -67,6 +67,25 @@ func TestOmlxPoolFallbackNamesALoadedModel(t *testing.T) {
 	}
 }
 
+// TestPoolFindPrefersAnExactID verifies a name that an id merely ends in
+// resolves to the exact model, not to the shorter one the lenient artifact
+// match would pick. Find's answer is what the load and unload requests name,
+// so resolving "org/A" to a different loaded model "A" would unload a model
+// nobody asked to stop (#195: an artifact named like another's suffix).
+func TestPoolFindPrefersAnExactID(t *testing.T) {
+	p := Pool{Models: []PoolModel{{ID: "A", Loaded: true}, {ID: "org/A", Loaded: true}}}
+	got, ok := p.Find("org/A")
+	if !ok || got.ID != "org/A" {
+		t.Errorf("Find(org/A) = %+v ok=%v, want org/A", got, ok)
+	}
+	// The lenient pass is still there for a registry repo id against the
+	// directory name omlx serves it under.
+	only := Pool{Models: []PoolModel{{ID: "org/A", Loaded: true}}}
+	if got, ok := only.Find("Qwen/org/A"); !ok || got.ID != "org/A" {
+		t.Errorf("Find(Qwen/org/A) = %+v ok=%v, want the lenient org/A match", got, ok)
+	}
+}
+
 // TestOmlxPoolReportsOnDiskIDsForAnAliasedModel pins #213 item 5. omlx lists
 // an aliased model under its alias, and wt matches models by directory name,
 // so reading "all loaded" off the list made an aliased model read as stopped:
