@@ -95,7 +95,10 @@ def sync_routes(*, litellm_path: Path | None = None) -> list[str]:
     modelman's only LiteLLM write path since #179: every command that changes
     the registry or local-model state calls this once at the end. It never
     raises — the registry is the source of truth and the next sync converges —
-    so a failure becomes a warning naming the command that fixes it.
+    so a failure becomes a warning naming the command that fixes it. wt's
+    refusal to pair a redirected registry with the default config.yaml is
+    passed on as it is: it names its own fix, and `wt litellm sync` would be
+    refused the same way.
 
     With no LiteLLM config.yaml (`litellm_path`, else
     `default_litellm_config_path()`) there is nothing to route: it returns
@@ -108,6 +111,8 @@ def sync_routes(*, litellm_path: Path | None = None) -> list[str]:
         return []
     try:
         result = wt_bridge.sync(litellm_path=litellm_path)
+    except wt_bridge.WtRegistryRedirectedError as exc:
+        return [str(exc)]
     except wt_bridge.WtBridgeError as exc:
         return [f"LiteLLM routes may not be synced: {exc} — run `wt litellm sync`"]
     return list(result.warnings) + _grouped_outcome_errors(result)

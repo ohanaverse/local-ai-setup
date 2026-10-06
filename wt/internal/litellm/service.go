@@ -266,8 +266,17 @@ type plannedRemove struct {
 //     discovered siblings included — plus the family's registry local ids,
 //     marked or legacy-unmarked. Never an unmarked row that is not a registry
 //     id, and never an id in Add.
+//   - AddMissingOnly — Add writes a model only when config.yaml has no row of
+//     that name at all; a row that is there, marked or not, is left exactly as
+//     it is and its model is not even built. For a repair that must not stand
+//     in for sync: building a cloud row resolves its provider's secret_ref,
+//     which fails in a shell that does not hold the key (the proxy's plist
+//     does) and can run an exec: helper — neither is owed for a route that is
+//     already in place, and a key that differs in this shell must not replace
+//     the one sync wrote.
 type Change struct {
 	Add            []config.Model
+	AddMissingOnly bool
 	Remove         []string
 	RemoveFamilies []string
 }
@@ -286,6 +295,9 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 		for _, m := range ch.Add {
 			adding[m.ID] = true
 			if !isRegistryID(cfg, m.ID) && f.hasUnmarkedRow(m.ID) {
+				continue
+			}
+			if ch.AddMissingOnly && f.row(m.ID) != nil {
 				continue
 			}
 			row, err := prepareModel(cfg, m)

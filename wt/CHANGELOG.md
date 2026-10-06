@@ -4,6 +4,18 @@
 
 ### Changed
 
+- wt refuses to write LiteLLM routes when the registry is redirected and
+  nothing names `config.yaml`. The registry path follows `MODELMAN_REGISTRY`
+  and `XDG_CONFIG_HOME`; `config.yaml` follows neither, so a run that
+  redirected only the registry (an ad-hoc `modelman migrate` against a
+  throwaway registry) synced it onto the real `config.yaml`: every route that
+  registry lacked was removed and the live proxy restarted. `wt litellm sync`
+  (and `--dry-run`) and the start, stop and launch route updates now answer
+  `LiteLLM routes not touched: the registry is … but config.yaml is the
+  default …`. Set `WT_LITELLM_CONFIG` to the `config.yaml` that registry
+  belongs to — the default path is a valid answer. **If `XDG_CONFIG_HOME` is
+  part of your everyday environment, set `WT_LITELLM_CONFIG` once**, or no
+  route is written.
 - The post-session survey is switched off (#136). wt no longer asks "did it
   work?", speed, quality and task after a session, and prints no
   after-survey stats block. The code is kept behind `survey.Enabled`
@@ -263,6 +275,12 @@
 
 ### Fixed
 
+- Launching a registry cloud model through LiteLLM (or smoke-testing one)
+  writes its route when `config.yaml` has no row for it. Only local models
+  were repaired at launch, so a `config.yaml` that had lost its cloud rows
+  answered every cloud launch with `Invalid model name` until someone ran
+  `wt litellm sync`. A cloud row that is there is left as it is: keeping it
+  current stays with `wt litellm sync`.
 - A local ollama model no longer stays loaded after wt stops it (#202). The
   cause was a second Ollama server: LiteLLM runs `ollama serve` itself at
   proxy startup for every ollama row in `config.yaml` that has no `api_base`,

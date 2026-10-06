@@ -31,6 +31,17 @@ class WtBridgeTimeoutError(WtBridgeError):
     to config.yaml before the kill."""
 
 
+class WtRegistryRedirectedError(WtBridgeError):
+    """wt refused to write routes: the registry is redirected but nothing
+    names config.yaml. Final until WT_LITELLM_CONFIG is set — re-running the
+    command is refused the same way."""
+
+
+# The text of wt's ErrRegistryRedirected (wt/internal/litellm/configfile.go),
+# which leads its refusal message.
+_REGISTRY_REDIRECTED = "LiteLLM routes not touched"
+
+
 @dataclass(frozen=True)
 class BridgeOutcome:
     id: str
@@ -136,7 +147,10 @@ def _change(args: list[str], litellm_path: Path | None) -> BridgeResult:
     except (ValueError, TypeError):
         # No JSON on stdout: a file-level failure (missing/invalid config.yaml,
         # unreadable registry). Nothing was applied.
-        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}")) from None
+        msg = _msg(proc, f"wt exited {proc.returncode}")
+        if msg.startswith(_REGISTRY_REDIRECTED):
+            raise WtRegistryRedirectedError(msg) from None
+        raise WtBridgeError(msg) from None
     try:
         # Parse regardless of exit code: a partial batch exits 1 with JSON.
         return parse_change_result(proc.stdout)

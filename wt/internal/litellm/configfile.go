@@ -31,7 +31,8 @@ var (
 	ErrInvalid = errors.New("LiteLLM config is invalid")
 	// ErrRegistryRedirected: the environment redirected the registry but
 	// nothing named config.yaml. No route write or dry run goes ahead (see
-	// checkRegistryPairing).
+	// checkRegistryPairing). modelman's wt_bridge matches this text to tell
+	// the refusal from a failed sync, so change both together.
 	ErrRegistryRedirected = errors.New("LiteLLM routes not touched")
 )
 

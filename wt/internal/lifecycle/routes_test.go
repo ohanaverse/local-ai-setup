@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -871,6 +872,92 @@ func TestEnsureModelRouteCloudAgainstTheRealWriter(t *testing.T) {
 	WaitPendingRoutes()
 	if restarts() != 1 || warn.Len() != 0 {
 		t.Fatalf("restarts = %d output = %q, want one restart in all and a silent second launch", restarts(), warn.String())
+	}
+}
+
+// TestEnsureModelRouteLeavesAnExistingCloudRowAlone pins that the cloud repair
+// is for a missing row only. Building a cloud row resolves its provider's
+// secret_ref, and the launching shell often does not hold that key — the
+// proxy's plist does — so a check that rebuilt the row on every launch printed
+// "route … not updated: secret_ref … resolved empty" before every cloud
+// launch although the route was in place and working; in a shell holding a
+// different key it replaced the api_key sync wrote and restarted the proxy. A
+// row that is there is sync's to keep current.
+func TestEnsureModelRouteLeavesAnExistingCloudRowAlone(t *testing.T) {
+	path, restarts, warn := realRoutes(t, "model_list: []\n")
+	cfg := cloudRoutesCfg()
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID == "openrouter" {
+			cfg.Providers[i].Auth.SecretRef = "WT_TEST_OPENROUTER_KEY"
+		}
+	}
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
+	t.Setenv("WT_TEST_OPENROUTER_KEY", "sk-proxy")
+	if !EnsureModelRoute(cfg, m) {
+		t.Fatalf("first launch: changed = false, output %q", warn.String())
+	}
+	WaitPendingRoutes()
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"", "sk-another-shell"} {
+		t.Setenv("WT_TEST_OPENROUTER_KEY", key)
+		warn.Reset()
+		if EnsureModelRoute(cfg, m) {
+			t.Errorf("key %q: changed = true, want the existing row left alone", key)
+		}
+		WaitPendingRoutes()
+		if warn.Len() != 0 {
+			t.Errorf("key %q: output = %q, want none: the route is in place", key, warn.String())
+		}
+		if now, _ := os.ReadFile(path); string(now) != string(written) {
+			t.Errorf("key %q: config.yaml was rewritten:\n%s", key, now)
+		}
+	}
+	if restarts() != 1 {
+		t.Errorf("restarts = %d, want only the first launch's", restarts())
+	}
+}
+
+// TestTryEnsureModelRouteReportsARefusedPairingAtOnce pins that the picker's
+// non-blocking check treats litellm.ErrRegistryRedirected as an answer, not as
+// a held lock. done == false sends the picker to its routing screen to retry
+// with a lock wait — and no wait changes a refusal, so every launch with a
+// redirected registry showed that screen and ran the check twice to print one
+// line.
+func TestTryEnsureModelRouteReportsARefusedPairingAtOnce(t *testing.T) {
+	_, restarts, _ := realRoutes(t, "model_list: []\n")
+	home := t.TempDir()
+	def := filepath.Join(home, ".config", "litellm", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(def), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(def, []byte("model_list: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MODELMAN_REGISTRY", filepath.Join(home, "scratch", "registry.toml"))
+	t.Setenv("WT_LITELLM_CONFIG", "")
+	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
+
+	var out bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&out, routesCfg(), config.Model{
+		ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal,
+	})
+	WaitPendingRoutes()
+	if changed || !done {
+		t.Fatalf("changed = %v done = %v, want false and true: refused, with nothing to retry", changed, done)
+	}
+	if got := out.String(); !strings.HasPrefix(got, "wt: LiteLLM route not updated: ") || !strings.Contains(got, "WT_LITELLM_CONFIG") {
+		t.Errorf("output = %q, want the refusal and the variable that lifts it", got)
+	}
+	if got := routedIDs(t, def); len(got) != 0 {
+		t.Errorf("routed = %v, want the default config.yaml untouched", got)
+	}
+	if restarts() != 0 {
+		t.Errorf("restarts = %d, want 0", restarts())
 	}
 }
 

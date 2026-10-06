@@ -1246,3 +1246,40 @@ func TestRedirectedRegistryStaysSilentWithoutAConfig(t *testing.T) {
 		t.Fatalf("err = %v, want ErrMissing", err)
 	}
 }
+
+// TestApplyChangeAddMissingOnlyLeavesAnExistingRow pins Change.AddMissingOnly,
+// the launch-time repair of a cloud route: a row that is already there is not
+// rebuilt — so its provider's secret_ref is not resolved and the key on disk
+// is not replaced by whatever this shell holds — while a missing one is still
+// written. Without it every cloud launch rebuilt sync's row, warning when the
+// shell lacked the key and bouncing the proxy when it held another.
+func TestApplyChangeAddMissingOnlyLeavesAnExistingRow(t *testing.T) {
+	const body = `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_key: sk-the-proxy-has}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`
+	o, restarts, p := opts(t, body)
+	cfg := testConfig()
+	res, err := ApplyChange(cfg, Change{Add: localFor(cfg, "openrouter/x/y"), AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != body || res.Changed || len(res.Outcomes) != 0 || *restarts != 0 {
+		t.Fatalf("existing row touched: changed=%v outcomes=%+v restarts=%d\n%s", res.Changed, res.Outcomes, *restarts, b)
+	}
+
+	res, err = ApplyChange(cfg, Change{Add: localFor(cfg, "openrouter/x/y", "ollama/gemma:9b"), AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Outcomes) != 1 || res.Outcomes[0].ID != "ollama/gemma:9b" || !res.Outcomes[0].Written {
+		t.Fatalf("outcomes = %+v, want only the missing row written", res.Outcomes)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "api_key: sk-the-proxy-has") || !strings.Contains(string(b), "model_name: ollama/gemma:9b") {
+		t.Fatalf("want the missing row added and the existing one kept:\n%s", b)
+	}
+}

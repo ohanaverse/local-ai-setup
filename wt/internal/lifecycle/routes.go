@@ -243,9 +243,13 @@ func reportEnsured(ctx context.Context, w routeWrite, id string) {
 // the one sync writes. Sync is still what keeps cloud routes current; this is
 // the repair for a config.yaml that lost them, which would otherwise answer
 // every cloud launch with "Invalid model name" until someone ran
-// `wt litellm sync`. Anything else — a native model, a cloud model that is not
-// in the registry, a model whose location cannot be resolved — is not wt's to
-// route.
+// `wt litellm sync`. So the cloud change is AddMissingOnly: a row that is
+// there is sync's, and is neither rebuilt nor compared. Rebuilding it on every
+// launch would resolve the provider's secret_ref each time — a warning per
+// launch in a shell that does not hold the key, though the route works, and a
+// rewritten api_key plus a proxy restart in a shell that holds a different
+// one. Anything else — a native model, a cloud model that is not in the
+// registry, a model whose location cannot be resolved — is not wt's to route.
 func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool) {
 	loc, err := cfg.ResolveLocation(m)
 	if err != nil {
@@ -257,7 +261,7 @@ func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool)
 	}
 	for _, c := range litellm.CloudModels(cfg) {
 		if c.ID == m.ID {
-			return litellm.Change{Add: []config.Model{c}}, true
+			return litellm.Change{Add: []config.Model{c}, AddMissingOnly: true}, true
 		}
 	}
 	return litellm.Change{}, false
@@ -318,8 +322,10 @@ func EnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) bool 
 // mid-write, but any failure to read or write config.yaml lands here too — and
 // the caller owes a retry through EnsureModelRouteTo, where waiting is
 // affordable, before it uses the proxy. That path prints nothing: the retry
-// reports, since a contended lock is not itself a warning. What it does print
-// goes to out, on EnsureModelRouteTo's terms.
+// reports, since a contended lock is not itself a warning. The one failure
+// that is final is litellm.ErrRegistryRedirected — no wait changes a refusal —
+// so it is reported at once and done is true. What it does print goes to out,
+// on EnsureModelRouteTo's terms.
 func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (changed, done bool) {
 	ch, ok := modelRouteChange(cfg, m)
 	if !ok {
@@ -329,6 +335,13 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 	cancel()
 	w, err := applyReported(ctx, cfg, ch, restartIfChanged)
 	if err != nil {
+		// A refused pairing is an answer, not a held lock: the retry would
+		// take the lock only to be refused again, behind a routing screen with
+		// nothing to wait for. Reported here, as the retry would have.
+		if errors.Is(err, litellm.ErrRegistryRedirected) {
+			routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
+			return false, true
+		}
 		return false, false
 	}
 	reportEnsured(ctx, w, ch.Add[0].ID)
