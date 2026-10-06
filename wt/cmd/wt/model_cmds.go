@@ -166,12 +166,12 @@ func withFamilyCollateral(out io.Writer, cands, targets []survey.Candidate) []su
 	fams := map[string]bool{}
 	for _, c := range targets {
 		have[c.Entry.ModelID] = true
-		if lifecycle.SingleModel(c.Entry.ProviderID) {
+		if lifecycle.TenancyOf(c.Entry.ProviderID) == lifecycle.Exclusive {
 			fams[localmodels.Family(c.Entry.ProviderID)] = true
 		}
 	}
 	for _, c := range cands {
-		if have[c.Entry.ModelID] || !lifecycle.SingleModel(c.Entry.ProviderID) || !fams[localmodels.Family(c.Entry.ProviderID)] {
+		if have[c.Entry.ModelID] || lifecycle.TenancyOf(c.Entry.ProviderID) != lifecycle.Exclusive || !fams[localmodels.Family(c.Entry.ProviderID)] {
 			continue
 		}
 		fmt.Fprintf(out, "wt: %s runs one model per process; stopping it also stops %s\n", localmodels.Family(c.Entry.ProviderID), c.Entry.ModelID)
@@ -190,7 +190,7 @@ func stopImpact(targets []survey.Candidate) (sessions int, users []string) {
 			continue
 		}
 		users = append(users, c.Entry.ModelID)
-		if lifecycle.SingleModel(c.Entry.ProviderID) {
+		if lifecycle.TenancyOf(c.Entry.ProviderID) == lifecycle.Exclusive {
 			fam := localmodels.Family(c.Entry.ProviderID)
 			if famSeen[fam] {
 				continue

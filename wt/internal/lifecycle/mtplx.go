@@ -16,7 +16,7 @@ import (
 // starting another model replaces the current one.
 type mtplxBackend struct{}
 
-func (mtplxBackend) singleModel() bool { return true }
+func (mtplxBackend) tenancy() Tenancy { return Exclusive }
 
 // mtplxEndpoint returns the origin, /v1/models URL and port for the family.
 // All three come from one resolution so the port passed to `mtplx serve` cannot

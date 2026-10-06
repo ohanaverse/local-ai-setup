@@ -156,14 +156,14 @@ func stopCandidates(cfg *config.Config, d stopDeps) []Candidate {
 	// running variant with it — so its sessions are the whole family's.
 	famSessions := map[string]int{}
 	for _, e := range cands {
-		if lifecycle.SingleModel(e.ProviderID) {
+		if lifecycle.TenancyOf(e.ProviderID) == lifecycle.Exclusive {
 			famSessions[localmodels.Family(e.ProviderID)] += own(e)
 		}
 	}
 	out := make([]Candidate, 0, len(cands))
 	for _, e := range cands {
 		n := own(e)
-		if lifecycle.SingleModel(e.ProviderID) {
+		if lifecycle.TenancyOf(e.ProviderID) == lifecycle.Exclusive {
 			n = famSessions[localmodels.Family(e.ProviderID)]
 		}
 		out = append(out, Candidate{Entry: e, Sessions: n})
@@ -290,7 +290,7 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 		fam := localmodels.Family(e.ProviderID)
 		// The first stop of a single-model provider already took down the whole
 		// provider.
-		if lifecycle.SingleModel(e.ProviderID) && stoppedFamily[fam] {
+		if lifecycle.TenancyOf(e.ProviderID) == lifecycle.Exclusive && stoppedFamily[fam] {
 			fmt.Fprintln(w, "done")
 			continue
 		}

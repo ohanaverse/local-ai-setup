@@ -246,7 +246,7 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 // single-model backend with modelman's pidfile and log paths.
 func TestDefaultEnvRegistersMtplx(t *testing.T) {
 	e := defaultEnv()
-	if e.backends["mtplx"] == nil || !e.backends["mtplx"].singleModel() {
+	if e.backends["mtplx"] == nil || e.backends["mtplx"].tenancy() != Exclusive {
 		t.Fatal("mtplx backend missing or not single-model")
 	}
 	if e.mtplxProc.pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.mtplxProc.logfile != "/tmp/local-ai-setup-mtplx.log" {

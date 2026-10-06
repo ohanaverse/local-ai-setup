@@ -35,7 +35,12 @@ type wrapBackend struct {
 	calls    *[]string
 }
 
-func (b wrapBackend) singleModel() bool { return b.single }
+func (b wrapBackend) tenancy() Tenancy {
+	if b.single {
+		return Exclusive
+	}
+	return Shared
+}
 
 func (b wrapBackend) stop(context.Context, *env, *config.Config) error {
 	*b.calls = append(*b.calls, "stop")
@@ -53,7 +58,7 @@ func (b wrapBackend) start(_ context.Context, _ *env, _ *config.Config, t Target
 }
 
 // swapBackend installs b as family's backend for one test. defaultEnv clones
-// backendsByFamily, and SingleModel reads it directly, so this is the single
+// backendsByFamily, and TenancyOf reads it directly, so this is the single
 // switch that makes the public wrappers run against a fake provider.
 func swapBackend(t *testing.T, family string, b backend) {
 	t.Helper()

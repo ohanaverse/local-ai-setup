@@ -139,7 +139,7 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 // after a start removes the hook's route and adds its own.
 func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
 	ch := litellm.Change{Add: []config.Model{routeModel(cfg, t)}}
-	if SingleModel(t.ProviderID) {
+	if TenancyOf(t.ProviderID) == Exclusive {
 		ch.RemoveFamilies = []string{localmodels.Family(t.ProviderID)}
 	}
 	return ch
@@ -389,7 +389,7 @@ func routeRemove(ctx context.Context, cfg *config.Config, providerID string, mod
 	// (omlx, mtplx; mlx_lm_server has no stop backend): stopping its model
 	// takes the provider down, so the whole family's routes go. A backend
 	// that is neither would need a per-model removal here; none exists.
-	if !SingleModel(providerID) {
+	if TenancyOf(providerID) != Exclusive {
 		return false
 	}
 	ch := litellm.Change{RemoveFamilies: []string{localmodels.Family(providerID)}}

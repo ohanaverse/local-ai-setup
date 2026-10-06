@@ -18,12 +18,22 @@ import (
 
 type fakeBackend struct {
 	single   bool
+	ten      Tenancy // overrides single when set
 	calls    *[]string
 	stopErr  error
 	startErr error
 }
 
-func (f *fakeBackend) singleModel() bool { return f.single }
+func (f *fakeBackend) tenancy() Tenancy {
+	switch {
+	case f.ten != NoTenancy:
+		return f.ten
+	case f.single:
+		return Exclusive
+	}
+	return Shared
+}
+
 func (f *fakeBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {
 	*f.calls = append(*f.calls, "stop")
 	return f.stopErr
@@ -228,7 +238,7 @@ func TestTypedErrorMessages(t *testing.T) {
 // through the omlx backend with nothing in the package noticing. Comparing
 // against the other map could not see that: defaultEnv clones backendsByFamily,
 // so both sides would move together. The per-family loop below is the behavioral
-// half — a backend that is startable (singleModel true) while Occupant reports no
+// half — a backend that is startable (tenancy Exclusive) while Occupant reports no
 // occupant is exactly the state in which a running model gets replaced with no
 // confirmation, the trap a hand-maintained family list leaves for the next
 // backend.
@@ -248,8 +258,8 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 	for family, b := range backendsByFamily {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}
 		_, ok := Occupant(Target{ProviderID: family, ModelName: "wanted"}, snap)
-		if ok != b.singleModel() {
-			t.Errorf("family %s: Occupant reported an occupant=%v but singleModel()=%v", family, ok, b.singleModel())
+		if ok != (b.tenancy() == Exclusive) {
+			t.Errorf("family %s: Occupant reported an occupant=%v but tenancy()=%v", family, ok, b.tenancy())
 		}
 	}
 }
@@ -550,6 +560,20 @@ func TestProbeTrustedStatuses(t *testing.T) {
 		snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": c.status}}
 		if got := ProbeTrusted(snap, "ollama"); got != c.want {
 			t.Errorf("%s: ProbeTrusted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestTenancyOfEachFamily pins how wt treats each provider's server. The
+// start, stop and route rules all switch on it, so a wrong value either
+// replaces a model that could have stayed or leaves a stopped one routed.
+func TestTenancyOfEachFamily(t *testing.T) {
+	for id, want := range map[string]Tenancy{
+		"ollama": Shared, "mtplx": Exclusive, "omlx": Exclusive, "omlx-6bit": Exclusive,
+		"mlx_lm_server": NoTenancy, "llamacpp": NoTenancy,
+	} {
+		if got := TenancyOf(id); got != want {
+			t.Errorf("TenancyOf(%q) = %v, want %v", id, got, want)
 		}
 	}
 }

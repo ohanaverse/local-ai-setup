@@ -15,7 +15,7 @@ import (
 // port; only one model is treated as the occupant.
 type omlxBackend struct{}
 
-func (omlxBackend) singleModel() bool { return true }
+func (omlxBackend) tenancy() Tenancy { return Exclusive }
 
 func (omlxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {
 	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")

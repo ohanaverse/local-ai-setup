@@ -124,7 +124,7 @@ func TestOllamaDaemonDown(t *testing.T) {
 // TestOllamaIsMultiTenant verifies ollama declares itself not single-model and
 // its stop is a no-op, so replacement logic never tries to stop the daemon.
 func TestOllamaIsMultiTenant(t *testing.T) {
-	if (ollamaBackend{}).singleModel() {
+	if (ollamaBackend{}).tenancy() != Shared {
 		t.Error("ollama must not be single-model")
 	}
 	if err := (ollamaBackend{}).stop(context.Background(), testEnv(), &config.Config{}); err != nil {
@@ -239,7 +239,7 @@ func TestDefaultEnvRegistersBackends(t *testing.T) {
 	if e.backends["ollama"] == nil || e.backends["omlx"] == nil {
 		t.Fatalf("backends = %v", e.backends)
 	}
-	if e.backends["ollama"].singleModel() || !e.backends["omlx"].singleModel() {
+	if e.backends["ollama"].tenancy() != Shared || e.backends["omlx"].tenancy() != Exclusive {
 		t.Error("ollama must be multi-tenant and omlx single-model")
 	}
 }

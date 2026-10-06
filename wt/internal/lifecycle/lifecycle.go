@@ -105,9 +105,8 @@ func (e *UnsupportedError) Error() string {
 
 // backend is one provider family's lifecycle.
 type backend interface {
-	// singleModel reports whether the provider serves one model at a time
-	// (starting another replaces it).
-	singleModel() bool
+	// tenancy reports how the provider's server holds models.
+	tenancy() Tenancy
 	// stop stops the provider's current occupant and waits for it to release its port.
 	stop(ctx context.Context, e *env, cfg *config.Config) error
 	// stopModel stops the one named model (provider-side name). Multi-tenant
@@ -179,7 +178,7 @@ var backendsByFamily = map[string]backend{
 // caller acting on that false would replace a model it never saw.
 func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 	family := localmodels.Family(t.ProviderID)
-	if b := backendsByFamily[family]; b == nil || !b.singleModel() {
+	if b := backendsByFamily[family]; b == nil || b.tenancy() != Exclusive {
 		return localmodels.Entry{}, false
 	}
 	if !ProbeTrusted(snap, family) {
@@ -204,7 +203,7 @@ func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 // unknown reports that even the re-probe could not tell; the caller must then
 // require AllowReplace.
 func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family string, t Target, snap localmodels.Snapshot) (occ localmodels.Entry, has, unknown bool) {
-	if b := e.backends[family]; b == nil || !b.singleModel() {
+	if b := e.backends[family]; b == nil || b.tenancy() != Exclusive {
 		return localmodels.Entry{}, false, false
 	}
 	if occ, ok := Occupant(t, snap); ok {
@@ -361,14 +360,3 @@ func Startable(providerID string) bool {
 // implements both start and stop, so this is Startable under its stop-side
 // name.
 func CanStop(providerID string) bool { return Startable(providerID) }
-
-// SingleModel reports whether wt treats providerID's family as serving one
-// model per process, so stopping any of its models stops the whole provider
-// (and every sibling it has loaded). For mtplx that is literally true. omlx is
-// really a pool that can hold several models; wt still starts into it by
-// replacing the occupant and stops it by stopping the service, and reads its
-// running models from what is loaded, not from what it lists (#201).
-func SingleModel(providerID string) bool {
-	b := backendsByFamily[localmodels.Family(providerID)]
-	return b != nil && b.singleModel()
-}
