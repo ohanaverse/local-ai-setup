@@ -59,6 +59,8 @@ func TestMain(m *testing.M) {
 		return errors.New("stopProvider not stubbed in this test")
 	}
 	stopPickerAll = func(*config.Config) bool { return false }
+	// No test may read the developer's refcount file for session counts.
+	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	confirmStop = func(string) (bool, error) { return false, nil }
 	code := m.Run()
 	rmConfigHome()

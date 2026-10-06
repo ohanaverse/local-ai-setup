@@ -1,0 +1,9 @@
+{
+  "_comment": "Shared fixture for cross-language contract tests of `wt start <id> --json`. Read by wt/cmd/wt/start_json_test.go (Go) and modelman/tests/contracts/ (Python, added with modelman's omlx delegation). A schema change on either side fails both CI jobs in the same PR.",
+  "plan_running": {"id": "omlx/B", "status": "running", "would_unload": []},
+  "plan_fits": {"id": "omlx/B", "status": "fits", "would_unload": []},
+  "plan_would_unload": {"id": "omlx/B", "status": "would_unload", "would_unload": [{"id": "omlx/A", "sessions": 1}]},
+  "plan_unknown": {"id": "omlx/B", "status": "unknown", "would_unload": []},
+  "started": {"id": "omlx/B", "status": "started", "unloaded": ["omlx/A"]},
+  "already_running": {"id": "omlx/B", "status": "already_running", "unloaded": []}
+}

@@ -224,6 +224,7 @@ func stopImpact(targets []survey.Candidate) (sessions int, users []string) {
 }
 
 func startCmd(a *app) *cobra.Command {
+	var asJSON, plan bool
 	cmd := &cobra.Command{
 		Use:   "start [model]",
 		Short: "Start a local model",
@@ -232,10 +233,14 @@ func startCmd(a *app) *cobra.Command {
 			"registered or detected (requires a TTY).\n\n" +
 			"A model that is already running is left running; its LiteLLM route is\n" +
 			"written if it is missing.\n\n" +
-			"If the provider's single slot is occupied, asks before replacing the running\n" +
-			"model; --replace skips the question.",
+			"On a provider that serves one model (mtplx), starting another replaces it.\n" +
+			"On omlx a model loads beside the ones already loaded; when it does not fit,\n" +
+			"omlx unloads the least recently used. wt asks before either; --replace skips\n" +
+			"the question.",
 		Example: "  wt start ollama/qwen3.8:27b-mlx\n  wt start",
 		Args:    cobra.MaximumNArgs(1),
+		// A refused or failed JSON start is not a usage mistake.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
 				return configError(a.cfgErr)
@@ -245,9 +250,17 @@ func startCmd(a *app) *cobra.Command {
 				id = args[0]
 			}
 			replace, _ := cmd.Flags().GetBool("replace")
+			if plan && !asJSON {
+				return errors.New("--plan needs --json")
+			}
+			if asJSON {
+				return runStartJSON(cmd.OutOrStdout(), a.cfg, id, plan, replace)
+			}
 			return runStart(cmd.OutOrStdout(), a.cfg, a.theme, id, replace)
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output; never prompts")
+	cmd.Flags().BoolVar(&plan, "plan", false, "with --json: report what a start would unload, and change nothing")
 	return cmd
 }
 
