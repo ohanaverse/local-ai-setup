@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -429,5 +431,88 @@ func TestStartRunningModelRepairsRoute(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "already running") {
 		t.Fatalf("out = %q, want the already-running line", out.String())
+	}
+}
+
+// omlxServer is a keyed omlx with two models in its pool and B loaded: /health
+// gives the counts to anyone, /v1/models/status says which only to the key.
+func omlxServer(t *testing.T, key string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"engine_pool":{"model_count":2,"loaded_count":1}}`))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"A"},{"id":"B"}]}`))
+		case "/v1/models/status":
+			if r.Header.Get("Authorization") != "Bearer "+key {
+				http.Error(w, `{"detail":"Invalid API key"}`, http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"models":[{"id":"A","loaded":false},{"id":"B","loaded":true}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func omlxServedCfg(origin, secretRef string) *config.Config {
+	return &config.Config{Providers: []config.Provider{{
+		ID: "omlx", Location: config.LocationLocal,
+		Auth: config.AuthConfig{Type: "api_key", SecretRef: secretRef, BaseURL: origin + "/v1"},
+	}}}
+}
+
+// TestServedReportsWhatAKeyedOmlxHasLoaded pins the reason `wt served`
+// exists: a partly loaded omlx pool names the loaded model only to a caller
+// holding the server's key, and wt is the one that resolves the registry's
+// secret_ref. modelman asks here when its keyless probe is refused.
+func TestServedReportsWhatAKeyedOmlxHasLoaded(t *testing.T) {
+	srv := omlxServer(t, "sk-omlx")
+	cfg := omlxServedCfg(srv.URL, "sk-omlx")
+
+	var out bytes.Buffer
+	if err := runServed(&out, cfg, srv.Client(), "omlx", true); err != nil {
+		t.Fatalf("runServed --json: %v", err)
+	}
+	if got, want := out.String(), `{"provider":"omlx","served":["B"]}`+"\n"; got != want {
+		t.Errorf("json = %q, want %q", got, want)
+	}
+
+	out.Reset()
+	if err := runServed(&out, cfg, srv.Client(), "omlx", false); err != nil {
+		t.Fatalf("runServed: %v", err)
+	}
+	if got := out.String(); got != "B\n" {
+		t.Errorf("plain = %q, want %q", got, "B\n")
+	}
+}
+
+// TestServedFailsRatherThanAnswerNothing: without the key the server will not
+// say which model is loaded, and that must be an error — an empty list with
+// exit 0 would read as "nothing is serving" and clear the flag of a model the
+// server still has loaded.
+func TestServedFailsRatherThanAnswerNothing(t *testing.T) {
+	srv := omlxServer(t, "sk-omlx")
+
+	var out bytes.Buffer
+	err := runServed(&out, omlxServedCfg(srv.URL, ""), srv.Client(), "omlx", true)
+	if err == nil || !strings.Contains(err.Error(), "omlx gave no usable answer") {
+		t.Fatalf("err = %v, want a no-usable-answer error", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("printed %q on a failed probe, want nothing", out.String())
+	}
+}
+
+// TestServedRefusesOllama: ollama has no "serving now" — a pulled model loads
+// on request — so it is refused by name rather than answered with its pulls.
+func TestServedRefusesOllama(t *testing.T) {
+	var out bytes.Buffer
+	err := runServed(&out, &config.Config{}, http.DefaultClient, "ollama", false)
+	if err == nil || !strings.Contains(err.Error(), `unknown provider "ollama"`) {
+		t.Fatalf("err = %v, want an unknown-provider error", err)
 	}
 }

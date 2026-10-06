@@ -1,15 +1,19 @@
 // wt start / wt stop — direct control of local models without launching an
 // agent. Start reuses the non-TUI start driver (startModel); stop reuses the
-// survey package's stop loop and picker.
+// survey package's stop loop and picker. wt served reports what a provider's
+// server is serving, the probe the other two act on.
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -223,6 +227,67 @@ func startCmd(a *app) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// servedProbeTimeout bounds each request `wt served` makes — the lifecycle
+// engine's probe timeout, since it asks the same question.
+const servedProbeTimeout = 5 * time.Second
+
+// servedFamilies are the providers `wt served` answers for: the ones whose
+// server says what it is serving. Ollama has no such answer — a pulled model
+// loads on request — so it is left out rather than answered with its pulls.
+var servedFamilies = []string{"mlx_lm_server", "mtplx", "omlx"}
+
+func servedCmd(a *app) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "served <provider>",
+		Short: "List the models a local provider's server is serving now",
+		Long: "List the model ids a local provider's server (" + strings.Join(servedFamilies, ", ") + ") is serving\n" +
+			"now, one per line, as the server names them. This is the probe `wt start`,\n" +
+			"`wt stop` and the pickers act on. For omlx it is the models loaded or loading,\n" +
+			"not every model it lists; when the server has an API key, wt sends the one\n" +
+			"the registry's omlx provider names (auth.secret_ref).\n\n" +
+			"Nothing listed and exit 0 means the server answered and serves nothing.\n" +
+			"Exit 1 means it gave no usable answer — not running, or it would not say.",
+		Example: "  wt served omlx\n  wt served mtplx --json",
+		Args:    cobra.ExactArgs(1),
+		// A probe that gets no answer is the expected failure here, not a
+		// usage mistake.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// The load error only: this reads the registry's provider rows
+			// and writes nothing, so a validation gap elsewhere in the
+			// config must not make the probe unavailable.
+			if a.loadErr != nil {
+				return configError(a.loadErr)
+			}
+			client := &http.Client{Timeout: servedProbeTimeout}
+			return runServed(cmd.OutOrStdout(), a.cfg, client, args[0], asJSON)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
+	return cmd
+}
+
+func runServed(out io.Writer, cfg *config.Config, client *http.Client, family string, asJSON bool) error {
+	if !slices.Contains(servedFamilies, family) {
+		return fmt.Errorf("unknown provider %q: wt served answers for %s", family, strings.Join(servedFamilies, ", "))
+	}
+	ids, err := localmodels.ServedIDs(cfg, client, family)
+	if err != nil {
+		return fmt.Errorf("%s gave no usable answer: %w", family, err)
+	}
+	if asJSON {
+		if ids == nil {
+			ids = []string{}
+		}
+		return json.NewEncoder(out).Encode(map[string]any{"provider": family, "served": ids})
+	}
+	for _, id := range ids {
+		fmt.Fprintln(out, id)
+	}
+	return nil
 }
 
 // localRows builds catalog rows for every local model the live inventory

@@ -290,6 +290,7 @@ wt --cwd -A codex                    # current directory
 claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files
 wt start [<id>] / wt stop [<id>|<provider>]   # local-model lifecycle (routes follow automatically)
+wt served <provider> [--json]        # ids an omlx/mtplx/mlx_lm_server server is serving now
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt profile show -A <agent> -M <id>   # dry-run profile resolution
 wt stats                             # survey report
