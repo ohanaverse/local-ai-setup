@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
+from .providers._paths import keys_overlap, overlap_keys
 from .providers.mtplx import MTPLX_V1_BASE
 from .providers.registry import ProviderRegistry
 from .time_pricing import TimePrice, parse_time_prices, time_price_to_dict
@@ -640,6 +641,10 @@ def find_shared_artifact_owner(
     # on another row is asked through ITS OWN row's provider — its own
     # model_dir — never through the deleting row's: two rows pointed at
     # different directories share nothing (#224).
+    #
+    # What is removed is resolved once, not once per entry: every key costs a
+    # realpath and a stat, for the directory and for each of its parents.
+    mine_keys = overlap_keys(mine)
     others: dict[str, Any] = {variant["provider"]: artifact_paths}
     for m in registry.models:
         if m.id == variant["id"]:
@@ -650,68 +655,12 @@ def find_shared_artifact_owner(
         if their_paths is None:
             continue
         try:
-            if _paths_overlap(mine, their_paths(model_entry_to_variant(m))):
-                return m
+            theirs = overlap_keys(their_paths(model_entry_to_variant(m)))
         except Exception:  # noqa: BLE001
             continue
+        if keys_overlap(mine_keys, theirs):
+            return m
     return None
-
-
-def _paths_overlap(removable: Any, theirs: Any) -> bool:
-    """Whether removing the directories in `removable` would take anything in
-    `theirs` with it: one of theirs is the same directory as one removed,
-    inside one (a quantize output written beside its source), or contains
-    one (#241). The last is the cautious reading — an entry naming a parent
-    loses part of what it points at, and a refused delete can be undone where
-    an rmtree cannot.
-
-    Nesting is tested on the same keys as equality (_canonical_paths) for a
-    path and each of its parents, never on string prefixes: `models/M2` is
-    not inside `models/M`, and on a case-insensitive volume `models/m/out` is
-    inside `models/M`."""
-    removable_keys = _canonical_paths(removable)
-    their_keys = _canonical_paths(theirs)
-    return bool(
-        removable_keys & their_keys
-        or removable_keys & _canonical_paths(_parents(theirs))
-        or their_keys & _canonical_paths(_parents(removable))
-    )
-
-
-def _parents(paths: Any) -> list[str]:
-    """Every directory above each of `paths`, resolved. Non-strings (a test
-    double's stand-in for a path) have none."""
-    found: list[str] = []
-    for p in paths:
-        if isinstance(p, str):
-            real = Path(os.path.realpath(os.path.expanduser(p)))
-            found.extend(str(parent) for parent in real.parents)
-    return found
-
-
-def _canonical_paths(paths: Any) -> frozenset[Any]:
-    """Keys for `paths` such that two spellings of one directory share a key
-    (#235): each path resolved — `~` expanded, relative and `..` segments and
-    a trailing slash collapsed, symlinks followed — and, for one that exists,
-    its (device, inode) as well. A `local_path` is stored as typed, and the
-    providers hand it over that way.
-
-    The (device, inode) key is what catches a spelling realpath leaves alone:
-    realpath keeps the letter case a path was typed in, and on a
-    case-insensitive volume (the macOS default) `models/Qwen` and
-    `models/qwen` are one directory. Anything that is not a string is passed
-    through untouched."""
-    keys: set[Any] = set()
-    for p in paths:
-        if not isinstance(p, str):
-            keys.add(p)
-            continue
-        real = os.path.realpath(os.path.expanduser(p))
-        keys.add(real)
-        with contextlib.suppress(OSError):
-            st = os.stat(real)
-            keys.add((st.st_dev, st.st_ino))
-    return frozenset(keys)
 
 
 def _row_artifact_paths(registry: Registry, provider_id: str) -> Any:

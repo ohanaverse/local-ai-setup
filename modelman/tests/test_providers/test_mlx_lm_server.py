@@ -763,3 +763,49 @@ def test_delete_keeps_a_download_its_own_local_path_names(provider, tmp_path):
     assert provider.removable_paths(variant) == frozenset()
     provider.delete(variant)
     assert (models / "T" / "weights.safetensors").exists()
+
+
+def test_delete_keeps_a_download_its_own_local_path_is_inside(provider, tmp_path):
+    # The same, one level down: a quantize output written inside the repo's
+    # download. Removing models/T would take the entry's own local_path with
+    # it, and the guard, which sees nesting between two entries, never looks
+    # at an entry's own paths.
+    from modelman.registry import model_entry_to_variant
+
+    models = tmp_path / "models"
+    _make_dir(models / "T" / "dwq-out", ("weights.safetensors", b"x"))
+    variant = model_entry_to_variant(
+        _pairing_entry(
+            "mlx_lm_server/a",
+            repo="o/T",
+            local_path=str(models / "T" / "dwq-out"),
+            draft_local_path=str(tmp_path / "user-draft"),
+        )
+    )
+    assert provider.removable_paths(variant) == frozenset()
+    provider.delete(variant)
+    assert (models / "T" / "dwq-out" / "weights.safetensors").exists()
+
+
+def test_delete_keeps_a_download_the_other_sides_local_path_names(provider, tmp_path):
+    # ...and across sides: the target's repo download is the directory the
+    # draft's local_path names. It is the user's to keep whichever side says
+    # so; the draft's own download, which no local_path touches, still goes.
+    from modelman.registry import model_entry_to_variant
+
+    models = tmp_path / "models"
+    _make_dir(models / "T", ("weights.safetensors", b"x"))
+    _make_dir(models / "D", ("weights.safetensors", b"x"))
+    variant = model_entry_to_variant(
+        _pairing_entry(
+            "mlx_lm_server/a",
+            repo="o/T",
+            local_path=str(tmp_path / "user-target"),
+            draft_repo="o/D",
+            draft_local_path=str(models / "T"),
+        )
+    )
+    assert provider.removable_paths(variant) == frozenset({str(models / "D")})
+    provider.delete(variant)
+    assert (models / "T" / "weights.safetensors").exists()
+    assert not (models / "D").exists()

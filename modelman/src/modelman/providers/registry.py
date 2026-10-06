@@ -22,8 +22,9 @@ class ProviderRegistry:
         registered under `name` itself (a registered class always wins).
 
         Two registry rows that resolve to the same name are the same server:
-        callers that must treat them as one (the shared-artifact guard, sync's
-        model-directory reconcile) compare this, never the row ids."""
+        callers that must treat them as one (sync's model-directory reconcile)
+        compare this, never the row ids. The shared-artifact guard used to; it
+        now asks every row, sibling or not (#241)."""
         if name in cls._providers:
             return name
         return _ALIASES.get(name, name)
