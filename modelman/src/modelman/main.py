@@ -37,11 +37,11 @@ from .registry import (
     Registry,
     RegistryNotFoundError,
     _default_registry_path,
-    _registry_read_path,
     load_registry,
     model_entry_to_variant,
     provider_config,
     save_registry,
+    unreadable_registry_message,
 )
 from .state import _default_state_path, load_state, locked_state
 from .sync import SyncError, _ensure_provider_entries
@@ -342,6 +342,11 @@ def run_tui() -> None:
     before = _file_digest(_default_registry_path())
     app = ModelmanApp()
     queued = app.run()
+    registry_error = getattr(app, "registry_error", None)
+    if isinstance(registry_error, str):
+        # The app would not open a registry it could not read (#240).
+        typer.echo(f"error: {registry_error}", err=True)
+        raise typer.Exit(1)
     if queued is None:
         # Add/edit write registry.toml immediately and queue nothing; route
         # what they changed (#179). run_queued_ops syncs on its own. A Discard
@@ -351,6 +356,12 @@ def run_tui() -> None:
             app, "route_sync_owed", False
         ):
             _sync_routes_and_warn()
+        # A crashed app returns None as well. Textual has printed the
+        # traceback and set a non-zero return code; carry it out rather than
+        # report a crash as success.
+        return_code = getattr(app, "return_code", None)
+        if isinstance(return_code, int) and return_code:
+            raise typer.Exit(return_code)
         return
     if run_queued_ops(queued):
         raise typer.Exit(1)
@@ -416,15 +427,8 @@ def migrate(
     except RegistryNotFoundError:
         registry = Registry()
     except Exception as exc:  # noqa: BLE001
-        # The file that was read, which is the pre-XDG one when
-        # XDG_CONFIG_HOME is set and holds no registry yet.
-        try:
-            unreadable = _registry_read_path()
-        except RegistryNotFoundError:
-            unreadable = _default_registry_path()
         typer.echo(
-            f"error: cannot read {unreadable}: {exc} — "
-            "fix or move it aside, then run `modelman migrate` again",
+            f"error: {unreadable_registry_message(exc)}, then run `modelman migrate` again",
             err=True,
         )
         raise typer.Exit(1) from exc

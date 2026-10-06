@@ -10,10 +10,11 @@ from textual.app import App
 from .queue import QueuedOps
 from .registry import (
     Registry,
-    RegistryError,
+    RegistryNotFoundError,
     _default_registry_path,
     load_registry,
     sync_agent_providers,
+    unreadable_registry_message,
 )
 from .screens.forms import ConfirmForceQuitDialog
 from .screens.models import ModelScreen
@@ -35,6 +36,9 @@ class ModelmanApp(App[QueuedOps | None]):
         # then looks untouched, but a model started in between was routed
         # under an id the registry no longer has (#194).
         self.route_sync_owed = False
+        # Set by on_mount when registry.toml is there but cannot be read: the
+        # app exits without opening it, and run_tui reports this (#240).
+        self.registry_error: str | None = None
         # Load user preferences (theme, etc.) before any widget
         # mounts so the first frame uses the right colors. A missing
         # file returns defaults; a corrupted file falls back to
@@ -49,10 +53,19 @@ class ModelmanApp(App[QueuedOps | None]):
     def on_mount(self) -> None:
         try:
             registry = load_registry()
-        except RegistryError:
+        except RegistryNotFoundError:
             # No registry.toml yet (fresh install): an empty Registry still
             # gives the user an Add dialog to create the first model.
             registry = Registry()
+        except Exception as exc:  # noqa: BLE001
+            # A registry that is there and cannot be read is not an empty one
+            # (#240): opened as empty, the first save wrote that over every
+            # entry in the file. Stop with nothing mounted that could save.
+            # Every failure, not a list of them — a hand-edited file fails in
+            # the parser as readily with a TypeError as with a RegistryError.
+            self.registry_error = f"{unreadable_registry_message(exc)}, then run `modelman` again"
+            self.exit(return_code=1)
+            return
         sync_agent_providers(registry)
         self.push_screen(
             ModelScreen(

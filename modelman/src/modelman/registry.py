@@ -450,6 +450,21 @@ def _derive_native(registry: Registry) -> None:
         m.native = m.provider_id in native_ids
 
 
+def unreadable_registry_message(exc: BaseException) -> str:
+    """What to tell the user when load_registry() failed on a registry that
+    is there: the file that was read — the pre-XDG one when XDG_CONFIG_HOME
+    is set and holds no registry yet — and why. The caller adds what to run
+    again. Not for RegistryNotFoundError, which is no failure to read."""
+    try:
+        unreadable = _registry_read_path()
+    except (RegistryNotFoundError, OSError):
+        # OSError: looking for the file is what failed (a directory that
+        # cannot be searched), and it fails here as it did in load_registry.
+        # Raising it again would turn the caller's report into a traceback.
+        unreadable = _default_registry_path()
+    return f"cannot read {unreadable}: {exc} — fix or move it aside"
+
+
 def _registry_read_path(path: Path | None = None) -> Path:
     """The file load_registry reads — not always _default_registry_path():
     see the pre-XDG fallback below. A caller reporting on a registry it could

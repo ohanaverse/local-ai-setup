@@ -11,7 +11,7 @@ from modelman.litellm import (
     default_litellm_config_path,
     load_litellm_config,
 )
-from modelman.registry import RegistryError, load_registry
+from modelman.registry import RegistryNotFoundError, load_registry, unreadable_registry_message
 from modelman.usage.db import PostgresSpendStore, database_url
 from modelman.usage.errors import UsageError
 from modelman.usage.reconcile import reconcile
@@ -51,8 +51,12 @@ def _run_report(
 
     try:
         registry = load_registry()
-    except RegistryError as exc:
+    except RegistryNotFoundError as exc:
         raise UsageError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Every other failure: a hand-edited file fails in the parser as
+        # readily with a TypeError or a TOML syntax error as a RegistryError.
+        raise UsageError(unreadable_registry_message(exc)) from exc
 
     config_path = default_litellm_config_path()
     env_url = os.environ.get("MODELMAN_LITELLM_DATABASE_URL")

@@ -2137,3 +2137,67 @@ async def test_force_quit_dialog_warns_about_pending_changes(tmp_path, monkeypat
             await pilot.pause()
             if app.screen.__class__.__name__ != "ConfirmForceQuitDialog":
                 break
+
+
+_ONE_BAD_ENTRY = """\
+providers = [{ id = "ollama", name = "Ollama", auth = { type = "none" } }]
+
+[[models]]
+id = "ollama/good"
+family = "f"
+provider_id = "ollama"
+model_name = "good"
+
+[[models]]
+id = "ollama/no-family"
+provider_id = "ollama"
+model_name = "bad"
+"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [_ONE_BAD_ENTRY, "[[models]\nnot toml", "models = 3\n"],
+    ids=["malformed-entry", "toml-syntax", "wrong-shape"],
+)
+async def test_app_refuses_to_open_an_unreadable_registry(tmp_path, monkeypatch, content):
+    """#240: only a missing registry is an empty one. A file that is there
+    and cannot be read opened as an empty model list with no message, and the
+    first save wrote that over every provider, family and model in it. The
+    app must stop instead — saying which file and why — with nothing mounted
+    that could save."""
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(content)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.models import ModelScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not isinstance(app.screen, ModelScreen)
+
+    assert app.return_code == 1
+    assert str(registry_path) in app.registry_error
+    assert "fix or move it aside" in app.registry_error
+    assert registry_path.read_text() == content
+
+
+@pytest.mark.asyncio
+async def test_app_opens_empty_when_there_is_no_registry(tmp_path, monkeypatch):
+    """The fresh install the empty-registry fallback is for still works."""
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "registry.toml"))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.models import ModelScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.registry.models == []
+    assert app.registry_error is None

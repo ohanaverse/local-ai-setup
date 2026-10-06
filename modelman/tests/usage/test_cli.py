@@ -88,3 +88,18 @@ def test_usage_report_runs_with_env_var_only(monkeypatch, tmp_path: Path) -> Non
     assert result.exit_code == 0, result.output
     assert "Usage Report" in result.output
     assert "ollama/a" in result.output
+
+
+def test_usage_reports_an_unreadable_registry_instead_of_a_traceback(monkeypatch, tmp_path: Path):
+    # #240's neighbour: only RegistryError was caught, so valid TOML of the
+    # wrong shape (or a syntax error) ended the report in a traceback.
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text("models = 3\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_WT_DIR", str(tmp_path / "wt"))
+
+    result = runner.invoke(app, ["usage", "report", "--days", "1"])
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert f"error: cannot read {registry_path}" in result.output
