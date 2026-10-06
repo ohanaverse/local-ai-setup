@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -513,6 +514,57 @@ func TestServedRefusesOllama(t *testing.T) {
 	var out bytes.Buffer
 	err := runServed(&out, &config.Config{}, http.DefaultClient, "ollama", false)
 	if err == nil || !strings.Contains(err.Error(), `unknown provider "ollama"`) {
+		t.Fatalf("err = %v, want an unknown-provider error", err)
+	}
+}
+
+// TestWarmSendsTheRegistryKeyToAKeyedOmlx pins `wt warm`, the step modelman
+// asks for when omlx refuses its keyless warmup (#256): the chat request
+// carries the key the registry's omlx provider names, and names the model by
+// its directory basename.
+func TestWarmSendsTheRegistryKeyToAKeyedOmlx(t *testing.T) {
+	var gotAuth, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sk-omlx" {
+			http.Error(w, `{"error":{"message":"API key required"}}`, http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			gotAuth, gotBody = r.Header.Get("Authorization"), string(b)
+			_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	var out bytes.Buffer
+	if err := runWarm(context.Background(), &out, omlxServedCfg(srv.URL, "sk-omlx"), "omlx", "org/Qwen-4bit"); err != nil {
+		t.Fatalf("runWarm: %v", err)
+	}
+	if gotAuth != "Bearer sk-omlx" || !strings.Contains(gotBody, `"model":"Qwen-4bit"`) {
+		t.Errorf("auth = %q body = %s", gotAuth, gotBody)
+	}
+	if got := out.String(); got != "org/Qwen-4bit is loaded on omlx\n" {
+		t.Errorf("out = %q", got)
+	}
+
+	// Without the key the refusal is the error, with the setting to change.
+	out.Reset()
+	err := runWarm(context.Background(), &out, omlxServedCfg(srv.URL, ""), "omlx", "Qwen-4bit")
+	if err == nil || !strings.Contains(err.Error(), "auth.secret_ref") {
+		t.Fatalf("err = %v, want one naming auth.secret_ref", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("printed %q on a refused warm, want nothing", out.String())
+	}
+}
+
+// TestWarmRefusesOtherProviders: the other local servers take no key, so
+// there is nothing wt can add to their caller's own warmup.
+func TestWarmRefusesOtherProviders(t *testing.T) {
+	var out bytes.Buffer
+	err := runWarm(context.Background(), &out, &config.Config{}, "mtplx", "m")
+	if err == nil || !strings.Contains(err.Error(), `unknown provider "mtplx"`) {
 		t.Fatalf("err = %v, want an unknown-provider error", err)
 	}
 }

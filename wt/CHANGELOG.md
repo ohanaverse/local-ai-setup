@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed
+
+- `wt start` can start a model on an omlx that has an API key (#256). The
+  warmup request now carries the key the registry's omlx provider names
+  (`auth.secret_ref`), as the "what is loaded" probe already did; it used to
+  go keyless, be refused, and be retried for the whole ten-minute warmup
+  budget. A warmup the server refuses (401/403) now fails at once, for every
+  provider, with an error that says whether a key is missing or was refused.
+
+### Added
+
+- `wt warm <provider> <model>` loads a model into a running omlx server with
+  one keyed request — the warmup step of `wt start` by itself, with nothing
+  started, stopped or routed. `modelman start` asks it when omlx refuses its
+  keyless warmup.
+
 ### Changed
 
 - wt refuses to write LiteLLM routes when the registry is redirected and

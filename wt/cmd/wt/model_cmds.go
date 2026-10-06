@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -287,6 +288,46 @@ func runServed(out io.Writer, cfg *config.Config, client *http.Client, family st
 	for _, id := range ids {
 		fmt.Fprintln(out, id)
 	}
+	return nil
+}
+
+func warmCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "warm <provider> <model>",
+		Short: "Load a model into a running omlx server",
+		Long: "Load a model into an omlx server that is already running, by sending it one\n" +
+			"short request. <model> is the name omlx serves it under, or a repo id whose\n" +
+			"last segment is that name. When the server has an API key, wt sends the one\n" +
+			"the registry's omlx provider names (auth.secret_ref).\n\n" +
+			"Nothing is started, stopped or routed: this is the warmup step of `wt start`\n" +
+			"by itself, which `modelman start` asks for when omlx refuses its keyless\n" +
+			"request. To start a model, use `wt start`.",
+		Example: "  wt warm omlx Qwen3.8-27B-4bit",
+		Args:    cobra.ExactArgs(2),
+		// A server that refuses or never loads the model is the expected
+		// failure here, not a usage mistake.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// The load error only, as for `wt served`: this reads the
+			// registry's provider rows and writes nothing.
+			if a.loadErr != nil {
+				return configError(a.loadErr)
+			}
+			ctx, cancel := startSignalCtx()
+			defer cancel()
+			return runWarm(ctx, cmd.OutOrStdout(), a.cfg, args[0], args[1])
+		},
+	}
+}
+
+func runWarm(ctx context.Context, out io.Writer, cfg *config.Config, provider, model string) error {
+	if localmodels.Family(provider) != "omlx" {
+		return fmt.Errorf("unknown provider %q: wt warm loads models into omlx only", provider)
+	}
+	if err := lifecycle.Warm(ctx, cfg, provider, model); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s is loaded on %s\n", model, provider)
 	return nil
 }
 

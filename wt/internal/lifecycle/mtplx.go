@@ -66,7 +66,7 @@ func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Tar
 		return err
 	}
 	report(StageWarming)
-	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, models, 120*time.Second)
+	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, models, "", 120*time.Second)
 }
 
 func (mtplxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {

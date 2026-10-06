@@ -167,7 +167,7 @@ func TestWarmupSendsOneTokenChatAndWaitsForCompletion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := e.warmup(context.Background(), srv.URL+"/v1/chat/completions", "m1", srv.URL+"/health", time.Second); err != nil {
+	if err := e.warmup(context.Background(), srv.URL+"/v1/chat/completions", "m1", srv.URL+"/health", "", time.Second); err != nil {
 		t.Fatalf("warmup: %v", err)
 	}
 	if lastBody["model"] != "m1" || lastBody["max_tokens"] != float64(1) || lastBody["stream"] != false {
@@ -179,7 +179,7 @@ func TestWarmupSendsOneTokenChatAndWaitsForCompletion(t *testing.T) {
 
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"error":"no"}`)) }))
 	defer bad.Close()
-	if err := e.warmup(context.Background(), bad.URL, "m1", bad.URL, 80*time.Millisecond); err == nil || !strings.Contains(err.Error(), "warm") {
+	if err := e.warmup(context.Background(), bad.URL, "m1", bad.URL, "", 80*time.Millisecond); err == nil || !strings.Contains(err.Error(), "warm") {
 		t.Errorf("never-completes err = %v, want warm-up failure", err)
 	}
 }
@@ -209,7 +209,7 @@ func TestWarmupRejectsNon2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := e.warmup(context.Background(), srv.URL, "m", srv.URL, e.warmupTimeout); err == nil {
+	if err := e.warmup(context.Background(), srv.URL, "m", srv.URL, "", e.warmupTimeout); err == nil {
 		t.Error("warmup must fail on a non-2xx response carrying a chat.completion body")
 	}
 	// The test env's 300ms window with a 5ms poll interval gives ~60 attempts,
@@ -240,7 +240,7 @@ func TestWarmupTimeoutErrorIncludesLastFailureReason(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := e.warmup(context.Background(), srv.URL+"/v1/chat/completions", "m", srv.URL+"/health", e.warmupTimeout)
+	err := e.warmup(context.Background(), srv.URL+"/v1/chat/completions", "m", srv.URL+"/health", "", e.warmupTimeout)
 	if err == nil {
 		t.Fatal("warmup: want an error, got nil")
 	}
@@ -264,7 +264,7 @@ func TestTryChatReasonIsTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ok, reason := e.tryChat(context.Background(), srv.URL, []byte(`{}`))
+	ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`))
 	if ok {
 		t.Fatal("tryChat: want ok=false for a 500 response")
 	}
@@ -314,7 +314,7 @@ func TestTruncateForErrorCollapsesWhitespace(t *testing.T) {
 // failure to whatever tryChat last returned in an earlier iteration.
 func TestWarmupHealthCheckNeverRespondingReasonIsDistinct(t *testing.T) {
 	e := testEnv()
-	err := e.warmup(context.Background(), "http://127.0.0.1:1/chat", "m", "http://127.0.0.1:1/health", e.warmupTimeout)
+	err := e.warmup(context.Background(), "http://127.0.0.1:1/chat", "m", "http://127.0.0.1:1/health", "", e.warmupTimeout)
 	if err == nil {
 		t.Fatal("warmup: want an error when the health endpoint never responds")
 	}
@@ -358,7 +358,7 @@ func TestWarmupStaleChatReasonReplacedByHealthReason(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	err := e.warmup(context.Background(), srv.URL+"/chat", "m", srv.URL+"/health", e.warmupTimeout)
+	err := e.warmup(context.Background(), srv.URL+"/chat", "m", srv.URL+"/health", "", e.warmupTimeout)
 	if err == nil {
 		t.Fatal("warmup: want an error, got nil")
 	}

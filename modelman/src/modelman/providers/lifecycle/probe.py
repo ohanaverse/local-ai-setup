@@ -41,6 +41,16 @@ MODEL_LOAD_TIMEOUT = 300.0
 RESTORE_WAIT_TIMEOUT = 90.0
 
 
+# The statuses that say "this request needs a key it did not carry".
+_KEY_REFUSED = (401, 403)
+
+
+class WarmupRefusedError(LifecycleError):
+    """The server refused the warmup request for want of an API key (HTTP 401
+    or 403). Unlike every other warmup failure this one is final: polling
+    does not change the answer, so `warmup` raises it at once (#256)."""
+
+
 def _deadline_loop(timeout: float):
     """Yield once per attempt until `timeout` elapses, then stop — the
     `deadline = time.monotonic() + timeout; while time.monotonic() <
@@ -168,6 +178,14 @@ def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0
     for _ in _deadline_loop(timeout):
         try:
             urllib.request.urlopen(health_url, timeout=2.0)  # noqa: S310 — localhost probe
+        except urllib.error.HTTPError as exc:
+            # A server that wants a key for its liveness URL is up (an omlx
+            # with an API key answers 401 on /v1/models); the chat below
+            # finds out whether it wants one there too. Any other error
+            # status stays "not ready", as before.
+            if exc.code not in _KEY_REFUSED:
+                time.sleep(1.0)
+                continue
         except OSError:
             time.sleep(1.0)
             continue
@@ -189,6 +207,12 @@ def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0
             # not "simplify" this back to a literal `in` check.
             if re.search(r'"object"\s*:\s*"chat\.completion"', body):
                 return
+        except urllib.error.HTTPError as exc:
+            if exc.code in _KEY_REFUSED:
+                detail = " ".join(exc.read(300).decode(errors="replace").split())
+                raise WarmupRefusedError(
+                    f"{chat_url} refused the warmup for {model} (HTTP {exc.code}: {detail})"
+                ) from None
         except OSError:
             pass
         time.sleep(1.0)

@@ -24,15 +24,16 @@ import (
 func ServedIDs(cfg *config.Config, client *http.Client, family string) ([]string, error) {
 	origin, _ := FamilyOrigin(cfg, family)
 	if family == "omlx" {
-		return omlxLoaded(client, origin, familyAPIKey(cfg, family))
+		return omlxLoaded(client, origin, FamilyAPIKey(cfg, family))
 	}
 	return FetchModelIDsErr(client, origin+"/v1/models")
 }
 
-// familyAPIKey is the key the registry gives for a family's server: the first
+// FamilyAPIKey is the key the registry gives for a family's server: the first
 // provider row of the family whose auth.secret_ref resolves to something. ""
 // when there is none — the usual case, a local server that wants no key.
-func familyAPIKey(cfg *config.Config, family string) string {
+// Exported for internal/lifecycle, whose warmup sends it as the probe does.
+func FamilyAPIKey(cfg *config.Config, family string) string {
 	for _, id := range familyProviderIDs(family) {
 		p := cfg.ProviderByID(id)
 		if p == nil || p.Auth.SecretRef == "" {

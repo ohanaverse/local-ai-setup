@@ -229,3 +229,56 @@ def test_warmup_retries_while_health_url_unreachable():
     assert health_error.call_count >= 1
     for call in health_error.call_args_list:
         assert call.args[0] == "http://x/health"
+
+
+def _http_error(code: int, body: bytes = b'{"error":{"message":"API key required"}}'):
+    import io
+    import urllib.error
+
+    return urllib.error.HTTPError("http://x", code, "refused", {}, io.BytesIO(body))  # type: ignore[arg-type]
+
+
+def test_warmup_stops_at_once_when_the_server_wants_a_key():
+    """#256: an omlx with an API key answers 401 to the keyless liveness probe
+    and to the keyless chat. The 401 on the probe is a server that is up, and
+    the 401 on the chat is final — waiting does not change it — so warmup
+    raises WarmupRefusedError on the first chat instead of polling out its
+    whole (ten-minute) budget and reporting a timeout."""
+    from modelman.providers.lifecycle.probe import WarmupRefusedError
+
+    refused = MagicMock(side_effect=lambda *a, **k: (_ for _ in ()).throw(_http_error(401)))
+    with (
+        patch("modelman.providers.lifecycle.probe.urllib.request.urlopen", refused),
+        patch("modelman.providers.lifecycle.probe.time.sleep"),
+        pytest.raises(WarmupRefusedError, match="API key required"),
+    ):
+        warmup("http://x/chat", "org/repo", health_url="http://x/health", timeout=600.0)
+    # One liveness probe, one chat: no retry.
+    assert refused.call_count == 2
+
+
+def test_warmup_still_retries_other_http_errors():
+    """Only 401/403 are final. A 404 or 503 while a model loads is the
+    ordinary "not yet", retried until the deadline as before."""
+    calls = {"n": 0}
+
+    def urlopen(target, **kwargs):
+        calls["n"] += 1
+        if isinstance(target, str):  # the liveness probe
+            return MagicMock()
+        raise _http_error(503, b"loading")
+
+    with (
+        patch("modelman.providers.lifecycle.probe.urllib.request.urlopen", urlopen),
+        patch(
+            "modelman.providers.lifecycle.probe.time.monotonic",
+            side_effect=[0.0, 0.2, 0.4, 1000.0],
+        ),
+        patch("modelman.providers.lifecycle.probe.time.sleep"),
+        pytest.raises(LifecycleError, match="warm up") as excinfo,
+    ):
+        warmup("http://x/chat", "org/repo", health_url="http://x/health", timeout=1.0)
+    assert calls["n"] == 4  # two iterations, probe + chat each
+    from modelman.providers.lifecycle.probe import WarmupRefusedError
+
+    assert not isinstance(excinfo.value, WarmupRefusedError)

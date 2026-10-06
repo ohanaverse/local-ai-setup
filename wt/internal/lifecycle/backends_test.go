@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -239,5 +241,119 @@ func TestDefaultEnvRegistersBackends(t *testing.T) {
 	}
 	if e.backends["ollama"].singleModel() || !e.backends["omlx"].singleModel() {
 		t.Error("ollama must be multi-tenant and omlx single-model")
+	}
+}
+
+// keyedOmlx is an omlx started with --api-key: every /v1 request without the
+// key is refused 401, as omlx 0.7.0 does (#256). It counts chat requests.
+type keyedOmlx struct {
+	*httptest.Server
+	posts atomic.Int32
+}
+
+func newKeyedOmlx(t *testing.T, key string) *keyedOmlx {
+	t.Helper()
+	ko := &keyedOmlx{}
+	ko.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			ko.posts.Add(1)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			http.Error(w, `{"error":{"message":"API key required","type":"authentication_error"}}`, http.StatusUnauthorized)
+			return
+		}
+		chatHandler().ServeHTTP(w, r)
+	}))
+	t.Cleanup(ko.Close)
+	return ko
+}
+
+func keyedProvCfg(baseURL, secretRef string) *config.Config {
+	return &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "api_key", BaseURL: baseURL, SecretRef: secretRef}}}}
+}
+
+// TestOmlxStartSendsRegistryKey pins #256: an omlx with an API key refuses a
+// keyless chat completion, so the warmup must carry the key the registry's
+// omlx provider names (auth.secret_ref). The 401 on the liveness probe still
+// counts as "up", so no `omlx start` runs.
+func TestOmlxStartSendsRegistryKey(t *testing.T) {
+	srv := newKeyedOmlx(t, "sk-omlx")
+	t.Setenv("WT_TEST_OMLX_KEY", "sk-omlx")
+	e := testEnv()
+	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
+	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		t.Errorf("ran %s %v: the daemon is up", name, args)
+		return nil, nil
+	}
+	err := omlxBackend{}.start(context.Background(), e, keyedProvCfg(srv.URL, "WT_TEST_OMLX_KEY"), Target{ProviderID: "omlx", ModelName: "org/Qwen-4bit"}, func(Stage) {})
+	if err != nil {
+		t.Fatalf("start on a keyed omlx with the registry's key: %v", err)
+	}
+}
+
+// TestOmlxStartWithoutKeyFailsAtOnce: a refused key does not heal by waiting,
+// so the start must fail on the first 401 with an error that says what to
+// set, not poll the whole warmup budget (ten minutes in production) and
+// report a timeout.
+func TestOmlxStartWithoutKeyFailsAtOnce(t *testing.T) {
+	srv := newKeyedOmlx(t, "sk-omlx")
+	e := testEnv()
+	e.warmupTimeout = 30 * time.Second
+	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
+	began := time.Now()
+	err := omlxBackend{}.start(context.Background(), e, provCfg("omlx", srv.URL), Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, func(Stage) {})
+	var kr *KeyRefusedError
+	if !errors.As(err, &kr) {
+		t.Fatalf("err = %v, want *KeyRefusedError", err)
+	}
+	if kr.KeySent {
+		t.Error("KeySent = true for a provider with no secret_ref")
+	}
+	if !strings.Contains(err.Error(), "auth.secret_ref") || !strings.Contains(err.Error(), "API key required") {
+		t.Errorf("err = %q, want the server's reason and the setting to change", err)
+	}
+	if n := srv.posts.Load(); n != 1 {
+		t.Errorf("chat requests = %d, want 1: a 401 is final", n)
+	}
+	if d := time.Since(began); d > 5*time.Second {
+		t.Errorf("took %v: the start waited instead of failing on the refusal", d)
+	}
+}
+
+// TestOmlxStartWithWrongKeySaysTheKeyWasRefused: the registry names a key and
+// the server refuses it — a different fix (the key is wrong) from the one
+// above (no key is set), so the error says which.
+func TestOmlxStartWithWrongKeySaysTheKeyWasRefused(t *testing.T) {
+	srv := newKeyedOmlx(t, "sk-omlx")
+	e := testEnv()
+	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
+	err := omlxBackend{}.start(context.Background(), e, keyedProvCfg(srv.URL, "sk-stale"), Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, func(Stage) {})
+	var kr *KeyRefusedError
+	if !errors.As(err, &kr) || !kr.KeySent {
+		t.Fatalf("err = %v, want *KeyRefusedError with KeySent", err)
+	}
+}
+
+// TestWarmLoadsAModelIntoARunningOmlx covers the engine behind `wt warm`,
+// which modelman calls when its own keyless warmup is refused: the request
+// names the directory basename and carries the registry's key; nothing is
+// started or stopped. Any provider but omlx is refused — the others take no
+// key, so their callers have nothing to ask wt for.
+func TestWarmLoadsAModelIntoARunningOmlx(t *testing.T) {
+	srv := newKeyedOmlx(t, "sk-omlx")
+	e := testEnv()
+	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		t.Errorf("ran %s %v: warm starts nothing", name, args)
+		return nil, nil
+	}
+	if err := warm(context.Background(), e, keyedProvCfg(srv.URL, "sk-omlx"), "omlx-6bit", "org/Qwen-6bit"); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	if n := srv.posts.Load(); n != 1 {
+		t.Errorf("chat requests = %d, want 1", n)
+	}
+	var ue *UnsupportedError
+	if err := warm(context.Background(), e, provCfg("mtplx", srv.URL), "mtplx", "m"); !errors.As(err, &ue) {
+		t.Errorf("warm mtplx: err = %v, want *UnsupportedError", err)
 	}
 }
