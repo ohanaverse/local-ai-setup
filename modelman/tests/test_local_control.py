@@ -2341,12 +2341,56 @@ def test_start_refuses_a_discovered_id_that_is_a_registry_models_id(tmp_path):
     assert load_state(state_path).models == {}
 
 
-def _omlx_probe(listed, health):
+def test_omlx_probe_sees_a_model_that_is_still_loading(monkeypatch):
+    # #213 item 6: /health's loaded_count counts finished loads only, so a
+    # pool with one model mid-load read as "nothing loaded" and modelman
+    # cleared the flag of a model that was on its way up. Status reports
+    # is_loading, so it is asked first.
+    def fake_json(url):
+        if url.endswith("/v1/models/status"):
+            return {"models": [{"id": "A-4bit", "loaded": False, "is_loading": True}]}
+        if url.endswith("/health"):
+            return {"engine_pool": {"loaded_count": 0, "model_count": 1}}
+        return None
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
+    assert local_control._omlx_loaded("http://x", ["A-4bit"]) == ["A-4bit"]
+
+
+def test_omlx_probe_asks_wt_when_status_is_refused(monkeypatch):
+    # A keyed omlx refuses the keyless status read; wt holds the registry's
+    # key, so it is asked. When wt cannot say either the answer is None
+    # (unknown), which leaves a running flag alone (#249).
+    def fake_json(url):
+        if url.endswith("/health"):
+            return {"engine_pool": {"loaded_count": 1, "model_count": 2}}
+        return {"error": {"message": "API key required"}}
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: ["B-4bit"])
+    assert local_control._omlx_loaded("http://x", ["A-4bit", "B-4bit"]) == ["B-4bit"]
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: None)
+    assert local_control._omlx_loaded("http://x", ["A-4bit", "B-4bit"]) is None
+
+
+def test_omlx_probe_reads_the_list_on_an_omlx_without_status(monkeypatch):
+    # An omlx old enough to have neither /health counts nor a status endpoint:
+    # its /v1/models list is all there is, as before.
+    monkeypatch.setattr(local_control, "_http_json", lambda url: None)
+    assert local_control._omlx_loaded("http://x", ["A-4bit"]) == ["A-4bit"]
+
+
+def _omlx_probe(listed, health, status=None):
     """_probe_running for omlx/A against a server listing `listed` on
-    /v1/models and answering /health with `health` (None = no answer)."""
+    /v1/models, answering /health with `health` and /v1/models/status with
+    `status` (None = no answer from either)."""
+
+    def answer(url):
+        return status if url.endswith("/v1/models/status") else health
+
     with (
         patch("modelman.local_control._http_models_ids", return_value=listed),
-        patch("modelman.local_control._http_json", return_value=health),
+        patch("modelman.local_control._http_json", side_effect=answer),
     ):
         return _probe_running("omlx", "A", "http://localhost:8000")
 
@@ -2356,19 +2400,21 @@ def test_probe_running_omlx_listed_but_unloaded_is_not_running():
     # so a listed model read as "running" for as long as the service was up —
     # and `modelman start` on it was a no-op exactly when a load was needed.
     # /health carries the pool's counts with no key: nothing loaded means not
-    # running, whatever the list says.
+    # running, whatever the list says. Status is asked first and says the same.
     idle = {"status": "healthy", "engine_pool": {"model_count": 2, "loaded_count": 0}}
-    assert _omlx_probe(["A", "B"], idle) is False
+    none_loaded = {"models": [{"id": "A", "loaded": False}, {"id": "B", "loaded": False}]}
+    assert _omlx_probe(["A", "B"], idle, none_loaded) is False
 
 
 def test_probe_running_omlx_all_loaded_reads_the_list():
     # Every pool model loaded and every one listed: the list is the answer.
     full = {"engine_pool": {"model_count": 2, "loaded_count": 2}}
-    assert _omlx_probe(["A", "B"], full) is True
-    # A hidden model is counted but not listed, so the list is not the pool
-    # and "all loaded" cannot be read off it — unknown (#249), not "not
-    # running": a hidden sibling may be the loaded one.
-    assert _omlx_probe(["A"], full) is None
+    both = {"models": [{"id": "A", "loaded": True}, {"id": "B", "loaded": True}]}
+    assert _omlx_probe(["A", "B"], full, both) is True
+    # A hidden model is counted but not listed; status reports the whole pool,
+    # so A reads as loaded all the same.
+    hidden = {"models": [{"id": "A", "loaded": True}, {"id": "H", "loaded": True}]}
+    assert _omlx_probe(["A"], full, hidden) is True
 
 
 def _omlx_probe_with_status(status):

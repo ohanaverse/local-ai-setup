@@ -230,9 +230,10 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     being served, after which `modelman stop` no-opped and the process stayed
     resident with nothing recording it. Callers that guard a flag ask
     `is not False` (running_model_ids, the start inventory); a caller that
-    needs a definite answer before acting asks for one (`modelman start`'s
-    idempotency check treats unknown as not-running and reloads — the
-    pre-existing behavior for a partly loaded pool, #213).
+    needs a definite answer before acting asks for one. omlx is asked status
+    first (_omlx_loaded), so a model mid-load reads as running; `modelman
+    start` no longer probes omlx at all (wt decides, #213), and an unknown
+    omlx probe never clears a flag.
 
     For ollama the question is "is it still pulled?", not "is it loaded?"
     (#242). `modelman start` for ollama is deliberately flag-only (no warmup
@@ -276,43 +277,34 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
 
 
 def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
-    """The ids among `listed` (omlx's /v1/models) that are actually loaded,
-    or None when the pool's state cannot be determined from here.
+    """The omlx models that are loaded or loading, or None when the pool's
+    state cannot be determined from here.
 
-    omlx's /v1/models lists every model in its engine pool — the whole model
-    directory, minus hidden ones — loaded or not (wt#201), so on its own it
-    reads every omlx model as running while the service is up. /health gives
-    the pool's counts without a key:
+    omlx's /v1/models lists every model in its engine pool, loaded or not
+    (wt#201), so on its own it reads every omlx model as running while the
+    service is up. The questions, in order:
 
-    - nothing loaded -> [] : nothing is running;
-    - every pool model loaded, and the list is the whole pool -> the list;
-    - anything else (some loaded; or all loaded but a hidden model makes the
-      list shorter than the pool) -> what /v1/models/status says, asked
-      without a key. That answers on an omlx with no API key set, the usual
-      local setup, and a model mid-load counts as wt counts it. An omlx that
-      wants a key refuses: modelman resolves no secret_ref, so wt is asked
-      (`wt served omlx`, the same probe with the registry's key). This is
-      the one read here that shells out, and only when nothing else can say.
-      If wt cannot say either that is None, reported as-is (#249) — the
-      callers that guard a flag leave it alone, because the flag was set by a
-      start that succeeded and a partly loaded pool neither confirms nor
-      refutes it.
-
-    An omlx whose /health gives no pool counts predates them: `listed` is all
-    there is, as before."""
+    - /v1/models/status without a key: per model, loaded and is_loading, by
+      on-disk id. It answers on an omlx with no API key. A model mid-load
+      counts (#213): /health's loaded_count cannot see it.
+    - `wt served omlx`: the same read with the registry's key, for an omlx
+      that refuses the keyless one. modelman resolves no secret_ref, so this
+      is the one probe that shells out.
+    - neither answers: an omlx that predates the pool endpoints (no pool
+      counts in /health) is read from `listed`, as before. Otherwise None,
+      reported as-is (#249): callers that guard a flag leave it alone, because
+      a pool that will not say neither confirms nor refutes it."""
+    by_status = _omlx_status_loaded(base)
+    if by_status is not None:
+        return by_status
+    by_wt = wt_bridge.served_ids(_OMLX_FAMILY)
+    if by_wt is not None:
+        return by_wt
     health = _http_json(f"{base}/health")
     pool = health.get("engine_pool") if health else None
-    if not isinstance(pool, dict):
+    if not isinstance(pool, dict) or not isinstance(pool.get("loaded_count"), int):
         return listed
-    loaded, count = pool.get("loaded_count"), pool.get("model_count")
-    if not isinstance(loaded, int) or not isinstance(count, int):
-        return listed
-    if loaded == 0:
-        return []
-    if loaded == count == len(listed):
-        return listed
-    by_status = _omlx_status_loaded(base)
-    return by_status if by_status is not None else wt_bridge.served_ids("omlx")
+    return None
 
 
 def _omlx_status_loaded(base: str) -> list[str] | None:
