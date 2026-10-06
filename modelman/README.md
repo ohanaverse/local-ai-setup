@@ -363,6 +363,11 @@ propagate `cost` to providers; it is registry metadata only.
 `config.toml` via `--wt-config`) into `registry.toml` + `modelman.toml`.
 The legacy files are read-only inputs and are not written by the TUI.
 
+It is safe to re-run as a repair: an existing `registry.toml` is read first,
+and only providers, families and models it does not already have are added.
+An entry already there is kept as it is. A `registry.toml` that cannot be
+read stops the command, and nothing is written.
+
 ### Benchmarking
 
 Compare local model backends side-by-side:

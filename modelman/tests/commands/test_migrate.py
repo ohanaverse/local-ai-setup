@@ -7,7 +7,7 @@ imported — the underlying merge logic is covered by tests/test_migrate.py."""
 from typer.testing import CliRunner
 
 from modelman.main import app
-from modelman.registry import load_registry
+from modelman.registry import ModelEntry, load_registry, save_registry
 from modelman.state import ModelState, load_state, locked_state
 
 
@@ -28,7 +28,7 @@ def test_migrate_command_writes_registry_and_reports_counts(tmp_path, monkeypatc
     result = runner.invoke(app, ["migrate"])
 
     assert result.exit_code == 0
-    assert "1 providers" in result.stdout
+    assert "Imported 1 providers and 0 models" in result.stdout
     assert "wt config not found" in result.stdout
     assert registry_path.exists()
     assert load_registry(registry_path).provider("ollama").id == "ollama"
@@ -75,8 +75,8 @@ def test_migrate_command_preserves_existing_state_on_rerun(tmp_path, monkeypatch
 
 
 def test_migrate_command_syncs_routes_once_after_writing(tmp_path, monkeypatch, wt_calls):
-    # migrate rewrites registry.toml wholesale (it is the documented repair
-    # step), and wt routes every registry cloud model, so it must run one
+    # migrate writes registry.toml (it is the documented repair step), and wt
+    # routes every registry cloud model, so it must run one
     # `wt litellm sync` after the save — otherwise repaired models stay
     # unrouted until some unrelated command syncs (#179).
     from modelman import wt_bridge
@@ -135,15 +135,15 @@ def test_migrate_on_a_fresh_machine_adds_rows_for_installed_providers(tmp_path, 
     assert [p.id for p in registry.providers] == ["ollama", "omlx"]
     assert registry.provider("ollama").auth.base_url == "http://localhost:11434"
     assert registry.provider("ollama").location == "local"
-    assert "Migrated 2 providers and 0 models." in result.stdout
+    assert "registry.toml now has 2 providers and 0 models." in result.stdout
     assert "Added provider entries: ollama, omlx" in result.stdout
 
-    # A re-run leaves the same rows, not duplicates. (migrate rebuilds the
-    # registry from its inputs each time rather than reading the one on disk,
-    # so the rows are added, and announced, again.)
+    # A re-run leaves the same rows, not duplicates, and announces nothing:
+    # migrate reads the registry on disk, where the rows already are (#234).
     again = CliRunner().invoke(app, ["migrate"])
     assert again.exit_code == 0
     assert [p.id for p in load_registry(registry_path).providers] == ["ollama", "omlx"]
+    assert "Added provider entries" not in again.stdout
 
 
 def test_migrate_on_a_fresh_machine_with_nothing_installed_adds_no_rows(tmp_path, monkeypatch):
@@ -158,3 +158,60 @@ def test_migrate_on_a_fresh_machine_with_nothing_installed_adds_no_rows(tmp_path
     assert result.exit_code == 0, result.stdout
     assert load_registry(registry_path).providers == []
     assert "Added provider entries" not in result.stdout
+
+
+def test_migrate_rerun_keeps_a_model_added_since_the_first_run(tmp_path, monkeypatch):
+    """#234: migrate is the documented repair step, and it rebuilt
+    registry.toml from the legacy inputs alone — so on a machine whose models
+    were all added after the first migrate (TUI, `ollama-catalog sync`, by
+    hand), the re-run wrote `models = []`."""
+    registry_path = _fresh_machine(tmp_path, monkeypatch)
+    monkeypatch.setattr("modelman.sync._installed_local_providers", lambda: ["ollama"])
+    assert CliRunner().invoke(app, ["migrate"]).exit_code == 0
+    registry = load_registry(registry_path)
+    registry.models.append(
+        ModelEntry(id="ollama/x", family="x", provider_id="ollama", model_name="x:latest")
+    )
+    save_registry(registry, registry_path)
+
+    again = CliRunner().invoke(app, ["migrate"])
+
+    assert again.exit_code == 0, again.stdout
+    assert [m.id for m in load_registry(registry_path).models] == ["ollama/x"]
+    assert "Imported 0 providers and 0 models" in again.stdout
+    assert "registry.toml now has 1 providers and 1 models." in again.stdout
+
+
+def test_migrate_rerun_keeps_an_edited_entry_over_the_legacy_one(tmp_path, monkeypatch):
+    """The legacy inputs are the stale side: an entry the import produces
+    again must not replace the one on disk, which may have been edited since."""
+    registry_path = _fresh_machine(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("providers:\n  ollama:\n    type: ollama\n")
+    monkeypatch.setenv("MODELMAN_CONFIG", str(config_path))
+    assert CliRunner().invoke(app, ["migrate"]).exit_code == 0
+    registry = load_registry(registry_path)
+    registry.provider("ollama").name = "Edited since"
+    save_registry(registry, registry_path)
+
+    again = CliRunner().invoke(app, ["migrate"])
+
+    assert again.exit_code == 0, again.stdout
+    registry = load_registry(registry_path)
+    assert [p.id for p in registry.providers] == ["ollama"]
+    assert registry.provider("ollama").name == "Edited since"
+    assert "Imported 0 providers and 0 models" in again.stdout
+
+
+def test_migrate_leaves_an_unreadable_registry_alone(tmp_path, monkeypatch, wt_calls):
+    """A registry that cannot be read is not a missing one: overwriting it
+    would discard whatever a hand repair could still recover."""
+    registry_path = _fresh_machine(tmp_path, monkeypatch)
+    registry_path.write_text("[[models]\nthis is not toml")
+
+    result = CliRunner().invoke(app, ["migrate"])
+
+    assert result.exit_code == 1
+    assert "registry.toml" in result.output
+    assert registry_path.read_text() == "[[models]\nthis is not toml"
+    assert wt_calls == []

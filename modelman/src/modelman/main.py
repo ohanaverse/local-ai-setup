@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -34,6 +35,9 @@ from .providers.lifecycle.cli import provider_app
 from .providers.registry import ProviderRegistry
 from .queue import PendingChanges, QueuedOps
 from .registry import (
+    Registry,
+    RegistryError,
+    RegistryNotFoundError,
     _default_registry_path,
     load_registry,
     model_entry_to_variant,
@@ -367,6 +371,22 @@ def _main(ctx: typer.Context) -> None:
         run_tui()
 
 
+def _merge_imported(registry: Registry, imported: Registry) -> tuple[int, int]:
+    """Add to `registry` the providers, families and models of `imported` it
+    does not already have, by id; return how many providers and models that
+    was. An entry already in `registry` is kept as it is: the legacy inputs
+    are the stale side, and the one on disk may have been edited since."""
+    provider_ids = {p.id for p in registry.providers}
+    new_providers = [p for p in imported.providers if p.id not in provider_ids]
+    registry.providers.extend(new_providers)
+    family_names = {f.name for f in registry.families}
+    registry.families.extend(f for f in imported.families if f.name not in family_names)
+    model_ids = {m.id for m in registry.models}
+    new_models = [m for m in imported.models if m.id not in model_ids]
+    registry.models.extend(new_models)
+    return len(new_providers), len(new_models)
+
+
 @app.command()
 def migrate(
     wt_config: str = typer.Option(
@@ -378,17 +398,35 @@ def migrate(
     """One-time import of legacy config.yaml + families/*.yaml (and,
     optionally, wt's config.toml) into registry.toml +
     modelman.toml."""
+    # Read the registry already on disk before importing anything: migrate is
+    # re-run as a repair step (see wt/CLAUDE.md's "unknown provider" note), and
+    # the import below starts from nothing, so saving its result outright
+    # deleted every model added since the first run (#234). One that cannot be
+    # read is not the same as none — stop rather than overwrite it.
+    try:
+        registry = load_registry()
+    except RegistryNotFoundError:
+        registry = Registry()
+    except (RegistryError, tomllib.TOMLDecodeError, OSError) as exc:
+        typer.echo(
+            f"error: cannot read {_default_registry_path()}: {exc} — "
+            "fix or move it aside, then run `modelman migrate` again",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+
     result = run_migration(
         default_config_path(),
         get_family_dir(),
         wt_config_path=Path(wt_config).expanduser(),
     )
+    providers_imported, models_imported = _merge_imported(registry, result.registry)
 
     # A fresh machine has nothing to import, and the registry would be written
     # with no providers at all; give the installed local providers their rows
     # (the same repair `modelman sync` makes).
-    providers_added = _ensure_provider_entries(result.registry)
-    save_registry(result.registry)
+    providers_added = _ensure_provider_entries(registry)
+    save_registry(registry)
     # Merge rather than overwrite: `migrate` is re-run as a repair step (see
     # wt/CLAUDE.md's "unknown provider" note), and result.state is a fresh
     # StateStore that's empty except for whatever this run's legacy
@@ -407,8 +445,9 @@ def migrate(
     for warning in result.warnings:
         typer.echo(f"warning: {warning}")
     typer.echo(
-        f"Migrated {len(result.registry.providers)} providers and "
-        f"{len(result.registry.models)} models."
+        f"Imported {providers_imported} providers and {models_imported} models; "
+        f"registry.toml now has {len(registry.providers)} providers and "
+        f"{len(registry.models)} models."
     )
     if providers_added:
         typer.echo(f"Added provider entries: {', '.join(providers_added)}")

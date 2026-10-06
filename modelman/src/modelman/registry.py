@@ -88,6 +88,11 @@ class RegistryError(Exception):
     """Raised when registry.toml is missing or malformed."""
 
 
+class RegistryNotFoundError(RegistryError):
+    """Raised when there is no registry.toml at all — as opposed to one that
+    cannot be read, which a caller must never treat as empty and overwrite."""
+
+
 def _default_registry_path() -> Path:
     """Compute the registry path lazily so env overrides work in tests.
 
@@ -451,11 +456,18 @@ def load_registry(path: Path | None = None) -> Registry:
         # Fall back to the pre-XDG location for users who created a registry
         # before the XDG alignment and have XDG_CONFIG_HOME set. The next
         # save_registry writes to the canonical (XDG) path, migrating it.
+        # Not past MODELMAN_REGISTRY: that names the file outright, and a
+        # missing one there is missing, not "use the one in ~/.config".
         legacy = Path("~/.config/local-ai/registry.toml").expanduser()
-        if path is None and registry_path != legacy and legacy.exists():
+        if (
+            path is None
+            and not os.environ.get("MODELMAN_REGISTRY")
+            and registry_path != legacy
+            and legacy.exists()
+        ):
             registry_path = legacy
         else:
-            raise RegistryError(f"Registry file not found: {registry_path}")
+            raise RegistryNotFoundError(f"Registry file not found: {registry_path}")
     with open(registry_path, "rb") as f:
         raw = tomllib.load(f)
     registry = Registry(
