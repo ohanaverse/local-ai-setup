@@ -1,3 +1,4 @@
+import os
 from unittest.mock import patch
 
 import pytest
@@ -620,3 +621,49 @@ def test_delete_of_a_nested_registered_model_removes_only_that_model(tmp_path):
     assert not nested.exists()
     assert sibling.is_dir()
     assert (tmp_path / "mlx-community").is_dir()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 directory")
+def test_an_unreadable_organization_folder_is_skipped_not_fatal(tmp_path):
+    # omlx and wt skip an unreadable folder; one bad folder must not take
+    # down listing or the downloaded check for every other model.
+    _model(tmp_path / "Flat-4bit")
+    bad = tmp_path / "locked-org"
+    bad.mkdir()
+    bad.chmod(0)
+    try:
+        provider = OMLXProvider({"model_dir": str(tmp_path)})
+        assert [m["variant_id"] for m in provider.list_local()] == ["Flat-4bit"]
+        flat: VariantSpec = {"id": "omlx/x", "repo": "org/Flat-4bit"}
+        assert provider.is_downloaded(flat)
+        assert provider.path_of(flat) == str(tmp_path / "Flat-4bit")
+        missing: VariantSpec = {"id": "omlx/y", "repo": "org/Not-There"}
+        assert not provider.is_downloaded(missing)
+    finally:
+        bad.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 directory")
+def test_an_unreadable_model_dir_is_no_models(tmp_path):
+    root = tmp_path / "models"
+    _model(root / "Flat-4bit")
+    root.chmod(0)
+    try:
+        assert OMLXProvider({"model_dir": str(root)}).list_local() == []
+    finally:
+        root.chmod(0o755)
+
+
+def test_a_model_dir_that_is_one_model_is_never_a_registered_models_target(tmp_path):
+    # model_dir pointed straight at one model folder: list_local lists it, but
+    # a registered repo of the same basename must not resolve to model_dir
+    # itself, or a delete would remove the user's configured directory.
+    solo = _model(tmp_path / "Solo-4bit")
+    provider = OMLXProvider({"model_dir": str(solo)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "org/Solo-4bit"}
+
+    assert [m["variant_id"] for m in provider.list_local()] == ["Solo-4bit"]
+    assert str(solo) not in provider.removable_paths(variant)
+    provider.delete(variant)
+    assert solo.is_dir()
+    assert (solo / "config.json").exists()

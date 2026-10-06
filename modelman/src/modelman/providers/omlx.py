@@ -19,8 +19,25 @@ def _model_dir(config: dict) -> Path:
     return Path(os.path.expanduser(raw))
 
 
+def _exists(path: Path) -> bool:
+    """Path.exists(), False instead of PermissionError (an unreadable parent
+    can make the stat fail)."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _is_model_dir(path: Path) -> bool:
-    return (path / "config.json").is_file() and not (path / "adapter_config.json").exists()
+    # Existence, as omlx's _is_model_dir and wt's scan test it.
+    return _exists(path / "config.json") and not _exists(path / "adapter_config.json")
 
 
 def omlx_model_dirs(md: Path) -> list[Path]:
@@ -38,21 +55,24 @@ def omlx_model_dirs(md: Path) -> list[Path]:
       model.
 
     A Hugging Face cache entry (models--Org--Name/snapshots/...) is not
-    listed: omlx names it by its own rules. A missing `md` is no models."""
-    if not md.is_dir():
-        return []
+    listed: omlx names it by its own rules. A missing or unreadable `md` is
+    no models, and an unreadable organization folder contributes nothing (as
+    omlx and wt skip it), so one bad folder never hides the rest."""
 
     def subdirs(path: Path) -> list[Path]:
-        return sorted(d for d in path.iterdir() if d.is_dir() and not d.name.startswith("."))
+        try:
+            return sorted(d for d in path.iterdir() if d.is_dir() and not d.name.startswith("."))
+        except OSError:
+            return []
 
     found: dict[str, Path] = {}
     for entry in subdirs(md):
-        if (entry / "adapter_config.json").exists():
+        if _exists(entry / "adapter_config.json"):
             continue
         if _is_model_dir(entry):
             found.setdefault(entry.name, entry)
             continue
-        if entry.name.startswith("models--") and (entry / "snapshots").is_dir():
+        if entry.name.startswith("models--") and _is_dir(entry / "snapshots"):
             continue
         for child in subdirs(entry):
             if _is_model_dir(child):
@@ -107,7 +127,9 @@ class OMLXProvider(Provider):
             # omlx may have stored it inside an organization folder (#261):
             # the directory omlx serves under this name is the model's.
             for found in omlx_model_dirs(md):
-                if found.name == flat.name:
+                # Never `md` itself (its single-model fallback): a delete
+                # would remove the user's configured model directory.
+                if found != md and found.name == flat.name:
                     return found
             # Not on disk: the flat path is where a download goes.
             return flat
