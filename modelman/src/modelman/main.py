@@ -212,6 +212,24 @@ def _load_registry_or_exit() -> Registry:
         raise typer.Exit(1) from exc
 
 
+def _load_registry_for_stop() -> Registry | None:
+    """The registry for `modelman stop <id>`, or None when it cannot be read.
+
+    A stop needs no registry to stop a model: it is read only when wt
+    refuses to stop an omlx model as not running, for the name omlx serves
+    the model under and the omlx server's origin
+    (local_control._stop_omlx_via_wt). So an unreadable registry must not
+    fail the command — the stop goes ahead without it, and that case then
+    reports that it cannot tell unless omlx's pool is empty. A registry that
+    is not there is an empty one, as for every other command."""
+    try:
+        return load_registry()
+    except RegistryNotFoundError:
+        return Registry()
+    except Exception:  # noqa: BLE001 — as _load_registry_or_exit: any parse failure
+        return None
+
+
 def run_queued_ops(queued: QueuedOps) -> bool:
     """Apply a QueuedOps returned by the TUI against fresh on-disk state.
 
@@ -713,9 +731,11 @@ def start(
     ),
 ) -> None:
     """Start model_id as a running local model, alongside any already
-    running. Only a model on the same single-model provider (omlx, mtplx,
-    mlx_lm_server) is stopped to make room. Idempotent when model_id is
-    already running and a probe confirms it.
+    running. Only a model on the same single-model provider (mtplx,
+    mlx_lm_server) is stopped to make room; an omlx model loads beside the
+    ones omlx already holds, and any omlx had to unload for room are
+    printed. Idempotent when model_id is already running and a probe
+    confirms it.
 
     model_id may be a registry id, an existing model's native
     provider-side name, or the native name of a model a provider has on
@@ -775,6 +795,8 @@ def start(
         typer.echo(f"{result.model_id} is already running.")
     else:
         typer.echo(f"Started {result.model_id}.")
+    if result.unloaded:
+        typer.echo(f"omlx unloaded to make room: {', '.join(result.unloaded)}")
     if result.other_running:
         typer.echo(
             f"warning: {len(result.other_running)} other local model(s) already running: "
@@ -826,7 +848,7 @@ def stop(
     # out for mypy, which can't infer that from the two independent ifs.
     assert model_id is not None
     try:
-        result = stop_local_model(model_id)
+        result = stop_local_model(model_id, registry=_load_registry_for_stop())
     except LocalControlError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc

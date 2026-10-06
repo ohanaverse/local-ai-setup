@@ -14,10 +14,13 @@ wt reads no per-model state key at all (#179 Phase B): it probes the
 providers themselves and discovers what is on disk, so this flag shapes
 modelman's own views (the TUI's RUNNING column, `modelman start`'s
 inventory, stop paths) alone. Cross-provider concurrency is unrestricted —
-multiple local models on DIFFERENT providers may run at once. Single-port
-providers (omlx, mtplx, mlx_lm_server) can still only ever serve one
-model each, so starting a different model on the SAME provider replaces
-that provider's occupant first.
+multiple local models on DIFFERENT providers may run at once. Single-model
+providers (mtplx, mlx_lm_server) can still only ever serve one model each,
+so starting a different model on the SAME provider replaces that
+provider's occupant first. omlx is a pool that holds several loaded models
+(#213): an omlx model is started and stopped through wt (wt_bridge.start /
+wt_bridge.stop), which loads it beside the others and unloads it alone;
+only the `running` flags are kept here.
 
 State ownership: these functions own each model's `running` flag
 read/write lifecycle entirely — they read it with load_state() and write
@@ -35,6 +38,8 @@ from __future__ import annotations
 import contextlib
 import subprocess
 from collections import defaultdict
+from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -53,7 +58,7 @@ from .benchmark.isolation import (
     stop_provider,
 )
 from .litellm import sync_routes
-from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
+from .local_process import connection_refused as _connection_refused
 from .local_process import http_answers as _http_answers
 from .local_process import http_json as _http_json
 from .local_process import http_models_ids as _http_models_ids
@@ -85,12 +90,13 @@ _DEFAULT_BASE_ORIGIN = {
 }
 
 # omlx and omlx-6bit are two registry provider ids but ONE physical
-# process/port (8000) — a single-port occupancy domain. A model flagged
-# running under either spelling occupies the same server as one flagged
-# under the other, so same-provider-occupant detection (and the
-# stop_provider() call that replaces it) must treat them as one group,
-# never as two independent providers.
+# process/port (8000): one pool of loaded models (#213). A model flagged
+# running under either spelling is loaded in the same server as one
+# flagged under the other, so everything keyed on the provider (the start
+# and stop that delegate to wt, the family a discovered id is prefixed
+# with) must treat them as one group, never as two independent providers.
 _OMLX_PROVIDER_IDS: frozenset[str] = frozenset({"omlx", "omlx-6bit"})
+
 
 # The omlx family's registry provider rows, in the order wt picks one to
 # stand for the family (wt/internal/localmodels/inventory.go's familyIDs /
@@ -115,6 +121,9 @@ class StartResult:
     direct_url: str | None = None
     warnings: list[str] = field(default_factory=list)
     other_running: list[str] = field(default_factory=list)
+    # Ids omlx unloaded to make room for this start, as wt reported them
+    # (empty for every provider but omlx).
+    unloaded: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -224,9 +233,10 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     being served, after which `modelman stop` no-opped and the process stayed
     resident with nothing recording it. Callers that guard a flag ask
     `is not False` (running_model_ids, the start inventory); a caller that
-    needs a definite answer before acting asks for one (`modelman start`'s
-    idempotency check treats unknown as not-running and reloads — the
-    pre-existing behavior for a partly loaded pool, #213).
+    needs a definite answer before acting asks for one. omlx is asked status
+    first (_omlx_loaded), so a model mid-load reads as running; `modelman
+    start` no longer probes omlx at all (wt decides, #213), and an unknown
+    omlx probe never clears a flag.
 
     For ollama the question is "is it still pulled?", not "is it loaded?"
     (#242). `modelman start` for ollama is deliberately flag-only (no warmup
@@ -251,12 +261,13 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
         # No address to ask: nothing is known about a provider modelman has
         # no origin for, and no flag was set by starting one.
         return False
-    ids = _http_models_ids(f"{base}/v1/models")
-    if provider_id in ("omlx", "omlx-6bit"):
-        loaded = _omlx_loaded(base, ids)
+    if provider_id in _OMLX_PROVIDER_IDS:
+        loaded = _omlx_pool(base)
         if loaded is None:
             return None
         ids = loaded
+    else:
+        ids = _http_models_ids(f"{base}/v1/models")
     if provider_id == "mlx_lm_server":
         # One target+draft pairing per process (the lifecycle's
         # mlx_lm_server backend is the only thing that starts one): the
@@ -269,61 +280,101 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     return any(_name_matches(served, model_name) for served in ids)
 
 
+# The omlx pool as read during one pass over the flagged models, by origin.
+# The pool's answer is the same for every model in it, and reading it can
+# cost a `wt served` subprocess (a keyed omlx) or a round of timeouts (an omlx
+# busy loading a model) — once per flagged model, when a pool holds several.
+# None outside a pass: every other probe reads the pool afresh.
+_omlx_pool_memo: ContextVar[dict[str, list[str] | None] | None] = ContextVar(
+    "_omlx_pool_memo", default=None
+)
+
+
+@contextlib.contextmanager
+def _one_omlx_pool_read() -> Iterator[None]:
+    """For the pass this wraps (it also decorates a function), the omlx pool
+    is read once per origin and every omlx probe in the pass answers from
+    that one read — "cannot say" included."""
+    token = _omlx_pool_memo.set({})
+    try:
+        yield
+    finally:
+        _omlx_pool_memo.reset(token)
+
+
+def _omlx_pool(base: str) -> list[str] | None:
+    """_omlx_loaded() for the omlx at `base`, read once per pass inside
+    _one_omlx_pool_read() and afresh outside one."""
+    memo = _omlx_pool_memo.get()
+    if memo is not None and base in memo:
+        return memo[base]
+    loaded = _omlx_loaded(base, _http_models_ids(f"{base}/v1/models"))
+    if memo is not None:
+        memo[base] = loaded
+    return loaded
+
+
 def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
-    """The ids among `listed` (omlx's /v1/models) that are actually loaded,
-    or None when the pool's state cannot be determined from here.
+    """The omlx models that are loaded or loading, or None when the pool's
+    state cannot be determined from here.
 
-    omlx's /v1/models lists every model in its engine pool — the whole model
-    directory, minus hidden ones — loaded or not (wt#201), so on its own it
-    reads every omlx model as running while the service is up. /health gives
-    the pool's counts without a key:
+    omlx's /v1/models lists every model in its engine pool, loaded or not
+    (wt#201), so on its own it reads every omlx model as running while the
+    service is up. The questions, in order:
 
-    - nothing loaded -> [] : nothing is running;
-    - every pool model loaded, and the list is the whole pool -> the list;
-    - anything else (some loaded; or all loaded but a hidden model makes the
-      list shorter than the pool) -> what /v1/models/status says, asked
-      without a key. That answers on an omlx with no API key set, the usual
-      local setup, and a model mid-load counts as wt counts it. An omlx that
-      wants a key refuses: modelman resolves no secret_ref, so wt is asked
-      (`wt served omlx`, the same probe with the registry's key). This is
-      the one read here that shells out, and only when nothing else can say.
-      If wt cannot say either that is None, reported as-is (#249) — the
-      callers that guard a flag leave it alone, because the flag was set by a
-      start that succeeded and a partly loaded pool neither confirms nor
-      refutes it.
-
-    An omlx whose /health gives no pool counts predates them: `listed` is all
-    there is, as before."""
-    health = _http_json(f"{base}/health")
-    pool = health.get("engine_pool") if health else None
-    if not isinstance(pool, dict):
-        return listed
-    loaded, count = pool.get("loaded_count"), pool.get("model_count")
-    if not isinstance(loaded, int) or not isinstance(count, int):
-        return listed
-    if loaded == 0:
-        return []
-    if loaded == count == len(listed):
-        return listed
+    - /v1/models/status without a key: per model, loaded and is_loading, by
+      on-disk id. It answers on an omlx with no API key. A model mid-load
+      counts (#213): /health's loaded_count cannot see it.
+    - `wt served omlx`: the same read with the registry's key, for an omlx
+      that refuses the keyless one. modelman resolves no secret_ref, so this
+      is the one probe that shells out.
+    - neither answers, and /health does: an omlx that predates the pool
+      endpoints (a /health answer with no pool counts) is read from `listed`,
+      as before. One that has the counts will not say which models they
+      count, so None, reported as-is (#249): callers that guard a flag leave
+      it alone, because a pool that will not say neither confirms nor refutes
+      it.
+    - /health does not answer either: nothing answered, and `listed` is the
+      [] of a /v1/models read that failed with the rest, not a listing. Only
+      a REFUSED connection is an answer — no server, so nothing loaded, []. A
+      timeout or a reset comes as well from an omlx too busy loading a model
+      to reply in time, so that is None: read as "nothing loaded" it cleared
+      the flag of a model still resident."""
     by_status = _omlx_status_loaded(base)
-    return by_status if by_status is not None else wt_bridge.served_ids("omlx")
+    if by_status is not None:
+        return by_status
+    by_wt = wt_bridge.served_ids(_OMLX_FAMILY)
+    if by_wt is not None:
+        return by_wt
+    health_url = f"{base}/health"
+    health = _http_json(health_url)
+    if health is None:
+        return [] if _connection_refused(health_url) else None
+    pool = health.get("engine_pool")
+    if not isinstance(pool, dict) or not isinstance(pool.get("loaded_count"), int):
+        return listed
+    return None
 
 
 def _omlx_status_loaded(base: str) -> list[str] | None:
     """The ids omlx's /v1/models/status reports loaded or loading, or None
     when it gives no listing — a refusal for want of the server's API key
-    answers with a JSON object too, just not one with `models`."""
+    answers with a JSON object too, just not one with `models`.
+
+    An entry without a boolean `loaded` makes the whole answer no listing:
+    it is not the schema this code reads, and taking a missing key for "not
+    loaded" would, after a rename on omlx's side, report every model
+    unloaded and clear every omlx flag."""
     status = _http_json(f"{base}/v1/models/status")
     models = status.get("models") if status else None
     if not isinstance(models, list):
         return None
+    if not all(isinstance(m, dict) and isinstance(m.get("loaded"), bool) for m in models):
+        return None
     return [
         m["id"]
         for m in models
-        if isinstance(m, dict)
-        and isinstance(m.get("id"), str)
-        and m["id"]
-        and (m.get("loaded") or m.get("is_loading"))
+        if isinstance(m.get("id"), str) and m["id"] and (m["loaded"] or m.get("is_loading"))
     ]
 
 
@@ -445,7 +496,7 @@ def _same_provider_occupant(
 ) -> str | None:
     """The id of another model belonging to the same provider
     (provider_model_ids — every registry id on that provider) currently
-    flagged running, or None. Single-port providers (omlx, mtplx,
+    flagged running, or None. Single-model providers (mtplx,
     mlx_lm_server) can only ever serve one model — this finds the one
     that needs replacing before starting a different model on the same
     provider."""
@@ -459,29 +510,31 @@ def same_provider_occupant(
     registry: Registry, state: StateStore, model_id: str, provider_id: str
 ) -> str | None:
     """The id of another model currently flagged running on the same
-    single-port occupancy domain as `model_id`, or None.
+    single-model provider as `model_id` (mtplx, mlx_lm_server), or None.
 
     The shared answer to "will starting this model silently replace
     something?" — used by start_local_model() to decide whose flag to
     clear, and by the TUI's `s` confirm dialog to warn the user BEFORE
-    the replacement happens (design §2/§4). Always None for ollama: the
-    daemon is multi-tenant, so many ollama models may run at once and
-    nothing is replaced. omlx/omlx-6bit are ONE domain (_OMLX_PROVIDER_IDS
-    — they share port 8000), so the occupant may be registered under the
-    other spelling.
+    the replacement happens (design §2/§4). Always None for ollama and for
+    the omlx family (omlx, omlx-6bit): the ollama daemon is multi-tenant,
+    and omlx is a pool that holds several loaded models (#213), so neither
+    has one occupant a start replaces.
     """
     if provider_id == "ollama":
         return None
-    slot_providers = _OMLX_PROVIDER_IDS if provider_id in _OMLX_PROVIDER_IDS else {provider_id}
-    domain = {m.id for m in registry.models if m.provider_id in slot_providers}
+    if provider_id in _OMLX_PROVIDER_IDS:
+        # A pool, not a slot (#213): nothing is replaced as a matter of
+        # course. What a start would unload is wt's plan (wt_bridge.start_plan).
+        return None
+    domain = {m.id for m in registry.models if m.provider_id == provider_id}
     # A model started without a registry entry (#179 Phase B) is flagged
-    # under its discovered id `<family>/<name>` (see _discovered_id; the
-    # omlx family's prefix is in _OMLX_PROVIDER_IDS): it occupies the slot too.
+    # under its discovered id `<family>/<name>` (see _discovered_id): it
+    # occupies the slot too.
     registered = {m.id for m in registry.models}
     domain |= {
         mid
         for mid in state.models
-        if mid not in registered and mid.partition("/")[0] in slot_providers
+        if mid not in registered and mid.partition("/")[0] == provider_id
     }
     return _same_provider_occupant(state, domain, exclude_model_id=model_id)
 
@@ -968,6 +1021,7 @@ def _resolve_local_model(registry: Registry, model_id: str) -> ModelEntry:
     return _discovered_entry(match)
 
 
+@_one_omlx_pool_read()
 def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelInventory:
     """Live, three-way view of local models: registered models split into
     downloaded/not-downloaded by asking each provider whether its artifact is
@@ -1061,6 +1115,7 @@ def _flagged_target(
     return None
 
 
+@_one_omlx_pool_read()
 def running_model_ids(
     registry: Registry,
     state: StateStore,
@@ -1132,9 +1187,12 @@ def start_local_model(
     """Start model_id as a running local model, alongside any other local
     models already running (cross-provider concurrency is unrestricted —
     see docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md).
-    If model_id's OWN provider is already running a DIFFERENT model (a
-    single-port provider: omlx, mtplx, mlx_lm_server), that occupant is
+    If model_id's OWN provider is already running a DIFFERENT model and
+    is a single-model provider (mtplx, mlx_lm_server), that occupant is
     stopped first — those providers can only ever serve one model.
+    An omlx model is started through wt (_start_omlx_via_wt) and loads
+    beside whatever omlx already has loaded (#213); the models omlx
+    unloads to make room, if any, come back on StartResult.unloaded.
     Ollama never gets a process call: the flag flips, and ollama lazy-
     loads on first request.
 
@@ -1146,13 +1204,15 @@ def start_local_model(
     discovered id, and its running flag is kept under that id.
 
     Raises LocalControlError when model_id is unknown, not a local model,
-    its provider cannot be isolated, or an mlx_lm_server pairing can't be
-    resolved.
+    its provider cannot be isolated, wt refuses an omlx start, or an
+    mlx_lm_server pairing can't be resolved.
 
     Idempotent: when model_id is already flagged running, it is PROBED
     before trusting the flag. A dead flag is cleared and a full start
     runs — modelman start is the recovery command wt's own "not running"
     message prescribes, and must not no-op on a flag whose process died.
+    For omlx the flag is not consulted: wt reads the pool and says whether
+    the model is already loaded.
     """
     model = _resolve_local_model(registry, model_id)
     resolved_id = model.id
@@ -1176,8 +1236,13 @@ def start_local_model(
         _require_ollama_daemon(provider)
         _require_ollama_pulled(provider, model)
 
+    if model.provider_id in _OMLX_PROVIDER_IDS:
+        # omlx is a pool (#213): wt loads the model beside what is loaded,
+        # predicts and reports evictions, holds the registry's key, and
+        # writes the route. modelman keeps only the flags.
+        return _start_omlx_via_wt(resolved_id, state_path, litellm_path)
+
     extra_args: tuple[str, ...] = ()
-    env: dict[str, str] | None = None
     if model.provider_id == "mlx_lm_server":
         try:
             target, draft = mlx_lm_server_pairing_args(
@@ -1192,8 +1257,6 @@ def start_local_model(
         extra_args = (target, draft)
     elif model.provider_id == "mtplx":
         extra_args = (model.model_name,)
-    elif model.provider_id != "ollama":
-        env = {_ENV_VAR_BY_PROVIDER[model.provider_id]: model.model_name}
 
     probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
 
@@ -1209,13 +1272,12 @@ def start_local_model(
         # A definite True, so "cannot say" is not an answer here: a start is
         # a request to have the model loaded NOW, and a probe that cannot
         # confirm it must not make the start a no-op (the reload below stops
-        # the occupant and loads the requested model). For a partly loaded
-        # omlx pool that is the pre-existing behavior (#213 item 3), not
-        # #249's flag-clearing bug. Ollama is the exception: its start is
-        # flag-only and the daemon and pull checks above have passed, so an
-        # /api/tags that then gives no usable listing (a proxy's error page)
-        # leaves nothing to reload — the flag stands, as for every other
-        # reader of an unknown ollama probe.
+        # the occupant and loads the requested model). Ollama is the
+        # exception: its start is flag-only and the daemon and pull checks
+        # above have passed, so an /api/tags that then gives no usable
+        # listing (a proxy's error page) leaves nothing to reload — the flag
+        # stands, as for every other reader of an unknown ollama probe.
+        # (omlx never gets here: wt answers for it, see _start_omlx_via_wt.)
         probed = _probe_running(model.provider_id, model.model_name, probe_origin)
         if probed or (probed is None and model.provider_id == "ollama"):
             # Re-sync even on the idempotent path: `modelman start <id>` is
@@ -1233,7 +1295,7 @@ def start_local_model(
         # Flag-only: no process action, ollama lazy-loads on request.
         direct_url = None
     else:
-        # The occupant LOOKUP runs for every single-port provider, mtplx
+        # The occupant LOOKUP runs for every single-model provider, mtplx
         # included: mtplx's own isolate() stops its predecessor's PROCESS
         # internally, but nothing there touches modelman.toml, so this
         # function still owns clearing the replaced occupant's FLAG. Skipping
@@ -1241,25 +1303,16 @@ def start_local_model(
         # RUNNING column, `modelman start`'s other-running warning) until some
         # later probe happened to self-heal it.
         occupant = same_provider_occupant(registry, fresh_state, resolved_id, model.provider_id)
-        if occupant is not None and model.provider_id in _OMLX_PROVIDER_IDS:
-            # omlx/omlx-6bit: stop_provider() tears down the occupant's
-            # process itself, right here — clear its flag as soon as that's
-            # confirmed, same as before. A failure leaves the occupant's
-            # flag untouched (it raises before reaching the clear).
-            try:
-                stop_provider(model.provider_id)
-            except BenchmarkError as exc:
-                raise LocalControlError(
-                    f"failed to stop {occupant} before starting {resolved_id}: {exc}"
-                ) from exc
-            _clear_stale_running_flag(occupant, state_path)
 
-        # A failed isolate may follow an occupant teardown (omlx's
-        # stop_provider above, or mtplx/mlx_lm_server's inside isolate), so
-        # routes are synced before the failure is reported: the occupant's
-        # route must not keep pointing at a dead backend.
+        # A failed isolate may follow an occupant teardown (mtplx's and
+        # mlx_lm_server's, inside isolate), so routes are synced before the
+        # failure is reported: the occupant's route must not keep pointing
+        # at a dead backend.
         try:
-            result = isolate_provider(model.provider_id, *extra_args, env=env, solo=True)
+            # No env override: mlx_lm_server and mtplx take their model as
+            # positional args, and the providers that take it from an
+            # LLM_ISOLATE_*_MODEL variable (omlx) no longer start here.
+            result = isolate_provider(model.provider_id, *extra_args, env=None, solo=True)
         except BenchmarkError as exc:
             _clear_stale_running_flag(resolved_id, state_path)
             raise LocalControlError(
@@ -1278,7 +1331,7 @@ def start_local_model(
             )
         direct_url = result.direct_url or None
 
-        if occupant is not None and model.provider_id not in _OMLX_PROVIDER_IDS:
+        if occupant is not None:
             # mtplx and mlx_lm_server tear down their own prior occupant
             # INSIDE the isolate_provider(..., solo=True) call just above
             # (providers/lifecycle's orchestrate.isolate()), not before it — so the
@@ -1319,23 +1372,105 @@ def start_local_model(
     )
 
 
+def _start_omlx_via_wt(
+    resolved_id: str, state_path: Path | None, litellm_path: Path | None
+) -> StartResult:
+    """Start an omlx model through `wt start <id> --json --replace`.
+
+    --replace because `modelman start` has always replaced without asking on
+    the command line; the TUI asks first, from wt's plan. wt reports the ids
+    omlx unloaded to make room, and their flags are cleared here — wt did the
+    unloading, so this result is the only way modelman learns of it. A start
+    wt refuses changes no flag: what omlx may have unloaded on the way is not
+    reported for a failed start (#260), and the next running_model_ids()
+    probe clears any flag that went stale. A start that times out here is
+    reported as one that may still be going on: the bridge kills wt, not
+    omlx."""
+    try:
+        outcome = wt_bridge.start(resolved_id, replace=True)
+    except wt_bridge.WtBridgeError as exc:
+        reason = str(exc)
+        if isinstance(exc, wt_bridge.WtBridgeTimeoutError):
+            # The bridge killed wt; nothing told omlx to stop loading.
+            reason += (
+                f" — wt was stopped, omlx was not: {resolved_id} may still be loading "
+                "in omlx, so check what omlx has loaded before retrying"
+            )
+        raise LocalControlError(
+            _with_warnings(
+                f"failed to start {resolved_id}: {reason}",
+                sync_routes(litellm_path=litellm_path),
+            )
+        ) from exc
+    # wt wrote the route itself; the sync is the same closing step every
+    # other start takes, and a no-op here unless something else drifted.
+    sync_warnings = sync_routes(litellm_path=litellm_path)
+    try:
+        with locked_state(state_path) as fresh:
+            for unloaded_id in outcome.unloaded:
+                if unloaded_id != resolved_id and unloaded_id in fresh.models:
+                    _clear_running_flag(fresh, unloaded_id)
+            existing = fresh.models.get(resolved_id, ModelState())
+            fresh.models[resolved_id] = replace(existing, running=True)
+            other_running = sorted(
+                mid for mid, s in fresh.models.items() if mid != resolved_id and s.running
+            )
+    except OSError as exc:
+        raise LocalControlError(
+            _with_warnings(
+                f"{resolved_id} started successfully but its running flag could not be "
+                f"persisted: {exc} — wt's picker will not see it as running until this "
+                "succeeds",
+                sync_warnings,
+            )
+        ) from exc
+    return StartResult(
+        model_id=resolved_id,
+        already_running=outcome.status == "already_running",
+        warnings=sync_warnings,
+        other_running=other_running,
+        unloaded=list(outcome.unloaded),
+    )
+
+
 def stop_local_model(
-    model_id: str, state_path: Path | None = None, *, litellm_path: Path | None = None
+    model_id: str,
+    state_path: Path | None = None,
+    *,
+    litellm_path: Path | None = None,
+    registry: Registry | None = None,
 ) -> StopResult:
     """Stop exactly one running local model, clear its running flag, then
     run one `wt litellm sync` so LiteLLM's routes follow the new live state
     (#179). No-op when it isn't running. Raises LocalControlError for an
     unknown provider id embedded in model_id's prefix.
 
+    "Running" is the flag for every provider but omlx. An omlx model with no
+    flag is still asked of wt (_stop_unflagged_omlx): its start takes wt's
+    word for what is loaded, and a start whose bridge call timed out, or a
+    `wt start`, leaves a loaded model modelman has no flag for.
+
+    An omlx model is unloaded through wt (_stop_omlx_via_wt): the omlx
+    service and the other models it has loaded stay up, and their flags
+    are left alone (#213). `registry` is read only there, and only when wt
+    refuses the stop: for the name omlx serves the model under, to look for
+    it in the pool, and for omlx's origin when the pool cannot be read.
+    Without it a refused stop clears the flag only when the pool is empty
+    (see _stop_omlx_via_wt).
+
     The sync runs AFTER the stop and the flag clear: wt probes the
     providers itself, so the process must already be gone.
     """
     state = load_state(state_path)
     current = state.get(model_id)
-    if not current.running:
-        return StopResult(stopped_model_id=None)
-
     provider_id = model_id.split("/", 1)[0]
+    if not current.running:
+        if provider_id not in _OMLX_PROVIDER_IDS or not _stop_unflagged_omlx(model_id):
+            return StopResult(stopped_model_id=None)
+        return StopResult(
+            stopped_model_id=model_id, warnings=sync_routes(litellm_path=litellm_path)
+        )
+
     if provider_id == "ollama":
         model_name = model_id.split("/", 1)[1]
         _stop_ollama_model(model_name)
@@ -1345,6 +1480,8 @@ def stop_local_model(
         result = lifecycle_stop("mtplx")
         if not result.ok:
             raise LocalControlError(f"failed to stop {model_id}: {result.error}")
+    elif provider_id in _OMLX_PROVIDER_IDS:
+        _stop_omlx_via_wt(model_id, registry)
     else:
         try:
             stop_provider(provider_id)
@@ -1354,6 +1491,130 @@ def stop_local_model(
     with locked_state(state_path) as fresh:
         _clear_running_flag(fresh, model_id)
     return StopResult(stopped_model_id=model_id, warnings=sync_routes(litellm_path=litellm_path))
+
+
+# The tail of wt's refusal for a model its inventory does not show running
+# (wt/cmd/wt/model_cmds.go runStop: `model "<id>" is not running`, or
+# `unknown model "<id>"` for an id with no registry row).
+_WT_NOT_RUNNING = ("is not running", "unknown model")
+
+
+def _omlx_origin(registry: Registry) -> str:
+    """The origin of the omlx server as `registry` gives it: the base_url of
+    the row that stands for the family (plain `omlx` first, as wt's
+    familyProviderID picks it), or omlx's default when the row names none."""
+    providers_by_id = _provider_by_id(registry)
+    for provider_id in _OMLX_FAMILY_PROVIDER_IDS:
+        provider = providers_by_id.get(provider_id)
+        if provider is None:
+            continue
+        origin = base_origin(provider.auth.base_url) if provider.auth else None
+        return origin or _DEFAULT_BASE_ORIGIN[_OMLX_FAMILY]
+    return _DEFAULT_BASE_ORIGIN[_OMLX_FAMILY]
+
+
+def _omlx_side_names(model_id: str, registry: Registry | None) -> tuple[tuple[str, ...], bool]:
+    """(the names omlx may serve `model_id` under, whether they can be
+    trusted).
+
+    A registry model's is its model_name. Any other id is a discovered one,
+    `omlx/<directory name>` (_discovered_id), whose tail is the name — but
+    only a registry can say the id is not one of its own: a registry id is
+    spelled `omlx/org--name`, and that tail is no directory name. So without
+    a registry the tail is a guess, good for finding the model among the
+    served ids and never for concluding it is absent from them.
+
+    A registry that has no row for an id spelled the registered way (the row
+    was removed while the model ran) leaves the same doubt, so that tail is
+    also read as the repo id it encodes ("--" → "/"), as running_model_ids
+    reads such a flag: omlx may still hold the model under that name."""
+    tail = model_id.partition("/")[2]
+    if registry is None:
+        return (tail,), False
+    model = next((m for m in registry.models if m.id == model_id), None)
+    if model is not None:
+        return (model.model_name,), True
+    if "--" in tail:
+        return (tail, tail.replace("--", "/")), True
+    return (tail,), True
+
+
+def _stop_unflagged_omlx(model_id: str) -> bool:
+    """Ask wt to unload an omlx model modelman has no running flag for;
+    whether it did.
+
+    wt refusing because the model is not running (or is unknown to it) is
+    the plain "not running" here: there is no flag for a wrong refusal to
+    clear, so the pool read that backs one in _stop_omlx_via_wt is not
+    needed. Any other failure is an error, as there."""
+    try:
+        wt_bridge.stop(model_id)
+    except wt_bridge.WtBridgeError as exc:
+        if any(tail in str(exc) for tail in _WT_NOT_RUNNING):
+            return False
+        raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
+    return True
+
+
+def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:
+    """Unload one omlx model through `wt stop <id> --yes`; the service and
+    its other loaded models stay up (#213).
+
+    wt refusing because the model "is not running" (or is unknown to it) is
+    not yet a fact about the pool: the refusal also comes from a pool wt
+    could not read at that moment, and from an id it could not map. So the
+    pool is read (`wt served omlx`) and the model looked for in it, by the
+    name omlx serves it under (_omlx_side_names):
+
+    - the pool lists the model: wt refused to stop a model omlx has loaded.
+      An error; the flag stays.
+    - the pool is empty, or the model's name is known and not in it: the
+      model really is not loaded — evicted, or timed out — so the goal is
+      met.
+    - the pool holds models and the name is not known (no registry to say
+      whether the id is its own): the model may be one of them. "Cannot
+      say", which must never clear a flag (#249).
+    - the pool cannot be read (a keyed omlx whose key the registry does not
+      name): the model may well be loaded. "Cannot say" again, an error
+      telling the user how to proceed.
+
+    The one exception to the last case is an omlx that is positively not
+    there: the connection to its origin is REFUSED, so no server is running
+    and nothing is loaded — a flag left by a crashed server can be cleared.
+    Only a refusal counts. A timeout, a reset or an unusable answer comes
+    just as well from an omlx that is busy loading a model, and reading
+    those as "down" cleared the flag of a model still resident. The origin
+    is the registry's (_omlx_origin): a refusal at the default port says
+    nothing about an omlx on another host or port. With no registry there
+    is no origin to ask, so the exception is not taken."""
+    try:
+        wt_bridge.stop(model_id)
+        return
+    except wt_bridge.WtBridgeError as exc:
+        if not any(tail in str(exc) for tail in _WT_NOT_RUNNING):
+            raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
+    served = wt_bridge.served_ids(_OMLX_FAMILY)
+    if served is None:
+        if registry is not None and _connection_refused(f"{_omlx_origin(registry)}/health"):
+            return
+        raise LocalControlError(
+            f"cannot tell whether {model_id} is loaded: wt could not read the omlx pool. "
+            "If the omlx server has an API key, set auth.secret_ref on the registry's omlx "
+            "provider so one model can be unloaded; or run `modelman stop --all` to stop "
+            "the omlx service."
+        )
+    names, name_known = _omlx_side_names(model_id, registry)
+    if any(_name_matches(served_id, name) for served_id in served for name in names):
+        raise LocalControlError(
+            f"wt refused to stop {model_id}, but omlx reports it loaded — retry, or run "
+            "`modelman stop --all` to stop the omlx service."
+        )
+    if served and not name_known:
+        raise LocalControlError(
+            f"cannot tell whether {model_id} is loaded: omlx has models loaded, and without "
+            "a readable registry the name omlx serves this one under is not known. Fix "
+            "registry.toml and retry, or run `modelman stop --all` to stop the omlx service."
+        )
 
 
 def stop_all_local_models(

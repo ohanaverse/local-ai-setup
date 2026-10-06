@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from modelman import local_control
+from modelman import local_control, wt_bridge
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     DiscoveredModel,
@@ -103,6 +103,25 @@ def _state_path(tmp_path: Path, running: dict[str, bool] | None = None) -> Path:
         store.set(model_id, ModelState(ready=True, running=is_running))
     save_state(store, path)
     return path
+
+
+def _mtplx_registry() -> Registry:
+    """_registry() plus an mtplx row with two models — a single-model
+    provider, whose start still goes through isolate_provider()."""
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    for suffix in ("a", "b"):
+        registry.models.append(
+            ModelEntry(
+                id=f"mtplx/org/model-{suffix}",
+                family=f"mtplx-{suffix}",
+                provider_id="mtplx",
+                model_name=f"org/model-{suffix}",
+            )
+        )
+    return registry
 
 
 def test_start_unknown_model_raises():
@@ -315,51 +334,52 @@ def test_start_leaves_unrelated_running_model_flagged_and_flips_ollama_flag_only
 
 
 def test_start_isolate_failure_raises_and_does_not_write_marker(tmp_path):
-    # No prior flag: a failed start must not fabricate one. Uses omlx (not
-    # ollama): ollama is flag-only and never calls isolate_provider, so it
-    # cannot exercise this failure path any more.
+    # No prior flag: a failed start must not fabricate one. Uses mtplx:
+    # ollama is flag-only and omlx starts through wt (#213), so neither
+    # calls isolate_provider and neither can exercise this failure path.
     state_path = _state_path(tmp_path, {})
     with patch("modelman.local_control.isolate_provider") as mock_isolate:
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="", direct_url="", ok=False, error="warmup timed out"
+            provider="mtplx", model="", direct_url="", ok=False, error="warmup timed out"
         )
         with pytest.raises(LocalControlError, match="warmup timed out"):
-            start_local_model(_registry(), "omlx/model-a", state_path)
-    assert load_state(state_path).get("omlx/model-a").running is False
+            start_local_model(_mtplx_registry(), "mtplx/org/model-a", state_path)
+    assert load_state(state_path).get("mtplx/org/model-a").running is False
 
 
-def test_start_isolate_failure_after_occupant_replaced_leaves_occupant_cleared(tmp_path):
-    # A same-provider occupant (omlx is single-port) is stopped and its
-    # flag cleared BEFORE isolate is attempted; if the new model's isolate
-    # then fails, the occupant stays cleared (never restored) and the new
-    # model's flag stays unset — the machine state truthfully reflects
-    # that the occupant is gone and the replacement never came up.
+def test_start_omlx_failure_leaves_the_loaded_sibling_flagged(tmp_path, monkeypatch, wt_calls):
+    # omlx is a pool (#213): a start no longer stops the model that is
+    # loaded, so when wt refuses the new one the sibling is still loaded and
+    # its flag stays. (modelman used to stop omlx and clear that flag before
+    # the start was even attempted.) Routes are still synced, once, before
+    # the failure is reported.
     state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    calls = _stub_wt_start(monkeypatch, error=wt_bridge.WtBridgeError("warmup timed out"))
     with (
-        patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control.stop_provider") as mock_stop_one,
+        pytest.raises(LocalControlError, match="warmup timed out"),
     ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="", direct_url="", ok=False, error="warmup timed out"
-        )
-        with pytest.raises(LocalControlError, match="warmup timed out"):
-            start_local_model(_registry(), "omlx/model-b", state_path)
-    mock_stop_one.assert_called_once_with("omlx")
+        start_local_model(_registry(), "omlx/model-b", state_path)
+    assert calls == [("omlx/model-b", True)]
+    mock_stop_one.assert_not_called()
+    mock_isolate.assert_not_called()
     state = load_state(state_path)
-    assert state.get("omlx/model-a").running is False
+    assert state.get("omlx/model-a").running is True
     assert state.get("omlx/model-b").running is False
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 
 @pytest.mark.parametrize("fails_by", ["not_ok", "raises"])
 def test_start_isolate_failure_after_occupant_stop_syncs_routes_once(tmp_path, wt_calls, fails_by):
-    # The omlx occupant is torn down BEFORE isolate runs; when the new
-    # model's isolate then fails, routes must still follow live state (the
+    # The mtplx occupant is torn down INSIDE isolate; when the new model's
+    # isolate then fails, routes must still follow live state (the
     # occupant's route must not keep pointing at a dead backend) — exactly
-    # one sync, and the failure is still raised.
+    # one sync, and the failure is still raised. (mtplx, not omlx: an omlx
+    # start goes through wt and never reaches isolate_provider, #213.)
     from modelman.benchmark.errors import BenchmarkError
 
-    state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    state_path = _state_path(tmp_path, {"mtplx/org/model-a": True})
     with (
         patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
@@ -369,19 +389,20 @@ def test_start_isolate_failure_after_occupant_stop_syncs_routes_once(tmp_path, w
             mock_isolate.side_effect = BenchmarkError("warmup timed out")
         else:
             mock_isolate.return_value = IsolateResult(
-                provider="omlx", model="", direct_url="", ok=False, error="warmup timed out"
+                provider="mtplx", model="", direct_url="", ok=False, error="warmup timed out"
             )
         with pytest.raises(LocalControlError, match="warmup timed out"):
-            start_local_model(_registry(), "omlx/model-b", state_path)
+            start_local_model(_mtplx_registry(), "mtplx/org/model-b", state_path)
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 
 def test_start_isolate_failure_includes_sync_warnings_in_error(tmp_path):
     # The failure branch raises, so a failed sync's warning travels in the
-    # error text rather than being dropped.
+    # error text rather than being dropped. (mtplx: the isolate path; the
+    # omlx start's twin is test_start_omlx_failure_includes_sync_warnings.)
     from modelman import wt_bridge
 
-    state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    state_path = _state_path(tmp_path, {"mtplx/org/model-a": True})
     with (
         patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
@@ -389,25 +410,26 @@ def test_start_isolate_failure_includes_sync_warnings_in_error(tmp_path):
         patch.object(wt_bridge, "sync", side_effect=wt_bridge.WtBridgeError("wt not on PATH")),
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="", direct_url="", ok=False, error="warmup timed out"
+            provider="mtplx", model="", direct_url="", ok=False, error="warmup timed out"
         )
         with pytest.raises(LocalControlError, match="warmup timed out") as excinfo:
-            start_local_model(_registry(), "omlx/model-b", state_path)
+            start_local_model(_mtplx_registry(), "mtplx/org/model-b", state_path)
     assert "may not be synced" in str(excinfo.value)
 
 
 def test_start_successful_occupant_replacement_syncs_routes_once(tmp_path, wt_calls):
-    # No double sync on the success path, occupant replacement included.
-    state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    # No double sync on the success path, occupant replacement included
+    # (mtplx: omlx replaces nothing and starts through wt, #213).
+    state_path = _state_path(tmp_path, {"mtplx/org/model-a": True})
     with (
         patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control.stop_provider"),
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="model-b", direct_url="http://x", ok=True, error=None
+            provider="mtplx", model="org/model-b", direct_url="http://x", ok=True, error=None
         )
-        start_local_model(_registry(), "omlx/model-b", state_path)
+        start_local_model(_mtplx_registry(), "mtplx/org/model-b", state_path)
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 
@@ -436,7 +458,7 @@ def test_start_isolate_failure_does_not_clear_concurrent_writes(tmp_path):
         with locked_state(state_path) as fresh:
             fresh.models["concurrent/new-model"] = ModelState(running=True)
         return IsolateResult(
-            provider="omlx", model="", direct_url="", ok=False, error="warmup timed out"
+            provider="mtplx", model="", direct_url="", ok=False, error="warmup timed out"
         )
 
     with (
@@ -444,20 +466,22 @@ def test_start_isolate_failure_does_not_clear_concurrent_writes(tmp_path):
         patch("modelman.local_control.isolate_provider", side_effect=concurrent_writer_and_fail),
         pytest.raises(LocalControlError, match="warmup timed out"),
     ):
-        start_local_model(_registry(), "omlx/model-a", state_path)
+        start_local_model(_mtplx_registry(), "mtplx/org/model-a", state_path)
     state = load_state(state_path)
     assert state.get("concurrent/new-model").running is True
-    assert state.get("omlx/model-a").running is False
+    assert state.get("mtplx/org/model-a").running is False
 
 
-def test_stop_clears_flag_and_stops_provider(tmp_path):
-    # A non-ollama, non-mtplx provider's stop goes through stop_provider()
-    # (the same-provider-only isolation helper), and the model's flag is
-    # cleared on success.
+def test_stop_omlx_clears_flag_without_stopping_the_provider(tmp_path, monkeypatch):
+    # An omlx model's stop goes to wt, which unloads that one model (#213);
+    # stop_provider() — `omlx stop`, halting the whole service — is not run.
+    # The model's flag is cleared on success.
     state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    calls, _ = _stub_wt_stop(monkeypatch)
     with patch("modelman.local_control.stop_provider") as mock_stop:
         result = stop_local_model("omlx/model-a", state_path)
-    mock_stop.assert_called_once_with("omlx")
+    assert calls == ["omlx/model-a"]
+    mock_stop.assert_not_called()
     assert result.stopped_model_id == "omlx/model-a"
     assert load_state(state_path).get("omlx/model-a").running is False
 
@@ -473,8 +497,8 @@ def test_stop_noop_when_model_present_but_not_running(tmp_path):
     assert result.stopped_model_id is None
 
 
-def test_stop_does_not_clobber_concurrent_write_to_another_model(tmp_path):
-    # stop_provider() runs OUTSIDE the state lock; a concurrent `modelman
+def test_stop_does_not_clobber_concurrent_write_to_another_model(tmp_path, monkeypatch):
+    # The stop (wt's, for omlx) runs OUTSIDE the state lock; a concurrent `modelman
     # start` that flags a DIFFERENT model running while our own stop is
     # mid-flight must not be clobbered by our own flag clear — locked_state
     # re-reads fresh from disk before mutating only our own key.
@@ -484,63 +508,63 @@ def test_stop_does_not_clobber_concurrent_write_to_another_model(tmp_path):
         with locked_state(state_path) as fresh:
             fresh.models["omlx/model-b"] = ModelState(running=True)
 
-    with patch("modelman.local_control.stop_provider", side_effect=concurrent_writer):
-        result = stop_local_model("omlx/model-a", state_path)
+    monkeypatch.setattr(local_control.wt_bridge, "stop", concurrent_writer)
+    result = stop_local_model("omlx/model-a", state_path)
     assert result.stopped_model_id == "omlx/model-a"
     state = load_state(state_path)
     assert state.get("omlx/model-a").running is False
     assert state.get("omlx/model-b").running is True
 
 
-def test_start_does_not_stop_a_different_provider(tmp_path):
+def test_start_does_not_stop_a_different_provider(tmp_path, monkeypatch):
     # Cross-provider concurrency: starting an omlx model while an ollama
     # model is already flagged running must leave ollama's flag alone and
     # never call the global stop-everyone-else path.
     state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True})
+    calls = _stub_wt_start(
+        monkeypatch, wt_bridge.StartOutcome(id="omlx/model-a", status="started", unloaded=[])
+    )
     with (
-        patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control.stop_all_local_providers") as mock_stop_all,
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx",
-            model="model-a",
-            direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
         result = start_local_model(_registry(), "omlx/model-a", state_path)
+    assert calls == [("omlx/model-a", True)]
     mock_stop_all.assert_not_called()
-    mock_stop_one.assert_not_called()  # nothing else was running on omlx
-    assert mock_isolate.call_args.kwargs["solo"] is True
+    mock_stop_one.assert_not_called()
+    mock_isolate.assert_not_called()  # an omlx start is wt's (#213)
     assert result.other_running == ["ollama/qwen3.8:27b-mlx"]
     state = load_state(state_path)
     assert state.get("omlx/model-a").running is True
     assert state.get("ollama/qwen3.8:27b-mlx").running is True  # untouched
 
 
-def test_start_replaces_same_provider_occupant(tmp_path):
-    # omlx/mtplx/mlx_lm_server are single-model-per-process: starting a
-    # DIFFERENT model on the same provider must stop the old one first.
+def test_start_omlx_clears_a_sibling_only_when_wt_reports_it_unloaded(
+    tmp_path, monkeypatch, wt_calls
+):
+    # omlx used to be treated as single-model-per-process: starting a
+    # DIFFERENT omlx model stopped the service first and cleared the old
+    # model's flag. It is a pool (#213): the start goes to wt, the service is
+    # never stopped, and the old model's flag goes only because wt reported
+    # omlx unloaded it. One sync closes the start.
     state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    calls = _stub_wt_start(
+        monkeypatch,
+        wt_bridge.StartOutcome(id="omlx/model-b", status="started", unloaded=["omlx/model-a"]),
+    )
     with (
-        patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx",
-            model="model-b",
-            direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
         start_local_model(_registry(), "omlx/model-b", state_path)
-    mock_stop_one.assert_called_once_with("omlx")
+    assert calls == [("omlx/model-b", True)]
+    mock_stop_one.assert_not_called()
+    mock_isolate.assert_not_called()
     state = load_state(state_path)
     assert state.get("omlx/model-b").running is True
     assert state.get("omlx/model-a").running is False
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 
 def test_start_replaces_same_provider_occupant_with_unrelated_provider_also_running(tmp_path):
@@ -550,39 +574,42 @@ def test_start_replaces_same_provider_occupant_with_unrelated_provider_also_runn
     # only afterward filtered by "is this id a member of provider_model_ids"
     # — so with an ollama model ALSO flagged running, dict iteration order
     # could hand that buggy version ollama's id first, its post-hoc filter
-    # would reject it (not an omlx id) and stop there, silently returning
-    # None instead of continuing on to find the real omlx occupant. The
+    # would reject it (not an mtplx id) and stop there, silently returning
+    # None instead of continuing on to find the real mtplx occupant. The
     # correct implementation iterates provider_model_ids itself, so it can
     # never be distracted by an unrelated provider's running flag —
-    # regardless of insertion/iteration order.
-    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True, "omlx/model-a": True})
+    # regardless of insertion/iteration order. (mtplx: omlx is a pool with
+    # no single occupant since #213, so the lookup no longer runs for it.)
+    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True, "mtplx/org/model-a": True})
     with (
         patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx",
-            model="model-b",
-            direct_url="http://localhost:8000/v1/chat/completions",
+            provider="mtplx",
+            model="org/model-b",
+            direct_url="http://localhost:8003/v1/chat/completions",
             ok=True,
             error=None,
         )
-        start_local_model(_registry(), "omlx/model-b", state_path)
-    mock_stop_one.assert_called_once_with("omlx")
+        start_local_model(_mtplx_registry(), "mtplx/org/model-b", state_path)
+    mock_stop_one.assert_not_called()  # mtplx replaces its occupant inside isolate
     state = load_state(state_path)
-    assert state.get("omlx/model-b").running is True
-    assert state.get("omlx/model-a").running is False  # the real occupant, cleared
+    assert state.get("mtplx/org/model-b").running is True
+    assert state.get("mtplx/org/model-a").running is False  # the real occupant, cleared
     assert state.get("ollama/qwen3.8:27b-mlx").running is True  # unrelated, untouched
 
 
-def test_start_replaces_omlx_6bit_occupant_when_starting_plain_omlx(tmp_path):
+def test_start_clears_an_omlx_6bit_model_wt_unloaded_when_starting_plain_omlx(
+    tmp_path, monkeypatch
+):
     # omlx and omlx-6bit are two registry provider ids sharing ONE physical
-    # port/process (8000): starting a plain-omlx model while an omlx-6bit
-    # model is flagged running must still find and replace that occupant —
-    # treating the two provider ids as independent occupancy domains would
-    # leave the 6-bit model's flag permanently stale (nothing else would
-    # ever displace it to trigger a probe-based self-heal).
+    # port/process (8000), so one pool (#213): starting a plain-omlx model
+    # can make omlx unload a model flagged under the omlx-6bit spelling. wt
+    # reports it under that id and its flag must go — treating the two
+    # provider ids as independent would leave the 6-bit model's flag stale.
+    # The service is not stopped to get there, as it used to be.
     registry = _registry()
     registry.providers.append(
         ProviderEntry(
@@ -599,23 +626,22 @@ def test_start_replaces_omlx_6bit_occupant_when_starting_plain_omlx(tmp_path):
         )
     )
     state_path = _state_path(tmp_path, {"omlx-6bit/model-c": True})
+    calls = _stub_wt_start(
+        monkeypatch,
+        wt_bridge.StartOutcome(id="omlx/model-a", status="started", unloaded=["omlx-6bit/model-c"]),
+    )
     with (
-        patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx",
-            model="model-a",
-            direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
-        start_local_model(registry, "omlx/model-a", state_path)
-    mock_stop_one.assert_called_once_with("omlx")
+        result = start_local_model(registry, "omlx/model-a", state_path)
+    assert calls == [("omlx/model-a", True)]
+    mock_stop_one.assert_not_called()
+    mock_isolate.assert_not_called()
+    assert result.unloaded == ["omlx-6bit/model-c"]
     state = load_state(state_path)
     assert state.get("omlx/model-a").running is True
-    assert state.get("omlx-6bit/model-c").running is False  # cross-spelling occupant, cleared
+    assert state.get("omlx-6bit/model-c").running is False  # cross-spelling sibling, cleared
 
 
 def test_start_replaces_mlx_lm_server_occupant_and_clears_its_flag(tmp_path):
@@ -1257,11 +1283,11 @@ def test_start_discovered_artifact_runs_without_registering(tmp_path, wt_calls):
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]] * 2
 
 
-def test_start_discovered_omlx_artifact_drives_the_provider_by_its_name(tmp_path):
-    # The unsaved entry must carry enough for the provider to start the
-    # artifact: omlx gets the on-disk name through its model env var, using
-    # the real OMLXProvider listing (not the name-keyed stub) because omlx's
-    # artifact names are directory basenames. registry.toml stays untouched.
+def test_start_discovered_omlx_artifact_drives_the_provider_by_its_name(tmp_path, monkeypatch):
+    # An unregistered omlx artifact is started through wt under its
+    # discovered id — the id wt itself gives it — resolved from the real
+    # OMLXProvider listing (not the name-keyed stub) because omlx's artifact
+    # names are directory basenames. registry.toml stays untouched.
     model_dir = _omlx_model_dir(tmp_path, basename="Qwen3.8-27B-4bit")
     registry = Registry(
         providers=[
@@ -1278,23 +1304,16 @@ def test_start_discovered_omlx_artifact_drives_the_provider_by_its_name(tmp_path
     save_registry(registry, registry_path)
     state_path = _state_path(tmp_path)
 
-    with (
-        patch("modelman.local_control.isolate_provider") as mock_isolate,
-        patch("modelman.local_control._probe_running", return_value=False),
-    ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx",
-            model="Qwen3.8-27B-4bit",
-            direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
+    calls = _stub_wt_start(
+        monkeypatch,
+        wt_bridge.StartOutcome(id="omlx/Qwen3.8-27B-4bit", status="started", unloaded=[]),
+    )
+    with patch("modelman.local_control.isolate_provider") as mock_isolate:
         result = start_local_model(registry, "Qwen3.8-27B-4bit", state_path)
 
     assert result.model_id == "omlx/Qwen3.8-27B-4bit"
-    mock_isolate.assert_called_once_with(
-        "omlx", env={"LLM_ISOLATE_OMLX_4BIT_MODEL": "Qwen3.8-27B-4bit"}, solo=True
-    )
+    assert calls == [("omlx/Qwen3.8-27B-4bit", True)]
+    mock_isolate.assert_not_called()
     assert load_registry(registry_path).models == []
     assert load_state(state_path).get("omlx/Qwen3.8-27B-4bit").running is True
 
@@ -1619,9 +1638,12 @@ def test_inventory_skips_providers_with_no_registered_class():
 
 def _omlx_model_dir(tmp_path: Path, basename: str = "Qwen3.8-27B-4bit") -> Path:
     """Create ~/.omlx/models-style <model_dir>/<repo basename>/ with a file
-    in it and return the model_dir."""
+    in it and return the model_dir. config.json is what makes omlx (and
+    modelman's scan) read the directory as a model; it is empty so the
+    size the tests assert stays that of the weights."""
     model_dir = tmp_path / "omlx-models"
     (model_dir / basename).mkdir(parents=True)
+    (model_dir / basename / "config.json").write_text("")
     (model_dir / basename / "weights.safetensors").write_bytes(b"x" * 2048)
     return model_dir
 
@@ -1696,7 +1718,9 @@ def test_inventory_excludes_mlx_lm_server_artifacts_from_discovery(tmp_path):
     assert inventory.unqueryable_providers == []
 
 
-def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(tmp_path):
+def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(
+    tmp_path, monkeypatch
+):
     # The duplicate-registration bug: the old "discovered" listing told the
     # user to type the on-disk basename, but the native-name match compared
     # it verbatim against model_name (the full repo id), missed, and fell
@@ -1710,17 +1734,13 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
     litellm_path = tmp_path / "config.yaml"
     litellm_path.write_text("model_list: []\n")
 
+    calls = _stub_wt_start(
+        monkeypatch, wt_bridge.StartOutcome(id=_OMLX_MODEL_ID, status="started", unloaded=[])
+    )
     with (
         patch("modelman.local_control.stop_all_local_providers"),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx",
-            model="mlx-community/Qwen3.8-27B-4bit",
-            direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
         result = start_local_model(
             registry,
             "Qwen3.8-27B-4bit",
@@ -1729,16 +1749,16 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
         )
 
     assert result.model_id == _OMLX_MODEL_ID
-    mock_isolate.assert_called_once_with(
-        "omlx", env={"LLM_ISOLATE_OMLX_4BIT_MODEL": "mlx-community/Qwen3.8-27B-4bit"}, solo=True
-    )
+    # wt is asked for the REGISTERED id, not a second, discovered one.
+    assert calls == [(_OMLX_MODEL_ID, True)]
+    mock_isolate.assert_not_called()
     # Singular registry entry and an untouched LiteLLM config: nothing was
     # re-registered or re-routed.
     assert [m.id for m in load_registry(registry_path).models] == [_OMLX_MODEL_ID]
     assert litellm_path.read_text() == "model_list: []\n"
 
 
-def test_find_discovered_omlx_basename_does_not_rediscover_registered_model(tmp_path):
+def test_find_discovered_omlx_basename_does_not_rediscover_registered_model(tmp_path, monkeypatch):
     # The same join, exercised through start_local_model's resolution path:
     # an already-registered omlx model must never be started as a
     # discovered artifact just because its on-disk spelling differs.
@@ -1747,21 +1767,14 @@ def test_find_discovered_omlx_basename_does_not_rediscover_registered_model(tmp_
     save_registry(registry, registry_path)
     state_path = _state_path(tmp_path)
 
-    with (
-        patch("modelman.local_control.stop_all_local_providers"),
-        patch("modelman.local_control.isolate_provider") as mock_isolate,
-    ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx",
-            model="mlx-community/Qwen3.8-27B-4bit",
-            direct_url=None,
-            ok=True,
-            error=None,
-        )
-        # The full repo id must keep resolving too (registry-id lookup misses
-        # it; the native-name match is what catches it).
-        result = start_local_model(registry, "mlx-community/Qwen3.8-27B-4bit", state_path)
+    calls = _stub_wt_start(
+        monkeypatch, wt_bridge.StartOutcome(id=_OMLX_MODEL_ID, status="started", unloaded=[])
+    )
+    # The full repo id must keep resolving too (registry-id lookup misses
+    # it; the native-name match is what catches it).
+    result = start_local_model(registry, "mlx-community/Qwen3.8-27B-4bit", state_path)
     assert result.model_id == _OMLX_MODEL_ID
+    assert calls == [(_OMLX_MODEL_ID, True)]
 
 
 def test_inventory_flags_providers_whose_presence_check_raises():
@@ -1842,13 +1855,16 @@ def test_running_model_ids_verifies_a_discovered_model_by_probing_it(tmp_path):
 
 
 def test_same_provider_occupant_sees_a_flagged_discovered_model(tmp_path):
-    # Starting a registered omlx model replaces whatever omlx serves, and a
+    # Starting a registered mtplx model replaces whatever mtplx serves, and a
     # model started without a registry entry is flagged only under its
     # discovered id: the occupant lookup must find it, or its flag would
-    # outlive the replacement.
-    state_path = _state_path(tmp_path, {"omlx/stray-4bit": True})
-    occupant = same_provider_occupant(_registry(), load_state(state_path), "omlx/model-a", "omlx")
-    assert occupant == "omlx/stray-4bit"
+    # outlive the replacement. omlx is a pool (#213): a flagged discovered
+    # omlx model is no occupant, and nothing is replaced as a matter of course.
+    state_path = _state_path(tmp_path, {"mtplx/org/stray": True, "omlx/stray-4bit": True})
+    state = load_state(state_path)
+    occupant = same_provider_occupant(_mtplx_registry(), state, "mtplx/org/model-a", "mtplx")
+    assert occupant == "mtplx/org/stray"
+    assert same_provider_occupant(_registry(), state, "omlx/model-a", "omlx") is None
 
 
 def test_running_model_ids_verifies_a_discarded_registration_by_repo_id(tmp_path):
@@ -2018,14 +2034,16 @@ def _omlx_6bit_only_registry() -> Registry:
     )
 
 
-def test_start_discovered_artifact_on_an_omlx_6bit_only_registry_uses_the_family_id(tmp_path):
+def test_start_discovered_artifact_on_an_omlx_6bit_only_registry_uses_the_family_id(
+    tmp_path, monkeypatch
+):
     # A registry whose only omlx-family provider row is `omlx-6bit`: wt
     # still routes an unregistered artifact as `omlx/<name>` (family-
     # prefixed) with the omlx-6bit row as its provider. If modelman can
-    # enumerate that row (stubbed here), the flag must sit under wt's id —
-    # not `omlx-6bit/<name>` — while the lifecycle is still driven through
-    # the omlx-6bit row; the probe, the occupant lookup and `modelman stop`
-    # must all resolve the family-prefixed id back to that one server.
+    # enumerate that row (stubbed here), wt must be asked to start wt's id
+    # and the flag must sit under it — not `omlx-6bit/<name>`; the probe and
+    # `modelman stop` must both resolve the family-prefixed id back to that
+    # one server, and the pool has no occupant under either spelling (#213).
     registry = _omlx_6bit_only_registry()
     state_path = _state_path(tmp_path)
     mapping = {
@@ -2033,23 +2051,19 @@ def test_start_discovered_artifact_on_an_omlx_6bit_only_registry_uses_the_family
             {"variant_id": "Qwen3.8-27B-6bit", "path": "/omlx/Qwen3.8-27B-6bit", "size_bytes": None}
         ]
     }
+    start_calls = _stub_wt_start(
+        monkeypatch,
+        wt_bridge.StartOutcome(id="omlx/Qwen3.8-27B-6bit", status="started", unloaded=[]),
+    )
     with (
         _patch_provider_local_models(mapping),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx-6bit",
-            model="Qwen3.8-27B-6bit",
-            direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
         result = start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
 
     assert result.model_id == "omlx/Qwen3.8-27B-6bit"
-    mock_isolate.assert_called_once_with(
-        "omlx-6bit", env={"LLM_ISOLATE_OMLX_6BIT_MODEL": "Qwen3.8-27B-6bit"}, solo=True
-    )
+    assert start_calls == [("omlx/Qwen3.8-27B-6bit", True)]
+    mock_isolate.assert_not_called()
     state = load_state(state_path)
     assert state.get("omlx/Qwen3.8-27B-6bit").running is True
     assert "omlx-6bit/Qwen3.8-27B-6bit" not in state.models
@@ -2066,20 +2080,20 @@ def test_start_discovered_artifact_on_an_omlx_6bit_only_registry_uses_the_family
         assert running_model_ids(registry, state, state_path) == ["omlx/Qwen3.8-27B-6bit"]
     assert probed == [("omlx-6bit", "Qwen3.8-27B-6bit")]
 
-    # Occupant of the shared omlx server, seen from a registered omlx-6bit model.
-    assert (
-        same_provider_occupant(registry, state, "omlx-6bit/registered", "omlx-6bit")
-        == "omlx/Qwen3.8-27B-6bit"
-    )
+    # The shared omlx server is a pool: no occupant, seen from a registered
+    # omlx-6bit model or otherwise.
+    assert same_provider_occupant(registry, state, "omlx-6bit/registered", "omlx-6bit") is None
 
+    stop_calls, _ = _stub_wt_stop(monkeypatch)
     with patch("modelman.local_control.stop_provider") as mock_stop:
         stopped = stop_local_model("omlx/Qwen3.8-27B-6bit", state_path)
-    mock_stop.assert_called_once_with("omlx")
+    assert stop_calls == ["omlx/Qwen3.8-27B-6bit"]
+    mock_stop.assert_not_called()
     assert stopped.stopped_model_id == "omlx/Qwen3.8-27B-6bit"
     assert load_state(state_path).get("omlx/Qwen3.8-27B-6bit").running is False
 
 
-def test_start_on_an_omlx_6bit_only_registry_with_the_real_providers(tmp_path):
+def test_start_on_an_omlx_6bit_only_registry_with_the_real_providers(tmp_path, monkeypatch):
     # #194: no Provider class is registered under "omlx-6bit" — it is the
     # omlx server reached through a second registry row — so a registry whose
     # only omlx-family row is `omlx-6bit` could not be enumerated at all:
@@ -2105,20 +2119,16 @@ def test_start_on_an_omlx_6bit_only_registry_with_the_real_providers(tmp_path):
     assert [(d.model_id, d.provider_id) for d in inventory.discovered] == [
         ("omlx/Qwen3.8-27B-6bit", "omlx-6bit")
     ]
-    with patch("modelman.local_control.isolate_provider") as mock_isolate:
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx-6bit",
-            model="Qwen3.8-27B-6bit",
-            direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True,
-            error=None,
-        )
-        result = start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
-    # wt's id (the family's), driven through the row that exists.
-    assert result.model_id == "omlx/Qwen3.8-27B-6bit"
-    mock_isolate.assert_called_once_with(
-        "omlx-6bit", env={"LLM_ISOLATE_OMLX_6BIT_MODEL": "Qwen3.8-27B-6bit"}, solo=True
+    calls = _stub_wt_start(
+        monkeypatch,
+        wt_bridge.StartOutcome(id="omlx/Qwen3.8-27B-6bit", status="started", unloaded=[]),
     )
+    with patch("modelman.local_control.isolate_provider") as mock_isolate:
+        result = start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
+    # wt's id (the family's), which is the id wt is asked to start.
+    assert result.model_id == "omlx/Qwen3.8-27B-6bit"
+    assert calls == [("omlx/Qwen3.8-27B-6bit", True)]
+    mock_isolate.assert_not_called()
     assert load_state(state_path).get("omlx/Qwen3.8-27B-6bit").running is True
 
 
@@ -2266,7 +2276,7 @@ def test_ollama_overlay_with_another_tag_does_not_own_the_latest_artifact():
     assert [d.model_id for d in discovered] == ["ollama/llama3.2:latest"]
 
 
-def test_omlx_artifact_registered_on_the_other_family_row_is_not_discovered(tmp_path):
+def test_omlx_artifact_registered_on_the_other_family_row_is_not_discovered(tmp_path, monkeypatch):
     # omlx and omlx-6bit are one server and (for wt) one family: an overlay
     # on the omlx-6bit row consumes the artifact, so wt never lists it as
     # discovered. Matching per exact provider row re-discovered it through
@@ -2293,16 +2303,15 @@ def test_omlx_artifact_registered_on_the_other_family_row_is_not_discovered(tmp_
             {"variant_id": "Qwen3.8-27B-6bit", "path": "/omlx/Qwen3.8-27B-6bit", "size_bytes": None}
         ]
     }
-    with (
-        _patch_provider_local_models(mapping),
-        patch("modelman.local_control.isolate_provider") as mock_isolate,
-    ):
-        mock_isolate.return_value = IsolateResult(
-            provider="omlx-6bit", model="x", direct_url=None, ok=True, error=None
-        )
+    calls = _stub_wt_start(
+        monkeypatch,
+        wt_bridge.StartOutcome(id="omlx-6bit/org--Qwen3.8-27B-6bit", status="started", unloaded=[]),
+    )
+    with _patch_provider_local_models(mapping):
         assert discover_unregistered_models(registry) == []
         result = start_local_model(registry, "Qwen3.8-27B-6bit", state_path)
     assert result.model_id == "omlx-6bit/org--Qwen3.8-27B-6bit"
+    assert calls == [("omlx-6bit/org--Qwen3.8-27B-6bit", True)]
 
 
 def test_start_refuses_a_discovered_id_that_is_a_registry_models_id(tmp_path):
@@ -2335,12 +2344,148 @@ def test_start_refuses_a_discovered_id_that_is_a_registry_models_id(tmp_path):
     assert load_state(state_path).models == {}
 
 
-def _omlx_probe(listed, health):
+def test_omlx_probe_sees_a_model_that_is_still_loading(monkeypatch):
+    # #213 item 6: /health's loaded_count counts finished loads only, so a
+    # pool with one model mid-load read as "nothing loaded" and modelman
+    # cleared the flag of a model that was on its way up. Status reports
+    # is_loading, so it is asked first.
+    def fake_json(url):
+        if url.endswith("/v1/models/status"):
+            return {"models": [{"id": "A-4bit", "loaded": False, "is_loading": True}]}
+        if url.endswith("/health"):
+            return {"engine_pool": {"loaded_count": 0, "model_count": 1}}
+        return None
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
+    assert local_control._omlx_loaded("http://x", ["A-4bit"]) == ["A-4bit"]
+
+
+def test_omlx_probe_asks_wt_when_status_is_refused(monkeypatch):
+    # A keyed omlx refuses the keyless status read; wt holds the registry's
+    # key, so it is asked. When wt cannot say either the answer is None
+    # (unknown), which leaves a running flag alone (#249).
+    def fake_json(url):
+        if url.endswith("/health"):
+            return {"engine_pool": {"loaded_count": 1, "model_count": 2}}
+        return {"error": {"message": "API key required"}}
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: ["B-4bit"])
+    assert local_control._omlx_loaded("http://x", ["A-4bit", "B-4bit"]) == ["B-4bit"]
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: None)
+    assert local_control._omlx_loaded("http://x", ["A-4bit", "B-4bit"]) is None
+
+
+def test_omlx_probe_reads_the_list_on_an_omlx_without_status(monkeypatch):
+    # An omlx old enough to have neither /health counts nor a status endpoint:
+    # its /health ANSWERS, with no pool counts, and its /v1/models list is all
+    # there is, as before.
+    def fake_json(url):
+        return {"status": "healthy"} if url.endswith("/health") else None
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
+    assert local_control._omlx_loaded("http://x", ["A-4bit"]) == ["A-4bit"]
+
+
+def _omlx_answers_nothing(monkeypatch, refused):
+    """An omlx whose status, `wt served` and /health reads all fail, with the
+    connection to it refused or not. Returns the urls the refused check saw."""
+    refused_urls: list[str] = []
+
+    def fake_refused(url, timeout=0.0):
+        refused_urls.append(url)
+        return refused
+
+    monkeypatch.setattr(local_control, "_http_json", lambda url: None)
+    monkeypatch.setattr(local_control, "_http_models_ids", lambda url: [])
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: None)
+    monkeypatch.setattr(local_control, "_connection_refused", fake_refused)
+    return refused_urls
+
+
+def test_omlx_probe_cannot_say_when_nothing_answered_at_all(tmp_path, monkeypatch):
+    # Final review F2: status, `wt served` and /health all failed without the
+    # connection being refused (an omlx too busy loading another model to
+    # answer inside the probe timeout). The probe returned the /v1/models
+    # list, which had failed too and was [], so it read "not running" and
+    # running_model_ids cleared the flag of a model that was still resident.
+    refused_urls = _omlx_answers_nothing(monkeypatch, refused=False)
+
+    assert local_control._omlx_loaded("http://x", []) is None
+    assert refused_urls == ["http://x/health"]
+    assert _probe_running("omlx", "org/A-4bit", "http://x") is None
+
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    state = load_state(state_path)
+    assert running_model_ids(_omlx_pool_registry(), state, state_path) == ["omlx/a"]
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_omlx_probe_reads_a_refused_connection_as_nothing_loaded(monkeypatch):
+    # Nothing listens on omlx's port: no server, so nothing is loaded. That is
+    # a positive answer, and the one failure that may clear a flag.
+    refused_urls = _omlx_answers_nothing(monkeypatch, refused=True)
+
+    assert local_control._omlx_loaded("http://x", []) == []
+    assert refused_urls == ["http://x/health"]
+    assert _probe_running("omlx", "org/A-4bit", "http://x") is False
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        [{"id": "A"}],
+        [{"id": "A", "loaded": "yes"}],
+        [{"id": "A", "loaded": True}, {"id": "B", "is_loading": False}],
+        [{"id": "A", "loaded": True}, "B"],
+    ],
+    ids=["no-loaded-key", "loaded-not-boolean", "one-entry-without", "entry-not-an-object"],
+)
+def test_omlx_status_with_an_entry_lacking_boolean_loaded_is_no_listing(monkeypatch, models):
+    # Final review F5: an entry with no boolean `loaded` read as "not loaded".
+    # Were omlx to rename the key, every status answer would say nothing is
+    # loaded and every omlx flag would clear. A listing this code cannot read
+    # is no listing.
+    def fake_json(url):
+        if url.endswith("/v1/models/status"):
+            return {"models": models}
+        return {"engine_pool": {"loaded_count": 1, "model_count": 2}}
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: None)
+    assert local_control._omlx_status_loaded("http://x") is None
+    assert _probe_running("omlx", "B", "http://x") is None
+
+
+def test_omlx_status_with_no_models_is_an_answer(monkeypatch):
+    # An empty pool is a listing that says nothing is loaded, not "no listing".
+    monkeypatch.setattr(local_control, "_http_json", lambda url: {"models": []})
+    assert local_control._omlx_status_loaded("http://x") == []
+
+
+def test_the_omlx_probe_never_runs_the_real_wt_served_by_default(monkeypatch):
+    # Final review F6: wt_bridge.served_ids shells out directly, past both
+    # bridge seams, and the probe reaches it whenever status gives no listing
+    # (the suite's default). conftest must stub it.
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError("the probe ran `wt served`")
+
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: "/usr/local/bin/wt")
+    monkeypatch.setattr(wt_bridge.subprocess, "run", no_subprocess)
+    assert local_control._omlx_loaded("http://x", []) is None
+
+
+def _omlx_probe(listed, health, status=None):
     """_probe_running for omlx/A against a server listing `listed` on
-    /v1/models and answering /health with `health` (None = no answer)."""
+    /v1/models, answering /health with `health` and /v1/models/status with
+    `status` (None = no answer from either)."""
+
+    def answer(url):
+        return status if url.endswith("/v1/models/status") else health
+
     with (
         patch("modelman.local_control._http_models_ids", return_value=listed),
-        patch("modelman.local_control._http_json", return_value=health),
+        patch("modelman.local_control._http_json", side_effect=answer),
     ):
         return _probe_running("omlx", "A", "http://localhost:8000")
 
@@ -2350,19 +2495,21 @@ def test_probe_running_omlx_listed_but_unloaded_is_not_running():
     # so a listed model read as "running" for as long as the service was up —
     # and `modelman start` on it was a no-op exactly when a load was needed.
     # /health carries the pool's counts with no key: nothing loaded means not
-    # running, whatever the list says.
+    # running, whatever the list says. Status is asked first and says the same.
     idle = {"status": "healthy", "engine_pool": {"model_count": 2, "loaded_count": 0}}
-    assert _omlx_probe(["A", "B"], idle) is False
+    none_loaded = {"models": [{"id": "A", "loaded": False}, {"id": "B", "loaded": False}]}
+    assert _omlx_probe(["A", "B"], idle, none_loaded) is False
 
 
 def test_probe_running_omlx_all_loaded_reads_the_list():
     # Every pool model loaded and every one listed: the list is the answer.
     full = {"engine_pool": {"model_count": 2, "loaded_count": 2}}
-    assert _omlx_probe(["A", "B"], full) is True
-    # A hidden model is counted but not listed, so the list is not the pool
-    # and "all loaded" cannot be read off it — unknown (#249), not "not
-    # running": a hidden sibling may be the loaded one.
-    assert _omlx_probe(["A"], full) is None
+    both = {"models": [{"id": "A", "loaded": True}, {"id": "B", "loaded": True}]}
+    assert _omlx_probe(["A", "B"], full, both) is True
+    # A hidden model is counted but not listed; status reports the whole pool,
+    # so A reads as loaded all the same.
+    hidden = {"models": [{"id": "A", "loaded": True}, {"id": "H", "loaded": True}]}
+    assert _omlx_probe(["A"], full, hidden) is True
 
 
 def _omlx_probe_with_status(status):
@@ -2398,6 +2545,27 @@ def test_probe_running_omlx_mixed_pool_asks_status_without_a_key():
     assert _omlx_probe_with_status(loading) is True
 
 
+def test_running_model_ids_reads_the_omlx_pool_once_for_all_its_models(tmp_path):
+    # A pool holds several flagged models, and its answer is the same for
+    # each. Read per model, a keyed omlx cost one `wt served` subprocess per
+    # flagged model on every TUI mount and `modelman sync`.
+    state_path = _state_path(tmp_path, {"omlx/a": True, "omlx/b": True})
+    refused = {"detail": "Invalid API key"}
+    with (
+        patch("modelman.local_control._http_models_ids", return_value=[]) as listed,
+        patch("modelman.local_control._http_json", return_value=refused),
+        patch("modelman.local_control.wt_bridge.served_ids", return_value=["A-4bit"]) as wt_served,
+    ):
+        running = running_model_ids(_omlx_pool_registry(), load_state(state_path), state_path)
+        assert running == ["omlx/a"]
+        wt_served.assert_called_once_with("omlx")
+        listed.assert_called_once()
+        # The memo ends with the pass: the next probe reads the pool again.
+        assert _probe_running("omlx", "org/A-4bit", None) is True
+        assert wt_served.call_count == 2
+    assert not load_state(state_path).get("omlx/b").running
+
+
 def test_probe_running_omlx_asks_wt_when_status_wants_a_key():
     # An omlx with an API key refuses status without it, and modelman
     # resolves no secret_ref. wt does, so it is asked — and its answer
@@ -2430,11 +2598,14 @@ def test_probe_running_omlx_mixed_pool_is_unknown_when_nothing_can_say():
 
 
 def test_probe_running_omlx_without_health_counts_falls_back_to_the_list():
-    # An omlx with no /health, or one whose answer has no pool counts,
-    # predates the counts: the list is all there is, as before.
-    assert _omlx_probe(["A"], None) is True
+    # An omlx whose /health answers with no pool counts predates the counts:
+    # the list is all there is, as before.
+    assert _omlx_probe(["A"], {}) is True
     assert _omlx_probe(["A"], {"status": "healthy"}) is True
-    assert _omlx_probe(["B"], None) is False
+    assert _omlx_probe(["B"], {"status": "healthy"}) is False
+    # No /health answer at all is not that case (final review F2): nothing
+    # answered, so nothing says the model is not loaded.
+    assert _omlx_probe(["A"], None) is None
 
 
 def test_probe_running_mtplx_does_not_consult_health():
@@ -2821,3 +2992,482 @@ def test_resolving_a_registered_repo_id_lists_no_provider():
     ):
         model = local_control._resolve_local_model(registry, "org/model-a")
     assert model.id == "omlx/model-a"
+
+
+def _omlx_pool_registry() -> Registry:
+    return Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", location="local", auth=AuthConfig(type="none"))
+        ],
+        models=[
+            ModelEntry(
+                id="omlx/a",
+                family="f",
+                provider_id="omlx",
+                model_name="org/A-4bit",
+                location="local",
+            ),
+            ModelEntry(
+                id="omlx/b",
+                family="f",
+                provider_id="omlx",
+                model_name="org/B-4bit",
+                location="local",
+            ),
+        ],
+    )
+
+
+def _stub_wt_start(monkeypatch, outcome=None, error=None):
+    calls: list[tuple[str, bool]] = []
+
+    def fake(model_id, *, replace, timeout=0.0):
+        calls.append((model_id, replace))
+        if error is not None:
+            raise error
+        return outcome
+
+    monkeypatch.setattr(local_control.wt_bridge, "start", fake)
+    return calls
+
+
+def test_start_omlx_delegates_to_wt_and_keeps_the_sibling_flag(tmp_path, monkeypatch):
+    # #213: omlx is a pool. Starting a second omlx model must leave the first
+    # one loaded and flagged; modelman used to stop the omlx service first,
+    # taking down a model another session was using.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    calls = _stub_wt_start(
+        monkeypatch, wt_bridge.StartOutcome(id="omlx/b", status="started", unloaded=[])
+    )
+    stop_provider = MagicMock()
+    monkeypatch.setattr(local_control, "stop_provider", stop_provider)
+    monkeypatch.setattr(
+        local_control, "isolate_provider", MagicMock(side_effect=AssertionError("isolate"))
+    )
+
+    result = start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    assert calls == [("omlx/b", True)]
+    stop_provider.assert_not_called()
+    state = load_state(state_path)
+    assert state.get("omlx/a").running and state.get("omlx/b").running
+    assert (result.already_running, result.unloaded, result.other_running) == (
+        False,
+        [],
+        ["omlx/a"],
+    )
+
+
+def test_start_omlx_clears_the_flags_of_models_wt_says_it_unloaded(tmp_path, monkeypatch):
+    # When the new model does not fit, omlx unloads others and wt reports
+    # them. Their flags must go, or they read as running forever and
+    # `modelman stop` on them would try to unload a model that is not loaded.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_start(
+        monkeypatch, wt_bridge.StartOutcome(id="omlx/b", status="started", unloaded=["omlx/a"])
+    )
+
+    result = start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    state = load_state(state_path)
+    assert not state.get("omlx/a").running and state.get("omlx/b").running
+    assert (result.unloaded, result.other_running) == (["omlx/a"], [])
+
+
+def test_start_omlx_ignores_an_unloaded_model_with_no_flag(tmp_path, monkeypatch):
+    # wt can unload a model modelman never flagged (one wt itself started).
+    # That must not fail the start or leave an empty state row behind.
+    state_path = _state_path(tmp_path)
+    _stub_wt_start(
+        monkeypatch,
+        wt_bridge.StartOutcome(id="omlx/b", status="started", unloaded=["omlx/Stray-4bit"]),
+    )
+
+    start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    assert "omlx/Stray-4bit" not in load_state(state_path).models
+
+
+def test_start_omlx_reports_already_running_from_wt(tmp_path, monkeypatch):
+    # wt is the one that knows whether the model is loaded; a model it calls
+    # already running gets its flag set (it may have been started by wt).
+    state_path = _state_path(tmp_path)
+    _stub_wt_start(
+        monkeypatch, wt_bridge.StartOutcome(id="omlx/b", status="already_running", unloaded=[])
+    )
+
+    result = start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    assert result.already_running and load_state(state_path).get("omlx/b").running
+
+
+def test_start_omlx_failure_changes_no_flag(tmp_path, monkeypatch):
+    # A start wt refuses (no room, a refused key) must not flag the model, and
+    # must not clear anyone else's flag on a guess.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_start(monkeypatch, error=wt_bridge.WtBridgeError("omlx has no room for B-4bit"))
+
+    with pytest.raises(LocalControlError, match="failed to start omlx/b: omlx has no room"):
+        start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    state = load_state(state_path)
+    assert state.get("omlx/a").running and not state.get("omlx/b").running
+
+
+def test_start_omlx_failure_includes_sync_warnings(tmp_path, monkeypatch):
+    # The failure raises, so a failed sync's warning travels in the error
+    # text rather than being dropped — as on the isolate path.
+    state_path = _state_path(tmp_path)
+    _stub_wt_start(monkeypatch, error=wt_bridge.WtBridgeError("omlx has no room for B-4bit"))
+    monkeypatch.setattr(
+        wt_bridge, "sync", MagicMock(side_effect=wt_bridge.WtBridgeError("wt not on PATH"))
+    )
+
+    with pytest.raises(LocalControlError, match="omlx has no room") as excinfo:
+        start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    assert "may not be synced" in str(excinfo.value)
+
+
+def test_start_omlx_timeout_says_the_model_may_still_be_loading(tmp_path, monkeypatch):
+    # Final review F8: on a timeout the bridge kills wt, not omlx, so the load
+    # may go on. The user has to hear that before retrying; no flag changes.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_start(
+        monkeypatch, error=wt_bridge.WtBridgeTimeoutError("wt start timed out after 660s")
+    )
+
+    with pytest.raises(LocalControlError, match="failed to start omlx/b") as exc:
+        start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    assert "wt start timed out after 660s" in str(exc.value)
+    assert "may still be loading in omlx" in str(exc.value)
+    state = load_state(state_path)
+    assert state.get("omlx/a").running and not state.get("omlx/b").running
+
+
+def test_pooled_capability_covers_both_omlx_rows():
+    # omlx and omlx-6bit are one server, a pool; the TUI's `s` key asks wt
+    # for a start plan on this capability, never on a provider id.
+    from modelman.providers import ProviderRegistry
+
+    def pooled(provider_id):
+        return ProviderRegistry.get_class(provider_id).pooled
+
+    assert pooled("omlx") and pooled("omlx-6bit")
+    assert not pooled("mtplx") and not pooled("ollama") and not pooled("mlx_lm_server")
+
+
+def _stub_wt_stop(monkeypatch, error=None, served=(), refused=False):
+    """Stub wt's stop and its pool read, and the refused-connection check.
+    Returns (stop targets, urls the refused check was made against)."""
+    calls: list[str] = []
+    refused_urls: list[str] = []
+
+    def fake(target, timeout=0.0):
+        calls.append(target)
+        if error is not None:
+            raise error
+
+    def fake_refused(url, timeout=0.0):
+        refused_urls.append(url)
+        return refused
+
+    monkeypatch.setattr(local_control.wt_bridge, "stop", fake)
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda provider, timeout=0.0: served)
+    monkeypatch.setattr(local_control, "_connection_refused", fake_refused)
+    return calls, refused_urls
+
+
+def test_stop_omlx_unloads_one_model_through_wt(tmp_path, monkeypatch):
+    # #213: stopping one omlx model must leave its siblings loaded and
+    # flagged. modelman used to run `omlx stop`, halting every loaded model.
+    state_path = _state_path(tmp_path, {"omlx/a": True, "omlx/b": True})
+    calls, _ = _stub_wt_stop(monkeypatch)
+    stop_provider = MagicMock()
+    monkeypatch.setattr(local_control, "stop_provider", stop_provider)
+
+    result = stop_local_model("omlx/a", state_path)
+
+    assert calls == ["omlx/a"] and result.stopped_model_id == "omlx/a"
+    stop_provider.assert_not_called()
+    state = load_state(state_path)
+    assert not state.get("omlx/a").running and state.get("omlx/b").running
+
+
+def test_stop_omlx_clears_the_flag_of_a_model_wt_says_is_not_running(tmp_path, monkeypatch):
+    # The model was evicted or timed out since it was flagged. wt can read
+    # the pool and it is not there: the goal is met, so the flag goes.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('model "omlx/a" is not running'),
+        served=["B-4bit"],
+    )
+
+    result = stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
+
+    assert result.stopped_model_id == "omlx/a"
+    assert not load_state(state_path).get("omlx/a").running
+
+
+_WT_SAYS_NOT_RUNNING = wt_bridge.WtBridgeError('model "omlx/a" is not running')
+
+
+def test_stop_omlx_asks_wt_about_a_model_modelman_has_no_flag_for(tmp_path, monkeypatch):
+    # A start whose bridge call timed out sets no flag while the load goes on
+    # ("may still be loading in omlx"), and `wt start` sets none at all. The
+    # start path takes wt's word for what is loaded, so the stop must too:
+    # answering "is not running" from the flag left the model resident.
+    state_path = _state_path(tmp_path, {"omlx/b": True})
+    calls, _ = _stub_wt_stop(monkeypatch)
+
+    with patch("modelman.local_control.sync_routes", return_value=[]) as sync:
+        result = stop_local_model("omlx/a", state_path)
+
+    assert calls == ["omlx/a"] and result.stopped_model_id == "omlx/a"
+    sync.assert_called_once()
+    state = load_state(state_path)
+    assert "omlx/a" not in state.models and state.get("omlx/b").running
+
+
+def test_stop_omlx_unflagged_is_a_noop_when_wt_says_it_is_not_running(tmp_path, monkeypatch):
+    # No flag to guard, so wt's refusal needs no pool read to back it: the
+    # answer is the plain "not running", with no sync and no state row.
+    state_path = _state_path(tmp_path, {})
+    calls, _ = _stub_wt_stop(monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None)
+
+    with patch("modelman.local_control.sync_routes") as sync:
+        result = stop_local_model("omlx/a", state_path)
+
+    assert calls == ["omlx/a"] and result.stopped_model_id is None
+    sync.assert_not_called()
+    assert "omlx/a" not in load_state(state_path).models
+
+
+def test_stop_omlx_unflagged_surfaces_any_other_wt_failure(tmp_path, monkeypatch):
+    state_path = _state_path(tmp_path, {})
+    _stub_wt_stop(monkeypatch, error=wt_bridge.WtBridgeError("unload timed out"))
+
+    with pytest.raises(LocalControlError, match="failed to stop omlx/a: unload timed out"):
+        stop_local_model("omlx/a", state_path)
+
+
+def test_stop_omlx_keeps_the_flag_when_the_pool_cannot_be_read(tmp_path, monkeypatch):
+    # #249's rule: "cannot say" is not "stopped". A keyed omlx whose key the
+    # registry does not name makes wt call the model not running while it is
+    # loaded; clearing the flag would leave a resident model nothing records.
+    # omlx is up here (its port accepts the connection), so nothing shows the
+    # model is gone.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=False
+    )
+
+    with pytest.raises(LocalControlError, match="secret_ref") as exc:
+        stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
+
+    assert "modelman stop --all" in str(exc.value)
+    assert refused_urls == ["http://localhost:8000/health"]  # it did look
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_clears_the_flag_when_omlx_refuses_the_connection(tmp_path, monkeypatch):
+    # Nothing listens on omlx's port: no server, so nothing is loaded, and a
+    # flagged model is stopped. The user must be able to clear a flag left by
+    # a crashed server. Asked at the origin the registry gives omlx — here
+    # none, so the default.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=True
+    )
+
+    result = stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
+
+    assert result.stopped_model_id == "omlx/a"
+    assert refused_urls == ["http://localhost:8000/health"]
+    assert not load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_asks_the_registrys_origin_whether_omlx_is_down(tmp_path, monkeypatch):
+    # An omlx on another host or port: a refused connection at localhost:8000
+    # says nothing about it. Asking there cleared the flag of a loaded model
+    # on every stop.
+    registry = _omlx_pool_registry()
+    registry.providers[0].auth = AuthConfig(type="none", base_url="http://10.0.0.5:9000/v1")
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=False
+    )
+
+    with pytest.raises(LocalControlError, match="cannot tell whether omlx/a is loaded"):
+        stop_local_model("omlx/a", state_path, registry=registry)
+
+    assert refused_urls == ["http://10.0.0.5:9000/health"]
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_origin_comes_from_the_omlx_6bit_row_when_it_is_the_only_one(
+    tmp_path, monkeypatch
+):
+    # omlx and omlx-6bit are one server; a registry may define only the
+    # omlx-6bit row, and a discovered model's id is `omlx/<name>` either way.
+    registry = _omlx_6bit_only_registry()
+    registry.providers[0].auth = AuthConfig(type="none", base_url="http://10.0.0.5:9000")
+    state_path = _state_path(tmp_path, {"omlx/Stray-6bit": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/Stray-6bit"'),
+        served=None,
+        refused=True,
+    )
+
+    assert stop_local_model("omlx/Stray-6bit", state_path, registry=registry).stopped_model_id
+    assert refused_urls == ["http://10.0.0.5:9000/health"]
+
+
+def test_stop_omlx_without_a_registry_never_takes_the_down_shortcut(tmp_path, monkeypatch):
+    # No registry, no origin to ask: even a refused connection at the default
+    # port proves nothing, so the flag stays and the user is told.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=None, refused=True
+    )
+
+    with pytest.raises(LocalControlError, match="cannot tell whether omlx/a is loaded"):
+        stop_local_model("omlx/a", state_path)
+
+    assert refused_urls == []
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_clears_the_flag_of_a_model_wt_no_longer_knows(tmp_path, monkeypatch):
+    # A discovered omlx model (no registry row) that is no longer loaded is
+    # not "not running" to wt but unknown: it lists such a model only while
+    # it runs. With the pool readable that is the same answer.
+    state_path = _state_path(tmp_path, {"omlx/Stray-4bit": True})
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/Stray-4bit"'),
+        served=["B-4bit"],
+    )
+
+    result = stop_local_model("omlx/Stray-4bit", state_path, registry=_omlx_pool_registry())
+
+    assert result.stopped_model_id == "omlx/Stray-4bit"
+    assert not load_state(state_path).get("omlx/Stray-4bit").running
+
+
+def test_stop_omlx_keeps_the_flag_when_omlx_reports_the_model_loaded(tmp_path, monkeypatch):
+    # Final review F1: wt refused the stop as "not running", but the pool it
+    # then read holds the model (wt's own read was transiently unusable, or it
+    # could not map the id). A readable pool is not an absent model: the flag
+    # was cleared for a model omlx still had loaded.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=["A-4bit", "B-4bit"], refused=True
+    )
+
+    with pytest.raises(LocalControlError, match="omlx reports it loaded") as exc:
+        stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
+
+    assert "wt refused to stop omlx/a" in str(exc.value)
+    assert refused_urls == []  # a pool that answered is not asked whether it is down
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_keeps_the_flag_of_a_discovered_model_omlx_reports_loaded(tmp_path, monkeypatch):
+    # A discovered id is `omlx/<directory name>`, so its tail is the name omlx
+    # serves it under — with or without a registry to say so.
+    for registry in (None, _omlx_pool_registry()):
+        state_path = _state_path(tmp_path, {"omlx/Stray-4bit": True})
+        _stub_wt_stop(
+            monkeypatch,
+            error=wt_bridge.WtBridgeError('unknown model "omlx/Stray-4bit"'),
+            served=["Stray-4bit"],
+        )
+
+        with pytest.raises(LocalControlError, match="omlx reports it loaded"):
+            stop_local_model("omlx/Stray-4bit", state_path, registry=registry)
+
+        assert load_state(state_path).get("omlx/Stray-4bit").running
+
+
+def test_stop_omlx_keeps_the_flag_of_an_unregistered_registry_style_id(tmp_path, monkeypatch):
+    # A flag left under a registry-spelled id (`omlx/org--Name`) whose row has
+    # since been removed: wt no longer knows the id, and the tail is the repo
+    # id with "/" → "--", not the directory omlx serves ("Gone-4bit"). Read
+    # as a directory name it was "not in the pool", and the stop cleared the
+    # flag of a model omlx still had loaded.
+    state_path = _state_path(tmp_path, {"omlx/org--Gone-4bit": True})
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/org--Gone-4bit"'),
+        served=["Gone-4bit", "B-4bit"],
+    )
+
+    with pytest.raises(LocalControlError, match="omlx reports it loaded"):
+        stop_local_model("omlx/org--Gone-4bit", state_path, registry=_omlx_pool_registry())
+
+    assert load_state(state_path).get("omlx/org--Gone-4bit").running
+
+    # ...and once omlx no longer holds it under either spelling, the flag goes.
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError('unknown model "omlx/org--Gone-4bit"'),
+        served=["B-4bit"],
+    )
+    result = stop_local_model("omlx/org--Gone-4bit", state_path, registry=_omlx_pool_registry())
+    assert result.stopped_model_id == "omlx/org--Gone-4bit"
+    assert not load_state(state_path).get("omlx/org--Gone-4bit").running
+
+
+def test_stop_omlx_clears_the_flag_when_the_pool_is_empty(tmp_path, monkeypatch):
+    # Nothing is loaded, so this model is not: no name is needed to say so,
+    # and so no registry either.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_stop(monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=[])
+
+    result = stop_local_model("omlx/a", state_path)
+
+    assert result.stopped_model_id == "omlx/a"
+    assert not load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_keeps_the_flag_when_the_models_omlx_name_is_not_known(tmp_path, monkeypatch):
+    # No registry was given and the pool holds models. `omlx/a` is a registry
+    # id here (model_name org/A-4bit), and its tail `a` is no directory name:
+    # that `a` is not among the served ids does not say A-4bit is not. The
+    # flag stays and the user is told.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_stop(monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=["A-4bit"])
+
+    with pytest.raises(LocalControlError, match="cannot tell whether omlx/a is loaded") as exc:
+        stop_local_model("omlx/a", state_path)
+
+    assert "modelman stop --all" in str(exc.value)
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_surfaces_any_other_wt_failure(tmp_path, monkeypatch):
+    # A refused key or a failed unload is a real failure: the model may still
+    # be loaded, so the flag stays and the user sees wt's reason.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_stop(
+        monkeypatch,
+        error=wt_bridge.WtBridgeError("omlx still has A-4bit loaded"),
+        served=["A-4bit"],
+    )
+
+    with pytest.raises(LocalControlError, match="failed to stop omlx/a: omlx still has"):
+        stop_local_model("omlx/a", state_path)
+
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_omlx_has_no_single_occupant(tmp_path):
+    # The TUI asks this before a start to warn about a replacement. omlx
+    # holds several models, so there is no occupant to name; what a start
+    # would unload comes from wt's plan instead.
+    state = load_state(_state_path(tmp_path, {"omlx/a": True}))
+    assert same_provider_occupant(_omlx_pool_registry(), state, "omlx/b", "omlx") is None

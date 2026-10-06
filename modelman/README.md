@@ -154,8 +154,10 @@ not stopped it. It is a hint, not ground truth: modelman and `wt` both
 confirm it with a live probe of the provider before treating the model as
 running, and a flag whose probe fails is treated as stopped (and
 opportunistically cleared). Several local models may be `running = true` at
-once; single-model-per-process providers (oMLX, MTPLX, mlx_lm_server) still
-replace their own occupant when a different model on that provider starts.
+once; oMLX is a pool (starting a model loads it beside the others; modelman hands the
+start and stop to `wt`), while single-model-per-process providers (MTPLX,
+mlx_lm_server) still replace their own occupant when a different model on that
+provider starts.
 
 Family display names now live in `registry.toml`'s `[[families]]` section.
 The legacy `[families.*]` table here is still loaded as a read-side
@@ -196,7 +198,9 @@ local model is an optional overlay (family, tags, cost, `model_info`) on what
 is on disk; the convention for a new one is `id = "<provider family>/<model_name>"`
 (`omlx` for an `omlx-6bit` model)
 (see `../docs/guides/02-providers-and-models.md` Step 3). Several
-local models can run at once; oMLX, MTPLX and
+local models can run at once; oMLX holds several loaded models (`modelman
+start`/`stop` on one go through `wt start`/`wt stop` and touch only that model;
+`modelman stop --all` stops the service), while MTPLX and
 mlx_lm_server serve one model per process, so starting another model on one
 of them replaces its current model. `modelman provider isolate
 <ollama|omlx|omlx-6bit|mtplx>` stops the other providers and starts one (used
@@ -317,8 +321,8 @@ A route wt wrote carries a `model_info.wt_managed` marker, and a hand-written
 touched by wt — a discovered model's route never replaces one of the same
 name; `wt litellm list` marks those `(hand-written)`. Preview what a
 sync would change with `wt litellm sync --dry-run`. To stop routing a model,
-remove a cloud model from `registry.toml`, or stop a local model (on a
-single-model provider; a pulled Ollama model stays routed until it is
+remove a cloud model from `registry.toml`, or stop a local model (an omlx
+model drops only its own route; a pulled Ollama model stays routed until it is
 removed from Ollama) rather than editing `config.yaml` — deleting a local
 model's registry entry alone does not unroute it while it runs. Details: `../docs/guides/04-litellm-config.md` §2.
 

@@ -1,3 +1,4 @@
+import os
 from unittest.mock import patch
 
 import pytest
@@ -552,3 +553,193 @@ def test_guard_sees_an_owner_on_another_provider(tmp_path, shared_owner):
         draft=DraftSpec(local_path=str(tmp_path / "user-draft")),
     )
     assert shared_owner(provider, downloaded, pairing) == "mlx_lm_server/pair"
+
+
+# #261: omlx's two-level model directory layout.
+
+
+def _model(path):
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}")
+    return path
+
+
+def test_list_local_finds_models_inside_an_organization_folder(tmp_path):
+    # #261, seen on a real machine: omlx stores a download at
+    # models/mlx-community/<name>/ and serves it as <name>. modelman listed a
+    # model called "mlx-community" and never saw the real one, so it could
+    # not be started or registered.
+    _model(tmp_path / "Flat-4bit")
+    _model(tmp_path / "mlx-community" / "Nested-6bit")
+    _model(tmp_path / "mlx-community" / "Other-8bit")
+    (tmp_path / "mlx-community" / "notes").mkdir()
+    (tmp_path / "empty-folder").mkdir()
+    adapter = _model(tmp_path / "Adapter")
+    (adapter / "adapter_config.json").write_text("{}")
+    _model(tmp_path / ".cache" / "Hidden")
+    (tmp_path / "models--Org--Cached" / "snapshots" / "abc").mkdir(parents=True)
+    _model(tmp_path / "zz-org" / "Flat-4bit")  # duplicate name: the first wins
+
+    found = {
+        m["variant_id"]: m["path"] for m in OMLXProvider({"model_dir": str(tmp_path)}).list_local()
+    }
+
+    assert sorted(found) == ["Flat-4bit", "Nested-6bit", "Other-8bit"]
+    assert found["Nested-6bit"] == str(tmp_path / "mlx-community" / "Nested-6bit")
+    assert found["Flat-4bit"] == str(tmp_path / "Flat-4bit")
+
+
+def test_list_local_reads_a_model_dir_that_is_itself_one_model(tmp_path):
+    # omlx accepts a model_dir pointed straight at one model's folder.
+    _model(tmp_path / "Solo-4bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path / "Solo-4bit")})
+    assert [m["variant_id"] for m in provider.list_local()] == ["Solo-4bit"]
+
+
+def test_a_registered_model_inside_an_organization_folder_reads_as_downloaded(tmp_path):
+    # A registry entry names a repo; its directory is looked up by the repo's
+    # basename. When omlx put that directory inside an organization folder,
+    # the entry read as not downloaded although omlx was serving it.
+    _model(tmp_path / "mlx-community" / "Nested-6bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "mlx-community/Nested-6bit"}
+    assert provider.is_downloaded(variant)
+    assert provider.path_of(variant) == str(tmp_path / "mlx-community" / "Nested-6bit")
+
+
+def test_delete_of_a_nested_registered_model_removes_only_that_model(tmp_path):
+    # The directory found inside an organization folder is the model's own:
+    # a delete must leave the folder and its other models alone.
+    nested = _model(tmp_path / "mlx-community" / "Nested-6bit")
+    sibling = _model(tmp_path / "mlx-community" / "Sibling-4bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "mlx-community/Nested-6bit"}
+
+    assert provider.removable_paths(variant) == frozenset([str(nested)])
+    provider.delete(variant)
+
+    assert not nested.exists()
+    assert sibling.is_dir()
+    assert (tmp_path / "mlx-community").is_dir()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 directory")
+def test_an_unreadable_organization_folder_is_skipped_not_fatal(tmp_path):
+    # omlx and wt skip an unreadable folder; one bad folder must not take
+    # down listing or the downloaded check for every other model.
+    _model(tmp_path / "Flat-4bit")
+    bad = tmp_path / "locked-org"
+    bad.mkdir()
+    bad.chmod(0)
+    try:
+        provider = OMLXProvider({"model_dir": str(tmp_path)})
+        assert [m["variant_id"] for m in provider.list_local()] == ["Flat-4bit"]
+        flat: VariantSpec = {"id": "omlx/x", "repo": "org/Flat-4bit"}
+        assert provider.is_downloaded(flat)
+        assert provider.path_of(flat) == str(tmp_path / "Flat-4bit")
+        missing: VariantSpec = {"id": "omlx/y", "repo": "org/Not-There"}
+        assert not provider.is_downloaded(missing)
+        # A registered repo whose own flat directory cannot be read (final
+        # review F7): the checks answer, they do not raise PermissionError.
+        locked: VariantSpec = {"id": "omlx/z", "repo": "org/locked-org"}
+        assert not provider.is_downloaded(locked)
+        assert provider.path_of(locked) is None
+        assert provider.artifact_paths(locked) == frozenset([str(bad)])
+        assert provider.removable_paths(locked) == frozenset([str(bad)])
+    finally:
+        bad.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 directory")
+def test_an_unreadable_model_dir_is_no_models(tmp_path):
+    root = tmp_path / "models"
+    _model(root / "Flat-4bit")
+    root.chmod(0)
+    try:
+        provider = OMLXProvider({"model_dir": str(root)})
+        assert provider.list_local() == []
+        # Final review F7: with the model dir unreadable, stat-ing a path
+        # under it raises PermissionError. These were path arithmetic before
+        # the organization-folder lookup and must still answer.
+        variant: VariantSpec = {"id": "omlx/x", "repo": "org/Flat-4bit"}
+        flat = frozenset([str(root / "Flat-4bit")])
+        assert provider.artifact_paths(variant) == flat
+        assert provider.removable_paths(variant) == flat
+        assert not provider.is_downloaded(variant)
+        assert provider.path_of(variant) is None
+    finally:
+        root.chmod(0o755)
+
+
+def test_a_repo_resolves_to_its_own_organizations_directory(tmp_path):
+    # Final review F3: the nested lookup matched on the basename alone and
+    # took the first hit in sorted order, so `zz-org/Same-4bit` resolved to
+    # `aa-org/Same-4bit` — and a delete removed another organization's model.
+    other = _model(tmp_path / "aa-org" / "Same-4bit")
+    own = _model(tmp_path / "zz-org" / "Same-4bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "zz-org/Same-4bit"}
+
+    assert provider.path_of(variant) == str(own)
+    assert provider.removable_paths(variant) == frozenset([str(own)])
+    provider.delete(variant)
+
+    assert not own.exists()
+    assert other.is_dir() and (other / "config.json").exists()
+
+
+def test_an_ambiguous_basename_resolves_to_no_organizations_directory(tmp_path):
+    # Two organizations hold a model of this name and the repo names neither:
+    # nothing says which is meant, so neither is. The entry reads as not
+    # downloaded and a delete has nothing to remove.
+    first = _model(tmp_path / "aa-org" / "Same-4bit")
+    second = _model(tmp_path / "zz-org" / "Same-4bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "other-org/Same-4bit"}
+
+    assert provider.removable_paths(variant) == frozenset([str(tmp_path / "Same-4bit")])
+    assert not provider.is_downloaded(variant)
+    provider.delete(variant)
+
+    assert first.is_dir() and second.is_dir()
+
+
+def test_a_unique_basename_still_resolves_across_organizations(tmp_path):
+    # One directory has the name: it is the one omlx serves under it, whatever
+    # organization the registry's repo spells (a re-uploaded or renamed org).
+    only = _model(tmp_path / "aa-org" / "Only-4bit")
+    _model(tmp_path / "aa-org" / "Other-4bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "zz-org/Only-4bit"}
+
+    assert provider.path_of(variant) == str(only)
+
+
+def test_a_repo_that_points_outside_the_model_dir_is_never_resolved_there(tmp_path):
+    # `<md>/<repo>` is taken only strictly inside the model dir: a repo
+    # spelled with `..` must not turn a directory outside it into a delete
+    # target.
+    md = tmp_path / "models"
+    md.mkdir()
+    outside = _model(tmp_path / "elsewhere" / "Out-4bit")
+    provider = OMLXProvider({"model_dir": str(md)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "../elsewhere/Out-4bit"}
+
+    assert provider.removable_paths(variant) == frozenset([str(md / "Out-4bit")])
+    provider.delete(variant)
+    assert outside.is_dir()
+
+
+def test_a_model_dir_that_is_one_model_is_never_a_registered_models_target(tmp_path):
+    # model_dir pointed straight at one model folder: list_local lists it, but
+    # a registered repo of the same basename must not resolve to model_dir
+    # itself, or a delete would remove the user's configured directory.
+    solo = _model(tmp_path / "Solo-4bit")
+    provider = OMLXProvider({"model_dir": str(solo)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "org/Solo-4bit"}
+
+    assert [m["variant_id"] for m in provider.list_local()] == ["Solo-4bit"]
+    assert str(solo) not in provider.removable_paths(variant)
+    provider.delete(variant)
+    assert solo.is_dir()
+    assert (solo / "config.json").exists()

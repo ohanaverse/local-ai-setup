@@ -98,6 +98,8 @@ def test_stop_command_single_model_prints_sync_warning(tmp_path, monkeypatch, wt
     state_path = tmp_path / "modelman.toml"
     state_path.write_text('[model_state."ollama/x"]\nready = true\nrunning = true\n')
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    # `stop <id>` loads the registry; keep it off the developer's real one.
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "registry.toml"))
 
     with (
         patch("modelman.local_control._stop_ollama_model"),
@@ -384,6 +386,43 @@ def test_start_command_warns_but_proceeds_when_others_running(tmp_path, monkeypa
     assert load_state(path=state_path).get("ollama/x").running is True
 
 
+def test_start_command_prints_what_omlx_unloaded(tmp_path, monkeypatch):
+    # #213: when the new model does not fit, omlx unloads others to make room
+    # and wt reports them. The user must be told which models went, and the
+    # models that went must stop reading as running.
+    from modelman import wt_bridge
+
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(
+        '[[providers]]\nid = "omlx"\nname = "oMLX"\nlocation = "local"\n'
+        'auth = { type = "none" }\n\n'
+        '[[models]]\nid = "omlx/a"\nfamily = "f"\nprovider_id = "omlx"\n'
+        'model_name = "org/A-4bit"\nlocation = "local"\n\n'
+        '[[models]]\nid = "omlx/b"\nfamily = "f"\nprovider_id = "omlx"\n'
+        'model_name = "org/B-4bit"\nlocation = "local"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text('[model_state."omlx/a"]\nready = true\nrunning = true\n')
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    monkeypatch.setattr(
+        wt_bridge,
+        "start",
+        lambda model_id, *, replace, timeout=0.0: wt_bridge.StartOutcome(
+            id=model_id, status="started", unloaded=["omlx/a"]
+        ),
+    )
+
+    result = runner.invoke(app, ["start", "omlx/b"])
+
+    assert result.exit_code == 0, result.output
+    assert "Started omlx/b." in result.output
+    assert "omlx unloaded to make room: omlx/a" in result.output
+    state = load_state(path=state_path)
+    assert state.get("omlx/b").running is True
+    assert state.get("omlx/a").running is False
+
+
 def test_stop_command_with_id_stops_one(tmp_path, monkeypatch):
     # `modelman stop <id>` must stop only the named model, leaving any other
     # running local model (and its flag) untouched - this is the targeted
@@ -394,6 +433,8 @@ def test_stop_command_with_id_stops_one(tmp_path, monkeypatch):
         '[model_state."ollama/y"]\nready = true\nrunning = true\n'
     )
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    # `stop <id>` loads the registry; keep it off the developer's real one.
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "registry.toml"))
     with patch("modelman.local_control._stop_ollama_model") as mock_stop:
         result = runner.invoke(app, ["stop", "ollama/x"])
     assert result.exit_code == 0, result.stdout
@@ -401,6 +442,64 @@ def test_stop_command_with_id_stops_one(tmp_path, monkeypatch):
     state = load_state(path=state_path)
     assert state.get("ollama/x").running is False
     assert state.get("ollama/y").running is True
+
+
+def _stop_omlx_cli_setup(tmp_path, monkeypatch, registry_text):
+    """A flagged omlx model whose stop wt refuses as "not running" while it
+    cannot read the pool; returns (state path, urls the refused check saw)."""
+    from modelman import local_control, wt_bridge
+
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(registry_text)
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text('[model_state."omlx/a"]\nready = true\nrunning = true\n')
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    def refuse(target, timeout=0.0):
+        raise wt_bridge.WtBridgeError('model "omlx/a" is not running')
+
+    urls: list[str] = []
+
+    def refused(url, timeout=0.0):
+        urls.append(url)
+        return True
+
+    monkeypatch.setattr(wt_bridge, "stop", refuse)
+    monkeypatch.setattr(wt_bridge, "served_ids", lambda provider, timeout=0.0: None)
+    monkeypatch.setattr(local_control, "_connection_refused", refused)
+    return state_path, urls
+
+
+def test_stop_command_asks_the_registrys_omlx_origin_whether_omlx_is_down(tmp_path, monkeypatch):
+    # #213: the CLI hands the registry to the stop, so "is omlx down?" is
+    # asked at the origin the registry gives omlx, not at a default port.
+    state_path, urls = _stop_omlx_cli_setup(
+        tmp_path,
+        monkeypatch,
+        '[[providers]]\nid = "omlx"\nname = "oMLX"\nlocation = "local"\n'
+        'auth = { type = "none", base_url = "http://10.0.0.5:9000/v1" }\n',
+    )
+
+    result = runner.invoke(app, ["stop", "omlx/a"])
+
+    assert result.exit_code == 0, result.output
+    assert urls == ["http://10.0.0.5:9000/health"]
+    assert load_state(path=state_path).get("omlx/a").running is False
+
+
+def test_stop_command_with_an_unreadable_registry_keeps_the_flag(tmp_path, monkeypatch):
+    # An unreadable registry does not fail `modelman stop`, but it gives no
+    # origin to ask: wt cannot say whether the model is loaded, so the flag
+    # stays and the user is told, rather than cleared on a guess.
+    state_path, urls = _stop_omlx_cli_setup(tmp_path, monkeypatch, "this is not toml [")
+
+    result = runner.invoke(app, ["stop", "omlx/a"])
+
+    assert result.exit_code == 1
+    assert "cannot tell whether omlx/a is loaded" in result.output
+    assert urls == []
+    assert load_state(path=state_path).get("omlx/a").running is True
 
 
 def test_stop_command_all_stops_everything(tmp_path, monkeypatch):

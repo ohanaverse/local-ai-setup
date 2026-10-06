@@ -1,4 +1,4 @@
-"""Subprocess bridge to `wt litellm ...` (and `wt served` / `wt warm`).
+"""Subprocess bridge to wt: `wt litellm ...`, `wt served`, `wt warm`, and `wt start` / `wt stop` for the omlx pool (#213).
 
 wt owns LiteLLM management (config.yaml routes, proxy restart, routing
 state); modelman calls these primitives instead of keeping its own copy of
@@ -289,5 +289,192 @@ def warm(provider: str, model: str, timeout: float = WARM_TIMEOUT) -> None:
         raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
     except OSError as e:
         raise WtBridgeError(f"wt warm could not run: {type(e).__name__}") from None
+    if proc.returncode != 0:
+        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+
+
+# Above wt's whole start budget, so a model that never loads is wt's failure
+# to report, not a kill from here: bringing a stopped omlx up (its
+# portUpTimeout, 90s), the load (warmupTimeout, 600s), then the route write
+# and proxy wait (10s + 30s).
+START_TIMEOUT = 780.0
+# A dry run: one inventory probe round.
+PLAN_TIMEOUT = 30.0
+# Above wt's unload budget (its loadTimeout, 300s) plus the route write and
+# proxy wait that follow it (10s + 30s).
+STOP_TIMEOUT = 360.0
+
+_PLAN_STATUSES = frozenset({"running", "fits", "would_unload", "unknown"})
+_OUTCOME_STATUSES = frozenset({"started", "already_running"})
+
+
+@dataclass(frozen=True)
+class PlanUnload:
+    id: str
+    sessions: int
+
+
+@dataclass(frozen=True)
+class StartPlan:
+    """`wt start <id> --plan --json`: what a start would do, nothing changed."""
+
+    id: str
+    status: str  # running | fits | would_unload | unknown
+    would_unload: list[PlanUnload]
+
+
+@dataclass(frozen=True)
+class StartOutcome:
+    """`wt start <id> --json` after a start."""
+
+    id: str
+    status: str  # started | already_running
+    unloaded: list[str]
+
+
+def _json_object(stdout: str) -> dict:
+    try:
+        doc = json.loads(stdout)
+    except ValueError as exc:
+        raise ValueError("not JSON") from exc
+    if not isinstance(doc, dict):
+        raise ValueError("not a JSON object")
+    return doc
+
+
+def parse_start_plan(stdout: str) -> StartPlan:
+    """Parse a plan, raising ValueError for any shape this code does not know
+    (pinned by docs/contracts/wt-start-cli.sample.json)."""
+    doc = _json_object(stdout)
+    status, model_id, rows = doc.get("status"), doc.get("id"), doc.get("would_unload")
+    # isinstance first: a non-string status (a list, an object) is unhashable,
+    # and the set lookup would raise TypeError past every ValueError handler.
+    if (
+        not isinstance(status, str)
+        or status not in _PLAN_STATUSES
+        or not isinstance(model_id, str)
+        or not isinstance(rows, list)
+    ):
+        raise ValueError("not a wt start plan")
+    unload: list[PlanUnload] = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            raise ValueError("not a wt start plan")
+        sessions = row.get("sessions", 0)
+        unload.append(
+            PlanUnload(id=row["id"], sessions=sessions if isinstance(sessions, int) else 0)
+        )
+    return StartPlan(id=model_id, status=status, would_unload=unload)
+
+
+def parse_start_outcome(stdout: str) -> StartOutcome:
+    """Parse a start result, raising ValueError for any unknown shape."""
+    doc = _json_object(stdout)
+    status, model_id, unloaded = doc.get("status"), doc.get("id"), doc.get("unloaded")
+    if (
+        not isinstance(status, str)
+        or status not in _OUTCOME_STATUSES
+        or not isinstance(model_id, str)
+        or not isinstance(unloaded, list)
+        or not all(isinstance(u, str) for u in unloaded)
+    ):
+        raise ValueError("not a wt start result")
+    return StartOutcome(id=model_id, status=status, unloaded=list(unloaded))
+
+
+def _run_wt(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run `wt <argv>` and return the finished process. The one seam the
+    start/stop calls share, so the suite can keep the real binary out
+    (conftest stubs it). Only the subcommand is named in errors."""
+    ensure_wt()
+    sub = argv[0] if argv else ""
+    try:
+        return subprocess.run(
+            ["wt", *argv],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise WtBridgeTimeoutError(f"wt {sub} timed out after {timeout:g}s") from None
+    except FileNotFoundError:
+        raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
+    except OSError as e:
+        raise WtBridgeError(f"wt {sub} could not run: {type(e).__name__}") from None
+
+
+# cobra's refusal of a flag the installed wt does not have.
+_UNKNOWN_FLAG = "unknown flag"
+
+
+def _raise_if_wt_predates(proc: subprocess.CompletedProcess[str], sub: str) -> None:
+    """Raise the reinstall hint when wt failed on a flag it does not know.
+
+    An older wt does not print prose and exit 0: cobra exits non-zero with
+    `unknown flag: --json` on stderr. Passing that on bare leaves the user
+    with a flag error about a command they never typed."""
+    if proc.returncode == 0:
+        return
+    # Only the line that names the flag: cobra may print its usage after it.
+    for line in (proc.stderr or "").splitlines():
+        if _UNKNOWN_FLAG in line:
+            flag_error = line[line.index(_UNKNOWN_FLAG) :].strip()
+            raise WtBridgeError(
+                f"{flag_error}: this wt predates the `wt {sub}` flags modelman uses for "
+                "omlx — reinstall it with `make install`"
+            )
+
+
+def start_plan(model_id: str, timeout: float = PLAN_TIMEOUT) -> StartPlan | None:
+    """What `wt start <model_id>` would do, or None when wt gives no usable
+    answer (not installed, timed out, an id wt does not know).
+
+    wt is asked because the answer needs omlx's sizes and the registry's key,
+    which only wt reads. A read, so a failure is not raised: None means
+    "could not tell", which no caller may read as "nothing would be
+    unloaded". The one exception is a wt too old to know `--plan`
+    (_raise_if_wt_predates): the start would be refused the same way, so that
+    raises WtBridgeError with the reinstall hint."""
+    try:
+        proc = _run_wt(["start", model_id, "--plan", "--json"], timeout)
+    except WtBridgeError:
+        return None
+    _raise_if_wt_predates(proc, "start")
+    try:
+        return parse_start_plan(proc.stdout)
+    except ValueError:
+        return None
+
+
+def start(model_id: str, *, replace: bool, timeout: float = START_TIMEOUT) -> StartOutcome:
+    """Start `model_id` through wt (`wt start <id> --json`), which loads it
+    into omlx's pool beside what is loaded and writes its LiteLLM route.
+
+    replace=True lets wt go ahead when the load would unload other models;
+    their ids come back in the outcome's `unloaded`. Raises WtBridgeError with
+    wt's own message when the model did not start."""
+    argv = ["start", model_id, "--json"]
+    if replace:
+        argv.append("--replace")
+    proc = _run_wt(argv, timeout)
+    _raise_if_wt_predates(proc, "start")
+    if proc.returncode != 0:
+        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+    try:
+        return parse_start_outcome(proc.stdout)
+    except ValueError:
+        raise WtBridgeError(
+            "wt start gave no usable answer; this wt may predate `wt start --json` "
+            "— reinstall it with `make install`"
+        ) from None
+
+
+def stop(target: str, timeout: float = STOP_TIMEOUT) -> None:
+    """Stop through wt: a model id unloads that one model from omlx's pool,
+    a bare provider (`omlx`) stops the service. `--yes` because the caller
+    has already asked the user. Raises WtBridgeError with wt's message."""
+    proc = _run_wt(["stop", target, "--yes"], timeout)
+    _raise_if_wt_predates(proc, "stop")
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))

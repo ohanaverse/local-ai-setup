@@ -3,6 +3,7 @@
 import pytest
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static
 
+from modelman import wt_bridge
 from modelman.app import ModelmanApp
 from modelman.registry import (
     AuthConfig,
@@ -20,6 +21,7 @@ from modelman.screens.models import (
     _format_location,
     _format_per_token,
     _variant_to_model_entry,
+    pool_start_note,
 )
 from modelman.state import ModelState, StateStore, load_state, save_state
 
@@ -1881,6 +1883,7 @@ async def test_action_toggle_running_confirms_then_stops_a_running_model(tmp_pat
     stopped = {}
 
     def fake_stop(model_id, state_path=None, **kwargs):
+        stopped["registry"] = kwargs.get("registry")
         stopped["id"] = model_id
         return StopResult(stopped_model_id=model_id)
 
@@ -1901,6 +1904,9 @@ async def test_action_toggle_running_confirms_then_stops_a_running_model(tmp_pat
             if stopped.get("id") == "ollama/a":
                 break
     assert stopped["id"] == "ollama/a"
+    # The screen's registry goes with the stop: an omlx stop reads omlx's
+    # origin from it when wt cannot say whether the model is loaded (#213).
+    assert [m.id for m in stopped["registry"].models] == ["ollama/a"]
 
 
 @pytest.mark.asyncio
@@ -2253,8 +2259,169 @@ async def test_start_toggle_preserves_in_session_reconciled_state(tmp_path, monk
     assert in_memory.ready is True
 
 
+def _seed_omlx_pool(tmp_path, monkeypatch, provider_id="omlx"):
+    """Two ready models on one omlx-family row: `omlx/a` flagged running and
+    `omlx/b` not (the row below it). Returns the state path."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    target = ModelEntry(
+        id="omlx/b", family="ornith", provider_id=provider_id, model_name="b", location="local"
+    )
+    loaded = ModelEntry(
+        id="omlx/a", family="ornith", provider_id=provider_id, model_name="a", location="local"
+    )
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[target, loaded])
+    state = StateStore()
+    state.set("omlx/b", ModelState(ready=True, running=False))
+    state.set("omlx/a", ModelState(ready=True, running=True))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr(
+        "modelman.screens.models.running_model_ids",
+        lambda registry, state, state_path=None: [m for m, s in state.models.items() if s.running],
+    )
+    return state_path
+
+
 @pytest.mark.asyncio
-async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp_path, monkeypatch):
+@pytest.mark.parametrize("provider_id", ["omlx", "omlx-6bit"])
+async def test_toggle_running_confirm_dialog_names_what_omlx_would_unload(
+    tmp_path, monkeypatch, provider_id
+):
+    # Pins that the omlx start dialog takes its text from wt's dry-run plan:
+    # omlx is a pool (#213), so modelman can no longer name an occupant
+    # itself, and the dialog must still never hide an unload from the user.
+    # Both omlx rows are that one pool.
+    from modelman.screens.forms import ConfirmModal
+
+    _seed_omlx_pool(tmp_path, monkeypatch, provider_id)
+    asked: list[str] = []
+
+    def fake_plan(model_id, timeout=wt_bridge.PLAN_TIMEOUT):
+        asked.append(model_id)
+        return wt_bridge.StartPlan(
+            id=model_id, status="would_unload", would_unload=[wt_bridge.PlanUnload("omlx/a", 2)]
+        )
+
+    monkeypatch.setattr(wt_bridge, "start_plan", fake_plan)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("down")  # omlx/a sorts first; move to omlx/b
+        await pilot.press("s")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        message = app.screen._message
+    assert asked == ["omlx/b"]
+    assert "omlx/a (in use by 2 wt session(s))" in message
+    assert "Start omlx/b anyway?" in message
+
+
+@pytest.mark.asyncio
+async def test_a_start_plan_that_arrives_under_another_modal_opens_no_confirm(
+    tmp_path, monkeypatch
+):
+    # Final review F4: the plan can take up to PLAN_TIMEOUT. If the user has
+    # opened something else by then, the start confirm must not land on top of
+    # it: ConfirmModal binds a bare `y`, so a `y` meant for the other dialog
+    # confirmed a start that may unload models.
+    import threading
+
+    from modelman.screens.forms import ConfirmModal
+
+    _seed_omlx_pool(tmp_path, monkeypatch)
+    release = threading.Event()
+
+    def slow_plan(model_id, timeout=wt_bridge.PLAN_TIMEOUT):
+        release.wait(30)
+        return wt_bridge.StartPlan(
+            id=model_id, status="would_unload", would_unload=[wt_bridge.PlanUnload("omlx/a", 2)]
+        )
+
+    monkeypatch.setattr(wt_bridge, "start_plan", slow_plan)
+    started: list[str] = []
+    monkeypatch.setattr(
+        "modelman.screens.models.start_local_model",
+        lambda registry, model_id, state_path=None: started.append(model_id),
+    )
+
+    app = ModelmanApp()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _open_model_screen(pilot)
+            await pilot.pause()  # let reconcile settle
+            notes: list[str] = []
+            monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notes.append(msg))
+            await pilot.press("down")  # omlx/a sorts first; move to omlx/b
+            await pilot.press("s")
+            await pilot.pause()
+            other = ConfirmModal("Something else entirely?")
+            answers: list[bool | None] = []
+            app.push_screen(other, answers.append)
+            await pilot.pause()
+
+            release.set()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+
+            assert app.screen is other
+            assert [s for s in app.screen_stack if isinstance(s, ConfirmModal)] == [other]
+            assert any("omlx/b" in n and "press s again" in n for n in notes), notes
+            # The `y` reaches the dialog it was meant for, and starts nothing.
+            await pilot.press("y")
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert answers == [True]
+            assert started == []
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_start_plan_from_an_older_wt_notifies_and_opens_no_confirm(tmp_path, monkeypatch):
+    # An older wt rejects `--plan`; the bridge raises its reinstall hint. The
+    # plan worker must show it, not die with it, and offers no start: `wt
+    # start --json` would be refused the same way.
+    from modelman.screens.forms import ConfirmModal
+
+    _seed_omlx_pool(tmp_path, monkeypatch)
+
+    def old_wt(model_id, timeout=wt_bridge.PLAN_TIMEOUT):
+        raise wt_bridge.WtBridgeError("unknown flag: --plan — reinstall it with `make install`")
+
+    monkeypatch.setattr(wt_bridge, "start_plan", old_wt)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        notes: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notes.append(msg))
+        await pilot.press("down")
+        await pilot.press("s")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert not isinstance(app.screen, ConfirmModal)
+        assert any("make install" in n for n in notes), notes
+
+
+@pytest.mark.asyncio
+async def test_toggle_running_confirm_dialog_names_same_provider_replacement_mtplx(
+    tmp_path, monkeypatch
+):
     # Design §4: when the model being started will REPLACE a same-provider
     # occupant (omlx/mtplx/mlx_lm_server serve one model per process), the
     # confirm dialog must say so explicitly by name, not just report "N
@@ -2267,19 +2434,19 @@ async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp
     from modelman.screens.forms import ConfirmModal
 
     target = ModelEntry(
-        id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local"
+        id="mtplx/a", family="ornith", provider_id="mtplx", model_name="a", location="local"
     )
     occupant = ModelEntry(
-        id="omlx/b", family="ornith", provider_id="omlx", model_name="b", location="local"
+        id="mtplx/b", family="ornith", provider_id="mtplx", model_name="b", location="local"
     )
     _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[target, occupant])
     state = StateStore()
-    state.set("omlx/a", ModelState(ready=True, running=False))
-    state.set("omlx/b", ModelState(ready=True, running=True))
+    state.set("mtplx/a", ModelState(ready=True, running=False))
+    state.set("mtplx/b", ModelState(ready=True, running=True))
     save_state(state, state_path)
 
     stub = MagicMock()
-    stub.name = "omlx"
+    stub.name = "mtplx"
     stub.is_downloaded.return_value = True
     stub.size_of.return_value = None
     monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
@@ -2296,12 +2463,12 @@ async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp
         await pilot.pause()
         await _open_model_screen(pilot)
         await pilot.pause()  # let reconcile settle
-        await pilot.press("s")  # cursor is on omlx/a (sorted before omlx/b)
+        await pilot.press("s")  # cursor is on mtplx/a (sorted before mtplx/b)
         await pilot.pause()
         assert isinstance(app.screen, ConfirmModal)
         message = app.screen._message
     assert (
-        "Starting this will also stop omlx/b, since omlx can only serve one model at a time."
+        "Starting this will also stop mtplx/b, since mtplx can only serve one model at a time."
         in message
     )
 
@@ -2667,3 +2834,35 @@ def test_add_start_discard_then_exit_syncs_routes_again(
     assert reg_path.read_bytes() == before_bytes
     # ...and the exit synced once more, after the start's own sync.
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"], ["sync", "--json"]]
+
+
+def test_pool_start_note_names_what_a_start_would_unload():
+    # The user is about to give these models up; the dialog must name them,
+    # and say when a live wt session is using one.
+    plan = wt_bridge.StartPlan(
+        id="omlx/b",
+        status="would_unload",
+        would_unload=[wt_bridge.PlanUnload("omlx/a", 2), wt_bridge.PlanUnload("omlx/c", 0)],
+    )
+    note = pool_start_note(plan)
+    assert "omlx/a (in use by 2 wt session(s))" in note and "omlx/c" in note
+    assert "unload" in note
+
+
+def test_pool_start_note_is_empty_when_the_model_fits():
+    # A start that fits beside the loaded models replaces nothing, so the
+    # dialog must not warn about a replacement.
+    assert pool_start_note(wt_bridge.StartPlan("omlx/b", "fits", [])) == ""
+    assert pool_start_note(wt_bridge.StartPlan("omlx/b", "running", [])) == ""
+
+
+def test_pool_start_note_says_so_when_wt_cannot_tell():
+    # No plan, or an unknown one, is not "nothing will be unloaded". Neither
+    # is a `would_unload` that names nothing (final review F8): wt does not
+    # print one today, and if it ever did the dialog must not read as "fits".
+    for plan in (
+        None,
+        wt_bridge.StartPlan("omlx/b", "unknown", []),
+        wt_bridge.StartPlan("omlx/b", "would_unload", []),
+    ):
+        assert "could not tell" in pool_start_note(plan)

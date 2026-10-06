@@ -87,3 +87,29 @@ def http_answers(url: str, timeout: float = 2.0) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def connection_refused(url: str, timeout: float = 2.0) -> bool:
+    """Whether the connection to `url` was positively REFUSED: nothing is
+    listening on that host and port.
+
+    True for that one failure only. A timeout, a reset, an unresolvable host
+    or any answer at all (an error status included) is False: a server that
+    is slow or mid-load is still a server, so those say nothing about whether
+    one is there. The caller that wants "is it down?" as a fact, not a guess,
+    asks this instead of reading http_json()'s or http_answers()'s failure,
+    which fold every one of those cases together.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — localhost probe
+            resp.read()
+    except urllib.error.HTTPError:
+        return False  # an error status is the server answering
+    except urllib.error.URLError as exc:
+        # urlopen wraps a failed connect: the socket error is `.reason`.
+        return isinstance(exc.reason, ConnectionRefusedError)
+    except ConnectionRefusedError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False

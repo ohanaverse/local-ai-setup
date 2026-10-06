@@ -204,21 +204,32 @@ modelman's normal omlx start and stop delegate to wt. `omlx` and `omlx-6bit` are
 
 **`wt_bridge.py`** gains three calls, following `warm` and `served_ids`:
 
-- `start_plan(model_id) -> StartPlan | None`: runs `wt start <id> --plan --json`. A read, so every failure is `None`.
+- `start_plan(model_id) -> StartPlan | None`: runs `wt start <id> --plan --json`. A read, so every failure is `None` — except a wt too old for the flags (cobra's `unknown flag`), which raises the reinstall hint from the plan, the start and the stop alike.
 - `start(model_id, replace) -> StartOutcome`: runs `wt start <id> --json` with `--replace` when asked. Raises `WtBridgeError` with wt's message on failure. Its timeout sits above wt's warmup budget, as `WARM_TIMEOUT` does.
 - `stop(target) -> None`: runs `wt stop <target> --yes`.
 
 **`local_control.py`:**
 
-- `start_local_model`, omlx family: the occupant lookup, `stop_provider()` and `isolate_provider(solo=True)` are replaced by `wt_bridge.start(resolved_id, replace=True)`. On success it sets the target's `running` flag and clears the flag of each id in `unloaded`. `StartResult` gains `unloaded`, and the CLI prints it. The already-running check, the stale-flag clear and the trailing `sync_routes` stay.
-- `stop_local_model`, omlx family: `wt_bridge.stop(model_id)`, then the flag clear and sync, as today.
-- `stop_all_local_models`: `wt_bridge.stop("omlx")` once for the family, which halts the service.
+- `start_local_model`, omlx family: the occupant lookup, `stop_provider()` and `isolate_provider(solo=True)` are replaced by `wt_bridge.start(resolved_id, replace=True)` (`_start_omlx_via_wt`). On success it sets the target's `running` flag and clears the flag of each id in `unloaded`. `StartResult` gains `unloaded`, and the CLI prints it. The trailing `sync_routes` stays.
+- `stop_local_model`, omlx family: `wt_bridge.stop(model_id)` (`_stop_omlx_via_wt`), then the flag clear and sync, as today.
+- `stop_all_local_models`: unchanged.
 - `same_provider_occupant` returns `None` for the omlx family. omlx no longer has a single occupant.
 - `_omlx_loaded`: ask `/v1/models/status` keyless first, then `wt_bridge.served_ids("omlx")`. The `/health` count arithmetic is removed. An omlx that predates status still falls back to the `/v1/models` list.
 
 **`screens/models.py`:** the `s` key's confirm dialog, for an omlx model, takes its text from `wt_bridge.start_plan(id)` fetched in a worker. `fits` shows a plain start confirmation; `would_unload` names the models; `unknown` or `None` says wt could not tell what would be unloaded.
 
 **Unchanged:** benchmark isolation and `modelman provider isolate|stop|restore` keep the Python omlx backend; mtplx, `mlx_lm_server` and ollama keep their paths.
+
+**Deviations from the plan, as built.**
+
+- `stop_all_local_models` is unchanged: `modelman stop --all` still halts the omlx service through the Python backend, not through `wt_bridge.stop("omlx")`.
+- A start wt refuses or that fails reports no `unloaded` and changes no flag (#260). What omlx evicted on the way is not known here, and the next `running_model_ids()` probe clears a flag that went stale.
+- There is no modelman-side already-running check or stale-flag clear for omlx: the start goes straight to wt, whose `already_running` is the answer, and `start_local_model` no longer probes omlx.
+- `_stop_omlx_via_wt` reads wt's `is not running` / `unknown model` refusal in two ways. If `wt served omlx` answers, the model is looked for in the list it returns, by the name omlx serves it under (the registry's `model_name`, else the id's tail): found there, wt refused to stop a loaded model, an error that keeps the flag; an empty list, or a known name not in it, means the model is really not loaded, and the stop succeeds so the flag clears; a non-empty list with no registry to give the name is "cannot say" and keeps the flag. If it does not answer, the model may be loaded, which is "cannot say" and never clears a flag (#249), so the stop is an error naming `auth.secret_ref` and `modelman stop --all`. The one exception is an omlx that is positively down: `modelman stop` loads the registry for the omlx origin (`_omlx_origin`), and only a refused connection there (`local_process.connection_refused`) clears the flag. A timeout, a reset or an unusable answer does not, since a busy omlx gives them too, and without a registry the exception is not taken.
+- The probe (`_omlx_loaded`) answers "cannot say" when nothing answered at all: with status, `wt served` and `/health` all failing, only a refused connection to `/health` reads as "nothing loaded", and the `/v1/models` fallback is kept for a `/health` that answers without pool counts. A status entry with no boolean `loaded` makes the status answer no listing.
+- The `wt_bridge` calls share one `_run_wt` seam and carry three timeouts (`START_TIMEOUT` 660s, `PLAN_TIMEOUT` 30s, `STOP_TIMEOUT` 330s), each above the wt budget it waits on.
+
+**Issues fixed on this branch.** #261 (modelman did not find omlx models inside an organization folder, and its scan could offer the model dir itself for deletion) and #263 (the omlx scans' single-model fallback disagreed with omlx) landed beside this work: modelman's `omlx_model_dirs` and wt's `scanOmlxModels` follow omlx's two-level rule, pinned by the shared fixture `docs/contracts/omlx-model-dirs.sample.json`, and `_target_dir` never returns the configured model dir, so a delete removes exactly the registered model's directory. Discovery of a registered repo's directory prefers the repo's own `org/name` path and takes a basename match only when exactly one directory has the name, so a repo never resolves to a same-named model in another organization's folder.
 
 **Ids.** modelman's resolved id and wt's id are the same string for registered and discovered omlx models (`<registry id>`, or `omlx/<directory>`), so ids pass in both directions unchanged.
 
