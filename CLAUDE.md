@@ -1,8 +1,8 @@
 # CLAUDE.md
 
 ## Docs
-- User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance). Read `docs/guides/00-config-map.md` first for config-file ownership.
-- `./issues.md` — follow-ups from the 2026-08-29 guide-set review; all 5 items are marked FIXED, kept as a historical record.
+- User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance, agent benchmarks, MLX quantization, capability eval). Read `docs/guides/00-config-map.md` first for config-file ownership.
+- `./issues.md` — follow-ups from the 2026-08-29 guide-set review (items 1–5 FIXED, kept as a historical record), plus one open, deferred item: #6, `piCompat` full-pointer replacement in `wt/internal/agents/pi_models.go`.
 - Package-level context: `modelman/CLAUDE.md` (Python TUI/CLI) and `wt/CLAUDE.md` (Go worktree launcher) contain per-package commands, architecture, and gotchas.
 
 ## Commands

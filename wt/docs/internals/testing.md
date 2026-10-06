@@ -1,0 +1,30 @@
+# wt Go tests: seams and isolation
+
+Internals reference for `wt/`, reached from [`wt/CLAUDE.md`](../../CLAUDE.md). Backticked paths are relative to `wt/` unless they start with `../`.
+
+## Go tests
+
+Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
+
+**Test seams.** TTY, installed-check, guard, TUI behavior, usage store, local-inventory probing, model starting, profiles, and stop flows are stubbed via package-level var seams (`tuiRun`, `launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`, `newUsageStore`, `flushTTY`, `stopSignalCtx`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`, `pickModelTUI`, `pickStartModelTUI`, `stopCandidates`, `stopEntries`, `stopPickerAll`, `confirmStop`, `ensureModelRoute`, `loadProfileStore`, `confirmProfile`, `openTTY`, `profileApplier`, `loadProxyEnv`) — production code calls the var, tests swap it. New seams follow the same shape: a `var x = realX` plus a `realX` function.
+
+**No test writes the developer's real config directory.** `internal/tui` and `cmd/wt` launch stub agents, record usage, take profile locks and load the config, so their `TestMain`s point `XDG_CONFIG_HOME` at a throwaway directory for the whole package (and clear `MODELMAN_REGISTRY`); a test that sets its own still wins. Before this, every run of `internal/tui` rewrote the real `rotation.state` with a test model and appended `wt-stub` launches to the real `usage.jsonl`. `TestConfigHomeIsNotTheDevelopersOwn` pins it in both packages. A new package whose tests reach `config.Dir()` needs the same setup — check with a before/after listing of `~/.config/agent-wt` around `go test`.
+
+Three `TestMain`s guarantee no Go test probes a real server, starts a real model, or drains the developer's terminal input queue:
+- `internal/tui`: `runInventory` (stubs `localmodels.Inventory`) defaults to `localmodels.OnDiskSnapshotForTest` — every registry local model on disk, nothing running (local rows come only from the inventory, so an empty snapshot would hide them); `startModel` (stubs `lifecycle.Start`) fails; `ensureModelRoute` (stubs `lifecycle.EnsureModelRouteTo`) is a no-op and `tryEnsureModelRoute` (stubs `lifecycle.TryEnsureModelRouteTo`) reports "done, nothing changed" — both forms, since unstubbed either one reaches the real `config.yaml`.
+- `cmd/wt` (`testmain_test.go`): `probeInventory` defaults to the same `localmodels.OnDiskSnapshotForTest`; its own `startModel` (a *different* seam from the TUI's despite the shared name — wraps `startForLaunch`) and `lifecycleStart` are hard-failed, so an unstubbed test can neither start a model nor let the route hook rewrite the real `config.yaml`; its own `ensureModelRoute` is a no-op for the same reason, and its `stubEnsureRoute(t)` also swaps `waitPendingRoutes` and captures `osStderr` — a check that reports "changed" goes on to announce a proxy restart, and that line would otherwise be sprayed over the test log by every launch test here (a test that wants to see it stubs `osStderr` itself, with `routeWaitInterval` shortened). Each package has a `stubEnsureRoute(t)` helper for tests that assert on the launch-time route check, and a new launch path must call the check through that seam.
+- `internal/survey`: `flushTTY` is a no-op.
+
+`internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` for other packages. `internal/lifecycle` uses a different convention: every seam (HTTP clients, exec, inventory, timeouts, pidfile paths) lives in one `env` struct that `defaultEnv()` fills and tests rebuild with `testEnv()`; its `TestMain` doubles as a fake `mtplx` helper process when `LIFECYCLE_HELPER=mtplx`.
+
+**Prefer asserting on unexported functions directly** — same-package tests can call them (e.g. `buildStatsRows`); parsing rendered lipgloss output couples tests to border glyphs/padding and flakes under forced-color ANSI.
+
+```bash
+go test ./...                        # all Go tests
+go test ./internal/worktree -v       # verbose, one package
+go test ./internal/agents -run TestOpenCodeOllamaPrefix -v   # one test
+go vet ./...                         # static analysis
+make check                           # shellcheck + shfmt check + go-format-check (gofmt -l gate wt-ci runs); `make format` writes both
+```
+
+From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint + modelman + wt build/vet/test).
