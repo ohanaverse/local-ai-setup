@@ -104,3 +104,57 @@ def test_migrate_command_syncs_routes_once_after_writing(tmp_path, monkeypatch, 
     assert CliRunner().invoke(app, ["migrate"]).exit_code == 0
     assert wt_calls == [["sync", "--json"]]
     assert registry_on_disk_at_sync == [True]
+
+
+def _fresh_machine(tmp_path, monkeypatch):
+    """No legacy config, no families, no wt config, no registry: what
+    `modelman migrate` meets on a machine that has never run modelman."""
+    registry_path = tmp_path / "registry.toml"
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "no-config.yaml"))
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(tmp_path / "no-families"))
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+    monkeypatch.setenv("MODELMAN_WT_CONFIG", str(tmp_path / "no-wt-config.toml"))
+    return registry_path
+
+
+def test_migrate_on_a_fresh_machine_adds_rows_for_installed_providers(tmp_path, monkeypatch):
+    """#194: `wt` tells a user with no registry to "seed it with `modelman
+    migrate`", and on a fresh machine that wrote `providers = []` — after
+    which a pulled model was "unknown model" to `modelman start` and
+    invisible to wt, with no command that would create the provider row. The
+    command itself, not only the helper it calls, must leave a registry with a
+    default row for each local provider whose tool is installed, and say so."""
+    registry_path = _fresh_machine(tmp_path, monkeypatch)
+    monkeypatch.setattr("modelman.sync._installed_local_providers", lambda: ["omlx", "ollama"])
+
+    result = CliRunner().invoke(app, ["migrate"])
+
+    assert result.exit_code == 0, result.stdout
+    registry = load_registry(registry_path)
+    assert [p.id for p in registry.providers] == ["ollama", "omlx"]
+    assert registry.provider("ollama").auth.base_url == "http://localhost:11434"
+    assert registry.provider("ollama").location == "local"
+    assert "Migrated 2 providers and 0 models." in result.stdout
+    assert "Added provider entries: ollama, omlx" in result.stdout
+
+    # A re-run leaves the same rows, not duplicates. (migrate rebuilds the
+    # registry from its inputs each time rather than reading the one on disk,
+    # so the rows are added, and announced, again.)
+    again = CliRunner().invoke(app, ["migrate"])
+    assert again.exit_code == 0
+    assert [p.id for p in load_registry(registry_path).providers] == ["ollama", "omlx"]
+
+
+def test_migrate_on_a_fresh_machine_with_nothing_installed_adds_no_rows(tmp_path, monkeypatch):
+    """A provider whose tool is not installed gets no row: wt would probe a
+    server the machine does not have. The registry is still written, so the
+    "registry missing" state ends either way."""
+    registry_path = _fresh_machine(tmp_path, monkeypatch)
+    monkeypatch.setattr("modelman.sync._installed_local_providers", lambda: [])
+
+    result = CliRunner().invoke(app, ["migrate"])
+
+    assert result.exit_code == 0, result.stdout
+    assert load_registry(registry_path).providers == []
+    assert "Added provider entries" not in result.stdout

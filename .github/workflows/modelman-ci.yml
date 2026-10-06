@@ -6,11 +6,13 @@ on:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - "bin/check-config-dirs-untouched"
       - ".github/workflows/modelman-ci.yml"
   pull_request:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - "bin/check-config-dirs-untouched"
       - ".github/workflows/modelman-ci.yml"
 
 jobs:
@@ -26,3 +28,8 @@ jobs:
       - run: uv sync
       - run: make check
       - run: make test
+      # No test may create the real config directories; see the script for
+      # why. Run right after the tests, before any later step could create
+      # them for its own reasons.
+      - name: Tests left the real config directories alone
+        run: ../bin/check-config-dirs-untouched

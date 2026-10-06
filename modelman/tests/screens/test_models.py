@@ -2497,3 +2497,118 @@ def test_edit_carryover_preserves_time_prices_and_extra():
     assert new.cost.time_prices == [tp]
     assert new.cost.extra == {"k": 1}
     assert new.cost.input_price_per_million == 2.0
+
+
+def test_add_start_discard_then_exit_syncs_routes_again(
+    tmp_path, monkeypatch, wt_calls, stub_ollama_caps
+):
+    """#194 (#17), as one sequence through the real screen and the real exit
+    path. Add a model (registry.toml is saved at once), start a model that
+    was already ready (the start runs one route sync, against the registry as
+    it now stands), then Discard. The registry is back to what it was, so
+    run_tui's before/after comparison sees nothing — but the routes were
+    last synced from a registry that no longer exists. The exit must sync
+    once more.
+
+    The two halves were pinned separately (the screen sets route_sync_owed;
+    run_tui syncs when a fake app has it set). This drives ModelmanApp
+    itself: run() is replaced only by a headless drive of the real app, and
+    the model is started by the real start_local_model (ollama's start is a
+    flag plus a sync; `wt` is the suite's recording fake)."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from modelman.main import run_tui
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmExitDialog
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    # (conftest points MODELMAN_WT_DIR at an empty directory: with a real wt
+    # config the screen registers a native provider row per agent on mount,
+    # rewriting registry.toml for a reason that has nothing to do with this.)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+    save_state(state, state_path)
+    # Reconcile on mount re-derives ready from the provider: confirm it.
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    seen: dict = {}
+
+    async def drive(app) -> object:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _open_model_screen(pilot)
+            await pilot.pause()
+
+            # 1. Add a model: saved to registry.toml immediately.
+            await pilot.press("a")
+            await pilot.pause()
+            app.screen.query_one("#provider-select", Select).value = "ollama"
+            await pilot.pause()
+            app.screen.query_one("#model", Input).focus()
+            for ch in "dangling:7b":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            await pilot.pause()
+            seen["added_on_disk"] = any(
+                m.id == "ollama/dangling:7b" for m in load_registry(reg_path).models
+            )
+
+            # 2. Start the model that was already ready.
+            table = app.screen.query_one("#model-table", DataTable)
+            for row in range(table.row_count):
+                table.move_cursor(row=row)
+                await pilot.pause()
+                current = app.screen._current_entry()
+                if current is not None and current.id == "ollama/a":
+                    break
+            screen = app.screen
+            await pilot.press("s")
+            await pilot.pause()
+            await pilot.press("y")
+            # Wait for the worker to finish, not only for its flag: the flag
+            # is written before the worker returns, and Escape with a worker
+            # still running raises ConfirmForceQuitDialog instead.
+            for _ in range(400):
+                await pilot.pause()
+                if (
+                    load_state(state_path).get("ollama/a").running
+                    and not screen._lifecycle_worker_busy()
+                ):
+                    break
+            seen["started"] = load_state(state_path).get("ollama/a").running
+            seen["syncs_before_exit"] = len([c for c in wt_calls if c[:1] == ["sync"]])
+
+            # 3. Leave, discarding the pending add.
+            await pilot.press("escape")
+            await pilot.pause()
+            seen["dialog"] = isinstance(app.screen, ConfirmExitDialog)
+            await pilot.press("d")
+            await pilot.pause()
+        return app.return_value
+
+    before_bytes = reg_path.read_bytes()
+    monkeypatch.setattr(ModelmanApp, "run", lambda self: asyncio.run(drive(self)))
+    run_tui()
+
+    assert seen == {
+        "added_on_disk": True,
+        "started": True,
+        "syncs_before_exit": 1,
+        "dialog": True,
+    }
+    # Discard put the registry back...
+    assert not any(m.id == "ollama/dangling:7b" for m in load_registry(reg_path).models)
+    # ...byte for byte, which is the whole problem: nothing on disk says the
+    # routes are stale. (If this ever fails the test no longer isolates the
+    # owed sync — run_tui would sync for the changed file anyway.)
+    assert reg_path.read_bytes() == before_bytes
+    # ...and the exit synced once more, after the start's own sync.
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"], ["sync", "--json"]]

@@ -3,6 +3,7 @@
 SHELL_SCRIPTS := \
 	bin/lib/mlx-lm-resolve.sh \
 	bin/mlx-quantize \
+	bin/check-config-dirs-untouched \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \
 	benchmarks/ornith-1.5-benchmark \
