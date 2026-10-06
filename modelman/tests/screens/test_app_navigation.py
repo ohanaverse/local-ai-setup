@@ -2162,8 +2162,22 @@ model_name = "bad"
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "content",
-    [_ONE_BAD_ENTRY, "[[models]\nnot toml", "models = 3\n"],
-    ids=["malformed-entry", "toml-syntax", "wrong-shape"],
+    [
+        _ONE_BAD_ENTRY,
+        "[[models]\nnot toml",
+        "models = 3\n",
+        # #247: valid TOML whose models are under a name modelman does not
+        # read. It loaded as zero models without a message, and the first save
+        # rewrote the file as `models = []`.
+        """
+[[model]]
+id = "ollama/qwen3"
+family = "qwen3"
+provider_id = "ollama"
+model_name = "qwen3:8b"
+""",
+    ],
+    ids=["malformed-entry", "toml-syntax", "wrong-shape", "unknown-top-level-key"],
 )
 async def test_app_refuses_to_open_an_unreadable_registry(tmp_path, monkeypatch, content):
     """#240: only a missing registry is an empty one. A file that is there

@@ -217,6 +217,25 @@ def test_migrate_leaves_an_unreadable_registry_alone(tmp_path, monkeypatch, wt_c
     assert wt_calls == []
 
 
+def test_migrate_leaves_a_registry_with_an_unknown_top_level_key_alone(
+    tmp_path, monkeypatch, wt_calls
+):
+    """#247: valid TOML whose models sit under a key modelman does not read
+    (`[[model]]`, a typo for `[[models]]`) loaded as zero models without a
+    message, and migrate's save rewrote the file as `models = []` — losing
+    every entry. It is a registry that cannot be read, not a missing one."""
+    registry_path = _fresh_machine(tmp_path, monkeypatch)
+    content = '[[model]]\nid = "ollama/qwen3"\nfamily = "qwen3"\n'
+    registry_path.write_text(content)
+
+    result = CliRunner().invoke(app, ["migrate"])
+
+    assert result.exit_code == 1
+    assert f"error: cannot read {registry_path}" in result.output
+    assert registry_path.read_text() == content
+    assert wt_calls == []
+
+
 def test_migrate_reports_a_wrongly_shaped_registry_instead_of_a_traceback(
     tmp_path, monkeypatch, wt_calls
 ):

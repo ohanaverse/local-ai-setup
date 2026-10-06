@@ -489,10 +489,44 @@ def _registry_read_path(path: Path | None = None) -> Path:
     raise RegistryNotFoundError(f"Registry file not found: {registry_path}")
 
 
+# The top-level tables a registry may hold. _write_registry emits exactly
+# these three, so anything else is a section a save would drop (#247) —
+# which _reject_unknown_top_level_keys refuses rather than reading past.
+_TOP_LEVEL_KEYS = frozenset({"providers", "families", "models"})
+
+
+def _reject_unknown_top_level_keys(raw: dict[str, Any]) -> None:
+    """Refuse a registry whose content sits under a top-level key nothing reads.
+
+    `[[model]]` for `[[models]]` is a plausible hand edit, and it reads as
+    zero models: the file parses, load_registry returns an empty Registry with
+    no message, and the first save rewrites the file without the entries. That
+    is the data loss #240 covers for a file that fails to parse, reached
+    through a file that parses perfectly well (#247). The parser is the only
+    place that can tell "no models" from "models under a name I do not read",
+    so it refuses here, where the callers that already report an unreadable
+    registry (#240) pick it up.
+
+    A nested unknown key is deliberately NOT this: it belongs to one entry and
+    survives the round trip through unknown_keys(). Only a top-level one names
+    a whole section the writer cannot emit.
+    """
+    unknown = sorted(set(raw) - _TOP_LEVEL_KEYS)
+    if not unknown:
+        return
+    keys = ", ".join(f"`{key}`" for key in unknown)
+    known = "/".join(sorted(_TOP_LEVEL_KEYS))
+    raise RegistryError(
+        f"unknown top-level key(s) {keys}: a registry holds {known} only, "
+        f"and saving would drop everything under anything else"
+    )
+
+
 def load_registry(path: Path | None = None) -> Registry:
     registry_path = _registry_read_path(path)
     with open(registry_path, "rb") as f:
         raw = tomllib.load(f)
+    _reject_unknown_top_level_keys(raw)
     registry = Registry(
         providers=[_parse_provider(p) for p in raw.get("providers", [])],
         families=[_parse_family(f) for f in raw.get("families", [])],

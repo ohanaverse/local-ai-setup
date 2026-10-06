@@ -52,6 +52,56 @@ def test_load_registry_missing_file_raises(tmp_path):
         load_registry(tmp_path / "nonexistent.toml")
 
 
+def test_load_registry_rejects_an_unknown_top_level_key(tmp_path):
+    """#247: valid TOML whose content sits under a key modelman does not read
+    loaded as zero models with no message — and `[[model]]` is a plausible
+    typo for `[[models]]` — so the first save rewrote the file without any of
+    them. The parser is the only place that can tell "no models" from "models
+    under a name I do not read", so it says so instead of returning empty."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        """
+[[model]]
+id = "ollama/qwen3"
+family = "qwen3"
+provider_id = "ollama"
+model_name = "qwen3:8b"
+"""
+    )
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry(path)
+
+    message = str(excinfo.value)
+    assert "model" in message
+    assert "providers" in message and "families" in message and "models" in message
+
+
+def test_load_registry_names_every_unknown_top_level_key(tmp_path):
+    """One message, every offending key: a hand-edited file usually carries
+    one mistake, but fixing it one parse at a time is a needless round trip."""
+    path = tmp_path / "registry.toml"
+    path.write_text('[registry]\nnotes = "mine"\n\n[meta]\nversion = 2\n')
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry(path)
+
+    assert "meta" in str(excinfo.value) and "registry" in str(excinfo.value)
+
+
+def test_unknown_top_level_key_raises_as_a_registry_error_not_not_found(tmp_path):
+    """The distinction #240 rests on: "there is a file, and it cannot be read"
+    must not be reported as "there is no file", or a caller opens it empty and
+    writes that back over the user's registry."""
+    path = tmp_path / "registry.toml"
+    path.write_text("[[model]]\nid = 'x'\n")
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry(path)
+
+    assert not isinstance(excinfo.value, RegistryNotFoundError)
+
+
 def test_save_then_load_round_trips_providers_and_models(tmp_path):
     registry = Registry(
         providers=[
