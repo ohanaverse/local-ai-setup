@@ -46,7 +46,7 @@ These were settled during design and are not open.
 ## Out of scope
 
 - **A command or screen to set the omlx API key** (#213 item 4). `auth.secret_ref` on the registry's omlx provider stays a hand edit.
-- **Loads wt does not perform.** An agent that dials omlx directly and names an unloaded model makes omlx load it, and possibly evict, with no prompt. `wt litellm sync` corrects the routes, and the launch-time check adds the launched model's own route when it is missing; a start or stop does not, since neither clears the family. This is documented, not prevented.
+- **Loads wt does not perform.** An agent that dials omlx directly and names an unloaded model makes omlx load it, and possibly evict, with no prompt. `wt litellm sync` corrects the routes, and the launch-time check adds the launched model's own route when it is missing; a start or a model stop does not, since neither clears the family (only `wt stop omlx` does). This is documented, not prevented.
 - **Models pinned in omlx's own settings.** wt reads the `pinned` flag to predict evictions and never sets it.
 - **The `mlx_lm_server` pairing identity fix** (#194 #19a/b). Separate, bounded work.
 
@@ -116,7 +116,8 @@ type PoolModel struct {
 - **`Shared`:** always none.
 - **`Pool`, sizes known and ceiling above zero:** the target fits when `InUse + size(target) <= Ceiling - margin`. `poolAdmissionMargin` is one named constant, 10% of the ceiling. When the target does not fit, walk the other loaded, unpinned models by `LastAccess`, oldest first, subtracting each size until the projection fits. Those models are the victims. If the walk ends without fitting, every unpinned loaded model is a victim; omlx gives the final answer at load time.
 - **`Pool`, sizes unknown or ceiling zero:** wt cannot tell whether the target fits, so every other loaded model is a victim. The loaded set itself is known, so `known` stays true and the prompt names real models.
-- **Any tenancy, probe not trusted:** no victims and `known` is false, as `Occupant` reports today. Only this case leads to `*OccupancyUnknownError`.
+- **Server refused the connection** (`Snapshot.Down`): nothing is serving, so no victims and `known` is true. A cold start plans as one that fits. The start engine still re-probes such a server before acting, in case a model came up after the snapshot.
+- **Any tenancy, probe not trusted otherwise:** no victims and `known` is false, as `Occupant` reports today. Only this case leads to `*OccupancyUnknownError`.
 
 A target missing from the pool reading (a model added to disk after omlx scanned) has size zero for the plan; the load itself reports the outcome.
 
