@@ -298,6 +298,35 @@ def test_run_tui_syncs_when_registry_changed_without_queue(tmp_path, monkeypatch
     assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
 
 
+def test_run_tui_exits_nonzero_when_the_app_refused_the_registry(
+    tmp_path, monkeypatch, wt_calls, capsys
+):
+    """#240: the app stops on a registry it cannot read; the command must
+    carry that out as a failure with the reason on stderr, and sync nothing."""
+    import pytest
+    import typer
+
+    reg = tmp_path / "registry.toml"
+    reg.write_text("models = 3\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg))
+
+    class FakeApp:
+        return_code = 1
+        registry_error = "cannot read registry.toml: boom"
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr("modelman.app.ModelmanApp", FakeApp)
+    from modelman.main import run_tui
+
+    with pytest.raises(typer.Exit) as excinfo:
+        run_tui()
+    assert excinfo.value.exit_code == 1
+    assert "error: cannot read registry.toml: boom" in capsys.readouterr().err
+    assert wt_calls == []
+
+
 def test_run_tui_registry_edit_plus_queue_syncs_once(tmp_path, monkeypatch, wt_calls):
     """An add/edit AND an applied queue in one session: run_queued_ops'
     sync covers both — no second sync from the registry-changed branch."""
