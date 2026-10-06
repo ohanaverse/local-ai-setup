@@ -281,6 +281,32 @@ def test_sync_command_keeps_the_flag_of_a_model_on_a_remote_ollama(tmp_path, mon
     assert "marked stopped" not in result.output
 
 
+def test_sync_command_reports_only_the_flags_it_cleared(tmp_path, monkeypatch):
+    """A flagged id with nothing to probe for — no registry entry and no
+    provider row of its prefix — is neither verified nor cleared by
+    running_model_ids. Reported as "flagged and not returned", it was
+    announced as marked stopped on every sync while its flag stayed set."""
+    from modelman.state import ModelState, StateStore, load_state, save_state
+
+    _registry_path, state_path = _seed_registry(tmp_path, monkeypatch)
+    store = StateStore()
+    store.set("retired/x", ModelState(running=True))
+    store.set("ollama/gone:1b", ModelState(running=True))
+    save_state(store, state_path)
+
+    with (
+        patch("modelman.sync.list_ollama", return_value={}),
+        patch("modelman.local_control._http_json", return_value={"models": []}),
+    ):
+        result = CliRunner().invoke(app, ["sync"])
+
+    assert result.exit_code == 0, result.output
+    after = load_state(state_path)
+    assert after.get("retired/x").running is True
+    assert after.get("ollama/gone:1b").running is False
+    assert "No longer running, marked stopped: ollama/gone:1b\n" in result.output
+
+
 def test_sync_command_does_not_undo_a_start_or_stop_made_while_it_ran(tmp_path, monkeypatch):
     """#231's neighbour. sync loads modelman.toml, scans the providers (slow),
     then writes back — and it wrote back every row of its stale snapshot. A

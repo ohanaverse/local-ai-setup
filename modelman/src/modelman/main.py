@@ -544,10 +544,17 @@ def sync() -> None:
     # under the lock — so nothing here can undo a start or stop made while
     # the scans ran (#243). For ollama the probe is "still pulled?", which is
     # what clears the flag of a model removed with `ollama rm` (#233, #242).
-    flagged = sorted(mid for mid, s in load_state().models.items() if s.running)
+    #
+    # What is reported is what the state file says afterwards, not "flagged
+    # and not returned": running_model_ids neither verifies nor clears an id
+    # it has nothing to probe for (no registry entry, no provider row of its
+    # prefix), and announcing that one as stopped on every sync was untrue.
+    before = load_state()
+    flagged = sorted(mid for mid, s in before.models.items() if s.running)
     if flagged:
-        still_running = set(running_model_ids(registry, load_state()))
-        stopped = [mid for mid in flagged if mid not in still_running]
+        running_model_ids(registry, before)
+        after = load_state()
+        stopped = [mid for mid in flagged if not after.get(mid).running]
         if stopped:
             typer.echo(f"No longer running, marked stopped: {', '.join(stopped)}")
     # The registry save above may have repaired a provider (backfilled
