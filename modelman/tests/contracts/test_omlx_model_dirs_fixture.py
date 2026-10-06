@@ -22,6 +22,8 @@ def test_omlx_model_dirs_matches_shared_fixture(case, tmp_path):
     for rel in case["files"]:
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
+        # Non-empty, as omlx's weight-size check needs: "{}" for JSON files, a
+        # short fixed byte string for the rest (same rule as the Go test).
+        path.write_bytes(b"{}" if rel.endswith(".json") else b"0123456789abcdef")
     names = [d.name for d in omlx_model_dirs(tmp_path / case["model_dir"])]
     assert names == case["expect"], f"case {case['name']!r}"

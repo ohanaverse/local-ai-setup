@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -43,7 +44,13 @@ func TestScanOmlxModelsMatchesSharedFixture(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(p, nil, 0o644); err != nil {
+				// Non-empty, as omlx's weight-size check needs: "{}" for
+				// JSON files, a short fixed byte string for the rest.
+				body := []byte("0123456789abcdef")
+				if strings.HasSuffix(f, ".json") {
+					body = []byte("{}")
+				}
+				if err := os.WriteFile(p, body, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
