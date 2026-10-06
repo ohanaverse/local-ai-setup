@@ -19,6 +19,49 @@ def _model_dir(config: dict) -> Path:
     return Path(os.path.expanduser(raw))
 
 
+def _is_model_dir(path: Path) -> bool:
+    return (path / "config.json").is_file() and not (path / "adapter_config.json").exists()
+
+
+def omlx_model_dirs(md: Path) -> list[Path]:
+    """The model directories omlx discovers under `md`, by its two-level rule
+    (omlx 0.7.0, model_discovery.discover_models; wt's scan in
+    wt/internal/localmodels/sources.go follows the same rule, and the two
+    must list the same names):
+
+    - an entry holding config.json is a model, named after the directory;
+    - an entry holding adapter_config.json is a LoRA adapter, skipped;
+    - any other entry is an organization folder: its child directories that
+      hold config.json are models, named after the CHILD;
+    - dot-directories are skipped, and the first of two equal names wins;
+    - if nothing was found and `md` itself holds config.json, it is the one
+      model.
+
+    A Hugging Face cache entry (models--Org--Name/snapshots/...) is not
+    listed: omlx names it by its own rules. A missing `md` is no models."""
+    if not md.is_dir():
+        return []
+
+    def subdirs(path: Path) -> list[Path]:
+        return sorted(d for d in path.iterdir() if d.is_dir() and not d.name.startswith("."))
+
+    found: dict[str, Path] = {}
+    for entry in subdirs(md):
+        if (entry / "adapter_config.json").exists():
+            continue
+        if _is_model_dir(entry):
+            found.setdefault(entry.name, entry)
+            continue
+        if entry.name.startswith("models--") and (entry / "snapshots").is_dir():
+            continue
+        for child in subdirs(entry):
+            if _is_model_dir(child):
+                found.setdefault(child.name, child)
+    if not found and _is_model_dir(md):
+        found[md.name] = md
+    return [found[name] for name in sorted(found)]
+
+
 def _is_local_path_entry(variant: VariantSpec) -> bool:
     return bool(variant.get("local_path"))
 
@@ -57,7 +100,17 @@ class OMLXProvider(Provider):
             return Path(os.path.expanduser(local_path))
         repo = variant.get("repo")
         if repo:
-            return _model_dir(self.config) / repo_basename(repo)
+            md = _model_dir(self.config)
+            flat = md / repo_basename(repo)
+            if flat.is_dir():
+                return flat
+            # omlx may have stored it inside an organization folder (#261):
+            # the directory omlx serves under this name is the model's.
+            for found in omlx_model_dirs(md):
+                if found.name == flat.name:
+                    return found
+            # Not on disk: the flat path is where a download goes.
+            return flat
         return None
 
     def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
@@ -121,20 +174,10 @@ class OMLXProvider(Provider):
                 ProgressTqdm.clear_active_context()
 
     def list_local(self, runner: _Runner | None = None) -> list[LocalModel]:
-        models: list[LocalModel] = []
-        md = _model_dir(self.config)
-        if not md.exists():
-            return models
-        for d in md.iterdir():
-            if d.is_dir():
-                models.append(
-                    {
-                        "variant_id": d.name,
-                        "path": str(d),
-                        "size_bytes": None,
-                    }
-                )
-        return models
+        return [
+            {"variant_id": d.name, "path": str(d), "size_bytes": None}
+            for d in omlx_model_dirs(_model_dir(self.config))
+        ]
 
     def size_of(self, variant: VariantSpec) -> int | None:
         target = self._target_dir(variant)

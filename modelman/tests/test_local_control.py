@@ -1638,9 +1638,12 @@ def test_inventory_skips_providers_with_no_registered_class():
 
 def _omlx_model_dir(tmp_path: Path, basename: str = "Qwen3.8-27B-4bit") -> Path:
     """Create ~/.omlx/models-style <model_dir>/<repo basename>/ with a file
-    in it and return the model_dir."""
+    in it and return the model_dir. config.json is what makes omlx (and
+    modelman's scan) read the directory as a model; it is empty so the
+    size the tests assert stays that of the weights."""
     model_dir = tmp_path / "omlx-models"
     (model_dir / basename).mkdir(parents=True)
+    (model_dir / basename / "config.json").write_text("")
     (model_dir / basename / "weights.safetensors").write_bytes(b"x" * 2048)
     return model_dir
 

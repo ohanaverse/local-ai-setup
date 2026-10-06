@@ -552,3 +552,71 @@ def test_guard_sees_an_owner_on_another_provider(tmp_path, shared_owner):
         draft=DraftSpec(local_path=str(tmp_path / "user-draft")),
     )
     assert shared_owner(provider, downloaded, pairing) == "mlx_lm_server/pair"
+
+
+# #261: omlx's two-level model directory layout.
+
+
+def _model(path):
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}")
+    return path
+
+
+def test_list_local_finds_models_inside_an_organization_folder(tmp_path):
+    # #261, seen on a real machine: omlx stores a download at
+    # models/mlx-community/<name>/ and serves it as <name>. modelman listed a
+    # model called "mlx-community" and never saw the real one, so it could
+    # not be started or registered.
+    _model(tmp_path / "Flat-4bit")
+    _model(tmp_path / "mlx-community" / "Nested-6bit")
+    _model(tmp_path / "mlx-community" / "Other-8bit")
+    (tmp_path / "mlx-community" / "notes").mkdir()
+    (tmp_path / "empty-folder").mkdir()
+    adapter = _model(tmp_path / "Adapter")
+    (adapter / "adapter_config.json").write_text("{}")
+    _model(tmp_path / ".cache" / "Hidden")
+    (tmp_path / "models--Org--Cached" / "snapshots" / "abc").mkdir(parents=True)
+    _model(tmp_path / "zz-org" / "Flat-4bit")  # duplicate name: the first wins
+
+    found = {
+        m["variant_id"]: m["path"] for m in OMLXProvider({"model_dir": str(tmp_path)}).list_local()
+    }
+
+    assert sorted(found) == ["Flat-4bit", "Nested-6bit", "Other-8bit"]
+    assert found["Nested-6bit"] == str(tmp_path / "mlx-community" / "Nested-6bit")
+    assert found["Flat-4bit"] == str(tmp_path / "Flat-4bit")
+
+
+def test_list_local_reads_a_model_dir_that_is_itself_one_model(tmp_path):
+    # omlx accepts a model_dir pointed straight at one model's folder.
+    _model(tmp_path / "Solo-4bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path / "Solo-4bit")})
+    assert [m["variant_id"] for m in provider.list_local()] == ["Solo-4bit"]
+
+
+def test_a_registered_model_inside_an_organization_folder_reads_as_downloaded(tmp_path):
+    # A registry entry names a repo; its directory is looked up by the repo's
+    # basename. When omlx put that directory inside an organization folder,
+    # the entry read as not downloaded although omlx was serving it.
+    _model(tmp_path / "mlx-community" / "Nested-6bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "mlx-community/Nested-6bit"}
+    assert provider.is_downloaded(variant)
+    assert provider.path_of(variant) == str(tmp_path / "mlx-community" / "Nested-6bit")
+
+
+def test_delete_of_a_nested_registered_model_removes_only_that_model(tmp_path):
+    # The directory found inside an organization folder is the model's own:
+    # a delete must leave the folder and its other models alone.
+    nested = _model(tmp_path / "mlx-community" / "Nested-6bit")
+    sibling = _model(tmp_path / "mlx-community" / "Sibling-4bit")
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    variant: VariantSpec = {"id": "omlx/x", "repo": "mlx-community/Nested-6bit"}
+
+    assert provider.removable_paths(variant) == frozenset([str(nested)])
+    provider.delete(variant)
+
+    assert not nested.exists()
+    assert sibling.is_dir()
+    assert (tmp_path / "mlx-community").is_dir()
