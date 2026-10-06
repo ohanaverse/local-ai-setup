@@ -300,9 +300,11 @@ func TestOmlxStartSendsRegistryKey(t *testing.T) {
 }
 
 // TestOmlxStartWithoutKeyFailsAtOnce: a refused key does not heal by waiting,
-// so the start must fail on the first 401 to its load with an error that says
-// what to set, not poll the whole warmup budget (ten minutes in production)
-// and report a timeout.
+// so a start on an omlx that refuses keyless inference too must fail at once
+// with an error that says what to set, not poll the whole warmup budget (ten
+// minutes in production) and report a timeout. It costs exactly two requests:
+// the keyless load, and the keyless chat warmup the start falls back to (an
+// omlx that allows unauthenticated inference loads the model on that one).
 func TestOmlxStartWithoutKeyFailsAtOnce(t *testing.T) {
 	srv := newKeyedOmlx(t, "sk-omlx")
 	e := testEnv()
@@ -320,8 +322,8 @@ func TestOmlxStartWithoutKeyFailsAtOnce(t *testing.T) {
 	if !strings.Contains(err.Error(), "auth.secret_ref") || !strings.Contains(err.Error(), "API key required") {
 		t.Errorf("err = %q, want the server's reason and the setting to change", err)
 	}
-	if n := srv.posts.Load(); n != 1 {
-		t.Errorf("load requests = %d, want 1: a 401 is final", n)
+	if n := srv.posts.Load(); n != 2 {
+		t.Errorf("POSTs = %d, want 2 (the load, then the chat warmup): a 401 on each is final", n)
 	}
 	if d := time.Since(began); d > 5*time.Second {
 		t.Errorf("took %v: the start waited instead of failing on the refusal", d)

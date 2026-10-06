@@ -10,7 +10,10 @@
   expected to unload. `wt stop <model>` unloads that model and leaves the
   others up; `wt stop omlx` stops the service. Routes follow each model's
   loaded state, so two loaded omlx models are both routed. `wt start --json`
-  and `--plan` give scripted callers the plan and the result.
+  and `--plan` give scripted callers the plan and the result. On an omlx
+  that wants its API key for load and unload but not for inference, and with
+  no `auth.secret_ref` in the registry, a start still loads the model through
+  a keyless chat request, and a model stop fails with the two ways to proceed.
 
 ### Fixed
 

@@ -25,6 +25,12 @@ import (
 // when it has one, as omlx does. statusFailsAfterLoad makes status answer 500
 // once a load has been asked for, so the reading after a load is the fallback
 // (/health and the list) while the one before it came from status.
+//
+// mgmtKey makes it an omlx with an API key that allows unauthenticated
+// inference: status, load and unload want `Authorization: Bearer <mgmtKey>`
+// and answer 401 without it (recorded in refused, and changing nothing), while
+// /health, the list and chat completions stay keyless. A chat completion loads
+// the model it names, as omlx does on a first request; chats records them.
 type fakePool struct {
 	mu                   sync.Mutex
 	loaded               map[string]bool
@@ -36,6 +42,20 @@ type fakePool struct {
 	loadCodes            []int
 	loads                []string
 	unloads              []string
+	mgmtKey              string
+	refused              []string
+	chats                []string
+}
+
+// refuse answers a management request 401 when the pool wants a key the
+// request does not carry, recording it as what ("load B"). The caller holds mu.
+func (f *fakePool) refuse(w http.ResponseWriter, r *http.Request, what string) bool {
+	if f.mgmtKey == "" || r.Header.Get("Authorization") == "Bearer "+f.mgmtKey {
+		return false
+	}
+	f.refused = append(f.refused, what)
+	http.Error(w, `{"detail":"API key required"}`, http.StatusUnauthorized)
+	return true
 }
 
 func (f *fakePool) serve(t *testing.T) string {
@@ -74,6 +94,9 @@ func (f *fakePool) handler() http.Handler {
 	mux.HandleFunc("GET /v1/models/status", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.refuse(w, r, "status") {
+			return
+		}
 		if f.statusFailsAfterLoad && len(f.loads) > 0 {
 			http.Error(w, `{"detail":"Internal Server Error"}`, http.StatusInternalServerError)
 			return
@@ -92,6 +115,9 @@ func (f *fakePool) handler() http.Handler {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		id := r.PathValue("id")
+		if f.refuse(w, r, "load "+id) {
+			return
+		}
 		f.loads = append(f.loads, id)
 		for _, v := range f.evictOnLoad {
 			f.loaded[v] = false
@@ -114,6 +140,9 @@ func (f *fakePool) handler() http.Handler {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		id := r.PathValue("id")
+		if f.refuse(w, r, "unload "+id) {
+			return
+		}
 		f.unloads = append(f.unloads, id)
 		if !f.loaded[id] {
 			http.Error(w, `{"detail":"Model not loaded"}`, http.StatusBadRequest)
@@ -121,6 +150,21 @@ func (f *fakePool) handler() http.Handler {
 		}
 		f.loaded[id] = false
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.chats = append(f.chats, body.Model)
+		if _, ok := f.loaded[body.Model]; !ok {
+			http.Error(w, `{"detail":"Model not found"}`, http.StatusNotFound)
+			return
+		}
+		f.loaded[body.Model] = true
+		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
 	})
 	return mux
 }
@@ -447,5 +491,85 @@ func TestStopModelDeferredOnPoolKeepsSiblingRoutes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fp.unloads, []string{"A"}) || !fp.isLoaded("B") || !fp.isLoaded("Six") {
 		t.Errorf("unloads = %v, B = %v, Six = %v; want only A unloaded", fp.unloads, fp.isLoaded("B"), fp.isLoaded("Six"))
+	}
+}
+
+// keylessSnap is the inventory of an omlx whose status wants a key the
+// registry does not name: the probe is trusted, the reading is the fallback
+// (no sizes), and loaded are the models it found loaded.
+func keylessSnap(loaded ...string) localmodels.Snapshot {
+	p := &localmodels.Pool{}
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK}, OmlxPool: p}
+	for _, id := range loaded {
+		p.Models = append(p.Models, localmodels.PoolModel{ID: id, Loaded: true})
+		snap.Entries = append(snap.Entries, localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/" + id, ModelName: id, Artifact: id, Running: true})
+	}
+	return snap
+}
+
+// TestStartOnPoolWithoutAKeyFallsBackToTheChatWarmup pins the regression the
+// #213 live check found. The common local setup is an omlx with an API key
+// that allows unauthenticated inference, and a registry with no secret_ref:
+// omlx refuses the keyless /load (401) but serves a keyless chat completion,
+// and loads the model on it. `main` starts a model there through that chat
+// warmup; a start that stops at the refused /load made `wt start` fail on
+// every such machine.
+func TestStartOnPoolWithoutAKeyFallsBackToTheChatWarmup(t *testing.T) {
+	fp := &fakePool{loaded: map[string]bool{"B": false}, mgmtKey: "sk-omlx"}
+	e, stopped := poolEnv(t, keylessSnap())
+	err := start(context.Background(), e, provCfg("omlx", fp.serve(t)), Target{ProviderID: "omlx", ModelName: "org/B", ModelID: "omlx/b"}, Options{})
+	if err != nil {
+		t.Fatalf("start = %v, want nil through the chat warmup", err)
+	}
+	var refusedLoads []string
+	for _, r := range fp.refused {
+		if r != "status" {
+			refusedLoads = append(refusedLoads, r)
+		}
+	}
+	if !reflect.DeepEqual(refusedLoads, []string{"load B"}) || len(fp.loads) != 0 {
+		t.Errorf("refused = %v, accepted loads = %v; want one refused load of B and none accepted", fp.refused, fp.loads)
+	}
+	if !reflect.DeepEqual(fp.chats, []string{"B"}) || !fp.isLoaded("B") || len(*stopped) != 0 {
+		t.Errorf("chats = %v, B loaded = %v, occupant hook = %v; want one chat naming the directory basename, loaded, none", fp.chats, fp.isLoaded("B"), *stopped)
+	}
+}
+
+// TestStartOnPoolWithAWrongKeyDoesNotFallBack verifies the fallback is for a
+// registry that names no key only. When the registry names one and omlx
+// refuses it, the key is wrong and the user has to fix it: warming keyless
+// instead would start the model and hide that wt can neither predict evictions
+// nor unload on that server.
+func TestStartOnPoolWithAWrongKeyDoesNotFallBack(t *testing.T) {
+	fp := &fakePool{loaded: map[string]bool{"B": false}, mgmtKey: "sk-omlx"}
+	e, _ := poolEnv(t, keylessSnap())
+	err := start(context.Background(), e, keyedProvCfg(fp.serve(t), "sk-stale"), Target{ProviderID: "omlx", ModelName: "org/B"}, Options{})
+	var kr *KeyRefusedError
+	if !errors.As(err, &kr) || !kr.KeySent {
+		t.Fatalf("start = %v, want *KeyRefusedError with KeySent", err)
+	}
+	if len(fp.chats) != 0 || fp.isLoaded("B") {
+		t.Errorf("chats = %v, B loaded = %v; want no chat request and nothing loaded", fp.chats, fp.isLoaded("B"))
+	}
+}
+
+// TestStopModelOnPoolWithoutAKeySaysHowToProceed verifies a model stop omlx
+// refuses for want of a key fails with both ways out — name the key so wt can
+// unload one model, or stop the whole service — and does neither itself. It
+// must never fall back to `omlx stop`: that takes down every other loaded
+// model, which a model stop promises not to do.
+func TestStopModelOnPoolWithoutAKeySaysHowToProceed(t *testing.T) {
+	fp := &fakePool{loaded: map[string]bool{"A": true, "B": true}, mgmtKey: "sk-omlx"}
+	e, _ := poolEnv(t, localmodels.Snapshot{})
+	err := stopModel(context.Background(), e, provCfg("omlx", fp.serve(t)), "omlx", "A")
+	var kr *KeyRefusedError
+	if !errors.As(err, &kr) || kr.KeySent {
+		t.Fatalf("stopModel = %v, want an error wrapping *KeyRefusedError with no key sent", err)
+	}
+	if msg := err.Error(); !containsFold(msg, "secret_ref") || !containsFold(msg, "wt stop omlx") {
+		t.Errorf("message = %q, want it to name auth.secret_ref and `wt stop omlx`", msg)
+	}
+	if !fp.isLoaded("A") || !fp.isLoaded("B") || len(fp.unloads) != 0 {
+		t.Errorf("A = %v, B = %v, accepted unloads = %v; want both still loaded", fp.isLoaded("A"), fp.isLoaded("B"), fp.unloads)
 	}
 }

@@ -64,9 +64,11 @@ Read from the omlx 0.7.0 source (`server.py`, `engine_pool.py`).
 
 Management auth accepts a keyless request only when the server has no API key and binds loopback.
 
+**Keyless-inference mode.** An omlx with an API key and `allow_unauthenticated_inference = true` relaxes the inference column only: a keyless `GET /v1/models` and `POST /v1/chat/completions` work, and `/health` answers, while the three management endpoints answer 401 without the key. wt sends a key only when the registry's omlx provider names one (`auth.secret_ref`), and a registry without one is the common local setup. There wt has no status reading and can neither load nor unload through the management endpoints; "Start on a pool" and "Stop" say what it does instead. Setting `auth.secret_ref` gives full pool behavior. (Found by a check against a real omlx 0.7.0.)
+
 **Eviction.** A load that does not fit evicts loaded models in order of `last_access`, oldest first. It skips pinned models and models with a request in flight. A model whose agent session is idle between turns is evictable.
 
-**The limit on prediction.** omlx starts evicting at a soft watermark below `final_ceiling`. The watermark is not exposed. A load that fits under the ceiling can therefore still evict. wt cannot rule that out through the public API, which is why every load is followed by a reconcile (below).
+**The limit on prediction.** omlx starts evicting at a soft watermark below `final_ceiling`: `final_ceiling * soft_threshold`, where `soft_threshold` defaults to 0.85. The threshold is not exposed. A load that fits under the ceiling can therefore still evict. wt cannot rule that out through the public API, which is why every load is followed by a reconcile (below).
 
 ## Design
 
@@ -114,7 +116,7 @@ type PoolModel struct {
 
 - **`Exclusive`:** today's rule. The one running model of the family other than the target, if any.
 - **`Shared`:** always none.
-- **`Pool`, sizes known and ceiling above zero:** the target fits when `InUse + size(target) <= Ceiling - margin`. `poolAdmissionMargin` is one named constant, 10% of the ceiling. When the target does not fit, walk the other loaded, unpinned models by `LastAccess`, oldest first, subtracting each size until the projection fits. Those models are the victims. If the walk ends without fitting, every unpinned loaded model is a victim; omlx gives the final answer at load time.
+- **`Pool`, sizes known and ceiling above zero:** the target fits when `InUse + size(target) <= Ceiling - margin`. `poolAdmissionMarginPct` is one named constant, 15% of the ceiling: it matches omlx's default `soft_threshold` of 0.85, which omlx does not report. (It was first 10%, which predicted "fits" for a load landing between 85% and 90% of the ceiling that then evicted.) When the target does not fit, walk the other loaded, unpinned models by `LastAccess`, oldest first, subtracting each size until the projection fits. Those models are the victims. If the walk ends without fitting, every unpinned loaded model is a victim; omlx gives the final answer at load time.
 - **`Pool`, sizes unknown or ceiling zero:** wt cannot tell whether the target fits, so every other loaded model is a victim. The loaded set itself is known, so `known` stays true and the prompt names real models.
 - **Server refused the connection** (`Snapshot.Down`): nothing is serving, so no victims and `known` is true. A cold start plans as one that fits. The start engine still re-probes such a server before acting, in case a model came up after the snapshot.
 - **Any tenancy, probe not trusted otherwise:** no victims and `known` is false, as `Occupant` reports today. Only this case leads to `*OccupancyUnknownError`.
@@ -128,10 +130,12 @@ A target missing from the pool reading (a model added to disk after omlx scanned
 1. If the service does not answer, run `omlx start` and wait for the port, as today.
 2. Read the pool. If the target is loaded, return. If it is loading, poll the pool until it is loaded or the warmup timeout passes.
 3. Compute the plan. With victims and no `AllowReplace`, return `*OccupiedError`, touching nothing. With `known` false and no `AllowReplace`, return `*OccupancyUnknownError`, as today.
-4. `POST /v1/models/{id}/load`. The id is the pool model that name-matches the target (`localmodels.NameMatches`), else the target's directory basename. The request carries the registry key when there is one and is bounded by `warmupTimeout`. A 409 for a model already loading is handled as in step 2.
+4. `POST /v1/models/{id}/load`. The id is the pool model that name-matches the target (`localmodels.NameMatches`), else the target's directory basename. The request carries the registry key when there is one and is bounded by `warmupTimeout`. A 409 for a model already loading is handled as in step 2. When omlx refuses the load (401, 403) and no key was sent, the start falls back to the keyless chat-completion warmup (`omlxWarm`), on which omlx loads the model; this is keyless-inference mode, where `main` starts a model the same way. A server that refuses inference too answers the warmup with `*KeyRefusedError`. A key that was sent and refused gets no fallback.
 5. Read the pool again and reconcile (below).
 
-This replaces the chat-completion warmup on the start path. `omlxWarm`, `lifecycle.Warm` and `wt warm` stay as they are for modelman's benchmark isolation.
+This replaces the chat-completion warmup on the start path, except as the fallback in step 4. `omlxWarm`, `lifecycle.Warm` and `wt warm` stay as they are for modelman's benchmark isolation.
+
+In keyless-inference mode the pool reading is the fallback (no sizes), so the plan names every other loaded model and wt asks before a second load; a partly loaded pool cannot be read at all and the start gets `*OccupancyUnknownError`. The reconcile does nothing without a status reading, so an eviction there is corrected by `wt litellm sync`.
 
 **`*OccupiedError` carries a list.** `Occupant localmodels.Entry` becomes `Occupants []localmodels.Entry`. `Exclusive` always fills exactly one. The CLI prompt (`cmd/wt/start.go`) renders the list with each entry's live session count from `refcount`. The TUI replace screen (`internal/tui/start_flow.go`) lists the ids; the picker's in-use column already shows the counts.
 
@@ -140,7 +144,8 @@ This replaces the chat-completion warmup on the start path. `omlxWarm`, `lifecyc
 | omlx answer | wt error |
 |---|---|
 | 507 | `*NoRoomError`, carrying omlx's `detail`, which names what holds the memory |
-| 401, 403 | `*KeyRefusedError`, as the warmup returns today |
+| 401, 403, a key was sent | `*KeyRefusedError`, as the warmup returns today |
+| 401, 403, no key was sent | fall back to the keyless chat warmup; its own 401 or 403 is `*KeyRefusedError` |
 | 404 | the existing start failure, naming the model and the pool directory |
 | timeout, transport failure | the existing start failure |
 
@@ -157,7 +162,7 @@ The start reports what it evicted to its caller through a new optional callback,
 
 ### Stop
 
-- **`wt stop <omlx model>`** calls `omlxBackend.stopModel`: `POST /v1/models/{id}/unload`, then a pool read to confirm. A 400 "not loaded" answer, or a pool read showing the model unloaded, is success. The route change removes that model's ids only (`Change.Remove`).
+- **`wt stop <omlx model>`** calls `omlxBackend.stopModel`: `POST /v1/models/{id}/unload`, then a pool read to confirm. A 400 "not loaded" answer, or a pool read showing the model unloaded, is success. A 401 or 403 with no key sent (keyless-inference mode) is an error that wraps `*KeyRefusedError` and names both ways out: set `auth.secret_ref` so wt can unload one model, or run `wt stop omlx`. wt does not fall back to stopping the service, because a model stop must never take siblings down. The route change removes that model's ids only (`Change.Remove`).
 - **`wt stop omlx`** calls `omlxBackend.stop`: `omlx stop`, wait for the port to close, remove the family's routes. Unchanged.
 - **`routeRemove`** takes the stopped model as well as the provider. `Exclusive` removes the family, `Shared` writes nothing, `Pool` removes the model's ids.
 - **The stop picker and `confirmStop`** count sessions per omlx model. The "stopping it also stops X" line and the stop-once-per-family shortcut apply to `Exclusive` only.
@@ -228,6 +233,8 @@ modelman's normal omlx start and stop delegate to wt. `omlx` and `omlx-6bit` are
 | omlx evicts a model the plan did not name | Route removed, line printed and marked unexpected |
 | Load fails after an eviction | Evicted model's route removed, one proxy restart, the load error returned |
 | Unload of a model already gone | Success |
+| Model stop refused for want of a key (keyless-inference mode) | Error naming `auth.secret_ref` and `wt stop omlx`; nothing is unloaded and the service stays up |
+| Load refused for want of a key, no key in the registry | The start falls back to the keyless chat warmup |
 | `wt` missing when modelman starts an omlx model | modelman's existing `WtNotFoundError` |
 
 ## Testing

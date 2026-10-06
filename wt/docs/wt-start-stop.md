@@ -94,14 +94,25 @@ recently used when a load does not fit.
   the question. Declining changes nothing. If wt cannot size the pool (omlx's
   status endpoint refused, or its memory limit is off) it names every other
   loaded model.
-- The prediction is an estimate: omlx starts unloading a little below its
-  ceiling and does not say where. If omlx unloads a model wt did not name, wt
+- The prediction is an estimate: omlx starts unloading below its ceiling
+  (at 85% of it by default) and does not report where, so wt keeps 15% of
+  the ceiling free when it predicts. If omlx unloads a model wt did not name, wt
   removes that model's route and prints
   `wt: omlx unloaded <id> to make room (not predicted)`. A load omlx refuses
   as too large fails with omlx's own explanation of what holds the memory.
 - `wt stop <omlx model>` unloads that one model. The service and the other
   models stay up, even when it was the last one.
 - `wt stop omlx` (or `omlx-6bit`) halts the service and every model in it.
+- An omlx with an API key that allows unauthenticated inference serves
+  keyless chat requests but refuses keyless status, load and unload requests.
+  With no `auth.secret_ref` on the registry's omlx provider, `wt start` still
+  loads the model, through a keyless chat request. wt then cannot size the
+  pool, so it cannot predict or report what omlx unloads: it asks before a
+  start whenever another model is loaded or it cannot tell, and
+  `wt litellm sync` corrects the routes afterwards. `wt stop <omlx model>`
+  fails there and says so: set `auth.secret_ref` so wt can unload one model,
+  or run `wt stop omlx` to stop the service. wt never stops the service for a
+  model stop. Setting `auth.secret_ref` gives the full pool behavior above.
 - A load wt does not perform is not covered: an agent that dials omlx
   directly and names a model that is not loaded makes omlx load it, and
   possibly evict another, with no prompt. The routes are corrected by

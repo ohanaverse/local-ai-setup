@@ -42,8 +42,9 @@ func (omlxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Targ
 	return omlxLoad(ctx, e, cfg, t.ModelName)
 }
 
-// omlxWarm is `wt warm`'s request (the start path loads through omlxLoad): a
-// chat completion that makes the omlx server already answering load modelName.
+// omlxWarm is a chat completion that makes the omlx server already answering
+// load modelName. It is `wt warm`'s request, and the start path's fallback
+// when omlx refuses a keyless load (omlxLoad).
 // omlx serves directory basenames; registry names are HF repo ids. The
 // request carries the key the registry's omlx provider names, when it names
 // one: an omlx started with an API key refuses a keyless chat completion

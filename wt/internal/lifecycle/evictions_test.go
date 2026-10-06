@@ -36,8 +36,12 @@ func TestPoolVictims(t *testing.T) {
 		want   []string
 	}{
 		{"fits under the margin", pool(100, 40, pm("A", 40, 1, false), pm("T", 40, 0, false)), []localmodels.Entry{a}, nil},
-		// 40 + 55 = 95 is under the ceiling but over the 90 the margin leaves.
+		// 40 + 55 = 95 is under the ceiling but over the 85 the margin leaves.
 		{"inside the margin", pool(100, 40, pm("A", 40, 1, false), pm("T", 55, 0, false)), []localmodels.Entry{a}, []string{"omlx/A"}},
+		// The boundary that tells 15% from 10%: 40 + 47 = 87 is over the 85 a
+		// 15% margin leaves and under the 90 a 10% one would. omlx's default
+		// watermark is 85% of the ceiling, so this load evicts.
+		{"over omlx's default watermark, under 90%", pool(100, 40, pm("A", 40, 1, false), pm("T", 47, 0, false)), []localmodels.Entry{a}, []string{"omlx/A"}},
 		{"oldest goes first, and only as many as needed", pool(100, 80, pm("A", 40, 9, false), pm("B", 40, 1, false), pm("T", 30, 0, false)), []localmodels.Entry{a, b}, []string{"omlx/B"}},
 		{"a pinned model is never named", pool(100, 80, pm("A", 40, 9, false), pm("B", 40, 1, true), pm("T", 30, 0, false)), []localmodels.Entry{a, b}, []string{"omlx/A"}},
 		{"cannot fit: every unpinned model", pool(100, 80, pm("A", 40, 9, false), pm("B", 40, 1, false), pm("T", 200, 0, false)), []localmodels.Entry{a, b}, []string{"omlx/B", "omlx/A"}},

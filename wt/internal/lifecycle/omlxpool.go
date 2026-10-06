@@ -70,6 +70,14 @@ func omlxPost(ctx context.Context, e *env, target, key string) (code int, detail
 // caller has already seen the server answer, so nothing listening now means
 // omlx went away during the load — most likely it ran out of memory — and
 // retrying for the whole warmup budget would only hide that.
+//
+// The load endpoint is behind omlx's management auth, which an omlx with an
+// API key enforces even when it allows unauthenticated inference. When omlx
+// refuses the load and the registry names no key — the common local setup —
+// the start falls back to omlxWarm's keyless chat completion, which omlx loads
+// the model on; a server that refuses inference too answers that with a
+// *KeyRefusedError. A key that was sent and refused gets no fallback: the
+// registry's key is wrong, and that is the user's to fix.
 func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
 	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
 	key := localmodels.FamilyAPIKey(cfg, "omlx")
@@ -87,8 +95,10 @@ func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string)
 			last = err.Error()
 		case code >= 200 && code < 300:
 			return nil
+		case (code == http.StatusUnauthorized || code == http.StatusForbidden) && key == "":
+			return omlxWarm(ctx, e, cfg, modelName)
 		case code == http.StatusUnauthorized || code == http.StatusForbidden:
-			return &KeyRefusedError{URL: target, KeySent: key != "", Detail: detail}
+			return &KeyRefusedError{URL: target, KeySent: true, Detail: detail}
 		case code == http.StatusInsufficientStorage:
 			return &NoRoomError{Model: id, Detail: detail}
 		case code == http.StatusNotFound:
@@ -111,6 +121,11 @@ func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string)
 // model up. The goal is "not loaded", so omlx's "not loaded" (400) and "no
 // such model" (404) answers are success, and the pool is read afterwards: a
 // model it still shows loaded is a failed stop whatever the POST said.
+//
+// Unload has no keyless equivalent. When omlx refuses it and the registry
+// names no key, the error says both ways out — name the key, or stop the
+// service — and wt takes neither: a model stop never stops the service, since
+// that would take the other loaded models down.
 func omlxUnload(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
 	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
 	key := localmodels.FamilyAPIKey(cfg, "omlx")
@@ -125,8 +140,11 @@ func omlxUnload(ctx context.Context, e *env, cfg *config.Config, modelName strin
 	switch {
 	case err != nil:
 		return fmt.Errorf("unloading %s from omlx: %w", id, err)
+	case (code == http.StatusUnauthorized || code == http.StatusForbidden) && key == "":
+		return fmt.Errorf("omlx will not unload %s without its API key: set auth.secret_ref on the registry's omlx provider so wt can unload one model, or run `wt stop omlx` to stop the service and every model it has loaded (%w)",
+			id, &KeyRefusedError{URL: target, Detail: detail})
 	case code == http.StatusUnauthorized || code == http.StatusForbidden:
-		return &KeyRefusedError{URL: target, KeySent: key != "", Detail: detail}
+		return &KeyRefusedError{URL: target, KeySent: true, Detail: detail}
 	case (code >= 200 && code < 300) || code == http.StatusBadRequest || code == http.StatusNotFound:
 	default:
 		return fmt.Errorf("omlx could not unload %s: HTTP %d: %s", id, code, detail)

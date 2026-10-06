@@ -7,10 +7,12 @@ import (
 )
 
 // poolAdmissionMarginPct is the share of omlx's ceiling wt keeps free when it
-// predicts whether a load fits. omlx starts evicting at a soft watermark below
-// its ceiling and does not report where that is, so a prediction made against
-// the ceiling itself would call "fits" on loads that evict.
-const poolAdmissionMarginPct = 10
+// predicts whether a load fits. omlx starts evicting once the pool passes
+// ceiling * soft_threshold, not the ceiling itself, and soft_threshold defaults
+// to 0.85. omlx does not report the threshold, so wt assumes the default: 15%.
+// At 10% a load landing between 85% and 90% of the ceiling was predicted to
+// fit and then evicted.
+const poolAdmissionMarginPct = 15
 
 // Evictions reports the running models that starting t is expected to
 // displace: an Exclusive server's one occupant, nobody on a Shared server, and
