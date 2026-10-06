@@ -3,11 +3,13 @@ package lifecycle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"path"
+	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -62,9 +64,12 @@ func omlxPost(ctx context.Context, e *env, target, key string) (code int, detail
 // omlxLoad loads modelName into the running omlx through its load endpoint,
 // which blocks until the model is loaded. omlx evicts by its own rule when the
 // model does not fit; the caller reconciles from the pool afterwards. A model
-// already loading (409) and a server still initialising (503, or no answer
-// yet) are waited for; a refused key and "no room" end at once, since waiting
-// changes neither.
+// already loading (409), a server still initialising (503) and a request that
+// timed out or was reset are waited for; a refused key and "no room" end at
+// once, since waiting changes neither. So does a refused connection: the
+// caller has already seen the server answer, so nothing listening now means
+// omlx went away during the load — most likely it ran out of memory — and
+// retrying for the whole warmup budget would only hide that.
 func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
 	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
 	key := localmodels.FamilyAPIKey(cfg, "omlx")
@@ -76,6 +81,8 @@ func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string)
 	for {
 		code, detail, err := omlxPost(bounded, e, target, key)
 		switch {
+		case errors.Is(err, syscall.ECONNREFUSED):
+			return fmt.Errorf("omlx stopped answering while loading %s (it may have run out of memory): %w", id, err)
 		case err != nil:
 			last = err.Error()
 		case code >= 200 && code < 300:

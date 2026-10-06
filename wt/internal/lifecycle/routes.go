@@ -404,10 +404,14 @@ func routeRemoveModel(ctx context.Context, cfg *config.Config, en localmodels.En
 	return applyAndReport(ctx, cfg, litellm.Change{Remove: poolRouteIDs(cfg, en)}, mode)
 }
 
-// poolRouteIDs lists the ids a pool model can be routed under: its registry
-// id when a registry model matches, and its discovered id. An entry built by
-// the occupancy re-probe carries the server's raw id as ModelID, which is no
-// route id, so ModelID is used only when it differs from the name.
+// poolRouteIDs lists the ids a pool model can be routed under: the id of every
+// registry model that names it, under any provider id of the entry's family —
+// omlx and omlx-6bit are one server, so a row under each can name the same
+// directory and both are routed while it is loaded — plus the entry's own id.
+// The discovered id is the fallback, used only when none of those gave an id.
+// An entry built by the occupancy re-probe carries the server's raw id as
+// ModelID, which is no route id, so ModelID is used only when it differs from
+// the name.
 func poolRouteIDs(cfg *config.Config, en localmodels.Entry) []string {
 	var ids []string
 	add := func(id string) {
@@ -418,8 +422,10 @@ func poolRouteIDs(cfg *config.Config, en localmodels.Entry) []string {
 	if en.ModelID != en.ModelName {
 		add(en.ModelID)
 	}
-	if m, ok := litellm.ModelFor(cfg, en.ProviderID, en.ModelName); ok {
-		add(m.ID)
+	for _, providerID := range localmodels.FamilyProviderIDs(localmodels.Family(en.ProviderID)) {
+		if m, ok := litellm.ModelFor(cfg, providerID, en.ModelName); ok {
+			add(m.ID)
+		}
 	}
 	if len(ids) == 0 {
 		add(litellm.DiscoveredModel(en.ProviderID, en.ModelName).ID)

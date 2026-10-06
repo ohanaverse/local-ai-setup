@@ -16,7 +16,8 @@ const poolAdmissionMarginPct = 10
 // displace: an Exclusive server's one occupant, nobody on a Shared server, and
 // on a Pool the models the plan says omlx would unload to make room. known is
 // false when the snapshot's probe for the family cannot be trusted — a caller
-// acting on "nobody" there would displace a model it never saw.
+// acting on "nobody" there would displace a model it never saw. A family whose
+// server refused the connection is the exception: that is known, and empty.
 func Evictions(t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, known bool) {
 	family := localmodels.Family(t.ProviderID)
 	b := backendsByFamily[family]
@@ -28,6 +29,13 @@ func Evictions(t Target, snap localmodels.Snapshot) (victims []localmodels.Entry
 
 func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) ([]localmodels.Entry, bool) {
 	if ten != Exclusive && ten != Pool {
+		return nil, true
+	}
+	// A refused connection positively means nothing is serving, so the family
+	// is known to be empty: a cold start displaces nobody. It is checked
+	// before the trust rule because the snapshot marks such a family Partial
+	// too, and "unknown" there would refuse every scripted cold start.
+	if snap.Down[family] {
 		return nil, true
 	}
 	if !ProbeTrusted(snap, family) {

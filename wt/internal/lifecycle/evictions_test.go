@@ -89,6 +89,26 @@ func TestEvictionsByTenancy(t *testing.T) {
 	if v, known := evictions(Pool, "omlx", Target{ProviderID: "omlx", ModelName: "T"}, snap); known || len(v) != 0 {
 		t.Errorf("untrusted probe: %v known=%v, want none and unknown", ids(v), known)
 	}
+	// A refused connection is a positive answer: nothing is serving, so a cold
+	// start displaces nobody. Reading it as "unknown" made `wt start <id>
+	// --plan --json` answer unknown, and a scripted start fail, whenever the
+	// server was simply not running.
+	for _, tc := range []struct {
+		ten    Tenancy
+		family string
+		target Target
+	}{
+		{Exclusive, "mtplx", Target{ProviderID: "mtplx", ModelName: "Org/M2"}},
+		{Pool, "omlx", Target{ProviderID: "omlx", ModelName: "T"}},
+	} {
+		down := localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{tc.family: localmodels.StatusPartial},
+			Down:      map[string]bool{tc.family: true},
+		}
+		if v, known := evictions(tc.ten, tc.family, tc.target, down); !known || len(v) != 0 {
+			t.Errorf("%s server down: %v known=%v, want none and known", tc.family, ids(v), known)
+		}
+	}
 }
 
 // TestOccupiedErrorNamesEveryOccupant verifies the refusal names each model a

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -78,6 +80,144 @@ func TestStartPlanJSONMatchesTheContract(t *testing.T) {
 	}
 	if len(*started) != 0 {
 		t.Errorf("a plan started a model (%d starts)", len(*started))
+	}
+}
+
+// runPlanJSON runs `wt start omlx/B --plan --json` against snap and returns the
+// decoded plan.
+func runPlanJSON(t *testing.T, snap localmodels.Snapshot) map[string]any {
+	t.Helper()
+	cfg := jsonStartFixture(t, 1000)
+	stubProbeInventory(t, snap)
+	var out bytes.Buffer
+	if err := runStartJSON(&out, cfg, "omlx/B", true, false); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output %q is not JSON: %v", out.String(), err)
+	}
+	return got
+}
+
+// TestStartPlanJSONColdServerFits verifies a plan for an omlx that is not
+// running — the probe's connection was refused — says the model fits. Nothing
+// is serving, so nothing can be unloaded. It answered "unknown", which made
+// modelman's dialog say wt could not tell and made `wt start <id> --json`
+// without --replace exit 1 on every cold start.
+func TestStartPlanJSONColdServerFits(t *testing.T) {
+	started := stubLifecycleStart(t, nil)
+	got := runPlanJSON(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial},
+		Down:      map[string]bool{"omlx": true},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/B", ModelName: "B", Artifact: "B", ArtifactKnown: true}},
+	})
+	if want := fixtureShape(t, "plan_fits"); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if len(*started) != 0 {
+		t.Errorf("a plan started a model (%d starts)", len(*started))
+	}
+}
+
+// TestStartPlanJSONRunningAndUnknown pins the two plan answers that involve no
+// eviction arithmetic, against the shared fixture: `running` for a target that
+// is already loaded, and `unknown` when the server answered but would not say
+// what it has loaded. modelman words its confirm dialog from these; a renamed
+// status or a missing would_unload key would break it silently.
+func TestStartPlanJSONRunningAndUnknown(t *testing.T) {
+	started := stubLifecycleStart(t, nil)
+	events := stubEnsureRoute(t)
+	b := localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/B", ModelName: "B", Artifact: "B", ArtifactKnown: true}
+	running := b
+	running.Running = true
+	for _, tc := range []struct {
+		key  string
+		snap localmodels.Snapshot
+	}{
+		{"plan_running", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+			Entries:   []localmodels.Entry{running},
+		}},
+		// Partial without Down: something answered at the port, so "nothing
+		// is serving" cannot be assumed.
+		{"plan_unknown", localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial},
+			Entries:   []localmodels.Entry{b},
+		}},
+	} {
+		if got, want := runPlanJSON(t, tc.snap), fixtureShape(t, tc.key); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", tc.key, got, want)
+		}
+	}
+	if len(*started) != 0 || len(*events) != 0 {
+		t.Errorf("a plan changed something: %d starts, route events %v", len(*started), *events)
+	}
+}
+
+// TestStartJSONAlreadyRunningMatchesTheContract verifies a JSON start of a
+// model that is already loaded reports `already_running` in the fixture's
+// shape, starts nothing, and still runs the launch-time route check: a model
+// loaded outside wt has no route until something writes one.
+func TestStartJSONAlreadyRunningMatchesTheContract(t *testing.T) {
+	started := stubLifecycleStart(t, nil)
+	events := stubEnsureRoute(t)
+	cfg := jsonStartFixture(t, 1000)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/B", ModelName: "B", Artifact: "B", ArtifactKnown: true, Running: true}},
+	})
+	var out bytes.Buffer
+	if err := runStartJSON(&out, cfg, "omlx/B", false, false); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output %q is not JSON: %v", out.String(), err)
+	}
+	if want := fixtureShape(t, "already_running"); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if len(*started) != 0 || len(*events) == 0 || (*events)[0] != "ensure:omlx/B" {
+		t.Errorf("starts = %d, route events = %v; want no start and the route check for omlx/B", len(*started), *events)
+	}
+}
+
+// TestStartJSONFailedStartPrintsNothing verifies a start that fails in the
+// engine leaves stdout empty and returns the error. A caller parses stdout as
+// the result; anything printed there on a failure would read as a start that
+// happened.
+func TestStartJSONFailedStartPrintsNothing(t *testing.T) {
+	boom := errors.New("omlx did not come up")
+	started := stubLifecycleStart(t, []error{boom})
+	var out bytes.Buffer
+	err := runStartJSON(&out, jsonStartFixture(t, 1000), "omlx/B", false, false)
+	if !errors.Is(err, boom) || len(*started) != 1 {
+		t.Fatalf("err = %v, starts = %d; want the engine's error from one start", err, len(*started))
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing on a failed start", out.String())
+	}
+}
+
+// TestStartPlanNeedsJSON verifies `wt start <id> --plan` without --json is
+// refused before anything runs. --plan promises to change nothing; falling
+// through to the interactive start would load the model the user only asked
+// about.
+func TestStartPlanNeedsJSON(t *testing.T) {
+	started := stubLifecycleStart(t, nil)
+	driver := stubStartDriver(t, nil)
+	c := startCmd(&app{cfg: jsonStartFixture(t, 1000)})
+	var out, errOut bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&errOut)
+	c.SetArgs([]string{"omlx/B", "--plan"})
+	err := c.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--plan needs --json") {
+		t.Fatalf("err = %v, want the --plan needs --json refusal", err)
+	}
+	if len(*started) != 0 || driver.called || out.Len() != 0 {
+		t.Errorf("starts = %d, driver called = %v, stdout = %q; want nothing done", len(*started), driver.called, out.String())
 	}
 }
 

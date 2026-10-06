@@ -480,6 +480,30 @@ func TestStartUsesSnapshotWhenProbeIsTrustworthy(t *testing.T) {
 	}
 }
 
+// TestStartReprobesAServerTheSnapshotSawDown verifies the engine still asks
+// the server itself when the snapshot's probe was refused. The plan reads a
+// refused connection as "nothing serving" (Evictions), which is right for a
+// dry run, but the engine acts on the answer: a server that came up with a
+// model between the snapshot and the start must still be found, or the start
+// replaces that model with no confirmation.
+func TestStartReprobesAServerTheSnapshotSawDown(t *testing.T) {
+	srv := modelsServing(t, "Org/M1")
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
+		Down:      map[string]bool{"mtplx": true},
+	}, true, &calls)
+
+	err := start(context.Background(), e, provCfg("mtplx", srv.URL), Target{ProviderID: "mtplx", ModelName: "Org/M2"}, Options{})
+	var occ *OccupiedError
+	if !errors.As(err, &occ) || !reflect.DeepEqual(occ.IDs(), []string{"Org/M1"}) {
+		t.Fatalf("start = %v, want *OccupiedError naming the model the server is serving now", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("start touched the provider (%v) without AllowReplace", calls)
+	}
+}
+
 // TestOccupantIgnoresUntrustworthySnapshot verifies Occupant does not claim
 // "no occupant" from a probe it knows failed. Its contract is that the caller
 // may act on a false result, so it must not answer from untrustworthy data.

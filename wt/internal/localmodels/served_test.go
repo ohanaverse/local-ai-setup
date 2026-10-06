@@ -26,6 +26,7 @@ type fakeOmlx struct {
 	statusHits   int
 	noStatus     bool             // an omlx old enough to have no status endpoint
 	sizes        map[string]int64 // resident_estimated_size per model
+	estimated    map[string]int64 // estimated_size per model
 	pinned       map[string]bool
 	lastAccess   map[string]float64
 	ceiling      int64 // final_ceiling
@@ -77,7 +78,8 @@ func (f *fakeOmlx) serve(t *testing.T) string {
 			ms = append(ms, map[string]any{
 				"id": id, "loaded": l, "is_loading": id == f.loading,
 				"pinned": f.pinned[id], "resident_estimated_size": f.sizes[id],
-				"last_access": f.lastAccess[id],
+				"estimated_size": f.estimated[id],
+				"last_access":    f.lastAccess[id],
 			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{

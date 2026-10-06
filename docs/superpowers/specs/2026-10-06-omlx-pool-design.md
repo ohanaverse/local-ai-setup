@@ -46,7 +46,7 @@ These were settled during design and are not open.
 ## Out of scope
 
 - **A command or screen to set the omlx API key** (#213 item 4). `auth.secret_ref` on the registry's omlx provider stays a hand edit.
-- **Loads wt does not perform.** An agent that dials omlx directly and names an unloaded model makes omlx load it, and possibly evict, with no prompt. wt's next start, stop or sync corrects the routes. This is documented, not prevented.
+- **Loads wt does not perform.** An agent that dials omlx directly and names an unloaded model makes omlx load it, and possibly evict, with no prompt. `wt litellm sync` corrects the routes, and the launch-time check adds the launched model's own route when it is missing; a start or stop does not, since neither clears the family. This is documented, not prevented.
 - **Models pinned in omlx's own settings.** wt reads the `pinned` flag to predict evictions and never sets it.
 - **The `mlx_lm_server` pairing identity fix** (#194 #19a/b). Separate, bounded work.
 

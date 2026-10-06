@@ -232,6 +232,14 @@ func familyOrigin(cfg *config.Config, family string) string {
 // familyProviderIDs lists the registry provider ids that belong to a family.
 func familyProviderIDs(family string) []string { return familyIDs[family] }
 
+// FamilyProviderIDs is familyProviderIDs for other packages, as a copy: every
+// registry provider id that names the family's one server ("omlx" and
+// "omlx-6bit" for omlx). A caller that must reach every registry row of a
+// model the server holds asks under each of them.
+func FamilyProviderIDs(family string) []string {
+	return append([]string(nil), familyProviderIDs(family)...)
+}
+
 // familyProviderID is the provider id a family's DISCOVERED entries are named
 // after: the first provider row of the family the registry actually defines
 // ("omlx-6bit" on a registry with no plain "omlx" row), falling back to the

@@ -191,8 +191,11 @@ var backendsByFamily = map[string]backend{
 // prefers the snapshot, which is free, and re-probes the server only when the
 // snapshot's probe could not be trusted — the case that used to read as "no
 // occupant" and let a start evict the running model. The re-probe has no
-// sizes, so on a Pool every other loaded model is a victim. unknown reports
-// that even the re-probe could not tell; the caller must then require
+// sizes, so on a Pool every other loaded model is a victim. A family the
+// snapshot saw refuse the connection is re-probed too, though the plan calls
+// it known-empty (evictions): the engine is about to act, and a server that
+// came up since the snapshot must not have its model replaced unasked. unknown
+// reports that even the re-probe could not tell; the caller must then require
 // AllowReplace.
 func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family string, t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, unknown bool) {
 	b := e.backends[family]
@@ -200,7 +203,10 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 		return nil, false
 	}
 	ten := b.tenancy()
-	if v, known := evictions(ten, family, t, snap); known {
+	// A Shared server displaces nobody whatever its state, so it is never
+	// re-probed.
+	reprobeDown := snap.Down[family] && (ten == Exclusive || ten == Pool)
+	if v, known := evictions(ten, family, t, snap); known && !reprobeDown {
 		return v, false
 	}
 	served, known := e.liveServed(ctx, cfg, family)
@@ -304,14 +310,21 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 // omlx no longer has loaded — and, for each, removes its route (the deferred
 // write Start's one settling bounce applies), says so, and tells the caller.
 // planned is what the eviction plan named; anything else is marked, because
-// omlx evicts from a soft watermark wt cannot see. A pool that cannot be read
-// now changes nothing: the next sync reconciles the routes.
+// omlx evicts from a soft watermark wt cannot see.
+//
+// Only a status reading (SizesKnown) can show an eviction. The fallback
+// reading names what is loaded by the ids of omlx's list, which gives an
+// aliased model its alias: a sibling that is still loaded is then missing from
+// it by directory name, and reading that as "unloaded" would remove the route
+// of a model that is serving. So a pool that cannot be read now, or that
+// answers only through the fallback, changes nothing: `wt litellm sync`
+// reconciles the routes.
 func (e *env) reconcilePool(ctx context.Context, cfg *config.Config, before, planned []localmodels.Entry, opts Options) {
 	if len(before) == 0 {
 		return
 	}
 	pool, err := localmodels.OmlxPool(cfg, e.probeClient)
-	if err != nil {
+	if err != nil || !pool.SizesKnown {
 		return
 	}
 	for _, en := range before {

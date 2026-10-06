@@ -10,25 +10,32 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
-// fakePool is an omlx 0.7.0 engine pool: status, load and unload by on-disk
-// id. evictOnLoad names models omlx unloads when a load is asked for, whether
-// or not the load then succeeds; loadCodes are answered in order before a load
-// succeeds (507, 409...).
+// fakePool is an omlx 0.7.0 engine pool: health, list, status, load and unload
+// by on-disk id. evictOnLoad names models omlx unloads when a load is asked
+// for, whether or not the load then succeeds; loadCodes are answered in order
+// before a load succeeds (507, 409...). The list names a model by its alias
+// when it has one, as omlx does. statusFailsAfterLoad makes status answer 500
+// once a load has been asked for, so the reading after a load is the fallback
+// (/health and the list) while the one before it came from status.
 type fakePool struct {
-	mu          sync.Mutex
-	loaded      map[string]bool
-	sizes       map[string]int64
-	ceiling     int64
-	evictOnLoad []string
-	loadCodes   []int
-	loads       []string
-	unloads     []string
+	mu                   sync.Mutex
+	loaded               map[string]bool
+	sizes                map[string]int64
+	ceiling              int64
+	alias                map[string]string
+	statusFailsAfterLoad bool
+	evictOnLoad          []string
+	loadCodes            []int
+	loads                []string
+	unloads              []string
 }
 
 func (f *fakePool) serve(t *testing.T) string {
@@ -38,15 +45,39 @@ func (f *fakePool) serve(t *testing.T) string {
 	return srv.URL
 }
 
-// handler is the pool's five endpoints, for a test that binds its own listener.
+// handler is the pool's endpoints, for a test that binds its own listener.
 func (f *fakePool) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		n := 0
+		for _, l := range f.loaded {
+			if l {
+				n++
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "healthy", "engine_pool": map[string]int{"model_count": len(f.loaded), "loaded_count": n}})
+	})
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[]}`))
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		data := []map[string]string{}
+		for id := range f.loaded {
+			if a := f.alias[id]; a != "" {
+				id = a
+			}
+			data = append(data, map[string]string{"id": id})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
 	mux.HandleFunc("GET /v1/models/status", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.statusFailsAfterLoad && len(f.loads) > 0 {
+			http.Error(w, `{"detail":"Internal Server Error"}`, http.StatusInternalServerError)
+			return
+		}
 		ms := []map[string]any{}
 		var inUse int64
 		for id, l := range f.loaded {
@@ -214,6 +245,61 @@ func TestStartOnPoolReportsAnUnpredictedEviction(t *testing.T) {
 	}
 }
 
+// TestStartOnPoolKeepsRoutesWhenTheReadingAfterTheLoadIsTheFallback pins the
+// final-review finding F1. The reading before the load came from status; the
+// one after it comes from /health and the list, because status failed once.
+// The list names an aliased model by its alias, so the still-loaded sibling is
+// not found in it by directory name. Reading that as "omlx unloaded it" removed
+// the route of a model that was still serving, restarted the proxy, and told
+// modelman to clear its running flag: every session on it got "Invalid model
+// name". A fallback reading names too little to prove an eviction, so it must
+// change nothing.
+func TestStartOnPoolKeepsRoutesWhenTheReadingAfterTheLoadIsTheFallback(t *testing.T) {
+	out := captureRoutes(t)
+	sizes := map[string]int64{"A": 20, "B": 20}
+	fp := &fakePool{
+		loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100,
+		alias: map[string]string{"A": "my-alias"}, statusFailsAfterLoad: true,
+	}
+	e, stopped := poolEnv(t, poolSnap(100, sizes, "A"))
+	cfg := provCfg("omlx", fp.serve(t))
+	var unloaded []string
+	opts := Options{OnUnloaded: func(en localmodels.Entry) { unloaded = append(unloaded, en.ModelID) }}
+	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "B", ModelID: "omlx/B"}, opts); err != nil {
+		t.Fatalf("start = %v, want nil: B fits beside A", err)
+	}
+	// The premise: the reading reconcilePool gets is the fallback, and it does
+	// not name A, though A is loaded.
+	pool, err := localmodels.OmlxPool(cfg, e.probeClient)
+	if _, found := pool.Find("A"); err != nil || pool.SizesKnown || found || !fp.isLoaded("A") || !fp.isLoaded("B") {
+		t.Fatalf("pool after the load = %+v err = %v, A loaded = %v, B loaded = %v; want a fallback reading without A while both are loaded", pool, err, fp.isLoaded("A"), fp.isLoaded("B"))
+	}
+	if len(*stopped) != 0 || len(unloaded) != 0 || e.restartOwed {
+		t.Errorf("occupant hook = %v, OnUnloaded = %v, restartOwed = %v; want none, none, false: A is still loaded", *stopped, unloaded, e.restartOwed)
+	}
+	if got := out.String(); containsFold(got, "omlx unloaded") {
+		t.Errorf("output = %q, want no eviction line for a model that is still loaded", got)
+	}
+}
+
+// TestResolveEvictionsOnPoolReprobeNamesEveryLoadedModel verifies that when
+// the snapshot's omlx probe cannot be trusted, the re-probe names every other
+// model omlx has loaded — not just the first, which is all an exclusive server
+// can have. The re-probe has no sizes, so any of them may be unloaded; a
+// prompt naming one of two would get a "yes" that the second session never
+// agreed to.
+func TestResolveEvictionsOnPoolReprobeNamesEveryLoadedModel(t *testing.T) {
+	fp := &fakePool{loaded: map[string]bool{"A": true, "B": true, "T": false}}
+	e := testEnv()
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}
+	victims, unknown := e.resolveEvictions(context.Background(), provCfg("omlx", fp.serve(t)), "omlx", Target{ProviderID: "omlx", ModelName: "T"}, snap)
+	got := ids(victims)
+	slices.Sort(got)
+	if unknown || !reflect.DeepEqual(got, []string{"A", "B"}) {
+		t.Errorf("victims = %v, unknown = %v; want both loaded models and a known answer", got, unknown)
+	}
+}
+
 // TestStartOnPoolFailedLoadStillReconciles verifies a load omlx refuses for
 // want of memory is reported as that, and that a model omlx evicted on the way
 // to refusing still loses its route.
@@ -242,6 +328,28 @@ func TestOmlxLoadWaitsOutABusyAnswer(t *testing.T) {
 	}
 	if len(fp.loads) != 3 || !fp.isLoaded("B") {
 		t.Errorf("loads = %v, B loaded = %v; want three attempts by on-disk id and loaded", fp.loads, fp.isLoaded("B"))
+	}
+}
+
+// TestOmlxLoadFailsFastWhenOmlxGoesAway verifies a load whose connection is
+// refused ends at once, saying omlx stopped answering. omlxLoad runs only
+// after the server has been seen answering, so a refusal there means omlx went
+// away — most likely it ran out of memory loading the model. Retrying it for
+// the whole warmup budget left the user watching "warming the model" for ten
+// minutes over a server that was already gone.
+func TestOmlxLoadFailsFastWhenOmlxGoesAway(t *testing.T) {
+	srv := httptest.NewServer((&fakePool{loaded: map[string]bool{"B": false}}).handler())
+	url := srv.URL
+	srv.Close()
+	e := testEnv()
+	e.warmupTimeout = 5 * time.Second
+	began := time.Now()
+	err := omlxLoad(context.Background(), e, provCfg("omlx", url), "B")
+	if took := time.Since(began); took > time.Second {
+		t.Errorf("load took %v against a refused connection, want it to fail at once (budget %v)", took, e.warmupTimeout)
+	}
+	if err == nil || !errors.Is(err, syscall.ECONNREFUSED) || !containsFold(err.Error(), "omlx stopped answering while loading B") {
+		t.Errorf("err = %v, want it to say omlx stopped answering while loading B", err)
 	}
 }
 
@@ -282,6 +390,19 @@ func TestPoolRouteChanges(t *testing.T) {
 	disc := poolRouteIDs(cfg, localmodels.Entry{ProviderID: "omlx", ModelID: "Loose-4bit", ModelName: "Loose-4bit"})
 	if !reflect.DeepEqual(disc, []string{"omlx/Loose-4bit"}) {
 		t.Errorf("route ids for an entry the re-probe built = %v, want its discovered id only", disc)
+	}
+	// omlx and omlx-6bit are one server: a registry row under each provider
+	// id can name the same directory, and both are routed while it is loaded.
+	// A model stop passes one provider id; consulting only that one left the
+	// sibling row's route pointing at a model that had just been unloaded.
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "omlx-6bit", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}})
+	cfg.Models = append(cfg.Models, config.Model{ID: "omlx-6bit/reg", ProviderID: "omlx-6bit", ModelName: "Reg-4bit", Location: config.LocationLocal})
+	both := poolRouteIDs(cfg, localmodels.Entry{ProviderID: "omlx", ModelName: "org/Reg-4bit"})
+	if !reflect.DeepEqual(both, []string{"omlx/reg", "omlx-6bit/reg"}) {
+		t.Errorf("route ids with a sibling provider's row for the same model = %v, want [omlx/reg omlx-6bit/reg]", both)
+	}
+	if disc := poolRouteIDs(cfg, localmodels.Entry{ProviderID: "omlx", ModelName: "Loose-4bit"}); !reflect.DeepEqual(disc, []string{"omlx/Loose-4bit"}) {
+		t.Errorf("route ids with no registry row = %v, want the discovered id as the fallback", disc)
 	}
 }
 

@@ -104,8 +104,9 @@ recently used when a load does not fit.
 - `wt stop omlx` (or `omlx-6bit`) halts the service and every model in it.
 - A load wt does not perform is not covered: an agent that dials omlx
   directly and names a model that is not loaded makes omlx load it, and
-  possibly evict another, with no prompt. The routes are corrected by wt's
-  next start, stop or `wt litellm sync`.
+  possibly evict another, with no prompt. The routes are corrected by
+  `wt litellm sync`; launching a model through wt also writes that model's
+  own route if it is missing.
 
 ### `--plan` and `--json`
 
