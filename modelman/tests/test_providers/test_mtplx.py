@@ -217,3 +217,42 @@ def test_guard_sees_a_local_path_however_it_is_spelled(tmp_path, shared_owner, r
     pointing_in = _mtplx_entry("mtplx/local", "Org/Elsewhere", respell(models / "Org--M"))
     assert shared_owner(p, cached, pointing_in) == "mtplx/local"
     assert shared_owner(p, pointing_in, cached) is None
+
+
+def test_guard_sees_an_entry_nested_inside_the_directory_it_would_remove(tmp_path, shared_owner):
+    # #241: only an identical directory counted as shared, so an entry living
+    # INSIDE the cache directory (a quantize output written beside its
+    # source) was removed with it — a user-produced artifact, which modelman
+    # says it never deletes.
+    models = tmp_path / "models"
+    (models / "Org--M" / "dwq-out").mkdir(parents=True)
+    p = MTPLXProvider({"model_dir": str(models)})
+    cached = _mtplx_entry("mtplx/a", "Org/M")
+    nested = _mtplx_entry("mtplx/dwq", "Org/Dwq", str(models / "Org--M" / "dwq-out"))
+    assert shared_owner(p, cached, nested) == "mtplx/dwq"
+    assert shared_owner(p, nested, cached) is None
+
+
+def test_guard_sees_an_entry_whose_directory_contains_the_one_it_would_remove(
+    tmp_path, shared_owner
+):
+    # The reverse nesting: an entry naming a parent of the cache directory
+    # loses part of what it points at. Refusing a delete can be undone; the
+    # rmtree cannot.
+    models = tmp_path / "models"
+    (models / "Org--M").mkdir(parents=True)
+    p = MTPLXProvider({"model_dir": str(models)})
+    cached = _mtplx_entry("mtplx/a", "Org/M")
+    whole_pool = _mtplx_entry("mtplx/pool", "Org/Pool", str(models))
+    assert shared_owner(p, cached, whole_pool) == "mtplx/pool"
+
+
+def test_guard_does_not_take_a_name_prefix_for_nesting(tmp_path, shared_owner):
+    # models/Org--M2 starts with models/Org--M and is not inside it.
+    models = tmp_path / "models"
+    (models / "Org--M").mkdir(parents=True)
+    (models / "Org--M2").mkdir()
+    p = MTPLXProvider({"model_dir": str(models)})
+    cached = _mtplx_entry("mtplx/a", "Org/M")
+    neighbour = _mtplx_entry("mtplx/n", "Org/N", str(models / "Org--M2"))
+    assert shared_owner(p, cached, neighbour) is None

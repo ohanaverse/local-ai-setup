@@ -741,3 +741,25 @@ def test_guard_sees_the_download_behind_a_local_path(provider, tmp_path, shared_
         "mlx_lm_server/b", repo="o/T", draft_local_path=str(tmp_path / "user-draft-b")
     )
     assert shared_owner(provider, a, b) == "mlx_lm_server/b"
+
+
+def test_delete_keeps_a_download_its_own_local_path_names(provider, tmp_path):
+    # #241: a hand-edited side with a repo AND a local_path removes the
+    # repo's download (#229) — but not when the local_path IS that download:
+    # that would delete the directory the entry's own local_path names, and
+    # the guard skips an entry's own id, so nothing else stops it.
+    from modelman.registry import model_entry_to_variant
+
+    models = tmp_path / "models"
+    _make_dir(models / "T", ("weights.safetensors", b"x"))
+    variant = model_entry_to_variant(
+        _pairing_entry(
+            "mlx_lm_server/a",
+            repo="o/T",
+            local_path=str(models / "T"),
+            draft_local_path=str(tmp_path / "user-draft"),
+        )
+    )
+    assert provider.removable_paths(variant) == frozenset()
+    provider.delete(variant)
+    assert (models / "T" / "weights.safetensors").exists()

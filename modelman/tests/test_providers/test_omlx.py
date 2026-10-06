@@ -527,3 +527,28 @@ def test_guard_sees_a_local_path_however_it_is_spelled(tmp_path, shared_owner, r
     )
     assert shared_owner(provider, downloaded, local) == "omlx/local"
     assert shared_owner(provider, local, downloaded) is None
+
+
+def test_guard_sees_an_owner_on_another_provider(tmp_path, shared_owner):
+    # #241: the guard only looked at entries on the same server. omlx and
+    # mlx_lm_server both read MLX directories, so a pairing whose local_path
+    # is an omlx download is a natural thing to have — and deleting the omlx
+    # entry removed the pairing's target.
+    from modelman.registry import DraftSpec, Fetch, ModelEntry
+
+    pool = tmp_path / "pool"
+    (pool / "qwen").mkdir(parents=True)
+    (pool / "qwen" / "weights.safetensors").write_bytes(b"x")
+    provider = OMLXProvider({"model_dir": str(pool)})
+    downloaded = ModelEntry(
+        id="omlx/dl", family="f", provider_id="omlx", model_name="dl", fetch=Fetch(repo="org/qwen")
+    )
+    pairing = ModelEntry(
+        id="mlx_lm_server/pair",
+        family="f",
+        provider_id="mlx_lm_server",
+        model_name="pair",
+        fetch=Fetch(local_path=str(pool / "qwen")),
+        draft=DraftSpec(local_path=str(tmp_path / "user-draft")),
+    )
+    assert shared_owner(provider, downloaded, pairing) == "mlx_lm_server/pair"

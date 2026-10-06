@@ -6,8 +6,10 @@ def shared_owner():
     """Ask the shared-artifact guard, as the delete queue does: the id of the
     entry that owns something deleting `deleting` would remove, or None.
 
-    `deleting` and `other` are the only two models in the registry, on one
-    provider row built from `deleting`'s provider id."""
+    `deleting` and `other` are the only two models in the registry, with one
+    default provider row for each provider id they use. `provider` answers
+    for `deleting`'s row; an entry on another row is asked through a provider
+    built from that row."""
 
     def owner(provider, deleting, other):
         from modelman.registry import (
@@ -19,7 +21,8 @@ def shared_owner():
 
         registry = Registry(
             providers=[
-                ProviderEntry(id=deleting.provider_id, name=deleting.provider_id, location="local")
+                ProviderEntry(id=provider_id, name=provider_id, location="local")
+                for provider_id in dict.fromkeys((deleting.provider_id, other.provider_id))
             ],
             models=[deleting, other],
         )
