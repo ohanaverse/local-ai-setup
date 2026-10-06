@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -797,16 +798,182 @@ func TestEnsureRouteWarnsAndNeverFails(t *testing.T) {
 	}
 }
 
-// TestEnsureModelRouteSkipsNonLocal pins the guard: a cloud model and a model
-// whose location cannot be resolved (its provider row is missing) are never
-// written, and the second does not panic.
-func TestEnsureModelRouteSkipsNonLocal(t *testing.T) {
-	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+// cloudRoutesCfg is routesCfg plus what a cloud launch needs: an openrouter
+// provider with one model, a native provider with one model, and a cloud
+// model on the local ollama provider.
+func cloudRoutesCfg() *config.Config {
 	cfg := routesCfg()
-	cloud := config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud}
+	cfg.Providers = append(cfg.Providers,
+		config.Provider{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key", SecretRef: "sk-test", BaseURL: "https://openrouter.ai/api/v1"}},
+		config.Provider{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+	)
+	cfg.Models = append(cfg.Models,
+		config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud},
+		config.Model{ID: "ollama/g:cloud", ProviderID: "ollama", ModelName: "g:cloud", Location: config.LocationCloud},
+		config.Model{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Native: true},
+	)
+	return cfg
+}
+
+// TestEnsureModelRouteRoutesARegistryCloudModel pins the launch-time repair
+// for cloud routes. Sync is what routes cloud models, so the check used to
+// skip them — and a config.yaml that had lost its cloud rows (a sync against
+// the wrong registry removed all of them) stayed broken: every launch on a
+// cloud model got "Invalid model name" from the proxy until someone ran
+// `wt litellm sync` by hand, while local launches repaired themselves. The
+// check now adds the launched cloud model's route too, and still removes
+// nothing.
+func TestEnsureModelRouteRoutesARegistryCloudModel(t *testing.T) {
+	for _, id := range []string{"openrouter/x", "ollama/g:cloud"} {
+		t.Run(id, func(t *testing.T) {
+			calls, warn := stubRoutes(t, wrote(id), nil)
+			cfg := cloudRoutesCfg()
+			m := cfg.Models[config.IndexModelByID(cfg.Models, id)]
+			changed := EnsureModelRoute(cfg, m)
+			WaitPendingRoutes()
+			if !changed {
+				t.Fatal("changed = false, want the missing cloud route written")
+			}
+			if len(*calls) != 1 {
+				t.Fatalf("calls = %+v, want one", *calls)
+			}
+			if c := (*calls)[0]; !slices.Equal(c.add, []string{id}) || len(c.remove) != 0 || len(c.families) != 0 {
+				t.Fatalf("call = %+v, want add [%s] and no removal", c, id)
+			}
+			if got, want := warn.String(), "wt: LiteLLM route for "+id+" updated\n"; got != want {
+				t.Fatalf("output = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestEnsureModelRouteCloudAgainstTheRealWriter runs the cloud repair through
+// litellm.ApplyChange and a real config.yaml: the first launch writes the row
+// sync would write (marked, so sync owns it afterwards) and restarts the proxy
+// once, and the next launch finds it in place and does nothing.
+func TestEnsureModelRouteCloudAgainstTheRealWriter(t *testing.T) {
+	path, restarts, warn := realRoutes(t, "model_list: []\n")
+	cfg := cloudRoutesCfg()
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
+	if !EnsureModelRoute(cfg, m) {
+		t.Fatalf("first launch: changed = false, output %q", warn.String())
+	}
+	WaitPendingRoutes()
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"openrouter/x"}) {
+		t.Fatalf("routed = %v, want [openrouter/x]", got)
+	}
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "wt_managed: true") {
+		t.Fatalf("the row is not marked, so sync would not own it:\n%s", b)
+	}
+	warn.Reset()
+	if EnsureModelRoute(cfg, m) {
+		t.Fatal("second launch: changed = true, want a no-op")
+	}
+	WaitPendingRoutes()
+	if restarts() != 1 || warn.Len() != 0 {
+		t.Fatalf("restarts = %d output = %q, want one restart in all and a silent second launch", restarts(), warn.String())
+	}
+}
+
+// TestEnsureModelRouteLeavesAnExistingCloudRowAlone pins that the cloud repair
+// is for a missing row only. Building a cloud row resolves its provider's
+// secret_ref, and the launching shell often does not hold that key — the
+// proxy's plist does — so a check that rebuilt the row on every launch printed
+// "route … not updated: secret_ref … resolved empty" before every cloud
+// launch although the route was in place and working; in a shell holding a
+// different key it replaced the api_key sync wrote and restarted the proxy. A
+// row that is there is sync's to keep current.
+func TestEnsureModelRouteLeavesAnExistingCloudRowAlone(t *testing.T) {
+	path, restarts, warn := realRoutes(t, "model_list: []\n")
+	cfg := cloudRoutesCfg()
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID == "openrouter" {
+			cfg.Providers[i].Auth.SecretRef = "WT_TEST_OPENROUTER_KEY"
+		}
+	}
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
+	t.Setenv("WT_TEST_OPENROUTER_KEY", "sk-proxy")
+	if !EnsureModelRoute(cfg, m) {
+		t.Fatalf("first launch: changed = false, output %q", warn.String())
+	}
+	WaitPendingRoutes()
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"", "sk-another-shell"} {
+		t.Setenv("WT_TEST_OPENROUTER_KEY", key)
+		warn.Reset()
+		if EnsureModelRoute(cfg, m) {
+			t.Errorf("key %q: changed = true, want the existing row left alone", key)
+		}
+		WaitPendingRoutes()
+		if warn.Len() != 0 {
+			t.Errorf("key %q: output = %q, want none: the route is in place", key, warn.String())
+		}
+		if now, _ := os.ReadFile(path); string(now) != string(written) {
+			t.Errorf("key %q: config.yaml was rewritten:\n%s", key, now)
+		}
+	}
+	if restarts() != 1 {
+		t.Errorf("restarts = %d, want only the first launch's", restarts())
+	}
+}
+
+// TestTryEnsureModelRouteReportsARefusedPairingAtOnce pins that the picker's
+// non-blocking check treats litellm.ErrRegistryRedirected as an answer, not as
+// a held lock. done == false sends the picker to its routing screen to retry
+// with a lock wait — and no wait changes a refusal, so every launch with a
+// redirected registry showed that screen and ran the check twice to print one
+// line.
+func TestTryEnsureModelRouteReportsARefusedPairingAtOnce(t *testing.T) {
+	_, restarts, _ := realRoutes(t, "model_list: []\n")
+	home := t.TempDir()
+	def := filepath.Join(home, ".config", "litellm", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(def), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(def, []byte("model_list: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MODELMAN_REGISTRY", filepath.Join(home, "scratch", "registry.toml"))
+	t.Setenv("WT_LITELLM_CONFIG", "")
+	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
+
+	var out bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&out, routesCfg(), config.Model{
+		ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal,
+	})
+	WaitPendingRoutes()
+	if changed || !done {
+		t.Fatalf("changed = %v done = %v, want false and true: refused, with nothing to retry", changed, done)
+	}
+	if got := out.String(); !strings.HasPrefix(got, "wt: LiteLLM route not updated: ") || !strings.Contains(got, "WT_LITELLM_CONFIG") {
+		t.Errorf("output = %q, want the refusal and the variable that lifts it", got)
+	}
+	if got := routedIDs(t, def); len(got) != 0 {
+		t.Errorf("routed = %v, want the default config.yaml untouched", got)
+	}
+	if restarts() != 0 {
+		t.Errorf("restarts = %d, want 0", restarts())
+	}
+}
+
+// TestEnsureModelRouteSkipsWhatSyncWouldNotRoute pins the guard: the check
+// writes only a route sync itself would write. A cloud model that is not in
+// the registry, a native model, and a model whose location cannot be resolved
+// (its provider row is missing) are never written, and the last does not
+// panic.
+func TestEnsureModelRouteSkipsWhatSyncWouldNotRoute(t *testing.T) {
+	calls, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	cfg := cloudRoutesCfg()
+	unregistered := config.Model{ID: "openrouter/nope", ProviderID: "openrouter", ModelName: "nope", Location: config.LocationCloud}
+	native := cfg.Models[config.IndexModelByID(cfg.Models, "claude/sonnet")]
 	orphan := config.Model{ID: "gone/y", ProviderID: "gone", ModelName: "y"}
-	if EnsureModelRoute(cfg, cloud) || EnsureModelRoute(cfg, orphan) {
-		t.Fatal("changed = true for a model that is not local")
+	if EnsureModelRoute(cfg, unregistered) || EnsureModelRoute(cfg, native) || EnsureModelRoute(cfg, orphan) {
+		t.Fatal("changed = true for a model sync would not route")
 	}
 	if len(*calls) != 0 || warn.Len() != 0 {
 		t.Fatalf("calls = %+v output = %q, want no write and no output", *calls, warn.String())

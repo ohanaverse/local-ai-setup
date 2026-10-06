@@ -236,22 +236,42 @@ func reportEnsured(ctx context.Context, w routeWrite, id string) {
 }
 
 // modelRouteChange is the route change a launch row's model needs, and whether
-// the launch-time check applies to it at all: only a local model is wt's to
-// route — a cloud route is sync's business, and a model whose location cannot
-// be resolved is not one wt can route. The row's id travels with it, so
-// StartRouteChange resolves the model by id (see routeModel).
+// the launch-time check applies to it at all. A local model is routed as the
+// start hook would route it: the row's id travels with it, so StartRouteChange
+// resolves the model by id (see routeModel). A cloud model is routed when sync
+// would route it (litellm.CloudModels), from its registry entry, so the row is
+// the one sync writes. Sync is still what keeps cloud routes current; this is
+// the repair for a config.yaml that lost them, which would otherwise answer
+// every cloud launch with "Invalid model name" until someone ran
+// `wt litellm sync`. So the cloud change is AddMissingOnly: a row that is
+// there is sync's, and is neither rebuilt nor compared. Rebuilding it on every
+// launch would resolve the provider's secret_ref each time — a warning per
+// launch in a shell that does not hold the key, though the route works, and a
+// rewritten api_key plus a proxy restart in a shell that holds a different
+// one. Anything else — a native model, a cloud model that is not in the
+// registry, a model whose location cannot be resolved — is not wt's to route.
 func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool) {
-	if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+	loc, err := cfg.ResolveLocation(m)
+	if err != nil {
 		return litellm.Change{}, false
 	}
-	t := Target{ProviderID: m.ProviderID, ModelName: m.ModelName, ModelID: m.ID}
-	return litellm.Change{Add: StartRouteChange(cfg, t).Add}, true
+	if loc == config.LocationLocal {
+		t := Target{ProviderID: m.ProviderID, ModelName: m.ModelName, ModelID: m.ID}
+		return litellm.Change{Add: StartRouteChange(cfg, t).Add}, true
+	}
+	for _, c := range litellm.CloudModels(cfg) {
+		if c.ID == m.ID {
+			return litellm.Change{Add: []config.Model{c}, AddMissingOnly: true}, true
+		}
+	}
+	return litellm.Change{}, false
 }
 
 // EnsureModelRoute is EnsureRoute for a launch row's model, the form the
-// launch paths call. It skips a model that is not local (modelRouteChange) and
-// bounds the config.yaml lock wait so a launch cannot hang behind another wt
-// process. The caller must only pass a model the probe reported running.
+// launch paths call. It skips a model that is not wt's to route
+// (modelRouteChange) and bounds the config.yaml lock wait so a launch cannot
+// hang behind another wt process. The caller must only pass a local model the
+// probe reported running; a cloud model needs no probe.
 func EnsureModelRoute(cfg *config.Config, m config.Model) bool {
 	return EnsureModelRouteTo(nil, cfg, m)
 }
@@ -302,8 +322,10 @@ func EnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) bool 
 // mid-write, but any failure to read or write config.yaml lands here too — and
 // the caller owes a retry through EnsureModelRouteTo, where waiting is
 // affordable, before it uses the proxy. That path prints nothing: the retry
-// reports, since a contended lock is not itself a warning. What it does print
-// goes to out, on EnsureModelRouteTo's terms.
+// reports, since a contended lock is not itself a warning. The one failure
+// that is final is litellm.ErrRegistryRedirected — no wait changes a refusal —
+// so it is reported at once and done is true. What it does print goes to out,
+// on EnsureModelRouteTo's terms.
 func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (changed, done bool) {
 	ch, ok := modelRouteChange(cfg, m)
 	if !ok {
@@ -313,6 +335,13 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 	cancel()
 	w, err := applyReported(ctx, cfg, ch, restartIfChanged)
 	if err != nil {
+		// A refused pairing is an answer, not a held lock: the retry would
+		// take the lock only to be refused again, behind a routing screen with
+		// nothing to wait for. Reported here, as the retry would have.
+		if errors.Is(err, litellm.ErrRegistryRedirected) {
+			routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
+			return false, true
+		}
 		return false, false
 	}
 	reportEnsured(ctx, w, ch.Add[0].ID)

@@ -41,6 +41,21 @@ def test_sync_routes_wt_missing_warns(monkeypatch):
     assert "wt not found" in sync_routes()[0]
 
 
+def test_sync_routes_passes_on_a_redirected_registry_refusal(monkeypatch):
+    # wt refuses a redirected registry paired with the default config.yaml;
+    # the same shell's `wt litellm sync` is refused too, so do not advise it.
+    refusal = (
+        "LiteLLM routes not touched: the registry is /tmp/r.toml but config.yaml is the "
+        "default /x/config.yaml — set WT_LITELLM_CONFIG to the config.yaml that registry belongs to"
+    )
+
+    def fake(args, env=None, timeout=None):
+        return subprocess.CompletedProcess(args, 1, "", f"Error: {refusal}\nwt: {refusal}\n")
+
+    monkeypatch.setattr(wt_bridge, "_run", fake)
+    assert sync_routes() == [refusal]
+
+
 def _fake_sync(monkeypatch, outcomes, warnings=()):
     def fake(args, env=None, timeout=None):
         out = json.dumps({"outcomes": outcomes, "changed": True, "warnings": list(warnings)})

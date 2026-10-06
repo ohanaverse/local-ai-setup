@@ -341,3 +341,34 @@ func TestExpandHomeExported(t *testing.T) {
 		t.Errorf("ExpandHome(/abs/path) = %q", got)
 	}
 }
+
+// TestRegistryRedirected pins what counts as a registry wt was sent to by the
+// environment: MODELMAN_REGISTRY or XDG_CONFIG_HOME naming anything but the
+// default ~/.config/local-ai/registry.toml. LiteLLM's config.yaml follows
+// neither variable, so the route writers use this to refuse pairing a
+// redirected registry with the default config.yaml. Spelling the default path
+// out is not a redirect.
+func TestRegistryRedirected(t *testing.T) {
+	home := t.TempDir()
+	def := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	for _, tc := range []struct {
+		name, registry, xdg string
+		want                bool
+	}{
+		{"nothing set", "", "", false},
+		{"MODELMAN_REGISTRY elsewhere", filepath.Join(home, "scratch", "registry.toml"), "", true},
+		{"XDG_CONFIG_HOME elsewhere", "", filepath.Join(home, "xdg"), true},
+		{"MODELMAN_REGISTRY spells the default", def, "", false},
+		{"MODELMAN_REGISTRY spells the default with a tilde", "~/.config/local-ai/registry.toml", "", false},
+		{"XDG_CONFIG_HOME spells the default", "", filepath.Join(home, ".config"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+			t.Setenv("MODELMAN_REGISTRY", tc.registry)
+			t.Setenv("XDG_CONFIG_HOME", tc.xdg)
+			if got := RegistryRedirected(); got != tc.want {
+				t.Fatalf("RegistryRedirected() = %v, want %v (registry path %s)", got, tc.want, RegistryPath())
+			}
+		})
+	}
+}

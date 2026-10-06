@@ -134,7 +134,8 @@ Two mechanisms stack on top of the on/off switch:
   `wt litellm sync` as soon as it is in the registry, and a local model by
   `wt start` (or the sync after `modelman start`). A local model that is
   already running when wt launches it has its route written at launch if it
-  is missing.
+  is missing, and so does a registry cloud model whose route has gone
+  missing from `config.yaml`.
 - **Protocol forcing (can override `off`).** Agents declare wire protocols
   (claude: `anthropic`; codex: `openai-responses`; copilot/opencode/pi:
   `openai-chat`) and registry providers declare the protocols they serve

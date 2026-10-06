@@ -29,22 +29,55 @@ var (
 	// ErrInvalid: config.yaml exists but is not a YAML mapping, or its
 	// model_list is not a list. wt refuses to write such a file.
 	ErrInvalid = errors.New("LiteLLM config is invalid")
+	// ErrRegistryRedirected: the environment redirected the registry but
+	// nothing named config.yaml. No route write or dry run goes ahead (see
+	// checkRegistryPairing). modelman's wt_bridge matches this text to tell
+	// the refusal from a failed sync, so change both together.
+	ErrRegistryRedirected = errors.New("LiteLLM routes not touched")
 )
 
 // DefaultPath resolves config.yaml lazily so env overrides work in tests:
 // WT_LITELLM_CONFIG, then legacy MODELMAN_LITELLM_CONFIG, then
 // ~/.config/litellm/config.yaml.
 func DefaultPath() string {
-	for _, k := range []string{"WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG"} {
-		if v := os.Getenv(k); v != "" {
-			if exp, err := config.ExpandHome(v); err == nil {
-				return exp
-			}
-			return v
-		}
+	if p, ok := namedPath(); ok {
+		return p
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "litellm", "config.yaml")
+}
+
+// namedPath is the config.yaml the environment names, if it names one.
+func namedPath() (string, bool) {
+	for _, k := range []string{"WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG"} {
+		if v := os.Getenv(k); v != "" {
+			if exp, err := config.ExpandHome(v); err == nil {
+				return exp, true
+			}
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// checkRegistryPairing refuses the one combination no caller means: a
+// registry the environment redirected (config.RegistryRedirected) with a
+// config.yaml nobody named. The two paths resolve independently — the
+// registry follows MODELMAN_REGISTRY and XDG_CONFIG_HOME, config.yaml only
+// WT_LITELLM_CONFIG — so redirecting the registry alone reconciles the
+// developer's real proxy config against a scratch registry: every marked
+// route that registry lacks is removed and the live proxy restarted. Naming
+// config.yaml (the environment, or Options.Path) says which proxy config the
+// registry belongs to and is always honored, the default file included.
+func checkRegistryPairing(o Options) error {
+	if o.Path != "" {
+		return nil
+	}
+	if _, ok := namedPath(); ok || !config.RegistryRedirected() {
+		return nil
+	}
+	return fmt.Errorf("%w: the registry is %s but config.yaml is the default %s — set WT_LITELLM_CONFIG to the config.yaml that registry belongs to",
+		ErrRegistryRedirected, config.RegistryPath(), DefaultPath())
 }
 
 // enforcedSettings are value-enforced under litellm_settings on every write.
