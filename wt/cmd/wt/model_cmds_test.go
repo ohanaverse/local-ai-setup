@@ -595,3 +595,22 @@ func TestWarmRefusesOtherProviders(t *testing.T) {
 		t.Fatalf("err = %v, want an unknown-provider error", err)
 	}
 }
+
+// TestStopBareOmlxHaltsTheService verifies `wt stop omlx` stops the omlx
+// service as a whole, even with nothing loaded. A per-model stop only unloads,
+// so this is the one command that frees the server's memory.
+func TestStopBareOmlxHaltsTheService(t *testing.T) {
+	stopped := stubStop(t, nil)
+	var halted []string
+	old := stopProvider
+	stopProvider = func(_ context.Context, _ *config.Config, id string) error { halted = append(halted, id); return nil }
+	t.Cleanup(func() { stopProvider = old })
+	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal}}}
+	var out bytes.Buffer
+	if err := runStop(&out, cfg, "omlx", true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(halted, []string{"omlx"}) || len(*stopped) != 0 {
+		t.Errorf("halted = %v, per-model stops = %v; want [omlx] and none", halted, *stopped)
+	}
+}

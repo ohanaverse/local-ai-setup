@@ -36,6 +36,8 @@ var (
 		return survey.PickerWith(os.Stdin, os.Stdout, cfg, survey.Options{IncludeInUse: true})
 	}
 	confirmStop = promptStop
+	// stopProvider stops a provider's server as a whole (`wt stop omlx`).
+	stopProvider = lifecycle.Stop
 )
 
 // promptStop is promptReplace's twin for stopping an in-use model: y/N on the
@@ -60,6 +62,8 @@ func stopCmd(a *app) *cobra.Command {
 			"provider (ollama, omlx, omlx-6bit, mtplx). With no argument, shows the\n" +
 			"stop picker (requires a TTY), which also lists models other wt sessions\n" +
 			"are using, marked with their session count.\n\n" +
+			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
+			"models up; \"wt stop omlx\" stops the service.\n\n" +
 			"Stopping a model a live wt session uses asks for confirmation; --yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop",
 		Args:    cobra.MaximumNArgs(1),
@@ -129,12 +133,15 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			return fmt.Errorf("unknown model %q", arg)
 		}
 	} else {
+		pool := lifecycle.TenancyOf(arg) == lifecycle.Pool
 		for _, c := range cands {
-			if c.Entry.ProviderID == arg {
+			// A pool's server is stopped as a whole, so every model of the
+			// family is affected, whichever of its rows it is listed under.
+			if c.Entry.ProviderID == arg || (pool && localmodels.Family(c.Entry.ProviderID) == localmodels.Family(arg)) {
 				targets = append(targets, c)
 			}
 		}
-		if len(targets) == 0 {
+		if len(targets) == 0 && !pool {
 			fmt.Fprintf(out, "wt: nothing running on %s\n", arg)
 			return nil
 		}
@@ -153,6 +160,19 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		if !ok {
 			return fmt.Errorf("cancelled — %s is still running", arg)
 		}
+	}
+	if !strings.Contains(arg, "/") && lifecycle.TenancyOf(arg) == lifecycle.Pool {
+		// A model stop on a pool only unloads; the bare provider halts the
+		// service, which is the one way to free the server itself.
+		ctx, cancel := startSignalCtx()
+		defer cancel()
+		fmt.Fprintf(out, "Stopping %s... ", arg)
+		if err := stopProvider(ctx, cfg, arg); err != nil {
+			fmt.Fprintln(out, "failed")
+			return err
+		}
+		fmt.Fprintln(out, "done")
+		return nil
 	}
 	return stopEntries(out, cfg, entries)
 }
