@@ -2398,17 +2398,35 @@ def test_probe_running_omlx_mixed_pool_asks_status_without_a_key():
     assert _omlx_probe_with_status(loading) is True
 
 
-def test_probe_running_omlx_mixed_pool_is_unknown_when_status_refuses():
-    # #249: an omlx with an API key refuses status without it, and modelman
-    # resolves no secret_ref — so this is unknown, and the callers that guard
-    # a flag leave the flag alone. Reading it as "not running" cleared the
-    # flag of a model the server was still serving: `modelman stop` no-opped,
-    # `stop --all` skipped it, and the process stayed resident with nothing
-    # in modelman.toml saying so.
-    assert _omlx_probe_with_status({"detail": "Invalid API key"}) is None
-    assert _omlx_probe_with_status(None) is None
-    mixed = {"engine_pool": {"model_count": 2, "loaded_count": 1}}
-    assert _omlx_probe(["A", "B"], mixed) is None
+def test_probe_running_omlx_asks_wt_when_status_wants_a_key():
+    # An omlx with an API key refuses status without it, and modelman
+    # resolves no secret_ref. wt does, so it is asked — and its answer
+    # settles a keyed pool the same way the keyless status settles the rest.
+    refused = {"detail": "Invalid API key"}
+    with patch("modelman.local_control.wt_bridge.served_ids", return_value=["B"]) as wt_served:
+        assert _omlx_probe_with_status(refused) is False
+    wt_served.assert_called_once_with("omlx")
+    with patch("modelman.local_control.wt_bridge.served_ids", return_value=["A"]):
+        assert _omlx_probe_with_status(refused) is True
+    # Nothing else shells out: a pool whose status answers never reaches wt.
+    answered = {"models": [{"id": "A", "loaded": True}]}
+    with patch("modelman.local_control.wt_bridge.served_ids") as wt_served:
+        assert _omlx_probe_with_status(answered) is True
+    wt_served.assert_not_called()
+
+
+def test_probe_running_omlx_mixed_pool_is_unknown_when_nothing_can_say():
+    # #249: status refuses and wt cannot say either (not installed, no
+    # secret_ref on the row, timed out) — so this is unknown, and the callers
+    # that guard a flag leave the flag alone. Reading it as "not running"
+    # cleared the flag of a model the server was still serving: `modelman
+    # stop` no-opped, `stop --all` skipped it, and the process stayed
+    # resident with nothing in modelman.toml saying so.
+    with patch("modelman.local_control.wt_bridge.served_ids", return_value=None):
+        assert _omlx_probe_with_status({"detail": "Invalid API key"}) is None
+        assert _omlx_probe_with_status(None) is None
+        mixed = {"engine_pool": {"model_count": 2, "loaded_count": 1}}
+        assert _omlx_probe(["A", "B"], mixed) is None
 
 
 def test_probe_running_omlx_without_health_counts_falls_back_to_the_list():

@@ -40,7 +40,10 @@ from pathlib import Path
 
 # Import the providers package to ensure ProviderRegistry is populated —
 # mirrors sync.py's identical defensive import.
-from . import providers  # noqa: F401
+from . import (
+    providers,  # noqa: F401
+    wt_bridge,
+)
 from .benchmark.errors import BenchmarkError
 from .benchmark.isolation import (
     SUPPORTED_PROVIDER_IDS,
@@ -281,11 +284,13 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
       list shorter than the pool) -> what /v1/models/status says, asked
       without a key. That answers on an omlx with no API key set, the usual
       local setup, and a model mid-load counts as wt counts it. An omlx that
-      wants a key refuses, and that is None: modelman resolves no
-      secret_ref, so only wt's probe (localmodels.ServedIDs) can ask there.
-      None is reported as-is (#249) — the callers that guard a flag leave it
-      alone, because the flag was set by a start that succeeded and a partly
-      loaded pool neither confirms nor refutes it.
+      wants a key refuses: modelman resolves no secret_ref, so wt is asked
+      (`wt served omlx`, the same probe with the registry's key). This is
+      the one read here that shells out, and only when nothing else can say.
+      If wt cannot say either that is None, reported as-is (#249) — the
+      callers that guard a flag leave it alone, because the flag was set by a
+      start that succeeded and a partly loaded pool neither confirms nor
+      refutes it.
 
     An omlx whose /health gives no pool counts predates them: `listed` is all
     there is, as before."""
@@ -300,7 +305,8 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
         return []
     if loaded == count == len(listed):
         return listed
-    return _omlx_status_loaded(base)
+    by_status = _omlx_status_loaded(base)
+    return by_status if by_status is not None else wt_bridge.served_ids("omlx")
 
 
 def _omlx_status_loaded(base: str) -> list[str] | None:

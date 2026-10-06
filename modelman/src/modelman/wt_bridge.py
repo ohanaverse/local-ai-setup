@@ -1,4 +1,4 @@
-"""Subprocess bridge to `wt litellm ...`.
+"""Subprocess bridge to `wt litellm ...` (and the `wt served` probe).
 
 wt owns LiteLLM management (config.yaml routes, proxy restart, routing
 state); modelman calls these primitives instead of keeping its own copy of
@@ -221,3 +221,42 @@ def litellm_set(url: str | None, api_key: str | None) -> None:
     proc = _run(args)
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+
+
+# Above wt's own bound on an exec: secret_ref helper (15s) plus its probes, so
+# a slow helper is wt's failure to report, not a kill from here.
+SERVED_TIMEOUT = 20.0
+
+
+def served_ids(provider: str, timeout: float = SERVED_TIMEOUT) -> list[str] | None:
+    """The model ids `wt served <provider>` reports the provider's server is
+    serving now, or None when wt gives no answer — not installed, timed out,
+    or the server would not say (wt exits 1 rather than print an empty list).
+
+    wt is asked because it resolves the registry's secret_ref, which a keyed
+    omlx wants before it says which model of a partly loaded pool is loaded.
+    A read, so unlike the `wt litellm` calls nothing is raised: every failure
+    is "unknown", which no caller may read as "nothing is serving".
+    """
+    if shutil.which("wt") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["wt", "served", provider, "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        doc = json.loads(proc.stdout)
+    except ValueError:
+        return None
+    served = doc.get("served") if isinstance(doc, dict) else None
+    if not isinstance(served, list):
+        return None
+    return [s for s in served if isinstance(s, str)]
