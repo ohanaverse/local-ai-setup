@@ -52,7 +52,7 @@ kickstart OK
         "id": "openrouter/qwen/qwen3.8-27b",
 ```
 
-To take a **cloud** model off the proxy, remove it from the registry (TUI `d`, guide 02) — the sync that follows drops its row. A **local** model is unrouted by stopping it (omlx unroutes just the model stopped, mtplx and mlx_lm_server the whole provider; `wt stop omlx` halts the service and unroutes every omlx model); a pulled ollama model stays routed until it is removed (`ollama rm`, then a sync). Deleting only a local model's registry entry does not unroute it while it is on disk and running — it is then routed under its discovered id (the TUI's `d` also deletes the artifact, which is why it does unroute). An `mlx_lm_server` pairing is the exception: it has no discovered id, so deleting its entry does unroute it at the next sync, running or not.
+To take a **cloud** model off the proxy, remove it from the registry (TUI `d`, guide 02) — the sync that follows drops its row. A **local** model is unrouted by stopping it (`wt stop <omlx model>` unroutes just that model; `modelman stop` on an omlx model halts the omlx service, so every omlx route goes at the next sync; mtplx and mlx_lm_server unroute the whole provider; `wt stop omlx` halts the service and unroutes every omlx model); a pulled ollama model stays routed until it is removed (`ollama rm`, then a sync). Deleting only a local model's registry entry does not unroute it while it is on disk and running — it is then routed under its discovered id (the TUI's `d` also deletes the artifact, which is why it does unroute). An `mlx_lm_server` pairing is the exception: it has no discovered id, so deleting its entry does unroute it at the next sync, running or not.
 
 ## Steps
 
@@ -142,7 +142,7 @@ Output is one line, `model_list entries: <N>`, where N is however many rows `con
 | add | a desired id has no row — wt appends one | `<id>: routed` / `<id>: would route` |
 | adopt | a desired id has an **unmarked** row (written by hand or by a pre-#179 wt) — wt replaces it with a marked row | `<id>: adopted` / `<id>: would adopt` |
 | rewrite | a desired id's marked row differs from what the registry now builds (a price, base URL or credential change) | `<id>: rewritten` / `<id>: would rewrite` |
-| remove | a row wt owns whose id is no longer desired (cloud model deleted from the registry, a local model stopped (or its server), an ollama model no longer pulled, a discovered model's artifact gone) | `<id>: unrouted` / `<id>: would unroute` |
+| remove | a row wt owns whose id is no longer desired (cloud model deleted from the registry, a local model stopped (`wt stop <omlx model>` drops only that model; a service halt drops all its models), an ollama model no longer pulled, a discovered model's artifact gone) | `<id>: unrouted` / `<id>: would unroute` |
 | repair | an ollama row the sync otherwise leaves in place — hand-written ones included — has no `api_base`; wt sets that one field (§1, Gotchas). A row with no `model_name` is named `(no model_name: <model>)` | `<id>: api_base set` / `<id>: would set api_base` |
 
 A row that already matches is left alone, so a sync that changes nothing writes nothing and does not restart the proxy. When the file did change, wt restarts LiteLLM once (below).

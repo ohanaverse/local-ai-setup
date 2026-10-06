@@ -120,8 +120,8 @@ status but `would_unload`.
  "would_unload": [{"id": "omlx/A", "sessions": 1}]}
 ```
 
-Without `--plan`, a start that would unload a model and has no `--replace`
-exits 1 with that plan on stdout. With `--replace` it starts, then prints
+Without `--plan`, a start that would unload a model, or whose plan is
+`unknown`, and has no `--replace` exits 1 with that plan on stdout. With `--replace` it starts, then prints
 `status` `started` or `already_running` and what omlx unloaded:
 
 ```json
