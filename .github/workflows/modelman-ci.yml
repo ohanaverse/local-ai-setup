@@ -6,11 +6,13 @@ on:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - "bin/check-config-dirs-untouched"
       - ".github/workflows/modelman-ci.yml"
   pull_request:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - "bin/check-config-dirs-untouched"
       - ".github/workflows/modelman-ci.yml"
 
 jobs:
@@ -26,29 +28,8 @@ jobs:
       - run: uv sync
       - run: make check
       - run: make test
-      # No test may create the real config directories. A fresh runner has
-      # none, so finding one here means a test wrote under the home directory
-      # instead of a temp one — on a developer's machine that same test
-      # rewrites live state (wt's rotation.state and usage.jsonl were being
-      # overwritten by every `go test` until #221). Checked right after the
-      # tests, before any later step could create them for its own reasons.
-      # Both tools put agent-wt and local-ai under XDG_CONFIG_HOME when it is
-      # set, so that base is checked too when it is not ~/.config.
+      # No test may create the real config directories; see the script for
+      # why. Run right after the tests, before any later step could create
+      # them for its own reasons.
       - name: Tests left the real config directories alone
-        run: |
-          status=0
-          bases=("$HOME/.config")
-          if [ -n "${XDG_CONFIG_HOME:-}" ] && [ "$XDG_CONFIG_HOME" != "$HOME/.config" ]; then
-            bases+=("$XDG_CONFIG_HOME")
-          fi
-          for base in "${bases[@]}"; do
-            for name in agent-wt local-ai litellm; do
-              d="$base/$name"
-              if [ -e "$d" ]; then
-                echo "::error::the test run created $d"
-                ls -la "$d"
-                status=1
-              fi
-            done
-          done
-          exit $status
+        run: ../bin/check-config-dirs-untouched

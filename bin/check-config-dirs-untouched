@@ -1,0 +1,36 @@
+#!/bin/bash
+# check-config-dirs-untouched — fail if the real config directories exist.
+#
+# CI runs this right after a test suite (modelman-ci, wt-ci), before any
+# later step could create the directories for its own reasons. No test may
+# create them: a fresh runner has none, so finding one means a test wrote
+# under the home directory instead of a temp one — on a developer's machine
+# that same test rewrites live state (wt's rotation.state and usage.jsonl
+# were being overwritten by every `go test` until #221).
+#
+# Both tools put agent-wt and local-ai under XDG_CONFIG_HOME when it is set,
+# so that base is checked too when it is not ~/.config.
+#
+# Only meaningful on a machine that has never run wt or modelman — on a
+# developer's machine the directories exist and this always fails.
+#
+# Usage:
+#   check-config-dirs-untouched
+
+status=0
+bases=("$HOME/.config")
+if [ -n "${XDG_CONFIG_HOME:-}" ] && [ "$XDG_CONFIG_HOME" != "$HOME/.config" ]; then
+    bases+=("$XDG_CONFIG_HOME")
+fi
+for base in "${bases[@]}"; do
+    for name in agent-wt local-ai litellm; do
+        d="$base/$name"
+        if [ -e "$d" ]; then
+            # `::error::` is a GitHub Actions annotation; plain text elsewhere.
+            echo "::error::the test run created $d"
+            ls -la "$d"
+            status=1
+        fi
+    done
+done
+exit $status
