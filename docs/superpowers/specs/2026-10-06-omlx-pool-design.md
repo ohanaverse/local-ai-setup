@@ -132,7 +132,7 @@ A target missing from the pool reading (a model added to disk after omlx scanned
 
 This replaces the chat-completion warmup on the start path. `omlxWarm`, `lifecycle.Warm` and `wt warm` stay as they are for modelman's benchmark isolation.
 
-**`*OccupiedError` carries a list.** `Occupant localmodels.Entry` becomes `Occupants []localmodels.Entry`. `Exclusive` always fills exactly one. The CLI prompt (`cmd/wt/start.go`), the TUI replace screen (`internal/tui/start_flow.go`) and `message.go` render the list, each entry with its live session count from `refcount`.
+**`*OccupiedError` carries a list.** `Occupant localmodels.Entry` becomes `Occupants []localmodels.Entry`. `Exclusive` always fills exactly one. The CLI prompt (`cmd/wt/start.go`) renders the list with each entry's live session count from `refcount`. The TUI replace screen (`internal/tui/start_flow.go`) lists the ids; the picker's in-use column already shows the counts.
 
 **Errors.**
 
@@ -152,7 +152,7 @@ After every `/load`, whether it succeeded or failed, wt reads the pool and compa
 - **One line per evicted model** goes to the route output. An eviction the plan did not name is marked as unexpected.
 - **Failure still reconciles.** omlx can evict before a load fails. The removal is written without a restart and sets `restartOwed`, so `Start`'s single settling bounce applies it. A failed start costs one proxy restart, like a failed replace today.
 
-The start reports what it evicted to its caller. `lifecycle.Start`'s signature becomes `Start(ctx, cfg, t, opts) (StartResult, error)`, where `StartResult.Unloaded` holds the evicted models' ids and is filled on failure too. Callers that have no use for it discard it.
+The start reports what it evicted to its caller through a new optional callback, `Options.OnUnloaded func(localmodels.Entry)`, called once per evicted model, on a failed start too. It sits beside `Options.Progress`, so `Start`'s signature and its existing callers and test seams are unchanged.
 
 ### Stop
 
