@@ -208,6 +208,35 @@ def test_reconcile_model_state_keeps_the_flag_when_absence_was_not_observed(monk
     assert cleared == []
 
 
+def test_reconcile_model_state_keeps_the_flag_when_the_ollama_daemon_is_down(monkeypatch):
+    """The same rule through the real OllamaProvider, whose batch path is the
+    one ollama actually takes: with the daemon down `ollama list` fails and
+    prints nothing, which resolve_local read as "nothing is pulled" — an
+    aligned all-absent answer, so every running ollama flag was cleared."""
+    import subprocess
+
+    def daemon_down(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 1, "", "Error: could not connect to ollama app, is it running?"
+        )
+
+    monkeypatch.setattr("modelman.providers.ollama._default_runner", daemon_down)
+    models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a:1b")]
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"), location="local")
+        ],
+        models=models,
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=True))
+
+    cleared = reconcile_model_state(models, reg, state)
+
+    assert state.get("ollama/a").running is True
+    assert cleared == []
+
+
 def test_reconcile_model_state_misaligned_batch_degrades_to_per_model(monkeypatch):
     """The batch contract requires a list aligned with the specs: a
     resolve_local() that returns the wrong length (provider bug) must

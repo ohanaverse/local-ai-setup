@@ -17,7 +17,7 @@ from typing import Any, Protocol
 # Import the providers package to ensure ProviderRegistry is populated.
 from . import providers  # noqa: F401
 from .providers.base import Provider, VariantSpec
-from .providers.ollama import _parse_ollama_list_sizes
+from .providers.ollama import _listed_name, _parse_ollama_list_sizes
 from .providers.registry import ProviderRegistry
 from .registry import (
     _DEFAULT_PROVIDER_TEMPLATES,
@@ -103,15 +103,18 @@ def _ollama_downloaded(registry: Registry, sizes: dict[str, int]) -> dict[str, t
     """Map ollama list output to {model_id: (disk_path, size_bytes)}.
 
     Only configured ollama models are returned; unconfigured models in `sizes`
-    are ignored.
+    are ignored. A tagless registry name matches its `:latest` row, as the
+    TUI's reconcile (OllamaProvider.resolve_local) and `modelman start` read
+    it: reconcile clears the running flag of a model that is not here (#233),
+    so a pulled `x:latest` must not read as a missing `x`.
     """
     downloaded: dict[str, tuple[str, int]] = {}
     for m in registry.models:
         if m.provider_id != "ollama":
             continue
-        size = sizes.get(m.model_name)
-        if size is not None:
-            downloaded[m.id] = (f"ollama:{m.model_name}", size)
+        listed = _listed_name(m.model_name, sizes)
+        if listed is not None:
+            downloaded[m.id] = (f"ollama:{listed}", sizes[listed])
     return downloaded
 
 

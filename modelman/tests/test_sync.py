@@ -179,6 +179,29 @@ def test_ollama_downloaded_ignores_unconfigured_models():
     assert _ollama_downloaded(registry, {"a": 1024}) == {}
 
 
+def test_a_tagless_ollama_model_pulled_as_latest_is_downloaded_and_keeps_its_flag():
+    # `ollama list` reports `x:latest` for a model registered as `x`. The
+    # TUI's reconcile and `modelman start` both read that as pulled; an exact
+    # lookup here read it as gone, and since #233 "gone" clears the running
+    # flag — so every `modelman sync` stopped a started tagless model.
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", location="local")],
+        models=[
+            ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x"),
+            ModelEntry(id="ollama/y", family="f", provider_id="ollama", model_name="y:9b"),
+        ],
+    )
+    # A tagged name is looked up exactly: `y:latest` is not `y:9b`.
+    downloaded = _ollama_downloaded(registry, {"x:latest": 5, "y:latest": 7})
+    assert downloaded == {"ollama/x": ("ollama:x:latest", 5)}
+
+    state = StateStore()
+    state.set("ollama/x", ModelState(ready=True, running=True))
+    result = reconcile(registry, state, downloaded)
+    assert state.get("ollama/x").running is True
+    assert result.running_cleared == []
+
+
 def test_reconcile_downloaded_model():
     registry = Registry(
         models=[
