@@ -355,15 +355,17 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 		}
 		return false, false
 	}
-	reportEnsured(ctx, w, ch.Add[0].ID)
 	if len(w.missing) > 0 {
 		// The row is missing and its build may run the provider's exec: secret_ref
 		// helper, synchronously and for up to execSecretTimeout (#253): a wait
-		// this goroutine cannot pay. The write deferred it, so nothing is known
-		// yet and the caller owes the retry — this check has got no further than
+		// this goroutine cannot pay. The write deferred it — and with it
+		// everything else it would have written (litellm.Options.DeferMissingAdd),
+		// so nothing was saved, nothing restarted and there is nothing to
+		// report. The caller owes the retry: this check has got no further than
 		// a held lock would have.
-		return w.changed, false
+		return false, false
 	}
+	reportEnsured(ctx, w, ch.Add[0].ID)
 	return w.changed, true
 }
 

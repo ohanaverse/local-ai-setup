@@ -963,9 +963,9 @@ func TestTryEnsureModelRouteDefersAMissingCloudRow(t *testing.T) {
 	path, restarts, _ := realRoutes(t, "model_list: []\n")
 	cfg, marker := cloudRoutesCfgWithExecSecret(t)
 	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
-	// Converge the file with a write that names no model. The settings every
-	// write enforces would otherwise make the deferred write below report a
-	// change of its own, and this test is about the row.
+	// Converge the file with a write that names no model, so the retry at the
+	// end is deciding on the row alone. (A deferred check writes nothing either
+	// way — TestTryEnsureModelRouteDeferredCheckWritesNothing.)
 	if _, err := litellm.ApplyChange(cfg, litellm.Change{}, litellm.Options{Path: path}); err != nil {
 		t.Fatal(err)
 	}
@@ -1001,6 +1001,48 @@ func TestTryEnsureModelRouteDefersAMissingCloudRow(t *testing.T) {
 	}
 }
 
+// TestTryEnsureModelRouteDeferredCheckWritesNothing pins that a check which
+// defers the row is as empty-handed as one that found the lock held: nothing
+// saved, nothing restarted, nothing printed. The repairs every write makes
+// (litellm_settings, ollama api_base) used to be saved on the deferred attempt,
+// so a launch against a config.yaml that lacked them restarted the proxy from
+// the update goroutine and then a second time when the retry wrote the row.
+func TestTryEnsureModelRouteDeferredCheckWritesNothing(t *testing.T) {
+	path, restarts, _ := realRoutes(t, "model_list: []\n")
+	cfg, _ := cloudRoutesCfgWithExecSecret(t)
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&out, cfg, m)
+	WaitPendingRoutes()
+
+	if changed || done {
+		t.Fatalf("changed = %v done = %v, want false and false", changed, done)
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml = %q (err %v), want it exactly as it was", after, err)
+	}
+	if got := restarts(); got != 0 || out.Len() != 0 {
+		t.Fatalf("restarts = %d output = %q, want none: the retry owns the whole write", got, out.String())
+	}
+
+	// The retry writes the row and the repairs together, for one restart.
+	if !EnsureModelRouteTo(&out, cfg, m) {
+		t.Fatalf("the retry changed = false, output %q", out.String())
+	}
+	WaitPendingRoutes()
+	if got := restarts(); got != 1 {
+		t.Fatalf("restarts = %d, want 1 for the whole launch", got)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"openrouter/x"}) {
+		t.Fatalf("routed = %v, want [openrouter/x]", got)
+	}
+}
+
 // TestTryEnsureModelRouteFinishesForACloudRowThatIsThere pins the other side of
 // the deferral: a route already in config.yaml is the case this repair exists
 // to leave alone, so nothing is deferred and the check finishes on the update
@@ -1013,8 +1055,12 @@ func TestTryEnsureModelRouteFinishesForACloudRowThatIsThere(t *testing.T) {
 	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
 	// Put the row there the way a launch does, with a secret this shell resolves
 	// without a helper, so the file already holds everything a write enforces and
-	// the check below is deciding on the row alone.
+	// the check below is deciding on the row alone. The providers are cloned: a
+	// plain struct copy shares cfg's slice, and the seed's literal secret would
+	// replace the exec: ref in cfg too — leaving no helper for the marker
+	// assertion below to catch.
 	seed := *cfg
+	seed.Providers = slices.Clone(cfg.Providers)
 	for i := range seed.Providers {
 		if seed.Providers[i].ID == "openrouter" {
 			seed.Providers[i].Auth.SecretRef = "sk-test"

@@ -1021,9 +1021,9 @@ func TestApplyChangeDefersAMissingCloudRow(t *testing.T) {
 	cfg := testConfig()
 	marker, ref := execSecretRef(t)
 	cfg.Providers[2].Auth.SecretRef = ref // openrouter
-	// Converge the file first. The settings a write enforces are not this
-	// test's subject, and only a converged file can show that the deferred
-	// write changed nothing at all.
+	// Converge the file first: the settings a write enforces are not this
+	// test's subject (TestApplyChangeDeferredWriteHoldsTheWholeWrite is the
+	// unconverged case).
 	if _, err := ApplyChange(cfg, Change{}, o); err != nil {
 		t.Fatal(err)
 	}
@@ -1049,6 +1049,44 @@ func TestApplyChangeDefersAMissingCloudRow(t *testing.T) {
 	}
 	if ids := f.RoutedIDs(); len(ids) != 0 {
 		t.Fatalf("routed = %v, want no row written", ids)
+	}
+}
+
+// TestApplyChangeDeferredWriteHoldsTheWholeWrite pins that a write which defers
+// a row saves nothing else either. Every write also enforces litellm_settings
+// and repairs ollama api_base, and a config.yaml that lost its cloud rows is
+// the kind of file that lacks those too: saved on the deferred attempt, they
+// restarted the proxy once for the repair and again, seconds later, for the
+// row the retry built — two 10–20 s bounces, overlapping, for one launch.
+func TestApplyChangeDeferredWriteHoldsTheWholeWrite(t *testing.T) {
+	const unconverged = "model_list: []\n"
+	o, restarts, p := opts(t, unconverged)
+	cfg := testConfig()
+	o.DeferMissingAdd = true
+
+	res, err := ApplyChange(cfg, Change{Add: []config.Model{cfg.Models[2]}, AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Missing, []string{"openrouter/x/y"}) {
+		t.Fatalf("missing = %v, want the one deferred id", res.Missing)
+	}
+	if len(res.Outcomes) != 0 || res.Changed || *restarts != 0 {
+		t.Fatalf("outcomes = %+v changed = %v restarts = %d, want nothing written", res.Outcomes, res.Changed, *restarts)
+	}
+	if got, err := os.ReadFile(p); err != nil || string(got) != unconverged {
+		t.Fatalf("config.yaml = %q (err %v), want it exactly as it was", got, err)
+	}
+
+	// The second attempt makes the whole change: the row and the repairs, in
+	// one write and one restart.
+	o.DeferMissingAdd = false
+	res, err = ApplyChange(cfg, Change{Add: []config.Model{cfg.Models[2]}, AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Missing) != 0 || !res.Changed || *restarts != 1 {
+		t.Fatalf("missing = %v changed = %v restarts = %d, want one write and one restart", res.Missing, res.Changed, *restarts)
 	}
 }
 
