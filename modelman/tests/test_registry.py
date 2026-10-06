@@ -18,6 +18,7 @@ from modelman.registry import (
     ProviderEntry,
     Registry,
     RegistryError,
+    RegistryNotFoundError,
     _default_registry_path,
     _default_wt_config_path,
     base_origin,
@@ -440,6 +441,24 @@ def test_load_registry_falls_back_to_legacy_location(tmp_path, monkeypatch):
     )
     loaded = load_registry()
     assert loaded.provider("ollama").id == "ollama"
+
+
+def test_load_registry_does_not_fall_back_past_an_explicit_override(tmp_path, monkeypatch):
+    # MODELMAN_REGISTRY names the registry outright; when that file is missing
+    # the answer is "not found", never some other machine-wide file. The
+    # fallback is for the XDG default only — with it, `modelman migrate`
+    # pointed at a new path would read (and copy) the registry in ~/.config.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "elsewhere" / "registry.toml"))
+    save_registry(
+        Registry(
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+        ),
+        home / ".config" / "local-ai" / "registry.toml",
+    )
+    with pytest.raises(RegistryNotFoundError):
+        load_registry()
 
 
 def test_save_then_load_preserves_unknown_keys(tmp_path):
