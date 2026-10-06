@@ -20,12 +20,16 @@ import (
 // means the server answered and has nothing loaded.
 //
 // mtplx and mlx_lm_server serve one model per process, so their /v1/models is
-// the answer. omlx's is not (#201) — see omlxLoaded.
+// the answer. omlx's is not (#201) — see OmlxPool.
 func ServedIDs(cfg *config.Config, client *http.Client, family string) ([]string, error) {
-	origin, _ := FamilyOrigin(cfg, family)
 	if family == "omlx" {
-		return omlxLoaded(client, origin, FamilyAPIKey(cfg, family))
+		p, err := OmlxPool(cfg, client)
+		if err != nil {
+			return nil, err
+		}
+		return p.LoadedIDs(), nil
 	}
+	origin, _ := FamilyOrigin(cfg, family)
 	return FetchModelIDsErr(client, origin+"/v1/models")
 }
 
