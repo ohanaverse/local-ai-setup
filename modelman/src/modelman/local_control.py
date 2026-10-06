@@ -218,21 +218,24 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     when it's needed (the marker's process died; see the idempotency note
     in start_local_model).
 
-    Ollama is EXEMPT from live verification and always reads as running:
-    `modelman start` for ollama is deliberately flag-only (no warmup call
-    — ollama lazy-loads on first request), so `ollama ps` (which lists
-    only currently-LOADED models) would read the freshly-flagged model as
-    not-running the moment anything probes it before its first real
-    request — permanently self-clearing a flag that was never wrong. There
-    is no live "is this specific model loaded" signal that corresponds to
-    what the running flag means for ollama (the daemon serves whatever's
-    requested, flag or no flag), so the flag is trusted as-is once set,
-    with no probe-based self-healing for this one provider
-    (Provider.running_flag_is_probed is False for it). What does clear it,
-    besides a stop, is reconcile observing the model gone from disk (#233).
+    For ollama the question is "is it still pulled?", not "is it loaded?"
+    (#242). `modelman start` for ollama is deliberately flag-only (no warmup
+    call — ollama lazy-loads on first request), so `ollama ps`, which lists
+    only currently-LOADED models, would read a freshly-flagged model as
+    not-running the moment anything probes it before its first real request
+    — permanently self-clearing a flag that was never wrong. There is no
+    live "this model is loaded" signal that corresponds to what the flag
+    means for ollama (the daemon serves whatever is requested, flag or no
+    flag). What can make the flag wrong is the model being removed: one that
+    is not pulled cannot be served, and nothing else would ever clear the
+    flag (#233). That is asked of the daemon at the provider row's origin
+    (_ollama_pulled) — and only a listing that positively lacks the model
+    answers False. A daemon that is down or unreadable is unknown, and
+    unknown stays running: restarting ollama must not stop every model.
     """
-    if not ProviderRegistry.running_flag_is_probed(provider_id):
-        return True
+    if provider_id == "ollama":
+        origin = base_origin_url or _DEFAULT_BASE_ORIGIN["ollama"]
+        return _ollama_pulled(origin, model_name) is not False
     base = base_origin_url or _DEFAULT_BASE_ORIGIN.get(provider_id)
     if not base:
         return False
@@ -310,6 +313,30 @@ def _require_ollama_daemon(provider: ProviderEntry | None) -> None:
         )
 
 
+def _ollama_pulled(origin: str, model_name: str) -> bool | None:
+    """Whether the ollama daemon at `origin` has `model_name` pulled: True,
+    False on a listing that positively lacks it, None when the daemon gives
+    no usable listing (down, unreachable, not ollama) — unknown, which no
+    caller may read as absent.
+
+    Reads `/api/tags` and parses it as wt does (ollamaModelNames: an entry
+    with a remote_host is an ollama.com cloud model, not a pulled one;
+    OllamaNameMatches for the implicit ":latest"). The local `ollama list`
+    CLI is not the authority: with base_url on another host or port it
+    describes a different server."""
+    body = _http_json(f"{origin}/api/tags")
+    listed = body.get("models") if body else None
+    if not isinstance(listed, list):
+        return None
+    for item in listed:
+        if not isinstance(item, dict) or item.get("remote_host"):
+            continue
+        name = item.get("name")
+        if isinstance(name, str) and _ollama_name_matches(name, model_name):
+            return True
+    return False
+
+
 def _require_ollama_pulled(provider: ProviderEntry | None, model: ModelEntry) -> None:
     """Raise unless ollama has `model` pulled — or cannot say.
 
@@ -327,17 +354,8 @@ def _require_ollama_pulled(provider: ProviderEntry | None, model: ModelEntry) ->
     CLI is not the authority: with base_url on another host or port it
     describes a different server, and refused a model wt would have routed.
     """
-    body = _http_json(f"{_ollama_origin(provider)}/api/tags")
-    listed = body.get("models") if body else None
-    if not isinstance(listed, list):
-        return
-    for item in listed:
-        if not isinstance(item, dict) or item.get("remote_host"):
-            continue
-        name = item.get("name")
-        if isinstance(name, str) and _ollama_name_matches(name, model.model_name):
-            return
-    raise LocalControlError(f"{model.id} is not pulled — ollama pull {model.model_name}")
+    if _ollama_pulled(_ollama_origin(provider), model.model_name) is False:
+        raise LocalControlError(f"{model.id} is not pulled — ollama pull {model.model_name}")
 
 
 def _clear_running_flag(fresh: StateStore, model_id: str) -> None:

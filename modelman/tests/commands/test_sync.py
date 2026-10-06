@@ -182,10 +182,9 @@ def test_sync_command_clears_the_running_flag_of_an_ollama_model_that_is_gone(
     tmp_path, monkeypatch
 ):
     """#233, through the command and the state file: a started ollama model
-    removed with `ollama rm` kept `running = true` for good — sync kept the
-    flag (#231) and ollama's probe never clears one. The merge onto the fresh
-    state copies only what sync observed, so the cleared flag has to be
-    carried across explicitly."""
+    removed with `ollama rm` kept `running = true` for good. Sync ends by
+    re-probing every flagged model (#242), and ollama's probe asks its
+    daemon whether the model is still pulled."""
     from modelman.registry import ModelEntry
     from modelman.state import ModelState, StateStore, load_state, save_state
 
@@ -216,14 +215,96 @@ def test_sync_command_clears_the_running_flag_of_an_ollama_model_that_is_gone(
     store.set("ollama/a:1b", ModelState(ready=True, running=True))
     save_state(store, state_path)
 
-    with patch("modelman.sync.list_ollama", return_value={}):
+    with (
+        patch("modelman.sync.list_ollama", return_value={}),
+        patch("modelman.local_control._http_json", return_value={"models": []}),
+    ):
         result = CliRunner().invoke(app, ["sync"])
 
     assert result.exit_code == 0, result.output
     after = load_state(state_path).get("ollama/a:1b")
     assert after.ready is False
     assert after.running is False
-    assert "No longer on disk, marked stopped: ollama/a:1b" in result.output
+    assert "No longer running, marked stopped: ollama/a:1b" in result.output
+
+
+def test_sync_command_keeps_the_flag_of_a_model_on_a_remote_ollama(tmp_path, monkeypatch):
+    """#242: with the ollama row's base_url on another host, the local
+    `ollama list` describes a different server. `modelman start` checked the
+    remote one and flagged the model; sync then read the local CLI, saw
+    nothing, and cleared the flag. Running is asked where the model is."""
+    from modelman.registry import ModelEntry
+    from modelman.state import ModelState, StateStore, load_state, save_state
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    save_registry(
+        Registry(
+            providers=[
+                ProviderEntry(
+                    id="ollama",
+                    name="Ollama",
+                    location="local",
+                    auth=AuthConfig(type="none", base_url="http://gpu-box:11434"),
+                )
+            ],
+            models=[
+                ModelEntry(
+                    id="ollama/a:1b",
+                    family="f",
+                    provider_id="ollama",
+                    model_name="a:1b",
+                    location="local",
+                )
+            ],
+        ),
+        registry_path,
+    )
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    store = StateStore()
+    store.set("ollama/a:1b", ModelState(running=True))
+    save_state(store, state_path)
+
+    def remote_tags(url, timeout=2.0):
+        assert url == "http://gpu-box:11434/api/tags", url
+        return {"models": [{"name": "a:1b"}]}
+
+    with (
+        patch("modelman.sync.list_ollama", return_value={}),
+        patch("modelman.local_control._http_json", remote_tags),
+    ):
+        result = CliRunner().invoke(app, ["sync"])
+
+    assert result.exit_code == 0, result.output
+    assert load_state(state_path).get("ollama/a:1b").running is True
+    assert "marked stopped" not in result.output
+
+
+def test_sync_command_reports_only_the_flags_it_cleared(tmp_path, monkeypatch):
+    """A flagged id with nothing to probe for — no registry entry and no
+    provider row of its prefix — is neither verified nor cleared by
+    running_model_ids. Reported as "flagged and not returned", it was
+    announced as marked stopped on every sync while its flag stayed set."""
+    from modelman.state import ModelState, StateStore, load_state, save_state
+
+    _registry_path, state_path = _seed_registry(tmp_path, monkeypatch)
+    store = StateStore()
+    store.set("retired/x", ModelState(running=True))
+    store.set("ollama/gone:1b", ModelState(running=True))
+    save_state(store, state_path)
+
+    with (
+        patch("modelman.sync.list_ollama", return_value={}),
+        patch("modelman.local_control._http_json", return_value={"models": []}),
+    ):
+        result = CliRunner().invoke(app, ["sync"])
+
+    assert result.exit_code == 0, result.output
+    after = load_state(state_path)
+    assert after.get("retired/x").running is True
+    assert after.get("ollama/gone:1b").running is False
+    assert "No longer running, marked stopped: ollama/gone:1b\n" in result.output
 
 
 def test_sync_command_does_not_undo_a_start_or_stop_made_while_it_ran(tmp_path, monkeypatch):

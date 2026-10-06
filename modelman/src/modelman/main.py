@@ -21,6 +21,7 @@ from .local_control import (
     LocalControlError,
     LocalModelInventory,
     inventory_local_models,
+    running_model_ids,
     start_local_model,
     stop_all_local_models,
     stop_local_model,
@@ -502,12 +503,6 @@ def sync() -> None:
     # recorded stopped, and a discovered model's row (dropped by its stop)
     # came back (#231).
     #
-    # `running` is the one thing merged that sync did not observe directly,
-    # and only ever to False: for a model seen gone from disk on a provider
-    # whose flag no probe confirms (result.running_cleared, #233). Nothing
-    # else clears that flag, and it would otherwise be dropped here with the
-    # rest of the stale row.
-    #
     # Families are left alone: run_sync never touches them, so its snapshot
     # holds nothing to write — and merging `state.families` back whole would
     # resurrect a legacy family row a concurrent `delete-family` just dropped,
@@ -523,8 +518,6 @@ def sync() -> None:
                     disk_path=seen.disk_path,
                     size_bytes=seen.size_bytes,
                 )
-            for mid in result.running_cleared:
-                fresh.models[mid] = replace(fresh.get(mid), running=False)
     except OSError as exc:
         # No registry repair is saved either — the state write must land first,
         # and the repair is idempotent and re-runs on the next sync.
@@ -548,8 +541,26 @@ def sync() -> None:
     typer.echo(
         f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."
     )
-    if result.running_cleared:
-        typer.echo(f"No longer on disk, marked stopped: {', '.join(result.running_cleared)}")
+    # `running` is not sync's to write from its snapshot (above), but a sync
+    # is where a user expects stale state to be put right: re-probe every
+    # flagged model now, as the TUI's mount does. running_model_ids clears a
+    # flag only on a probe made at that moment, against the state it re-reads
+    # under the lock — so nothing here can undo a start or stop made while
+    # the scans ran (#243). For ollama the probe is "still pulled?", which is
+    # what clears the flag of a model removed with `ollama rm` (#233, #242).
+    #
+    # What is reported is what the state file says afterwards, not "flagged
+    # and not returned": running_model_ids neither verifies nor clears an id
+    # it has nothing to probe for (no registry entry, no provider row of its
+    # prefix), and announcing that one as stopped on every sync was untrue.
+    before = load_state()
+    flagged = sorted(mid for mid, s in before.models.items() if s.running)
+    if flagged:
+        running_model_ids(registry, before)
+        after = load_state()
+        stopped = [mid for mid in flagged if not after.get(mid).running]
+        if stopped:
+            typer.echo(f"No longer running, marked stopped: {', '.join(stopped)}")
     # The registry save above may have repaired a provider (backfilled
     # base_url, added entry); route what it now configures (#179).
     _sync_routes_and_warn()

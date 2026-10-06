@@ -65,7 +65,7 @@ def reconcile_model_state(
     registry: Registry,
     state: StateStore,
     local_map: dict[tuple[str, str], LocalModel] | None = None,
-) -> list[str]:
+) -> None:
     """Ask each provider whether each of `models` is on disk and write the
     result straight into `state`: for local-artifact models (per
     `model_has_local_artifact`), files present -> ready=True + disk_path +
@@ -76,12 +76,6 @@ def reconcile_model_state(
 
     Used by ModelScreen's background reconcile worker so the write
     semantics live in one place.
-
-    Returns the ids whose running flag was cleared in `state` because the
-    model was observed gone and no probe would clear it (sync.stops_when_gone,
-    #233) — the caller persists those. A provider that could not be asked
-    records the model as not ready, as it always has, but is not an
-    observation of absence, so the flag stays.
 
     Per provider, `resolve_local()` — the batch presence/path/size check —
     is tried first: providers that implement it (ollama's single `ollama
@@ -110,9 +104,7 @@ def reconcile_model_state(
     # model_entry_to_variant now lives in ..registry (imported at the top
     # here), so only the provider registry stays deferred.
     from ..providers.registry import ProviderRegistry
-    from ..sync import stops_when_gone
 
-    running_cleared: list[str] = []
     by_provider: dict[str, list[ModelEntry]] = defaultdict(list)
     for m in models:
         by_provider[m.provider_id].append(m)
@@ -133,8 +125,6 @@ def reconcile_model_state(
 
         checked: list[tuple[ModelEntry, bool, int | None]] = []
         paths: dict[int, str] = {}
-        # Indexes whose "not ready" is a failed question, not an answer.
-        unasked: set[int] = set()
         specs = [model_entry_to_variant(m) for m in entries]
         try:
             resolved = provider.resolve_local(specs)
@@ -164,7 +154,6 @@ def reconcile_model_state(
                     ready = bool(provider.is_downloaded(spec))
                 except Exception:
                     ready = False
-                    unasked.add(i)
                 model_size: int | None = None
                 if ready:
                     try:
@@ -244,11 +233,10 @@ def reconcile_model_state(
                         ),
                     )
                 else:
-                    gone = replace(existing, ready=False, disk_path=None, size_bytes=None)
-                    if i not in unasked and stops_when_gone(m.provider_id, existing.running):
-                        gone = replace(gone, running=False)
-                        running_cleared.append(m.id)
-                    state.set(m.id, gone)
+                    state.set(
+                        m.id,
+                        replace(existing, ready=False, disk_path=None, size_bytes=None),
+                    )
             elif local_path is not None or size is not None:
                 existing = state.get(m.id)
                 state.set(
@@ -259,4 +247,3 @@ def reconcile_model_state(
                         size_bytes=size if size is not None else existing.size_bytes,
                     ),
                 )
-    return running_cleared
