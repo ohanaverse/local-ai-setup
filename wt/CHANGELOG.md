@@ -17,6 +17,10 @@
 
 ### Fixed
 
+- The omlx scan's single-model fallback matches omlx (#263). A model
+  directory that is itself a LoRA adapter, or that holds a Hugging Face cache
+  entry, is no longer listed as a model omlx does not serve. wt and modelman
+  are tested against one shared fixture of directory trees.
 - omlx models inside an organization folder are found (#213). wt now scans
   omlx's model directory two levels deep, as omlx does, so a model at
   `<model dir>/mlx-community/<model>` is listed under the name omlx serves

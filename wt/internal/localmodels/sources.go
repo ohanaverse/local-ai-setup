@@ -98,9 +98,11 @@ func scanModelDirs(dir string) ([]string, error) {
 //     CHILD directory. The folder itself is never a model, and one with no
 //     such child contributes nothing.
 //
-// A name found twice is listed once. When nothing was found and dir itself
-// holds config.json, dir is the one model, named after itself. A missing dir
-// is "no models", not an error.
+// A name found twice is listed once. When nothing was found, dir itself is
+// the one model, named after itself, if it is a model by the same test (it
+// holds config.json and no adapter_config.json) and holds no Hugging Face
+// cache entry: omlx registers a model from such an entry, and then its own
+// fallback does not fire. A missing dir is "no models", not an error.
 //
 // Not covered: omlx also resolves Hugging Face hub cache entries
 // (models--Org--Name/snapshots/<hash>/) under id rules of its own. Such an
@@ -130,6 +132,7 @@ func scanOmlxModels(dir string) ([]string, error) {
 		}
 		return fileExists(filepath.Join(p, "config.json")), false
 	}
+	sawHFCache := false
 	for _, top := range tops {
 		p := filepath.Join(dir, top)
 		model, adapter := isModel(p)
@@ -138,6 +141,7 @@ func scanOmlxModels(dir string) ([]string, error) {
 		case model:
 			add(top)
 		case isHFCacheEntry(p):
+			sawHFCache = true
 		default:
 			// An organization folder. One that cannot be read holds no
 			// model wt can name, as for omlx.
@@ -152,8 +156,13 @@ func scanOmlxModels(dir string) ([]string, error) {
 			}
 		}
 	}
-	if len(names) == 0 && fileExists(filepath.Join(dir, "config.json")) {
-		return []string{filepath.Base(dir)}, nil
+	// omlx's fallback fires only when it registered nothing, and a cache entry
+	// may have registered a model there. Neither tool lists cache models, so
+	// listing nothing is the safe answer.
+	if len(names) == 0 && !sawHFCache {
+		if model, _ := isModel(dir); model {
+			return []string{filepath.Base(dir)}, nil
+		}
 	}
 	sort.Strings(names)
 	return names, nil

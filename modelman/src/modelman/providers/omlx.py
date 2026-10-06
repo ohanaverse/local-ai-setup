@@ -51,8 +51,11 @@ def omlx_model_dirs(md: Path) -> list[Path]:
     - any other entry is an organization folder: its child directories that
       hold config.json are models, named after the CHILD;
     - dot-directories are skipped, and the first of two equal names wins;
-    - if nothing was found and `md` itself holds config.json, it is the one
-      model.
+    - if nothing was found, `md` itself is the one model when it holds
+      config.json and no adapter_config.json, unless it holds a Hugging Face
+      cache entry: omlx may have registered a model from that entry, and then
+      its own fallback does not fire (listing nothing is the safe answer, as
+      neither tool lists cache models).
 
     A Hugging Face cache entry (models--Org--Name/snapshots/...) is not
     listed: omlx names it by its own rules. A missing or unreadable `md` is
@@ -66,6 +69,7 @@ def omlx_model_dirs(md: Path) -> list[Path]:
             return []
 
     found: dict[str, Path] = {}
+    saw_hf_cache = False
     for entry in subdirs(md):
         if _exists(entry / "adapter_config.json"):
             continue
@@ -73,11 +77,12 @@ def omlx_model_dirs(md: Path) -> list[Path]:
             found.setdefault(entry.name, entry)
             continue
         if entry.name.startswith("models--") and _is_dir(entry / "snapshots"):
+            saw_hf_cache = True
             continue
         for child in subdirs(entry):
             if _is_model_dir(child):
                 found.setdefault(child.name, child)
-    if not found and _is_model_dir(md):
+    if not found and not saw_hf_cache and _is_model_dir(md):
         found[md.name] = md
     return [found[name] for name in sorted(found)]
 
