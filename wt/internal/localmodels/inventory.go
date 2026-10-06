@@ -94,6 +94,10 @@ type Snapshot struct {
 	// repair — omlx's "set auth.secret_ref ..." hint lives in the error
 	// alone.
 	ProbeFailures map[string]error
+	// OmlxPool is the omlx pool reading this round's Running flags came
+	// from: sizes, pins and the ceiling the eviction plan needs
+	// (lifecycle.Evictions). Nil when omlx was not probed or gave no reading.
+	OmlxPool *Pool
 }
 
 // Inventory probes every local provider in the registry concurrently and
@@ -166,6 +170,7 @@ type source struct {
 	registered int      // local registry models in this family
 	down       bool     // the server refused the connection (nothing listening)
 	probeErr   error    // the probe failure, for a caller that shows the reason
+	pool       *Pool    // omlx only: the reading loaded came from
 }
 
 func (s *source) matchArtifact(artifact, modelName string) bool {
@@ -226,6 +231,14 @@ func familyOrigin(cfg *config.Config, family string) string {
 
 // familyProviderIDs lists the registry provider ids that belong to a family.
 func familyProviderIDs(family string) []string { return familyIDs[family] }
+
+// FamilyProviderIDs is familyProviderIDs for other packages, as a copy: every
+// registry provider id that names the family's one server ("omlx" and
+// "omlx-6bit" for omlx). A caller that must reach every registry row of a
+// model the server holds asks under each of them.
+func FamilyProviderIDs(family string) []string {
+	return append([]string(nil), familyProviderIDs(family)...)
+}
 
 // familyProviderID is the provider id a family's DISCOVERED entries are named
 // after: the first provider row of the family the registry actually defines
@@ -345,7 +358,17 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 		// replace a model that may well be serving. StatusPartial records the same
 		// "Running flags are not trustworthy" state ollama already uses for a
 		// failed /api/ps.
-		loaded, err := ServedIDs(cfg, client, family)
+		var loaded []string
+		var err error
+		if family == "omlx" {
+			var p Pool
+			if p, err = OmlxPool(cfg, client); err == nil {
+				s.pool = &p
+				loaded = p.LoadedIDs()
+			}
+		} else {
+			loaded, err = ServedIDs(cfg, client, family)
+		}
 		if err != nil {
 			s.status = StatusPartial
 			s.down = refused(err)
@@ -369,7 +392,12 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.status = StatusUnreachable
 			return s
 		}
-		names, err := scanModelDirs(dir)
+		// omlx discovers models two levels deep; mtplx's directory is flat.
+		scan := scanOmlxModels
+		if family == "mtplx" {
+			scan = scanModelDirs
+		}
+		names, err := scan(dir)
 		if err != nil {
 			s.status = StatusUnreachable
 			return s
@@ -452,6 +480,9 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		}
 		if results[i].probeErr != nil {
 			snap.ProbeFailures[f] = results[i].probeErr
+		}
+		if results[i].pool != nil {
+			snap.OmlxPool = results[i].pool
 		}
 	}
 

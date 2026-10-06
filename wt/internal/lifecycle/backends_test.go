@@ -124,7 +124,7 @@ func TestOllamaDaemonDown(t *testing.T) {
 // TestOllamaIsMultiTenant verifies ollama declares itself not single-model and
 // its stop is a no-op, so replacement logic never tries to stop the daemon.
 func TestOllamaIsMultiTenant(t *testing.T) {
-	if (ollamaBackend{}).singleModel() {
+	if (ollamaBackend{}).tenancy() != Shared {
 		t.Error("ollama must not be single-model")
 	}
 	if err := (ollamaBackend{}).stop(context.Background(), testEnv(), &config.Config{}); err != nil {
@@ -132,11 +132,13 @@ func TestOllamaIsMultiTenant(t *testing.T) {
 	}
 }
 
-// TestOmlxAlreadyUpSkipsStartAndWarmsBasename verifies that with the daemon
-// answering, no `omlx start` is run, and the warmup names the model's last path
-// segment (omlx serves directory basenames, the registry stores HF repo ids).
-func TestOmlxAlreadyUpSkipsStartAndWarmsBasename(t *testing.T) {
-	srv := newChatServer(t)
+// TestOmlxAlreadyUpSkipsStartAndLoadsBasename verifies that with the daemon
+// answering, no `omlx start` is run, and the load names the model's last path
+// segment (omlx serves directory basenames, the registry stores HF repo ids):
+// a load sent under the repo id is a 404 and the model never starts.
+func TestOmlxAlreadyUpSkipsStartAndLoadsBasename(t *testing.T) {
+	fp := &fakePool{loaded: map[string]bool{"Qwen3.8-27B-4bit": false}}
+	url := fp.serve(t)
 	e := testEnv()
 	var ran [][]string
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -145,30 +147,31 @@ func TestOmlxAlreadyUpSkipsStartAndWarmsBasename(t *testing.T) {
 	}
 	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
 	var stages []Stage
-	err := omlxBackend{}.start(context.Background(), e, provCfg("omlx", srv.URL), Target{ProviderID: "omlx", ModelName: "mlx-community/Qwen3.8-27B-4bit"}, func(s Stage) { stages = append(stages, s) })
+	err := omlxBackend{}.start(context.Background(), e, provCfg("omlx", url), Target{ProviderID: "omlx", ModelName: "mlx-community/Qwen3.8-27B-4bit"}, func(s Stage) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ran) != 0 {
 		t.Errorf("omlx start must not run when the daemon is up, ran %v", ran)
 	}
-	if srv.lastModel() != "Qwen3.8-27B-4bit" || !reflect.DeepEqual(stages, []Stage{StageWarming}) {
-		t.Errorf("model=%q stages=%v", srv.lastModel(), stages)
+	if !reflect.DeepEqual(fp.loads, []string{"Qwen3.8-27B-4bit"}) || !reflect.DeepEqual(stages, []Stage{StageWarming}) {
+		t.Errorf("loads=%v stages=%v", fp.loads, stages)
 	}
 }
 
 // TestOmlxStartsDaemonWhenDown verifies a down daemon triggers `omlx start`
-// (stage starting), waits for the port, then warms — the port comes up when the
-// fake `omlx start` starts a server on the configured address.
+// (stage starting), waits for the port, then loads the model — the port comes
+// up when the fake `omlx start` starts a pool on the configured address.
 func TestOmlxStartsDaemonWhenDown(t *testing.T) {
 	addr := freeAddr(t)
+	fp := &fakePool{loaded: map[string]bool{"Qwen-4bit": false}}
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
 	var ran []string
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		ran = append(ran, name)
 		ran = append(ran, args...)
-		serveAt(t, addr, chatHandler())
+		serveAt(t, addr, fp.handler())
 		return nil, nil
 	}
 	var stages []Stage
@@ -178,6 +181,9 @@ func TestOmlxStartsDaemonWhenDown(t *testing.T) {
 	}
 	if !reflect.DeepEqual(ran, []string{"/bin/omlx", "start"}) || !reflect.DeepEqual(stages, []Stage{StageStarting, StageWarming}) {
 		t.Errorf("ran=%v stages=%v", ran, stages)
+	}
+	if !fp.isLoaded("Qwen-4bit") {
+		t.Errorf("loads = %v: the model was not loaded into the daemon that came up", fp.loads)
 	}
 }
 
@@ -233,19 +239,21 @@ func TestOmlxStopWaitsForPortClose(t *testing.T) {
 }
 
 // TestDefaultEnvRegistersBackends verifies the production env wires the ollama
-// and omlx backends (single-model: omlx yes, ollama no).
+// and omlx backends with their tenancy (ollama shared, omlx a pool): a start
+// on either must load beside what is running, never stop it first.
 func TestDefaultEnvRegistersBackends(t *testing.T) {
 	e := defaultEnv()
 	if e.backends["ollama"] == nil || e.backends["omlx"] == nil {
 		t.Fatalf("backends = %v", e.backends)
 	}
-	if e.backends["ollama"].singleModel() || !e.backends["omlx"].singleModel() {
-		t.Error("ollama must be multi-tenant and omlx single-model")
+	if e.backends["ollama"].tenancy() != Shared || e.backends["omlx"].tenancy() != Pool {
+		t.Error("ollama must be multi-tenant and omlx a pool")
 	}
 }
 
 // keyedOmlx is an omlx started with --api-key: every /v1 request without the
-// key is refused 401, as omlx 0.7.0 does (#256). It counts chat requests.
+// key is refused 401, as omlx 0.7.0 does (#256) — the chat completion `wt warm`
+// sends and the POST /v1/models/{id}/load a start sends alike. It counts POSTs.
 type keyedOmlx struct {
 	*httptest.Server
 	posts atomic.Int32
@@ -273,8 +281,8 @@ func keyedProvCfg(baseURL, secretRef string) *config.Config {
 }
 
 // TestOmlxStartSendsRegistryKey pins #256: an omlx with an API key refuses a
-// keyless chat completion, so the warmup must carry the key the registry's
-// omlx provider names (auth.secret_ref). The 401 on the liveness probe still
+// keyless load, so the start must carry the key the registry's omlx provider
+// names (auth.secret_ref). The 401 on the liveness probe still
 // counts as "up", so no `omlx start` runs.
 func TestOmlxStartSendsRegistryKey(t *testing.T) {
 	srv := newKeyedOmlx(t, "sk-omlx")
@@ -292,9 +300,11 @@ func TestOmlxStartSendsRegistryKey(t *testing.T) {
 }
 
 // TestOmlxStartWithoutKeyFailsAtOnce: a refused key does not heal by waiting,
-// so the start must fail on the first 401 with an error that says what to
-// set, not poll the whole warmup budget (ten minutes in production) and
-// report a timeout.
+// so a start on an omlx that refuses keyless inference too must fail at once
+// with an error that says what to set, not poll the whole warmup budget (ten
+// minutes in production) and report a timeout. It costs exactly two requests:
+// the keyless load, and the keyless chat warmup the start falls back to (an
+// omlx that allows unauthenticated inference loads the model on that one).
 func TestOmlxStartWithoutKeyFailsAtOnce(t *testing.T) {
 	srv := newKeyedOmlx(t, "sk-omlx")
 	e := testEnv()
@@ -312,8 +322,8 @@ func TestOmlxStartWithoutKeyFailsAtOnce(t *testing.T) {
 	if !strings.Contains(err.Error(), "auth.secret_ref") || !strings.Contains(err.Error(), "API key required") {
 		t.Errorf("err = %q, want the server's reason and the setting to change", err)
 	}
-	if n := srv.posts.Load(); n != 1 {
-		t.Errorf("chat requests = %d, want 1: a 401 is final", n)
+	if n := srv.posts.Load(); n != 2 {
+		t.Errorf("POSTs = %d, want 2 (the load, then the chat warmup): a 401 on each is final", n)
 	}
 	if d := time.Since(began); d > 5*time.Second {
 		t.Errorf("took %v: the start waited instead of failing on the refusal", d)

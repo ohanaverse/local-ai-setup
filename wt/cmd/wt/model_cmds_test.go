@@ -372,28 +372,47 @@ func TestStartDiscoveredRunningModel(t *testing.T) {
 }
 
 // TestStopSingleModelProviderStopsAndNamesWholeFamily verifies that stopping
-// one model of a single-model provider (omlx) — which takes the whole provider
+// one model of a single-model provider (mtplx) — which takes the whole provider
 // down — puts every co-running model in the stop list and names the collateral
 // in the output. Otherwise a sibling variant dies with no warning.
 func TestStopSingleModelProviderStopsAndNamesWholeFamily(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 0), cand("omlx", "omlx/d", "d", 0), cand("ollama", "ollama/a:1", "a:1", 0)})
+	stopped := stubStop(t, []survey.Candidate{cand("mtplx", "mtplx/c", "c", 0), cand("mtplx", "mtplx/d", "d", 0), cand("ollama", "ollama/a:1", "a:1", 0)})
+	var out bytes.Buffer
+	if err := runStop(&out, modelCmdConfig(), "mtplx/c", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*stopped) != 2 {
+		t.Fatalf("stopped = %v, want both mtplx models (the provider stops as a whole) and not ollama", *stopped)
+	}
+	if !strings.Contains(out.String(), "mtplx/d") {
+		t.Errorf("out = %q, want the collateral model mtplx/d named", out.String())
+	}
+}
+
+// TestStopPoolModelLeavesSiblingsRunning pins #213 for `wt stop <omlx model>`:
+// omlx holds a pool, so stopping one model stops that model alone and names no
+// collateral. Widening it to the family, as for mtplx, unloaded models other
+// sessions were using.
+func TestStopPoolModelLeavesSiblingsRunning(t *testing.T) {
+	stopped := stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 0), cand("omlx", "omlx/d", "d", 0), cand("omlx-6bit", "omlx-6bit/e", "e", 0)})
 	var out bytes.Buffer
 	if err := runStop(&out, modelCmdConfig(), "omlx/c", false); err != nil {
 		t.Fatal(err)
 	}
-	if len(*stopped) != 2 {
-		t.Fatalf("stopped = %v, want both omlx models (the provider stops as a whole) and not ollama", *stopped)
+	if len(*stopped) != 1 || (*stopped)[0].ModelID != "omlx/c" {
+		t.Fatalf("stopped = %v, want only omlx/c", *stopped)
 	}
-	if !strings.Contains(out.String(), "omlx/d") {
-		t.Errorf("out = %q, want the collateral model omlx/d named", out.String())
+	if strings.Contains(out.String(), "also stops") {
+		t.Errorf("out = %q, want no collateral named on a pool", out.String())
 	}
 }
 
 // TestStopInUseCountIsTotalAcrossModels verifies the in-use prompt reports the
 // real number of affected sessions: summed across models on a multi-model
-// provider (1 + 3 = 4, not the max 3) and counted once for a single-model
-// provider, whose candidates each carry the family total. The prompt also names
-// the in-use models so the user sees what dies.
+// provider (1 + 3 = 4, not the max 3; an omlx pool counts per model the same
+// way) and counted once for a single-model provider (mtplx), whose candidates
+// each carry the family total. The prompt also names the in-use models so the
+// user sees what dies.
 func TestStopInUseCountIsTotalAcrossModels(t *testing.T) {
 	old := confirmStop
 	t.Cleanup(func() { confirmStop = old })
@@ -406,10 +425,18 @@ func TestStopInUseCountIsTotalAcrossModels(t *testing.T) {
 		t.Errorf("ollama prompt = %q, want 4 sessions and both models named", asked)
 	}
 
-	stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 2), cand("omlx", "omlx/d", "d", 2)})
-	_ = runStop(io.Discard, modelCmdConfig(), "omlx", false)
+	cfg := modelCmdConfig()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}})
+	stubStop(t, []survey.Candidate{cand("mtplx", "mtplx/c", "c", 2), cand("mtplx", "mtplx/d", "d", 2)})
+	_ = runStop(io.Discard, cfg, "mtplx", false)
 	if !strings.Contains(asked, "2 live") {
-		t.Errorf("omlx prompt = %q, want the family total (2) counted once, not 4", asked)
+		t.Errorf("mtplx prompt = %q, want the family total (2) counted once, not 4", asked)
+	}
+
+	stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 1), cand("omlx", "omlx/d", "d", 2)})
+	_ = runStop(io.Discard, modelCmdConfig(), "omlx", false)
+	if !strings.Contains(asked, "3 live") || !strings.Contains(asked, "omlx/c") || !strings.Contains(asked, "omlx/d") {
+		t.Errorf("omlx prompt = %q, want 3 sessions (each pool model carries its own count) and both models named", asked)
 	}
 }
 
@@ -566,5 +593,24 @@ func TestWarmRefusesOtherProviders(t *testing.T) {
 	err := runWarm(context.Background(), &out, &config.Config{}, "mtplx", "m")
 	if err == nil || !strings.Contains(err.Error(), `unknown provider "mtplx"`) {
 		t.Fatalf("err = %v, want an unknown-provider error", err)
+	}
+}
+
+// TestStopBareOmlxHaltsTheService verifies `wt stop omlx` stops the omlx
+// service as a whole, even with nothing loaded. A per-model stop only unloads,
+// so this is the one command that frees the server's memory.
+func TestStopBareOmlxHaltsTheService(t *testing.T) {
+	stopped := stubStop(t, nil)
+	var halted []string
+	old := stopProvider
+	stopProvider = func(_ context.Context, _ *config.Config, id string) error { halted = append(halted, id); return nil }
+	t.Cleanup(func() { stopProvider = old })
+	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal}}}
+	var out bytes.Buffer
+	if err := runStop(&out, cfg, "omlx", true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(halted, []string{"omlx"}) || len(*stopped) != 0 {
+		t.Errorf("halted = %v, per-model stops = %v; want [omlx] and none", halted, *stopped)
 	}
 }

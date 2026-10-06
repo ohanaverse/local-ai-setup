@@ -188,14 +188,12 @@ func TestBuildOverlayMatchedAgainstRealInventory(t *testing.T) {
 	refused := gone.URL
 	gone.Close()
 	omlxDir, mtplxDir := t.TempDir(), t.TempDir()
-	for _, d := range []string{
-		filepath.Join(omlxDir, "Qwen3.8-9B-4bit"),
-		filepath.Join(omlxDir, "stray-model"),
-		filepath.Join(mtplxDir, "mlx-community--Qwen3.8-27B-4bit"),
-	} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
+	// An omlx model is a directory holding a config.json; mtplx's are bare.
+	if err := localmodels.MakeOmlxModelsForTest(omlxDir, "Qwen3.8-9B-4bit", "stray-model"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(mtplxDir, "mlx-community--Qwen3.8-27B-4bit"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	cfg := &config.Config{
 		Providers: []config.Provider{

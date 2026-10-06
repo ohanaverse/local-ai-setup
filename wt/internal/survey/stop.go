@@ -27,7 +27,7 @@ type stopDeps struct {
 	counts    func(modelIDs []string) map[string]int
 	// stop stops one model and writes its route removal without restarting
 	// the proxy; restartOwed reports that settle must run (issue #142).
-	stop   func(ctx context.Context, cfg *config.Config, providerID, modelName string) (restartOwed bool, err error)
+	stop   func(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error)
 	settle func(ctx context.Context, cfg *config.Config)
 }
 
@@ -152,18 +152,19 @@ func stopCandidates(cfg *config.Config, d stopDeps) []Candidate {
 		}
 		return n
 	}
-	// A single-model provider (omlx, mtplx) stops as a whole, taking every
-	// running variant with it — so its sessions are the whole family's.
+	// An Exclusive provider (mtplx) stops as a whole, taking every running
+	// variant with it — so its sessions are the whole family's. A Pool (omlx)
+	// unloads one model at a time, so each model keeps its own count.
 	famSessions := map[string]int{}
 	for _, e := range cands {
-		if lifecycle.SingleModel(e.ProviderID) {
+		if lifecycle.TenancyOf(e.ProviderID) == lifecycle.Exclusive {
 			famSessions[localmodels.Family(e.ProviderID)] += own(e)
 		}
 	}
 	out := make([]Candidate, 0, len(cands))
 	for _, e := range cands {
 		n := own(e)
-		if lifecycle.SingleModel(e.ProviderID) {
+		if lifecycle.TenancyOf(e.ProviderID) == lifecycle.Exclusive {
 			n = famSessions[localmodels.Family(e.ProviderID)]
 		}
 		out = append(out, Candidate{Entry: e, Sessions: n})
@@ -290,11 +291,14 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 		fam := localmodels.Family(e.ProviderID)
 		// The first stop of a single-model provider already took down the whole
 		// provider.
-		if lifecycle.SingleModel(e.ProviderID) && stoppedFamily[fam] {
+		if lifecycle.TenancyOf(e.ProviderID) == lifecycle.Exclusive && stoppedFamily[fam] {
 			fmt.Fprintln(w, "done")
 			continue
 		}
-		owed, err := d.stop(ctx, cfg, e.ProviderID, e.ModelName)
+		// The whole entry goes through: its ModelID is the route id the
+		// removal must use, so an omlx model whose name merely ends in a
+		// sibling's cannot have the sibling's route removed instead (#195).
+		owed, err := d.stop(ctx, cfg, e)
 		restartOwed = restartOwed || owed
 		if err != nil {
 			if ctx.Err() != nil {

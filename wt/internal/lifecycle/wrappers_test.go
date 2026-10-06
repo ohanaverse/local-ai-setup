@@ -15,6 +15,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // This file drives the PUBLIC wrappers (Start, Stop, StopModelDeferred +
@@ -30,12 +31,21 @@ import (
 // fail, so a wrapper test can drive start/stop without a real provider.
 type wrapBackend struct {
 	single   bool
+	pool     bool // Pool tenancy, as omlx has; overrides single
 	startErr error
 	stopErr  error
 	calls    *[]string
 }
 
-func (b wrapBackend) singleModel() bool { return b.single }
+func (b wrapBackend) tenancy() Tenancy {
+	switch {
+	case b.pool:
+		return Pool
+	case b.single:
+		return Exclusive
+	}
+	return Shared
+}
 
 func (b wrapBackend) stop(context.Context, *env, *config.Config) error {
 	*b.calls = append(*b.calls, "stop")
@@ -53,7 +63,7 @@ func (b wrapBackend) start(_ context.Context, _ *env, _ *config.Config, t Target
 }
 
 // swapBackend installs b as family's backend for one test. defaultEnv clones
-// backendsByFamily, and SingleModel reads it directly, so this is the single
+// backendsByFamily, and TenancyOf reads it directly, so this is the single
 // switch that makes the public wrappers run against a fake provider.
 func swapBackend(t *testing.T, family string, b backend) {
 	t.Helper()
@@ -293,7 +303,7 @@ func TestStopRouteRemovalSymmetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owed, err := StopModelDeferred(context.Background(), cfg, "ollama", "a:1"); err != nil || owed {
+	if owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/a:1", ModelName: "a:1"}); err != nil || owed {
 		t.Fatalf("StopModelDeferred(ollama) = (%v, %v), want (false, nil): stop leaves an ollama route in place", owed, err)
 	}
 	WaitPendingRoutes()
@@ -301,7 +311,7 @@ func TestStopRouteRemovalSymmetry(t *testing.T) {
 		t.Fatalf("ollama stop rewrote config.yaml:\n%s", after)
 	}
 
-	if owed, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil || !owed {
+	if owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"}); err != nil || !owed {
 		t.Fatalf("StopModelDeferred(mtplx) = (%v, %v), want (true, nil)", owed, err)
 	}
 	SettleRoutes(context.Background(), cfg)
@@ -445,11 +455,16 @@ func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
 	}
 }
 
-// TestStopRemovesOmlx6bitSibling verifies a stop on the omlx family drops the
-// omlx-6bit variant's route too: one physical oMLX server serves both
-// quantizations, so stopping either takes both down. Before omlx-6bit had a
-// LiteLLM policy its rows were invisible to the family sweep and survived as
-// dead routes.
+// TestStopRemovesOmlx6bitSibling verifies `wt stop omlx` — the public Stop of
+// the provider, through the real litellm.ApplyChange — drops the omlx-6bit
+// variant's route too: one physical oMLX server serves both quantizations, so
+// halting the service takes both down. Before omlx-6bit had a LiteLLM policy
+// its rows were invisible to the family sweep and survived as dead routes.
+//
+// The fake backend has omlx's own tenancy (Pool), so the rule under test is
+// the real one, routeRemoveFamily. A stop of one omlx MODEL is a different
+// rule and removes that model's ids only
+// (TestStopModelDeferredOnPoolKeepsSiblingRoutes).
 func TestStopRemovesOmlx6bitSibling(t *testing.T) {
 	const both = `model_list:
   - model_name: omlx/Four
@@ -457,9 +472,9 @@ func TestStopRemovesOmlx6bitSibling(t *testing.T) {
   - model_name: omlx-6bit/Six
     litellm_params: {model: openai/Six, api_base: http://localhost:8000/v1, api_key: not-needed}
 `
-	path, _, warn := realRoutes(t, both)
+	path, restarts, warn := realRoutes(t, both)
 	var calls []string
-	swapBackend(t, "omlx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "omlx", wrapBackend{pool: true, calls: &calls})
 	srv := openaiSrv(t, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -472,13 +487,18 @@ func TestStopRemovesOmlx6bitSibling(t *testing.T) {
 		},
 	}
 
-	if owed, err := StopModelDeferred(context.Background(), cfg, "omlx", "Four"); err != nil || !owed {
-		t.Fatalf("StopModelDeferred(omlx) = (%v, %v), want (true, nil)", owed, err)
+	if err := Stop(context.Background(), cfg, "omlx"); err != nil {
+		t.Fatalf("Stop(omlx): %v", err)
 	}
-	SettleRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
+	if !slices.Equal(calls, []string{"stop"}) {
+		t.Fatalf("backend calls = %v, want one provider stop", calls)
+	}
 	if got := routedIDs(t, path); len(got) != 0 {
 		t.Fatalf("routed = %v, want none: one oMLX server serves both variants (warn %q)", got, warn.String())
+	}
+	if restarts() != 1 {
+		t.Fatalf("restarts = %d, want 1", restarts())
 	}
 }
 
@@ -548,8 +568,8 @@ func TestStopModelDeferredBatchRestartsOnce(t *testing.T) {
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 
 	owed := false
-	for _, s := range []struct{ provider, name string }{{"ollama", "a:1"}, {"ollama", "b:1"}, {"mtplx", "Y/Q35"}} {
-		o, err := StopModelDeferred(context.Background(), cfg, s.provider, s.name)
+	for _, s := range []struct{ provider, id, name string }{{"ollama", "ollama/a:1", "a:1"}, {"ollama", "ollama/b:1", "b:1"}, {"mtplx", "mtplx/Y--Q35", "Y/Q35"}} {
+		o, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: s.provider, ModelID: s.id, ModelName: s.name})
 		if err != nil {
 			t.Fatalf("StopModelDeferred(%s %s): %v", s.provider, s.name, err)
 		}
@@ -586,10 +606,11 @@ func TestStopModelDeferredNothingRoutedOwesNothing(t *testing.T) {
 	// The first write may still change the file: every write ensures
 	// LiteLLM's launcher-required litellm_settings keys, which this minimal
 	// fixture lacks. Only the second write sees a file in normal form.
-	if _, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil {
+	mtplxY := localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"}
+	if _, err := StopModelDeferred(context.Background(), cfg, mtplxY); err != nil {
 		t.Fatalf("first StopModelDeferred: %v", err)
 	}
-	owed, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35")
+	owed, err := StopModelDeferred(context.Background(), cfg, mtplxY)
 	if err != nil || owed {
 		t.Fatalf("StopModelDeferred = (%v, %v), want (false, nil)", owed, err)
 	}
@@ -610,7 +631,7 @@ func TestStopModelDeferredFailedStopWritesNothing(t *testing.T) {
 	var calls []string
 	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, stopErr: errors.New("boom")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
-	owed, err := StopModelDeferred(context.Background(), cfg, "mtplx", "Y/Q35")
+	owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"})
 	if err == nil || owed {
 		t.Fatalf("StopModelDeferred = (%v, %v), want (false, error)", owed, err)
 	}
@@ -619,13 +640,16 @@ func TestStopModelDeferredFailedStopWritesNothing(t *testing.T) {
 	}
 }
 
-// TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten drives a real stop
-// through the real litellm.ApplyChange (#179 Phase B): stopping the omlx-6bit
-// registry model takes the one oMLX server down, so every marked route of the
-// omlx family goes — the 6-bit model's own row and a discovered sibling's
-// "omlx/<artifact>" row the registry never named — while an unmarked
-// hand-written row that merely shares the family prefix survives, as do
-// other families' rows.
+// TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten drives a provider stop
+// through the real litellm.ApplyChange (#179 Phase B): `wt stop omlx-6bit`
+// halts the one oMLX server, so every marked route of the omlx family goes —
+// the 6-bit model's own row and a discovered sibling's "omlx/<artifact>" row
+// the registry never named — while an unmarked hand-written row that merely
+// shares the family prefix survives, as do other families' rows.
+//
+// It is a provider stop, with a fake backend of omlx's own tenancy (Pool): the
+// family sweep is what halting the service does. Stopping one omlx model
+// unloads that model and leaves its siblings' routes alone.
 func TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten(t *testing.T) {
 	const rows = `model_list:
   - model_name: omlx-6bit/Six
@@ -642,7 +666,7 @@ func TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten(t *testing.T) {
 `
 	path, _, warn := realRoutes(t, rows)
 	var calls []string
-	swapBackend(t, "omlx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "omlx", wrapBackend{pool: true, calls: &calls})
 	srv := openaiSrv(t, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -653,11 +677,13 @@ func TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten(t *testing.T) {
 		},
 	}
 
-	if owed, err := StopModelDeferred(context.Background(), cfg, "omlx-6bit", "Six"); err != nil || !owed {
-		t.Fatalf("StopModelDeferred(omlx-6bit) = (%v, %v), want (true, nil)", owed, err)
+	if err := Stop(context.Background(), cfg, "omlx-6bit"); err != nil {
+		t.Fatalf("Stop(omlx-6bit): %v", err)
 	}
-	SettleRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
+	if !slices.Equal(calls, []string{"stop"}) {
+		t.Fatalf("backend calls = %v, want one provider stop", calls)
+	}
 	if got := routedIDs(t, path); !slices.Equal(got, []string{"omlx/my-hand-row", "mtplx/org/other"}) {
 		t.Fatalf("routed = %v, want only the hand-written omlx row and the mtplx row (warn %q)", got, warn.String())
 	}

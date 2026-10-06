@@ -36,6 +36,8 @@ var (
 		return survey.PickerWith(os.Stdin, os.Stdout, cfg, survey.Options{IncludeInUse: true})
 	}
 	confirmStop = promptStop
+	// stopProvider stops a provider's server as a whole (`wt stop omlx`).
+	stopProvider = lifecycle.Stop
 )
 
 // promptStop is promptReplace's twin for stopping an in-use model: y/N on the
@@ -60,6 +62,8 @@ func stopCmd(a *app) *cobra.Command {
 			"provider (ollama, omlx, omlx-6bit, mtplx). With no argument, shows the\n" +
 			"stop picker (requires a TTY), which also lists models other wt sessions\n" +
 			"are using, marked with their session count.\n\n" +
+			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
+			"models up; \"wt stop omlx\" stops the service.\n\n" +
 			"Stopping a model a live wt session uses asks for confirmation; --yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop",
 		Args:    cobra.MaximumNArgs(1),
@@ -129,12 +133,15 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			return fmt.Errorf("unknown model %q", arg)
 		}
 	} else {
+		pool := lifecycle.TenancyOf(arg) == lifecycle.Pool
 		for _, c := range cands {
-			if c.Entry.ProviderID == arg {
+			// A pool's server is stopped as a whole, so every model of the
+			// family is affected, whichever of its rows it is listed under.
+			if c.Entry.ProviderID == arg || (pool && localmodels.Family(c.Entry.ProviderID) == localmodels.Family(arg)) {
 				targets = append(targets, c)
 			}
 		}
-		if len(targets) == 0 {
+		if len(targets) == 0 && !pool {
 			fmt.Fprintf(out, "wt: nothing running on %s\n", arg)
 			return nil
 		}
@@ -154,24 +161,38 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			return fmt.Errorf("cancelled — %s is still running", arg)
 		}
 	}
+	if !strings.Contains(arg, "/") && lifecycle.TenancyOf(arg) == lifecycle.Pool {
+		// A model stop on a pool only unloads; the bare provider halts the
+		// service, which is the one way to free the server itself.
+		ctx, cancel := startSignalCtx()
+		defer cancel()
+		fmt.Fprintf(out, "Stopping %s... ", arg)
+		if err := stopProvider(ctx, cfg, arg); err != nil {
+			fmt.Fprintln(out, "failed")
+			return err
+		}
+		fmt.Fprintln(out, "done")
+		return nil
+	}
 	return stopEntries(out, cfg, entries)
 }
 
 // withFamilyCollateral widens targets to every running model of any
-// single-model provider (omlx, mtplx) they touch: that provider stops as a
-// whole, so a sibling variant goes down with the one named. Collateral models
-// are announced on out. Targets keep their order; collateral follows.
+// Exclusive provider (mtplx) they touch: that provider stops as a whole, so a
+// sibling variant goes down with the one named. A Pool (omlx) is not widened:
+// stopping one of its models leaves the others loaded. Collateral models are
+// announced on out. Targets keep their order; collateral follows.
 func withFamilyCollateral(out io.Writer, cands, targets []survey.Candidate) []survey.Candidate {
 	have := map[string]bool{}
 	fams := map[string]bool{}
 	for _, c := range targets {
 		have[c.Entry.ModelID] = true
-		if lifecycle.SingleModel(c.Entry.ProviderID) {
+		if lifecycle.TenancyOf(c.Entry.ProviderID) == lifecycle.Exclusive {
 			fams[localmodels.Family(c.Entry.ProviderID)] = true
 		}
 	}
 	for _, c := range cands {
-		if have[c.Entry.ModelID] || !lifecycle.SingleModel(c.Entry.ProviderID) || !fams[localmodels.Family(c.Entry.ProviderID)] {
+		if have[c.Entry.ModelID] || lifecycle.TenancyOf(c.Entry.ProviderID) != lifecycle.Exclusive || !fams[localmodels.Family(c.Entry.ProviderID)] {
 			continue
 		}
 		fmt.Fprintf(out, "wt: %s runs one model per process; stopping it also stops %s\n", localmodels.Family(c.Entry.ProviderID), c.Entry.ModelID)
@@ -190,7 +211,7 @@ func stopImpact(targets []survey.Candidate) (sessions int, users []string) {
 			continue
 		}
 		users = append(users, c.Entry.ModelID)
-		if lifecycle.SingleModel(c.Entry.ProviderID) {
+		if lifecycle.TenancyOf(c.Entry.ProviderID) == lifecycle.Exclusive {
 			fam := localmodels.Family(c.Entry.ProviderID)
 			if famSeen[fam] {
 				continue
@@ -203,6 +224,7 @@ func stopImpact(targets []survey.Candidate) (sessions int, users []string) {
 }
 
 func startCmd(a *app) *cobra.Command {
+	var asJSON, plan bool
 	cmd := &cobra.Command{
 		Use:   "start [model]",
 		Short: "Start a local model",
@@ -211,10 +233,14 @@ func startCmd(a *app) *cobra.Command {
 			"registered or detected (requires a TTY).\n\n" +
 			"A model that is already running is left running; its LiteLLM route is\n" +
 			"written if it is missing.\n\n" +
-			"If the provider's single slot is occupied, asks before replacing the running\n" +
-			"model; --replace skips the question.",
+			"On a provider that serves one model (mtplx), starting another replaces it.\n" +
+			"On omlx a model loads beside the ones already loaded; when it does not fit,\n" +
+			"omlx unloads the least recently used. wt asks before either; --replace skips\n" +
+			"the question.",
 		Example: "  wt start ollama/qwen3.8:27b-mlx\n  wt start",
 		Args:    cobra.MaximumNArgs(1),
+		// A refused or failed JSON start is not a usage mistake.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
 				return configError(a.cfgErr)
@@ -224,9 +250,17 @@ func startCmd(a *app) *cobra.Command {
 				id = args[0]
 			}
 			replace, _ := cmd.Flags().GetBool("replace")
+			if plan && !asJSON {
+				return errors.New("--plan needs --json")
+			}
+			if asJSON {
+				return runStartJSON(cmd.OutOrStdout(), a.cfg, id, plan, replace)
+			}
 			return runStart(cmd.OutOrStdout(), a.cfg, a.theme, id, replace)
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output; never prompts")
+	cmd.Flags().BoolVar(&plan, "plan", false, "with --json: report what a start would unload, and change nothing")
 	return cmd
 }
 

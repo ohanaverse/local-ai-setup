@@ -55,7 +55,12 @@ func TestMain(m *testing.M) {
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
 		return errors.New("stopEntries not stubbed in this test")
 	}
+	stopProvider = func(context.Context, *config.Config, string) error {
+		return errors.New("stopProvider not stubbed in this test")
+	}
 	stopPickerAll = func(*config.Config) bool { return false }
+	// No test may read the developer's refcount file for session counts.
+	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	confirmStop = func(string) (bool, error) { return false, nil }
 	code := m.Run()
 	rmConfigHome()

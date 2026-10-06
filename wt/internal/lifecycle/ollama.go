@@ -17,7 +17,7 @@ import (
 // multi-tenant, so nothing is ever replaced.
 type ollamaBackend struct{}
 
-func (ollamaBackend) singleModel() bool { return false }
+func (ollamaBackend) tenancy() Tenancy { return Shared }
 
 func (ollamaBackend) stop(ctx context.Context, e *env, cfg *config.Config) error { return nil }
 

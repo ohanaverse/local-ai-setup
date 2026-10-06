@@ -18,12 +18,22 @@ import (
 
 type fakeBackend struct {
 	single   bool
+	ten      Tenancy // overrides single when set
 	calls    *[]string
 	stopErr  error
 	startErr error
 }
 
-func (f *fakeBackend) singleModel() bool { return f.single }
+func (f *fakeBackend) tenancy() Tenancy {
+	switch {
+	case f.ten != NoTenancy:
+		return f.ten
+	case f.single:
+		return Exclusive
+	}
+	return Shared
+}
+
 func (f *fakeBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {
 	*f.calls = append(*f.calls, "stop")
 	return f.stopErr
@@ -86,22 +96,22 @@ func TestOccupantRules(t *testing.T) {
 		running("mtplx", "mtplx/m1", "Org/M1"),
 	}}
 
-	if _, ok := Occupant(Target{ProviderID: "ollama", ModelName: "b:2b"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "ollama", ModelName: "b:2b"}, snap); len(v) != 0 {
 		t.Error("ollama must never have an occupant")
 	}
-	if occ, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, snap); !ok || occ.ModelID != "omlx-6bit/six" {
-		t.Errorf("omlx occupant = %+v ok=%v, want the running omlx-6bit model (one domain)", occ, ok)
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, snap); len(v) == 0 || v[0].ModelID != "omlx-6bit/six" {
+		t.Errorf("omlx occupant = %+v, want the running omlx-6bit model (one domain)", v)
 	}
-	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Six-6bit"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "Six-6bit"}, snap); len(v) != 0 {
 		t.Error("the target itself (matching by lenient name) must not be its own occupant")
 	}
-	if occ, ok := Occupant(Target{ProviderID: "mtplx", ModelName: "Org/M2"}, snap); !ok || occ.ModelID != "mtplx/m1" {
-		t.Errorf("mtplx occupant = %+v ok=%v", occ, ok)
+	if v, _ := Evictions(Target{ProviderID: "mtplx", ModelName: "Org/M2"}, snap); len(v) == 0 || v[0].ModelID != "mtplx/m1" {
+		t.Errorf("mtplx occupant = %+v", v)
 	}
-	if _, ok := Occupant(Target{ProviderID: "mtplx", ModelName: "Org/M1"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "mtplx", ModelName: "Org/M1"}, snap); len(v) != 0 {
 		t.Error("mtplx target already running must not be its own occupant")
 	}
-	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "omlx", ModelName: "Idle-4bit"}}}); ok {
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "Qwen-4bit"}, localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "omlx", ModelName: "Idle-4bit"}}}); len(v) != 0 {
 		t.Error("a non-running entry is not an occupant")
 	}
 }
@@ -127,7 +137,7 @@ func TestStartNeverReplacesSilently(t *testing.T) {
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/old", "Old-4bit")}}
 	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{ProviderID: "omlx", ModelName: "New-4bit"}, Options{})
 	var occ *OccupiedError
-	if !errors.As(err, &occ) || occ.Occupant.ModelID != "omlx/old" {
+	if !errors.As(err, &occ) || occ.IDs()[0] != "omlx/old" {
 		t.Fatalf("err = %v, want *OccupiedError for omlx/old", err)
 	}
 	if len(calls) != 0 {
@@ -204,7 +214,7 @@ func TestTypedErrorMessages(t *testing.T) {
 		err  error
 		want string
 	}{
-		{&OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}, "omlx/old"},
+		{&OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}, "omlx/old"},
 		{&DaemonDownError{Provider: "ollama", Origin: "http://localhost:11434"}, "http://localhost:11434"},
 		{&BinaryMissingError{Binary: "mtplx"}, "mtplx"},
 		{&PortBusyError{Port: 8003}, "8003"},
@@ -228,10 +238,10 @@ func TestTypedErrorMessages(t *testing.T) {
 // through the omlx backend with nothing in the package noticing. Comparing
 // against the other map could not see that: defaultEnv clones backendsByFamily,
 // so both sides would move together. The per-family loop below is the behavioral
-// half — a backend that is startable (singleModel true) while Occupant reports no
-// occupant is exactly the state in which a running model gets replaced with no
-// confirmation, the trap a hand-maintained family list leaves for the next
-// backend.
+// half — a backend whose start can displace a running model (tenancy Exclusive,
+// or a Pool wt has no sizes for) while Evictions reports nobody is exactly the
+// state in which a running model gets replaced with no confirmation, the trap a
+// hand-maintained family list leaves for the next backend.
 //
 // maps.Equal compares interface values with ==, so a backend struct that gained
 // a non-comparable field (a slice, map or func) would make this guard panic
@@ -247,9 +257,12 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 	}
 	for family, b := range backendsByFamily {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}
-		_, ok := Occupant(Target{ProviderID: family, ModelName: "wanted"}, snap)
-		if ok != b.singleModel() {
-			t.Errorf("family %s: Occupant reported an occupant=%v but singleModel()=%v", family, ok, b.singleModel())
+		v, _ := Evictions(Target{ProviderID: family, ModelName: "wanted"}, snap)
+		ok := len(v) > 0
+		// The snapshot carries no pool reading, so a Pool cannot tell whether
+		// the target fits and must name the running model, as Exclusive does.
+		if ok != (b.tenancy() == Exclusive || b.tenancy() == Pool) {
+			t.Errorf("family %s: Occupant reported an occupant=%v but tenancy()=%v", family, ok, b.tenancy())
 		}
 	}
 }
@@ -269,9 +282,9 @@ func TestOccupantUnregisteredFamilyHasNoOccupant(t *testing.T) {
 			running("omlx", "omlx/other", "other"),  // an unrelated family
 			running(id, id+"/occupant", "occupant"), // this family: the occupant if the guard were gone
 		}}
-		occ, ok := Occupant(Target{ProviderID: id, ModelName: "wanted"}, snap)
-		if ok {
-			t.Errorf("%s: Occupant = %+v, want no occupant — wt has no backend for this family, so there is nothing to replace", id, occ)
+		occ, _ := Evictions(Target{ProviderID: id, ModelName: "wanted"}, snap)
+		if len(occ) > 0 {
+			t.Errorf("%s: Evictions = %+v, want no occupant — wt has no backend for this family, so there is nothing to replace", id, occ)
 		}
 	}
 }
@@ -360,8 +373,8 @@ func TestStartFindsOccupantTheSnapshotMissed(t *testing.T) {
 	if !errors.As(err, &occ) {
 		t.Fatalf("start over a live occupant = %v, want *OccupiedError", err)
 	}
-	if !containsFold(occ.Occupant.ModelID, "a") {
-		t.Errorf("occupant = %q, want the model the server reports (a)", occ.Occupant.ModelID)
+	if !containsFold(occ.IDs()[0], "a") {
+		t.Errorf("occupant = %q, want the model the server reports (a)", occ.IDs()[0])
 	}
 	if len(calls) != 0 {
 		t.Errorf("start touched the provider (%v) without AllowReplace", calls)
@@ -467,6 +480,30 @@ func TestStartUsesSnapshotWhenProbeIsTrustworthy(t *testing.T) {
 	}
 }
 
+// TestStartReprobesAServerTheSnapshotSawDown verifies the engine still asks
+// the server itself when the snapshot's probe was refused. The plan reads a
+// refused connection as "nothing serving" (Evictions), which is right for a
+// dry run, but the engine acts on the answer: a server that came up with a
+// model between the snapshot and the start must still be found, or the start
+// replaces that model with no confirmation.
+func TestStartReprobesAServerTheSnapshotSawDown(t *testing.T) {
+	srv := modelsServing(t, "Org/M1")
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
+		Down:      map[string]bool{"mtplx": true},
+	}, true, &calls)
+
+	err := start(context.Background(), e, provCfg("mtplx", srv.URL), Target{ProviderID: "mtplx", ModelName: "Org/M2"}, Options{})
+	var occ *OccupiedError
+	if !errors.As(err, &occ) || !reflect.DeepEqual(occ.IDs(), []string{"Org/M1"}) {
+		t.Fatalf("start = %v, want *OccupiedError naming the model the server is serving now", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("start touched the provider (%v) without AllowReplace", calls)
+	}
+}
+
 // TestOccupantIgnoresUntrustworthySnapshot verifies Occupant does not claim
 // "no occupant" from a probe it knows failed. Its contract is that the caller
 // may act on a false result, so it must not answer from untrustworthy data.
@@ -475,7 +512,7 @@ func TestOccupantIgnoresUntrustworthySnapshot(t *testing.T) {
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial},
 		Entries:   []localmodels.Entry{running("omlx", "omlx/a", "a")},
 	}
-	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "b"}, snap); ok {
+	if v, _ := Evictions(Target{ProviderID: "omlx", ModelName: "b"}, snap); len(v) != 0 {
 		t.Error("Occupant must not report an occupant from an untrustworthy probe")
 	}
 }
@@ -550,6 +587,20 @@ func TestProbeTrustedStatuses(t *testing.T) {
 		snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": c.status}}
 		if got := ProbeTrusted(snap, "ollama"); got != c.want {
 			t.Errorf("%s: ProbeTrusted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestTenancyOfEachFamily pins how wt treats each provider's server. The
+// start, stop and route rules all switch on it, so a wrong value either
+// replaces a model that could have stayed or leaves a stopped one routed.
+func TestTenancyOfEachFamily(t *testing.T) {
+	for id, want := range map[string]Tenancy{
+		"ollama": Shared, "mtplx": Exclusive, "omlx": Pool, "omlx-6bit": Pool,
+		"mlx_lm_server": NoTenancy, "llamacpp": NoTenancy,
+	} {
+		if got := TenancyOf(id); got != want {
+			t.Errorf("TenancyOf(%q) = %v, want %v", id, got, want)
 		}
 	}
 }

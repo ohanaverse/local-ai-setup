@@ -114,14 +114,16 @@ const (
 
 // routeAfterStart adds the started model's LiteLLM route: its registry
 // overlay's id when one matches, else its discovered id (#179 Phase B — the
-// id the catalog, -M and usage use). A single-model provider (omlx, mtplx)
-// can serve only one model, so starting one replaced whatever ran before:
-// every other route of its family — discovered siblings included — is
-// removed in the same write. restartOwed means an earlier deferred write (the
-// replaced occupant's route removal) has not been followed by a restart yet;
-// this call's bounce settles it, so a replace costs one proxy restart, not
-// two. It never fails the caller — a missing route is a warning, not a failed
-// start.
+// id the catalog, -M and usage use). An Exclusive provider (mtplx) can serve
+// only one model, so starting one replaced whatever ran before: every other
+// route of its family — discovered siblings included — is removed in the
+// same write. A Pool start (omlx) adds its model and clears nothing: its
+// loaded siblings keep their routes, and a model omlx evicted to make room
+// already lost its own (reconcilePool). restartOwed means an earlier deferred
+// write (a replaced occupant's or an evicted model's route removal) has not
+// been followed by a restart yet; this call's bounce settles it, so a replace
+// costs one proxy restart, not two. It never fails the caller — a missing
+// route is a warning, not a failed start.
 func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartOwed bool) {
 	mode := restartIfChanged
 	if restartOwed {
@@ -132,14 +134,16 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 
 // StartRouteChange is the route change routeAfterStart writes for a started
 // target: the model to route (registry overlay, else discovered — routeModel
-// says how a target's id and name choose it) and, for a single-model
-// provider, its family to clear. It is exported so the id the
+// says how a target's id and name choose it) and, for an Exclusive provider,
+// its family to clear. A Pool start adds its model and clears nothing: clearing
+// the family there is what made sync and the start hook undo each other with
+// two models loaded (#213). It is exported so the id the
 // start hook writes can be pinned against the id `wt litellm sync` desires
 // for the same model (cmd/wt) — if the two derivations drift, every sync
 // after a start removes the hook's route and adds its own.
 func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
 	ch := litellm.Change{Add: []config.Model{routeModel(cfg, t)}}
-	if SingleModel(t.ProviderID) {
+	if TenancyOf(t.ProviderID) == Exclusive {
 		ch.RemoveFamilies = []string{localmodels.Family(t.ProviderID)}
 	}
 	return ch
@@ -173,12 +177,10 @@ func routeModel(cfg *config.Config, t Target) config.Model {
 //
 // It routes the model the start hook would (StartRouteChange's Add), so the
 // two cannot name a model's route differently — and it removes nothing. The
-// start hook also clears a single-model provider's family, which is safe
-// there because Start has just stopped or refused any occupant. The ensure
-// has no such guard: an omlx server can hold two models loaded at once (the
-// probe reports the loaded ones — localmodels.ServedIDs, #201 — and sync
-// routes each of them), so a clear here would delete a running sibling's
-// route and bounce the proxy on every alternating launch.
+// start hook also clears an Exclusive provider's family, which is safe there
+// because Start has just stopped or refused any occupant. The ensure has no
+// such guard, so a clear here could delete the route of a model that is still
+// serving and bounce the proxy on every alternating launch.
 // Stale sibling routes are left to the next start, stop or sync.
 //
 // Unlike Start it never starts or stops anything: a caller holding a stale
@@ -369,42 +371,94 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 	return w.changed, true
 }
 
-// routeAfterStop removes the stopped model's route. Stopping a single-model
-// provider's model takes the whole provider down, so every route of its
-// family goes. Stopping an ollama model only unloads it, so its route stays
-// (see routeRemove).
+// routeAfterStop removes the routes of a provider that was stopped as a whole
+// (see routeRemoveFamily).
 func routeAfterStop(ctx context.Context, cfg *config.Config, providerID string) {
-	routeRemove(ctx, cfg, providerID, restartIfChanged)
+	routeRemoveFamily(ctx, cfg, providerID, restartIfChanged)
 }
 
-// routeRemove writes a stop's route removal and reports whether config.yaml
-// changed. For a family whose routes follow its artifact (ollama) it writes
-// nothing and returns false: stopping unloads the model, but a pulled model is
-// still served on request, so its route stays (#179).
-func routeRemove(ctx context.Context, cfg *config.Config, providerID string, mode restartMode) bool {
-	if localmodels.RoutesFollowArtifact(localmodels.Family(providerID)) {
+// routeRemoveFamily writes the removal for a provider that was stopped as a
+// whole (lifecycle.Stop): on an Exclusive or Pool server every route of the
+// family goes, since the server is down. For a family whose routes follow its
+// artifacts (ollama) it writes nothing: a pulled model is still served on
+// request (#179).
+func routeRemoveFamily(ctx context.Context, cfg *config.Config, providerID string, mode restartMode) bool {
+	family := localmodels.Family(providerID)
+	if localmodels.RoutesFollowArtifact(family) {
 		return false
 	}
-	// Every family whose routes do not follow its artifacts is single-model
-	// (omlx, mtplx; mlx_lm_server has no stop backend): stopping its model
-	// takes the provider down, so the whole family's routes go. A backend
-	// that is neither would need a per-model removal here; none exists.
-	if !SingleModel(providerID) {
+	if ten := TenancyOf(providerID); ten != Exclusive && ten != Pool {
 		return false
 	}
-	ch := litellm.Change{RemoveFamilies: []string{localmodels.Family(providerID)}}
-	return applyAndReport(ctx, cfg, ch, mode)
+	return applyAndReport(ctx, cfg, litellm.Change{RemoveFamilies: []string{family}}, mode)
 }
 
-// routeAfterOccupantStopped removes the route of the occupant a replace just
-// stopped. It is the env hook defaultEnv wires in (env.go): the start that
-// follows may still fail, and a failed Start runs no success hook at all, so
-// the removal has to be written at the moment the occupant went down. It only
-// writes: the proxy restart is deferred to Start's single settling bounce
-// (routeAfterStart on success, bounceRoutes on failure). It reports whether a
-// restart is now owed.
+// routeRemoveModel writes the removal for one model that stopped serving and
+// reports whether config.yaml changed. On an Exclusive server the model was
+// the provider, so the family goes; on a Pool only that model's ids go, and
+// its loaded siblings keep their routes (#213).
+func routeRemoveModel(ctx context.Context, cfg *config.Config, en localmodels.Entry, mode restartMode) bool {
+	if TenancyOf(en.ProviderID) != Pool {
+		return routeRemoveFamily(ctx, cfg, en.ProviderID, mode)
+	}
+	return applyAndReport(ctx, cfg, litellm.Change{Remove: poolRouteIDs(cfg, en)}, mode)
+}
+
+// poolRouteIDs lists the ids a pool model can be routed under: the id of every
+// registry model that names it, under any provider id of the entry's family —
+// omlx and omlx-6bit are one server, so a row under each can name the same
+// directory and both are routed while it is loaded — plus the entry's own id.
+// The discovered id is the fallback, used only when none of those gave an id.
+// An entry built by the occupancy re-probe carries the server's raw id as
+// ModelID, which is no route id, so ModelID is used only when it differs from
+// the name.
+//
+// An entry with an id of its own is matched by name exactly: ModelFor's lenient
+// match would let an artifact that merely resembles a registry model's
+// ("org/name" beside "name", #195) pull in that other model's row, removing the
+// route of a sibling omlx still has loaded — whose sessions then get "Invalid
+// model name" — and leaving this model's own row behind. That is the same rule
+// routeModel follows for the write. Only an entry with no id of its own (the
+// raw served name the occupancy re-probe carries) falls back to ModelFor.
+func poolRouteIDs(cfg *config.Config, en localmodels.Entry) []string {
+	var ids []string
+	add := func(id string) {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	own := en.ModelID != "" && en.ModelID != en.ModelName
+	if own {
+		add(en.ModelID)
+	}
+	for _, providerID := range localmodels.FamilyProviderIDs(localmodels.Family(en.ProviderID)) {
+		if own {
+			for _, m := range cfg.Models {
+				if m.ProviderID == providerID && m.ModelName == en.ModelName {
+					add(m.ID)
+				}
+			}
+			continue
+		}
+		if m, ok := litellm.ModelFor(cfg, providerID, en.ModelName); ok {
+			add(m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		add(litellm.DiscoveredModel(en.ProviderID, en.ModelName).ID)
+	}
+	return ids
+}
+
+// routeAfterOccupantStopped removes the route of a model a start displaced: an
+// Exclusive server's stopped occupant, or a model a Pool load evicted. It is
+// the env hook defaultEnv wires in (env.go): the start may still fail, and a
+// failed Start runs no success hook at all, so the removal has to be written
+// at the moment the model went away. It only writes: the proxy restart is
+// deferred to Start's single settling bounce (routeAfterStart on success,
+// bounceRoutes on failure). It reports whether a restart is now owed.
 func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ localmodels.Entry) bool {
-	return routeRemove(ctx, cfg, occ.ProviderID, restartDeferred)
+	return routeRemoveModel(ctx, cfg, occ, restartDeferred)
 }
 
 // bounceRoutes settles route writes a deferred write already made — when the

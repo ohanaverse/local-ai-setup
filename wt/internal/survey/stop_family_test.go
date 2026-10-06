@@ -10,18 +10,18 @@ import (
 )
 
 // TestStopPickerSingleModelFamilyBusyBlocksSiblings verifies that when one
-// running variant of a single-model provider (omlx serves 4-bit and 6-bit on
-// one daemon) is in use by another session, its idle sibling is not offered
-// either. Stopping the sibling runs a whole-provider stop, which would kill
-// the daemon under the other session. Multi-tenant ollama is unaffected.
+// running model of a single-model provider (mtplx: one model per process) is
+// in use by another session, a sibling row that reads as running is not
+// offered either. Stopping the sibling runs a whole-provider stop, which would
+// kill the server under the other session. Multi-tenant ollama is unaffected.
 func TestStopPickerSingleModelFamilyBusyBlocksSiblings(t *testing.T) {
 	h := &stopHarness{
 		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
-			runningEntry("omlx", "omlx/m-4bit", "m-4bit"),
-			runningEntry("omlx-6bit", "omlx-6bit/m-6bit", "m-6bit"),
+			runningEntry("mtplx", "mtplx/m-4bit", "m-4bit"),
+			runningEntry("mtplx", "mtplx/m-6bit", "m-6bit"),
 			runningEntry("ollama", "ollama/a", "a"),
 		}},
-		counts: map[string]int{"omlx/m-4bit": 1},
+		counts: map[string]int{"mtplx/m-4bit": 1},
 	}
 	var out bytes.Buffer
 	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
@@ -33,13 +33,37 @@ func TestStopPickerSingleModelFamilyBusyBlocksSiblings(t *testing.T) {
 	}
 }
 
+// TestStopPickerPoolSiblingsAreIndependent pins #213 for the stop picker: omlx
+// holds a pool, and stopping one model only unloads it. So an idle omlx model
+// is offered while another session uses its sibling, and two selected omlx
+// models are each stopped — skipping the second, as for a single-model
+// provider, would print "done" for a model that is still loaded.
+func TestStopPickerPoolSiblingsAreIndependent(t *testing.T) {
+	h := &stopHarness{
+		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("omlx", "omlx/m-4bit", "m-4bit"),
+			runningEntry("omlx-6bit", "omlx-6bit/m-6bit", "m-6bit"),
+			runningEntry("omlx", "omlx/n-4bit", "n-4bit"),
+		}},
+		counts: map[string]int{"omlx/m-4bit": 1},
+	}
+	var out bytes.Buffer
+	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
+	if len(h.stops) != 2 || h.stops[0] != "omlx-6bit|m-6bit" || h.stops[1] != "omlx|n-4bit" {
+		t.Fatalf("stops = %v, want both idle omlx models stopped, each by its own stop, and the busy one left", h.stops)
+	}
+	if strings.Contains(out.String(), "omlx/m-4bit") {
+		t.Errorf("output offers the model another session is using: %q", out.String())
+	}
+}
+
 // TestStopPickerSingleModelFamilyStoppedOnce verifies selecting two idle
-// variants of one single-model provider runs the provider stop once and
-// reports both done, since the first stop already took the daemon down.
+// rows of one single-model provider (mtplx) runs the provider stop once and
+// reports both done, since the first stop already took the server down.
 func TestStopPickerSingleModelFamilyStoppedOnce(t *testing.T) {
 	h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
-		runningEntry("omlx", "omlx/m-4bit", "m-4bit"),
-		runningEntry("omlx-6bit", "omlx-6bit/m-6bit", "m-6bit"),
+		runningEntry("mtplx", "mtplx/m-4bit", "m-4bit"),
+		runningEntry("mtplx", "mtplx/m-6bit", "m-6bit"),
 	}}}
 	var out bytes.Buffer
 	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())

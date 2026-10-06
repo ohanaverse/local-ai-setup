@@ -266,16 +266,25 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	var unk *lifecycle.OccupancyUnknownError
 	switch {
 	case errors.As(err, &occ):
+		counts := sessionCounts(occ.IDs())
+		parts := make([]string, len(occ.Occupants))
+		for i, oid := range occ.IDs() {
+			parts[i] = oid
+			if n := counts[oid]; n > 0 {
+				parts[i] = fmt.Sprintf("%s (in use by %d wt session(s))", oid, n)
+			}
+		}
+		names := strings.Join(parts, ", ")
 		if !allowReplace {
-			ok, perr := ask(fmt.Sprintf("%s is running; stop it and start %s?", occ.Occupant.ModelID, id))
+			ok, perr := ask(fmt.Sprintf("starting %s will stop %s; continue?", id, names))
 			if perr != nil {
 				return perr
 			}
 			if !ok {
-				return fmt.Errorf("cancelled — %s is still running", occ.Occupant.ModelID)
+				return fmt.Errorf("cancelled — %s still running", names)
 			}
 		}
-		fmt.Fprintf(osStderr, "wt: replacing %s\n", occ.Occupant.ModelID)
+		fmt.Fprintf(osStderr, "wt: replacing %s\n", names)
 	case errors.As(err, &unk):
 		if !allowReplace {
 			ok, perr := ask(fmt.Sprintf("cannot tell whether %s at %s is already serving a model; replace it with %s?", unk.ProviderID, unk.Origin, id))

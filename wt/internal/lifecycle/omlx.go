@@ -12,10 +12,10 @@ import (
 )
 
 // omlxBackend serves omlx and omlx-6bit, which are ONE physical daemon on one
-// port; only one model is treated as the occupant.
+// port holding a pool of loaded models.
 type omlxBackend struct{}
 
-func (omlxBackend) singleModel() bool { return true }
+func (omlxBackend) tenancy() Tenancy { return Pool }
 
 func (omlxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {
 	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
@@ -39,10 +39,12 @@ func (omlxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Targ
 		}
 	}
 	report(StageWarming)
-	return omlxWarm(ctx, e, cfg, t.ModelName)
+	return omlxLoad(ctx, e, cfg, t.ModelName)
 }
 
-// omlxWarm loads modelName into the omlx server that is already answering.
+// omlxWarm is a chat completion that makes the omlx server already answering
+// load modelName. It is `wt warm`'s request, and the start path's fallback
+// when omlx refuses a keyless load (omlxLoad).
 // omlx serves directory basenames; registry names are HF repo ids. The
 // request carries the key the registry's omlx provider names, when it names
 // one: an omlx started with an API key refuses a keyless chat completion
@@ -68,10 +70,10 @@ func (omlxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {
 	return nil
 }
 
-// stopModel: omlx serves one model at a time, so stopping its occupant is
-// stopping the daemon's model.
-func (b omlxBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, _ string) error {
-	return b.stop(ctx, e, cfg)
+// stopModel unloads the one named model; the service and every other loaded
+// model stay up (omlxUnload).
+func (omlxBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
+	return omlxUnload(ctx, e, cfg, modelName)
 }
 
 // Warm loads modelName into providerID's server, which must already be

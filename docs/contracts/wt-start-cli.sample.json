@@ -1,0 +1,9 @@
+{
+  "_comment": "Shared fixture for cross-language contract tests of `wt start <id> --json`. Read by wt/cmd/wt/start_json_test.go (Go). modelman parses this shape too, but its test in modelman/tests/contracts/ lands with its omlx delegation; until then a change here fails only the Go CI job.",
+  "plan_running": {"id": "omlx/B", "status": "running", "would_unload": []},
+  "plan_fits": {"id": "omlx/B", "status": "fits", "would_unload": []},
+  "plan_would_unload": {"id": "omlx/B", "status": "would_unload", "would_unload": [{"id": "omlx/A", "sessions": 1}]},
+  "plan_unknown": {"id": "omlx/B", "status": "unknown", "would_unload": []},
+  "started": {"id": "omlx/B", "status": "started", "unloaded": ["omlx/A"]},
+  "already_running": {"id": "omlx/B", "status": "already_running", "unloaded": []}
+}

@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -33,19 +34,33 @@ const (
 	StageRouting Stage = "routing"
 )
 
-// Options tunes Start. AllowReplace permits stopping a running occupant of a
-// single-model provider; Progress (optional) receives stages in order.
+// Options tunes Start. AllowReplace permits displacing running models (an
+// Exclusive server's occupant, or a Pool's evictions); Progress (optional)
+// receives stages in order.
 type Options struct {
 	AllowReplace bool
 	Progress     func(Stage)
+	// OnUnloaded (optional) receives each model a Pool start unloaded to make
+	// room, whether or not the start then succeeded.
+	OnUnloaded func(localmodels.Entry)
 }
 
-// OccupiedError means starting the target would replace a running model and
-// AllowReplace was false. Nothing was touched.
-type OccupiedError struct{ Occupant localmodels.Entry }
+// OccupiedError means starting the target would displace running models and
+// AllowReplace was false. Nothing was touched. An Exclusive server has exactly
+// one occupant; a Pool can have several.
+type OccupiedError struct{ Occupants []localmodels.Entry }
+
+// IDs lists the occupants' model ids, in the order they would go.
+func (e *OccupiedError) IDs() []string {
+	ids := make([]string, len(e.Occupants))
+	for i, o := range e.Occupants {
+		ids[i] = o.ModelID
+	}
+	return ids
+}
 
 func (e *OccupiedError) Error() string {
-	return fmt.Sprintf("starting this model would stop %s, which is running — confirm to replace it", e.Occupant.ModelID)
+	return fmt.Sprintf("starting this model would stop %s — confirm to replace", strings.Join(e.IDs(), ", "))
 }
 
 // DaemonDownError means the provider's daemon is not answering.
@@ -105,13 +120,12 @@ func (e *UnsupportedError) Error() string {
 
 // backend is one provider family's lifecycle.
 type backend interface {
-	// singleModel reports whether the provider serves one model at a time
-	// (starting another replaces it).
-	singleModel() bool
+	// tenancy reports how the provider's server holds models.
+	tenancy() Tenancy
 	// stop stops the provider's current occupant and waits for it to release its port.
 	stop(ctx context.Context, e *env, cfg *config.Config) error
-	// stopModel stops the one named model (provider-side name). Multi-tenant
-	// providers unload just that model; single-model providers stop their
+	// stopModel stops the one named model (provider-side name). Shared and
+	// Pool providers unload just that model; an Exclusive provider stops its
 	// only occupant, so modelName is informational there.
 	stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error
 	// start runs everything from spawn through warmup for t, reporting stages.
@@ -161,85 +175,75 @@ func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
 }
 
 // backendsByFamily is the single source of truth for which providers wt can
-// start and which of them serve one model at a time. defaultEnv copies it, and
-// Occupant reads it (Occupant has no *env). Keeping these two in agreement used
-// to be manual — Occupant held its own hardcoded family list — so a new
-// single-model backend could be startable while Occupant still reported no
-// occupant, replacing a running model without a confirmation.
+// start and how each one's server holds models (tenancy). defaultEnv copies
+// it, and Evictions and TenancyOf read it (they have no *env). Keeping these in
+// agreement used to be manual — the occupancy check held its own hardcoded
+// family list — so a new single-model backend could be startable while the
+// check still reported no occupant, replacing a running model without a
+// confirmation.
 var backendsByFamily = map[string]backend{
 	"ollama": ollamaBackend{},
 	"omlx":   omlxBackend{},
 	"mtplx":  mtplxBackend{},
 }
 
-// Occupant reports the running model that starting t would replace: none for
-// ollama (multi-tenant) or unsupported providers; on omlx/omlx-6bit (one
-// domain) and mtplx, any running model of the family other than t itself. It
-// also reports none when the snapshot's probe for the family failed, because a
-// caller acting on that false would replace a model it never saw.
-func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
-	family := localmodels.Family(t.ProviderID)
-	if b := backendsByFamily[family]; b == nil || !b.singleModel() {
-		return localmodels.Entry{}, false
+// resolveEvictions decides which running models starting t would displace. It
+// prefers the snapshot, which is free, and re-probes the server only when the
+// snapshot's probe could not be trusted — the case that used to read as "no
+// occupant" and let a start evict the running model. The re-probe has no
+// sizes, so on a Pool every other loaded model is a victim. A family the
+// snapshot saw refuse the connection is re-probed too, though the plan calls
+// it known-empty (evictions): the engine is about to act, and a server that
+// came up since the snapshot must not have its model replaced unasked. unknown
+// reports that even the re-probe could not tell; the caller must then require
+// AllowReplace.
+func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family string, t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, unknown bool) {
+	b := e.backends[family]
+	if b == nil {
+		return nil, false
 	}
-	if !ProbeTrusted(snap, family) {
-		return localmodels.Entry{}, false
+	ten := b.tenancy()
+	// A Shared server displaces nobody whatever its state, so it is never
+	// re-probed.
+	reprobeDown := snap.Down[family] && (ten == Exclusive || ten == Pool)
+	if v, known := evictions(ten, family, t, snap); known && !reprobeDown {
+		return v, false
 	}
-	for _, en := range snap.Entries {
-		if !en.Running || localmodels.Family(en.ProviderID) != family {
-			continue
-		}
-		if SameModel(family, en.ModelName, t.ModelName) {
-			continue
-		}
-		return en, true
-	}
-	return localmodels.Entry{}, false
-}
-
-// resolveOccupant decides whether starting t would replace a running model of a
-// single-model family. It prefers the snapshot, which is free, and re-probes
-// the server only when the snapshot's probe could not be trusted — the case
-// that used to read as "no occupant" and let a start evict the running model.
-// unknown reports that even the re-probe could not tell; the caller must then
-// require AllowReplace.
-func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family string, t Target, snap localmodels.Snapshot) (occ localmodels.Entry, has, unknown bool) {
-	if b := e.backends[family]; b == nil || !b.singleModel() {
-		return localmodels.Entry{}, false, false
-	}
-	if occ, ok := Occupant(t, snap); ok {
-		return occ, true, false
-	}
-	if ProbeTrusted(snap, family) {
-		return localmodels.Entry{}, false, false
-	}
-	ids, known := e.liveServed(ctx, cfg, family)
+	served, known := e.liveServed(ctx, cfg, family)
 	if !known {
-		return localmodels.Entry{}, false, true
+		return nil, true
 	}
-	for _, id := range ids {
+	for _, id := range served {
 		if SameModel(family, id, t.ModelName) {
 			continue // the target itself is already served: not an occupant
 		}
-		return localmodels.Entry{ProviderID: t.ProviderID, ModelID: id, ModelName: id, Running: true}, true, false
+		victims = append(victims, localmodels.Entry{ProviderID: t.ProviderID, ModelID: id, ModelName: id, Running: true})
+		if ten == Exclusive {
+			break
+		}
 	}
-	return localmodels.Entry{}, false, false
+	return victims, false
 }
 
 // Start starts t. It is a no-op when live Inventory shows t already running,
 // returns *OccupiedError (touching nothing) when it would replace a running
 // model and opts.AllowReplace is false, returns *OccupancyUnknownError
 // (touching nothing) when its server accepted a connection but could not say
-// what it is serving, and otherwise stops the occupant (if any) and runs the
-// provider's start sequence. After a successful start the model's LiteLLM
-// route is updated (routes.go), announced as StageRouting so callers stop
-// rendering the engine's last stage while the proxy is bounced.
+// what it is serving, and otherwise stops the occupant of an Exclusive
+// provider (mtplx), if any, and runs the provider's start sequence. On a Pool
+// (omlx) a start loads beside the models already loaded: nothing is stopped,
+// omlx evicts what it must, and the routes of whatever it unloaded are removed
+// afterwards, whether or not the load succeeded (reconcilePool). After a
+// successful start the model's LiteLLM route is updated (routes.go), announced
+// as StageRouting so callers stop rendering the engine's last stage while the
+// proxy is bounced.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
 	e := defaultEnv()
 	if err := start(ctx, e, cfg, t, opts); err != nil {
 		if e.restartOwed {
-			// The occupant's route was already dropped from config.yaml; the
-			// proxy still serves the old list until it is bounced.
+			// A stopped occupant's or an evicted model's route was already
+			// dropped from config.yaml; the proxy still serves the old list
+			// until it is bounced.
 			bounceRoutes(ctx, cfg)
 		}
 		return err
@@ -266,15 +270,16 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if isRunning(snap, family, t) {
 		return nil
 	}
-	if occ, has, unknown := e.resolveOccupant(ctx, cfg, family, t, snap); unknown {
-		if !opts.AllowReplace {
-			origin, _ := localmodels.FamilyOrigin(cfg, family)
-			return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
-		}
-	} else if has {
-		if !opts.AllowReplace {
-			return &OccupiedError{Occupant: occ}
-		}
+	victims, unknown := e.resolveEvictions(ctx, cfg, family, t, snap)
+	if unknown && !opts.AllowReplace {
+		origin, _ := localmodels.FamilyOrigin(cfg, family)
+		return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
+	}
+	if len(victims) > 0 && !opts.AllowReplace {
+		return &OccupiedError{Occupants: victims}
+	}
+	if b.tenancy() == Exclusive && len(victims) > 0 {
+		occ := victims[0]
 		report(StageStoppingOccupant)
 		if err := b.stop(ctx, e, cfg); err != nil {
 			return fmt.Errorf("stopping %s before starting %s: %w", occ.ModelID, t.ModelName, err)
@@ -286,11 +291,69 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 			e.restartOwed = true
 		}
 	}
-	return b.start(ctx, e, cfg, t, report)
+	if b.tenancy() != Pool {
+		return b.start(ctx, e, cfg, t, report)
+	}
+	// What was loaded before the load, to compare with what is loaded after:
+	// omlx decides what to evict, and can evict more or less than the plan
+	// named — or evict and then fail the load.
+	before := victims
+	if ProbeTrusted(snap, family) {
+		before = runningOthers(snap, family, t)
+	}
+	err := b.start(ctx, e, cfg, t, report)
+	e.reconcilePool(ctx, cfg, before, victims, opts)
+	return err
 }
 
-// Stop stops the provider's running model. A no-op for multi-tenant ollama.
-// After a successful stop the model's LiteLLM route is updated (routes.go).
+// reconcilePool finds the models a pool load unloaded — those of before that
+// omlx no longer has loaded — and, for each, removes its route (the deferred
+// write Start's one settling bounce applies), says so, and tells the caller.
+// planned is what the eviction plan named; anything else is marked, because
+// omlx evicts from a soft watermark wt cannot see.
+//
+// Only a status reading (SizesKnown) can show an eviction. The fallback
+// reading names what is loaded by the ids of omlx's list, which gives an
+// aliased model its alias: a sibling that is still loaded is then missing from
+// it by directory name, and reading that as "unloaded" would remove the route
+// of a model that is serving. So a pool that cannot be read now, or that
+// answers only through the fallback, changes nothing: `wt litellm sync`
+// reconciles the routes.
+func (e *env) reconcilePool(ctx context.Context, cfg *config.Config, before, planned []localmodels.Entry, opts Options) {
+	if len(before) == 0 {
+		return
+	}
+	pool, err := localmodels.OmlxPool(cfg, e.probeClient)
+	if err != nil || !pool.SizesKnown {
+		return
+	}
+	for _, en := range before {
+		name := en.Artifact
+		if name == "" {
+			name = en.ModelName
+		}
+		if m, ok := pool.Find(name); ok && (m.Loaded || m.Loading) {
+			continue
+		}
+		note := " (not predicted)"
+		for _, p := range planned {
+			if p.ModelID == en.ModelID {
+				note = ""
+			}
+		}
+		routePrintf(ctx, "wt: omlx unloaded %s to make room%s\n", en.ModelID, note)
+		if e.onOccupantStopped != nil && e.onOccupantStopped(ctx, cfg, en) {
+			e.restartOwed = true
+		}
+		if opts.OnUnloaded != nil {
+			opts.OnUnloaded(en)
+		}
+	}
+}
+
+// Stop stops the provider as a whole: mtplx's process, or the omlx service
+// with every model it has loaded. A no-op for multi-tenant ollama. After a
+// successful stop the family's LiteLLM routes are removed (routes.go).
 func Stop(ctx context.Context, cfg *config.Config, providerID string) error {
 	if err := stop(ctx, defaultEnv(), cfg, providerID); err != nil {
 		return err
@@ -309,11 +372,15 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 	return b.stop(ctx, e, cfg)
 }
 
-// StopModelDeferred stops one running model (modelName is the provider-side
-// name) and writes its route removal, leaving the LiteLLM proxy restart to the
-// caller (issue #142). On ollama it unloads just that model; on single-model
-// providers (omlx, mtplx) it stops the provider's sole occupant. The caller
-// must only pass a model live Inventory reported running.
+// StopModelDeferred stops one running model and writes its route removal,
+// leaving the LiteLLM proxy restart to the caller (issue #142). en is the
+// inventory entry: ProviderID and ModelName name what to stop, ModelID the
+// route id its row was built under, which the removal needs to tell the model
+// from a sibling whose name merely resembles it (poolRouteIDs, #195). On ollama
+// it unloads just that model; on an Exclusive provider (mtplx) it stops the
+// provider's sole occupant; on a Pool (omlx) it unloads that one model, leaving
+// the service and its loaded siblings up and routed. The caller must only pass
+// a model live Inventory reported running.
 //
 // restartOwed reports that a removal was written and the proxy therefore still
 // needs its restart: the caller must call SettleRoutes once after the last stop
@@ -322,11 +389,11 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 // restart. One settling bounce replaces N overlapping restarts, each of which
 // killed the proxy the previous one had just brought up. A failed stop writes
 // nothing and owes nothing.
-func StopModelDeferred(ctx context.Context, cfg *config.Config, providerID, modelName string) (restartOwed bool, err error) {
-	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
+func StopModelDeferred(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error) {
+	if err := stopModel(ctx, defaultEnv(), cfg, en.ProviderID, en.ModelName); err != nil {
 		return false, err
 	}
-	return routeRemove(ctx, cfg, providerID, restartDeferred), nil
+	return routeRemoveModel(ctx, cfg, en, restartDeferred), nil
 }
 
 // SettleRoutes restarts the LiteLLM proxy (and waits for it, asynchronously —
@@ -361,14 +428,3 @@ func Startable(providerID string) bool {
 // implements both start and stop, so this is Startable under its stop-side
 // name.
 func CanStop(providerID string) bool { return Startable(providerID) }
-
-// SingleModel reports whether wt treats providerID's family as serving one
-// model per process, so stopping any of its models stops the whole provider
-// (and every sibling it has loaded). For mtplx that is literally true. omlx is
-// really a pool that can hold several models; wt still starts into it by
-// replacing the occupant and stops it by stopping the service, and reads its
-// running models from what is loaded, not from what it lists (#201).
-func SingleModel(providerID string) bool {
-	b := backendsByFamily[localmodels.Family(providerID)]
-	return b != nil && b.singleModel()
-}

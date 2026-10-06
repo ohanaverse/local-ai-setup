@@ -251,7 +251,7 @@ func trimTrailingPartialRune(s string) string {
 	return s
 }
 
-// liveServed asks a single-model provider's server directly what it is serving,
+// liveServed asks a provider's server directly what it is serving,
 // and reports whether that answer can be trusted.
 //
 // known is false only when the server failed to give a usable answer — it

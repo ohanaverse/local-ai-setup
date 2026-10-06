@@ -2,8 +2,27 @@
 
 ## Unreleased
 
+### Changed
+
+- omlx is handled as the multi-model pool it is (#213). `wt start` loads an
+  omlx model beside the ones already loaded instead of stopping the service
+  first, and asks only when the model does not fit, naming what omlx is
+  expected to unload. `wt stop <model>` unloads that model and leaves the
+  others up; `wt stop omlx` stops the service. Routes follow each model's
+  loaded state, so two loaded omlx models are both routed. `wt start --json`
+  and `--plan` give scripted callers the plan and the result. On an omlx
+  that wants its API key for load and unload but not for inference, and with
+  no `auth.secret_ref` in the registry, a start still loads the model through
+  a keyless chat request, and a model stop fails with the two ways to proceed.
+
 ### Fixed
 
+- omlx models inside an organization folder are found (#213). wt now scans
+  omlx's model directory two levels deep, as omlx does, so a model at
+  `<model dir>/mlx-community/<model>` is listed under the name omlx serves
+  it by and can be started and stopped. The folder itself is no longer
+  listed as a model, and neither is a LoRA adapter or a directory with no
+  `config.json`.
 - `wt start` can start a model on an omlx that has an API key (#256). The
   warmup request now carries the key the registry's omlx provider names
   (`auth.secret_ref`), as the "what is loaded" probe already did; it used to

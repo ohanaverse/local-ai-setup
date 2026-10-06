@@ -28,8 +28,10 @@ func StageLabel(s Stage) string {
 // names the provider and origin (the user has to start an app or service);
 // the binary and port errors are already actionable as written; everything
 // else is prefixed with the model id so an unattributed engine error is still
-// traceable to the row it came from. The replace-confirmation errors
-// (OccupiedError, OccupancyUnknownError) are deliberately unmapped — callers
+// traceable to the row it came from; *NoRoomError and *KeyRefusedError fall
+// through to that wording too, their own text saying what holds the memory or
+// which key to set. The replace-confirmation errors (OccupiedError,
+// OccupancyUnknownError) are deliberately unmapped — callers
 // handle those interactively, not as a failure line.
 func StartErrorMessage(id string, err error) string {
 	var down *DaemonDownError
