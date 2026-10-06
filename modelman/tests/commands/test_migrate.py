@@ -262,6 +262,35 @@ def test_migrate_names_the_pre_xdg_registry_it_could_not_read(tmp_path, monkeypa
     assert not (tmp_path / "xdg" / "local-ai" / "registry.toml").exists()
 
 
+def test_migrate_reports_a_registry_it_cannot_even_look_for(tmp_path, monkeypatch, wt_calls):
+    """A directory that cannot be searched fails the lookup of the file, not
+    the read of it — and building the message looks the file up again. That
+    second failure must not turn the report into a traceback."""
+    import os
+
+    import pytest
+
+    if os.geteuid() == 0:
+        pytest.skip("root can search any directory")
+    _fresh_machine(tmp_path, monkeypatch)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    registry_path = locked / "registry.toml"
+    registry_path.write_text("providers = []\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    locked.chmod(0o600)
+    try:
+        result = CliRunner().invoke(app, ["migrate"])
+    finally:
+        locked.chmod(0o700)
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert f"error: cannot read {registry_path}" in result.output
+    assert registry_path.read_text() == "providers = []\n"
+    assert wt_calls == []
+
+
 def test_migrate_rerun_keeps_the_state_of_a_model_it_imports_again(tmp_path, monkeypatch):
     """The legacy download markers are as stale as the legacy registry
     entries: a re-run must not put `ready`/`disk_path` back to what they were

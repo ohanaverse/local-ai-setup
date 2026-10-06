@@ -457,7 +457,10 @@ def unreadable_registry_message(exc: BaseException) -> str:
     again. Not for RegistryNotFoundError, which is no failure to read."""
     try:
         unreadable = _registry_read_path()
-    except RegistryNotFoundError:
+    except (RegistryNotFoundError, OSError):
+        # OSError: looking for the file is what failed (a directory that
+        # cannot be searched), and it fails here as it did in load_registry.
+        # Raising it again would turn the caller's report into a traceback.
         unreadable = _default_registry_path()
     return f"cannot read {unreadable}: {exc} — fix or move it aside"
 

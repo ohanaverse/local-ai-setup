@@ -327,6 +327,33 @@ def test_run_tui_exits_nonzero_when_the_app_refused_the_registry(
     assert wt_calls == []
 
 
+def test_run_tui_exits_nonzero_when_the_app_crashed(tmp_path, monkeypatch, wt_calls):
+    """A crashed app returns None like a Discard does, with Textual's return
+    code set. The command reported that as success. A registry the session
+    had already written still gets its route sync first."""
+    import pytest
+    import typer
+
+    reg = tmp_path / "registry.toml"
+    reg.write_text("models = []\n")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg))
+
+    class FakeApp:
+        return_code = 1
+
+        def run(self):
+            reg.write_text("models = []\n# edited\n")
+            return None
+
+    monkeypatch.setattr("modelman.app.ModelmanApp", FakeApp)
+    from modelman.main import run_tui
+
+    with pytest.raises(typer.Exit) as excinfo:
+        run_tui()
+    assert excinfo.value.exit_code == 1
+    assert [c for c in wt_calls if c[:1] == ["sync"]] == [["sync", "--json"]]
+
+
 def test_run_tui_registry_edit_plus_queue_syncs_once(tmp_path, monkeypatch, wt_calls):
     """An add/edit AND an applied queue in one session: run_queued_ops'
     sync covers both — no second sync from the registry-changed branch."""

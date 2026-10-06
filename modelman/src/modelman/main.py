@@ -356,6 +356,12 @@ def run_tui() -> None:
             app, "route_sync_owed", False
         ):
             _sync_routes_and_warn()
+        # A crashed app returns None as well. Textual has printed the
+        # traceback and set a non-zero return code; carry it out rather than
+        # report a crash as success.
+        return_code = getattr(app, "return_code", None)
+        if isinstance(return_code, int) and return_code:
+            raise typer.Exit(return_code)
         return
     if run_queued_ops(queued):
         raise typer.Exit(1)
