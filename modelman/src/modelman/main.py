@@ -182,6 +182,35 @@ def print_error_summary(failures: list[str], total: int) -> bool:
     return True
 
 
+def _report_unreadable_registry(exc: BaseException) -> None:
+    """Echo the #240 report for a registry that is there and cannot be read:
+    the file — the pre-XDG one when that is where it was read from — and why.
+    What to run next is the caller's to add."""
+    typer.echo(f"error: {unreadable_registry_message(exc)}", err=True)
+
+
+def _load_registry_or_exit() -> Registry:
+    """load_registry() for a CLI command: an unreadable registry is reported
+    the way the TUI reports it (#240) and exits 1, instead of ending the
+    command in a Python traceback that names neither the file to fix nor that
+    nothing was changed.
+
+    RegistryNotFoundError is deliberately not caught: "no registry yet" is a
+    case each caller answers for itself (migrate writes one; the read paths
+    treat it as empty), not a failure to report.
+    """
+    try:
+        return load_registry()
+    except RegistryNotFoundError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Broad like migrate's, and for the same reason: a hand-edited file
+        # fails in the parser as readily with a TypeError/ValueError (valid
+        # TOML, wrong shape) or a UnicodeDecodeError as with a RegistryError.
+        _report_unreadable_registry(exc)
+        raise typer.Exit(1) from exc
+
+
 def run_queued_ops(queued: QueuedOps) -> bool:
     """Apply a QueuedOps returned by the TUI against fresh on-disk state.
 
@@ -191,7 +220,18 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     deletes/moves/ready have not. Returns True iff the run
     should exit non-zero (failures, or a Ctrl+C cancellation).
     """
-    registry = load_registry()
+    try:
+        registry = load_registry()
+    except RegistryNotFoundError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # The registry was readable when the TUI opened it and queued these
+        # ops, so it changed under us (a hand edit while the TUI sat open, a
+        # symlink's volume unmounted). Report it as this apply failing —
+        # True, i.e. exit non-zero — rather than raise, so the callers that
+        # keep working after a failure still do.
+        _report_unreadable_registry(exc)
+        return True
     state = load_state()
     models_by_id = {m.id: m for m in registry.models}
     ready_specs = {}
@@ -483,7 +523,7 @@ def migrate(
 @app.command()
 def sync() -> None:
     """Reconcile configured models against their providers."""
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     state = load_state()
     try:
         result = run_sync(registry, state)
@@ -579,7 +619,7 @@ def delete_family(
     used to offer family deletion) is gone. Refuses if the family still
     has models — move or delete them first.
     """
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     models = registry.models_by_family(name)
     if models:
         typer.echo(
@@ -615,7 +655,7 @@ def refresh_prices() -> None:
     from .pricing import refresh_prices as run_refresh
     from .state import stamp_price_refresh_today
 
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     result = run_refresh(registry)
     if result.error is not None:
         typer.echo(f"error: {result.error}", err=True)
@@ -681,7 +721,7 @@ def start(
     disk, models registered but missing their artifact, and on-disk
     models with no registry.toml entry yet.
     """
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     if model_id is None:
         state = load_state()
         inventory = inventory_local_models(registry, state)
