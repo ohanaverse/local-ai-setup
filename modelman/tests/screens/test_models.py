@@ -905,6 +905,61 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_edit_whose_save_is_refused_is_reported_and_undone(tmp_path, monkeypatch):
+    """A save can be refused after the registry loaded fine — a symlinked
+    registry whose volume unmounted while the TUI sat open (#248). That is a
+    report and an edit that did not happen, not a crashed TUI: the screen
+    stays up and neither memory nor disk carries the change."""
+    from unittest.mock import MagicMock
+
+    import modelman.screens.models as models_screen
+    from modelman.providers import registry as prov_registry
+    from modelman.registry import RegistryError
+
+    entry = ModelEntry(
+        id="ollama/glm-5.3:cloud",
+        family="glm",
+        provider_id="ollama",
+        model_name="glm-5.3:cloud",
+        location="cloud",
+    )
+    reg_path, _ = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    def refuse(registry, path=None):
+        raise RegistryError("registry.toml is a symlink to a file that is not there")
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await _open_model_screen(pilot)
+        screen = app.screen
+        monkeypatch.setattr(models_screen, "save_registry", refuse)
+        notified = []
+        monkeypatch.setattr(app, "notify", lambda message, **kw: notified.append((message, kw)))
+
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
+        await pilot.pause()
+        app.screen.query_one("#subscription-price", Input).value = "20"
+        app.screen.query_one("#save", Button).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert [kw.get("severity") for _, kw in notified] == ["error"]
+        assert "not there" in notified[0][0]
+        assert screen.registry.model("ollama/glm-5.3:cloud").cost is None
+
+    assert load_registry(reg_path).model("ollama/glm-5.3:cloud").cost is None
+
+
+@pytest.mark.asyncio
 async def test_edit_model_preserves_discovered_source(tmp_path, monkeypatch):
     """Regression: editing a model registered via the discovered-artifact
     flow (source="discovered") must not silently reclassify it back to

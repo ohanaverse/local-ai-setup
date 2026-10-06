@@ -278,13 +278,14 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
     - nothing loaded -> [] : nothing is running;
     - every pool model loaded, and the list is the whole pool -> the list;
     - anything else (some loaded; or all loaded but a hidden model makes the
-      list shorter than the pool) -> None : only the key-protected
-      /v1/models/status says which, and modelman does not ask it. None is
-      reported as-is (#249) — the callers that guard a flag leave it alone,
-      because the flag was set by a start that succeeded and a partly loaded
-      pool neither confirms nor refutes it. wt's probe
-      (localmodels.ServedIDs) does ask status, with the registry's
-      secret_ref.
+      list shorter than the pool) -> what /v1/models/status says, asked
+      without a key. That answers on an omlx with no API key set, the usual
+      local setup, and a model mid-load counts as wt counts it. An omlx that
+      wants a key refuses, and that is None: modelman resolves no
+      secret_ref, so only wt's probe (localmodels.ServedIDs) can ask there.
+      None is reported as-is (#249) — the callers that guard a flag leave it
+      alone, because the flag was set by a start that succeeded and a partly
+      loaded pool neither confirms nor refutes it.
 
     An omlx whose /health gives no pool counts predates them: `listed` is all
     there is, as before."""
@@ -299,7 +300,25 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
         return []
     if loaded == count == len(listed):
         return listed
-    return None
+    return _omlx_status_loaded(base)
+
+
+def _omlx_status_loaded(base: str) -> list[str] | None:
+    """The ids omlx's /v1/models/status reports loaded or loading, or None
+    when it gives no listing — a refusal for want of the server's API key
+    answers with a JSON object too, just not one with `models`."""
+    status = _http_json(f"{base}/v1/models/status")
+    models = status.get("models") if status else None
+    if not isinstance(models, list):
+        return None
+    return [
+        m["id"]
+        for m in models
+        if isinstance(m, dict)
+        and isinstance(m.get("id"), str)
+        and m["id"]
+        and (m.get("loaded") or m.get("is_loading"))
+    ]
 
 
 def _ollama_origin(provider: ProviderEntry | None) -> str:
@@ -1181,14 +1200,18 @@ def start_local_model(
 
     already = fresh_state.get(resolved_id).running
     if already:
-        # Truthiness on purpose, so "cannot say" is not an answer here: a
-        # start is a request to have the model loaded NOW, and a probe that
-        # cannot confirm it must not make the start a no-op (the reload below
-        # stops the occupant and loads the requested model). For ollama this
-        # is unreachable — the daemon and pull checks above refuse first —
-        # and for a partly loaded omlx pool it is the pre-existing behavior
-        # (#213 item 3), not #249's flag-clearing bug.
-        if _probe_running(model.provider_id, model.model_name, probe_origin):
+        # A definite True, so "cannot say" is not an answer here: a start is
+        # a request to have the model loaded NOW, and a probe that cannot
+        # confirm it must not make the start a no-op (the reload below stops
+        # the occupant and loads the requested model). For a partly loaded
+        # omlx pool that is the pre-existing behavior (#213 item 3), not
+        # #249's flag-clearing bug. Ollama is the exception: its start is
+        # flag-only and the daemon and pull checks above have passed, so an
+        # /api/tags that then gives no usable listing (a proxy's error page)
+        # leaves nothing to reload — the flag stands, as for every other
+        # reader of an unknown ollama probe.
+        probed = _probe_running(model.provider_id, model.model_name, probe_origin)
+        if probed or (probed is None and model.provider_id == "ollama"):
             # Re-sync even on the idempotent path: `modelman start <id>` is
             # the remediation for a running model whose route drifted.
             sync_warnings = sync_routes(litellm_path=litellm_path)

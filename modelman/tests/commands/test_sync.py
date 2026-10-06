@@ -320,6 +320,10 @@ def test_sync_command_keeps_the_flag_of_a_model_in_a_partly_loaded_omlx_pool(tmp
     save_state(store, state_path)
 
     def health(url, timeout=2.0):
+        # The status endpoint would say which — this omlx has an API key and
+        # refuses it to modelman, which resolves no secret_ref.
+        if url == "http://localhost:8000/v1/models/status":
+            return {"detail": "Invalid API key"}
         assert url == "http://localhost:8000/health", url
         return {"engine_pool": {"model_count": 2, "loaded_count": 1}}
 

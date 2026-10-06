@@ -798,14 +798,17 @@ def _write_registry(registry: Registry, path: Path) -> None:
     under the same lock without calling save_registry() (which would deadlock
     on a non-reentrant lock).
 
-    Refuses to write when ``path`` is a symlink to a file that is not there:
-    os.replace() swaps the link itself for a regular file, so a volume that
-    unmounted while this process held a registry loaded would be shadowed by
-    the empty one written in its place (#248). A link that resolves is a
-    normal save (the link is still replaced by the file it pointed at; the
-    content is what the user was editing either way).
+    A symlinked ``path`` is written through, to the file it resolves to:
+    os.replace() on the link itself swaps it for a regular file, and a
+    registry linked into a dotfiles checkout would stop reaching the checkout
+    on the first save. A link to a file that is not there is refused instead
+    — writing its target would recreate a registry on a volume that
+    unmounted while this process held one loaded, from whatever was in
+    memory (#248).
     """
     _refuse_dangling_symlink(path)
+    if path.is_symlink():
+        path = Path(os.path.realpath(path))
     payload = {
         "providers": [_provider_to_dict(p) for p in registry.providers],
         "families": [_family_to_dict(f) for f in registry.families],

@@ -221,6 +221,23 @@ def test_save_registry_refuses_to_replace_a_dangling_symlink(tmp_path):
     assert not target.exists()
 
 
+def test_save_registry_writes_through_a_symlink_that_resolves(tmp_path):
+    """A registry linked into a dotfiles checkout stays linked: the save lands
+    in the file the link names. os.replace() on the link itself swapped it
+    for a regular file, and the checkout silently stopped receiving edits
+    after the first save."""
+    real = tmp_path / "dotfiles" / "registry.toml"
+    real.parent.mkdir()
+    save_registry(Registry(), real)
+    link = tmp_path / "registry.toml"
+    link.symlink_to(real)
+
+    save_registry(Registry(families=[FamilyEntry(name="qwen3")]), link)
+
+    assert link.is_symlink() and link.resolve() == real.resolve()
+    assert [f.name for f in load_registry(real).families] == ["qwen3"]
+
+
 def test_save_then_load_round_trips_providers_and_models(tmp_path):
     registry = Registry(
         providers=[

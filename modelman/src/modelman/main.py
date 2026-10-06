@@ -196,14 +196,14 @@ def _load_registry_or_exit() -> Registry:
     command in a Python traceback that names neither the file to fix nor that
     nothing was changed.
 
-    RegistryNotFoundError is deliberately not caught: "no registry yet" is a
-    case each caller answers for itself (migrate writes one; the read paths
-    treat it as empty), not a failure to report.
+    A registry that is not there yet is an empty one, as it is for the TUI
+    and for migrate: sync gives a fresh machine its provider rows, and the
+    other commands find nothing to act on and say so themselves.
     """
     try:
         return load_registry()
     except RegistryNotFoundError:
-        raise
+        return Registry()
     except Exception as exc:  # noqa: BLE001
         # Broad like migrate's, and for the same reason: a hand-edited file
         # fails in the parser as readily with a TypeError/ValueError (valid
@@ -663,6 +663,17 @@ def refresh_prices() -> None:
     if result.error is not None:
         typer.echo(f"error: {result.error}", err=True)
         raise typer.Exit(1)
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    typer.echo(f"Refreshed prices for {result.updated} model(s).")
+    # A refresh that updated nothing has nothing to write, stamp or route —
+    # and on a machine with no registry.toml yet, writing would create an
+    # empty one. The stamp follows the TUI's rule (app.py): a zero-update
+    # refresh is not a success worth gating on, and stamping it (no
+    # OpenRouter-priced candidates, or no candidate matched) would suppress a
+    # same-day retry and the pricing of a model added later the same day.
+    if result.updated == 0:
+        return
     try:
         save_registry(registry)
     except (OSError, RegistryError) as exc:
@@ -671,16 +682,8 @@ def refresh_prices() -> None:
     # Stamp the refresh date like the TUI's background refresh does (both
     # call state.stamp_price_refresh_today): wt's stale-pricing notice reads
     # it, and without the stamp it told the user to run this very command
-    # forever (#151). But only when the refresh actually updated something —
-    # the TUI's rule (app.py): a zero-update refresh is not a success worth
-    # gating on, and stamping it (no OpenRouter-priced candidates, or no
-    # candidate matched) would suppress a same-day retry and the pricing of
-    # a model added later the same day.
-    if result.updated > 0:
-        stamp_price_refresh_today()
-    for warning in result.warnings:
-        typer.echo(f"warning: {warning}", err=True)
-    typer.echo(f"Refreshed prices for {result.updated} model(s).")
+    # forever (#151).
+    stamp_price_refresh_today()
     # wt writes a route's prices from the registry, so new prices reach
     # LiteLLM only through a sync (#179).
     _sync_routes_and_warn()

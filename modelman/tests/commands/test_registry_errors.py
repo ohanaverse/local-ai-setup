@@ -92,3 +92,22 @@ def test_a_save_refused_for_a_link_that_went_dangling_is_reported_too(
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert link.is_symlink() and not target.exists()
     assert wt_calls == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["sync"], ["refresh-prices"], ["delete-family", "qwen3"], ["start"], ["start", "qwen3"]],
+    ids=["sync", "refresh-prices", "delete-family", "start", "start-id"],
+)
+def test_commands_read_a_missing_registry_as_empty(tmp_path, monkeypatch, wt_calls, argv):
+    """No registry.toml yet is not the unreadable case: there is nothing to
+    protect, so a command runs against an empty registry — as the TUI and
+    migrate do — and ends in its own answer, not in a RegistryNotFoundError
+    traceback."""
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "registry.toml"))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    result = CliRunner().invoke(app, argv)
+
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.output
+    assert "cannot read" not in result.output
