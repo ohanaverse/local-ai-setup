@@ -51,8 +51,10 @@ class OMLXProvider(Provider):
         if local_path:
             # Stored as typed, so a leading `~` is still there; unexpanded it
             # names a directory literally called `~` and the entry reads as
-            # not downloaded (#235).
-            return Path(local_path).expanduser()
+            # not downloaded (#235). os.path's expanduser, as _model_dir
+            # uses: pathlib's raises RuntimeError for a `~name` that is no
+            # user, which would take `modelman sync` down with it.
+            return Path(os.path.expanduser(local_path))
         repo = variant.get("repo")
         if repo:
             return _model_dir(self.config) / repo_basename(repo)

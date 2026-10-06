@@ -40,10 +40,18 @@ def _symlink(tmp_path, directory, monkeypatch):
     return str(link)
 
 
+def _other_case(tmp_path, directory, monkeypatch):
+    swapped = directory.with_name(directory.name.swapcase())
+    if not swapped.exists():
+        pytest.skip("case-sensitive filesystem: another letter case is another directory")
+    return str(swapped)
+
+
 # #235: ways to name one directory that are not the string the provider
 # derives for it. Each takes (tmp_path, directory, monkeypatch) and returns
-# the spelling; `directory` is under tmp_path.
+# the spelling; `directory` is under tmp_path and already exists.
 SPELLINGS = {
+    "other-case": _other_case,
     "tilde": _tilde,
     "trailing-slash": lambda tmp_path, directory, monkeypatch: f"{directory}/",
     "dot-dot": lambda tmp_path, directory, monkeypatch: str(

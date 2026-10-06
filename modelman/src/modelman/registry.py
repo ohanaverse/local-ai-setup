@@ -587,13 +587,11 @@ def find_shared_artifact_owner(
     # the repo's download. A provider that does not say (or a test double
     # answering with something that is not a set) guards every path it
     # lives in.
-    mine = None
+    mine: Any = None
     removable_paths = getattr(provider, "removable_paths", None)
     if callable(removable_paths):
-        try:
+        with contextlib.suppress(Exception):
             mine = removable_paths(variant)
-        except Exception:  # noqa: BLE001
-            mine = None
     if not isinstance(mine, (set, frozenset)):
         try:
             mine = artifact_paths(variant)
@@ -633,14 +631,28 @@ def find_shared_artifact_owner(
 
 
 def _canonical_paths(paths: Any) -> frozenset[Any]:
-    """`paths` with each one resolved to the directory it names, so that two
-    spellings of one directory compare equal (#235): `~` expanded, relative
-    and `..` segments and a trailing slash collapsed, symlinks followed. A
-    `local_path` is stored as typed, and the providers hand it over that way.
-    Anything that is not a string is passed through untouched."""
-    return frozenset(
-        os.path.realpath(os.path.expanduser(p)) if isinstance(p, str) else p for p in paths
-    )
+    """Keys for `paths` such that two spellings of one directory share a key
+    (#235): each path resolved — `~` expanded, relative and `..` segments and
+    a trailing slash collapsed, symlinks followed — and, for one that exists,
+    its (device, inode) as well. A `local_path` is stored as typed, and the
+    providers hand it over that way.
+
+    The (device, inode) key is what catches a spelling realpath leaves alone:
+    realpath keeps the letter case a path was typed in, and on a
+    case-insensitive volume (the macOS default) `models/Qwen` and
+    `models/qwen` are one directory. Anything that is not a string is passed
+    through untouched."""
+    keys: set[Any] = set()
+    for p in paths:
+        if not isinstance(p, str):
+            keys.add(p)
+            continue
+        real = os.path.realpath(os.path.expanduser(p))
+        keys.add(real)
+        with contextlib.suppress(OSError):
+            st = os.stat(real)
+            keys.add((st.st_dev, st.st_ino))
+    return frozenset(keys)
 
 
 def _sibling_artifact_paths(registry: Registry, provider_id: str) -> Any:
