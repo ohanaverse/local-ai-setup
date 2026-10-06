@@ -160,7 +160,9 @@ def _never_call_real_wt(monkeypatch):
     partial-failure / exit-1 / file-level-failure case. Any other verb
     (e.g. the expose/unexpose removed in #179) fails the test loudly. Tests
     exercising error paths must override wt_bridge._run. Every argv tail is
-    recorded and yielded (see the `wt_calls` fixture)."""
+    recorded and yielded (see the `wt_calls` fixture). The start/stop calls go
+    through wt_bridge._run_wt, which fails the test loudly unless the test
+    stubs it."""
     import json
 
     from modelman import wt_bridge
@@ -198,6 +200,14 @@ def _never_call_real_wt(monkeypatch):
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(out), stderr="")
 
     monkeypatch.setattr(wt_bridge, "_run", fake)
+
+    def no_wt(argv, timeout):
+        raise AssertionError(
+            f"unexpected `wt {' '.join(argv[:1])}` in tests: stub wt_bridge.start / "
+            "start_plan / stop (or wt_bridge._run_wt) in the test that needs it"
+        )
+
+    monkeypatch.setattr(wt_bridge, "_run_wt", no_wt)
     return calls
 
 

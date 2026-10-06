@@ -353,3 +353,93 @@ def test_warm_without_wt_on_path(monkeypatch):
     monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: None)
     with pytest.raises(wt_bridge.WtNotFoundError):
         wt_bridge.warm("omlx", "Qwen-4bit")
+
+
+def _wt(monkeypatch, returncode=0, stdout="", stderr=""):
+    """Stub the bridge's non-litellm seam; returns the argv lists it saw."""
+    calls: list[list[str]] = []
+
+    def fake(argv, timeout):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(wt_bridge, "_run_wt", fake)
+    return calls
+
+
+def test_start_passes_replace_and_returns_the_outcome(monkeypatch):
+    # modelman start delegates to wt; the ids wt says it unloaded are what
+    # modelman clears flags for, so they must arrive intact.
+    calls = _wt(monkeypatch, stdout='{"id": "omlx/B", "status": "started", "unloaded": ["omlx/A"]}')
+    out = wt_bridge.start("omlx/B", replace=True)
+    assert calls == [["start", "omlx/B", "--json", "--replace"]]
+    assert (out.status, out.unloaded) == ("started", ["omlx/A"])
+
+
+def test_start_without_replace_omits_the_flag(monkeypatch):
+    calls = _wt(monkeypatch, stdout='{"id": "omlx/B", "status": "started", "unloaded": []}')
+    wt_bridge.start("omlx/B", replace=False)
+    assert calls == [["start", "omlx/B", "--json"]]
+
+
+def test_start_failure_raises_with_wts_message(monkeypatch):
+    # wt prints its error twice (cobra's "Error:" and its own "wt:"); the user
+    # must see it once.
+    _wt(
+        monkeypatch,
+        returncode=1,
+        stderr="Error: omlx has no room for B\nwt: omlx has no room for B\n",
+    )
+    with pytest.raises(wt_bridge.WtBridgeError) as exc:
+        wt_bridge.start("omlx/B", replace=True)
+    assert str(exc.value) == "omlx has no room for B"
+
+
+def test_start_rejects_output_it_cannot_parse(monkeypatch):
+    # An older wt without --json exits 0 and prints prose. Treating that as a
+    # start would set a running flag for a model that may not be loaded.
+    _wt(monkeypatch, stdout="wt: omlx/B is running\n")
+    with pytest.raises(wt_bridge.WtBridgeError, match="make install"):
+        wt_bridge.start("omlx/B", replace=True)
+
+
+def test_start_plan_parses_a_plan_printed_with_exit_1(monkeypatch):
+    # `--plan` always exits 0, but the same shape arrives with exit 1 from a
+    # refused start; the plan read must not depend on the exit code.
+    calls = _wt(
+        monkeypatch,
+        returncode=1,
+        stdout='{"id": "omlx/B", "status": "would_unload", "would_unload": [{"id": "omlx/A", "sessions": 2}]}',
+    )
+    plan = wt_bridge.start_plan("omlx/B")
+    assert calls == [["start", "omlx/B", "--plan", "--json"]]
+    assert plan is not None and plan.would_unload[0].sessions == 2
+
+
+def test_start_plan_is_none_when_wt_gives_no_answer(monkeypatch):
+    # A read: every failure is "unknown", never an exception in the TUI.
+    _wt(monkeypatch, returncode=1, stderr="wt: unknown model\n")
+    assert wt_bridge.start_plan("omlx/B") is None
+
+    def boom(argv, timeout):
+        raise wt_bridge.WtNotFoundError("wt not found")
+
+    monkeypatch.setattr(wt_bridge, "_run_wt", boom)
+    assert wt_bridge.start_plan("omlx/B") is None
+
+
+def test_stop_runs_wt_stop_with_yes(monkeypatch):
+    # --yes: modelman already asked the user; wt must not prompt on a pipe.
+    calls = _wt(monkeypatch, stdout="Stopping omlx/A... done\n")
+    wt_bridge.stop("omlx/A")
+    assert calls == [["stop", "omlx/A", "--yes"]]
+
+
+def test_stop_failure_raises_with_wts_message(monkeypatch):
+    _wt(
+        monkeypatch,
+        returncode=1,
+        stderr='Error: model "omlx/A" is not running\nwt: model "omlx/A" is not running\n',
+    )
+    with pytest.raises(wt_bridge.WtBridgeError, match="is not running"):
+        wt_bridge.stop("omlx/A")
