@@ -12,11 +12,11 @@ import os
 import weakref
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from huggingface_hub import snapshot_download
 
-from ._paths import paths_overlap
+from ._paths import keys_overlap, overlap_keys
 from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm, repo_basename
 from .base import LocalModel, Provider, VariantSpec, _Runner
 from .registry import ProviderRegistry
@@ -38,10 +38,6 @@ def _resolve_local_path(raw: str) -> Path:
     the weights live. normpath() collapses '..' and '.' components so both
     sides normalize '~/models/../quant' to '/Users/keith/quant'."""
     return Path(os.path.normpath(os.path.abspath(os.path.expanduser(raw))))
-
-
-def _is_local_path_entry(value: str | None) -> bool:
-    return bool(value)
 
 
 class MLXLMServerProvider(Provider):
@@ -293,34 +289,29 @@ class MLXLMServerProvider(Provider):
         Nor is a repo-downloaded dir whose removal would take one of this
         pairing's own local_path dirs with it (#241): the shared-artifact
         guard skips an entry's own id, so nothing else stops that rmtree. It
-        is the guard's own test (paths_overlap) — the local_path is that dir,
-        inside it (a quantize output written beside its source) or a parent of
-        it — asked of both sides' local_paths, since one side's download can
-        be where the other side's local_path points."""
+        is the guard's own overlap test (providers/_paths.py) — the
+        local_path is that dir, inside it (a quantize output written beside
+        its source) or a parent of it — asked of both sides' local_paths,
+        since one side's download can be where the other side's local_path
+        points. The pair's own keys are computed once; the dir's are
+        recomputed per dir."""
         dirs: list[Path] = []
-        # target side
-        target_repo = self._repo_dir(variant.get("repo"))
-        if not _is_local_path_entry(variant.get("local_path")):
-            target = self._target_dir(variant)
-            if target is not None:
-                dirs.append(target)
-        elif target_repo is not None:
-            # local_path precedence: only the repo-downloaded dir is removable.
-            dirs.append(target_repo)
-        # draft side
-        draft_repo = self._repo_dir(variant.get("draft_repo"))
-        if not _is_local_path_entry(variant.get("draft_local_path")):
-            draft = self._draft_dir(variant)
-            if draft is not None:
-                dirs.append(draft)
-        elif draft_repo is not None:
-            dirs.append(draft_repo)
+        # Each side contributes its repo-downloaded dir — the one artifact
+        # modelman itself creates. When the side has no local_path its
+        # resolved dir IS that path; when it does, the local_path (user's,
+        # never removed) takes precedence there and only the repo dir below
+        # model_dir is left.
+        for repo_field in ("repo", "draft_repo"):
+            repo_dir = self._repo_dir(cast("str | None", variant.get(repo_field)))
+            if repo_dir is not None:
+                dirs.append(repo_dir)
         own_local = [
             str(_resolve_local_path(raw))
             for raw in (variant.get("local_path"), variant.get("draft_local_path"))
             if isinstance(raw, str) and raw
         ]
-        return [d for d in dict.fromkeys(dirs) if not paths_overlap([str(d)], own_local)]
+        own = overlap_keys(own_local)
+        return [d for d in dict.fromkeys(dirs) if not keys_overlap(overlap_keys([str(d)]), own)]
 
     def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
         """Remove the target and draft on-disk directories, independently.
