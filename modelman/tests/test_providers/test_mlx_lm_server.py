@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -612,7 +613,7 @@ def test_download_flips_cancel_flag_when_target_side_interrupted(provider):
 # --- removable_paths and the shared-artifact guard (#227, #229) ---
 
 
-def _pairing_variant(tmp_path, **kw) -> VariantSpec:
+def _pairing_variant(**kw) -> VariantSpec:
     base: dict = {
         "id": "mlx_lm_server/p",
         "provider": "mlx_lm_server",
@@ -631,21 +632,13 @@ def _pairing_cases(tmp_path):
     live outside model_dir and are never removable."""
     ut, ud = str(tmp_path / "user-target"), str(tmp_path / "user-draft")
     return [
-        (
-            "both sides downloaded",
-            _pairing_variant(tmp_path, repo="o/T", draft_repo="o/D"),
-            {"T", "D"},
-        ),
-        ("local_path target", _pairing_variant(tmp_path, local_path=ut, draft_repo="o/D"), {"D"}),
-        ("local_path draft", _pairing_variant(tmp_path, repo="o/T", draft_local_path=ud), {"T"}),
-        (
-            "both sides local_path",
-            _pairing_variant(tmp_path, local_path=ut, draft_local_path=ud),
-            set(),
-        ),
+        ("both sides downloaded", _pairing_variant(repo="o/T", draft_repo="o/D"), {"T", "D"}),
+        ("local_path target", _pairing_variant(local_path=ut, draft_repo="o/D"), {"D"}),
+        ("local_path draft", _pairing_variant(repo="o/T", draft_local_path=ud), {"T"}),
+        ("both sides local_path", _pairing_variant(local_path=ut, draft_local_path=ud), set()),
         (
             "target has a local_path AND a repo",
-            _pairing_variant(tmp_path, local_path=ut, repo="o/T", draft_local_path=ud),
+            _pairing_variant(local_path=ut, repo="o/T", draft_local_path=ud),
             {"T"},
         ),
     ]
@@ -673,8 +666,6 @@ def test_removable_paths_is_exactly_what_delete_removes(provider, tmp_path):
         everything = [models / "T", models / "D", tmp_path / "user-target", tmp_path / "user-draft"]
         for d in everything:
             if d.exists():
-                import shutil
-
                 shutil.rmtree(d)
             _make_dir(d, ("weights.safetensors", b"x"))
         removable = {Path(p) for p in provider.removable_paths(variant)}
@@ -748,6 +739,9 @@ def test_guard_still_refuses_when_the_other_pairing_lives_in_my_download(provide
 
 @pytest.mark.xfail(
     strict=True,
+    # Only the guard's wrong answer is the known gap; an error building the
+    # entries or calling the guard must fail the suite, not read as expected.
+    raises=AssertionError,
     reason="#229: a side with BOTH a local_path and a repo removes the repo's downloaded "
     "directory, which artifact_paths() does not list, so the guard never compares it",
 )

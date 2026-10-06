@@ -65,15 +65,21 @@ def _default_litellm_config(monkeypatch, tmp_path):
 def _no_real_wt_config(monkeypatch, tmp_path):
     """Point modelman at an empty wt config directory.
 
-    modelman reads wt's ~/.config/agent-wt for two things: the agent list
+    modelman reads wt's ~/.config/agent-wt for three things: the agent list
     (the model screen registers a native provider row per agent on mount,
-    registry.sync_agent_providers) and the usage/rotation state. Left at the
-    default, a test's outcome depended on the developer's own wt setup — on a
-    machine with agents configured, mounting the model screen rewrote the
-    test's registry.toml, which CI (no wt config) never saw. A test that needs
-    a wt config sets MODELMAN_WT_DIR itself and wins.
+    registry.sync_agent_providers), the usage/rotation state, and the
+    config.toml `modelman migrate` imports from. Left at the default, a
+    test's outcome depended on the developer's own wt setup — on a machine
+    with agents configured, mounting the model screen rewrote the test's
+    registry.toml, which CI (no wt config) never saw. A test that needs a wt
+    config sets MODELMAN_WT_DIR (or, for migrate, MODELMAN_WT_CONFIG) itself
+    and wins.
     """
-    monkeypatch.setenv("MODELMAN_WT_DIR", str(tmp_path / "no-agent-wt"))
+    wt_dir = tmp_path / "no-agent-wt"
+    monkeypatch.setenv("MODELMAN_WT_DIR", str(wt_dir))
+    # `migrate --wt-config` has its own default and does not follow
+    # MODELMAN_WT_DIR.
+    monkeypatch.setenv("MODELMAN_WT_CONFIG", str(wt_dir / "config.toml"))
 
 
 @pytest.fixture(autouse=True)

@@ -2569,12 +2569,19 @@ def test_add_start_discard_then_exit_syncs_routes_again(
                 current = app.screen._current_entry()
                 if current is not None and current.id == "ollama/a":
                     break
+            screen = app.screen
             await pilot.press("s")
             await pilot.pause()
             await pilot.press("y")
+            # Wait for the worker to finish, not only for its flag: the flag
+            # is written before the worker returns, and Escape with a worker
+            # still running raises ConfirmForceQuitDialog instead.
             for _ in range(400):
                 await pilot.pause()
-                if load_state(state_path).get("ollama/a").running:
+                if (
+                    load_state(state_path).get("ollama/a").running
+                    and not screen._lifecycle_worker_busy()
+                ):
                     break
             seen["started"] = load_state(state_path).get("ollama/a").running
             seen["syncs_before_exit"] = len([c for c in wt_calls if c[:1] == ["sync"]])

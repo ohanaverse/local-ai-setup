@@ -32,14 +32,23 @@ jobs:
       # rewrites live state (wt's rotation.state and usage.jsonl were being
       # overwritten by every `go test` until #221). Checked right after the
       # tests, before any later step could create them for its own reasons.
+      # Both tools put agent-wt and local-ai under XDG_CONFIG_HOME when it is
+      # set, so that base is checked too when it is not ~/.config.
       - name: Tests left the real config directories alone
         run: |
           status=0
-          for d in "$HOME/.config/agent-wt" "$HOME/.config/local-ai" "$HOME/.config/litellm"; do
-            if [ -e "$d" ]; then
-              echo "::error::the test run created $d"
-              ls -la "$d"
-              status=1
-            fi
+          bases=("$HOME/.config")
+          if [ -n "${XDG_CONFIG_HOME:-}" ] && [ "$XDG_CONFIG_HOME" != "$HOME/.config" ]; then
+            bases+=("$XDG_CONFIG_HOME")
+          fi
+          for base in "${bases[@]}"; do
+            for name in agent-wt local-ai litellm; do
+              d="$base/$name"
+              if [ -e "$d" ]; then
+                echo "::error::the test run created $d"
+                ls -la "$d"
+                status=1
+              fi
+            done
           done
           exit $status

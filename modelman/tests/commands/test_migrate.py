@@ -138,7 +138,9 @@ def test_migrate_on_a_fresh_machine_adds_rows_for_installed_providers(tmp_path, 
     assert "Migrated 2 providers and 0 models." in result.stdout
     assert "Added provider entries: ollama, omlx" in result.stdout
 
-    # A re-run is a no-op for the rows: nothing duplicated, nothing announced.
+    # A re-run leaves the same rows, not duplicates. (migrate rebuilds the
+    # registry from its inputs each time rather than reading the one on disk,
+    # so the rows are added, and announced, again.)
     again = CliRunner().invoke(app, ["migrate"])
     assert again.exit_code == 0
     assert [p.id for p in load_registry(registry_path).providers] == ["ollama", "omlx"]
