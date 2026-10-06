@@ -70,6 +70,16 @@ class Provider(ABC):
     # is retired (llamacpp).
     supports_discovery: bool = True
 
+    # True for a provider whose running flag is confirmed by a live probe
+    # (local_control._probe_running), which clears it when the server is not
+    # serving the model. False for one with no such signal — ollama, where
+    # "running" is a flag only and the daemon serves whatever is requested —
+    # so the flag is trusted as set and no probe ever clears it. Reconcile
+    # (sync.py, screens/__init__.py) reads this to clear the flag itself for
+    # a model it observes gone from disk (#233); read it through
+    # ProviderRegistry.running_flag_is_probed instead of testing provider ids.
+    running_flag_is_probed: bool = True
+
     def __init__(self, config: dict):
         self.config = config
 

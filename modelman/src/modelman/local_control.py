@@ -227,9 +227,11 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     is no live "is this specific model loaded" signal that corresponds to
     what the running flag means for ollama (the daemon serves whatever's
     requested, flag or no flag), so the flag is trusted as-is once set,
-    with no probe-based self-healing for this one provider.
+    with no probe-based self-healing for this one provider
+    (Provider.running_flag_is_probed is False for it). What does clear it,
+    besides a stop, is reconcile observing the model gone from disk (#233).
     """
-    if provider_id == "ollama":
+    if not ProviderRegistry.running_flag_is_probed(provider_id):
         return True
     base = base_origin_url or _DEFAULT_BASE_ORIGIN.get(provider_id)
     if not base:

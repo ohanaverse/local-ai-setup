@@ -148,6 +148,9 @@ def _parse_ollama_list_sizes(stdout: str) -> dict[str, int]:
 
 class OllamaProvider(Provider):
     name = "ollama"
+    # `ollama ps` lists only models loaded right now, and a started model is
+    # not loaded until its first request — see local_control._probe_running.
+    running_flag_is_probed = False
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)

@@ -1308,8 +1308,12 @@ def _patch_provider_local_models(mapping: dict[str, list[dict]]):
     fixtures further down.
     """
 
+    # The real class where there is one: capability flags are read off it
+    # (Provider.running_flag_is_probed, #233).
+    real_get_class = local_control.ProviderRegistry.get_class
+
     def get_class(name):
-        return object if name in mapping else None
+        return (real_get_class(name) or object) if name in mapping else None
 
     def get(name, config):
         by_name = {lm["variant_id"]: lm for lm in mapping.get(name, [])}

@@ -54,3 +54,11 @@ class ProviderRegistry:
         capability flag (e.g. Provider.manages_own_cache). An alias row
         (`omlx-6bit`) answers with the class of the server it names."""
         return cls._providers.get(cls.resolve(name))
+
+    @classmethod
+    def running_flag_is_probed(cls, name: str) -> bool:
+        """Provider.running_flag_is_probed for row `name`. True for a row no
+        class is registered for: nothing may clear a running flag on the
+        strength of a provider modelman cannot identify."""
+        provider_cls = cls.get_class(name)
+        return provider_cls is None or provider_cls.running_flag_is_probed

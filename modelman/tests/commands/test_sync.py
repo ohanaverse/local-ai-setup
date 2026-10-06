@@ -178,6 +178,54 @@ def test_sync_command_keeps_a_running_models_flag(tmp_path, monkeypatch):
     assert after.running is True
 
 
+def test_sync_command_clears_the_running_flag_of_an_ollama_model_that_is_gone(
+    tmp_path, monkeypatch
+):
+    """#233, through the command and the state file: a started ollama model
+    removed with `ollama rm` kept `running = true` for good — sync kept the
+    flag (#231) and ollama's probe never clears one. The merge onto the fresh
+    state copies only what sync observed, so the cleared flag has to be
+    carried across explicitly."""
+    from modelman.registry import ModelEntry
+    from modelman.state import ModelState, StateStore, load_state, save_state
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    save_registry(
+        Registry(
+            providers=[
+                ProviderEntry(
+                    id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")
+                )
+            ],
+            models=[
+                ModelEntry(
+                    id="ollama/a:1b",
+                    family="f",
+                    provider_id="ollama",
+                    model_name="a:1b",
+                    location="local",
+                )
+            ],
+        ),
+        registry_path,
+    )
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    store = StateStore()
+    store.set("ollama/a:1b", ModelState(ready=True, running=True))
+    save_state(store, state_path)
+
+    with patch("modelman.sync.list_ollama", return_value={}):
+        result = CliRunner().invoke(app, ["sync"])
+
+    assert result.exit_code == 0, result.output
+    after = load_state(state_path).get("ollama/a:1b")
+    assert after.ready is False
+    assert after.running is False
+    assert "No longer on disk, marked stopped: ollama/a:1b" in result.output
+
+
 def test_sync_command_does_not_undo_a_start_or_stop_made_while_it_ran(tmp_path, monkeypatch):
     """#231's neighbour. sync loads modelman.toml, scans the providers (slow),
     then writes back — and it wrote back every row of its stale snapshot. A

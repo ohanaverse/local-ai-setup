@@ -439,6 +439,12 @@ def sync() -> None:
     # recorded stopped, and a discovered model's row (dropped by its stop)
     # came back (#231).
     #
+    # `running` is the one thing merged that sync did not observe directly,
+    # and only ever to False: for a model seen gone from disk on a provider
+    # whose flag no probe confirms (result.running_cleared, #233). Nothing
+    # else clears that flag, and it would otherwise be dropped here with the
+    # rest of the stale row.
+    #
     # Families are left alone: run_sync never touches them, so its snapshot
     # holds nothing to write — and merging `state.families` back whole would
     # resurrect a legacy family row a concurrent `delete-family` just dropped,
@@ -454,6 +460,8 @@ def sync() -> None:
                     disk_path=seen.disk_path,
                     size_bytes=seen.size_bytes,
                 )
+            for mid in result.running_cleared:
+                fresh.models[mid] = replace(fresh.get(mid), running=False)
     except OSError as exc:
         # No registry repair is saved either — the state write must land first,
         # and the repair is idempotent and re-runs on the next sync.
@@ -477,6 +485,8 @@ def sync() -> None:
     typer.echo(
         f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."
     )
+    if result.running_cleared:
+        typer.echo(f"No longer on disk, marked stopped: {', '.join(result.running_cleared)}")
     # The registry save above may have repaired a provider (backfilled
     # base_url, added entry); route what it now configures (#179).
     _sync_routes_and_warn()
