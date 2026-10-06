@@ -53,9 +53,11 @@ def omlx_model_dirs(md: Path) -> list[Path]:
     - dot-directories are skipped, and the first of two equal names wins;
     - if nothing was found, `md` itself is the one model when it holds
       config.json and no adapter_config.json, unless it holds a Hugging Face
-      cache entry: omlx may have registered a model from that entry, and then
-      its own fallback does not fire (listing nothing is the safe answer, as
-      neither tool lists cache models).
+      cache entry. That condition is a deliberate conservative answer: omlx
+      registers a model from a usable cache entry, and then its own fallback
+      does not fire, so the fallback is skipped whenever an entry is present.
+      When the entry is one omlx cannot use, omlx itself would take its
+      fallback and serve `md`, and this scan does not list it.
 
     A Hugging Face cache entry (models--Org--Name/snapshots/...) is not
     listed: omlx names it by its own rules. A missing or unreadable `md` is

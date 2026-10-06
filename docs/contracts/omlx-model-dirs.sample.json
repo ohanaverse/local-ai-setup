@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared fixture for the omlx model-directory scan. wt (wt/internal/localmodels/sources.go, scanOmlxModels) and modelman (modelman/src/modelman/providers/omlx.py, omlx_model_dirs) must list the same model names for the same tree, and both follow omlx's discover_models. Each case lists the files to create under a temporary root (directories are implied), the model dir relative to that root, and the names expected, sorted. Read by a Go test in wt/internal/localmodels and a Python test in modelman/tests/contracts; a rule change on either side fails both CI jobs in the same PR.",
+  "_comment": "Shared fixture for the omlx model-directory scan. wt (wt/internal/localmodels/sources.go, scanOmlxModels) and modelman (modelman/src/modelman/providers/omlx.py, omlx_model_dirs) must list the same model names for the same tree. Both follow omlx's DIRECTORY rule (discover_models); neither checks weights, which omlx also requires before it registers a model. Both deliberately list nothing for a model dir that holds a Hugging Face cache entry, whether or not omlx can use that entry. Each case lists the files to create under a temporary root (directories are implied; files are empty), the model dir relative to that root, and the names expected, sorted. Read by a Go test in wt/internal/localmodels and a Python test in modelman/tests/contracts; a rule change on either side fails both CI jobs in the same PR.",
   "cases": [
     {"name": "flat and nested", "model_dir": "models",
      "files": ["models/Flat-4bit/config.json", "models/org/Nested-6bit/config.json", "models/org/Other-8bit/config.json", "models/org/notes/readme.txt"],
@@ -19,8 +19,8 @@
     {"name": "fallback: an adapter is not a model", "model_dir": "models/Lora",
      "files": ["models/Lora/config.json", "models/Lora/adapter_config.json"],
      "expect": []},
-    {"name": "fallback: not taken when the dir holds an HF cache entry", "model_dir": "models/Mixed",
-     "files": ["models/Mixed/config.json", "models/Mixed/models--Org--Cached/snapshots/abc/config.json"],
+    {"name": "fallback: not taken when the dir holds an HF cache entry (omlx serves the cache model instead)", "model_dir": "models/Mixed",
+     "files": ["models/Mixed/config.json", "models/Mixed/models--mlx-community--Cached/snapshots/abc/config.json", "models/Mixed/models--mlx-community--Cached/snapshots/abc/model.safetensors"],
      "expect": []},
     {"name": "a missing model dir is no models", "model_dir": "models/absent",
      "files": ["models/keep.txt"],

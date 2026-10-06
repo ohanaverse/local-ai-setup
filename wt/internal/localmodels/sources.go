@@ -101,8 +101,11 @@ func scanModelDirs(dir string) ([]string, error) {
 // A name found twice is listed once. When nothing was found, dir itself is
 // the one model, named after itself, if it is a model by the same test (it
 // holds config.json and no adapter_config.json) and holds no Hugging Face
-// cache entry: omlx registers a model from such an entry, and then its own
-// fallback does not fire. A missing dir is "no models", not an error.
+// cache entry. The cache condition is a deliberate conservative answer: omlx
+// registers a model from a usable cache entry, and then its own fallback does
+// not fire, so the fallback is skipped whenever an entry is present. When the
+// entry is one omlx cannot use, omlx itself would take its fallback and serve
+// dir, and wt does not list it. A missing dir is "no models", not an error.
 //
 // Not covered: omlx also resolves Hugging Face hub cache entries
 // (models--Org--Name/snapshots/<hash>/) under id rules of its own. Such an
