@@ -393,17 +393,43 @@ def _run_wt(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]
         raise WtBridgeError(f"wt {sub} could not run: {type(e).__name__}") from None
 
 
+# cobra's refusal of a flag the installed wt does not have.
+_UNKNOWN_FLAG = "unknown flag"
+
+
+def _raise_if_wt_predates(proc: subprocess.CompletedProcess[str], sub: str) -> None:
+    """Raise the reinstall hint when wt failed on a flag it does not know.
+
+    An older wt does not print prose and exit 0: cobra exits non-zero with
+    `unknown flag: --json` on stderr. Passing that on bare leaves the user
+    with a flag error about a command they never typed."""
+    if proc.returncode == 0:
+        return
+    # Only the line that names the flag: cobra may print its usage after it.
+    for line in (proc.stderr or "").splitlines():
+        if _UNKNOWN_FLAG in line:
+            flag_error = line[line.index(_UNKNOWN_FLAG) :].strip()
+            raise WtBridgeError(
+                f"{flag_error}: this wt predates the `wt {sub}` flags modelman uses for "
+                "omlx — reinstall it with `make install`"
+            )
+
+
 def start_plan(model_id: str, timeout: float = PLAN_TIMEOUT) -> StartPlan | None:
     """What `wt start <model_id>` would do, or None when wt gives no usable
-    answer (not installed, timed out, an older wt, an id wt does not know).
+    answer (not installed, timed out, an id wt does not know).
 
     wt is asked because the answer needs omlx's sizes and the registry's key,
-    which only wt reads. A read, so nothing is raised: None means "could not
-    tell", which no caller may read as "nothing would be unloaded"."""
+    which only wt reads. A read, so a failure is not raised: None means
+    "could not tell", which no caller may read as "nothing would be
+    unloaded". The one exception is a wt too old to know `--plan`
+    (_raise_if_wt_predates): the start would be refused the same way, so that
+    raises WtBridgeError with the reinstall hint."""
     try:
         proc = _run_wt(["start", model_id, "--plan", "--json"], timeout)
     except WtBridgeError:
         return None
+    _raise_if_wt_predates(proc, "start")
     try:
         return parse_start_plan(proc.stdout)
     except ValueError:
@@ -421,6 +447,7 @@ def start(model_id: str, *, replace: bool, timeout: float = START_TIMEOUT) -> St
     if replace:
         argv.append("--replace")
     proc = _run_wt(argv, timeout)
+    _raise_if_wt_predates(proc, "start")
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
     try:
@@ -437,5 +464,6 @@ def stop(target: str, timeout: float = STOP_TIMEOUT) -> None:
     a bare provider (`omlx`) stops the service. `--yes` because the caller
     has already asked the user. Raises WtBridgeError with wt's message."""
     proc = _run_wt(["stop", target, "--yes"], timeout)
+    _raise_if_wt_predates(proc, "stop")
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))

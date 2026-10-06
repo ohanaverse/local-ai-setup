@@ -97,8 +97,11 @@ def _never_call_real_ollama(monkeypatch):
     # _probe_running/_ollama_loaded_names explicitly.
     monkeypatch.setattr("modelman.local_control._ollama_loaded_names", lambda: [])
     monkeypatch.setattr("modelman.local_control._http_models_ids", lambda url, timeout=2.0: [])
-    # ...and the omlx probe's /health read (wt#201); None = no counts, so the
-    # probe falls back to the (stubbed, empty) list.
+    # ...and the omlx probe's reads of /v1/models/status and /health (and the
+    # ollama /api/tags read). None = no answer from any of them, so the omlx
+    # probe goes on to `wt served` (stubbed in _never_call_real_wt) and then
+    # to "was the connection refused?" (stubbed below): by default it cannot
+    # say, and clears no flag.
     monkeypatch.setattr("modelman.local_control._http_json", lambda url, timeout=2.0: None)
     # ...and start_local_model's "is this ollama model pulled?" check, which
     # would otherwise GET the developer's real /api/tags — machine-dependent,
@@ -115,10 +118,11 @@ def _never_call_real_ollama(monkeypatch):
     # on the dev machine and down in CI, i.e. machine-dependent tests. Stubbed
     # to "answering"; the tests of the down path patch it to False.
     monkeypatch.setattr("modelman.local_control._http_answers", lambda url, timeout=2.0: True)
-    # ...and stop_local_model's "is omlx positively down?" check (#213), which
-    # would otherwise dial the developer's real omlx port. Stubbed to "not
-    # refused" — the answer that clears no flag; the tests of the check patch
-    # it, and tests/test_local_process.py tests the real function.
+    # ...and the "is omlx positively down?" check stop_local_model and the
+    # omlx probe make (#213), which would otherwise dial the developer's real
+    # omlx port. Stubbed to "not refused" — the answer that clears no flag;
+    # the tests of the check patch it, and tests/test_local_process.py tests
+    # the real function.
     monkeypatch.setattr(
         "modelman.local_control._connection_refused", lambda url, timeout=2.0: False
     )
@@ -169,7 +173,9 @@ def _never_call_real_wt(monkeypatch):
     exercising error paths must override wt_bridge._run. Every argv tail is
     recorded and yielded (see the `wt_calls` fixture). The start/stop calls go
     through wt_bridge._run_wt, which fails the test loudly unless the test
-    stubs it."""
+    stubs it. wt_bridge.served_ids (`wt served`, the omlx probe's keyed read)
+    goes through neither seam, so it is stubbed itself, to None — "wt cannot
+    say" — and the tests that need an answer patch it."""
     import json
 
     from modelman import wt_bridge
@@ -215,6 +221,7 @@ def _never_call_real_wt(monkeypatch):
         )
 
     monkeypatch.setattr(wt_bridge, "_run_wt", no_wt)
+    monkeypatch.setattr(wt_bridge, "served_ids", lambda provider, timeout=0.0: None)
     return calls
 
 

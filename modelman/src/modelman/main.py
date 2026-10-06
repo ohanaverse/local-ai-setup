@@ -215,12 +215,13 @@ def _load_registry_or_exit() -> Registry:
 def _load_registry_for_stop() -> Registry | None:
     """The registry for `modelman stop <id>`, or None when it cannot be read.
 
-    A stop needs no registry to stop a model: it is read for one thing, the
-    omlx server's origin, when wt cannot say whether an omlx model is loaded
+    A stop needs no registry to stop a model: it is read only when wt
+    refuses to stop an omlx model as not running, for the name omlx serves
+    the model under and the omlx server's origin
     (local_control._stop_omlx_via_wt). So an unreadable registry must not
-    fail the command — the stop goes ahead without it, and that one case
-    then reports that it cannot tell. A registry that is not there is an
-    empty one, as for every other command."""
+    fail the command — the stop goes ahead without it, and that case then
+    reports that it cannot tell unless omlx's pool is empty. A registry that
+    is not there is an empty one, as for every other command."""
     try:
         return load_registry()
     except RegistryNotFoundError:

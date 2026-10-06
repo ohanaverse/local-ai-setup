@@ -279,6 +279,11 @@ def test_sync_timeout_propagates_as_timeout_error(monkeypatch):
     assert calls == [["sync", "--json"]]
 
 
+# conftest stubs wt_bridge.served_ids for every test (it shells out past both
+# bridge seams); the tests of the function itself put the real one back.
+_real_served_ids = wt_bridge.served_ids
+
+
 def _served(monkeypatch, result):
     """wt_bridge.served_ids("omlx") with `wt served` answering `result` (a
     CompletedProcess, or an exception to raise)."""
@@ -292,7 +297,7 @@ def _served(monkeypatch, result):
 
     monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: "/usr/local/bin/wt")
     monkeypatch.setattr(wt_bridge.subprocess, "run", run)
-    return wt_bridge.served_ids("omlx"), seen
+    return _real_served_ids("omlx"), seen
 
 
 def test_served_ids_reads_wts_json(monkeypatch):
@@ -323,7 +328,7 @@ def test_served_ids_is_unknown_whenever_wt_gives_no_answer(monkeypatch, result):
 
 def test_served_ids_is_unknown_without_wt_on_path(monkeypatch):
     monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: None)
-    assert wt_bridge.served_ids("omlx") is None
+    assert _real_served_ids("omlx") is None
 
 
 def test_warm_runs_wt_warm_and_reports_its_failure(monkeypatch):
@@ -443,3 +448,29 @@ def test_stop_failure_raises_with_wts_message(monkeypatch):
     )
     with pytest.raises(wt_bridge.WtBridgeError, match="is not running"):
         wt_bridge.stop("omlx/A")
+
+
+@pytest.mark.parametrize(
+    ("call", "flag"),
+    [
+        (lambda: wt_bridge.start("omlx/B", replace=True), "--json"),
+        (lambda: wt_bridge.start_plan("omlx/B"), "--plan"),
+        (lambda: wt_bridge.stop("omlx/B"), "--yes"),
+    ],
+    ids=["start", "plan", "stop"],
+)
+def test_an_older_wt_that_rejects_a_flag_gets_the_reinstall_hint(monkeypatch, call, flag):
+    # Final review F8: a real older wt does not print prose and exit 0 — cobra
+    # exits non-zero with `unknown flag`, so the "may predate" hint in start()
+    # was never reached for it and the user saw only the flag error.
+    _wt(
+        monkeypatch,
+        returncode=1,
+        stderr=f"Error: unknown flag: {flag}\nUsage:\n  wt start <model> [flags]\n"
+        f"wt: unknown flag: {flag}\n",
+    )
+    with pytest.raises(wt_bridge.WtBridgeError, match="make install") as exc:
+        call()
+    # wt's flag error once, and none of the usage cobra prints after it.
+    assert str(exc.value).startswith(f"unknown flag: {flag}: this wt predates")
+    assert "Usage" not in str(exc.value)

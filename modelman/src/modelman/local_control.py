@@ -95,6 +95,14 @@ _DEFAULT_BASE_ORIGIN = {
 # with) must treat them as one group, never as two independent providers.
 _OMLX_PROVIDER_IDS: frozenset[str] = frozenset({"omlx", "omlx-6bit"})
 
+
+def is_omlx_family(provider_id: str) -> bool:
+    """Whether `provider_id` is one of the registry rows that stand for the
+    omlx server (omlx, omlx-6bit) — for a caller outside this module that
+    must treat the two as one pool."""
+    return provider_id in _OMLX_PROVIDER_IDS
+
+
 # The omlx family's registry provider rows, in the order wt picks one to
 # stand for the family (wt/internal/localmodels/inventory.go's familyIDs /
 # familyProviderID): plain `omlx` first, `omlx-6bit` on a registry that
@@ -259,7 +267,7 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
         # no origin for, and no flag was set by starting one.
         return False
     ids = _http_models_ids(f"{base}/v1/models")
-    if provider_id in ("omlx", "omlx-6bit"):
+    if is_omlx_family(provider_id):
         loaded = _omlx_loaded(base, ids)
         if loaded is None:
             return None
@@ -290,18 +298,29 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
     - `wt served omlx`: the same read with the registry's key, for an omlx
       that refuses the keyless one. modelman resolves no secret_ref, so this
       is the one probe that shells out.
-    - neither answers: an omlx that predates the pool endpoints (no pool
-      counts in /health) is read from `listed`, as before. Otherwise None,
-      reported as-is (#249): callers that guard a flag leave it alone, because
-      a pool that will not say neither confirms nor refutes it."""
+    - neither answers, and /health does: an omlx that predates the pool
+      endpoints (a /health answer with no pool counts) is read from `listed`,
+      as before. One that has the counts will not say which models they
+      count, so None, reported as-is (#249): callers that guard a flag leave
+      it alone, because a pool that will not say neither confirms nor refutes
+      it.
+    - /health does not answer either: nothing answered, and `listed` is the
+      [] of a /v1/models read that failed with the rest, not a listing. Only
+      a REFUSED connection is an answer — no server, so nothing loaded, []. A
+      timeout or a reset comes as well from an omlx too busy loading a model
+      to reply in time, so that is None: read as "nothing loaded" it cleared
+      the flag of a model still resident."""
     by_status = _omlx_status_loaded(base)
     if by_status is not None:
         return by_status
     by_wt = wt_bridge.served_ids(_OMLX_FAMILY)
     if by_wt is not None:
         return by_wt
-    health = _http_json(f"{base}/health")
-    pool = health.get("engine_pool") if health else None
+    health_url = f"{base}/health"
+    health = _http_json(health_url)
+    if health is None:
+        return [] if _connection_refused(health_url) else None
+    pool = health.get("engine_pool")
     if not isinstance(pool, dict) or not isinstance(pool.get("loaded_count"), int):
         return listed
     return None
@@ -310,18 +329,22 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
 def _omlx_status_loaded(base: str) -> list[str] | None:
     """The ids omlx's /v1/models/status reports loaded or loading, or None
     when it gives no listing — a refusal for want of the server's API key
-    answers with a JSON object too, just not one with `models`."""
+    answers with a JSON object too, just not one with `models`.
+
+    An entry without a boolean `loaded` makes the whole answer no listing:
+    it is not the schema this code reads, and taking a missing key for "not
+    loaded" would, after a rename on omlx's side, report every model
+    unloaded and clear every omlx flag."""
     status = _http_json(f"{base}/v1/models/status")
     models = status.get("models") if status else None
     if not isinstance(models, list):
         return None
+    if not all(isinstance(m, dict) and isinstance(m.get("loaded"), bool) for m in models):
+        return None
     return [
         m["id"]
         for m in models
-        if isinstance(m, dict)
-        and isinstance(m.get("id"), str)
-        and m["id"]
-        and (m.get("loaded") or m.get("is_loading"))
+        if isinstance(m.get("id"), str) and m["id"] and (m["loaded"] or m.get("is_loading"))
     ]
 
 
@@ -1328,13 +1351,22 @@ def _start_omlx_via_wt(
     unloading, so this result is the only way modelman learns of it. A start
     wt refuses changes no flag: what omlx may have unloaded on the way is not
     reported for a failed start (#260), and the next running_model_ids()
-    probe clears any flag that went stale."""
+    probe clears any flag that went stale. A start that times out here is
+    reported as one that may still be going on: the bridge kills wt, not
+    omlx."""
     try:
         outcome = wt_bridge.start(resolved_id, replace=True)
     except wt_bridge.WtBridgeError as exc:
+        reason = str(exc)
+        if isinstance(exc, wt_bridge.WtBridgeTimeoutError):
+            # The bridge killed wt; nothing told omlx to stop loading.
+            reason += (
+                f" — wt was stopped, omlx was not: {resolved_id} may still be loading "
+                "in omlx, so check what omlx has loaded before retrying"
+            )
         raise LocalControlError(
             _with_warnings(
-                f"failed to start {resolved_id}: {exc}",
+                f"failed to start {resolved_id}: {reason}",
                 sync_routes(litellm_path=litellm_path),
             )
         ) from exc
@@ -1383,9 +1415,11 @@ def stop_local_model(
 
     An omlx model is unloaded through wt (_stop_omlx_via_wt): the omlx
     service and the other models it has loaded stay up, and their flags
-    are left alone (#213). `registry` is read only there, and only to find
-    omlx's origin when wt cannot say whether the model is loaded; without
-    it that case is always an error (see _stop_omlx_via_wt).
+    are left alone (#213). `registry` is read only there, and only when wt
+    refuses the stop: for the name omlx serves the model under, to look for
+    it in the pool, and for omlx's origin when the pool cannot be read.
+    Without it a refused stop clears the flag only when the pool is empty
+    (see _stop_omlx_via_wt).
 
     The sync runs AFTER the stop and the flag clear: wt probes the
     providers itself, so the process must already be gone.
@@ -1438,20 +1472,46 @@ def _omlx_origin(registry: Registry) -> str:
     return _DEFAULT_BASE_ORIGIN[_OMLX_FAMILY]
 
 
+def _omlx_side_name(model_id: str, registry: Registry | None) -> tuple[str, bool]:
+    """(the name omlx serves `model_id` under, whether that name can be
+    trusted).
+
+    A registry model's is its model_name. Any other id is a discovered one,
+    `omlx/<directory name>` (_discovered_id), whose tail is the name — but
+    only a registry can say the id is not one of its own: a registry id is
+    spelled `omlx/org--name`, and that tail is no directory name. So without
+    a registry the tail is a guess, good for finding the model among the
+    served ids and never for concluding it is absent from them."""
+    tail = model_id.partition("/")[2]
+    if registry is None:
+        return tail, False
+    model = next((m for m in registry.models if m.id == model_id), None)
+    return (model.model_name if model is not None else tail), True
+
+
 def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:
     """Unload one omlx model through `wt stop <id> --yes`; the service and
     its other loaded models stay up (#213).
 
-    wt refusing because the model "is not running" has two meanings, told
-    apart by whether wt can read the pool at all:
+    wt refusing because the model "is not running" (or is unknown to it) is
+    not yet a fact about the pool: the refusal also comes from a pool wt
+    could not read at that moment, and from an id it could not map. So the
+    pool is read (`wt served omlx`) and the model looked for in it, by the
+    name omlx serves it under (_omlx_side_name):
 
-    - wt can read it (`wt served omlx` answers): the model really is not
-      loaded — evicted, or timed out — so the goal is met.
-    - wt cannot (a keyed omlx whose key the registry does not name): the
-      model may well be loaded. That is "cannot say", which must never clear
-      a flag (#249), so it is an error telling the user how to proceed.
+    - the pool lists the model: wt refused to stop a model omlx has loaded.
+      An error; the flag stays.
+    - the pool is empty, or the model's name is known and not in it: the
+      model really is not loaded — evicted, or timed out — so the goal is
+      met.
+    - the pool holds models and the name is not known (no registry to say
+      whether the id is its own): the model may be one of them. "Cannot
+      say", which must never clear a flag (#249).
+    - the pool cannot be read (a keyed omlx whose key the registry does not
+      name): the model may well be loaded. "Cannot say" again, an error
+      telling the user how to proceed.
 
-    The one exception to the second case is an omlx that is positively not
+    The one exception to the last case is an omlx that is positively not
     there: the connection to its origin is REFUSED, so no server is running
     and nothing is loaded — a flag left by a crashed server can be cleared.
     Only a refusal counts. A timeout, a reset or an unusable answer comes
@@ -1466,16 +1526,28 @@ def _stop_omlx_via_wt(model_id: str, registry: Registry | None) -> None:
     except wt_bridge.WtBridgeError as exc:
         if not any(tail in str(exc) for tail in _WT_NOT_RUNNING):
             raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
-    if wt_bridge.served_ids(_OMLX_FAMILY) is not None:
-        return
-    if registry is not None and _connection_refused(f"{_omlx_origin(registry)}/health"):
-        return
-    raise LocalControlError(
-        f"cannot tell whether {model_id} is loaded: wt could not read the omlx pool. "
-        "If the omlx server has an API key, set auth.secret_ref on the registry's omlx "
-        "provider so one model can be unloaded; or run `modelman stop --all` to stop "
-        "the omlx service."
-    )
+    served = wt_bridge.served_ids(_OMLX_FAMILY)
+    if served is None:
+        if registry is not None and _connection_refused(f"{_omlx_origin(registry)}/health"):
+            return
+        raise LocalControlError(
+            f"cannot tell whether {model_id} is loaded: wt could not read the omlx pool. "
+            "If the omlx server has an API key, set auth.secret_ref on the registry's omlx "
+            "provider so one model can be unloaded; or run `modelman stop --all` to stop "
+            "the omlx service."
+        )
+    name, name_known = _omlx_side_name(model_id, registry)
+    if any(_name_matches(served_id, name) for served_id in served):
+        raise LocalControlError(
+            f"wt refused to stop {model_id}, but omlx reports it loaded — retry, or run "
+            "`modelman stop --all` to stop the omlx service."
+        )
+    if served and not name_known:
+        raise LocalControlError(
+            f"cannot tell whether {model_id} is loaded: omlx has models loaded, and without "
+            "a readable registry the name omlx serves this one under is not known. Fix "
+            "registry.toml and retry, or run `modelman stop --all` to stop the omlx service."
+        )
 
 
 def stop_all_local_models(

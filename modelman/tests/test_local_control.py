@@ -2378,9 +2378,101 @@ def test_omlx_probe_asks_wt_when_status_is_refused(monkeypatch):
 
 def test_omlx_probe_reads_the_list_on_an_omlx_without_status(monkeypatch):
     # An omlx old enough to have neither /health counts nor a status endpoint:
-    # its /v1/models list is all there is, as before.
-    monkeypatch.setattr(local_control, "_http_json", lambda url: None)
+    # its /health ANSWERS, with no pool counts, and its /v1/models list is all
+    # there is, as before.
+    def fake_json(url):
+        return {"status": "healthy"} if url.endswith("/health") else None
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
     assert local_control._omlx_loaded("http://x", ["A-4bit"]) == ["A-4bit"]
+
+
+def _omlx_answers_nothing(monkeypatch, refused):
+    """An omlx whose status, `wt served` and /health reads all fail, with the
+    connection to it refused or not. Returns the urls the refused check saw."""
+    refused_urls: list[str] = []
+
+    def fake_refused(url, timeout=0.0):
+        refused_urls.append(url)
+        return refused
+
+    monkeypatch.setattr(local_control, "_http_json", lambda url: None)
+    monkeypatch.setattr(local_control, "_http_models_ids", lambda url: [])
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: None)
+    monkeypatch.setattr(local_control, "_connection_refused", fake_refused)
+    return refused_urls
+
+
+def test_omlx_probe_cannot_say_when_nothing_answered_at_all(tmp_path, monkeypatch):
+    # Final review F2: status, `wt served` and /health all failed without the
+    # connection being refused (an omlx too busy loading another model to
+    # answer inside the probe timeout). The probe returned the /v1/models
+    # list, which had failed too and was [], so it read "not running" and
+    # running_model_ids cleared the flag of a model that was still resident.
+    refused_urls = _omlx_answers_nothing(monkeypatch, refused=False)
+
+    assert local_control._omlx_loaded("http://x", []) is None
+    assert refused_urls == ["http://x/health"]
+    assert _probe_running("omlx", "org/A-4bit", "http://x") is None
+
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    state = load_state(state_path)
+    assert running_model_ids(_omlx_pool_registry(), state, state_path) == ["omlx/a"]
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_omlx_probe_reads_a_refused_connection_as_nothing_loaded(monkeypatch):
+    # Nothing listens on omlx's port: no server, so nothing is loaded. That is
+    # a positive answer, and the one failure that may clear a flag.
+    refused_urls = _omlx_answers_nothing(monkeypatch, refused=True)
+
+    assert local_control._omlx_loaded("http://x", []) == []
+    assert refused_urls == ["http://x/health"]
+    assert _probe_running("omlx", "org/A-4bit", "http://x") is False
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        [{"id": "A"}],
+        [{"id": "A", "loaded": "yes"}],
+        [{"id": "A", "loaded": True}, {"id": "B", "is_loading": False}],
+        [{"id": "A", "loaded": True}, "B"],
+    ],
+    ids=["no-loaded-key", "loaded-not-boolean", "one-entry-without", "entry-not-an-object"],
+)
+def test_omlx_status_with_an_entry_lacking_boolean_loaded_is_no_listing(monkeypatch, models):
+    # Final review F5: an entry with no boolean `loaded` read as "not loaded".
+    # Were omlx to rename the key, every status answer would say nothing is
+    # loaded and every omlx flag would clear. A listing this code cannot read
+    # is no listing.
+    def fake_json(url):
+        if url.endswith("/v1/models/status"):
+            return {"models": models}
+        return {"engine_pool": {"loaded_count": 1, "model_count": 2}}
+
+    monkeypatch.setattr(local_control, "_http_json", fake_json)
+    monkeypatch.setattr(local_control.wt_bridge, "served_ids", lambda p, timeout=0.0: None)
+    assert local_control._omlx_status_loaded("http://x") is None
+    assert _probe_running("omlx", "B", "http://x") is None
+
+
+def test_omlx_status_with_no_models_is_an_answer(monkeypatch):
+    # An empty pool is a listing that says nothing is loaded, not "no listing".
+    monkeypatch.setattr(local_control, "_http_json", lambda url: {"models": []})
+    assert local_control._omlx_status_loaded("http://x") == []
+
+
+def test_the_omlx_probe_never_runs_the_real_wt_served_by_default(monkeypatch):
+    # Final review F6: wt_bridge.served_ids shells out directly, past both
+    # bridge seams, and the probe reaches it whenever status gives no listing
+    # (the suite's default). conftest must stub it.
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError("the probe ran `wt served`")
+
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: "/usr/local/bin/wt")
+    monkeypatch.setattr(wt_bridge.subprocess, "run", no_subprocess)
+    assert local_control._omlx_loaded("http://x", []) is None
 
 
 def _omlx_probe(listed, health, status=None):
@@ -2485,11 +2577,14 @@ def test_probe_running_omlx_mixed_pool_is_unknown_when_nothing_can_say():
 
 
 def test_probe_running_omlx_without_health_counts_falls_back_to_the_list():
-    # An omlx with no /health, or one whose answer has no pool counts,
-    # predates the counts: the list is all there is, as before.
-    assert _omlx_probe(["A"], None) is True
+    # An omlx whose /health answers with no pool counts predates the counts:
+    # the list is all there is, as before.
+    assert _omlx_probe(["A"], {}) is True
     assert _omlx_probe(["A"], {"status": "healthy"}) is True
-    assert _omlx_probe(["B"], None) is False
+    assert _omlx_probe(["B"], {"status": "healthy"}) is False
+    # No /health answer at all is not that case (final review F2): nothing
+    # answered, so nothing says the model is not loaded.
+    assert _omlx_probe(["A"], None) is None
 
 
 def test_probe_running_mtplx_does_not_consult_health():
@@ -3013,6 +3108,30 @@ def test_start_omlx_failure_includes_sync_warnings(tmp_path, monkeypatch):
     assert "may not be synced" in str(excinfo.value)
 
 
+def test_start_omlx_timeout_says_the_model_may_still_be_loading(tmp_path, monkeypatch):
+    # Final review F8: on a timeout the bridge kills wt, not omlx, so the load
+    # may go on. The user has to hear that before retrying; no flag changes.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_start(
+        monkeypatch, error=wt_bridge.WtBridgeTimeoutError("wt start timed out after 660s")
+    )
+
+    with pytest.raises(LocalControlError, match="failed to start omlx/b") as exc:
+        start_local_model(_omlx_pool_registry(), "omlx/b", state_path)
+
+    assert "wt start timed out after 660s" in str(exc.value)
+    assert "may still be loading in omlx" in str(exc.value)
+    state = load_state(state_path)
+    assert state.get("omlx/a").running and not state.get("omlx/b").running
+
+
+def test_is_omlx_family_covers_both_omlx_rows():
+    # omlx and omlx-6bit are one server; every other provider is not it.
+    assert local_control.is_omlx_family("omlx") and local_control.is_omlx_family("omlx-6bit")
+    assert not local_control.is_omlx_family("mtplx")
+    assert not local_control.is_omlx_family("ollama")
+
+
 def _stub_wt_stop(monkeypatch, error=None, served=(), refused=False):
     """Stub wt's stop and its pool read, and the refused-connection check.
     Returns (stop targets, urls the refused check was made against)."""
@@ -3060,7 +3179,7 @@ def test_stop_omlx_clears_the_flag_of_a_model_wt_says_is_not_running(tmp_path, m
         served=["B-4bit"],
     )
 
-    result = stop_local_model("omlx/a", state_path)
+    result = stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
 
     assert result.stopped_model_id == "omlx/a"
     assert not load_state(state_path).get("omlx/a").running
@@ -3168,10 +3287,72 @@ def test_stop_omlx_clears_the_flag_of_a_model_wt_no_longer_knows(tmp_path, monke
         served=["B-4bit"],
     )
 
-    result = stop_local_model("omlx/Stray-4bit", state_path)
+    result = stop_local_model("omlx/Stray-4bit", state_path, registry=_omlx_pool_registry())
 
     assert result.stopped_model_id == "omlx/Stray-4bit"
     assert not load_state(state_path).get("omlx/Stray-4bit").running
+
+
+def test_stop_omlx_keeps_the_flag_when_omlx_reports_the_model_loaded(tmp_path, monkeypatch):
+    # Final review F1: wt refused the stop as "not running", but the pool it
+    # then read holds the model (wt's own read was transiently unusable, or it
+    # could not map the id). A readable pool is not an absent model: the flag
+    # was cleared for a model omlx still had loaded.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _, refused_urls = _stub_wt_stop(
+        monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=["A-4bit", "B-4bit"], refused=True
+    )
+
+    with pytest.raises(LocalControlError, match="omlx reports it loaded") as exc:
+        stop_local_model("omlx/a", state_path, registry=_omlx_pool_registry())
+
+    assert "wt refused to stop omlx/a" in str(exc.value)
+    assert refused_urls == []  # a pool that answered is not asked whether it is down
+    assert load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_keeps_the_flag_of_a_discovered_model_omlx_reports_loaded(tmp_path, monkeypatch):
+    # A discovered id is `omlx/<directory name>`, so its tail is the name omlx
+    # serves it under — with or without a registry to say so.
+    for registry in (None, _omlx_pool_registry()):
+        state_path = _state_path(tmp_path, {"omlx/Stray-4bit": True})
+        _stub_wt_stop(
+            monkeypatch,
+            error=wt_bridge.WtBridgeError('unknown model "omlx/Stray-4bit"'),
+            served=["Stray-4bit"],
+        )
+
+        with pytest.raises(LocalControlError, match="omlx reports it loaded"):
+            stop_local_model("omlx/Stray-4bit", state_path, registry=registry)
+
+        assert load_state(state_path).get("omlx/Stray-4bit").running
+
+
+def test_stop_omlx_clears_the_flag_when_the_pool_is_empty(tmp_path, monkeypatch):
+    # Nothing is loaded, so this model is not: no name is needed to say so,
+    # and so no registry either.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_stop(monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=[])
+
+    result = stop_local_model("omlx/a", state_path)
+
+    assert result.stopped_model_id == "omlx/a"
+    assert not load_state(state_path).get("omlx/a").running
+
+
+def test_stop_omlx_keeps_the_flag_when_the_models_omlx_name_is_not_known(tmp_path, monkeypatch):
+    # No registry was given and the pool holds models. `omlx/a` is a registry
+    # id here (model_name org/A-4bit), and its tail `a` is no directory name:
+    # that `a` is not among the served ids does not say A-4bit is not. The
+    # flag stays and the user is told.
+    state_path = _state_path(tmp_path, {"omlx/a": True})
+    _stub_wt_stop(monkeypatch, error=_WT_SAYS_NOT_RUNNING, served=["A-4bit"])
+
+    with pytest.raises(LocalControlError, match="cannot tell whether omlx/a is loaded") as exc:
+        stop_local_model("omlx/a", state_path)
+
+    assert "modelman stop --all" in str(exc.value)
+    assert load_state(state_path).get("omlx/a").running
 
 
 def test_stop_omlx_surfaces_any_other_wt_failure(tmp_path, monkeypatch):

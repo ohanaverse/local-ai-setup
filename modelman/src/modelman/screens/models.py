@@ -24,6 +24,7 @@ from ..local_control import (
     LocalControlError,
     _provider_local_models,
     discover_unregistered_models,
+    is_omlx_family,
     running_model_ids,
     same_provider_occupant,
     start_local_model,
@@ -57,15 +58,22 @@ if TYPE_CHECKING:
     from ..providers.base import VariantSpec
 
 
+_PLAN_UNKNOWN_NOTE = "\nwt could not tell which omlx models this would unload."
+
+
 def pool_start_note(plan: wt_bridge.StartPlan | None) -> str:
     """The line the start dialog adds for an omlx model, from wt's dry-run
     plan: which loaded models the start would unload. Empty when the model
     fits beside them. A missing or unknown plan says so — "could not tell"
-    is never shown as "nothing will be unloaded"."""
+    is never shown as "nothing will be unloaded" — and so does a
+    `would_unload` that names no model (wt does not print one; were it to,
+    it would not mean "fits")."""
     if plan is None or plan.status == "unknown":
-        return "\nwt could not tell which omlx models this would unload."
-    if plan.status != "would_unload" or not plan.would_unload:
+        return _PLAN_UNKNOWN_NOTE
+    if plan.status != "would_unload":
         return ""
+    if not plan.would_unload:
+        return _PLAN_UNKNOWN_NOTE
     names = ", ".join(
         f"{u.id} (in use by {u.sessions} wt session(s))" if u.sessions else u.id
         for u in plan.would_unload
@@ -615,7 +623,7 @@ class ModelScreen(Screen[None]):
             return
 
         others = [m for m in self.state.models if m != mid and self.state.models[m].running]
-        if entry.provider_id in ("omlx", "omlx-6bit"):
+        if is_omlx_family(entry.provider_id):
             # omlx is a pool (#213): what a start would unload depends on
             # sizes only wt reads, so ask wt for its plan first. It is a
             # subprocess and a probe round, so it runs in a worker.
@@ -641,8 +649,31 @@ class ModelScreen(Screen[None]):
         self._confirm_start(mid, others, note)
 
     def _plan_then_confirm(self, mid: str, others: list[str]) -> None:
-        note = pool_start_note(wt_bridge.start_plan(mid))
-        self.app.call_from_thread(self._confirm_start, mid, others, note)
+        try:
+            plan = wt_bridge.start_plan(mid)
+        except wt_bridge.WtBridgeError as exc:
+            # A wt too old for `--plan`: the start would be refused the same
+            # way, so the hint is the answer and no start is offered.
+            self.app.call_from_thread(
+                self.app.notify, f"Cannot start {mid}: {exc}", severity="error"
+            )
+            return
+        self.app.call_from_thread(self._confirm_planned_start, mid, others, pool_start_note(plan))
+
+    def _confirm_planned_start(self, mid: str, others: list[str], note: str) -> None:
+        """The confirm for a start whose plan came back from the worker.
+
+        The plan can take up to wt_bridge.PLAN_TIMEOUT, and the user may have
+        opened a form, a delete confirm or the quit dialog meanwhile. Pushed
+        over that, the start confirm would take the next keystroke — and
+        ConfirmModal binds a bare `y` — so a `y` meant for the other dialog
+        would confirm a start that may unload models. It is shown only while
+        this screen is still the top one; otherwise the plan is dropped and
+        the user asked to press `s` again."""
+        if self.app.screen is not self:
+            self.app.notify(f"The start plan for {mid} is ready — press s again to start it")
+            return
+        self._confirm_start(mid, others, note)
 
     def _confirm_start(self, mid: str, others: list[str], note: str) -> None:
         """Every start is confirmed (it is slow: a load, a proxy restart);
