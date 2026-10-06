@@ -941,6 +941,52 @@ def test_stop_all_local_models_surfaces_sync_failure_as_warning(tmp_path):
     assert load_state(state_path).get("ollama/a").running is False
 
 
+def test_running_model_ids_keeps_a_flag_the_probe_cannot_disprove(tmp_path, wt_calls):
+    """#249: the probe's three answers are not two. A provider that is up but
+    cannot say — an omlx pool with some models loaded, which only the
+    key-protected status endpoint could resolve — must leave the flag alone.
+    Reading "unknown" as "not running" cleared the flag of a model that was
+    still being served, after which `modelman stop` no-opped and the process
+    stayed resident with nothing recording it."""
+    state_path = _state_path(tmp_path, {"omlx/model-a": True, "ollama/x:1b": True})
+    registry = _registry()
+    state = load_state(state_path)
+
+    def probe(provider_id, model_name, base):
+        return None if provider_id in ("omlx", "omlx-6bit") else False
+
+    with patch("modelman.local_control._probe_running", side_effect=probe):
+        ids = running_model_ids(registry, state, state_path)
+
+    assert ids == ["omlx/model-a"]
+    after = load_state(state_path)
+    assert after.get("omlx/model-a").running is True
+    assert after.get("ollama/x:1b").running is False
+
+
+def test_start_listing_shows_a_model_the_probe_cannot_disprove_as_running(tmp_path):
+    """The no-arg `modelman start` inventory lists what the probe confirms.
+    For an answer of "cannot say" the flag is what there is to go on, and the
+    flag says running — the same answer `modelman start`'s own idempotency
+    check and the TUI's RUNNING column give."""
+    from modelman.local_control import inventory_local_models
+
+    state_path = _state_path(tmp_path, {"omlx/model-a": True})
+    registry = _registry()
+    state = load_state(state_path)
+
+    with (
+        _patch_provider_local_models(
+            {"omlx": [{"variant_id": "model-a", "path": "/m/a", "size_bytes": 7}]}
+        ),
+        patch("modelman.local_control._probe_running", return_value=None),
+    ):
+        inventory = inventory_local_models(registry, state)
+
+    entry = next(e for e in inventory.downloaded if e.model_id == "omlx/model-a")
+    assert entry.running is True
+
+
 def test_running_model_ids_clears_a_stale_flag_without_touching_litellm(tmp_path, wt_calls):
     # A flagged model whose probe fails gets its running flag cleared (TUI
     # mount reconcile is the main caller of this path). Routing is not this
@@ -1072,12 +1118,14 @@ def test_probe_running_ollama_means_still_pulled():
 
 
 @pytest.mark.parametrize("answer", [None, {}, {"models": "nope"}], ids=["down", "empty", "junk"])
-def test_probe_running_ollama_keeps_the_flag_when_the_daemon_cannot_say(answer):
-    # Only a listing that positively lacks the model clears the flag. A
-    # daemon that is down or answers nonsense is unknown, and unknown stays
-    # running: restarting ollama must not stop every started model.
+def test_probe_running_ollama_is_unknown_when_the_daemon_cannot_say(answer):
+    # Only a listing that positively lacks the model reads False. A daemon
+    # that is down or answers nonsense cannot say either way — None, which
+    # every caller that keeps a flag reads as "leave it" (running_model_ids)
+    # or "still running" (the start listing): restarting ollama must not stop
+    # every started model.
     with patch("modelman.local_control._http_json", return_value=answer):
-        assert _probe_running("ollama", "anything", None) is True
+        assert _probe_running("ollama", "anything", None) is None
 
 
 def test_running_model_ids_clears_an_unregistered_ollama_model_that_is_gone(tmp_path):
@@ -2298,16 +2346,20 @@ def test_probe_running_omlx_all_loaded_reads_the_list():
     full = {"engine_pool": {"model_count": 2, "loaded_count": 2}}
     assert _omlx_probe(["A", "B"], full) is True
     # A hidden model is counted but not listed, so the list is not the pool
-    # and "all loaded" cannot be read off it.
-    assert _omlx_probe(["A"], full) is False
+    # and "all loaded" cannot be read off it — unknown (#249), not "not
+    # running": a hidden sibling may be the loaded one.
+    assert _omlx_probe(["A"], full) is None
 
 
-def test_probe_running_omlx_mixed_pool_is_not_running():
-    # Some loaded, not all: only the key-protected status endpoint says which,
-    # and modelman does not ask it. False is the safe direction here (see
-    # _probe_running): a start then reloads rather than silently doing nothing.
+def test_probe_running_omlx_mixed_pool_is_unknown():
+    # #249: some loaded, not all. Only the key-protected status endpoint says
+    # which, and modelman does not ask it — so this is unknown, and the
+    # callers that guard a flag leave the flag alone. Reading it as "not
+    # running" cleared the flag of a model the server was still serving:
+    # `modelman stop` no-opped, `stop --all` skipped it, and the process
+    # stayed resident with nothing in modelman.toml saying so.
     mixed = {"engine_pool": {"model_count": 2, "loaded_count": 1}}
-    assert _omlx_probe(["A", "B"], mixed) is False
+    assert _omlx_probe(["A", "B"], mixed) is None
 
 
 def test_probe_running_omlx_without_health_counts_falls_back_to_the_list():
