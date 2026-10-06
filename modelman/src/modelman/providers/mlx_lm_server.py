@@ -256,26 +256,17 @@ class MLXLMServerProvider(Provider):
         return frozenset(paths)
 
     def removable_paths(self, variant: VariantSpec) -> frozenset[str]:
-        """The subset of artifact_paths() that delete() would actually remove.
+        """Every directory delete() would actually remove — _removable_dirs(),
+        the list delete() and cleanup_partial_download() themselves walk, so
+        the shared-artifact guard cannot drift from them.
 
-        A local_path or draft_local_path directory is user-produced and
-        never removed by delete() or cleanup_partial_download(), so it is
-        excluded from the shared-artifact guard (#227).
+        A local_path or draft_local_path directory is user-produced and never
+        removed, so it is not here (#227). A repo's downloaded directory is,
+        including one that a local_path on the same side takes precedence
+        over — which artifact_paths() does not list, because the pairing
+        does not live there (#229).
         """
-        paths: list[str] = []
-        # Target side: only repo-downloaded dir is removable
-        target_repo = variant.get("repo")
-        if target_repo:
-            target_dir = self._repo_dir(target_repo)
-            if target_dir is not None:
-                paths.append(str(target_dir))
-        # Draft side: only repo-downloaded dir is removable
-        draft_repo = variant.get("draft_repo")
-        if draft_repo:
-            draft_dir = self._repo_dir(draft_repo)
-            if draft_dir is not None:
-                paths.append(str(draft_dir))
-        return frozenset(paths)
+        return frozenset(str(d) for d in self._removable_dirs(variant))
 
     def _repo_dir(self, repo: str | None) -> Path | None:
         """The on-disk directory a repo-downloaded side would occupy under

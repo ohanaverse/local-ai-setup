@@ -49,7 +49,12 @@ class OMLXProvider(Provider):
         falls back to the existing repo-keyed download directory."""
         local_path = variant.get("local_path")
         if local_path:
-            return Path(local_path)
+            # Stored as typed, so a leading `~` is still there; unexpanded it
+            # names a directory literally called `~` and the entry reads as
+            # not downloaded (#235). os.path's expanduser, as _model_dir
+            # uses: pathlib's raises RuntimeError for a `~name` that is no
+            # user, which would take `modelman sync` down with it.
+            return Path(os.path.expanduser(local_path))
         repo = variant.get("repo")
         if repo:
             return _model_dir(self.config) / repo_basename(repo)
@@ -151,6 +156,15 @@ class OMLXProvider(Provider):
         if not target.is_dir() or not any(target.iterdir()):
             return None
         return str(target)
+
+    def artifact_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """The directory this variant is configured to live in, present or
+        not — unlike path_of(), which is for display and answers None until
+        the weights are there. The shared-artifact guard has to see an entry
+        whose directory it cannot currently read as well (#235), as it does
+        for mtplx and mlx_lm_server."""
+        target = self._target_dir(variant)
+        return frozenset([str(target)]) if target is not None else frozenset()
 
     def removable_paths(self, variant: VariantSpec) -> frozenset[str]:
         """Nothing for a local_path entry: delete() and

@@ -466,3 +466,64 @@ def test_cleanup_partial_download_local_path_is_noop_directory_still_exists(tmp_
 
     assert local_dir.exists()
     assert (local_dir / "model.safetensors").exists()
+
+
+def test_local_path_with_a_tilde_is_read_from_home(tmp_path, monkeypatch):
+    # #235: a local_path is stored as typed. Unexpanded, `~/...` named a
+    # directory literally called `~` and the entry read as not downloaded.
+    # (The guard test below passes without this: the guard expands the path
+    # itself.)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    local_dir = tmp_path / "quant" / "my-model"
+    local_dir.mkdir(parents=True)
+    (local_dir / "config.json").write_text("{}")
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": "~/quant/my-model",
+    }
+    assert provider.is_downloaded(variant)
+    assert provider.path_of(variant) == str(local_dir)
+    assert provider.download(variant) == str(local_dir)
+
+
+def test_local_path_naming_no_such_user_is_absent_not_an_error(tmp_path, monkeypatch):
+    # `~name/...` where `name` is no user cannot be expanded. It must read as
+    # a directory that is not there — pathlib's expanduser raises
+    # RuntimeError for it, and `modelman sync` calls is_downloaded() bare.
+    monkeypatch.chdir(tmp_path)
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": "~no-such-user-modelman-test/model",
+    }
+    assert provider.is_downloaded(variant) is False
+    assert provider.path_of(variant) is None
+    assert provider.artifact_paths(variant) == frozenset(["~no-such-user-modelman-test/model"])
+
+
+def test_guard_sees_a_local_path_however_it_is_spelled(tmp_path, shared_owner, respell):
+    # #235: see the same test for mtplx. omlx's Path(local_path) only dropped
+    # a trailing slash.
+    from modelman.registry import Fetch, ModelEntry
+
+    pool = tmp_path / "pool"
+    (pool / "qwen").mkdir(parents=True)
+    (pool / "qwen" / "weights.safetensors").write_bytes(b"x")
+    provider = OMLXProvider({"model_dir": str(pool)})
+    downloaded = ModelEntry(
+        id="omlx/dl", family="f", provider_id="omlx", model_name="dl", fetch=Fetch(repo="org/qwen")
+    )
+    local = ModelEntry(
+        id="omlx/local",
+        family="f",
+        provider_id="omlx",
+        model_name="local",
+        fetch=Fetch(local_path=respell(pool / "qwen")),
+    )
+    assert shared_owner(provider, downloaded, local) == "omlx/local"
+    assert shared_owner(provider, local, downloaded) is None

@@ -687,32 +687,18 @@ def _pairing_entry(model_id: str, **kw):
     )
 
 
-def _owner(provider, deleting, other):
-    from modelman.registry import (
-        ProviderEntry,
-        Registry,
-        find_shared_artifact_owner,
-        model_entry_to_variant,
-    )
-
-    registry = Registry(
-        providers=[ProviderEntry(id="mlx_lm_server", name="m", location="local")],
-        models=[deleting, other],
-    )
-    found = find_shared_artifact_owner(registry, provider, model_entry_to_variant(deleting))
-    return found.id if found else None
-
-
-def test_guard_refuses_a_delete_that_would_remove_a_shared_download(provider, tmp_path):
+def test_guard_refuses_a_delete_that_would_remove_a_shared_download(
+    provider, tmp_path, shared_owner
+):
     # Two pairings with their own targets and one downloaded draft: deleting
     # either would rmtree the draft the other needs.
     a = _pairing_entry("mlx_lm_server/a", repo="o/T1", draft_repo="o/D")
     b = _pairing_entry("mlx_lm_server/b", repo="o/T2", draft_repo="o/D")
-    assert _owner(provider, a, b) == "mlx_lm_server/b"
-    assert _owner(provider, b, a) == "mlx_lm_server/a"
+    assert shared_owner(provider, a, b) == "mlx_lm_server/b"
+    assert shared_owner(provider, b, a) == "mlx_lm_server/a"
 
 
-def test_guard_reports_nothing_for_a_shared_local_path(provider, tmp_path):
+def test_guard_reports_nothing_for_a_shared_local_path(provider, tmp_path, shared_owner):
     # #227 for a pairing: a draft (or a whole pairing) kept in the user's own
     # directory is never removed, so two pairings sharing it have no conflict
     # — the delete goes ahead and takes only the deleting pairing's download.
@@ -720,35 +706,31 @@ def test_guard_reports_nothing_for_a_shared_local_path(provider, tmp_path):
     ut = str(tmp_path / "user-target")
     a = _pairing_entry("mlx_lm_server/a", repo="o/T1", draft_local_path=ud)
     b = _pairing_entry("mlx_lm_server/b", repo="o/T2", draft_local_path=ud)
-    assert _owner(provider, a, b) is None
+    assert shared_owner(provider, a, b) is None
     c = _pairing_entry("mlx_lm_server/c", local_path=ut, draft_local_path=ud)
     d = _pairing_entry("mlx_lm_server/d", local_path=ut, draft_local_path=ud)
-    assert _owner(provider, c, d) is None
+    assert shared_owner(provider, c, d) is None
 
 
-def test_guard_still_refuses_when_the_other_pairing_lives_in_my_download(provider, tmp_path):
+def test_guard_still_refuses_when_the_other_pairing_lives_in_my_download(
+    provider, tmp_path, shared_owner
+):
     # The mixed case: my downloaded draft directory is the directory another
     # pairing names as its local_path draft. My delete would remove it.
     shared = str(tmp_path / "models" / "D")
     a = _pairing_entry("mlx_lm_server/a", repo="o/T1", draft_repo="o/D")
     b = _pairing_entry("mlx_lm_server/b", repo="o/T2", draft_local_path=shared)
-    assert _owner(provider, a, b) == "mlx_lm_server/b"
+    assert shared_owner(provider, a, b) == "mlx_lm_server/b"
     # ...and b's own delete removes nothing of a's.
-    assert _owner(provider, b, a) is None
+    assert shared_owner(provider, b, a) is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    # Only the guard's wrong answer is the known gap; an error building the
-    # entries or calling the guard must fail the suite, not read as expected.
-    raises=AssertionError,
-    reason="#229: a side with BOTH a local_path and a repo removes the repo's downloaded "
-    "directory, which artifact_paths() does not list, so the guard never compares it",
-)
-def test_guard_sees_the_download_behind_a_local_path(provider, tmp_path):
-    # Known gap, pinned so its fix flips this test: deleting `a` removes
-    # models/T (see test_removable_paths_is_exactly_what_delete_removes),
-    # which is `b`'s target, and the guard finds no owner.
+def test_guard_sees_the_download_behind_a_local_path(provider, tmp_path, shared_owner):
+    # #229: a side with BOTH a local_path and a repo (hand-edited; the forms
+    # reject it). Deleting `a` removes models/T (see
+    # test_removable_paths_is_exactly_what_delete_removes), which is `b`'s
+    # target — a directory `a` does not live in, so it is only found by
+    # comparing what the delete removes, not where the entry lives.
     a = _pairing_entry(
         "mlx_lm_server/a",
         repo="o/T",
@@ -758,4 +740,4 @@ def test_guard_sees_the_download_behind_a_local_path(provider, tmp_path):
     b = _pairing_entry(
         "mlx_lm_server/b", repo="o/T", draft_local_path=str(tmp_path / "user-draft-b")
     )
-    assert _owner(provider, a, b) == "mlx_lm_server/b"
+    assert shared_owner(provider, a, b) == "mlx_lm_server/b"
