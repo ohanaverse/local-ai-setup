@@ -24,6 +24,21 @@ func (e *NoRoomError) Error() string {
 	return fmt.Sprintf("omlx has no room for %s: %s", e.Model, e.Detail)
 }
 
+// unloadRefusedError means omlx refused to unload one model because the
+// registry names no API key. It unwraps to the *KeyRefusedError, and its own
+// text replaces that error's so the instruction is given once, with the second
+// way out a model stop has: stopping the service.
+type unloadRefusedError struct {
+	model   string
+	refused *KeyRefusedError
+}
+
+func (e *unloadRefusedError) Error() string {
+	return fmt.Sprintf("omlx will not unload %s without its API key (%s): set auth.secret_ref on the registry's omlx provider so wt can unload one model, or run `wt stop omlx` to stop the service and every model it has loaded", e.model, e.refused.Detail)
+}
+
+func (e *unloadRefusedError) Unwrap() error { return e.refused }
+
 // omlxPoolID is the on-disk id omlx knows modelName by: the pool model it
 // matches, else the name's last path segment (registry names are HF repo ids,
 // omlx serves directory basenames).
@@ -141,8 +156,7 @@ func omlxUnload(ctx context.Context, e *env, cfg *config.Config, modelName strin
 	case err != nil:
 		return fmt.Errorf("unloading %s from omlx: %w", id, err)
 	case (code == http.StatusUnauthorized || code == http.StatusForbidden) && key == "":
-		return fmt.Errorf("omlx will not unload %s without its API key: set auth.secret_ref on the registry's omlx provider so wt can unload one model, or run `wt stop omlx` to stop the service and every model it has loaded (%w)",
-			id, &KeyRefusedError{URL: target, Detail: detail})
+		return &unloadRefusedError{model: id, refused: &KeyRefusedError{URL: target, Detail: detail}}
 	case code == http.StatusUnauthorized || code == http.StatusForbidden:
 		return &KeyRefusedError{URL: target, KeySent: true, Detail: detail}
 	case (code >= 200 && code < 300) || code == http.StatusBadRequest || code == http.StatusNotFound:

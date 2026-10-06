@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -566,8 +567,8 @@ func TestStopModelOnPoolWithoutAKeySaysHowToProceed(t *testing.T) {
 	if !errors.As(err, &kr) || kr.KeySent {
 		t.Fatalf("stopModel = %v, want an error wrapping *KeyRefusedError with no key sent", err)
 	}
-	if msg := err.Error(); !containsFold(msg, "secret_ref") || !containsFold(msg, "wt stop omlx") {
-		t.Errorf("message = %q, want it to name auth.secret_ref and `wt stop omlx`", msg)
+	if msg := err.Error(); strings.Count(msg, "secret_ref") != 1 || strings.Count(msg, "wt stop omlx") != 1 {
+		t.Errorf("message = %q, want it to name auth.secret_ref and `wt stop omlx` once each", msg)
 	}
 	if !fp.isLoaded("A") || !fp.isLoaded("B") || len(fp.unloads) != 0 {
 		t.Errorf("A = %v, B = %v, accepted unloads = %v; want both still loaded", fp.isLoaded("A"), fp.isLoaded("B"), fp.unloads)

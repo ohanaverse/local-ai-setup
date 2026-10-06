@@ -106,13 +106,29 @@ recently used when a load does not fit.
 - An omlx with an API key that allows unauthenticated inference serves
   keyless chat requests but refuses keyless status, load and unload requests.
   With no `auth.secret_ref` on the registry's omlx provider, `wt start` still
-  loads the model, through a keyless chat request. wt then cannot size the
-  pool, so it cannot predict or report what omlx unloads: it asks before a
-  start whenever another model is loaded or it cannot tell, and
-  `wt litellm sync` corrects the routes afterwards. `wt stop <omlx model>`
-  fails there and says so: set `auth.secret_ref` so wt can unload one model,
-  or run `wt stop omlx` to stop the service. wt never stops the service for a
-  model stop. Setting `auth.secret_ref` gives the full pool behavior above.
+  loads the model, through a keyless chat request, but wt is limited there:
+  - It cannot see **which** models are loaded while the pool is partly loaded
+    (some loaded, some not), which is the usual state once the pool holds
+    more than one model. Those models do not read as running in the picker,
+    `wt served` (which exits 1), `wt stop`, or `wt start --plan` (which
+    answers `unknown`).
+  - A second start therefore normally asks "cannot tell whether omlx is
+    already serving a model"; `--replace` skips the question. The prompt
+    names models only when every model in the pool is loaded. wt cannot
+    predict or report what omlx unloads.
+  - `wt litellm sync` leaves omlx routes as they are, with a warning, while
+    the pool is partly loaded. The route of a model omlx unloaded stays
+    until the pool is empty or fully loaded.
+  - `wt stop <omlx model>` usually ends at `model "<id>" is not running`
+    (`unknown model "<id>"` when the model has no registry entry), even for
+    a model wt just started. Only when every pool model is loaded
+    (a one-model pool included) does it reach omlx, which refuses the
+    unload; wt then says how to proceed and never stops the service itself.
+  - A model omlx cannot fit or does not know fails only when the warmup
+    times out, not at once.
+
+  Two ways out: set `auth.secret_ref`, which gives the full pool behavior
+  above, or run `wt stop omlx` to stop the service and clear its routes.
 - A load wt does not perform is not covered: an agent that dials omlx
   directly and names a model that is not loaded makes omlx load it, and
   possibly evict another, with no prompt. The routes are corrected by
