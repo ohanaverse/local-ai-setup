@@ -166,6 +166,29 @@ def test_load_registry_does_not_fall_back_from_a_dangling_symlink(tmp_path, monk
     assert str(xdg) in str(excinfo.value)
 
 
+def test_load_registry_refuses_a_dangling_symlink_at_the_pre_xdg_path(tmp_path, monkeypatch):
+    """#248 through the fallback: with XDG_CONFIG_HOME set and no registry
+    there yet, the registry is the pre-XDG file — and when THAT is a link to
+    an unmounted volume it read as "no registry at all". The save that
+    followed wrote a fresh one at the XDG path, which is read first from then
+    on and so shadows the linked registry once its target is back."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    legacy = home / ".config" / "local-ai" / "registry.toml"
+    legacy.parent.mkdir(parents=True)
+    target = tmp_path / "moved-away.toml"
+    legacy.symlink_to(target)
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry()
+
+    assert not isinstance(excinfo.value, RegistryNotFoundError)
+    assert str(legacy) in str(excinfo.value) and str(target) in str(excinfo.value)
+    assert str(legacy) in unreadable_registry_message(excinfo.value)
+
+
 def test_unreadable_registry_message_names_a_dangling_symlink(tmp_path, monkeypatch):
     """The message has to name the file the user must fix. For every other
     unreadable registry it re-derives that path, because the load failure is

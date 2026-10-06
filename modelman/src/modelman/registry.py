@@ -499,8 +499,7 @@ def _registry_read_path(path: Path | None = None) -> Path:
     # nothing at all — and a link is a pointer at where the registry lives,
     # not an absent registry, so it is refused rather than fallen back from
     # (#248). A link that resolves reads through as any other file does.
-    if registry_path.is_symlink() and not registry_path.exists():
-        raise RegistryPathError(registry_path, os.readlink(registry_path))
+    _refuse_dangling_symlink(registry_path)
     if registry_path.exists():
         return registry_path
     # Fall back to the pre-XDG location for users who created a registry
@@ -509,14 +508,22 @@ def _registry_read_path(path: Path | None = None) -> Path:
     # Not past MODELMAN_REGISTRY: that names the file outright, and a
     # missing one there is missing, not "use the one in ~/.config".
     legacy = Path("~/.config/local-ai/registry.toml").expanduser()
-    if (
-        path is None
-        and not os.environ.get("MODELMAN_REGISTRY")
-        and registry_path != legacy
-        and legacy.exists()
-    ):
-        return legacy
+    if path is None and not os.environ.get("MODELMAN_REGISTRY") and registry_path != legacy:
+        # The same refusal for the file being fallen back to: a dangling link
+        # there read as "no registry", and the save that followed wrote a new
+        # one at the XDG path — which shadows the linked registry just the
+        # same once its target is back, since the XDG path is read first.
+        _refuse_dangling_symlink(legacy)
+        if legacy.exists():
+            return legacy
     raise RegistryNotFoundError(f"Registry file not found: {registry_path}")
+
+
+def _refuse_dangling_symlink(path: Path) -> None:
+    """Raise RegistryPathError when `path` is a symlink to a file that is not
+    there — the one test the read and the write share (#248)."""
+    if path.is_symlink() and not path.exists():
+        raise RegistryPathError(path, os.readlink(path))
 
 
 # The top-level tables a registry may hold. _write_registry emits exactly
@@ -798,8 +805,7 @@ def _write_registry(registry: Registry, path: Path) -> None:
     normal save (the link is still replaced by the file it pointed at; the
     content is what the user was editing either way).
     """
-    if path.is_symlink() and not path.exists():
-        raise RegistryPathError(path, os.readlink(path))
+    _refuse_dangling_symlink(path)
     payload = {
         "providers": [_provider_to_dict(p) for p in registry.providers],
         "families": [_family_to_dict(f) for f in registry.families],

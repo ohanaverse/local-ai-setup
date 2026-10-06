@@ -967,8 +967,9 @@ def test_running_model_ids_keeps_a_flag_the_probe_cannot_disprove(tmp_path, wt_c
 def test_start_listing_shows_a_model_the_probe_cannot_disprove_as_running(tmp_path):
     """The no-arg `modelman start` inventory lists what the probe confirms.
     For an answer of "cannot say" the flag is what there is to go on, and the
-    flag says running — the same answer `modelman start`'s own idempotency
-    check and the TUI's RUNNING column give."""
+    flag says running — the same answer running_model_ids, and so the TUI's
+    RUNNING column, gives. (`modelman start <id>` is the one reader that wants
+    a definite yes: its idempotency check reloads on "cannot say".)"""
     from modelman.local_control import inventory_local_models
 
     state_path = _state_path(tmp_path, {"omlx/model-a": True})

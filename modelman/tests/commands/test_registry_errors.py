@@ -56,3 +56,39 @@ def test_a_dangling_registry_symlink_is_reported_by_commands_too(tmp_path, monke
     assert str(target) in result.output
     assert link.is_symlink()
     assert wt_calls == []
+
+
+def test_a_save_refused_for_a_link_that_went_dangling_is_reported_too(
+    tmp_path, monkeypatch, wt_calls
+):
+    """#248's write-side refusal, through the CLI: the registry was readable
+    when the command loaded it and its link dangles by the time it saves (the
+    volume unmounted in between). The save raises a RegistryError, not an
+    OSError, so a handler written for a failed write let it through as a
+    traceback — the one thing these commands were changed to stop doing."""
+    import modelman.main as main
+
+    target = tmp_path / "volume" / "registry.toml"
+    target.parent.mkdir()
+    target.write_text('[[families]]\nname = "qwen3"\n')
+    link = tmp_path / "registry.toml"
+    link.symlink_to(target)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(link))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+    real_load = main.load_registry
+
+    def load_then_unmount():
+        registry = real_load()
+        target.unlink()
+        return registry
+
+    monkeypatch.setattr(main, "load_registry", load_then_unmount)
+
+    result = CliRunner().invoke(app, ["delete-family", "qwen3"])
+
+    assert result.exit_code == 1, result.output
+    assert "error: failed to save registry" in result.output
+    assert str(target) in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert link.is_symlink() and not target.exists()
+    assert wt_calls == []

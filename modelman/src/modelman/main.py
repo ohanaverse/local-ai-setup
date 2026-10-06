@@ -36,6 +36,7 @@ from .providers.registry import ProviderRegistry
 from .queue import PendingChanges, QueuedOps
 from .registry import (
     Registry,
+    RegistryError,
     RegistryNotFoundError,
     _default_registry_path,
     load_registry,
@@ -570,10 +571,12 @@ def sync() -> None:
     # that repair on the floor.
     try:
         save_registry(registry)
-    except OSError as exc:
+    except (OSError, RegistryError) as exc:
         # The state sync already succeeded; report the registry repair
         # failure cleanly instead of a traceback. The repair is idempotent
-        # and re-runs on the next sync.
+        # and re-runs on the next sync. RegistryError is the save's own
+        # refusal: registry.toml became a symlink to nothing while the scans
+        # ran (#248), which is not an OSError.
         typer.echo(f"error: failed to save registry: {exc}", err=True)
         raise typer.Exit(1) from exc
     if result.providers_added:
@@ -638,7 +641,7 @@ def delete_family(
         registry.families.remove(entry)
         try:
             save_registry(registry)
-        except OSError as exc:
+        except (OSError, RegistryError) as exc:
             typer.echo(f"error: failed to save registry: {exc}", err=True)
             raise typer.Exit(1) from exc
     if had_legacy:
@@ -662,7 +665,7 @@ def refresh_prices() -> None:
         raise typer.Exit(1)
     try:
         save_registry(registry)
-    except OSError as exc:
+    except (OSError, RegistryError) as exc:
         typer.echo(f"error: failed to save registry: {exc}", err=True)
         raise typer.Exit(1) from exc
     # Stamp the refresh date like the TUI's background refresh does (both
