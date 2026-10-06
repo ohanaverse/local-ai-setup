@@ -63,8 +63,8 @@ through LiteLLM can run it. A target that is already running — whoever
 started it — has its route written first if it is missing
 (`wt: LiteLLM route for <id> updated`).
 An idle pick is started first through the shared start driver, honouring
-the root `--replace` flag when another model occupies a single-model
-provider's slot.
+the root `--replace` flag when another model occupies an mtplx
+(one model per process) slot, or an omlx load would unload another model.
 
 ## Tool-use permission
 

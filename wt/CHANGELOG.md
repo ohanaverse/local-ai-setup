@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- omlx is handled as the multi-model pool it is (#213). `wt start` loads an
+  omlx model beside the ones already loaded instead of stopping the service
+  first, and asks only when the model does not fit, naming what omlx is
+  expected to unload. `wt stop <model>` unloads that model and leaves the
+  others up; `wt stop omlx` stops the service. Routes follow each model's
+  loaded state, so two loaded omlx models are both routed. `wt start --json`
+  and `--plan` give scripted callers the plan and the result.
+
 ### Fixed
 
 - `wt start` can start a model on an omlx that has an API key (#256). The
