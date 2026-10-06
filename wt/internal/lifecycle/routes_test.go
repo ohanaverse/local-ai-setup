@@ -131,20 +131,20 @@ func TestRouteAfterStartRoutesDiscoveredModel(t *testing.T) {
 	}
 }
 
-// TestRouteAfterStartOmlx6bitClearsOmlxFamily pins the omlx/omlx-6bit
-// spelling split: a registry omlx-6bit model and a discovered artifact (whose
-// id is always spelled "omlx/<artifact>") share one physical server, so
-// starting the 6-bit model must remove the whole "omlx" family — the family
-// name, never the provider id "omlx-6bit", which no discovered row carries.
-func TestRouteAfterStartOmlx6bitClearsOmlxFamily(t *testing.T) {
+// TestRouteAfterStartOmlx6bitKeepsOmlxFamily pins the pool rule for the
+// omlx/omlx-6bit pair (#213): both share one physical server that holds
+// several models loaded, so starting the 6-bit model adds its route and clears
+// nothing. Clearing the "omlx" family here removed the routes of models still
+// loaded, which the next sync put back — the two undid each other.
+func TestRouteAfterStartOmlx6bitKeepsOmlxFamily(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx-6bit", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Models:    []config.Model{{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal}},
 	}
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "omlx-6bit", ModelName: "Six"}, false)
-	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, []string{"omlx-6bit/Six"}) || !slices.Equal((*calls)[0].families, []string{"omlx"}) {
-		t.Fatalf("calls = %+v, want add [omlx-6bit/Six] and the omlx family removed", *calls)
+	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, []string{"omlx-6bit/Six"}) || len((*calls)[0].families) != 0 || len((*calls)[0].remove) != 0 {
+		t.Fatalf("calls = %+v, want add [omlx-6bit/Six] and nothing removed", *calls)
 	}
 }
 
@@ -154,8 +154,10 @@ func TestRouteAfterStartOmlx6bitClearsOmlxFamily(t *testing.T) {
 // would be a silent no-op that leaves the replaced model's dead route behind,
 // and "" is the family of every provider wt has no probe for — a hook that
 // asked to clear it would be asking to clear routes it cannot name. So an
-// omlx-6bit start or stop clears "omlx", and a family-less provider
-// (retired llamacpp) requests no family removal at all, registered or not.
+// omlx-6bit provider stop clears "omlx" (its start clears nothing: omlx is a
+// pool, #213), an mtplx start and stop both clear "mtplx", and a family-less
+// provider (retired llamacpp) requests no family removal at all, registered
+// or not.
 func TestRouteHooksRequestOnlyRealFamilies(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -169,16 +171,16 @@ func TestRouteHooksRequestOnlyRealFamilies(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		provider, model string
-		want            []string // RemoveFamilies of both the start and the stop
+		start, stop     []string // RemoveFamilies of the start, and of the provider stop
 	}{
-		{"omlx-6bit", "Six", []string{"omlx"}},
-		{"omlx-6bit", "unregistered", []string{"omlx"}},
-		{"omlx", "unregistered", []string{"omlx"}},
-		{"mtplx", "org/unregistered", []string{"mtplx"}},
-		{"ollama", "unregistered:1", nil},
-		{"llamacpp", "G", nil},
-		{"llamacpp", "unregistered", nil},
-		{"no-such-provider", "x", nil},
+		{"omlx-6bit", "Six", nil, []string{"omlx"}},
+		{"omlx-6bit", "unregistered", nil, []string{"omlx"}},
+		{"omlx", "unregistered", nil, []string{"omlx"}},
+		{"mtplx", "org/unregistered", []string{"mtplx"}, []string{"mtplx"}},
+		{"ollama", "unregistered:1", nil, nil},
+		{"llamacpp", "G", nil, nil},
+		{"llamacpp", "unregistered", nil, nil},
+		{"no-such-provider", "x", nil, nil},
 	} {
 		calls, _ := stubRoutes(t, litellm.Result{}, nil)
 		routeAfterStart(context.Background(), cfg, Target{ProviderID: tc.provider, ModelName: tc.model}, false)
@@ -187,9 +189,17 @@ func TestRouteHooksRequestOnlyRealFamilies(t *testing.T) {
 			t.Errorf("%s/%s: no route write recorded for the start", tc.provider, tc.model)
 			continue
 		}
+		if wantCalls := 1 + min(len(tc.stop), 1); len(*calls) != wantCalls {
+			t.Errorf("%s/%s: %d route writes, want %d (the start, and a stop only when it clears a family)", tc.provider, tc.model, len(*calls), wantCalls)
+			continue
+		}
 		for i, c := range *calls {
-			if !slices.Equal(c.families, tc.want) {
-				t.Errorf("%s/%s call %d: families = %q, want %q", tc.provider, tc.model, i, c.families, tc.want)
+			want := tc.start
+			if i > 0 {
+				want = tc.stop
+			}
+			if !slices.Equal(c.families, want) {
+				t.Errorf("%s/%s call %d: families = %q, want %q", tc.provider, tc.model, i, c.families, want)
 			}
 			for _, f := range c.families {
 				if f == "" || f != localmodels.Family(tc.provider) {
@@ -472,7 +482,7 @@ func TestRouteProbesProxyOnlyWhenRestarting(t *testing.T) {
 	probed := 0
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
 	// mtplx: an ollama stop never writes at all (#179).
-	routeRemove(context.Background(), cfg, "mtplx", restartDeferred)
+	routeRemoveFamily(context.Background(), cfg, "mtplx", restartDeferred)
 	WaitPendingRoutes() // nothing should be pending — prove it before re-stubbing
 	stubRoutes(t, litellm.Result{Changed: false}, nil)
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }

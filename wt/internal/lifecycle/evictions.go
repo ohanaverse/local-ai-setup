@@ -60,7 +60,9 @@ func runningOthers(snap localmodels.Snapshot, family string, t Target) []localmo
 // every other loaded model is named. With them, the walk follows omlx's own
 // order — least recently used first, pinned models never — until the
 // projection fits under the margin; when it never does, every unpinned model
-// is named and omlx gives the final answer at load time.
+// is named and omlx gives the final answer at load time. A running sibling the
+// pool reading does not list cannot be sized, so when t does not fit it is
+// named too, ahead of the rest and freeing nothing: wt has to ask about it.
 func poolVictims(pool *localmodels.Pool, t Target, others []localmodels.Entry) []localmodels.Entry {
 	if len(others) == 0 {
 		return nil
@@ -81,17 +83,21 @@ func poolVictims(pool *localmodels.Pool, t Target, others []localmodels.Entry) [
 		m  localmodels.PoolModel
 	}
 	var cands []cand
+	var victims []localmodels.Entry
 	for _, en := range others {
 		name := en.Artifact
 		if name == "" {
 			name = en.ModelName
 		}
-		if m, ok := pool.Find(name); ok && !m.Pinned {
+		m, ok := pool.Find(name)
+		switch {
+		case !ok:
+			victims = append(victims, en)
+		case !m.Pinned:
 			cands = append(cands, cand{en, m})
 		}
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].m.LastAccess < cands[j].m.LastAccess })
-	var victims []localmodels.Entry
 	freed := map[string]bool{}
 	for _, c := range cands {
 		// Two registry rows can name one loaded model: both rows are

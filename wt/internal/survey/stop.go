@@ -152,8 +152,9 @@ func stopCandidates(cfg *config.Config, d stopDeps) []Candidate {
 		}
 		return n
 	}
-	// A single-model provider (omlx, mtplx) stops as a whole, taking every
-	// running variant with it — so its sessions are the whole family's.
+	// An Exclusive provider (mtplx) stops as a whole, taking every running
+	// variant with it — so its sessions are the whole family's. A Pool (omlx)
+	// unloads one model at a time, so each model keeps its own count.
 	famSessions := map[string]int{}
 	for _, e := range cands {
 		if lifecycle.TenancyOf(e.ProviderID) == lifecycle.Exclusive {

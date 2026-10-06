@@ -27,7 +27,8 @@ type env struct {
 	backends    map[string]backend // keyed by provider family
 
 	// onOccupantStopped fires the moment a replace has stopped the running
-	// occupant, before the new model is started. Production drops the
+	// occupant, before the new model is started — and, on a Pool, once per
+	// model a load evicted (reconcilePool). Production drops the
 	// occupant's LiteLLM route there: if the new model then fails to load,
 	// Start returns the error and no route hook runs, so the stopped occupant
 	// would otherwise keep its model_list row until the next `wt litellm

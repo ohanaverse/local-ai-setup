@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -210,36 +209,6 @@ func TestCanStop(t *testing.T) {
 		if got := CanStop(id); got != want {
 			t.Errorf("CanStop(%q) = %v, want %v", id, got, want)
 		}
-	}
-}
-
-// TestStopModelOmlxRunsOmlxStopAndWaitsForPort verifies the omlx stopModel
-// thunk actually reaches the daemon stop: it invokes `omlx stop` and returns
-// only after the port closes. A thunk that returned nil without stopping would
-// leave the post-exit picker printing "done" for a model still loaded.
-func TestStopModelOmlxRunsOmlxStopAndWaitsForPort(t *testing.T) {
-	srv, addr := serveFree(t, chatHandler())
-	e := testEnv()
-	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
-	var ran []string
-	e.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		ran = append(ran, name+" "+strings.Join(args, " "))
-		srv.Close()
-		return nil, nil
-	}
-	if err := stopModel(context.Background(), e, provCfg("omlx", "http://"+addr), "omlx", "m"); err != nil {
-		t.Fatalf("stopModel: %v", err)
-	}
-	if len(ran) != 1 || ran[0] != "/bin/omlx stop" {
-		t.Fatalf("ran = %v, want [/bin/omlx stop]", ran)
-	}
-
-	// The port never closes: the thunk must report it, not "done".
-	_, addr2 := serveFree(t, chatHandler())
-	e.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
-	e.stopTimeout = 60 * time.Millisecond
-	if err := stopModel(context.Background(), e, provCfg("omlx", "http://"+addr2), "omlx", "m"); err == nil {
-		t.Fatal("stopModel returned nil while the daemon still holds its port")
 	}
 }
 

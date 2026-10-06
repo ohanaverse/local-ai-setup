@@ -158,9 +158,10 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 }
 
 // withFamilyCollateral widens targets to every running model of any
-// single-model provider (omlx, mtplx) they touch: that provider stops as a
-// whole, so a sibling variant goes down with the one named. Collateral models
-// are announced on out. Targets keep their order; collateral follows.
+// Exclusive provider (mtplx) they touch: that provider stops as a whole, so a
+// sibling variant goes down with the one named. A Pool (omlx) is not widened:
+// stopping one of its models leaves the others loaded. Collateral models are
+// announced on out. Targets keep their order; collateral follows.
 func withFamilyCollateral(out io.Writer, cands, targets []survey.Candidate) []survey.Candidate {
 	have := map[string]bool{}
 	fams := map[string]bool{}

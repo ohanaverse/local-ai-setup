@@ -49,6 +49,12 @@ func TestPoolVictims(t *testing.T) {
 		// both rows are named, its 60 is freed once, so B must go too.
 		{"two rows, one model", pool(100, 100, pm("A", 60, 1, false), pm("B", 40, 2, false), pm("T", 80, 0, false)), []localmodels.Entry{a, a6, b}, []string{"omlx/A", "omlx-6bit/A", "omlx/B"}},
 		{"nothing else loaded", pool(100, 0, pm("T", 200, 0, false)), nil, nil},
+		// A running sibling the pool reading does not list cannot be sized,
+		// so when the target does not fit wt must ask about it: skipping it
+		// left the plan empty and the start went ahead unasked.
+		{"a sibling missing from the pool reading is named", pool(100, 80, pm("T", 30, 0, false)), []localmodels.Entry{a}, []string{"omlx/A"}},
+		{"unresolved siblings come first and free nothing", pool(100, 80, pm("B", 40, 1, false), pm("T", 30, 0, false)), []localmodels.Entry{b, a}, []string{"omlx/A", "omlx/B"}},
+		{"an unresolved sibling is not named when the target fits", pool(100, 40, pm("T", 40, 0, false)), []localmodels.Entry{a}, nil},
 	} {
 		got := ids(poolVictims(tc.pool, target, tc.others))
 		if !reflect.DeepEqual(got, tc.want) {

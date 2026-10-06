@@ -238,10 +238,10 @@ func TestTypedErrorMessages(t *testing.T) {
 // through the omlx backend with nothing in the package noticing. Comparing
 // against the other map could not see that: defaultEnv clones backendsByFamily,
 // so both sides would move together. The per-family loop below is the behavioral
-// half — a backend that is startable (tenancy Exclusive) while Occupant reports no
-// occupant is exactly the state in which a running model gets replaced with no
-// confirmation, the trap a hand-maintained family list leaves for the next
-// backend.
+// half — a backend whose start can displace a running model (tenancy Exclusive,
+// or a Pool wt has no sizes for) while Evictions reports nobody is exactly the
+// state in which a running model gets replaced with no confirmation, the trap a
+// hand-maintained family list leaves for the next backend.
 //
 // maps.Equal compares interface values with ==, so a backend struct that gained
 // a non-comparable field (a slice, map or func) would make this guard panic
@@ -259,7 +259,9 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}
 		v, _ := Evictions(Target{ProviderID: family, ModelName: "wanted"}, snap)
 		ok := len(v) > 0
-		if ok != (b.tenancy() == Exclusive) {
+		// The snapshot carries no pool reading, so a Pool cannot tell whether
+		// the target fits and must name the running model, as Exclusive does.
+		if ok != (b.tenancy() == Exclusive || b.tenancy() == Pool) {
 			t.Errorf("family %s: Occupant reported an occupant=%v but tenancy()=%v", family, ok, b.tenancy())
 		}
 	}
@@ -570,7 +572,7 @@ func TestProbeTrustedStatuses(t *testing.T) {
 // replaces a model that could have stayed or leaves a stopped one routed.
 func TestTenancyOfEachFamily(t *testing.T) {
 	for id, want := range map[string]Tenancy{
-		"ollama": Shared, "mtplx": Exclusive, "omlx": Exclusive, "omlx-6bit": Exclusive,
+		"ollama": Shared, "mtplx": Exclusive, "omlx": Pool, "omlx-6bit": Pool,
 		"mlx_lm_server": NoTenancy, "llamacpp": NoTenancy,
 	} {
 		if got := TenancyOf(id); got != want {

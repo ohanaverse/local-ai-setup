@@ -569,7 +569,8 @@ func TestStopPickerCtrlCAtMenuSkipsAndDrains(t *testing.T) {
 
 // TestStopCandidatesReportsSessionCounts verifies StopCandidates returns every
 // running stoppable model INCLUDING ones a live session uses, with the count,
-// and that a single-model provider reports its whole family's count. `wt stop`
+// that a single-model provider (mtplx) reports its whole family's count, and
+// that an omlx pool counts per model (stopping one leaves the others). `wt stop`
 // needs the in-use models to warn before stopping them; the exit-of-session
 // picker's hiding of them is asserted by TestStopPickerStopsOnlySelected.
 func TestStopCandidatesReportsSessionCounts(t *testing.T) {
@@ -579,14 +580,16 @@ func TestStopCandidatesReportsSessionCounts(t *testing.T) {
 			runningEntry("ollama", "ollama/busy", "busy"),
 			runningEntry("omlx", "omlx/x", "x"),
 			runningEntry("omlx-6bit", "omlx-6bit/y", "y"),
+			runningEntry("mtplx", "mtplx/p", "p"),
+			runningEntry("mtplx", "mtplx/q", "q"),
 		}},
-		counts: map[string]int{"ollama/busy": 2, "omlx/x": 1},
+		counts: map[string]int{"ollama/busy": 2, "omlx/x": 1, "mtplx/p": 1},
 	}
 	got := map[string]int{}
 	for _, c := range stopCandidates(&config.Config{}, h.deps()) {
 		got[c.Entry.ModelID] = c.Sessions
 	}
-	want := map[string]int{"ollama/a": 0, "ollama/busy": 2, "omlx/x": 1, "omlx-6bit/y": 1}
+	want := map[string]int{"ollama/a": 0, "ollama/busy": 2, "omlx/x": 1, "omlx-6bit/y": 0, "mtplx/p": 1, "mtplx/q": 1}
 	for id, n := range want {
 		if got[id] != n {
 			t.Errorf("Sessions[%s] = %d, want %d (all: %v)", id, got[id], n, got)
