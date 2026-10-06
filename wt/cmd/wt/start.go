@@ -58,15 +58,18 @@ var ensureModelRoute = lifecycle.EnsureModelRoute
 // report.
 var routeWaitInterval = 10 * time.Second
 
-// ensureRouteBeforeLaunch makes sure a running local model has its LiteLLM
-// route, then waits for the proxy to carry it (#192). A model wt did not
+// ensureRouteBeforeLaunch makes sure the model about to be launched has its
+// LiteLLM route, then waits for the proxy to carry it (#192). A model wt did not
 // start — an omlx or mtplx server started by hand, an ollama model pulled
 // since the last sync — has no route until something writes one; without this
 // the launch reaches the proxy and gets "Invalid model name". It only ever
 // adds that one route: unlike the start hook it removes nothing, so a running
-// sibling's route survives. It is a no-op for a cloud model, costs one read of
-// config.yaml when the route is already there, and never fails the launch. m
-// must be a model the probe reported running: this never starts one.
+// sibling's route survives. A registry cloud model gets the same repair: sync
+// is what routes those, but a config.yaml that lost its cloud rows would
+// otherwise fail every cloud launch until someone ran `wt litellm sync`. It
+// costs one read of config.yaml when the route is already there, and never
+// fails the launch. A local m must be a model the probe reported running:
+// this never starts one.
 //
 // A write means the proxy is restarting, and the wait for it is announced and
 // kept alive rather than run in silence (see waitForProxyRestart). The check's

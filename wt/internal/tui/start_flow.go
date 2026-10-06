@@ -81,10 +81,11 @@ func routeTick(id int) tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return routeTickMsg{id: id} })
 }
 
-// checkLaunchRoute makes sure a running local model has its LiteLLM route
-// before the launch (#192), then continues to launchSelected. A model wt did
-// not start has no route until something writes one, and the agent launched on
-// it would get "Invalid model name" from the proxy. The check writes that one
+// checkLaunchRoute makes sure the launched model has its LiteLLM route
+// before the launch (#192), then continues to launchSelected. A local model wt
+// did not start has no route until something writes one, and a cloud model's
+// route can be missing from a config.yaml that lost it; either way the agent
+// launched on it would get "Invalid model name" from the proxy. The check writes that one
 // route if it is missing and removes nothing, so a running sibling's route
 // survives. It never fails the launch. mdl must be a row the probe reported
 // running: this never starts a model. The caller has already established that

@@ -106,3 +106,20 @@ func loadRegistry() ([]Provider, []Model, error) {
 	}
 	return reg.Providers, reg.Models, nil
 }
+
+// RegistryRedirected reports whether the environment sends RegistryPath
+// somewhere other than the default ~/.config/local-ai/registry.toml —
+// MODELMAN_REGISTRY or XDG_CONFIG_HOME naming another place. LiteLLM's
+// config.yaml follows neither variable (litellm.DefaultPath), so a run that
+// redirects the registry alone would pair a scratch registry with the real
+// proxy config; the route writers ask this before they write. The paths are
+// compared, not the variables: spelling the default out is not a redirect.
+// With no home directory there is no default to compare against, and the
+// answer is false.
+func RegistryRedirected() bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	return filepath.Clean(RegistryPath()) != filepath.Join(home, ".config", "local-ai", "registry.toml")
+}

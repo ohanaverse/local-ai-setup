@@ -165,7 +165,8 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		// Already running, so no start hook ran: a model started outside wt
 		// has no route yet, and every row below would FAIL against the proxy
 		// with "Invalid model name". Writes that one route if it is missing
-		// and removes nothing; a no-op for a cloud target.
+		// and removes nothing. A cloud target takes this branch too, and
+		// gets its route back the same way if config.yaml lost it.
 		ensureRouteBeforeLaunch(a.cfg, m)
 	}
 	stderr := cmd.ErrOrStderr()

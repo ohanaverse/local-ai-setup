@@ -1137,3 +1137,112 @@ func TestSyncResolvesFailingSecretOncePerProvider(t *testing.T) {
 		t.Fatalf("helper ran %d times, want 1", n)
 	}
 }
+
+// redirectedRegistry sets up the environment the guard exists for: HOME holds
+// a default-path config.yaml with one marked route, and MODELMAN_REGISTRY
+// points somewhere else. Nothing names config.yaml, so DefaultPath resolves
+// to the file under HOME. It returns that path.
+func redirectedRegistry(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	dir := home + "/.config/litellm"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := dir + "/config.yaml"
+	body := "model_list:\n  - model_name: openrouter/kept\n    litellm_params: {model: openrouter/kept}\n    model_info: {wt_managed: true}\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MODELMAN_REGISTRY", home+"/scratch/registry.toml")
+	t.Setenv("WT_LITELLM_CONFIG", "")
+	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
+	return p
+}
+
+// TestRouteWritesRefuseARedirectedRegistry pins the guard against syncing a
+// scratch registry onto the real proxy config. The registry follows
+// MODELMAN_REGISTRY and XDG_CONFIG_HOME; config.yaml follows neither. So a run
+// that redirects only the registry (an ad-hoc `modelman migrate` against a
+// throwaway registry did exactly this) reconciled the developer's real
+// config.yaml against it: every marked route the scratch registry lacked was
+// removed and the live proxy restarted. Sync, its dry run and the lifecycle
+// hooks' ApplyChange all refuse instead, and neither the file nor the proxy
+// is touched.
+func TestRouteWritesRefuseARedirectedRegistry(t *testing.T) {
+	p := redirectedRegistry(t)
+	before, _ := os.ReadFile(p)
+	restarts := 0
+	o := Options{Restart: func() []string { restarts++; return nil }}
+	cfg := testConfig()
+	if _, err := Sync(cfg, nil, o); !errors.Is(err, ErrRegistryRedirected) {
+		t.Errorf("Sync err = %v, want ErrRegistryRedirected", err)
+	}
+	if _, err := PlanSync(cfg, nil, o); !errors.Is(err, ErrRegistryRedirected) {
+		t.Errorf("PlanSync err = %v, want ErrRegistryRedirected: a dry run must agree with the real sync", err)
+	}
+	if _, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b")}, o); !errors.Is(err, ErrRegistryRedirected) {
+		t.Errorf("ApplyChange err = %v, want ErrRegistryRedirected", err)
+	}
+	if after, _ := os.ReadFile(p); string(after) != string(before) {
+		t.Errorf("config.yaml was rewritten:\n%s", after)
+	}
+	if restarts != 0 {
+		t.Errorf("restarts = %d, want 0", restarts)
+	}
+}
+
+// TestRedirectedRegistryErrorNamesTheFix pins that the refusal tells the user
+// both paths and the variable that pairs them.
+func TestRedirectedRegistryErrorNamesTheFix(t *testing.T) {
+	p := redirectedRegistry(t)
+	_, err := Sync(testConfig(), nil, Options{Restart: func() []string { return nil }})
+	if err == nil {
+		t.Fatal("err = nil, want a refusal")
+	}
+	for _, want := range []string{config.RegistryPath(), p, "WT_LITELLM_CONFIG"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestRedirectedRegistryWritesANamedConfig pins the way through the guard:
+// naming config.yaml — WT_LITELLM_CONFIG, its legacy alias, or Options.Path —
+// says which proxy config the redirected registry belongs to, and the write
+// goes ahead. That holds even when the named file is the default one.
+func TestRedirectedRegistryWritesANamedConfig(t *testing.T) {
+	for _, name := range []string{"WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG", "Options.Path"} {
+		t.Run(name, func(t *testing.T) {
+			p := redirectedRegistry(t)
+			o := Options{Restart: func() []string { return nil }}
+			if name == "Options.Path" {
+				o.Path = p
+			} else {
+				t.Setenv(name, p)
+			}
+			res, err := Sync(testConfig(), nil, o)
+			if err != nil {
+				t.Fatalf("Sync err = %v, want the write to go ahead", err)
+			}
+			if !res.Changed {
+				t.Fatal("changed = false, want the named config.yaml synced")
+			}
+		})
+	}
+}
+
+// TestRedirectedRegistryStaysSilentWithoutAConfig pins that the guard does not
+// turn the everyday "no LiteLLM here" case into an error: with no config.yaml
+// the answer is still ErrMissing, which the route hooks treat as silence.
+func TestRedirectedRegistryStaysSilentWithoutAConfig(t *testing.T) {
+	p := redirectedRegistry(t)
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyChange(testConfig(), Change{}, Options{}); !errors.Is(err, ErrMissing) {
+		t.Fatalf("err = %v, want ErrMissing", err)
+	}
+}

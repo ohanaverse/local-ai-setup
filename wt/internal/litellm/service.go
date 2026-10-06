@@ -341,6 +341,12 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, o
 		if err != nil {
 			return err
 		}
+		// After Open, so a machine with no config.yaml keeps answering
+		// ErrMissing — which the route hooks treat as silence — whatever its
+		// registry path is.
+		if err := checkRegistryPairing(o); err != nil {
+			return err
+		}
 		// Refuse a config we cannot understand before planning or mutating
 		// anything. EnsureSettings would otherwise rewrite such a file whenever
 		// the plan happened to be empty, and a caller must not edit a file it
@@ -750,6 +756,10 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	o.Recheck = nil
 	f, err := Open(o.path())
 	if err != nil {
+		return SyncPlan{}, err
+	}
+	// The dry run refuses what the real sync refuses (applyPlanned).
+	if err := checkRegistryPairing(o); err != nil {
 		return SyncPlan{}, err
 	}
 	if err := f.checkModelList(); err != nil {
