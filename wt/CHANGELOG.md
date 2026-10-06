@@ -241,6 +241,13 @@
 
 ### Added
 
+- `wt served <provider> [--json]` prints the model ids an `omlx`, `mtplx` or
+  `mlx_lm_server` server is serving now — the probe `wt start`, `wt stop` and
+  the pickers already act on. For omlx that is the models loaded or loading,
+  asked with the key the registry's omlx provider names (`auth.secret_ref`)
+  when the server has one. It exits 1 rather than print nothing when the
+  server gives no usable answer. modelman asks it for a keyed omlx with a
+  partly loaded pool, where it used to leave a stale `running` flag in place.
 - `-A`/`--agent` short flag (alias for `--agent`).
 - `-M`/`--model` flag to pin a model as `<provider>/<name>`. Resolved from
   live rows: a cloud or running local model launches; a non-running local

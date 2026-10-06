@@ -74,6 +74,22 @@ def test_run_tui_discard_or_empty_does_not_apply(tmp_path, monkeypatch):
     assert reg_path.read_text() == before
 
 
+def test_run_queued_ops_reports_an_unreadable_registry_and_fails(tmp_path, monkeypatch, capsys):
+    """The queued apply reloads the registry after the TUI has closed, so it
+    is reachable with a registry that went unreadable while the user was in
+    the TUI. That is a failure like any other operation failing — report it
+    and exit non-zero, rather than ending the session in a traceback."""
+    reg_path, state_path = _seed(tmp_path, monkeypatch)
+    reg_path.write_text("models = 3\n")
+
+    failed = run_queued_ops(QueuedOps(ready={"ollama/x": True}))
+
+    assert failed is True
+    err = capsys.readouterr().err
+    assert f"error: cannot read {reg_path}" in err
+    assert reg_path.read_text() == "models = 3\n"
+
+
 def test_run_queued_ops_downloads_a_queued_ready_on(tmp_path, monkeypatch, capsys):
     """A queued ready-on against a mapped provider downloads for real —
     the behavior apply() lost when DownloadManager took it over, and

@@ -2162,8 +2162,22 @@ model_name = "bad"
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "content",
-    [_ONE_BAD_ENTRY, "[[models]\nnot toml", "models = 3\n"],
-    ids=["malformed-entry", "toml-syntax", "wrong-shape"],
+    [
+        _ONE_BAD_ENTRY,
+        "[[models]\nnot toml",
+        "models = 3\n",
+        # #247: valid TOML whose models are under a name modelman does not
+        # read. It loaded as zero models without a message, and the first save
+        # rewrote the file as `models = []`.
+        """
+[[model]]
+id = "ollama/qwen3"
+family = "qwen3"
+provider_id = "ollama"
+model_name = "qwen3:8b"
+""",
+    ],
+    ids=["malformed-entry", "toml-syntax", "wrong-shape", "unknown-top-level-key"],
 )
 async def test_app_refuses_to_open_an_unreadable_registry(tmp_path, monkeypatch, content):
     """#240: only a missing registry is an empty one. A file that is there
@@ -2188,6 +2202,34 @@ async def test_app_refuses_to_open_an_unreadable_registry(tmp_path, monkeypatch,
     assert str(registry_path) in app.registry_error
     assert "fix or move it aside" in app.registry_error
     assert registry_path.read_text() == content
+
+
+@pytest.mark.asyncio
+async def test_app_refuses_to_open_a_dangling_registry_symlink(tmp_path, monkeypatch):
+    """#248: `Path.exists()` is False for a symlink to a missing file, so a
+    registry that lives on an unmounted volume or in a checkout that moved
+    took the missing-registry branch: an empty model list with no message, and
+    the first save replaced the link with a regular file. The app must stop
+    instead, naming the link and what it points at, with nothing mounted that
+    could save over it."""
+    registry_path = tmp_path / "registry.toml"
+    target = tmp_path / "moved-away" / "registry.toml"
+    registry_path.symlink_to(target)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.models import ModelScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not isinstance(app.screen, ModelScreen)
+
+    assert app.return_code == 1
+    assert str(registry_path) in app.registry_error
+    assert str(target) in app.registry_error
+    assert registry_path.is_symlink() and not target.exists()
 
 
 @pytest.mark.asyncio

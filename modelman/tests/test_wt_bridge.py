@@ -277,3 +277,50 @@ def test_sync_timeout_propagates_as_timeout_error(monkeypatch):
     with pytest.raises(wt_bridge.WtBridgeTimeoutError, match="sync timed out"):
         wt_bridge.sync()
     assert calls == [["sync", "--json"]]
+
+
+def _served(monkeypatch, result):
+    """wt_bridge.served_ids("omlx") with `wt served` answering `result` (a
+    CompletedProcess, or an exception to raise)."""
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs.get("timeout")))
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: "/usr/local/bin/wt")
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+    return wt_bridge.served_ids("omlx"), seen
+
+
+def test_served_ids_reads_wts_json(monkeypatch):
+    ids, seen = _served(monkeypatch, _cp('{"provider": "omlx", "served": ["B"]}\n'))
+    assert ids == ["B"]
+    assert seen == [(["wt", "served", "omlx", "--json"], wt_bridge.SERVED_TIMEOUT)]
+    # Answered and serving nothing is an answer, not "unknown".
+    assert _served(monkeypatch, _cp('{"provider": "omlx", "served": []}'))[0] == []
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _cp(returncode=1, stderr="Error: omlx gave no usable answer\n"),
+        _cp(""),
+        _cp("not json"),
+        _cp('{"provider": "omlx"}'),
+        subprocess.TimeoutExpired(cmd="wt", timeout=20),
+        OSError("exec format error"),
+    ],
+    ids=["exit-1", "empty", "not-json", "no-served", "timeout", "oserror"],
+)
+def test_served_ids_is_unknown_whenever_wt_gives_no_answer(monkeypatch, result):
+    """A probe, so nothing raises — and None, never [], so no caller can read
+    wt's failure to say as "nothing is serving" and clear a live model's flag."""
+    assert _served(monkeypatch, result)[0] is None
+
+
+def test_served_ids_is_unknown_without_wt_on_path(monkeypatch):
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: None)
+    assert wt_bridge.served_ids("omlx") is None

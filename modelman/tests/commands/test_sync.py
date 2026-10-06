@@ -281,6 +281,64 @@ def test_sync_command_keeps_the_flag_of_a_model_on_a_remote_ollama(tmp_path, mon
     assert "marked stopped" not in result.output
 
 
+def test_sync_command_keeps_the_flag_of_a_model_in_a_partly_loaded_omlx_pool(tmp_path, monkeypatch):
+    """#249: sync re-probes every flagged model (#242/#243 extended that past
+    ollama), and the omlx probe read a partly loaded pool as "nothing
+    running" — /health reports the counts without a key, and 1 of 2 loaded
+    does not say WHICH. sync printed "No longer running, marked stopped" and
+    cleared the flag of a model omlx was still serving: `modelman stop`
+    no-opped, `stop --all` skipped it, and the process stayed resident with
+    nothing in modelman.toml saying so."""
+    from modelman.registry import ModelEntry
+    from modelman.state import ModelState, StateStore, load_state, save_state
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    save_registry(
+        Registry(
+            providers=[
+                ProviderEntry(
+                    id="omlx", name="oMLX", location="local", auth=AuthConfig(type="none")
+                )
+            ],
+            models=[
+                ModelEntry(
+                    id="omlx/A",
+                    family="f",
+                    provider_id="omlx",
+                    model_name="A",
+                    location="local",
+                )
+            ],
+        ),
+        registry_path,
+    )
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    store = StateStore()
+    store.set("omlx/A", ModelState(running=True))
+    save_state(store, state_path)
+
+    def health(url, timeout=2.0):
+        # The status endpoint would say which — this omlx has an API key and
+        # refuses it to modelman, which resolves no secret_ref.
+        if url == "http://localhost:8000/v1/models/status":
+            return {"detail": "Invalid API key"}
+        assert url == "http://localhost:8000/health", url
+        return {"engine_pool": {"model_count": 2, "loaded_count": 1}}
+
+    with (
+        patch("modelman.sync.list_ollama", return_value={}),
+        patch("modelman.local_control._http_models_ids", return_value=["A", "B"]),
+        patch("modelman.local_control._http_json", health),
+    ):
+        result = CliRunner().invoke(app, ["sync"])
+
+    assert result.exit_code == 0, result.output
+    assert load_state(state_path).get("omlx/A").running is True
+    assert "marked stopped" not in result.output
+
+
 def test_sync_command_reports_only_the_flags_it_cleared(tmp_path, monkeypatch):
     """A flagged id with nothing to probe for — no registry entry and no
     provider row of its prefix — is neither verified nor cleared by

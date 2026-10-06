@@ -31,6 +31,7 @@ from modelman.registry import (
     provider_config,
     save_registry,
     sync_agent_providers,
+    unreadable_registry_message,
 )
 from modelman.state import FamilyState, StateStore
 
@@ -50,6 +51,191 @@ def test_default_registry_path_modelman_registry_override_wins(monkeypatch):
 def test_load_registry_missing_file_raises(tmp_path):
     with pytest.raises(RegistryError, match="not found"):
         load_registry(tmp_path / "nonexistent.toml")
+
+
+def test_load_registry_rejects_an_unknown_top_level_key(tmp_path):
+    """#247: valid TOML whose content sits under a key modelman does not read
+    loaded as zero models with no message — and `[[model]]` is a plausible
+    typo for `[[models]]` — so the first save rewrote the file without any of
+    them. The parser is the only place that can tell "no models" from "models
+    under a name I do not read", so it says so instead of returning empty."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        """
+[[model]]
+id = "ollama/qwen3"
+family = "qwen3"
+provider_id = "ollama"
+model_name = "qwen3:8b"
+"""
+    )
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry(path)
+
+    message = str(excinfo.value)
+    assert "model" in message
+    assert "providers" in message and "families" in message and "models" in message
+
+
+def test_load_registry_names_every_unknown_top_level_key(tmp_path):
+    """One message, every offending key: a hand-edited file usually carries
+    one mistake, but fixing it one parse at a time is a needless round trip."""
+    path = tmp_path / "registry.toml"
+    path.write_text('[registry]\nnotes = "mine"\n\n[meta]\nversion = 2\n')
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry(path)
+
+    assert "meta" in str(excinfo.value) and "registry" in str(excinfo.value)
+
+
+def test_unknown_top_level_key_raises_as_a_registry_error_not_not_found(tmp_path):
+    """The distinction #240 rests on: "there is a file, and it cannot be read"
+    must not be reported as "there is no file", or a caller opens it empty and
+    writes that back over the user's registry."""
+    path = tmp_path / "registry.toml"
+    path.write_text("[[model]]\nid = 'x'\n")
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry(path)
+
+    assert not isinstance(excinfo.value, RegistryNotFoundError)
+
+
+def test_load_registry_reports_a_dangling_symlink_as_unreadable_not_missing(tmp_path):
+    """#248: `Path.exists()` is False for a symlink to a file that is not
+    there, so a registry symlinked into an unmounted volume or a checkout that
+    moved read as "no registry at all": the TUI opened an empty model list and
+    the first save replaced the link with a near-empty regular file, shadowing
+    the real registry once the target came back. There IS a file entry at the
+    path; what cannot be read is what it points at."""
+    target = tmp_path / "dotfiles" / "registry.toml"
+    link = tmp_path / "registry.toml"
+    link.symlink_to(target)
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry(link)
+
+    assert not isinstance(excinfo.value, RegistryNotFoundError)
+    assert str(link) in str(excinfo.value) and str(target) in str(excinfo.value)
+
+
+def test_load_registry_reads_through_a_symlink_that_resolves(tmp_path):
+    """The reason to symlink the registry at all — a dotfiles checkout —
+    keeps working; only a link that points at nothing is refused."""
+    real = tmp_path / "dotfiles" / "registry.toml"
+    real.parent.mkdir()
+    save_registry(
+        Registry(
+            models=[
+                ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:latest")
+            ]
+        ),
+        real,
+    )
+    link = tmp_path / "registry.toml"
+    link.symlink_to(real)
+
+    assert [m.id for m in load_registry(link).models] == ["ollama/x"]
+
+
+def test_load_registry_does_not_fall_back_from_a_dangling_symlink(tmp_path, monkeypatch):
+    """The pre-XDG fallback is for a user who has not moved their registry
+    yet. A symlink at the XDG path says the opposite — it names where the
+    registry is — and reading the old file when that target is missing would
+    quietly serve a stale registry while the user edits their real one."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    legacy = home / ".config" / "local-ai" / "registry.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        '[[models]]\nid = "ollama/stale"\nfamily = "f"\n'
+        'provider_id = "ollama"\nmodel_name = "stale"\n'
+    )
+    xdg = tmp_path / "xdg" / "local-ai" / "registry.toml"
+    xdg.parent.mkdir(parents=True)
+    xdg.symlink_to(tmp_path / "moved-away.toml")
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry()
+
+    assert not isinstance(excinfo.value, RegistryNotFoundError)
+    assert str(xdg) in str(excinfo.value)
+
+
+def test_load_registry_refuses_a_dangling_symlink_at_the_pre_xdg_path(tmp_path, monkeypatch):
+    """#248 through the fallback: with XDG_CONFIG_HOME set and no registry
+    there yet, the registry is the pre-XDG file — and when THAT is a link to
+    an unmounted volume it read as "no registry at all". The save that
+    followed wrote a fresh one at the XDG path, which is read first from then
+    on and so shadows the linked registry once its target is back."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    legacy = home / ".config" / "local-ai" / "registry.toml"
+    legacy.parent.mkdir(parents=True)
+    target = tmp_path / "moved-away.toml"
+    legacy.symlink_to(target)
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry()
+
+    assert not isinstance(excinfo.value, RegistryNotFoundError)
+    assert str(legacy) in str(excinfo.value) and str(target) in str(excinfo.value)
+    assert str(legacy) in unreadable_registry_message(excinfo.value)
+
+
+def test_unreadable_registry_message_names_a_dangling_symlink(tmp_path, monkeypatch):
+    """The message has to name the file the user must fix. For every other
+    unreadable registry it re-derives that path, because the load failure is
+    not about the path; for a dangling symlink the path IS the failure, so
+    re-deriving it fails the same way and the error carries it instead."""
+    link = tmp_path / "registry.toml"
+    link.symlink_to(tmp_path / "gone.toml")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(link))
+
+    with pytest.raises(RegistryError) as excinfo:
+        load_registry()
+
+    assert str(link) in unreadable_registry_message(excinfo.value)
+
+
+def test_save_registry_refuses_to_replace_a_dangling_symlink(tmp_path):
+    """The read-side refusal covers a link that is already dangling when the
+    file is read. This covers one that goes dangling afterwards — a volume
+    unmounted while the TUI sat open — where the load already succeeded, so
+    only the write can stop the `os.replace` that shadows the real registry."""
+    target = tmp_path / "gone.toml"
+    link = tmp_path / "registry.toml"
+    link.symlink_to(target)
+
+    with pytest.raises(RegistryError) as excinfo:
+        save_registry(Registry(), link)
+
+    assert str(link) in str(excinfo.value) and str(target) in str(excinfo.value)
+    assert link.is_symlink() and not link.exists()
+    assert not target.exists()
+
+
+def test_save_registry_writes_through_a_symlink_that_resolves(tmp_path):
+    """A registry linked into a dotfiles checkout stays linked: the save lands
+    in the file the link names. os.replace() on the link itself swapped it
+    for a regular file, and the checkout silently stopped receiving edits
+    after the first save."""
+    real = tmp_path / "dotfiles" / "registry.toml"
+    real.parent.mkdir()
+    save_registry(Registry(), real)
+    link = tmp_path / "registry.toml"
+    link.symlink_to(real)
+
+    save_registry(Registry(families=[FamilyEntry(name="qwen3")]), link)
+
+    assert link.is_symlink() and link.resolve() == real.resolve()
+    assert [f.name for f in load_registry(real).families] == ["qwen3"]
 
 
 def test_save_then_load_round_trips_providers_and_models(tmp_path):

@@ -40,7 +40,10 @@ from pathlib import Path
 
 # Import the providers package to ensure ProviderRegistry is populated —
 # mirrors sync.py's identical defensive import.
-from . import providers  # noqa: F401
+from . import (
+    providers,  # noqa: F401
+    wt_bridge,
+)
 from .benchmark.errors import BenchmarkError
 from .benchmark.isolation import (
     SUPPORTED_PROVIDER_IDS,
@@ -210,13 +213,20 @@ def _ollama_name_matches(have: str, want: str) -> bool:
     return ":" not in want and have == want + ":latest"
 
 
-def _probe_running(provider_id: str, model_name: str, base_origin_url: str | None) -> bool:
+def _probe_running(provider_id: str, model_name: str, base_origin_url: str | None) -> bool | None:
     """Best-effort: is this model actually serving right now?
 
-    False on any failure — a false "not running" only costs a harmless
-    stop+reload; a false "yes" would make `modelman start` a no-op exactly
-    when it's needed (the marker's process died; see the idempotency note
-    in start_local_model).
+    Three answers, not two — the distinction #249 turns on. True (the
+    provider answered that it is), False (it positively answered that it is
+    not, which costs a harmless stop+reload), and None for "the provider is
+    up but cannot say". Only False may clear a flag: reading "cannot say" as
+    "not running" cleared the running flag of an omlx model that was still
+    being served, after which `modelman stop` no-opped and the process stayed
+    resident with nothing recording it. Callers that guard a flag ask
+    `is not False` (running_model_ids, the start inventory); a caller that
+    needs a definite answer before acting asks for one (`modelman start`'s
+    idempotency check treats unknown as not-running and reloads — the
+    pre-existing behavior for a partly loaded pool, #213).
 
     For ollama the question is "is it still pulled?", not "is it loaded?"
     (#242). `modelman start` for ollama is deliberately flag-only (no warmup
@@ -230,18 +240,23 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     is not pulled cannot be served, and nothing else would ever clear the
     flag (#233). That is asked of the daemon at the provider row's origin
     (_ollama_pulled) — and only a listing that positively lacks the model
-    answers False. A daemon that is down or unreadable is unknown, and
-    unknown stays running: restarting ollama must not stop every model.
+    answers False. A daemon that is down or unreadable is None, which
+    restarting ollama must not read as "stopped every started model".
     """
     if provider_id == "ollama":
         origin = base_origin_url or _DEFAULT_BASE_ORIGIN["ollama"]
-        return _ollama_pulled(origin, model_name) is not False
+        return _ollama_pulled(origin, model_name)
     base = base_origin_url or _DEFAULT_BASE_ORIGIN.get(provider_id)
     if not base:
+        # No address to ask: nothing is known about a provider modelman has
+        # no origin for, and no flag was set by starting one.
         return False
     ids = _http_models_ids(f"{base}/v1/models")
     if provider_id in ("omlx", "omlx-6bit"):
-        ids = _omlx_loaded(base, ids)
+        loaded = _omlx_loaded(base, ids)
+        if loaded is None:
+            return None
+        ids = loaded
     if provider_id == "mlx_lm_server":
         # One target+draft pairing per process (the lifecycle's
         # mlx_lm_server backend is the only thing that starts one): the
@@ -254,21 +269,28 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     return any(_name_matches(served, model_name) for served in ids)
 
 
-def _omlx_loaded(base: str, listed: list[str]) -> list[str]:
-    """The ids among `listed` (omlx's /v1/models) that are actually loaded.
+def _omlx_loaded(base: str, listed: list[str]) -> list[str] | None:
+    """The ids among `listed` (omlx's /v1/models) that are actually loaded,
+    or None when the pool's state cannot be determined from here.
 
     omlx's /v1/models lists every model in its engine pool — the whole model
     directory, minus hidden ones — loaded or not (wt#201), so on its own it
     reads every omlx model as running while the service is up. /health gives
     the pool's counts without a key:
 
-    - nothing loaded -> nothing is running;
+    - nothing loaded -> [] : nothing is running;
     - every pool model loaded, and the list is the whole pool -> the list;
     - anything else (some loaded; or all loaded but a hidden model makes the
-      list shorter than the pool) -> [] : only the key-protected
-      /v1/models/status says which, and modelman does not ask it. Not-running
-      is _probe_running's safe direction. wt's probe (localmodels.ServedIDs)
-      does ask, with the registry's secret_ref.
+      list shorter than the pool) -> what /v1/models/status says, asked
+      without a key. That answers on an omlx with no API key set, the usual
+      local setup, and a model mid-load counts as wt counts it. An omlx that
+      wants a key refuses: modelman resolves no secret_ref, so wt is asked
+      (`wt served omlx`, the same probe with the registry's key). This is
+      the one read here that shells out, and only when nothing else can say.
+      If wt cannot say either that is None, reported as-is (#249) — the
+      callers that guard a flag leave it alone, because the flag was set by a
+      start that succeeded and a partly loaded pool neither confirms nor
+      refutes it.
 
     An omlx whose /health gives no pool counts predates them: `listed` is all
     there is, as before."""
@@ -279,9 +301,30 @@ def _omlx_loaded(base: str, listed: list[str]) -> list[str]:
     loaded, count = pool.get("loaded_count"), pool.get("model_count")
     if not isinstance(loaded, int) or not isinstance(count, int):
         return listed
-    if loaded and loaded == count == len(listed):
+    if loaded == 0:
+        return []
+    if loaded == count == len(listed):
         return listed
-    return []
+    by_status = _omlx_status_loaded(base)
+    return by_status if by_status is not None else wt_bridge.served_ids("omlx")
+
+
+def _omlx_status_loaded(base: str) -> list[str] | None:
+    """The ids omlx's /v1/models/status reports loaded or loading, or None
+    when it gives no listing — a refusal for want of the server's API key
+    answers with a JSON object too, just not one with `models`."""
+    status = _http_json(f"{base}/v1/models/status")
+    models = status.get("models") if status else None
+    if not isinstance(models, list):
+        return None
+    return [
+        m["id"]
+        for m in models
+        if isinstance(m, dict)
+        and isinstance(m.get("id"), str)
+        and m["id"]
+        and (m.get("loaded") or m.get("is_loading"))
+    ]
 
 
 def _ollama_origin(provider: ProviderEntry | None) -> str:
@@ -965,7 +1008,7 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
             probe_origin = (
                 base_origin(provider.auth.base_url) if provider and provider.auth else None
             )
-            running = _probe_running(model.provider_id, model.model_name, probe_origin)
+            running = _probe_running(model.provider_id, model.model_name, probe_origin) is not False
         # A provider that can't size an artifact it confirms is present (no
         # size_of() implementation) must not regress the size modelman.toml
         # already cached from an earlier reconcile into a "—".
@@ -982,7 +1025,9 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
             continue
         provider = providers_by_id.get(found.provider_id)
         probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
-        found.running = _probe_running(found.provider_id, found.variant_id, probe_origin)
+        found.running = (
+            _probe_running(found.provider_id, found.variant_id, probe_origin) is not False
+        )
     return LocalModelInventory(
         downloaded=downloaded,
         not_downloaded=not_downloaded,
@@ -1021,11 +1066,16 @@ def running_model_ids(
     state: StateStore,
     state_path: Path | None = None,
 ) -> list[str]:
-    """Every local model flagged running AND confirmed by a live probe —
+    """Every local model flagged running AND not disproved by a live probe —
     the same self-healing rule every other consumer (the TUI indicator,
     wt's picker) applies. A flagged-but-dead entry's running flag is
     opportunistically cleared (see _clear_stale_running_flag). Sorted for
-    stable display."""
+    stable display.
+
+    Only a probe that answers False clears a flag: None (the provider is up
+    but cannot say — a partly loaded omlx pool) leaves it, because the flag
+    was set by a start that succeeded and #249's whole bug was reading
+    "cannot say" as "stopped" (#249)."""
     providers_by_id = _provider_by_id(registry)
     models_by_id = {m.id: m for m in registry.models}
     verified: list[str] = []
@@ -1038,13 +1088,14 @@ def running_model_ids(
         provider_id, model_name = target
         provider = providers_by_id.get(provider_id)
         probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
-        if _probe_running(provider_id, model_name, probe_origin):
+        if _probe_running(provider_id, model_name, probe_origin) is not False:
             verified.append(model_id)
             continue
         if (
             model_id not in models_by_id
             and "--" in model_name
             and _probe_running(provider_id, model_name.replace("--", "/"), probe_origin)
+            is not False
         ):
             # A flagged id that no registry entry owns but that is spelled the
             # REGISTERED way (the id's "/" → "--": "mtplx/org--name"): the
@@ -1155,7 +1206,18 @@ def start_local_model(
 
     already = fresh_state.get(resolved_id).running
     if already:
-        if _probe_running(model.provider_id, model.model_name, probe_origin):
+        # A definite True, so "cannot say" is not an answer here: a start is
+        # a request to have the model loaded NOW, and a probe that cannot
+        # confirm it must not make the start a no-op (the reload below stops
+        # the occupant and loads the requested model). For a partly loaded
+        # omlx pool that is the pre-existing behavior (#213 item 3), not
+        # #249's flag-clearing bug. Ollama is the exception: its start is
+        # flag-only and the daemon and pull checks above have passed, so an
+        # /api/tags that then gives no usable listing (a proxy's error page)
+        # leaves nothing to reload — the flag stands, as for every other
+        # reader of an unknown ollama probe.
+        probed = _probe_running(model.provider_id, model.model_name, probe_origin)
+        if probed or (probed is None and model.provider_id == "ollama"):
             # Re-sync even on the idempotent path: `modelman start <id>` is
             # the remediation for a running model whose route drifted.
             sync_warnings = sync_routes(litellm_path=litellm_path)

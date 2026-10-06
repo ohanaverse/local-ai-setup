@@ -39,6 +39,7 @@ from ..registry import (
     Fetch,
     ModelEntry,
     Registry,
+    RegistryError,
     _cost_from_dict,
     is_local_location,
     is_model_local,
@@ -369,8 +370,8 @@ class ModelScreen(Screen[None]):
             # A model we believed running is not, so its LiteLLM route points
             # at a dead backend and only a sync drops it (#179). Nothing else
             # does: the flag lives in modelman.toml, which the TUI-exit sync
-            # (gated on registry.toml) reads past, and running_model_ids() is
-            # deliberately wt-free. Gated on stale_ids so an ordinary mount —
+            # (gated on registry.toml) reads past, and running_model_ids() never
+            # syncs routes. Gated on stale_ids so an ordinary mount —
             # this worker's common case — never bounces the proxy.
             for warning in sync_routes():
                 self.app.call_from_thread(self.app.notify, warning, severity="warning")
@@ -771,12 +772,26 @@ class ModelScreen(Screen[None]):
             return None
         return self.queued_moves.get(entry.id, entry.family)
 
+    def _save_registry(self) -> bool:
+        """save_registry() for an action on this screen: a write that is
+        refused or fails (a symlinked registry whose volume unmounted since
+        it was loaded, a read-only directory) is reported and returns False
+        for the caller to undo its in-memory change, instead of taking the
+        TUI down with whatever was queued."""
+        try:
+            save_registry(self.registry, self.registry_path)
+        except (OSError, RegistryError) as exc:
+            self.app.notify(f"Registry not saved: {exc}", severity="error", timeout=10)
+            return False
+        self._registry_saved = True
+        return True
+
     def _append_new_model_entry(
         self, variant: VariantSpec, family: str, source: str
     ) -> ModelEntry | None:
         """Build and persist a ModelEntry for a freshly submitted add or
         discovered-registration dialog result. Returns None (after
-        notifying) on an id collision. Shared by _on_add_model and
+        notifying) on an id collision or a save that fails. Shared by _on_add_model and
         _on_register_discovered so the collision guard and the
         immediate save_registry() can't drift between the two — every
         add path persists the registry entry right away (the post-exit
@@ -792,8 +807,9 @@ class ModelScreen(Screen[None]):
         if entry.cost is not None:
             entry.pricing_updated_at = _now_iso()
         self.registry.models.append(entry)
-        save_registry(self.registry, self.registry_path)
-        self._registry_saved = True
+        if not self._save_registry():
+            self.registry.models.remove(entry)
+            return None
         self._last_provider_used = variant["provider"]
         return entry
 
@@ -982,10 +998,8 @@ class ModelScreen(Screen[None]):
             new_entry.pricing_updated_at = _now_iso()
         else:
             new_entry.pricing_updated_at = old_entry.pricing_updated_at
-        for i, m in enumerate(self.registry.models):
-            if m.id == updated["id"]:
-                self.registry.models[i] = new_entry
-                break
+        index = self.registry.models.index(old_entry)
+        self.registry.models[index] = new_entry
         # Persist the edit's registry metadata (location, model name,
         # fetch split, …) immediately: unlike every other mutating
         # action here, an edit that doesn't move families queues nothing,
@@ -993,8 +1007,9 @@ class ModelScreen(Screen[None]):
         # final save_registry() would never run. Family changes from the
         # dialog stay queued as moves and are applied (and saved) at
         # apply time, as before.
-        save_registry(self.registry, self.registry_path)
-        self._registry_saved = True
+        if not self._save_registry():
+            self.registry.models[index] = old_entry
+            return
         if result.family != old_entry.family:
             self.queued_moves[updated["id"]] = result.family
         else:
@@ -1119,8 +1134,13 @@ class ModelScreen(Screen[None]):
             # The exit path compares the file before and after the whole
             # session, sees no difference, and would not sync; tell it one is
             # owed (#194). A discard of queued toggles alone owes nothing.
-            save_registry(self.registry, self.registry_path)
-            if self._registry_saved:
+            #
+            # A refused write leaves those edits on disk, so stay here with
+            # the report rather than exit as if they were discarded.
+            wrote_before = self._registry_saved
+            if not self._save_registry():
+                return
+            if wrote_before:
                 self.app.route_sync_owed = True  # type: ignore[attr-defined]
             self.queued_ready.clear()
             self.queued_deletes.clear()

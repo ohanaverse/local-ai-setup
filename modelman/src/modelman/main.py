@@ -36,6 +36,7 @@ from .providers.registry import ProviderRegistry
 from .queue import PendingChanges, QueuedOps
 from .registry import (
     Registry,
+    RegistryError,
     RegistryNotFoundError,
     _default_registry_path,
     load_registry,
@@ -182,6 +183,35 @@ def print_error_summary(failures: list[str], total: int) -> bool:
     return True
 
 
+def _report_unreadable_registry(exc: BaseException) -> None:
+    """Echo the #240 report for a registry that is there and cannot be read:
+    the file — the pre-XDG one when that is where it was read from — and why.
+    What to run next is the caller's to add."""
+    typer.echo(f"error: {unreadable_registry_message(exc)}", err=True)
+
+
+def _load_registry_or_exit() -> Registry:
+    """load_registry() for a CLI command: an unreadable registry is reported
+    the way the TUI reports it (#240) and exits 1, instead of ending the
+    command in a Python traceback that names neither the file to fix nor that
+    nothing was changed.
+
+    A registry that is not there yet is an empty one, as it is for the TUI
+    and for migrate: sync gives a fresh machine its provider rows, and the
+    other commands find nothing to act on and say so themselves.
+    """
+    try:
+        return load_registry()
+    except RegistryNotFoundError:
+        return Registry()
+    except Exception as exc:  # noqa: BLE001
+        # Broad like migrate's, and for the same reason: a hand-edited file
+        # fails in the parser as readily with a TypeError/ValueError (valid
+        # TOML, wrong shape) or a UnicodeDecodeError as with a RegistryError.
+        _report_unreadable_registry(exc)
+        raise typer.Exit(1) from exc
+
+
 def run_queued_ops(queued: QueuedOps) -> bool:
     """Apply a QueuedOps returned by the TUI against fresh on-disk state.
 
@@ -191,7 +221,18 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     deletes/moves/ready have not. Returns True iff the run
     should exit non-zero (failures, or a Ctrl+C cancellation).
     """
-    registry = load_registry()
+    try:
+        registry = load_registry()
+    except RegistryNotFoundError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # The registry was readable when the TUI opened it and queued these
+        # ops, so it changed under us (a hand edit while the TUI sat open, a
+        # symlink's volume unmounted). Report it as this apply failing —
+        # True, i.e. exit non-zero — rather than raise, so the callers that
+        # keep working after a failure still do.
+        _report_unreadable_registry(exc)
+        return True
     state = load_state()
     models_by_id = {m.id: m for m in registry.models}
     ready_specs = {}
@@ -483,7 +524,7 @@ def migrate(
 @app.command()
 def sync() -> None:
     """Reconcile configured models against their providers."""
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     state = load_state()
     try:
         result = run_sync(registry, state)
@@ -530,10 +571,12 @@ def sync() -> None:
     # that repair on the floor.
     try:
         save_registry(registry)
-    except OSError as exc:
+    except (OSError, RegistryError) as exc:
         # The state sync already succeeded; report the registry repair
         # failure cleanly instead of a traceback. The repair is idempotent
-        # and re-runs on the next sync.
+        # and re-runs on the next sync. RegistryError is the save's own
+        # refusal: registry.toml became a symlink to nothing while the scans
+        # ran (#248), which is not an OSError.
         typer.echo(f"error: failed to save registry: {exc}", err=True)
         raise typer.Exit(1) from exc
     if result.providers_added:
@@ -579,7 +622,7 @@ def delete_family(
     used to offer family deletion) is gone. Refuses if the family still
     has models — move or delete them first.
     """
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     models = registry.models_by_family(name)
     if models:
         typer.echo(
@@ -598,7 +641,7 @@ def delete_family(
         registry.families.remove(entry)
         try:
             save_registry(registry)
-        except OSError as exc:
+        except (OSError, RegistryError) as exc:
             typer.echo(f"error: failed to save registry: {exc}", err=True)
             raise typer.Exit(1) from exc
     if had_legacy:
@@ -615,29 +658,32 @@ def refresh_prices() -> None:
     from .pricing import refresh_prices as run_refresh
     from .state import stamp_price_refresh_today
 
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     result = run_refresh(registry)
     if result.error is not None:
         typer.echo(f"error: {result.error}", err=True)
         raise typer.Exit(1)
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    typer.echo(f"Refreshed prices for {result.updated} model(s).")
+    # A refresh that updated nothing has nothing to write, stamp or route —
+    # and on a machine with no registry.toml yet, writing would create an
+    # empty one. The stamp follows the TUI's rule (app.py): a zero-update
+    # refresh is not a success worth gating on, and stamping it (no
+    # OpenRouter-priced candidates, or no candidate matched) would suppress a
+    # same-day retry and the pricing of a model added later the same day.
+    if result.updated == 0:
+        return
     try:
         save_registry(registry)
-    except OSError as exc:
+    except (OSError, RegistryError) as exc:
         typer.echo(f"error: failed to save registry: {exc}", err=True)
         raise typer.Exit(1) from exc
     # Stamp the refresh date like the TUI's background refresh does (both
     # call state.stamp_price_refresh_today): wt's stale-pricing notice reads
     # it, and without the stamp it told the user to run this very command
-    # forever (#151). But only when the refresh actually updated something —
-    # the TUI's rule (app.py): a zero-update refresh is not a success worth
-    # gating on, and stamping it (no OpenRouter-priced candidates, or no
-    # candidate matched) would suppress a same-day retry and the pricing of
-    # a model added later the same day.
-    if result.updated > 0:
-        stamp_price_refresh_today()
-    for warning in result.warnings:
-        typer.echo(f"warning: {warning}", err=True)
-    typer.echo(f"Refreshed prices for {result.updated} model(s).")
+    # forever (#151).
+    stamp_price_refresh_today()
     # wt writes a route's prices from the registry, so new prices reach
     # LiteLLM only through a sync (#179).
     _sync_routes_and_warn()
@@ -681,7 +727,7 @@ def start(
     disk, models registered but missing their artifact, and on-disk
     models with no registry.toml entry yet.
     """
-    registry = load_registry()
+    registry = _load_registry_or_exit()
     if model_id is None:
         state = load_state()
         inventory = inventory_local_models(registry, state)

@@ -94,6 +94,24 @@ class RegistryNotFoundError(RegistryError):
     cannot be read, which a caller must never treat as empty and overwrite."""
 
 
+class RegistryPathError(RegistryError):
+    """Raised when the registry path is a symlink to a file that is not there.
+
+    Distinct from RegistryNotFoundError, which it looks like at the filesystem
+    level (`Path.exists()` is False for both): a link is a user's pointer at
+    where their registry lives — a dotfiles checkout, a file on a volume that
+    is not mounted right now — so a caller must neither read it as empty nor
+    write over it, which would shadow the real registry when the target comes
+    back (#248). Carries the two names to report: the link and what it points
+    at.
+    """
+
+    def __init__(self, link: Path, target: str) -> None:
+        self.link = link
+        self.target = target
+        super().__init__(f"{link} is a symlink to {target}, which does not exist")
+
+
 def _default_registry_path() -> Path:
     """Compute the registry path lazily so env overrides work in tests.
 
@@ -456,12 +474,17 @@ def unreadable_registry_message(exc: BaseException) -> str:
     is there: the file that was read — the pre-XDG one when XDG_CONFIG_HOME
     is set and holds no registry yet — and why. The caller adds what to run
     again. Not for RegistryNotFoundError, which is no failure to read."""
+    if isinstance(exc, RegistryPathError):
+        # A dangling symlink carries the path to report, because looking the
+        # path up again is exactly what just failed (#248).
+        return f"cannot read {exc.link}: {exc} — fix or move it aside"
     try:
         unreadable = _registry_read_path()
-    except (RegistryNotFoundError, OSError):
+    except (RegistryError, OSError):
         # OSError: looking for the file is what failed (a directory that
         # cannot be searched), and it fails here as it did in load_registry.
-        # Raising it again would turn the caller's report into a traceback.
+        # RegistryError: the same, for a path that no longer resolves.
+        # Raising either again would turn the caller's report into a traceback.
         unreadable = _default_registry_path()
     return f"cannot read {unreadable}: {exc} — fix or move it aside"
 
@@ -469,8 +492,14 @@ def unreadable_registry_message(exc: BaseException) -> str:
 def _registry_read_path(path: Path | None = None) -> Path:
     """The file load_registry reads — not always _default_registry_path():
     see the pre-XDG fallback below. A caller reporting on a registry it could
-    not read names this one. Raises RegistryNotFoundError when there is none."""
+    not read names this one. Raises RegistryNotFoundError when there is none,
+    RegistryPathError when it is a link to a file that is not there."""
     registry_path = Path(path) if path else _default_registry_path()
+    # Before exists(), which is False both for a dangling symlink and for
+    # nothing at all — and a link is a pointer at where the registry lives,
+    # not an absent registry, so it is refused rather than fallen back from
+    # (#248). A link that resolves reads through as any other file does.
+    _refuse_dangling_symlink(registry_path)
     if registry_path.exists():
         return registry_path
     # Fall back to the pre-XDG location for users who created a registry
@@ -479,20 +508,62 @@ def _registry_read_path(path: Path | None = None) -> Path:
     # Not past MODELMAN_REGISTRY: that names the file outright, and a
     # missing one there is missing, not "use the one in ~/.config".
     legacy = Path("~/.config/local-ai/registry.toml").expanduser()
-    if (
-        path is None
-        and not os.environ.get("MODELMAN_REGISTRY")
-        and registry_path != legacy
-        and legacy.exists()
-    ):
-        return legacy
+    if path is None and not os.environ.get("MODELMAN_REGISTRY") and registry_path != legacy:
+        # The same refusal for the file being fallen back to: a dangling link
+        # there read as "no registry", and the save that followed wrote a new
+        # one at the XDG path — which shadows the linked registry just the
+        # same once its target is back, since the XDG path is read first.
+        _refuse_dangling_symlink(legacy)
+        if legacy.exists():
+            return legacy
     raise RegistryNotFoundError(f"Registry file not found: {registry_path}")
+
+
+def _refuse_dangling_symlink(path: Path) -> None:
+    """Raise RegistryPathError when `path` is a symlink to a file that is not
+    there — the one test the read and the write share (#248)."""
+    if path.is_symlink() and not path.exists():
+        raise RegistryPathError(path, os.readlink(path))
+
+
+# The top-level tables a registry may hold. _write_registry emits exactly
+# these three, so anything else is a section a save would drop (#247) —
+# which _reject_unknown_top_level_keys refuses rather than reading past.
+_TOP_LEVEL_KEYS = frozenset({"providers", "families", "models"})
+
+
+def _reject_unknown_top_level_keys(raw: dict[str, Any]) -> None:
+    """Refuse a registry whose content sits under a top-level key nothing reads.
+
+    `[[model]]` for `[[models]]` is a plausible hand edit, and it reads as
+    zero models: the file parses, load_registry returns an empty Registry with
+    no message, and the first save rewrites the file without the entries. That
+    is the data loss #240 covers for a file that fails to parse, reached
+    through a file that parses perfectly well (#247). The parser is the only
+    place that can tell "no models" from "models under a name I do not read",
+    so it refuses here, where the callers that already report an unreadable
+    registry (#240) pick it up.
+
+    A nested unknown key is deliberately NOT this: it belongs to one entry and
+    survives the round trip through unknown_keys(). Only a top-level one names
+    a whole section the writer cannot emit.
+    """
+    unknown = sorted(set(raw) - _TOP_LEVEL_KEYS)
+    if not unknown:
+        return
+    keys = ", ".join(f"`{key}`" for key in unknown)
+    known = "/".join(sorted(_TOP_LEVEL_KEYS))
+    raise RegistryError(
+        f"unknown top-level key(s) {keys}: a registry holds {known} only, "
+        f"and saving would drop everything under anything else"
+    )
 
 
 def load_registry(path: Path | None = None) -> Registry:
     registry_path = _registry_read_path(path)
     with open(registry_path, "rb") as f:
         raw = tomllib.load(f)
+    _reject_unknown_top_level_keys(raw)
     registry = Registry(
         providers=[_parse_provider(p) for p in raw.get("providers", [])],
         families=[_parse_family(f) for f in raw.get("families", [])],
@@ -726,7 +797,18 @@ def _write_registry(registry: Registry, path: Path) -> None:
     The write half of save_registry, split out so locked_registry() can save
     under the same lock without calling save_registry() (which would deadlock
     on a non-reentrant lock).
+
+    A symlinked ``path`` is written through, to the file it resolves to:
+    os.replace() on the link itself swaps it for a regular file, and a
+    registry linked into a dotfiles checkout would stop reaching the checkout
+    on the first save. A link to a file that is not there is refused instead
+    — writing its target would recreate a registry on a volume that
+    unmounted while this process held one loaded, from whatever was in
+    memory (#248).
     """
+    _refuse_dangling_symlink(path)
+    if path.is_symlink():
+        path = Path(os.path.realpath(path))
     payload = {
         "providers": [_provider_to_dict(p) for p in registry.providers],
         "families": [_family_to_dict(f) for f in registry.families],

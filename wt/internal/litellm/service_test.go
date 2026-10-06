@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -1004,6 +1005,135 @@ func TestPlanSyncAndSyncAgreeOnInvalidModelList(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyChangeDefersAMissingCloudRow pins #253's deferral at the write:
+// Options.DeferMissingAdd asks the write to name a missing AddMissingOnly row
+// in Result.Missing instead of building it. Building a cloud row resolves the
+// provider's secret_ref, and an exec: ref runs its helper synchronously,
+// bounded only by execSecretTimeout (15s) — a wait the TUI's update goroutine
+// cannot pay. The caller retries where waiting is affordable, so the id must be
+// named rather than dropped: a silently dropped add would leave the route
+// missing for good, and the launch that asked for it fails with "Invalid model
+// name" from the proxy.
+func TestApplyChangeDefersAMissingCloudRow(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: []\n")
+	cfg := testConfig()
+	marker, ref := execSecretRef(t)
+	cfg.Providers[2].Auth.SecretRef = ref // openrouter
+	// Converge the file first: the settings a write enforces are not this
+	// test's subject (TestApplyChangeDeferredWriteHoldsTheWholeWrite is the
+	// unconverged case).
+	if _, err := ApplyChange(cfg, Change{}, o); err != nil {
+		t.Fatal(err)
+	}
+	*restarts = 0
+	o.DeferMissingAdd = true
+
+	res, err := ApplyChange(cfg, Change{Add: []config.Model{cfg.Models[2]}, AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Missing, []string{"openrouter/x/y"}) {
+		t.Fatalf("missing = %v, want the one deferred id", res.Missing)
+	}
+	if len(res.Outcomes) != 0 || res.Changed || *restarts != 0 {
+		t.Fatalf("outcomes = %+v changed = %v restarts = %d, want a write that did nothing", res.Outcomes, res.Changed, *restarts)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the exec: secret_ref helper ran: a deferred build must not start it")
+	}
+	f, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := f.RoutedIDs(); len(ids) != 0 {
+		t.Fatalf("routed = %v, want no row written", ids)
+	}
+}
+
+// TestApplyChangeDeferredWriteHoldsTheWholeWrite pins that a write which defers
+// a row saves nothing else either. Every write also enforces litellm_settings
+// and repairs ollama api_base, and a config.yaml that lost its cloud rows is
+// the kind of file that lacks those too: saved on the deferred attempt, they
+// restarted the proxy once for the repair and again, seconds later, for the
+// row the retry built — two 10–20 s bounces, overlapping, for one launch.
+func TestApplyChangeDeferredWriteHoldsTheWholeWrite(t *testing.T) {
+	const unconverged = "model_list: []\n"
+	o, restarts, p := opts(t, unconverged)
+	cfg := testConfig()
+	o.DeferMissingAdd = true
+
+	res, err := ApplyChange(cfg, Change{Add: []config.Model{cfg.Models[2]}, AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Missing, []string{"openrouter/x/y"}) {
+		t.Fatalf("missing = %v, want the one deferred id", res.Missing)
+	}
+	if len(res.Outcomes) != 0 || res.Changed || *restarts != 0 {
+		t.Fatalf("outcomes = %+v changed = %v restarts = %d, want nothing written", res.Outcomes, res.Changed, *restarts)
+	}
+	if got, err := os.ReadFile(p); err != nil || string(got) != unconverged {
+		t.Fatalf("config.yaml = %q (err %v), want it exactly as it was", got, err)
+	}
+
+	// The second attempt makes the whole change: the row and the repairs, in
+	// one write and one restart.
+	o.DeferMissingAdd = false
+	res, err = ApplyChange(cfg, Change{Add: []config.Model{cfg.Models[2]}, AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Missing) != 0 || !res.Changed || *restarts != 1 {
+		t.Fatalf("missing = %v changed = %v restarts = %d, want one write and one restart", res.Missing, res.Changed, *restarts)
+	}
+}
+
+// TestApplyChangeDefersNothingForACloudRowThatIsThere pins the other side:
+// AddMissingOnly's existing row is skipped before the deferral (it is not a
+// build that could be deferred, it is one that is not needed), so it is never
+// reported missing. A report here would send the picker to its routing screen
+// and re-run the whole check on every cloud launch whose route is in place.
+func TestApplyChangeDefersNothingForACloudRowThatIsThere(t *testing.T) {
+	o, restarts, _ := opts(t, `model_list:
+  - model_name: openrouter/x/y
+    litellm_params: {model: openrouter/x/y, api_key: sk-old}
+    model_info: {wt_managed: true}
+`)
+	cfg := testConfig()
+	// Converge the file, so a no-op below means the row alone decided it.
+	if _, err := ApplyChange(cfg, Change{}, o); err != nil {
+		t.Fatal(err)
+	}
+	*restarts = 0
+	o.DeferMissingAdd = true
+
+	res, err := ApplyChange(cfg, Change{Add: []config.Model{cfg.Models[2]}, AddMissingOnly: true}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Missing) != 0 {
+		t.Fatalf("missing = %v, want none: the row is already routed", res.Missing)
+	}
+	if res.Changed || *restarts != 0 {
+		t.Fatalf("changed = %v restarts = %d, want a no-op", res.Changed, *restarts)
+	}
+}
+
+// execSecretRef points a provider's secret_ref at a helper that records that it
+// ran, and returns the marker path and the ref. Unique per test: a successful
+// resolution is memoized process-wide by ref.
+func execSecretRef(t *testing.T) (marker, ref string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker = filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "key.sh")
+	body := "#!/bin/sh\necho ran > " + marker + "\necho sk-from-helper\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return marker, "exec:" + script
 }
 
 // TestSyncKeepsRouteWhenSecretUnresolved pins that a cloud row whose

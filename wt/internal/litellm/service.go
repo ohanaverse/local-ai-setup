@@ -80,6 +80,21 @@ type Options struct {
 	// ForceRestart restarts the proxy even when this call changed nothing —
 	// the settling restart for a run of earlier NoRestart writes.
 	ForceRestart bool
+	// DeferMissingAdd asks the write not to build a missing AddMissingOnly
+	// row, but to name it in Result.Missing instead. Building a cloud row
+	// resolves the provider's secret_ref, and an exec: ref runs its helper
+	// synchronously, bounded only by execSecretTimeout — a wait the TUI
+	// picker's update goroutine cannot pay (it is also the goroutine that
+	// repaints the screen and answers keys, #253). The caller owes a second
+	// attempt through the same change where waiting is affordable, or the
+	// route stays missing. A row that is already there is skipped before the
+	// deferral (Change.AddMissingOnly) and is never reported as missing.
+	//
+	// A write that defers a row writes nothing at all: the whole change is the
+	// second attempt's, the repairs every write makes included. Saving those
+	// here would restart the proxy for them and then again, seconds later, for
+	// the row.
+	DeferMissingAdd bool
 	// reportOllamaServe asks the write to also collect the rows LiteLLM starts
 	// its own `ollama serve` for (Result.ollamaServe; Sync publishes them in
 	// Result.Warnings). Unexported, and set by Sync alone: the scan is per-write
@@ -119,6 +134,12 @@ type Result struct {
 	Outcomes []Outcome
 	Changed  bool
 	Warnings []string
+	// Missing names the AddMissingOnly adds the write did not build because
+	// Options.DeferMissingAdd asked it not to. Empty for every other caller:
+	// a write without that option builds the row, or reports why it could not
+	// in Outcomes. When it is not empty nothing was written: Outcomes is empty
+	// and Changed is false.
+	Missing []string
 	// ollamaServe is File.ollamaServeWarnings for the document as written, and
 	// is filled only when Options.reportOllamaServe is set. Only Sync sets it,
 	// and only Sync publishes it, in Warnings: a start, stop or launch is not
@@ -289,7 +310,11 @@ type Change struct {
 // is written, and the proxy restarted, only when the document actually
 // changed.
 func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
-	return applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove) {
+	// Collected by the plan, under the lock, and published on the Result below.
+	// A caller that asked for the deferral is told what it owes a second
+	// attempt for; dropping an id here would lose the route.
+	var missing []string
+	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
 		adding := map[string]bool{}
 		var add []plannedAdd
 		for _, m := range ch.Add {
@@ -298,6 +323,14 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 				continue
 			}
 			if ch.AddMissingOnly && f.row(m.ID) != nil {
+				continue
+			}
+			// The row is missing and building it can run the provider's exec:
+			// secret_ref helper synchronously. A caller that cannot afford that
+			// wait (the picker's update goroutine, #253) defers the build and
+			// makes it again through this same call where waiting is possible.
+			if ch.AddMissingOnly && o.DeferMissingAdd {
+				missing = append(missing, m.ID)
 				continue
 			}
 			row, err := prepareModel(cfg, m)
@@ -336,8 +369,14 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 				}
 			}
 		}
-		return add, rm
+		// A deferred row holds the whole write: see Options.DeferMissingAdd.
+		return add, rm, len(missing) > 0
 	}, o, OllamaAPIBase(cfg))
+	if err != nil {
+		return Result{}, err
+	}
+	res.Missing = missing
+	return res, nil
 }
 
 // applyPlanned is the one locked read-modify-write every route change goes
@@ -345,7 +384,11 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 // the document as read under the lock, so a caller that derives the change
 // from the current routes never acts on a snapshot another process has since
 // changed.
-func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, ollamaBase string) (Result, error) {
+//
+// plan's third result holds the write: the document is left exactly as it was
+// read — nothing applied, repaired or saved, so nothing restarted — for a
+// caller that will make the whole change again (Options.DeferMissingAdd).
+func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, hold bool), o Options, ollamaBase string) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -367,7 +410,10 @@ func applyPlanned(plan func(*File) ([]plannedAdd, []plannedRemove), o Options, o
 		if err := f.checkModelList(); err != nil {
 			return err
 		}
-		add, remove := plan(f)
+		add, remove, hold := plan(f)
+		if hold {
+			return nil
+		}
 		// Written is only ever set on a "routed" outcome — an id the plan adds —
 		// so a plan that adds nothing owes no digests. Marshaling every row of
 		// model_list twice is the write path's most expensive step, and the
@@ -845,13 +891,14 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	// The one caller that reports the rows LiteLLM starts its own `ollama serve`
 	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
 	o.reportOllamaServe = true
-	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove) {
+	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
 		p, built := planSync(cfg, f, local, o)
 		plan = p
 		// The plan already built every changed row while comparing it with the
 		// row on disk; hand the rows through so the write path does not
 		// prepare each one a second time.
-		return plan.planned(built)
+		add, remove := plan.planned(built)
+		return add, remove, false
 	}, o, OllamaAPIBase(cfg))
 	if err != nil {
 		return res, err

@@ -243,8 +243,8 @@ func TestApplyPlannedNeverWritesNilRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := applyPlanned(func(*File) ([]plannedAdd, []plannedRemove) {
-		return []plannedAdd{{id: "omlx/no-row"}, {id: cfg.Models[0].ID, row: good}}, nil
+	res, err := applyPlanned(func(*File) ([]plannedAdd, []plannedRemove, bool) {
+		return []plannedAdd{{id: "omlx/no-row"}, {id: cfg.Models[0].ID, row: good}}, nil, false
 	}, o, "")
 	if err != nil {
 		t.Fatal(err)

@@ -84,6 +84,26 @@ stopped (a single-model provider counts once). `--yes` skips the question; with 
    `wt smoke`): running local models; the exit flows hide in-use models,
    `wt stop` shows them.
 
+## `wt served <provider>`
+
+Prints the model ids the provider's server is serving now, one per line, as
+the server names them; `--json` prints `{"provider": …, "served": […]}`. It
+answers for `omlx`, `mtplx` and `mlx_lm_server` — the same probe `wt start`,
+`wt stop` and the pickers act on. Ollama is not answered for: a pulled model
+loads on request, so it has no "serving now".
+
+- omlx lists every model in its pool, loaded or not, so wt reports the ones
+  **loaded or loading**. When the pool is partly loaded only omlx's status
+  endpoint says which, and a server with an API key answers it only to that
+  key: wt sends the one the registry's omlx provider row names
+  (`auth.secret_ref`).
+- Nothing printed with exit `0` means the server answered and serves nothing.
+  Exit `1` means it gave no usable answer — nothing is listening, or it would
+  not say which model is loaded — and is never to be read as "nothing".
+
+`modelman` asks this when its own keyless probe of a partly loaded omlx pool
+is refused, since only wt resolves a `secret_ref`.
+
 ## Exit codes
 
 `0` on success, when there was nothing to start or stop (already running —

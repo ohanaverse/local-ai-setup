@@ -920,6 +920,176 @@ func TestEnsureModelRouteLeavesAnExistingCloudRowAlone(t *testing.T) {
 	}
 }
 
+// execSecretRef points a provider's secret_ref at a helper that records that
+// it ran, and returns the marker path and the ref. The ref is unique per test
+// (config.ResolveSecret memoizes successful resolutions process-wide by ref),
+// so one test's helper can never stand in for another's.
+func execSecretRef(t *testing.T) (marker, ref string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker = filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "key.sh")
+	body := "#!/bin/sh\necho ran > " + marker + "\necho sk-from-helper\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return marker, "exec:" + script
+}
+
+// cloudRoutesCfgWithExecSecret is cloudRoutesCfg with openrouter's secret_ref
+// replaced by an exec: helper, returning the marker that helper writes.
+func cloudRoutesCfgWithExecSecret(t *testing.T) (*config.Config, string) {
+	t.Helper()
+	marker, ref := execSecretRef(t)
+	cfg := cloudRoutesCfg()
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID == "openrouter" {
+			cfg.Providers[i].Auth.SecretRef = ref
+		}
+	}
+	return cfg, marker
+}
+
+// TestTryEnsureModelRouteDefersAMissingCloudRow pins #253: the launch-time
+// check's non-blocking form must not run a cloud provider's exec: secret_ref
+// helper on the update goroutine. Building a cloud row resolves that secret,
+// and an exec: helper runs synchronously, bounded only by execSecretTimeout
+// (15s) — so a launch of a cloud model whose route was missing froze the
+// picker, ctrl+c included, before its routing screen had even been entered.
+// The row build is deferred instead: the check reports that it got nowhere, and
+// the command behind the routing screen rebuilds where waiting is affordable.
+// Deferring must not lose the route, so the retry has to write it.
+func TestTryEnsureModelRouteDefersAMissingCloudRow(t *testing.T) {
+	path, restarts, _ := realRoutes(t, "model_list: []\n")
+	cfg, marker := cloudRoutesCfgWithExecSecret(t)
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
+	// Converge the file with a write that names no model, so the retry at the
+	// end is deciding on the row alone. (A deferred check writes nothing either
+	// way — TestTryEnsureModelRouteDeferredCheckWritesNothing.)
+	if _, err := litellm.ApplyChange(cfg, litellm.Change{}, litellm.Options{Path: path}); err != nil {
+		t.Fatal(err)
+	}
+	seededRestarts := restarts()
+
+	var out bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&out, cfg, m)
+	WaitPendingRoutes()
+
+	if changed || done {
+		t.Fatalf("changed = %v done = %v, want false and false: the row build is the caller's retry to make", changed, done)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the exec: secret_ref helper ran on the non-blocking check: that wait is what freezes the picker")
+	}
+	if got := routedIDs(t, path); len(got) != 0 {
+		t.Fatalf("routed = %v, want the row still missing", got)
+	}
+	if got := restarts(); got != seededRestarts {
+		t.Fatalf("restarts = +%d, want 0: nothing was written", got-seededRestarts)
+	}
+
+	// The retry, where waiting is affordable, is what builds the row.
+	if !EnsureModelRouteTo(&out, cfg, m) {
+		t.Fatalf("the retry changed = false, output %q", out.String())
+	}
+	WaitPendingRoutes()
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"openrouter/x"}) {
+		t.Fatalf("routed = %v, want [openrouter/x]: the deferred build must still happen", got)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the retry never resolved the exec: secret_ref: %v", err)
+	}
+}
+
+// TestTryEnsureModelRouteDeferredCheckWritesNothing pins that a check which
+// defers the row is as empty-handed as one that found the lock held: nothing
+// saved, nothing restarted, nothing printed. The repairs every write makes
+// (litellm_settings, ollama api_base) used to be saved on the deferred attempt,
+// so a launch against a config.yaml that lacked them restarted the proxy from
+// the update goroutine and then a second time when the retry wrote the row.
+func TestTryEnsureModelRouteDeferredCheckWritesNothing(t *testing.T) {
+	path, restarts, _ := realRoutes(t, "model_list: []\n")
+	cfg, _ := cloudRoutesCfgWithExecSecret(t)
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&out, cfg, m)
+	WaitPendingRoutes()
+
+	if changed || done {
+		t.Fatalf("changed = %v done = %v, want false and false", changed, done)
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml = %q (err %v), want it exactly as it was", after, err)
+	}
+	if got := restarts(); got != 0 || out.Len() != 0 {
+		t.Fatalf("restarts = %d output = %q, want none: the retry owns the whole write", got, out.String())
+	}
+
+	// The retry writes the row and the repairs together, for one restart.
+	if !EnsureModelRouteTo(&out, cfg, m) {
+		t.Fatalf("the retry changed = false, output %q", out.String())
+	}
+	WaitPendingRoutes()
+	if got := restarts(); got != 1 {
+		t.Fatalf("restarts = %d, want 1 for the whole launch", got)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"openrouter/x"}) {
+		t.Fatalf("routed = %v, want [openrouter/x]", got)
+	}
+}
+
+// TestTryEnsureModelRouteFinishesForACloudRowThatIsThere pins the other side of
+// the deferral: a route already in config.yaml is the case this repair exists
+// to leave alone, so nothing is deferred and the check finishes on the update
+// goroutine — the launch continues without a routing screen, exactly as before.
+// Reporting a present row as deferred would send every cloud launch to that
+// screen and re-run the whole check for a route that is already in place.
+func TestTryEnsureModelRouteFinishesForACloudRowThatIsThere(t *testing.T) {
+	path, restarts, _ := realRoutes(t, "model_list: []\n")
+	cfg, marker := cloudRoutesCfgWithExecSecret(t)
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x")]
+	// Put the row there the way a launch does, with a secret this shell resolves
+	// without a helper, so the file already holds everything a write enforces and
+	// the check below is deciding on the row alone. The providers are cloned: a
+	// plain struct copy shares cfg's slice, and the seed's literal secret would
+	// replace the exec: ref in cfg too — leaving no helper for the marker
+	// assertion below to catch.
+	seed := *cfg
+	seed.Providers = slices.Clone(cfg.Providers)
+	for i := range seed.Providers {
+		if seed.Providers[i].ID == "openrouter" {
+			seed.Providers[i].Auth.SecretRef = "sk-test"
+		}
+	}
+	if !EnsureModelRouteTo(&bytes.Buffer{}, &seed, m) {
+		t.Fatal("fixture: the seeded launch wrote no row")
+	}
+	WaitPendingRoutes()
+	seededRestarts := restarts()
+
+	var out bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&out, cfg, m)
+	WaitPendingRoutes()
+
+	if changed || !done {
+		t.Fatalf("changed = %v done = %v, want false and true: the row is there and the check is finished", changed, done)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the exec: secret_ref helper ran for a row that is already routed (#252)")
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"openrouter/x"}) {
+		t.Fatalf("routed = %v, want the seeded row untouched", got)
+	}
+	if got := restarts(); got != seededRestarts || out.Len() != 0 {
+		t.Fatalf("restarts = +%d output = %q, want a silent no-op", got-seededRestarts, out.String())
+	}
+}
+
 // TestTryEnsureModelRouteReportsARefusedPairingAtOnce pins that the picker's
 // non-blocking check treats litellm.ErrRegistryRedirected as an answer, not as
 // a held lock. done == false sends the picker to its routing screen to retry

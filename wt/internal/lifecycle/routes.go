@@ -199,7 +199,7 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
 // keeps a model from being routed under one id by one caller and another id by
 // the next.
 func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bool {
-	w, err := applyReported(ctx, cfg, ch, restartIfChanged)
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, false)
 	if err != nil {
 		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
@@ -208,12 +208,14 @@ func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bo
 }
 
 // routeWrite is what one route write did: whether config.yaml changed, the ids
-// whose own row was added or differs from the one on disk, and whether a line
-// about this write has already been printed.
+// whose own row was added or differs from the one on disk, whether a line
+// about this write has already been printed, and the ids whose row the write
+// left unbuilt at the caller's request (missing, #253).
 type routeWrite struct {
 	changed bool
 	rows    []string
 	said    bool
+	missing []string
 }
 
 // reportEnsured prints the one line a launch-time check owes for a write that
@@ -310,22 +312,31 @@ func EnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) bool 
 // *before* its routing phase had been entered, so the one screen built to cover
 // a route wait would be the one thing the wait prevented (#192 review).
 //
-// So this form never waits. It attempts the config.yaml lock exactly once:
-// WithLock runs its first flock before it consults a deadline, and the
-// already-cancelled context below is what a contended lock hits, so a free lock
-// is still taken and a held one returns at once rather than polling
-// (lockPollInterval) up to a deadline.
+// So this form never waits — not for the lock, and not for a row build. It
+// attempts the config.yaml lock exactly once: WithLock runs its first flock
+// before it consults a deadline, and the already-cancelled context below is what
+// a contended lock hits, so a free lock is still taken and a held one returns at
+// once rather than polling (lockPollInterval) up to a deadline. And it asks the
+// write to defer a missing cloud row's build (Options.DeferMissingAdd), which is
+// the one other wait this path could pay: resolving a provider's exec:
+// secret_ref runs its helper synchronously (#253).
 //
 // done reports whether the check finished at all: changed says whether
 // config.yaml was written, and is only meaningful when done is true. done ==
-// false means the check got nowhere — most often another wt holds the lock
-// mid-write, but any failure to read or write config.yaml lands here too — and
-// the caller owes a retry through EnsureModelRouteTo, where waiting is
-// affordable, before it uses the proxy. That path prints nothing: the retry
-// reports, since a contended lock is not itself a warning. The one failure
-// that is final is litellm.ErrRegistryRedirected — no wait changes a refusal —
-// so it is reported at once and done is true. What it does print goes to out,
-// on EnsureModelRouteTo's terms.
+// false means the check got nowhere and the caller owes a retry through
+// EnsureModelRouteTo, where waiting is affordable, before it uses the proxy.
+// Two things get it there: the lock was not free — most often another wt holds
+// it mid-write, but any failure to read or write config.yaml lands here too —
+// or the model is a registry cloud model whose row is missing, so building it
+// could run the provider's exec: secret_ref helper, synchronously and for up to
+// execSecretTimeout (#253). That build is deferred rather than paid here, the
+// same way a contended lock is, because this goroutine is also the one that
+// repaints the picker and answers its keys. Neither of those is written yet, so
+// a retry is owed and no line is printed about it — a contended lock and a
+// deferred build are both "not established", not failures. The one failure that
+// is final is litellm.ErrRegistryRedirected — no wait changes a refusal — so it
+// is reported at once and done is true. What it does print goes to out, on
+// EnsureModelRouteTo's terms.
 func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (changed, done bool) {
 	ch, ok := modelRouteChange(cfg, m)
 	if !ok {
@@ -333,7 +344,7 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 	}
 	ctx, cancel := context.WithCancel(withRouteOutput(context.Background(), out))
 	cancel()
-	w, err := applyReported(ctx, cfg, ch, restartIfChanged)
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, true)
 	if err != nil {
 		// A refused pairing is an answer, not a held lock: the retry would
 		// take the lock only to be refused again, behind a routing screen with
@@ -342,6 +353,16 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 			routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 			return false, true
 		}
+		return false, false
+	}
+	if len(w.missing) > 0 {
+		// The row is missing and its build may run the provider's exec: secret_ref
+		// helper, synchronously and for up to execSecretTimeout (#253): a wait
+		// this goroutine cannot pay. The write deferred it — and with it
+		// everything else it would have written (litellm.Options.DeferMissingAdd),
+		// so nothing was saved, nothing restarted and there is nothing to
+		// report. The caller owes the retry: this check has got no further than
+		// a held lock would have.
 		return false, false
 	}
 	reportEnsured(ctx, w, ch.Add[0].ID)
@@ -423,7 +444,7 @@ func bounceRoutes(ctx context.Context, cfg *config.Config) {
 // (see WaitPendingRoutes) because the agent they hand off to dials the model
 // through the proxy.
 func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
-	w, err := applyReported(ctx, cfg, ch, mode)
+	w, err := applyReported(ctx, cfg, ch, mode, false)
 	if err != nil {
 		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
@@ -437,11 +458,16 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 // to a retry that can afford to wait (see EnsureModelRoute), and only that
 // retry, or applyAndReport, reports.
 //
+// deferMissing is litellm.Options.DeferMissingAdd: a caller that cannot afford
+// a cloud row's exec: secret_ref helper (the picker's update goroutine, #253)
+// sets it, and reads what the write left unbuilt off routeWrite.missing. Every
+// other caller leaves it false — this write is where the row gets built.
+//
 // Everything else is applyAndReport's: ErrMissing is silent (no config.yaml =
 // LiteLLM not set up), a restartForced mode settles the earlier deferred write
 // even when this one failed (or the proxy keeps serving the dead occupant's
 // route), and the restart itself runs asynchronously.
-func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) (routeWrite, error) {
+func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode, deferMissing bool) (routeWrite, error) {
 	res, err := applyRoutes(cfg, ch, litellm.Options{
 		// The restart is always deferred here: the caller decides whether to
 		// restart, and runs that restart asynchronously, below.
@@ -451,6 +477,9 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 		// The caller's ctx bounds the config.yaml lock wait too, so a
 		// contended lock cannot outlive a caller that set a deadline.
 		Ctx: ctx,
+		// Only the caller knows whether it can pay a row build here; nothing
+		// sets this but the launch-time check's non-blocking form.
+		DeferMissingAdd: deferMissing,
 	})
 	if err != nil {
 		// This write failed, but restartForced means an earlier deferred
@@ -465,7 +494,7 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 		}
 		return routeWrite{}, err
 	}
-	w := routeWrite{changed: res.Changed}
+	w := routeWrite{changed: res.Changed, missing: res.Missing}
 	for _, o := range res.Outcomes {
 		if o.Written {
 			w.rows = append(w.rows, o.ID)

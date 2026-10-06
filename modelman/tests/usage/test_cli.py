@@ -103,3 +103,24 @@ def test_usage_reports_an_unreadable_registry_instead_of_a_traceback(monkeypatch
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert f"error: cannot read {registry_path}" in result.output
+
+
+def test_usage_reports_a_dangling_registry_symlink_instead_of_a_traceback(
+    monkeypatch, tmp_path: Path
+):
+    """#248's third caller of load_registry() that reads RegistryNotFound as
+    "no registry" — read-only, so nothing is at risk here, but a dangling
+    symlink must still come out as an unreadable registry naming the link and
+    its target rather than as "registry file not found" with nothing to fix."""
+    target = tmp_path / "moved-away" / "registry.toml"
+    registry_path = tmp_path / "registry.toml"
+    registry_path.symlink_to(target)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_WT_DIR", str(tmp_path / "wt"))
+
+    result = runner.invoke(app, ["usage", "report", "--days", "1"])
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert f"error: cannot read {registry_path}" in result.output
+    assert str(target) in result.output
