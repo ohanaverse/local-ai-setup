@@ -47,6 +47,17 @@ func (e ProxyEnv) IsSet(name string) bool {
 	return ok
 }
 
+// Lookup returns the value name has for the proxy, and whether it is set
+// there — the value behind IsSet, read from the same place: the plist's
+// EnvironmentVariables, or wt's own environment when that stands in.
+func (e ProxyEnv) Lookup(name string) (string, bool) {
+	if e.ambient {
+		return os.LookupEnv(name)
+	}
+	v, ok := e.vars[name]
+	return v, ok
+}
+
 // ProxyPlistPath is the proxy's LaunchAgent plist: WT_LITELLM_PLIST, else the
 // one the default restart command kickstarts. A leading "~" is expanded the
 // way every wt path override is (config.ExpandHome, the helper
