@@ -312,3 +312,31 @@ func TestConfigErrorHintNamesTheFileToFix(t *testing.T) {
 		t.Errorf("another config error = %q, want the existing hint unchanged", got)
 	}
 }
+
+// TestConfigErrorForABrokenRegistryLink pins what the commands that refuse
+// to run print when registry.toml is a symlink to a file that is not there:
+// the link, its target, and a hint about the link — not "seed the registry"
+// (there is one, behind the link) and not "run `wt config`" (which cannot
+// repair a symlink).
+func TestConfigErrorForABrokenRegistryLink(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	link := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "unmounted", "registry.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	_, loadErr := config.Load()
+	if !errors.Is(loadErr, config.ErrRegistryLink) {
+		t.Fatalf("Load error = %v, want config.ErrRegistryLink", loadErr)
+	}
+	got := configError(loadErr).Error()
+	want := "config error: registry link is broken: " + link + " is a symlink to " + target +
+		", which does not exist (fix the link or move it aside)"
+	if got != want {
+		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
+	}
+}

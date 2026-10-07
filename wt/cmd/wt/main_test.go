@@ -1264,3 +1264,47 @@ func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
 		t.Error("the guard was not installed: --cwd in a subdirectory is still inside a repo")
 	}
 }
+
+// TestBrokenRegistryLinkIsNotAPassthrough pins the launch gate for a registry
+// path that is a dangling symlink. A missing registry lets an unconfigured
+// agent launch with no model routing; a broken link must not, because the
+// user has a registry — it is just not reachable right now — and a silent
+// native launch would bill their own account instead of the routed model.
+func TestBrokenRegistryLinkIsNotAPassthrough(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	link := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "unmounted", "registry.toml"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	var called bool
+	oldLaunchPassthrough := launchPassthrough
+	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
+		called = true
+		return nil
+	}
+	defer func() { launchPassthrough = oldLaunchPassthrough }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
+	err := root.Execute()
+	if !errors.Is(err, config.ErrRegistryLink) {
+		t.Fatalf("err = %v, want config.ErrRegistryLink", err)
+	}
+	if called {
+		t.Error("launchPassthrough was called for a broken registry link")
+	}
+}

@@ -914,13 +914,16 @@ var ErrLocation = errors.New("invalid location")
 
 // RegistryFixHint is the hint for a config error whose repair is in
 // registry.toml — modelman's file, which `wt config` cannot edit — or "" for
-// any other error (and nil). Today that is a location error (ErrLocation). It
-// is the one source of the wording, so the commands that refuse to run on such
-// an error and the editor that opens on it name the same file the same way
-// (#209).
+// any other error (and nil). Today that is a location error (ErrLocation) and
+// a registry path that is a broken symlink (ErrRegistryLink). It is the one
+// source of the wording, so the commands that refuse to run on such an error
+// and the editor that opens on it name the same file the same way (#209).
 func RegistryFixHint(err error) string {
-	if errors.Is(err, ErrLocation) {
+	switch {
+	case errors.Is(err, ErrLocation):
 		return "fix the entry in " + RegistryPath()
+	case errors.Is(err, ErrRegistryLink):
+		return "fix the link or move it aside"
 	}
 	return ""
 }
