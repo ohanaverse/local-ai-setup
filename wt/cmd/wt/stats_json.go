@@ -19,7 +19,9 @@ type statsJSON struct {
 }
 
 // surveyRowJSON is one survey table row. Agent is null for a model's
-// all-agents aggregate (the table's "(all)").
+// all-agents aggregate (the table's "(all)") and only for it: an agent whose
+// configured name is "(all)" keeps its name here, so a document still says
+// which agent a row covers.
 type surveyRowJSON struct {
 	Model      string   `json:"model"`
 	Agent      *string  `json:"agent"`
@@ -84,7 +86,7 @@ func buildStatsJSON(window string, asOf time.Time, survey []statsRow, rep usageR
 			QualityAvg: optional(r.Stats.QualityAvg()),
 			SpeedAvg:   optional(r.Stats.SpeedAvg()),
 		}
-		if r.Agent != statsAllAgents {
+		if !r.Aggregate {
 			agent := r.Agent
 			j.Agent = &agent
 		}

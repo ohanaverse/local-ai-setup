@@ -21,11 +21,16 @@ import (
 const statsAllAgents = "(all)"
 
 // statsRow is one rendered row of `wt stats`: either a per-model "(all)"
-// aggregate (Agent == statsAllAgents) or one (agent, model) combo.
+// aggregate (Aggregate) or one (agent, model) combo. Agent is the label the
+// table prints, and statsAllAgents is only that label: an agent may be
+// configured under the name "(all)", so the string cannot answer whether a
+// row is the aggregate; Aggregate can.
 type statsRow struct {
 	ModelID string
 	Agent   string
 	Stats   survey.Stats
+	// Aggregate marks the per-model all-agents row built from ModelStats.
+	Aggregate bool
 }
 
 // statsCmd returns the `wt stats` command. It is a report, never a gate:
@@ -178,7 +183,7 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 		}
 		if agentFilter == "" {
 			if s := modelStats[id]; s.Answered > 0 || s.Skipped > 0 {
-				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Stats: s})
+				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
 			}
 		}
 	}
@@ -197,9 +202,10 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 
 	sort.Slice(rows, func(i, j int) bool {
 		// Aggregate rows sort before real-agent rows regardless of how
-		// a configured agent name compares to "(all)" byte-wise.
-		if (rows[i].Agent == statsAllAgents) != (rows[j].Agent == statsAllAgents) {
-			return rows[i].Agent == statsAllAgents
+		// a configured agent name compares to "(all)" byte-wise — including
+		// an agent named "(all)", which is a real-agent row.
+		if rows[i].Aggregate != rows[j].Aggregate {
+			return rows[i].Aggregate
 		}
 		if rows[i].Agent != rows[j].Agent {
 			return rows[i].Agent < rows[j].Agent

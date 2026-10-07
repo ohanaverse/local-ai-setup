@@ -251,3 +251,36 @@ func TestStatsJSONAgreesWithTheTable(t *testing.T) {
 		}
 	}
 }
+
+// TestStatsJSONKeepsAnAgentNamedAll verifies a null agent field means "the
+// model's all-agents aggregate" and nothing else: an agent that is
+// configured under the name "(all)" is a real agent, and its rows keep that
+// name in the document. Reading the flag off the printed label would mark
+// the archive's rows with an aggregate that was never computed — the text
+// table can only show the collision (both rows read "(all)"), the document
+// has to resolve it.
+func TestStatsJSONKeepsAnAgentNamedAll(t *testing.T) {
+	a, tmp := newTestApp(t)
+	seedSurveyEvents(t, tmp, []survey.Event{
+		{Agent: "(all)", ModelID: "m/one", Timestamp: time.Now().Add(-time.Hour), Worked: boolPtr(true)},
+	})
+	stubSpend(t, spend.Result{}, nil)
+
+	stdout, _ := runStats(t, a, "--json")
+	var doc statsJSON
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("stdout is not the document: %v\n%s", err, stdout)
+	}
+	var aggregate, named int
+	for _, r := range doc.Survey {
+		switch {
+		case r.Agent == nil:
+			aggregate++
+		case *r.Agent == statsAllAgents:
+			named++
+		}
+	}
+	if len(doc.Survey) != 2 || aggregate != 1 || named != 1 {
+		t.Errorf("survey = %+v, want two rows: one null agent (the aggregate) and one agent %q", doc.Survey, statsAllAgents)
+	}
+}

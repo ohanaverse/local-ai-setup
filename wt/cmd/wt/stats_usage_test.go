@@ -101,9 +101,7 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
 	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	oldNow := statsNow
-	statsNow = func() time.Time { return asOf }
-	t.Cleanup(func() { statsNow = oldNow })
+	pinStatsNow(t, asOf)
 
 	stdout, stderr := runStats(t, a, "--window", "7d")
 
