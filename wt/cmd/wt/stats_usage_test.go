@@ -410,6 +410,16 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 			if !strings.Contains(stderr, "registry") || strings.Count(stderr, "\n") != 1 {
 				t.Errorf("stderr = %q, want one line that names the registry as what did not load", stderr)
 			}
+			// The repair hint mirrors configError's: a registry problem names
+			// the repair that works (`wt config` cannot fix or seed registry.toml).
+			wantHint := map[string]string{
+				"missing":          "seed the registry with `modelman migrate`",
+				"unparseable":      "run `wt config` to repair",
+				"dangling symlink": "fix the link or move it aside",
+			}
+			if !strings.Contains(stderr, wantHint[name]) {
+				t.Errorf("stderr = %q, want the %q repair hint", stderr, wantHint[name])
+			}
 
 			// Without --family nothing depends on the registry: both rows, no note.
 			stdout, stderr = runStats(t, a)

@@ -65,13 +65,18 @@ func statsCmd(a *app) *cobra.Command {
 
 			asOf := statsNow()
 			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, modelFilter, agentFilter)
-			rep := collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
 
 			out := cmd.OutOrStdout()
-			if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+			asJSON, _ := cmd.Flags().GetBool("json")
+			var rep usageReport
+			if asJSON {
 				if windowName == "" {
 					windowName = "30d"
 				}
+				// One JSON document: writeStatsJSON writes nothing until it is
+				// complete, so there is no first table to show before the spend
+				// query: query, then write.
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
 				if err := writeStatsJSON(out, buildStatsJSON(windowName, asOf, rows, rep)); err != nil {
 					return err
 				}
@@ -82,6 +87,13 @@ func statsCmd(a *app) *cobra.Command {
 					fmt.Fprintln(out, renderTable(surveyHeaders, table, a.theme))
 				}
 				fmt.Fprintln(out)
+
+				// After the survey table: collectUsage runs the spend query (psql,
+				// up to a few seconds against a down or hanging database), and
+				// the survey table does not need it — printing first keeps the
+				// first table off that critical path. (--json waits anyway: one
+				// document prints only when complete.)
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
 				if len(rep.Rows) == 0 {
 					fmt.Fprintln(out, "no usage data")
 				} else {
