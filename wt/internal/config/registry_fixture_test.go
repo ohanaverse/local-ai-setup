@@ -280,3 +280,47 @@ func TestRegistryFixtureTimePrices(t *testing.T) {
 		t.Errorf("weekend window days = %v", got)
 	}
 }
+
+// TestTypedReaderLoadsTheWrittenFixture pins that wt's own reader accepts a
+// registry in the form wt's writer produces: docs/contracts/
+// registry.written.sample.toml, which wt/internal/tomlw re-emits byte for
+// byte and modelman's tomli-w reproduces too. It holds what the hand-written
+// sample cannot — integer prices, an empty tags array, keys wt does not model
+// at every level below the top, [[header]] windows — and a reader that choked on any of
+// them would fail on the user's real registry after the first wt write.
+func TestTypedReaderLoadsTheWrittenFixture(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.written.sample.toml")
+
+	providers, models, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry() error: %v", err)
+	}
+	if len(providers) != 4 || len(models) != 4 {
+		t.Fatalf("got %d providers and %d models, want 4 and 4", len(providers), len(models))
+	}
+	ints := models[0]
+	if ints.ID != "ollama/written-fixture:int" || ints.Tags == nil || len(ints.Tags) != 0 {
+		t.Errorf("first model decoded wrong: %+v", ints)
+	}
+	if ints.Cost.InputPricePerMillion == nil || *ints.Cost.InputPricePerMillion != 3 ||
+		ints.Cost.OutputPricePerMillion == nil || *ints.Cost.OutputPricePerMillion != 15 {
+		t.Errorf("integer prices should decode as 3 and 15, got %+v", ints.Cost)
+	}
+	if got := ints.ModelInfo["max_input_tokens"]; got != int64(131072) {
+		t.Errorf("model_info.max_input_tokens = %v (%T), want 131072", got, got)
+	}
+	cloud := models[1]
+	if len(cloud.Cost.TimePrices) != 1 || len(cloud.Cost.TimePrices[0].Windows) != 2 {
+		t.Fatalf("time_prices decoded wrong: %+v", cloud.Cost.TimePrices)
+	}
+	if w := cloud.Cost.TimePrices[0].Windows[1]; len(w.Days) != 2 || w.Days[0] != "sat" || w.End != "24:00" {
+		t.Errorf("second window decoded wrong: %+v", w)
+	}
+	if cloud.Cost.SubscriptionPrice == nil || *cloud.Cost.SubscriptionPrice != 20 || cloud.Cost.SubscriptionPeriod != "month" {
+		t.Errorf("subscription decoded wrong: %+v", cloud.Cost)
+	}
+	cfg := &Config{DefaultTag: "code", Providers: providers, Models: models}
+	if err := cfg.ValidateAll(); err != nil {
+		t.Errorf("the written fixture should validate: %v", err)
+	}
+}

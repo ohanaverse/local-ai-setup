@@ -1,0 +1,144 @@
+families = [
+    { name = "written-fixture", display_name = "Written Fixture" },
+    { x_rank = 2, display_name = "Second Family", name = "written-second" },
+]
+
+[[providers]]
+x_provider_note = "an unknown provider key"
+id = "ollama"
+name = "Ollama"
+location = "local"
+protocols = [
+    "anthropic",
+    "openai-chat",
+]
+
+[providers.auth]
+x_auth_note = "an unknown auth key"
+type = "none"
+base_url = "http://localhost:11434"
+
+[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "OPENROUTER_API_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[[providers]]
+id = "mlx_lm_server"
+name = "mlx-lm server (target+draft)"
+location = "local"
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8001/v1"
+
+[[providers]]
+id = "agy"
+name = "Agy"
+location = "cloud"
+
+[providers.auth]
+type = "native"
+
+[[models]]
+catalog_name = "written-fixture"
+x_added = 2026-10-01
+x_local_checked = 2026-10-01 07:30:00
+x_daily_at = 07:30:00
+id = "ollama/written-fixture:int"
+family = "written-fixture"
+provider_id = "ollama"
+model_name = "written-fixture:int"
+location = "local"
+tags = []
+
+[models.cost]
+input_price_per_million = 3
+output_price_per_million = 15
+
+[models.model_info]
+supports_vision = false
+supports_function_calling = true
+max_input_tokens = 131072
+x_aliases = [
+    { alias = "wf" },
+    { weight = 0.5, alias = "written" },
+]
+
+[[models]]
+id = "openrouter/written-fixture:cloud"
+family = "written-fixture"
+provider_id = "openrouter"
+model_name = "org/written-fixture-cloud"
+location = "cloud"
+source = "curated"
+tags = [
+    "code",
+    "design",
+]
+pricing_updated_at = "2026-10-01T00:00:00+00:00"
+x_checked_at = 2026-10-01 12:30:00+00:00
+
+[models.cost]
+x_cost_note = "an unknown cost key"
+input_price_per_million = 0.5
+cache_price_per_million = 0.125
+output_price_per_million = 1.0
+subscription_price = 20
+subscription_period = "month"
+
+[[models.cost.time_prices]]
+x_row_note = "an unknown time-price key"
+label = "off-peak"
+timezone = "UTC"
+input_price_per_million = 0.25
+output_price_per_million = 1e-07
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+    "tue",
+]
+start = "00:00"
+end = "12:00"
+
+[[models.cost.time_prices.windows]]
+x_window_note = "an unknown window key"
+days = [
+    "sat",
+    "sun",
+]
+start = "00:00"
+end = "24:00"
+
+[[models]]
+id = "mlx_lm_server/written-fixture:pair"
+family = "written-second"
+provider_id = "mlx_lm_server"
+model_name = "org/written-fixture-target"
+tags = [
+    "code",
+]
+quantization = "4bit"
+
+[models.fetch]
+x_fetch_note = "an unknown fetch key"
+repo = "org/written-fixture-target"
+
+[models.draft]
+x_draft_note = "an unknown draft key"
+repo = "org/written-fixture-draft"
+
+[[models]]
+id = "agy/written-fixture:native"
+family = "written-second"
+provider_id = "agy"
+model_name = "written-fixture:native"
+tags = [
+    "native",
+]
