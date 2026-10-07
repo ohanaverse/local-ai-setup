@@ -4,7 +4,7 @@ Performance and accuracy benchmarks for the local AI setup.
 
 ## Agentic coding benchmarks
 
-`modelman benchmark agent` runs a real coding task through the `pi` agent
+`llmbench agent` runs a real coding task through the `pi` agent
 across a model/thinking/route matrix and grades the result on deterministic
 gates plus a blind LLM rubric — see [docs/guides/09-agent-benchmarks.md](../docs/guides/09-agent-benchmarks.md).
 

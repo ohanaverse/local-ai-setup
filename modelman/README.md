@@ -375,11 +375,11 @@ command, and nothing is written.
 
 ### Benchmarking
 
-Compare local model backends side-by-side:
+Compare local model backends side-by-side. The benchmarks now live in the `llmbench` package (`../llmbench/`); `modelman benchmark ...` still runs them, and `uv run --directory llmbench llmbench ...` is the same commands without the `benchmark` word:
 
 ```bash
-modelman benchmark run
-modelman benchmark run --workload short
+modelman benchmark run --family <family>          # no default targets: name --model or --family, or it exits 2
+modelman benchmark run --family <family> --workload short
 modelman benchmark run --model ollama/ornith-1.5:35b --direct
 modelman benchmark list-workloads
 modelman benchmark show-results --latest
@@ -420,7 +420,7 @@ make clean       # remove caches
 - `src/modelman/migrate.py` — one-time import of legacy config into the registry/state.
 - `src/modelman/settings.py` — user preferences (`settings.yaml`).
 - `src/modelman/providers/` — one module per backend (`ollama.py`, `omlx.py`, `mtplx.py`, `mlx_lm_server.py`, retired `llamacpp.py`). Each registers itself with `ProviderRegistry` at import time and implements `is_downloaded`, `download`, `list_local`, and optionally `size_of`/`path_of`/`resolve_local`.
-- `src/modelman/providers/lifecycle/` — start/stop/isolate/restore of local provider servers (`modelman provider ...`); `src/modelman/local_control.py` — `modelman start`/`stop` and the TUI `s` key.
+- `../llmbench/src/llmbench/providers/lifecycle/` — start/stop/isolate/restore of local provider servers (`llmbench provider ...`, still mounted as `modelman provider ...`); it moved to the `llmbench` package, which modelman depends on. `src/modelman/local_control.py` — `modelman start`/`stop` and the TUI `s` key.
 - `src/modelman/pricing.py` — OpenRouter price refresh (`modelman refresh-prices`, plus a daily check when the TUI starts).
 - `src/modelman/manifest.py` / `config.py` — legacy `families/*.yaml` / `config.yaml` loaders, read only by `migrate`.
 

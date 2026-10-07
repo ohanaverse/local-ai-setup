@@ -1,4 +1,4 @@
-# Agent coding benchmarks — `modelman benchmark agent`
+# Agent coding benchmarks — `llmbench agent`
 
 > Use this to: run a real coding task through the `pi` agent across a matrix of model/thinking/route configurations, and read a report that separates speed from quality instead of ranking on tokens/sec alone.
 
@@ -6,7 +6,7 @@ Design rationale, gate taxonomy, and scoring rules: `docs/superpowers/specs/2026
 
 ## Prerequisites
 
-- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, isolation helpers on `PATH`).
+- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, llmbench runnable via `uv run` — the provider lifecycle runs in-process in `llmbench agent`, no isolation helpers on PATH needed).
 - `pi` installed and on `PATH` — this harness drives `pi --mode json`, not a direct HTTP request, for the agent rows.
 - A working LiteLLM apiKey already seeded into `~/.pi/agent/models.json` — flip LiteLLM routing on (`wt litellm on`) and launch any `wt` agent once if you've never done so; the harness reads that key rather than storing its own.
 - `OPENROUTER_API_KEY` available (via `~/Library/LaunchAgents/local.litellm.proxy.plist` or the env) if your suite's `[judge]` model is an OpenRouter model — preflight checks this before running any agent row.
@@ -14,16 +14,16 @@ Design rationale, gate taxonomy, and scoring rules: `docs/superpowers/specs/2026
 ## TL;DR
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman benchmark agent list-tasks --root ../benchmarks/tasks
-uv run modelman benchmark agent list-suites --root ../benchmarks/suites
-uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml --dry-run
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
+uv run llmbench agent list-tasks --root ../benchmarks/tasks
+uv run llmbench agent list-suites --root ../benchmarks/suites
+uv run llmbench agent run --suite ../benchmarks/suites/smoke.toml --dry-run
 ```
 
 Captured live on 2026-09-05 (one `ollama/glm-5.3-flash:cloud` row on the `day31-drift` task, judged by `anthropic/claude-opus-5` through OpenRouter — 90 s, 21 requests, 20 tool calls). Kept verbatim as a historical record (see `benchmarks/results/agent-bench-smoke-20260905-160301.md`) even though it predates both llamacpp's 2026-09-07 retirement and this port's issue #79 — the `[llm-restore-providers]`-prefixed message below is what the then-current bash `bin/llm-restore-providers` script actually printed at the time:
 
 ```bash
-uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml
+uv run llmbench agent run --suite ../benchmarks/suites/smoke.toml
 # → Agent benchmark complete: 1 row(s), 1 ran without an isolation error
 #   Results: /Users/keith/.config/local-ai/benchmarks/20260905-160301
 # → error: providers failed to restore after the run (all results were saved to
@@ -31,10 +31,10 @@ uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml
 #   providers: [llm-restore-providers] llamacpp did not come back up
 #   (http://localhost:8080/v1/models)
 
-uv run modelman benchmark agent show --latest
+uv run llmbench agent show --latest
 ```
 
-That run exits 1 *after* finishing: the sweep is complete and persisted, and only putting the local backends back failed (here, a `local.llamacpp.server` LaunchAgent pointing at a GGUF that no longer exists — this specific failure mode can no longer happen today, since llamacpp is retired-only with `restore_action="skip"` and `modelman provider restore` never touches it; see [provider-artifacts.md](../reference/provider-artifacts.md)). The error names the directory that survived, and `--latest` still resolves to it — a failed restore never costs you the data. See Step 4 for what the run scored.
+That run exits 1 *after* finishing: the sweep is complete and persisted, and only putting the local backends back failed (here, a `local.llamacpp.server` LaunchAgent pointing at a GGUF that no longer exists — this specific failure mode can no longer happen today, since llamacpp is retired-only with `restore_action="skip"` and `llmbench provider restore` never touches it; see [provider-artifacts.md](../reference/provider-artifacts.md)). The error names the directory that survived, and `--latest` still resolves to it — a failed restore never costs you the data. See Step 4 for what the run scored.
 
 ## Steps
 
@@ -49,32 +49,32 @@ A suite (`benchmarks/suites/*.toml`) picks a task and a `[[rows]]` matrix (model
 ### 3. Run it
 
 ```bash
-uv run modelman benchmark agent run --suite <path> [--row <label-or-index>]... [--passes N] [--skip-judge] [--dry-run]
+uv run llmbench agent run --suite <path> [--row <label-or-index>]... [--skip-judge] [--dry-run]
 ```
 
-Local rows are grouped by provider and isolated once per group (stop-others, start, warmup) via the same in-process `src/modelman/providers/lifecycle/orchestrate.py` isolate/restore functions `modelman benchmark` uses — see [05-benchmarks](05-benchmarks.md) Step 1 for exactly what isolation does per backend. Judging always runs *after* `restore_providers()`, so a cloud judge call never contends with a loaded local model.
+There is no `--passes` flag: passes per row are the suite file's top-level `passes` key. Local rows are grouped by provider and isolated once per group (stop-others, start, warmup) via the same in-process `src/llmbench/providers/lifecycle/orchestrate.py` isolate/restore functions `llmbench` uses — see [05-benchmarks](05-benchmarks.md) Step 1 for exactly what isolation does per backend. Judging always runs *after* `restore_providers()`, so a cloud judge call never contends with a loaded local model.
 
 ### 4. Read the report
 
 ```bash
-uv run modelman benchmark agent show --latest
-uv run modelman benchmark agent show --run-id <run-id>
+uv run llmbench agent show --latest
+uv run llmbench agent show --run-id <run-id>
 ```
 
 `summary.md` (copy it into `benchmarks/results/` yourself if you want it version-controlled, same as the bash benchmarks' results) has four tables: **Quality** (outcome code, hidden n/m, rubric, cap, composite, verdict), **Speed** (`wall_s`, `gen_s`, first/median TTFT, and `gen_tok_s`/`e2e_tok_s` derived from `output_tok` over each denominator, plus input/output/cache-read/cache-write/reasoning tokens, tool-call count and request count), **Two-axis** (sorted by composite, Pareto-nondominated rows starred — "fastest config at ≥ this quality"), and **Anomalies** (every cap applied, `VACUOUS_TEST`, `thinking=off but N reasoning tokens`, the `CACHE_ANOMALY`/`COLD_FIRST_TOKEN`/`REPEATED_FAILURE` string metrics derived, overclaim, and any row scoring ≥70 rubric points despite failing every hidden test). There is no per-row "thinking no-op" flag: whether `--thinking` changes anything is a comparison across a suite's off/high rows, not a property of one run's stream. A `JUDGE_FAIL` row keeps its gates/speed data and shows `N/A` for quality — it never voids the row, and it never earns a Pareto star.
 
-Per-row artifacts live under `~/.config/local-ai/benchmarks/<run-id>/<row-dir>/`: `agent.jsonl.gz` (raw event stream), pi's own session file (`*.jsonl`, named by pi — this is gate 1's evidence that a session really ran), `diff.raw.patch`/`diff.patch` (as-produced / anonymized), `gates.json`, `metrics.json`, `judge.json`, `row.json` (what `agent judge` needs to re-score later). Set `MODELMAN_AGENT_DEBUG=1` to also get `metrics.log`, a per-event trace of how the metrics were derived — roughly 0.5 MB per row of prose restating the compressed event stream beside it, which is why it is off by default.
+Per-row artifacts live under `~/.config/local-ai/benchmarks/<run-id>/<row-dir>/`: `agent.jsonl.gz` (raw event stream), pi's own session file (`*.jsonl`, named by pi — this is gate 1's evidence that a session really ran), `diff.raw.patch`/`diff.patch` (as-produced / anonymized), `gates.json`, `metrics.json`, `judge.json`, `row.json` (what `agent judge` needs to re-score later). Set `LLMBENCH_AGENT_DEBUG=1` to also get `metrics.log`, a per-event trace of how the metrics were derived — roughly 0.5 MB per row of prose restating the compressed event stream beside it, which is why it is off by default.
 
 ### 5. Re-judge cheaply after a rubric edit
 
 ```bash
-uv run modelman benchmark agent judge --latest [--row <row-dir>]... [--samples N]
+uv run llmbench agent judge --latest [--row <row-dir>]... [--samples N]
 ```
 
 Re-scores from each row's persisted `row.json`/`diff.patch`/`gates.json` — no agent re-run, no isolation. Captured live against the run above, one judge call later:
 
 ```bash
-uv run modelman benchmark agent judge --latest
+uv run llmbench agent judge --latest
 # → smoke: rubric=95 composite=48 verdict=principled_fix
 ```
 
@@ -134,7 +134,7 @@ Every number in that report is self-consistent, which is the point of reading th
 
 - **`pi` needs no permission-bypass flag** for this harness — tool execution works under `--no-approve` in `--mode json` because non-interactive modes never prompt; see the spec's "Verified against the live setup" for why `--no-approve` is passed anyway (pinning project-trust behavior, not enabling tools).
 - **`route = "direct"` requires a matching `[routes.direct.<provider>]` block** in the suite — preflight fails immediately, naming the missing provider, rather than after an agent has already run.
-- **`omlx` 4-bit and 6-bit share one provider.** Use a row's `provider =` override (not just the model id) to isolate the exact variant — same rule as `modelman benchmark`'s own isolation, see [05-benchmarks](05-benchmarks.md) Gotchas.
+- **`omlx` 4-bit and 6-bit share one provider.** Use a row's `provider =` override (not just the model id) to isolate the exact variant — same rule as `llmbench`'s own isolation, see [05-benchmarks](05-benchmarks.md) Gotchas.
 - **`route = "direct"` sends the registry `model_name`, which is not always what the backend serves.** True for `ollama` (bare names), not for `omlx`, whose registry entries are org-prefixed (`mlx-community/X`) while the server knows `X`. Set the row's `direct_model = "X"` (check `curl -s localhost:8000/v1/models`) or the row's pi requests will 400. A misaddressed row does not look like a configuration error here — it looks like a model that failed the task, which is the one misreading this harness cannot allow.
 - **`thinking = "off"` is a request, not a guarantee.** Observed live: `--thinking off` against `ollama/glm-5.3-flash:cloud` still returned `usage.reasoning = 11` and a thinking block. The Anomalies table flags those rows (`reasoning emitted with thinking=off`); treat an off/high pair as uncomparable when either is flagged.
 - **`repair_rounds` is accepted but rejected if non-zero.** The seam exists (per-turn retry after a failed run) but is disabled in v1 — see the spec's "Deferred: the repair round."
@@ -148,5 +148,5 @@ Every number in that report is self-consistent, which is the point of reading th
 
 - Full design: `docs/superpowers/specs/2026-09-04-agent-coding-benchmark-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-09-04-agent-coding-benchmark.md`
-- Module map: `modelman/CLAUDE.md` (Benchmark subsystem)
+- Module map: `llmbench/CLAUDE.md` (Benchmark subsystem)
 - Single-turn speed benchmarks (the fast triage tool this harness doesn't replace): [05-benchmarks](05-benchmarks.md)

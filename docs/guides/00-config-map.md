@@ -12,8 +12,9 @@ None — this is a reference doc, not a procedure.
 
 | File | Owner (writes) | Consumers | Purpose |
 |---|---|---|---|
-| `~/.config/local-ai/registry.toml` | `modelman` (TUI add/edit, `modelman migrate`) | `wt` (read-only; source of the LiteLLM routes) | Canonical providers + models |
+| `~/.config/local-ai/registry.toml` | `modelman` (TUI add/edit, `modelman migrate`) | `wt` (read-only; source of the LiteLLM routes), `llmbench` (read-only) | Canonical providers + models |
 | `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only: the `price_refresh_last_run` date, and `[litellm]` only as a legacy fallback — no per-model key) | Per-machine state: downloads, running hints, family display names (its `[litellm]` table is a legacy read-only fallback) |
+| `~/.config/local-ai/benchmarks/latest.toml` | `llmbench` | `llmbench` | Latest-run pointers behind `--latest`; the run directories sit beside it |
 | `~/.config/local-ai/settings.yaml` | `modelman` | `modelman` | User preferences (theme) |
 | `~/.config/local-ai/config.yaml` | you by hand (pre-modelman) | `modelman migrate` (read-only input) | Legacy provider types — superseded by `registry.toml` |
 | `~/.config/local-ai/families/*.yaml` | pre-registry modelman tooling | `modelman migrate` (read-only input) | Legacy per-family variants + download markers |
@@ -60,6 +61,7 @@ tags = []
 - **Consumers:** `modelman`, plus `wt` (read-only — it reads the global `price_refresh_last_run` date, and the legacy `[litellm]` table as a fallback for routing state wt has not migrated; it reads **no** `[model_state]` key, not even `ready`: what is on disk and what is running come from wt's own live probes (#179 Phase B). That read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, the `running` hint (modelman's start/stop intent, confirmed by a live probe whenever `wt` or modelman needs the truth), a legacy `[litellm]` routing table (modelman round-trips it verbatim; wt owns the live copy), and family display names.
 - **Env override:** `MODELMAN_STATE`.
+- **Benchmark pointers moved out.** The `[benchmarks]` table (`last_run`, `last_run_dir`, `agent_last_run`, `eval_last_run`) is no longer written. `llmbench` keeps those four keys in `~/.config/local-ai/benchmarks/latest.toml` (override: `LLMBENCH_LATEST`) and reads the old table only while that file does not exist yet.
 - **No exposure flag (#179).** `wt` derives the routes: every cloud model `registry.toml` configures, and a local model while it runs (for ollama, while it is pulled) — with or without a registry entry. A legacy pre-#179 `exposed`/`litellm_exposed` key is ignored by both tools — modelman drops it on the next save, so an older file self-cleans; never write one. The authoritative "is it routed" answer is `wt litellm list`. Routing decisions live in `wt/CLAUDE.md`'s "Local-model resolution" section — this guide does not repeat them.
 
 Count your own entries with:
@@ -312,7 +314,7 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 - **Legacy files are migration inputs, not config:** `~/.config/local-ai/config.yaml`, `~/.config/local-ai/families/*.yaml`, and `~/.config/agent-wt/models.conf` are read only by `modelman migrate` / wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
 - **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist. Redact before pasting either into issues, docs, or chats.
 - **Run modelman from the `modelman/` directory.** modelman is no longer installed as a global `uv tool`. Run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`; the repo root has no `pyproject.toml`, so `uv run modelman` from the root will fail.
-- **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `modelman benchmark run`. Don't create them by hand.
+- **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `llmbench run`. Don't create them by hand.
 - Stray siblings are uninteresting: `config.toml.bak`, `*.plist.qwen3.8.bak`, `config.yaml.qwen3.8.bak` are manual backups; `usage.jsonl.lock` is wt's lock file.
 
 ## Going deeper
