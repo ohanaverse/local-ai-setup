@@ -42,20 +42,40 @@ func stubSpend(t *testing.T, res spend.Result, err error) *spendCall {
 	return call
 }
 
-// launch is one usage.jsonl line: a model launched by an agent, age ago.
+// launch is one usage.jsonl line: a model launched by an agent, age before
+// the report's instant.
 type launch struct {
 	model, agent string
 	age          time.Duration
 }
 
+// launchAt is one usage.jsonl line with an absolute timestamp.
+type launchAt struct {
+	model, agent string
+	at           time.Time
+}
+
 // seedLaunches writes <tmp>/agent-wt/usage.jsonl, where newTestApp's
-// XDG_CONFIG_HOME points the usage store.
+// XDG_CONFIG_HOME points the usage store. Ages are measured back from
+// statsNow(), the instant the report itself uses, so a test that pins the
+// instant calls pinStatsNow first.
 func seedLaunches(t *testing.T, tmp string, launches ...launch) {
+	t.Helper()
+	asOf := statsNow()
+	at := make([]launchAt, 0, len(launches))
+	for _, l := range launches {
+		at = append(at, launchAt{l.model, l.agent, asOf.Add(-l.age)})
+	}
+	seedLaunchesAt(t, tmp, at...)
+}
+
+// seedLaunchesAt writes usage.jsonl with the given absolute timestamps.
+func seedLaunchesAt(t *testing.T, tmp string, launches ...launchAt) {
 	t.Helper()
 	var data []byte
 	for _, l := range launches {
 		line, err := json.Marshal(map[string]any{
-			"model_id": l.model, "agent": l.agent, "timestamp": time.Now().UTC().Add(-l.age),
+			"model_id": l.model, "agent": l.agent, "timestamp": l.at.UTC(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -88,8 +108,10 @@ func runStats(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 // ending now. This is `modelman usage report`'s replacement.
 func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 	a, tmp := newTestApp(t)
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	pinStatsNow(t, asOf)
 	seedSurveyEvents(t, tmp, []survey.Event{
-		{Agent: "claude", ModelID: "ollama/gemma4:9b", Timestamp: time.Now().Add(-time.Hour), Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "ollama/gemma4:9b", Timestamp: asOf.Add(-time.Hour), Worked: boolPtr(true)},
 	})
 	seedLaunches(t, tmp,
 		launch{"ollama/gemma4:9b", "claude", time.Hour},
@@ -100,8 +122,6 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 		{Model: "ollama/gemma4:9b", Requests: 1204, PromptTokens: 1234567, CompletionTokens: 630, Spend: 0},
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
-	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	pinStatsNow(t, asOf)
 
 	stdout, stderr := runStats(t, a, "--window", "7d")
 
@@ -123,6 +143,104 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 	}
 	if call.n != 1 || !call.end.Equal(asOf) || !call.start.Equal(asOf.Add(-7*24*time.Hour)) {
 		t.Errorf("querySpend called %d times for %s..%s, want once for the 7 days ending %s", call.n, call.start, call.end, asOf)
+	}
+}
+
+// TestStatsLaunchesAndSpendShareOneInstant verifies the report's one
+// instant decides both halves of the usage table (#287). statsNow is pinned
+// far from the real clock, usage.jsonl holds launches at absolute times
+// around both ends of the 1d window, and the spend stub answers from
+// requests at those same times, filtered by the start and end it is asked
+// for. Every model then has a launch exactly when it has a request: one
+// just inside the old edge, one a second past it, ones either side of the
+// UTC midnight the window spans, one at the instant itself, and one a
+// moment after it (a launch recorded between the report reading its instant
+// and reading the file, which is after the spend window's end). When
+// launches were bucketed against a clock read of their own, a model at an
+// edge showed requests and no launch, the row the usage guide tells the
+// user to read as "requests wt did not send".
+func TestStatsLaunchesAndSpendShareOneInstant(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		asOf time.Time
+	}{
+		// Before any real clock this test runs under: bucketed against the
+		// real clock, every launch here is months old.
+		{"just after midnight, in the past", time.Date(2026, 3, 10, 0, 0, 30, 0, time.UTC)},
+		// After any real clock: bucketed against it, every launch here is
+		// dated in the future.
+		{"just before midnight, in the future", time.Date(2099, 12, 30, 23, 59, 58, 500e6, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, tmp := newTestApp(t)
+			asOf := tc.asOf
+			pinStatsNow(t, asOf)
+			day := 24 * time.Hour
+			events := []struct {
+				model string
+				at    time.Time
+				in    bool
+			}{
+				{"m/an-hour-ago", asOf.Add(-time.Hour), true},
+				{"m/before-midnight", asOf.Truncate(day).Add(-time.Second), true},
+				{"m/after-midnight", asOf.Truncate(day).Add(time.Second), asOf.Truncate(day).Add(time.Second).Before(asOf)},
+				{"m/inside-the-old-edge", asOf.Add(-day + time.Second), true},
+				{"m/past-the-old-edge", asOf.Add(-day - time.Second), false},
+				{"m/at-the-instant", asOf, true},
+				{"m/after-the-instant", asOf.Add(time.Millisecond), false},
+				{"m/next-day", asOf.Add(2 * time.Second), false},
+			}
+			var launches []launchAt
+			for _, e := range events {
+				launches = append(launches, launchAt{e.model, "claude", e.at})
+			}
+			seedLaunchesAt(t, tmp, launches...)
+
+			// The spend side: one request per event, kept when it is inside
+			// the window the report asks for (spend.Query's own bounds are
+			// inclusive at both ends).
+			old := querySpend
+			querySpend = func(_ context.Context, start, end time.Time) (spend.Result, error) {
+				var res spend.Result
+				for _, e := range events {
+					if !e.at.Before(start) && !e.at.After(end) {
+						res.Rows = append(res.Rows, spend.Row{Model: e.model, Requests: 1})
+					}
+				}
+				return res, nil
+			}
+			t.Cleanup(func() { querySpend = old })
+
+			stdout, _ := runStats(t, a, "--json", "--window", "1d")
+			var doc statsJSON
+			if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+				t.Fatalf("stdout is not the document: %v\n%s", err, stdout)
+			}
+			if doc.AsOf != asOf.Format(time.RFC3339) {
+				t.Fatalf("as_of = %s, want the pinned %s", doc.AsOf, asOf.Format(time.RFC3339))
+			}
+			if len(doc.Usage.Rows) == 0 {
+				t.Fatalf("no usage rows at all:\n%s", stdout)
+			}
+			got := map[string]usageRowJSON{}
+			for _, r := range doc.Usage.Rows {
+				got[r.Model] = r
+			}
+			for _, e := range events {
+				r, listed := got[e.model]
+				if !e.in {
+					if listed {
+						t.Errorf("%s (%s) has a row %+v, want none: it is outside the 1d window ending %s",
+							e.model, e.at.Format(time.RFC3339Nano), r, doc.AsOf)
+					}
+					continue
+				}
+				if !listed || r.Launches != 1 || r.Requests == nil || *r.Requests != 1 {
+					t.Errorf("%s (%s): row %+v (listed %v), want 1 launch and 1 request: both halves cover the 1d window ending %s",
+						e.model, e.at.Format(time.RFC3339Nano), r, listed, doc.AsOf)
+				}
+			}
+		})
 	}
 }
 

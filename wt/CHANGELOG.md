@@ -22,7 +22,9 @@
   stays 0. Requests the proxy logged under the other spelling of a wt id —
   `mtplx/Org/Name` for `mtplx/Org--Name` — are added to that id's row, when
   the logged id is not itself a registry or launched id. `--family` narrows
-  the new table; `--agent` narrows its launch counts and leaves spend out.
+  the new table; `--agent` narrows its launch counts and leaves spend out;
+  launches and spend are counted over one window ending at one instant, so a
+  launch dated after it is not counted.
   `--family` is `stats`' own flag and takes one exact family: the root
   command's `-F` shorthand, which `wt stats` used to accept and ignore, is
   now an error there. This replaces `modelman usage report`, which still works until modelman

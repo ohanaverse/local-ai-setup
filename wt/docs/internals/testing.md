@@ -18,6 +18,8 @@ Four `TestMain`s guarantee no Go test probes a real server, starts a real model,
 
 `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` for other packages. `internal/lifecycle` uses a different convention: every seam (HTTP clients, exec, inventory, timeouts, pidfile paths) lives in one `env` struct that `defaultEnv()` fills and tests rebuild with `testEnv()`; its `TestMain` doubles as a fake `mtplx` helper process when `LIFECYCLE_HELPER=mtplx`.
 
+**`wt stats` has one clock.** `statsNow` is read once per run and every window in the report is measured back from that value: `buildStatsRows` takes it, `collectUsage` hands it to both `querySpend` and `(*usage.StoreImpl).AllCounts(agent, asOf)`, and `--json` prints it as `as_of`. `AllCounts` never reads `internal/usage`'s own unexported `now` (that clock stamps `RecordFor` and feeds the picker's `Counts`/`CountsForAgent`), so `pinStatsNow(t, at)` pins the whole report from `cmd/wt`. Pin first, then seed: `seedLaunches` measures its ages back from `statsNow()`, and `seedLaunchesAt` takes absolute timestamps for a test about the window's edges (`TestStatsLaunchesAndSpendShareOneInstant`). `AllCounts` is not on the `usage.Store` interface — `wt stats` holds the concrete store — so a `usage.Store` double does not implement it.
+
 **Prefer asserting on unexported functions directly** — same-package tests can call them (e.g. `buildStatsRows`); parsing rendered lipgloss output couples tests to border glyphs/padding and flakes under forced-color ANSI.
 
 ```bash

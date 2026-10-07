@@ -120,9 +120,11 @@ func statsCmd(a *app) *cobra.Command {
 	return cmd
 }
 
-// statsNow is the report's "as of" instant, the end of the window the
-// spend query covers and the as_of a --json document carries. A seam so a
-// test can pin it.
+// statsNow is the report's "as of" instant. It is read once per run, and
+// every window in the report is measured back from that one value: the
+// survey rows, the launch counts (usage's AllCounts takes it), the spend
+// query, and the as_of a --json document carries. A seam so a test can pin
+// the whole report.
 var statsNow = func() time.Time { return time.Now().UTC() }
 
 var surveyHeaders = []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}

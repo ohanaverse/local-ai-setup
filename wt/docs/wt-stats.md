@@ -18,7 +18,10 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>
 ```
 
 - `--window` — defaults to `30d`. One window for both tables: survey
-  answers, launches and spend all cover the same period.
+  answers, launches and spend all cover the same period, measured back from
+  one instant read once when the command starts (`as_of` in `--json`). A
+  launch recorded after that instant — or dated after it by a clock that was
+  wrong — is not counted, as a request after it is not.
 - `--model` — narrow both tables to one model id (exact match).
 - `--agent` — narrow the survey table and the launch counts to one agent.
   The spend log does not record which agent sent a request, so spend is not
@@ -75,7 +78,7 @@ openrouter/qwen/qwen3.8-27b         0         5        517       3,135  $0.0085
 
 | Column | Source |
 |---|---|
-| `LAUNCHES` | wt launches of the model in the window, from `usage.jsonl` (the same counts the picker's 1d/7d/30d columns show) |
+| `LAUNCHES` | wt launches of the model in the window, from `usage.jsonl` (the picker's 1d/7d/30d counts, except that a line dated after the report's instant is left out here) |
 | `REQUESTS` | rows the LiteLLM proxy logged for the model in the window |
 | `PROMPT`, `COMPLETION` | summed prompt and completion tokens of those rows |
 | `SPEND` | summed cost of those rows, in dollars |
@@ -156,8 +159,8 @@ naming another place) and nothing names `config.yaml`:
 set `WT_LITELLM_DATABASE_URL` or `WT_LITELLM_CONFIG` for a scratch setup.
 
 The query waits at most 3 seconds for a connection and 10 seconds in all,
-and never prompts for a password. The window is `--window` ending now, in
-UTC. wt only reads; it writes nothing to the database.
+and never prompts for a password. The window is `--window` ending at the
+report's instant (the one the launch counts are measured from), in UTC. wt only reads; it writes nothing to the database.
 
 The connection string is passed to `psql` as an argument, so for the second
 or so the query runs it is visible to other users of the machine in `ps`.
@@ -219,7 +222,9 @@ Example (illustrative values, wrapped here for reading):
     "requests":4,"prompt_tokens":152,"completion_tokens":630,"spend":0,"also_logged_as":[]}]}}
 ```
 
-- `window` is the `--window` value; `as_of` is the end of the window, UTC.
+- `window` is the `--window` value; `as_of` is the end of the window, UTC —
+  the one instant the survey rows, the launch counts and the spend query
+  were all measured from.
 - `survey` holds the survey table's rows. `agent` is `null` for a model's
   all-agents aggregate (`(all)` in the table). `worked_pct`, `quality_avg`
   and `speed_avg` are unrounded, and `null` where the table shows `-`.

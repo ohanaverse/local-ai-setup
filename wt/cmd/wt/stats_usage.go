@@ -231,8 +231,10 @@ func realStdoutWidth() int {
 	return w
 }
 
-// collectUsage builds the usage report for one window ending at asOf.
-// It never fails: every way of having no spend data is a status and a
+// collectUsage builds the usage report for one window ending at asOf: the
+// spend query covers asOf-window..asOf, and the launches are the ones
+// usage.jsonl dates inside that same window (a launch after asOf is in
+// neither half). It never fails: every way of having no spend data is a status and a
 // reason, and the launch counts are reported regardless.
 func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, modelFilter, familyFilter, agentFilter string) usageReport {
 	rep := usageReport{SpendStatus: spendOK, Narrowed: modelFilter != "" || familyFilter != ""}
@@ -253,7 +255,9 @@ func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration,
 		sp = &res
 		rep.Unattributed = res.Unattributed
 	}
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(agentFilter), window, sp, registryFamilies(cfg), modelFilter, familyFilter)
+	// The same asOf the spend query ends at: launches are bucketed against
+	// the report's instant, never against a second read of the clock.
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(agentFilter, asOf), window, sp, registryFamilies(cfg), modelFilter, familyFilter)
 	return rep
 }
 
