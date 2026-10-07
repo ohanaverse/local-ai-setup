@@ -33,13 +33,16 @@ type event struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// Store is an interface for recording and querying model-launch history.
+// Store is what the consumers that take a store through an interface need:
+// rotation records launches, the picker reads counts for the models it
+// lists. It is not the whole surface of *StoreImpl. AllCounts is left out on
+// purpose (#289): its one caller, `wt stats`, holds the concrete type, and a
+// member here is a method every test double has to implement.
 type Store interface {
 	Record(modelID string) error
 	RecordFor(agent, modelID string) error
 	Counts(modelIDs []string) map[string]UsageCounts
 	CountsForAgent(agent string, modelIDs []string) map[string]UsageCounts
-	AllCounts(agent string) map[string]UsageCounts
 }
 
 // StoreImpl reads and appends to the usage history file.
