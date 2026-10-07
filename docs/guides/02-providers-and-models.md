@@ -25,7 +25,7 @@ modelman reads three files under `~/.config/local-ai/` (table copied from the mo
 
 | File | Purpose | Env override |
 |------|---------|--------------|
-| `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
+| `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `WT_REGISTRY` (legacy alias `MODELMAN_REGISTRY`) |
 | `modelman.toml` | Per-machine mutable state: download markers, family display names, the `running` hint | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 

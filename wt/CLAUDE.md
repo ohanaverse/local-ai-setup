@@ -83,7 +83,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
-- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/litellm` and `internal/survey` point `XDG_CONFIG_HOME` at a throwaway directory, stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui` and `internal/config` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
@@ -157,7 +157,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 
 ## Registry (modelman-owned)
 
-`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it read-only via `config.Load`, fail-closed, and joins it in memory with `config.toml`. Path precedence matches modelman's: `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config` — keep the two in sync.
+`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it read-only via `config.Load`, fail-closed, and joins it in memory with `config.toml`. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
 
 - **`ResolveLocation` is the one judge of a location**: every consumer keys off its error (`config.ErrLocation`), so catalog, inventory, sync and validation agree.
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
