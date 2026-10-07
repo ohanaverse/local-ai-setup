@@ -106,6 +106,35 @@ def registry_path() -> Path:
     return Path(base, "local-ai", "registry.toml").expanduser()
 
 
+def _refuse_dangling_symlink(path: Path) -> None:
+    """A link to a file that is not there is a pointer at where the registry
+    lives, not an absent registry: refuse it (#248)."""
+    if path.is_symlink() and not path.exists():
+        raise RegistryError(f"{path} is a symlink to {os.readlink(path)}, which does not exist")
+
+
+def registry_read_path(path: Path | None = None) -> Path:
+    """The file load_registry reads. Not always registry_path(): a registry
+    created before XDG_CONFIG_HOME was set is still read from ~/.config.
+
+    Must resolve the file modelman's `_registry_read_path` does until modelman
+    is retired: `modelman start <mtplx model>` loads the registry through
+    both (modelman/tests/test_registry_path_parity.py holds them together).
+    """
+    wanted = Path(path) if path else registry_path()
+    _refuse_dangling_symlink(wanted)
+    if wanted.exists():
+        return wanted
+    # Not past MODELMAN_REGISTRY or an explicit path: those name the file
+    # outright, and a missing one is missing.
+    legacy = Path("~/.config/local-ai/registry.toml").expanduser()
+    if path is None and not os.environ.get("MODELMAN_REGISTRY") and wanted != legacy:
+        _refuse_dangling_symlink(legacy)
+        if legacy.exists():
+            return legacy
+    raise RegistryError(f"Registry file not found: {wanted}")
+
+
 def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
     if "id" not in raw:
         raise RegistryError(f"Provider entry missing required `id` field: {raw}")
@@ -136,12 +165,10 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
 
 
 def load_registry(path: Path | None = None) -> Registry:
-    registry_file = Path(path) if path else registry_path()
+    registry_file = registry_read_path(path)
     try:
         with open(registry_file, "rb") as f:
             raw = tomllib.load(f)
-    except FileNotFoundError:
-        raise RegistryError(f"Registry file not found: {registry_file}") from None
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise RegistryError(f"cannot read {registry_file}: {exc}") from exc
     return Registry(
