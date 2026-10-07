@@ -48,7 +48,7 @@ def test_start_command_success_writes_marker(tmp_path, monkeypatch):
         patch("modelman.local_control.stop_all_local_providers"),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
-        from modelman.benchmark.isolation import IsolateResult
+        from llmbench.benchmark.isolation import IsolateResult
 
         mock_isolate.return_value = IsolateResult(
             provider="ollama",

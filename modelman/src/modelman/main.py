@@ -7,13 +7,14 @@ from dataclasses import replace
 from pathlib import Path
 
 import typer
+from llmbench.benchmark.cli import benchmark_app
+from llmbench.providers.lifecycle.cli import provider_app
 
 # Import providers package to trigger registration of all providers.
 from . import (
     providers,  # noqa: F401
     wt_bridge,
 )
-from .benchmark.cli import benchmark_app
 from .config import default_config_path
 from .formatting import format_size
 from .litellm import sync_routes
@@ -31,7 +32,6 @@ from .migrate import migrate as run_migration
 from .migrate import migrate_wt_gateway_to_litellm
 from .ollama_catalog_cli import ollama_catalog_app
 from .providers.base import VariantSpec
-from .providers.lifecycle.cli import provider_app
 from .providers.registry import ProviderRegistry
 from .queue import PendingChanges, QueuedOps
 from .registry import (

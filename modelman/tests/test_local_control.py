@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from llmbench.benchmark.isolation import IsolateResult
 
 from modelman import local_control, wt_bridge
-from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     DiscoveredModel,
     InventoryEntry,
@@ -377,7 +377,7 @@ def test_start_isolate_failure_after_occupant_stop_syncs_routes_once(tmp_path, w
     # occupant's route must not keep pointing at a dead backend) — exactly
     # one sync, and the failure is still raised. (mtplx, not omlx: an omlx
     # start goes through wt and never reaches isolate_provider, #213.)
-    from modelman.benchmark.errors import BenchmarkError
+    from llmbench.benchmark.errors import BenchmarkError
 
     state_path = _state_path(tmp_path, {"mtplx/org/model-a": True})
     with (
@@ -901,7 +901,7 @@ def test_stop_local_model_mtplx_stops_via_lifecycle_and_clears_flag(tmp_path):
         )
     )
     state_path = _state_path(tmp_path, {"mtplx/org/model": True})
-    with patch("modelman.providers.lifecycle.stop") as mock_lifecycle_stop:
+    with patch("llmbench.providers.lifecycle.stop") as mock_lifecycle_stop:
         mock_lifecycle_stop.return_value = ProcessResult(
             provider="mtplx", model="", direct_url="", ok=True, error=None
         )
@@ -918,7 +918,7 @@ def test_stop_local_model_mtplx_failure_raises_local_control_error(tmp_path):
     from modelman.local_process import ProcessResult
 
     state_path = _state_path(tmp_path, {"mtplx/org/model": True})
-    with patch("modelman.providers.lifecycle.stop") as mock_lifecycle_stop:
+    with patch("llmbench.providers.lifecycle.stop") as mock_lifecycle_stop:
         mock_lifecycle_stop.return_value = ProcessResult(
             provider="mtplx", model="", direct_url="", ok=False, error="mtplx stop failed"
         )
@@ -2005,7 +2005,7 @@ def test_start_discovered_mtplx_artifact_uses_the_repo_id_wt_routes(tmp_path):
         assert running_model_ids(registry, load_state(state_path), state_path) == [wt_id]
     assert probed == [("mtplx", "Youssofal/Qwen3.8-27B-MTPLX")]
 
-    with patch("modelman.providers.lifecycle.stop") as mock_lifecycle_stop:
+    with patch("llmbench.providers.lifecycle.stop") as mock_lifecycle_stop:
         mock_lifecycle_stop.return_value = ProcessResult(
             provider="mtplx", model="", direct_url="", ok=True, error=None
         )

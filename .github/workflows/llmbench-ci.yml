@@ -1,0 +1,37 @@
+name: llmbench-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "llmbench/**"
+      - "benchmarks/tasks/**"
+      - "docs/contracts/registry*.toml"
+      - "bin/check-config-dirs-untouched"
+      - ".github/workflows/llmbench-ci.yml"
+  pull_request:
+    paths:
+      - "llmbench/**"
+      - "benchmarks/tasks/**"
+      - "docs/contracts/registry*.toml"
+      - "bin/check-config-dirs-untouched"
+      - ".github/workflows/llmbench-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        working-directory: llmbench
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv publishes no floating major tag past v7, so pin the exact release.
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync
+      - run: make check
+      - run: make test
+      # No test may create the real config directories; see the script for
+      # why. Run right after the tests, before any later step could create
+      # them for its own reasons.
+      - name: Tests left the real config directories alone
+        run: ../bin/check-config-dirs-untouched

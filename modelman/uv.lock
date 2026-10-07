@@ -829,6 +829,38 @@ wheels = [
 ]
 
 [[package]]
+name = "llmbench"
+version = "0.1.0"
+source = { editable = "../llmbench" }
+dependencies = [
+    { name = "requests" },
+    { name = "tomli-w" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+eval = [
+    { name = "evalplus" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "evalplus", marker = "extra == 'eval'", specifier = ">=0.3.1" },
+    { name = "requests", specifier = ">=2.32.0" },
+    { name = "tomli-w", specifier = ">=1.2.0" },
+    { name = "typer", specifier = ">=0.15.3" },
+]
+provides-extras = ["eval"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.10.0" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-cov", specifier = ">=5.0.0" },
+    { name = "ruff", specifier = ">=0.6.0" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -872,6 +904,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
+    { name = "llmbench" },
     { name = "psycopg2-binary" },
     { name = "pyyaml" },
     { name = "questionary" },
@@ -885,7 +918,7 @@ dependencies = [
 
 [package.optional-dependencies]
 eval = [
-    { name = "evalplus" },
+    { name = "llmbench", extra = ["eval"] },
 ]
 
 [package.dev-dependencies]
@@ -901,8 +934,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "evalplus", marker = "extra == 'eval'", specifier = ">=0.3.1" },
     { name = "huggingface-hub", specifier = ">=1.0.0" },
+    { name = "llmbench", editable = "../llmbench" },
+    { name = "llmbench", extras = ["eval"], marker = "extra == 'eval'", editable = "../llmbench" },
     { name = "psycopg2-binary", specifier = ">=2.9.10" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "questionary", specifier = ">=2.0.0" },

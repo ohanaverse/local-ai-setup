@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - "modelman/**"
+      - "llmbench/**"
       - "docs/contracts/**"
       - "bin/check-config-dirs-untouched"
       - ".github/workflows/modelman-ci.yml"
   pull_request:
     paths:
       - "modelman/**"
+      - "llmbench/**"
       - "docs/contracts/**"
       - "bin/check-config-dirs-untouched"
       - ".github/workflows/modelman-ci.yml"

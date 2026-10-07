@@ -4,9 +4,9 @@ docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md.
 
 `modelman start`/`modelman stop` (main.py) are the only place a local
 model's process is started or stopped for normal (non-benchmark) usage.
-Both delegate the actual stop/start to modelman.benchmark.isolation —
+Both delegate the actual stop/start to llmbench.benchmark.isolation —
 the same in-process lifecycle contract `modelman benchmark` uses, which
-drives modelman.providers.lifecycle's backends — and record which models
+drives llmbench.providers.lifecycle's backends — and record which models
 are running via a per-model
 `running: bool` flag on modelman.toml's ModelState (state.py) — a hint
 only modelman's own readers use, and only after a live probe confirms it.
@@ -43,19 +43,20 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-# Import the providers package to ensure ProviderRegistry is populated —
-# mirrors sync.py's identical defensive import.
-from . import (
-    providers,  # noqa: F401
-    wt_bridge,
-)
-from .benchmark.errors import BenchmarkError
-from .benchmark.isolation import (
+from llmbench.benchmark.errors import BenchmarkError
+from llmbench.benchmark.isolation import (
     SUPPORTED_PROVIDER_IDS,
     isolate_provider,
     mlx_lm_server_pairing_args,
     stop_all_local_providers,
     stop_provider,
+)
+
+# Import the providers package to ensure ProviderRegistry is populated —
+# mirrors sync.py's identical defensive import.
+from . import (
+    providers,  # noqa: F401
+    wt_bridge,
 )
 from .litellm import sync_routes
 from .local_process import connection_refused as _connection_refused
@@ -1475,7 +1476,7 @@ def stop_local_model(
         model_name = model_id.split("/", 1)[1]
         _stop_ollama_model(model_name)
     elif provider_id == "mtplx":
-        from .providers.lifecycle import stop as lifecycle_stop
+        from llmbench.providers.lifecycle import stop as lifecycle_stop
 
         result = lifecycle_stop("mtplx")
         if not result.ok:

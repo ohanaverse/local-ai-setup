@@ -127,7 +127,7 @@ def _never_call_real_ollama(monkeypatch):
         "modelman.local_control._connection_refused", lambda url, timeout=2.0: False
     )
     monkeypatch.setattr(
-        "modelman.providers.lifecycle.backends.ollama._loaded_model_names",
+        "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
         lambda: [],
     )
 
@@ -258,7 +258,7 @@ def _fake_provider_run(cmd, *args, **kwargs):
 
     `subprocess` is one shared module object — `monkeypatch.setattr` on
     ANY dotted path that resolves through it (e.g.
-    "modelman.providers.lifecycle.launchd.subprocess.run") replaces
+    "llmbench.providers.lifecycle.launchd.subprocess.run") replaces
     `subprocess.run` globally for the whole interpreter, not just calls
     made from launchd.py. That cuts both ways:
 
@@ -306,7 +306,7 @@ def _never_touch_live_providers(monkeypatch):
     # give it the same real-delegating wrapper `_fake_provider_run` uses
     # above instead of widening this comment.
     monkeypatch.setattr(
-        "modelman.providers.lifecycle.probe.urllib.request.urlopen",
+        "llmbench.providers.lifecycle.probe.urllib.request.urlopen",
         MagicMock(side_effect=urllib.error.URLError("hermetic test")),
     )
     # One global patch, one allow-list: see `_fake_provider_run`. The
@@ -314,11 +314,11 @@ def _never_touch_live_providers(monkeypatch):
     # through — the replacement is process-wide, so it covers
     # omlx/mtplx/mlx_lm calls made from their own backend modules too.
     monkeypatch.setattr(
-        "modelman.providers.lifecycle.launchd.subprocess.run",
+        "llmbench.providers.lifecycle.launchd.subprocess.run",
         _fake_provider_run,
     )
     monkeypatch.setattr(
-        "modelman.providers.lifecycle.pidproc.os.kill",
+        "llmbench.providers.lifecycle.pidproc.os.kill",
         lambda *a, **k: None,
     )
 

@@ -22,9 +22,12 @@
 #   - wt/internal/catalog/registry_fixture_test.go (Go)
 #   - wt/cmd/wt/litellm_test.go (Go)
 #   - modelman/tests/contracts/test_registry_fixture.py (Python)
+#   - llmbench/tests/test_registry.py (Python; reads id/family/provider_id/
+#     model_name/location/fetch/draft only)
 #
 # The point of this file is that changing a field here without updating
-# both tests should make both CI jobs fail in the same PR.
+# every test listed above should make each of their CI jobs (wt-ci,
+# modelman-ci, llmbench-ci) fail in the same PR.
 
 [[providers]]
 id = "ollama"
