@@ -25,7 +25,10 @@ import (
 // before a load succeeds (507, 409...). The list names a model by its alias
 // when it has one, as omlx does. statusFailsAfterLoad makes status answer 500
 // once a load has been asked for, so the reading after a load is the fallback
-// (/health and the list) while the one before it came from status.
+// (/health and the list) while the one before it came from status. loading
+// marks models status reports is_loading; an unload of one that is not loaded
+// is answered 400, as omlx answers an unload mid-load. keepOnUnload makes an
+// accepted unload change nothing, and onLoad runs on every load request.
 //
 // mgmtKey makes it an omlx with an API key that allows unauthenticated
 // inference: status, load and unload want `Authorization: Bearer <mgmtKey>`
@@ -35,11 +38,14 @@ import (
 type fakePool struct {
 	mu                   sync.Mutex
 	loaded               map[string]bool
+	loading              map[string]bool
 	sizes                map[string]int64
 	ceiling              int64
 	alias                map[string]string
 	statusFailsAfterLoad bool
 	evictOnLoad          []string
+	keepOnUnload         bool
+	onLoad               func()
 	loadCodes            []int
 	loads                []string
 	unloads              []string
@@ -108,7 +114,7 @@ func (f *fakePool) handler() http.Handler {
 			if l {
 				inUse += f.sizes[id]
 			}
-			ms = append(ms, map[string]any{"id": id, "loaded": l, "resident_estimated_size": f.sizes[id]})
+			ms = append(ms, map[string]any{"id": id, "loaded": l, "is_loading": f.loading[id], "resident_estimated_size": f.sizes[id]})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"final_ceiling": f.ceiling, "current_model_memory": inUse, "models": ms})
 	})
@@ -120,6 +126,9 @@ func (f *fakePool) handler() http.Handler {
 			return
 		}
 		f.loads = append(f.loads, id)
+		if f.onLoad != nil {
+			f.onLoad()
+		}
 		for _, v := range f.evictOnLoad {
 			f.loaded[v] = false
 		}
@@ -149,7 +158,9 @@ func (f *fakePool) handler() http.Handler {
 			http.Error(w, `{"detail":"Model not loaded"}`, http.StatusBadRequest)
 			return
 		}
-		f.loaded[id] = false
+		if !f.keepOnUnload {
+			f.loaded[id] = false
+		}
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
@@ -416,6 +427,35 @@ func TestStopModelOnPoolUnloadsOnlyThatModel(t *testing.T) {
 	}
 }
 
+// TestStopModelOnALoadingModelSaysOmlxIsStillLoadingIt verifies the error a
+// `wt stop <id>` gives for a model mid-load names the state the model is in.
+// omlx 0.7.0 answers that unload "400 Model not loaded" and goes on loading,
+// so the stop fails; it used to say "omlx still has <id> loaded" about a model
+// that is not loaded yet, and gave no way out. The message now says omlx is
+// loading it, that it will not unload it mid-load, and that `wt stop omlx`
+// halts the service. A model that is loaded and still there after the unload
+// keeps the old wording.
+func TestStopModelOnALoadingModelSaysOmlxIsStillLoadingIt(t *testing.T) {
+	fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, loading: map[string]bool{"B": true}}
+	e, stopped := poolEnv(t, localmodels.Snapshot{})
+	err := stopModel(context.Background(), e, provCfg("omlx", fp.serve(t)), "omlx", "B")
+	const want = "omlx is still loading B and will not unload it mid-load; `wt stop omlx` stops the service and the load with it"
+	if err == nil || err.Error() != want {
+		t.Errorf("stop of a loading model = %v, want %q", err, want)
+	}
+	if !reflect.DeepEqual(fp.unloads, []string{"B"}) || !fp.isLoaded("A") || len(*stopped) != 0 {
+		t.Errorf("unloads = %v, A loaded = %v, occupant hook = %v; want one unload of B and the sibling untouched", fp.unloads, fp.isLoaded("A"), *stopped)
+	}
+
+	// Loaded and loading at once is a reload: the model is loaded, so the old
+	// wording is the true one.
+	fp = &fakePool{loaded: map[string]bool{"A": true}, loading: map[string]bool{"A": true}, keepOnUnload: true}
+	err = stopModel(context.Background(), e, provCfg("omlx", fp.serve(t)), "omlx", "A")
+	if err == nil || err.Error() != "omlx still has A loaded" {
+		t.Errorf("stop of a model omlx kept loaded = %v, want \"omlx still has A loaded\"", err)
+	}
+}
+
 // TestPoolRouteChanges pins the route rules for a pool: a start adds its model
 // and clears nothing else, and a model stop removes that model's ids only.
 // Clearing the family is what made sync and the start hook undo each other
@@ -642,7 +682,7 @@ func TestStartOnALoadingTargetWaitsForTheLoad(t *testing.T) {
 // for a load that is already under way. What the load did evict still loses
 // its route when the load ends.
 func TestStartOnALoadingTargetAsksNothing(t *testing.T) {
-	captureRoutes(t)
+	notes := captureRoutes(t)
 	sizes := map[string]int64{"A": 60, "B": 60}
 	fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, evictOnLoad: []string{"A"}}
 	snap := loadingSnap(poolSnap(100, sizes, "A"), "B")
@@ -656,6 +696,11 @@ func TestStartOnALoadingTargetAsksNothing(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fp.loads, []string{"B"}) || !reflect.DeepEqual(*stopped, []string{"omlx/A"}) {
 		t.Errorf("loads = %v, occupant hook = %v; want [B] and the evicted [omlx/A]", fp.loads, *stopped)
+	}
+	// The eviction was planned by the start that began the load, so this one
+	// has no plan to measure it against and must not call it a surprise.
+	if got := notes.String(); got != "wt: omlx unloaded omlx/A to make room\n" {
+		t.Errorf("route notes = %q, want the unload reported without \"(not predicted)\"", got)
 	}
 }
 
@@ -718,13 +763,23 @@ func TestStartOnALoadingTargetReportsHowTheLoadEnded(t *testing.T) {
 		}
 	})
 	t.Run("ctrl+c during the wait", func(t *testing.T) {
-		fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, loadCodes: busy(10000)}
 		ctx, cancel := context.WithCancel(context.Background())
-		time.AfterFunc(30*time.Millisecond, cancel)
+		defer cancel()
+		// The cancel is tied to the third load request, not to a timer, so it
+		// lands mid-wait however slow the runner is.
+		polls := 0
+		fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, loadCodes: busy(10000), onLoad: func() {
+			if polls++; polls == 3 {
+				cancel()
+			}
+		}}
 		// A budget far beyond the test, so only the cancel can end the wait.
 		err := join(t, ctx, fp, func(e *env) { e.warmupTimeout = time.Minute })
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("start = %v, want context.Canceled", err)
+		}
+		if polls < 3 {
+			t.Errorf("load requests = %d, want the wait to have polled before the cancel", polls)
 		}
 	})
 }

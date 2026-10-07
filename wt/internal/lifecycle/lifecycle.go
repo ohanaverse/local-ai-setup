@@ -318,8 +318,15 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if ProbeTrusted(snap, family) {
 		before = runningOthers(snap, family, t)
 	}
+	// A start that joins a load planned nothing itself (evictions): what that
+	// load evicts was put to whoever began it, so none of it is this start's
+	// surprise and none is marked "not predicted".
+	planned := victims
+	if ProbeTrusted(snap, family) && isLoading(snap, family, t) {
+		planned = before
+	}
 	err := b.start(ctx, e, cfg, t, report)
-	e.reconcilePool(ctx, cfg, before, victims, opts)
+	e.reconcilePool(ctx, cfg, before, planned, opts)
 	return err
 }
 
@@ -327,7 +334,8 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 // omlx no longer has loaded — and, for each, removes its route (the deferred
 // write Start's one settling bounce applies), says so, and tells the caller.
 // planned is what the eviction plan named; anything else is marked, because
-// omlx evicts from a soft watermark wt cannot see.
+// omlx evicts from a soft watermark wt cannot see. A start that joined a load
+// passes before as planned: the plan was the first start's, not its own.
 //
 // Only a status reading (SizesKnown) can show an eviction. The fallback
 // reading names what is loaded by the ids of omlx's list, which gives an

@@ -699,8 +699,8 @@ func TestStopEntriesSkipsSettleWhenNothingOwed(t *testing.T) {
 // hide a model from `wt stop`: it stays a stop candidate, in `wt stop <id>` and
 // in the stop picker. A user who sees the model occupying the pool must be able
 // to name it there. (omlx 0.7.0 refuses to unload a model mid-load, so the stop
-// itself reports `omlx still has <id> loaded`; `wt stop omlx` is what calls a
-// load off.)
+// itself reports that omlx is still loading <id> and will not unload it
+// mid-load; `wt stop omlx` is what calls a load off, and the message says so.)
 func TestStopCandidatesIncludeAModelMidLoad(t *testing.T) {
 	loading := runningEntry("omlx", "omlx/x", "x")
 	loading.Loading = true

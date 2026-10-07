@@ -21,7 +21,10 @@
   `wt start` on it waits for the load instead of printing `already running`,
   and the pickers show `load` in the RUNNING column and start it on Enter
   instead of launching an agent on a model that cannot answer yet. It still
-  counts as occupying the pool and keeps its route.
+  counts as occupying the pool and keeps its route. `wt stop <id>` on it
+  fails as before — omlx does not unload a model mid-load — but now says
+  that omlx is still loading it and that `wt stop omlx` stops the service,
+  instead of `omlx still has <id> loaded`.
 - The omlx scan's single-model fallback matches omlx (#263). A model
   directory that is itself a LoRA adapter, or that holds a Hugging Face cache
   entry, is no longer listed as a model omlx does not serve. wt and modelman

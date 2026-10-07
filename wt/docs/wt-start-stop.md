@@ -37,9 +37,10 @@ wt stop <target> --yes           # skip the in-use confirmation
   stderr, then prints `wt: <id> is running`. It asks nothing, because it
   loads nothing new. In the pickers the row's RUNNING column reads `load`,
   and selecting it waits the same way. `wt` without `-M` never picks a model
-  that is still loading. `wt stop <id>` on it fails with
-  `omlx still has <id> loaded`, because omlx does not unload a model in the
-  middle of a load; `wt stop omlx` stops the service and the load with it.
+  that is still loading. `wt stop <id>` on it fails, saying
+  `omlx is still loading <id> and will not unload it mid-load` and that
+  `wt stop omlx` stops the service and the load with it: omlx does not
+  unload a model in the middle of a load.
   wt sees a load only through omlx's status endpoint: on a server with an
   API key the registry does not name, a loading model reads as not running.
 - Not on disk (a registry entry whose artifact is missing): not listed;
