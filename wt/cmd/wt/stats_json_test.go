@@ -23,7 +23,8 @@ func pinStatsNow(t *testing.T, at time.Time) {
 // TestStatsJSONDocument pins the --json document byte for byte with spend
 // available: one line holding window, as_of, survey and usage; the
 // all-agents survey row has a null agent; averages with nothing rated are
-// null; a launch-only model has zero spend fields, not null. Scripts and
+// null; a launch-only model has zero spend fields, not null; also_logged_as
+// is [] on a row nothing was folded into. Scripts and
 // the archived `wt stats --json >> usage.jsonl` habit parse exactly this.
 func TestStatsJSONDocument(t *testing.T) {
 	a, tmp := newTestApp(t)
@@ -49,9 +50,9 @@ func TestStatsJSONDocument(t *testing.T) {
 		`{"model":"ollama/gemma4:9b","agent":null,"answered":2,"worked":1,"failed":1,"skipped":0,"worked_pct":50,"quality_avg":5,"speed_avg":4},` +
 		`{"model":"ollama/gemma4:9b","agent":"claude","answered":2,"worked":1,"failed":1,"skipped":0,"worked_pct":50,"quality_avg":5,"speed_avg":4}],` +
 		`"usage":{"spend_status":"ok","spend_reason":"","unattributed_requests":3,"rows":[` +
-		`{"model":"ollama/gemma4:9b","family":"ollama","launches":1,"requests":4,"prompt_tokens":152,"completion_tokens":630,"spend":0},` +
-		`{"model":"ollama/launch-only","family":"ollama","launches":1,"requests":0,"prompt_tokens":0,"completion_tokens":0,"spend":0},` +
-		`{"model":"openrouter/qwen/qwen3.8-27b","family":"openrouter","launches":0,"requests":5,"prompt_tokens":517,"completion_tokens":3135,"spend":0.0085}]}}` + "\n"
+		`{"model":"ollama/gemma4:9b","family":"ollama","launches":1,"requests":4,"prompt_tokens":152,"completion_tokens":630,"spend":0,"also_logged_as":[]},` +
+		`{"model":"ollama/launch-only","family":"ollama","launches":1,"requests":0,"prompt_tokens":0,"completion_tokens":0,"spend":0,"also_logged_as":[]},` +
+		`{"model":"openrouter/qwen/qwen3.8-27b","family":"openrouter","launches":0,"requests":5,"prompt_tokens":517,"completion_tokens":3135,"spend":0.0085,"also_logged_as":[]}]}}` + "\n"
 	if stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
 	}
@@ -163,6 +164,31 @@ func TestStatsJSONNullsWhereTheTableShowsADash(t *testing.T) {
 		if !strings.Contains(stdout, field) {
 			t.Errorf("stdout = %s\nwant %s spelled as null", stdout, field)
 		}
+	}
+}
+
+// TestStatsJSONListsFoldedSpellings verifies a --json row whose spend
+// includes requests the proxy logged under another spelling of the id names
+// that spelling in also_logged_as, carries the summed figures under the wt
+// id, and that no row has the logged spelling as its model. An archived
+// document must be able to say why a model's requests exceed what the
+// database shows for its id alone; the text table has no room for it.
+func TestStatsJSONListsFoldedSpellings(t *testing.T) {
+	a, tmp := newTestApp(t)
+	seedLaunches(t, tmp, launch{"mtplx/Org--Name", "claude", time.Hour})
+	stubSpend(t, spend.Result{Rows: []spend.Row{
+		{Model: "mtplx/Org--Name", Requests: 4, PromptTokens: 100, CompletionTokens: 10},
+		{Model: "mtplx/Org/Name", Requests: 5, PromptTokens: 23, CompletionTokens: 5, Spend: 0.5},
+		{Model: "openrouter/x/y", Requests: 1},
+	}}, nil)
+
+	stdout, _ := runStats(t, a, "--json")
+
+	wantRows := `"rows":[` +
+		`{"model":"mtplx/Org--Name","family":"mtplx","launches":1,"requests":9,"prompt_tokens":123,"completion_tokens":15,"spend":0.5,"also_logged_as":["mtplx/Org/Name"]},` +
+		`{"model":"openrouter/x/y","family":"openrouter","launches":0,"requests":1,"prompt_tokens":0,"completion_tokens":0,"spend":0,"also_logged_as":[]}]}}` + "\n"
+	if !strings.HasSuffix(stdout, wantRows) {
+		t.Errorf("stdout =\n%s\nwant it to end with\n%s", stdout, wantRows)
 	}
 }
 

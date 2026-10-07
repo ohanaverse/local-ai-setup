@@ -42,7 +42,9 @@ type usageJSON struct {
 }
 
 // usageRowJSON is one model. The four spend fields are null unless
-// spend_status is ok.
+// spend_status is ok. AlsoLoggedAs lists the other spellings of Model whose
+// requests are included in those fields (buildUsageRows' fold); like every
+// list it is [] when empty.
 type usageRowJSON struct {
 	Model            string   `json:"model"`
 	Family           string   `json:"family"`
@@ -51,6 +53,7 @@ type usageRowJSON struct {
 	PromptTokens     *int64   `json:"prompt_tokens"`
 	CompletionTokens *int64   `json:"completion_tokens"`
 	Spend            *float64 `json:"spend"`
+	AlsoLoggedAs     []string `json:"also_logged_as"`
 }
 
 // optional returns &v when ok, else nil (JSON null).
@@ -92,7 +95,8 @@ func buildStatsJSON(window string, asOf time.Time, survey []statsRow, rep usageR
 		doc.Usage.UnattributedRequests = &n
 	}
 	for _, r := range rep.Rows {
-		j := usageRowJSON{Model: r.Model, Family: r.Family, Launches: r.Launches}
+		j := usageRowJSON{Model: r.Model, Family: r.Family, Launches: r.Launches, AlsoLoggedAs: []string{}}
+		j.AlsoLoggedAs = append(j.AlsoLoggedAs, r.AlsoLoggedAs...)
 		if r.Spend != nil {
 			s := *r.Spend
 			j.Requests, j.PromptTokens, j.CompletionTokens, j.Spend = &s.Requests, &s.PromptTokens, &s.CompletionTokens, &s.Spend

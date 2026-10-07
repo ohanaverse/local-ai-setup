@@ -27,7 +27,8 @@
   is removed. Not carried over: `--days N`, the Markdown output, the
   Reconciliation sections and the "Last wt launch" line.
 - `wt stats --json` prints both tables as one JSON document (`window`,
-  `as_of`, `survey`, `usage`) on stdout; notes stay on stderr.
+  `as_of`, `survey`, `usage`) on stdout; notes stay on stderr. A usage row
+  lists in `also_logged_as` the other spellings whose requests it includes.
 
 ### Changed
 

@@ -215,7 +215,7 @@ Example (illustrative values, wrapped here for reading):
  "usage":{"spend_status":"ok","spend_reason":"","unattributed_requests":3,
   "rows":[
    {"model":"ollama/gemma4:9b","family":"gemma4","launches":1,
-    "requests":4,"prompt_tokens":152,"completion_tokens":630,"spend":0}]}}
+    "requests":4,"prompt_tokens":152,"completion_tokens":630,"spend":0,"also_logged_as":[]}]}}
 ```
 
 - `window` is the `--window` value; `as_of` is the end of the window, UTC.
@@ -227,13 +227,17 @@ Example (illustrative values, wrapped here for reading):
 - `usage.rows` holds the usage table's rows, with each model's `family`.
   `requests`, `prompt_tokens`, `completion_tokens` and `spend` are `null`
   unless `spend_status` is `ok`, and so is `unattributed_requests`.
+- A row's `also_logged_as` lists the other spellings of its `model` whose
+  requests are included in the row (see "One model, two spellings" above):
+  `["mtplx/Org/Name"]` on the `mtplx/Org--Name` row, `[]` on most rows.
 - `usage.unattributed_requests` counts requests with no model in the whole
   window, whatever `--model` or `--family` selected.
 - Model ids are JSON strings, so a control character in one is escaped by
   JSON's own rules (`\n`, `\u001b`), not the table's. JSON leaves most
   invisible characters (a bidi override, a zero-width space) as they are;
   the table escapes them.
-- `survey` and `usage.rows` are always arrays, `[]` when empty.
+- `survey`, `usage.rows` and `also_logged_as` are always arrays, `[]` when
+  empty.
 
 To keep a history, append one line per run: `wt stats --json >> ~/notes/wt-stats.jsonl`.
 
