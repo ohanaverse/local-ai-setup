@@ -7,7 +7,8 @@ components — fresh install starts at
 | Component | Role |
 |---|---|
 | Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
-| `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, download state, benchmarks, usage |
+| `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, download state, usage |
+| `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
 ## User guides (docs/guides/)
@@ -22,13 +23,13 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`02-providers-and-models.md`](docs/guides/02-providers-and-models.md) | register and download providers and models — a configured cloud model is routed, a local model while it runs |
 | [`03-model-families.md`](docs/guides/03-model-families.md) | families, tags, and wt model rotation |
 | [`04-litellm-config.md`](docs/guides/04-litellm-config.md) | audit proxy config, `wt litellm sync` routing, admin UI |
-| [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated modelman benchmark runs |
+| [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated llmbench runs |
 | [`06-wt-agents-and-models.md`](docs/guides/06-wt-agents-and-models.md) | pick worktree/agent/model, then launch |
 | [`07-usage-and-spend.md`](docs/guides/07-usage-and-spend.md) | reconcile wt launches vs LiteLLM spend |
 | [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades |
-| [`09-agent-benchmarks.md`](docs/guides/09-agent-benchmarks.md) | agentic coding benchmark (`modelman benchmark agent`) |
+| [`09-agent-benchmarks.md`](docs/guides/09-agent-benchmarks.md) | agentic coding benchmark (`llmbench agent`) |
 | [`10-mlx-lm-quantization.md`](docs/guides/10-mlx-lm-quantization.md) | local mlx-lm quantization + `mlx_lm_server` speculative decoding |
-| [`11-capability-eval-benchmark.md`](docs/guides/11-capability-eval-benchmark.md) | cross-category capability benchmark (`modelman benchmark eval`) |
+| [`11-capability-eval-benchmark.md`](docs/guides/11-capability-eval-benchmark.md) | cross-category capability benchmark (`llmbench eval`) |
 
 ## 60-second health check
 
@@ -77,12 +78,13 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ├── docs/
 │   ├── guides/         # user playbooks — index above
 │   ├── reference/      # backend-specific guides
-│   ├── contracts/      # cross-language config-format fixtures (read by wt Go + modelman Python tests)
+│   ├── contracts/      # cross-language config-format fixtures (read by wt Go + modelman and llmbench Python tests)
 │   ├── archive/        # superseded docs
 │   └── superpowers/    # plans + specs
 ├── modelman/           # model registry TUI/CLI (Python/uv) — has its own CLAUDE.md
+├── llmbench/           # benchmarks + provider isolation (Python/uv) — has its own CLAUDE.md
 ├── wt/                 # worktree agent launcher (Go) — has its own CLAUDE.md
-├── .github/workflows/ # CI: shell-ci, wt-ci, modelman-ci
+├── .github/workflows/ # CI: shell-ci, wt-ci, modelman-ci, llmbench-ci
 ├── CLAUDE.md           # agent entry point
 ├── Makefile            # make lint (shellcheck), make check-links, make test-all
 └── README.md           # this file — index only

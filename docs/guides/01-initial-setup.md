@@ -212,7 +212,7 @@ curl -s http://localhost:11434/api/tags | python3 -c 'import json,sys; [print(m[
 
 > **Retired 2026-09-07** (issue #33): the LaunchAgent's pinned GGUF no longer
 > existed, so the agent crash-looped at every login and the provider-restore
-> step (then `bin/llm-restore-providers`, now `modelman provider restore`
+> step (then `bin/llm-restore-providers`, now `llmbench provider restore`
 > after issue #79's port) could never succeed. Removed from this host:
 > both plists, the logs, and the Homebrew formula. The verbatim plist, the
 > litellm rows, the registry block, and the full re-enable procedure live in
@@ -229,7 +229,7 @@ brew services list | grep omlx
 omlx          none            keith   # 2026-09-30 rebuild — deliberately NO service ("started" was the old machine)
 ```
 
-(It used to run as a brew service; since the wt/modelman lifecycle engines it's **optional**. Starting any omlx model — `wt start`, TUI `s`, `modelman provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
+(It used to run as a brew service; since the wt/modelman lifecycle engines it's **optional**. Starting any omlx model — `wt start`, TUI `s`, `llmbench provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
 
 oMLX auto-discovers models in `~/.omlx/models/` (set via `~/.omlx/settings.json`, key `model.model_dirs`). Get a model in with the HF CLI:
 
@@ -531,7 +531,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 
 ## Gotchas
 
-- **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/<model-id>` (e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`) writes a `model_list` row named after the registry id — or, for a model directory with no registry entry, after its discovered id `omlx/<directory name>` — with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt never removes or replaces an unmarked row whose name is not a registry id, so a hand-written row under a discovered model's id blocks wt's own. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory modelman modelman provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
+- **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/<model-id>` (e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`) writes a `model_list` row named after the registry id — or, for a model directory with no registry entry, after its discovered id `omlx/<directory name>` — with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt never removes or replaces an unmarked row whose name is not a registry id, so a hand-written row under a discovered model's id blocks wt's own. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory llmbench llmbench provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
 - **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` or `~/.local/bin/llm-restart`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).

@@ -10,7 +10,7 @@ Two independent features, both built on the same `mlx_lm.*` tooling bundled insi
 ## Prerequisites
 
 - omlx installed (`brew install omlx`) — this is where `mlx_lm.convert`/`dynamic_quant`/`dwq`/`server` actually live; none of them are on `PATH` directly, or a declared dependency of this repo. Override with `MLX_LM_BIN_DIR` if you maintain a separate `pip install`ed mlx-lm.
-- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, `modelman provider` CLI runnable from `modelman/`).
+- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, `llmbench provider` CLI runnable from `llmbench/`).
 - For speculative decoding: a target and draft model that **share a tokenizer** — mlx-lm's speculative decoding only works across same-tokenizer pairs (this is generic mlx-lm decoding, not omlx's MTP/DFlash/VLM-MTP mechanisms, none of which apply here).
 
 ## TL;DR
@@ -23,13 +23,13 @@ bin/mlx-quantize convert --model mlx-community/some-model -q --mlx-path /tmp/som
 #   [[models]] entry with provider_id = "omlx" and a [models.fetch]
 #   local_path = "/tmp/some-model-4bit" (absolute path).
 
-uv run --directory modelman modelman provider isolate mlx_lm_server org/target-repo --draft org/draft-repo --json
+uv run --directory llmbench llmbench provider isolate mlx_lm_server org/target-repo --draft org/draft-repo --json
 # → {"provider":"mlx_lm_server","model":"org/target-repo (+draft org/draft-repo)",
 #    "direct_url":"http://localhost:8001/v1/chat/completions","ok":true,"error":null}
 
 curl -s http://localhost:8001/v1/models
 
-uv run --directory modelman modelman provider restore
+uv run --directory llmbench llmbench provider restore
 ```
 
 ## Steps
@@ -60,7 +60,7 @@ location = "local"
 local_path = "/tmp/some-model-4bit"   # absolute path to Step 1's output directory
 ```
 
-Then `modelman sync` (or just reopen the TUI) to pick up the new entry, and `modelman start <id>` to load it — there is no separate routing step: a local model is routed while it runs, and the start's own `wt litellm sync` writes the route. From there it's usable through `wt` and `modelman benchmark` exactly like any other omlx model.
+Then `modelman sync` (or just reopen the TUI) to pick up the new entry, and `modelman start <id>` to load it — there is no separate routing step: a local model is routed while it runs, and the start's own `wt litellm sync` writes the route. From there it's usable through `wt` and `llmbench` exactly like any other omlx model.
 
 ### 3. Register a target+draft pairing (feature 2)
 
@@ -69,14 +69,14 @@ TUI → Add model → provider `mlx_lm_server` → dual-model form → target (r
 ### 4. Isolate and serve the pairing
 
 ```bash
-uv run --directory modelman modelman provider isolate mlx_lm_server <target> --draft <draft>
+uv run --directory llmbench llmbench provider isolate mlx_lm_server <target> --draft <draft>
 ```
 
 Unlike ollama/omlx, **`mlx_lm_server` has no baked-in default pairing** — you must always pass the target and draft explicitly (`<target>` positional + `--draft <draft>` — note `--draft` is a flag, not a second positional, since the port from the old bash isolation helper — or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`). This isolates on port 8001, backgrounded with a pidfile at `/tmp/local-ai-setup-mlx-lm-server.pid` (log at `/tmp/local-ai-setup-mlx-lm-server.log`) — not a LaunchAgent, since a plist would bake in one fixed pairing and defeat sweeping many pairings per session.
 
 ### 5. Route and use it
 
-The isolated pairing is live on port 8001; provided the pairing is registered (Step 3 — `mlx_lm_server` is never discovered, so an unregistered pairing gets no row and no route), `wt litellm sync` (or the `modelman start` you'd use for a registered pairing) then adds its route, so it shows up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `modelman benchmark run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
+The isolated pairing is live on port 8001; provided the pairing is registered (Step 3 — `mlx_lm_server` is never discovered, so an unregistered pairing gets no row and no route), `wt litellm sync` (or the `modelman start` you'd use for a registered pairing) then adds its route, so it shows up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `llmbench run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
 
 ## Verification
 
@@ -88,20 +88,20 @@ curl -s http://localhost:8001/v1/chat/completions -d '{"model":"default","messag
 Check `/tmp/local-ai-setup-mlx-lm-server.log` for mlx_lm.server's draft/acceptance reporting to confirm speculative decoding is actually engaging (a tokenizer-mismatched pairing still serves, it just never speculates).
 
 ```bash
-uv run --directory modelman modelman provider isolate omlx   # isolate something else
+uv run --directory llmbench llmbench provider isolate omlx   # isolate something else
 ```
 
-Confirms `mlx_lm_server` was stopped, port 8001 closed, pidfile removed — `modelman provider restore` does the same unconditionally at the end of every `modelman benchmark` run, even if `mlx_lm_server` was the last isolated provider.
+Confirms `mlx_lm_server` was stopped, port 8001 closed, pidfile removed — `llmbench provider restore` does the same unconditionally at the end of every `llmbench` run, even if `mlx_lm_server` was the last isolated provider.
 
 ## Gotchas
 
 - **modelman never deletes a `local_path` artifact.** A directory from `mlx_lm.convert`/`dwq` is user-produced (possibly hours of GPU time), not something modelman downloaded — deleting the registry entry (or a ready-off toggle) leaves the directory on disk. Clean up failed experiments with a manual `rm -rf`.
-- **No default target/draft pairing exists anywhere in this repo.** Every `mlx_lm_server` isolate call — manual or from `modelman benchmark` — must supply both sides; there's no fallback to guess from.
+- **No default target/draft pairing exists anywhere in this repo.** Every `mlx_lm_server` isolate call — manual or from `llmbench` — must supply both sides; there's no fallback to guess from.
 - **`mlx_lm_server` is one-model-per-process**, unlike ollama (single daemon, any model) or omlx (one daemon, both 4-bit/6-bit variants). Sweeping multiple pairings in one benchmark run restarts the process between them.
-- **The omlx keg version drifts on `brew upgrade omlx`.** `bin/mlx-quantize` and the `modelman provider isolate` lifecycle backends (`src/modelman/providers/lifecycle/binaries.py`) resolve `mlx_lm.*` by globbing the keg and taking the newest match — never hardcode a version path.
+- **The omlx keg version drifts on `brew upgrade omlx`.** `bin/mlx-quantize` and the `llmbench provider isolate` lifecycle backends (`src/llmbench/providers/lifecycle/binaries.py`) resolve `mlx_lm.*` by globbing the keg and taking the newest match — never hardcode a version path.
 
 ## Going deeper
 
 - Provider/isolation artifact reference: [provider-artifacts.md](../reference/provider-artifacts.md)
 - Benchmark isolation mechanics: [05-benchmarks](05-benchmarks.md)
-- Module map: `modelman/CLAUDE.md` (Provider plugin system, Benchmark subsystem)
+- Module map: `modelman/CLAUDE.md` (Provider plugin system), `llmbench/CLAUDE.md` (Provider lifecycle, Benchmark subsystem)
