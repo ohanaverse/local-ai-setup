@@ -136,6 +136,50 @@ Example output (captured 2026-08-29 — your models, rows, and numbers will diff
 
   Expected: a single integer — the number of logged proxy requests. It grows with every LiteLLM-routed request; `0` (or a `relation does not exist` error) means spend logging isn't wired up. Stack setup: [01-initial-setup](01-initial-setup.md), [04-litellm-config](04-litellm-config.md).
 
+## The same numbers from wt: `wt stats`
+
+`wt stats` prints launches and LiteLLM spend per model without modelman: one
+table, below its survey table, for one window (`--window 1d|7d|30d`, default
+`30d`).
+
+```bash
+wt stats --window 7d
+```
+
+Example usage table (illustrative values — your models and numbers will
+differ; the survey table above it is left out here):
+
+```
+MODEL                        LAUNCHES  REQUESTS     PROMPT  COMPLETION    SPEND
+ollama/gemma4:9b                    2     1,204  1,234,567         630  $0.0000
+openrouter/qwen/qwen3.8-27b         0         5        517       3,135  $0.0085
+```
+
+What differs from `modelman usage report`:
+
+| `modelman usage report` | `wt stats` |
+|---|---|
+| `--days N`, default 7 | `--window 1d\|7d\|30d`, default `30d`; no other lengths |
+| Three launch buckets (1d/7d/30d) beside a spend window of `--days` | One launch count and one spend total, both for `--window` |
+| `## Reconciliation` lists | Read them off the table: launches with `0` requests bypassed the proxy; requests with `0` launches did not come from wt |
+| `## Last wt launch` | Not shown (`cat ~/.config/agent-wt/rotation.state`) |
+| Markdown on stdout | A plain table |
+| Fails without `config.yaml` or a database | Prints the launch counts, `-` in the spend cells, one note on stderr, exit 0 |
+| Exits 1 when `registry.toml` is missing or unreadable | Prints the report; a model's family is then its id's provider prefix |
+| Requests with no model are dropped silently | Counted in a note on stderr |
+| `--model`, `--family` | Same flags; `--agent` also narrows the launch counts (and leaves spend out) |
+| Needs the connection string as a literal in `config.yaml`, or exported | Also resolves an `os.environ/NAME` value, and `DATABASE_URL`, from the proxy's LaunchAgent plist |
+
+It needs `psql` on `PATH` and finds the database with nothing exported:
+`WT_LITELLM_DATABASE_URL`, then `MODELMAN_LITELLM_DATABASE_URL`, then
+`general_settings.database_url` in LiteLLM's `config.yaml`, then
+`DATABASE_URL` — the last two looked up in your shell and then in the
+proxy's LaunchAgent plist, as the proxy itself sees them. If the database
+cannot be reached, the note names the host and port wt tried. Totals can
+differ from `modelman usage report` at the edges of the window: `wt stats`
+compares the proxy's timestamps as UTC. Full reference:
+[wt/docs/wt-stats.md](../../wt/docs/wt-stats.md).
+
 ## Verification
 
 - Exit code 0 and Markdown on stdout:
