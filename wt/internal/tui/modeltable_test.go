@@ -253,7 +253,9 @@ func TestRenderTableStartRowNotStartableWhenRouteUnresolvable(t *testing.T) {
 // omlx is still loading used to render as "run" and launch on Enter, handing
 // the agent a model that could not answer. Its RUNNING cell now reads "load"
 // and Enter starts it, which joins the load and waits. "load" fits the
-// column's fixed width, so the header and the other rows do not move.
+// column's fixed width, so the header and the other rows do not move, and
+// the loading row's own later columns stay under their headers: its line is
+// the running row's with the one cell changed.
 func TestRenderTableShowsALoadingModelAsLoad(t *testing.T) {
 	rows := tableTestRows()
 	// omlx/Qwen3.8-27B-4bit: Running and Loading. The shared rows leave its
@@ -268,7 +270,18 @@ func TestRenderTableShowsALoadingModelAsLoad(t *testing.T) {
 	if !it.start || it.blocked != "" {
 		t.Errorf("loading row: start = %v blocked = %q, want a start row", it.start, it.blocked)
 	}
-	if plain := renderTable(tableTestRows(), nil, "", nil, ""); plain.header != tbl.header || len(plain.items[0].line) != len(tbl.items[0].line) {
-		t.Errorf("a loading row changed the layout:\n%q\n%q", plain.header, tbl.header)
+	plain := renderTable(tableTestRows(), nil, "", nil, "")
+	if plain.header != tbl.header {
+		t.Errorf("a loading row changed the header:\n%q\n%q", plain.header, tbl.header)
+	}
+	for i := range plain.items {
+		want := plain.items[i].line
+		if i == 1 {
+			// Same width, so every column after RUNNING keeps its place.
+			want = strings.Replace(want, " run ", " load", 1)
+		}
+		if tbl.items[i].line != want {
+			t.Errorf("row %d moved or changed beside a loading row:\n got %q\nwant %q", i, tbl.items[i].line, want)
+		}
 	}
 }

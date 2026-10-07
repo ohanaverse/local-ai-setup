@@ -98,7 +98,7 @@ func TestALoadingModelIsNotLaunchableButAPinStartsIt(t *testing.T) {
 	cfg.Agents = []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}}
 	// A base url, so the pin's route guard resolves a launch route; without
 	// one the row is refused before the start (pickerBlockedReason).
-	cfg.Providers[1].Auth.BaseURL = "http://localhost:8000"
+	cfg.ProviderByID("omlx").Auth.BaseURL = "http://localhost:8000"
 	req := stubStartDriver(t, nil)
 
 	_, launchable, _ := resolveModel("pi", cfg, "", "", "")
