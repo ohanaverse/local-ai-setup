@@ -9,6 +9,7 @@ that the command exits 0.
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import llmbench.benchmark.agent.cli as cli_module
@@ -311,3 +312,78 @@ route = "litellm"
     assert result.exit_code == 0
     assert "a-eval.toml: error:" in result.output
     assert "b-agent.toml  (agent suite, 1 rows)" in result.output
+
+
+def _results_dir_with_a_summary_at(tmp_path, run_id):
+    """A results dir nested deep enough that `run_id` resolves inside tmp_path,
+    with a summary.md planted where the unchecked join would land."""
+    results_dir = tmp_path / "a" / "b" / "results"
+    results_dir.mkdir(parents=True)
+    outside = results_dir / run_id
+    outside.mkdir(parents=True, exist_ok=True)
+    (outside / "summary.md").write_text("OUTSIDE-THE-RESULTS-DIR", encoding="utf-8")
+    return results_dir
+
+
+@pytest.mark.parametrize("run_id", ["..", "../../x"])
+def test_show_refuses_a_run_id_outside_the_results_dir(tmp_path, run_id):
+    """#277: agent show joined --run-id onto --results-dir unchecked. Same
+    usage error as `eval show`, and nothing is read."""
+    results_dir = _results_dir_with_a_summary_at(tmp_path, run_id)
+
+    result = runner.invoke(
+        agent_app, ["show", "--run-id", run_id, "--results-dir", str(results_dir)]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert f"error: invalid --run-id {run_id!r}" in result.output
+    assert "OUTSIDE-THE-RESULTS-DIR" not in result.output
+
+
+def test_show_prints_the_summary_for_a_valid_run_id(tmp_path):
+    run_dir = tmp_path / "20260905-143200"
+    run_dir.mkdir()
+    (run_dir / "summary.md").write_text("# agent summary", encoding="utf-8")
+
+    result = runner.invoke(
+        agent_app, ["show", "--run-id", "20260905-143200", "--results-dir", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "# agent summary" in result.output
+
+
+@pytest.mark.parametrize("run_id", ["..", "../../x"])
+def test_judge_refuses_a_run_id_outside_the_results_dir(tmp_path, monkeypatch, run_id):
+    """#277: agent judge is the one that WRITES — rejudge_run rewrites every
+    row's judge.json under the directory it is handed — so a bad id must be
+    refused before rejudge_run is called at all."""
+    results_dir = _results_dir_with_a_summary_at(tmp_path, run_id)
+    calls = []
+    monkeypatch.setattr(cli_module, "rejudge_run", lambda *a, **k: calls.append((a, k)) or [])
+
+    result = runner.invoke(
+        agent_app, ["judge", "--run-id", run_id, "--results-dir", str(results_dir)]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert f"error: invalid --run-id {run_id!r}" in result.output
+    assert calls == []
+
+
+def test_judge_hands_rejudge_run_the_directory_of_a_valid_run_id(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_rejudge_run(target_dir, **kwargs):
+        calls.append(target_dir)
+        return [{"label": "row-a", "rubric_total": 7, "composite": 0.7, "verdict": "pass"}]
+
+    monkeypatch.setattr(cli_module, "rejudge_run", fake_rejudge_run)
+
+    result = runner.invoke(
+        agent_app, ["judge", "--run-id", "20260905-143200", "--results-dir", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [tmp_path / "20260905-143200"]
+    assert "row-a: rubric=7 composite=0.7 verdict=pass" in result.output

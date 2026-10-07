@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import typer
@@ -17,6 +16,7 @@ from llmbench.benchmark.eval.runner import (
     select_rows,
 )
 from llmbench.benchmark.eval.suite import load_suite
+from llmbench.benchmark.results import run_dir as resolve_run_dir
 from llmbench.registry import load_registry
 from llmbench.state import load_state, save_state
 
@@ -36,15 +36,6 @@ def _repo_relative(default: str) -> Path:
 
 DEFAULT_CATEGORIES_ROOT = _repo_relative("benchmarks/tasks/eval")
 DEFAULT_SUITES_DIR = _repo_relative("benchmarks/suites")
-_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
-
-
-def _run_dir_for(results_dir: Path, run_id: str) -> Path:
-    """results_dir/run_id, refusing ids that could escape results_dir."""
-    if not _RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
-        typer.echo(f"error: invalid --run-id {run_id!r}", err=True)
-        raise typer.Exit(1)
-    return results_dir / run_id
 
 
 def _load_all_categories(root: Path) -> list:
@@ -224,7 +215,7 @@ def show_cmd(
             raise typer.Exit(1)
         md_path = Path(run_dir_str) / "summary.md"
     else:
-        md_path = _run_dir_for(results_dir, str(run_id)) / "summary.md"
+        md_path = resolve_run_dir(results_dir, str(run_id)) / "summary.md"
     if not md_path.exists():
         typer.echo(f"error: results not found: {md_path}", err=True)
         raise typer.Exit(1)
@@ -251,7 +242,7 @@ def judge_cmd(
             raise typer.Exit(1)
         target_dir = Path(run_dir_str)
     else:
-        target_dir = _run_dir_for(results_dir, str(run_id))
+        target_dir = resolve_run_dir(results_dir, str(run_id))
 
     categories = _load_all_categories(root)
     if not categories:

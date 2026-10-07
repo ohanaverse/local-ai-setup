@@ -430,11 +430,12 @@ def test_show_and_judge_reject_path_traversal_run_ids(tmp_path):
     # re-judge (judge) a directory outside the results tree; it must be
     # refused before any path is touched.
     for command in ("show", "judge"):
-        result = runner.invoke(
-            eval_app, [command, "--run-id", "../x", "--results-dir", str(tmp_path)]
-        )
-        assert result.exit_code == 1
-        assert "invalid --run-id" in result.output
+        for run_id in ("../x", "..", "."):
+            result = runner.invoke(
+                eval_app, [command, "--run-id", run_id, "--results-dir", str(tmp_path)]
+            )
+            assert result.exit_code == 1
+            assert f"error: invalid --run-id {run_id!r}" in result.output
 
 
 def test_judge_cmd_rejects_empty_category_root(tmp_path):

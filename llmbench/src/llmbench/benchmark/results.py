@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from statistics import median
 from typing import Any
+
+import typer
 
 from llmbench.benchmark.workloads.base import BenchmarkMetrics
 
@@ -121,10 +124,30 @@ def _render_markdown(run: BenchmarkRun) -> str:
     return "\n".join(lines)
 
 
+# One plain directory name. Every id a runner generates fits: the throughput
+# and agent runners use `%Y%m%d-%H%M%S`, the eval runner `eval-<that>` with a
+# `-<n>` suffix when two runs start in the same second.
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def run_dir(results_dir: Path, run_id: str) -> Path:
+    """`results_dir/run_id` for a `--run-id` the user typed, refusing an id
+    that could name anything but a child of `results_dir`.
+
+    The one place the rule lives: show-results, agent show, agent judge, eval
+    show and eval judge all resolve through it, so `--run-id ..` is the same
+    usage error everywhere and never a read (or, for the judge commands, a
+    rewrite) of a directory outside the results tree."""
+    if not _RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+        typer.echo(f"error: invalid --run-id {run_id!r}", err=True)
+        raise typer.Exit(1)
+    return results_dir / run_id
+
+
 def write_results(run: BenchmarkRun, base_dir: Path) -> Path:
     """Write JSON, Markdown, and payload artifacts for a run."""
-    run_dir = base_dir / run.run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = base_dir / run.run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "run_id": run.run_id,
@@ -132,7 +155,7 @@ def write_results(run: BenchmarkRun, base_dir: Path) -> Path:
         "started_at": run.started_at.isoformat(),
         "metadata": run.metadata,
     }
-    (run_dir / "payload.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (out_dir / "payload.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     results = {
         "run_id": run.run_id,
@@ -142,8 +165,8 @@ def write_results(run: BenchmarkRun, base_dir: Path) -> Path:
         "summary": _aggregate(run.results),
         "metadata": run.metadata,
     }
-    (run_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    (out_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
 
-    (run_dir / "summary.md").write_text(_render_markdown(run), encoding="utf-8")
+    (out_dir / "summary.md").write_text(_render_markdown(run), encoding="utf-8")
 
-    return run_dir
+    return out_dir

@@ -11,6 +11,7 @@ from llmbench.benchmark.agent.cli import agent_app
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.benchmark.eval.cli import eval_app
 from llmbench.benchmark.results import BenchmarkRun
+from llmbench.benchmark.results import run_dir as resolve_run_dir
 from llmbench.benchmark.runner import (
     DEFAULT_RESULTS_DIR,
     NoTargetSelection,
@@ -131,7 +132,7 @@ def show_results_cmd(
         md_path = Path(run_dir) / "summary.md"
     else:
         assert run_id is not None
-        md_path = DEFAULT_RESULTS_DIR / run_id / "summary.md"
+        md_path = resolve_run_dir(DEFAULT_RESULTS_DIR, run_id) / "summary.md"
 
     if not md_path.exists():
         typer.echo(f"error: results not found: {md_path}", err=True)
