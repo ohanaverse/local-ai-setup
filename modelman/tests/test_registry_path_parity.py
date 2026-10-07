@@ -7,6 +7,7 @@ serves a model from another. Deleted with modelman.
 """
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -62,9 +63,9 @@ def test_both_read_the_default_registry_without_xdg(home):
 def test_both_report_no_registry_at_the_xdg_path(home, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     wanted = tmp_path / "xdg" / "local-ai" / "registry.toml"
-    with pytest.raises(modelman_registry.RegistryNotFoundError, match=str(wanted)):
+    with pytest.raises(modelman_registry.RegistryNotFoundError, match=re.escape(str(wanted))):
         modelman_registry._registry_read_path()
-    with pytest.raises(bench_registry.RegistryError, match=str(wanted)):
+    with pytest.raises(bench_registry.RegistryError, match=re.escape(str(wanted))):
         bench_registry.registry_read_path()
 
 
@@ -81,6 +82,20 @@ def test_both_refuse_a_dangling_symlink(home, monkeypatch, tmp_path):
     _write(home / ".config" / "local-ai" / "registry.toml")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     link = tmp_path / "xdg" / "local-ai" / "registry.toml"
+    link.parent.mkdir(parents=True)
+    os.symlink(tmp_path / "gone.toml", link)
+    with pytest.raises(modelman_registry.RegistryPathError):
+        modelman_registry._registry_read_path()
+    with pytest.raises(bench_registry.RegistryError, match="is a symlink to"):
+        bench_registry.registry_read_path()
+
+
+def test_both_refuse_a_dangling_legacy_symlink(home, monkeypatch, tmp_path):
+    """The same refusal for the file being fallen back to: XDG_CONFIG_HOME
+    holds no registry and the pre-XDG path is a link to nothing. If only one
+    reader named the link, the other would report the XDG path as missing."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    link = home / ".config" / "local-ai" / "registry.toml"
     link.parent.mkdir(parents=True)
     os.symlink(tmp_path / "gone.toml", link)
     with pytest.raises(modelman_registry.RegistryPathError):

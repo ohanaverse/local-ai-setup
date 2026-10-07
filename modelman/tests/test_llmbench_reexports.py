@@ -41,13 +41,24 @@ def test_modelmans_own_bridge_errors_stay_in_the_one_hierarchy():
     assert issubclass(wt_bridge.WtRegistryRedirectedError, llmbench.wt_bridge.WtBridgeError)
 
 
-def test_duplicated_constants_agree():
+@pytest.mark.parametrize(
+    ("name", "llmbench_module", "modelman_module"),
+    [
+        ("DEFAULT_PROVIDER_IDS", llmbench.registry, mm_registry),
+        ("ENV_VAR_BY_PROVIDER", llmbench.local_process, local_process),
+        ("MTPLX_PORT", llmbench.providers.mtplx, mm_mtplx),
+        ("_ALIASES", llmbench.providers.registry, mm_providers),
+        ("WARM_TIMEOUT", llmbench.wt_bridge, wt_bridge),
+    ],
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_duplicated_constants_agree(name, llmbench_module, modelman_module):
     """These are copies, not re-exports (modelman is frozen). `modelman sync`
     and the TUI seed provider rows from modelman's DEFAULT_PROVIDER_IDS while
     `llmbench run` filters on llmbench's: a backend added to one and not the
     other is silently skipped by one tool."""
-    assert llmbench.registry.DEFAULT_PROVIDER_IDS == mm_registry.DEFAULT_PROVIDER_IDS
-    assert llmbench.local_process.ENV_VAR_BY_PROVIDER == local_process.ENV_VAR_BY_PROVIDER
-    assert llmbench.providers.mtplx.MTPLX_PORT == mm_mtplx.MTPLX_PORT
-    assert llmbench.providers.registry._ALIASES == mm_providers._ALIASES
-    assert llmbench.wt_bridge.WARM_TIMEOUT == wt_bridge.WARM_TIMEOUT
+    theirs, ours = getattr(llmbench_module, name), getattr(modelman_module, name)
+    assert theirs == ours, (
+        f"{name} differs: {llmbench_module.__name__} has {theirs!r}, "
+        f"{modelman_module.__name__} has {ours!r}; change both copies"
+    )

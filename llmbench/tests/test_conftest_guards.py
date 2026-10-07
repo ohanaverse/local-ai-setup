@@ -13,6 +13,7 @@ from __future__ import annotations
 import inspect
 import os
 import pwd
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -54,13 +55,20 @@ BOUND_DEFAULTS = {
     "agent.suite.preflight": (agent_suite.preflight, "plist_path"),
     "agent.pidriver.resolve_pi_target": (pidriver.resolve_pi_target, "live_models_path"),
     "agent.runner.run_suite": (agent_runner.run_suite, "live_models_path"),
+    "agent.runner._build_judge_transport": (agent_runner._build_judge_transport, "plist_path"),
     "eval.suite.resolve_row_endpoint": (eval_suite.resolve_row_endpoint, "live_models_path"),
+    "eval.suite.resolve_row_endpoint[plist]": (eval_suite.resolve_row_endpoint, "plist_path"),
 }
 
 
 def test_home_is_a_scratch_directory():
+    """The directory conftest.py made, not the account's home. Named by its
+    mkdtemp prefix and not by "outside the real home": TMPDIR may sit inside
+    the home directory (`~/tmp`, some sandboxed runners), and a scratch
+    directory there is still a scratch directory."""
     assert Path.home() != REAL_HOME
-    assert not Path.home().is_relative_to(REAL_HOME)
+    assert Path.home().name.startswith("llmbench-test-home-")
+    assert Path.home().parent == Path(tempfile.gettempdir())
     assert "XDG_CONFIG_HOME" not in os.environ
 
 
