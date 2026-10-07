@@ -133,6 +133,9 @@ func updateRegistryOnce(path string, apply func(*RegistryDoc) error) (changed, r
 	if err := apply(doc); err != nil {
 		return false, false, err
 	}
+	if err := doc.validateTouched(); err != nil {
+		return false, false, err
+	}
 	after, err := tomlw.Encode(root)
 	if err != nil {
 		return false, false, fmt.Errorf("encode %s: %w", path, err)
