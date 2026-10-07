@@ -163,10 +163,35 @@ The query waits at most 3 seconds for a connection and 10 seconds in all,
 and never prompts for a password. The window is `--window` ending at the
 report's instant (the one the launch counts are measured from), in UTC. wt only reads; it writes nothing to the database.
 
-The connection string is passed to `psql` as an argument, so for the second
-or so the query runs it is visible to other users of the machine in `ps`.
-Keep the password out of it (a `~/.pgpass` entry or `PGPASSWORD` works with
-`psql` as usual) on a shared machine.
+The connection string is never on `psql`'s command line, where `ps` would
+show it to every user of the machine. wt reads the string and gives `psql`
+each part in libpq's environment variable for it (`PGHOST`, `PGPORT`,
+`PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE`, …), and passes no `-d`.
+While the query runs, the password is therefore readable in `psql`'s
+environment by processes of your own user and by root (`ps -E` on macOS,
+`/proc/<pid>/environ` on Linux), and by no other user.
+
+Two things follow from that:
+
+- **Only the connection string describes the connection.** `psql` gets none
+  of the `PG*` variables set in your shell — a stray `PGHOST`, `PGSERVICE`
+  or `PGSSLMODE` cannot redirect or weaken the query, and a `PGPASSWORD` or
+  `PGPASSFILE` there is not used either. Put the password in the string, in
+  the string's `passfile`, or in `~/.pgpass`.
+- **A string wt cannot hand over exactly is refused**, and `psql` is not
+  run: see `the LiteLLM database connection string cannot be handed to
+  psql` under "When spend is missing".
+
+Both forms work, a URI (`postgresql://user:password@host:port/dbname?sslmode=require`,
+several hosts included) and a keyword string (`host=… port=… dbname=…`,
+with libpq's quoting). The options passed on are `host`, `hostaddr`,
+`port`, `dbname`, `user`, `password`, `passfile`, `connect_timeout`,
+`client_encoding`, `options`, `application_name`, `channel_binding`,
+`sslmode`, `sslcompression`, `sslcert`, `sslkey`, `sslrootcert`, `sslcrl`,
+`sslcrldir`, `sslsni`, `ssl_min_protocol_version`,
+`ssl_max_protocol_version`, `requirepeer`, `gssencmode`, `krbsrvname`,
+`gsslib` and `target_session_attrs`, plus the URI's `ssl=true`. A
+`connect_timeout` in the string replaces the 3 seconds above.
 
 When the database cannot be reached, the note names the host and port wt
 tried — `cannot reach the LiteLLM database at 127.0.0.1:5432: Connection
@@ -195,6 +220,7 @@ wt: spend unavailable: psql not found on PATH
 |---|---|
 | `spend unavailable: psql not found on PATH` | Install a Postgres client that puts `psql` on `PATH` |
 | `spend unavailable: cannot reach the LiteLLM database at <host>:<port>: …` | `psql` could not connect to that address (`at socket <path>` for a socket), or got no answer in 10 seconds (no address is shown for that). The reason follows: `Connection refused`, `password authentication failed for user "..."` (names are blanked), `the database host name did not resolve`. A reason wt does not recognise — a server that answers in another language, a connection pooler's own wording — is replaced by `the reason psql gave is not shown because it can quote the connection string`, with the address kept. When `psql` tried several addresses for one host, the last attempt is the one reported. If the address is not the one you expect, "Where spend comes from" lists where it can come from. When `psql`'s message could quote the connection string — it does for one it cannot parse — wt says so instead of printing it, and shows no address; run `psql` yourself to see it |
+| `spend unavailable: the LiteLLM database connection string cannot be handed to psql: …` | wt gives `psql` the connection in environment variables, and this string cannot be given that way without changing what it means. `psql` was not run, and nothing from the string is quoted. `it sets an option wt cannot pass in psql's environment`: the string has an option outside the list in "Where spend comes from" — one with no environment variable (`keepalives`, `sslpassword`), `service`, one only recent libpq releases know (`require_auth`), or one that is not libpq's at all (Prisma's `schema`, which `psql` refuses too). `it is not written in a form wt can read the way psql would`: a URI with a space, a control character or a bad percent-escape (write a space as `%20`), or a keyword string with an unclosed quote, a value cut by a space, or, in a value that is not in single quotes, one of the letters outside ASCII that `psql` can take for a space (`à` is one; write `password='…'`) |
 | `spend unavailable: no LiteLLM database configured: …` | Nothing names a database; the rest says where wt looked — `config.yaml`, the variable it names, wt's environment and the proxy's plist — and which variable to set. It never quotes a value |
 | `spend unavailable: the spend query failed: …` | Connected, but the query failed. The server's `ERROR:` line follows (for example the table does not exist: spend logging is not set up), or `psql`'s exit status |
 | `spend unavailable: LiteLLM config is invalid: …` | `config.yaml` exists and cannot be parsed |

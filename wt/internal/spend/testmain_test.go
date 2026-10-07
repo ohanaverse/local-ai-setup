@@ -11,7 +11,7 @@ import (
 // or run the real psql — and so none can reach a real database, whatever
 // connection string the developer's shell or config.yaml holds. A test that
 // exercises Query sets the seams itself (stubPsql, or fakePsqlBinary for the
-// three tests that run a real process: a shell script, never psql).
+// tests that run a real process: a shell script, never psql).
 func TestMain(m *testing.M) {
 	lookPath = func(string) (string, error) {
 		return "", errors.New("lookPath not stubbed in this test")

@@ -35,6 +35,19 @@ func stubPsql(t *testing.T, stdout, stderr string, exit int) *psqlCall {
 	return call
 }
 
+// libpqVars are the PG* entries of a child environment, sorted: everything
+// libpq reads from it.
+func libpqVars(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PG") {
+			out = append(out, kv)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // fakePsqlBinary writes an executable shell script and points lookPath at
 // it, with the real process runner restored. The script stands in for
 // psql: no test runs the real one.
@@ -108,27 +121,29 @@ func TestQueryEmptyWindow(t *testing.T) {
 	}
 }
 
-// TestQueryInvocation pins how psql is run, which is the spec's wording:
-// `psql -X -w -q -At -v ON_ERROR_STOP=1`, the connection string after -d
-// (libpq does not expand a URI given in PGDATABASE), the statement after
-// -c, and PGCONNECT_TIMEOUT=3 in the environment. -X keeps a ~/.psqlrc
-// from changing the output format; -w keeps psql from ever stopping at a
-// password prompt inside `wt stats`. LC_MESSAGES=C asks libpq for the
-// English connect-failure line the error mapping reads, so a translated
-// locale does not cost the note its address and reason.
+// TestQueryInvocation pins how psql is run: `psql -X -w -q -At -v
+// ON_ERROR_STOP=1`, the statement after -c, and no -d — the connection is
+// in the environment (PGHOST, PGDATABASE, …), with PGCONNECT_TIMEOUT=3.
+// -X keeps a ~/.psqlrc from changing the output format; -w keeps psql from
+// ever stopping at a password prompt inside `wt stats`. LC_MESSAGES=C asks
+// libpq for the English connect-failure line the error mapping reads, so a
+// translated locale does not cost the note its address and reason. A -d
+// here would put the database password back where `ps` shows it to every
+// user of the machine (#282).
 func TestQueryInvocation(t *testing.T) {
 	call := stubPsql(t, "[]", "", 0)
 	if _, err := Query(context.Background(), "postgresql://h/db", winStart, winEnd); err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", "postgresql://h/db", "-c", querySQL(winStart, winEnd)}
+	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-c", querySQL(winStart, winEnd)}
 	if call.bin != "/fake/psql" || !slices.Equal(call.args, want) {
 		t.Errorf("ran %s %q\nwant /fake/psql %q", call.bin, call.args, want)
 	}
-	for _, kv := range []string{"PGCONNECT_TIMEOUT=3", "PGTZ=UTC", "LC_MESSAGES=C"} {
-		if !slices.Contains(call.env, kv) {
-			t.Errorf("env lacks %s", kv)
-		}
+	if got, want := libpqVars(call.env), []string{"PGCONNECT_TIMEOUT=3", "PGDATABASE=db", "PGHOST=h", "PGTZ=UTC"}; !slices.Equal(got, want) {
+		t.Errorf("libpq variables = %q\nwant %q", got, want)
+	}
+	if !slices.Contains(call.env, "LC_MESSAGES=C") {
+		t.Error("env lacks LC_MESSAGES=C")
 	}
 	if call.n != 1 {
 		t.Errorf("psql ran %d times, want 1 (one aggregated query)", call.n)
@@ -363,6 +378,11 @@ func TestQueryKeepsARunThatAnswersAtTheDeadline(t *testing.T) {
 // line per address for a string with several. A reason is shown only when
 // it is one the package lists; the address still is, since it is checked
 // separately.
+//
+// Two of the mis-split strings are ones libpq cannot read at all (a bad
+// percent escape, a keyword value cut by a space). wt refuses those before
+// psql is run, with a fixed message. In every case psql's arguments are
+// checked too: no piece of the string is among them.
 // `wt stats` prints the error on the terminal, which ends up in scrollback,
 // history files and bug reports.
 func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
@@ -371,6 +391,8 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 	const failedAtDB = "psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: "
 	const reasonWithheld = "cannot reach the LiteLLM database at db.example:5432: the reason psql gave is not shown because it can quote the connection string"
 	const goodURI = "postgresql://FAKEuser:FAKEpw@db.example:5432/FAKEdb"
+	// A string libpq itself cannot read never reaches psql.
+	const refused = "the LiteLLM database connection string cannot be handed to psql: it is not written in a form wt can read the way psql would"
 	cases := []struct {
 		name, dsn, stderr string
 		exit              int
@@ -402,7 +424,7 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 			"psql: error: connection to server at \"FAKEuser\" (10.0.0.7), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a bad percent escape in the password", "postgresql://FAKEuser:FAKEpa%zzword@db.example:5432/FAKEdb",
-			"psql: error: invalid percent-encoded token: \"FAKEpa%zzword\"\n", 2, withheld},
+			"psql: error: invalid percent-encoded token: \"FAKEpa%zzword\"\n", 2, refused},
 		{"an @ in the password, read as the host", "postgresql://FAKEuser:FAKEp@ss@db.example:5432/FAKEdb",
 			"psql: error: could not translate host name \"ss@db.example\" to address: nodename nor servname provided, or not known\n", 2,
 			"cannot reach the LiteLLM database: the database host name did not resolve"},
@@ -416,14 +438,14 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 			"psql: error: connection to server at \"ss.example\" (10.0.0.7), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a keyword string with a space in the password", "host=db.example port=5432 user=FAKEuser password=FAKEabc FAKEdef",
-			"psql: error: missing \"=\" after \"FAKEdef\" in connection info string\n", 2, withheld},
+			"psql: error: missing \"=\" after \"FAKEdef\" in connection info string\n", 2, refused},
 		{"a keyword string with a quoted password", "host=db.example port=5432 user=FAKEuser password='FAKE a'",
 			refusedAtDB, 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a keyword string whose password has a space before port=", "host=db.example user=FAKEuser password=FAKEab port=54321",
 			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
-		{"a keyword string whose sslpassword has a space before port=", "host=db.example sslpassword=FAKEab port=54321",
+		{"a keyword string whose passfile has a space before port=", "host=db.example passfile=FAKEab port=54321",
 			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a keyword string that names the host after the database", "dbname=FAKEdb host=ss.example port=54321",
@@ -453,13 +475,19 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			stubPsql(t, "", c.stderr, c.exit)
+			call := stubPsql(t, "", c.stderr, c.exit)
 			_, err := Query(context.Background(), c.dsn, winStart, winEnd)
 			if err == nil {
 				t.Fatal("err = nil, want an error")
 			}
 			if err.Error() != c.want {
 				t.Errorf("err = %q\nwant  %q", err, c.want)
+			}
+			if (call.n == 0) != errors.Is(err, ErrConnectionString) {
+				t.Errorf("psql ran %d times for a string whose error is %q", call.n, err)
+			}
+			if joined := strings.Join(call.args, "\n"); strings.Contains(joined, "FAKE") || strings.Contains(joined, "db.example") {
+				t.Errorf("psql's arguments hold part of the connection string: %q", call.args)
 			}
 			for _, piece := range []string{"FAKE", "zzword", "ss@", "ss:", "at ss", "ss.example", "54321", "10.0.0", "%", "postgresql://", "»", "'"} {
 				if strings.Contains(err.Error(), piece) {
@@ -471,14 +499,14 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 }
 
 // TestQueryRunsARealProcess runs Query end to end against a shell script
-// standing in for psql: the arguments and the two environment variables
-// reach a real child process, and its stdout comes back parsed. The stubbed
+// standing in for psql: the arguments and the environment variables reach
+// a real child process, and its stdout comes back parsed. The stubbed
 // tests cannot catch a mistake in the exec plumbing itself (a dropped
 // environment, stdout and stderr swapped).
 func TestQueryRunsARealProcess(t *testing.T) {
 	rec := filepath.Join(t.TempDir(), "argv")
 	fakePsqlBinary(t, `printf '%s\n' "$@" > "`+rec+`"
-printf 'timeout=%s tz=%s\n' "$PGCONNECT_TIMEOUT" "$PGTZ" >> "`+rec+`"
+printf 'timeout=%s tz=%s host=%s db=%s\n' "$PGCONNECT_TIMEOUT" "$PGTZ" "$PGHOST" "$PGDATABASE" >> "`+rec+`"
 echo 'noise on stderr' >&2
 echo '[{"model":"m","requests":2,"prompt_tokens":10,"completion_tokens":20,"spend":0.5}]'
 `)
@@ -494,7 +522,7 @@ echo '[{"model":"m","requests":2,"prompt_tokens":10,"completion_tokens":20,"spen
 		t.Fatalf("the script did not record its arguments: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", "postgresql://h/db", "-c", querySQL(winStart, winEnd), "timeout=3 tz=UTC"}
+	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-c", querySQL(winStart, winEnd), "timeout=3 tz=UTC host=h db=db"}
 	if !slices.Equal(lines, want) {
 		t.Errorf("the child saw\n%q\nwant\n%q", lines, want)
 	}

@@ -30,7 +30,9 @@
   configured URL, the launch counts still print, the spend cells show `-`,
   one note on stderr says why (an unreachable database is named by host and
   port, and by nothing else from the connection string), and the exit code
-  stays 0. Requests the proxy logged under the other spelling of a wt id —
+  stays 0. The connection string reaches `psql` in its environment, never
+  on its command line where `ps` would show the password to other users
+  (#282). Requests the proxy logged under the other spelling of a wt id —
   `mtplx/Org/Name` for `mtplx/Org--Name` — are added to that id's row, when
   the logged id is not itself a registry or launched id. `--family` narrows
   the new table; `--agent` narrows its launch counts and leaves spend out;

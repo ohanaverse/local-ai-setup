@@ -3,6 +3,10 @@
 // aggregated query through psql. wt links no Postgres driver: psql is on
 // every machine that runs the proxy's database, and its absence is one of
 // the cases Query reports rather than a build dependency.
+//
+// The connection string never reaches psql's command line, where `ps`
+// would show the database password to every user of the machine: conn.go
+// turns it into libpq's environment variables, and says why that way.
 package spend
 
 import (
@@ -56,6 +60,7 @@ type Result struct {
 
 // connectTimeout is PGCONNECT_TIMEOUT, in seconds: how long psql waits for
 // a host that does not answer at all. A refused connection fails at once.
+// A connect_timeout in the connection string takes its place.
 const connectTimeout = "3"
 
 // deadline bounds the whole psql run. A var so a test can shorten it.
@@ -67,8 +72,10 @@ var lookPath = realLookPath
 // realLookPath is the production lookPath.
 func realLookPath(name string) (string, error) { return exec.LookPath(name) }
 
-// runPsql runs the psql binary and returns what it printed and its exit
-// status. A seam: no test may run the real psql against a real database.
+// runPsql runs the psql binary with the given arguments and environment and
+// returns what it printed and its exit status. A seam: no test may run the
+// real psql against a real database, and a test sees through it exactly
+// what psql would be given — its arguments and its whole environment.
 var runPsql = realRunPsql
 
 // timestampLayout is a Postgres timestamp literal with no zone.
@@ -98,9 +105,13 @@ func querySQL(start, end time.Time) string {
 
 // Query returns per-model totals for requests the proxy logged between
 // start and end, both inclusive. dsn is a libpq connection string or URI.
+// psql receives it as environment variables and never as an argument, and
+// inherits no PG* variable from wt's own environment (see conn.go).
 //
 // A blank dsn is refused with ErrNoConnectionString before anything else is
 // looked at, so no caller can have psql connect to libpq's default server.
+// A dsn that cannot be carried over to the environment faithfully is
+// refused with ErrConnectionString, also before psql is looked for.
 // Every other failure is one of ErrNoPsql, ErrUnreachable or ErrQuery,
 // wrapped with a one-line reason. An ErrUnreachable names the host and port
 // psql tried (or the socket), so a wrong address can be seen; no other part
@@ -111,6 +122,10 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	if strings.TrimSpace(dsn) == "" {
 		return Result{}, ErrNoConnectionString
 	}
+	conn, err := connEnv(dsn)
+	if err != nil {
+		return Result{}, err
+	}
 	bin, err := lookPath("psql")
 	if err != nil {
 		return Result{}, ErrNoPsql
@@ -119,13 +134,9 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	ctx, cancel := context.WithTimeout(parent, deadline)
 	defer cancel()
 
-	args := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", dsn, "-c", querySQL(start, end)}
-	// LC_MESSAGES=C: unreachable reads libpq's English connect-failure line,
-	// and under a translated one it can only withhold the address and the
-	// reason. (An LC_ALL in the user's environment still wins; the note is
-	// then the withheld one, never a leak.)
-	env := append(os.Environ(), "PGCONNECT_TIMEOUT="+connectTimeout, "PGTZ=UTC", "LC_MESSAGES=C")
-	stdout, stderr, exit, err := runPsql(ctx, bin, args, env)
+	// No -d: an argument is readable by every user of the machine.
+	args := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-c", querySQL(start, end)}
+	stdout, stderr, exit, err := runPsql(ctx, bin, args, psqlEnv(os.Environ(), conn))
 	switch {
 	case err == nil && exit == 0:
 		// psql answered: its output is parsed below, even when the deadline
