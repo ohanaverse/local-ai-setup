@@ -725,6 +725,7 @@ def test_row_dir_has_no_metrics_log_unless_debug(tmp_path, monkeypatch, litellm_
     monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+    monkeypatch.delenv("LLMBENCH_AGENT_DEBUG", raising=False)
     monkeypatch.delenv("MODELMAN_AGENT_DEBUG", raising=False)
 
     suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
@@ -738,6 +739,30 @@ def test_row_dir_has_no_metrics_log_unless_debug(tmp_path, monkeypatch, litellm_
     assert not (results[0].row_dir / "metrics.log").exists()
     assert (results[0].row_dir / "agent.jsonl.gz").exists()
     assert run_dir.exists()
+
+
+@pytest.mark.parametrize("name", ["LLMBENCH_AGENT_DEBUG", "MODELMAN_AGENT_DEBUG"])
+def test_row_dir_has_a_metrics_log_under_debug(tmp_path, monkeypatch, litellm_models_json, name):
+    """LLMBENCH_AGENT_DEBUG asks for the per-event metrics trace.
+    MODELMAN_AGENT_DEBUG, its name under modelman, keeps working: someone
+    debugging a metric with the old name must not get a run with no trace
+    and have to repeat it."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+    monkeypatch.delenv("LLMBENCH_AGENT_DEBUG", raising=False)
+    monkeypatch.delenv("MODELMAN_AGENT_DEBUG", raising=False)
+    monkeypatch.setenv(name, "1")
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    _, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=litellm_models_json,
+        skip_judge=True,
+    )
+    assert (results[0].row_dir / "metrics.log").exists()
 
 
 def _mlx_lm_registry() -> Registry:

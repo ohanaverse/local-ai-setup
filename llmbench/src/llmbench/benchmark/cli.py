@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import typer
 
+from llmbench._env import env_first
 from llmbench.benchmark.agent.cli import agent_app
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.benchmark.eval.cli import eval_app
@@ -65,7 +65,7 @@ def run_cmd(
     if litellm:
         routes = ["litellm"]
 
-    workload_name = os.environ.get("MODELMAN_BENCHMARK_WORKLOAD", workload)
+    workload_name = env_first("LLMBENCH_WORKLOAD", "MODELMAN_BENCHMARK_WORKLOAD") or workload
     try:
         workload_obj = get_workload(workload_name)
     except BenchmarkError as exc:

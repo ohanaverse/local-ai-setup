@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from llmbench._env import env_first
 from llmbench.benchmark import isolation
 from llmbench.benchmark._routes import litellm_credentials
 from llmbench.benchmark.agent import judge, pidriver, report
@@ -191,7 +192,7 @@ def _run_single_row(
         # it, and the first live run wrote four of them. Opt-in only.
         log_fn = (
             (lambda msg: pidriver._log(msg, row_dir / "metrics.log"))
-            if os.environ.get("MODELMAN_AGENT_DEBUG")
+            if env_first("LLMBENCH_AGENT_DEBUG", "MODELMAN_AGENT_DEBUG")
             else None
         )
         metrics = pidriver.compute_metrics(

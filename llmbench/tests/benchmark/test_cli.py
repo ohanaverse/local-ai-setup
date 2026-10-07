@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
+from llmbench.benchmark.errors import BenchmarkError
 from llmbench.benchmark.results import BenchmarkRun
 from llmbench.benchmark.runner import WorkloadRunSavedButRestoreFailed
 from llmbench.main import app
@@ -71,3 +73,35 @@ def test_run_without_model_or_family_exits_2():
         result = CliRunner().invoke(app, ["run"])
     assert result.exit_code == 2, result.output
     assert "error: name models (--model) or pass --family" in result.output
+
+
+@pytest.mark.parametrize(
+    ("env", "want"),
+    [
+        ({}, "code"),
+        ({"LLMBENCH_WORKLOAD": "long"}, "long"),
+        ({"MODELMAN_BENCHMARK_WORKLOAD": "short"}, "short"),
+        ({"LLMBENCH_WORKLOAD": "long", "MODELMAN_BENCHMARK_WORKLOAD": "short"}, "long"),
+        ({"LLMBENCH_WORKLOAD": "", "MODELMAN_BENCHMARK_WORKLOAD": "short"}, "short"),
+    ],
+    ids=["flag", "llmbench", "modelman-alias", "llmbench-wins", "empty-is-unset"],
+)
+def test_run_takes_the_workload_from_the_environment(monkeypatch, env, want):
+    """LLMBENCH_WORKLOAD overrides --workload. MODELMAN_BENCHMARK_WORKLOAD,
+    the name it had under modelman, keeps working: a wrapper script that
+    exports the old name must not silently fall back to the flag's default
+    and benchmark a different workload."""
+    for name in ("LLMBENCH_WORKLOAD", "MODELMAN_BENCHMARK_WORKLOAD"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    seen = []
+
+    def _get_workload(name):
+        seen.append(name)
+        raise BenchmarkError("stop here")
+
+    with patch("llmbench.benchmark.cli.get_workload", _get_workload):
+        result = CliRunner().invoke(app, ["run", "--workload", "code"])
+    assert result.exit_code == 1
+    assert seen == [want]
