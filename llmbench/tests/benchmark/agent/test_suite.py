@@ -409,3 +409,32 @@ def test_load_suite_rejects_an_unknown_judge_route(tmp_path):
     path.write_text(body, encoding="utf-8")
     with pytest.raises(BenchmarkError, match="judge.*route|route"):
         load_suite(path, _registry())
+
+
+def test_load_suite_rejects_a_non_agent_suite_with_a_clean_error(tmp_path):
+    """`benchmarks/suites/` also holds the eval benchmark's suites, which have no
+    `task` and no `[judge] thinking`. Loading one as an agent suite must raise a
+    BenchmarkError naming every missing key, not a raw KeyError traceback."""
+    body = """
+name = "eval-sweep"
+
+[judge]
+model = "x"
+temperature = 0.0
+route = "openrouter"
+
+[[rows]]
+model = "ollama/a"
+route = "litellm"
+"""
+    with pytest.raises(BenchmarkError, match=r"task, judge\.thinking"):
+        load_suite(_write_suite(tmp_path, body), _registry())
+
+
+def test_load_suite_rejects_a_suite_with_no_judge_table(tmp_path):
+    body = """
+name = "test suite"
+task = "some/task"
+"""
+    with pytest.raises(BenchmarkError, match="judge"):
+        load_suite(_write_suite(tmp_path, body), _registry())

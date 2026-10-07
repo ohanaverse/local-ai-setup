@@ -269,3 +269,45 @@ def test_run_records_the_pointer_even_when_restore_failed(tmp_path, monkeypatch)
     from llmbench.state import load_state
 
     assert load_state().extra["benchmarks"]["agent_last_run"] == str(run_dir)
+
+
+def test_list_suites_keeps_listing_past_a_non_agent_suite(tmp_path, monkeypatch):
+    """An eval suite sharing the directory (it sorts first here) is reported as
+    an error line; the agent suites after it are still listed and the command
+    exits 0."""
+    monkeypatch.setattr(cli_module, "load_registry", _registry)
+    (tmp_path / "a-eval.toml").write_text(
+        """
+name = "eval-sweep"
+
+[judge]
+model = "x"
+temperature = 0.0
+route = "openrouter"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "b-agent.toml").write_text(
+        """
+name = "agent suite"
+task = "some/task"
+
+[judge]
+model = "x"
+thinking = "low"
+temperature = 0.0
+route = "litellm"
+
+[[rows]]
+model = "ollama/a"
+thinking = "off"
+route = "litellm"
+""",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(agent_app, ["list-suites", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "a-eval.toml: error:" in result.output
+    assert "b-agent.toml  (agent suite, 1 rows)" in result.output

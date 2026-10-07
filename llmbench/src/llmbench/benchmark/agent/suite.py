@@ -149,12 +149,25 @@ def _resolve_task_path(raw: str, suite_path: Path) -> Path:
     return candidate
 
 
+_REQUIRED_SUITE_KEYS = ("name", "task", "judge")
+_REQUIRED_JUDGE_KEYS = ("model", "thinking", "temperature", "route")
+
+
 def load_suite(path: Path, registry: Registry) -> Suite:
     path = Path(path)
     with path.open("rb") as f:
         raw = tomllib.load(f)
 
-    judge_raw = raw["judge"]
+    # The suites directory also holds the eval benchmark's suites (no `task`, no
+    # `[judge] thinking`). Name every missing key in a clean BenchmarkError
+    # rather than letting the first raw KeyError escape with a traceback.
+    judge_raw = raw.get("judge", {})
+    missing = [k for k in _REQUIRED_SUITE_KEYS if k not in raw]
+    missing += [f"judge.{k}" for k in _REQUIRED_JUDGE_KEYS if k not in judge_raw]
+    if missing:
+        raise BenchmarkError(
+            f"{path.name} is not an agent suite — missing required key(s): {', '.join(missing)}"
+        )
     if judge_raw["route"] not in JUDGE_ROUTES:
         raise BenchmarkError(
             f"[judge] route must be one of {list(JUDGE_ROUTES)}, got {judge_raw['route']!r} — "
