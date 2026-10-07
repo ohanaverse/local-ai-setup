@@ -1,4 +1,4 @@
-"""CLI for llmbench subcommand."""
+"""The workload benchmark commands (`llmbench run`, `list-workloads`, `show-results`)."""
 
 from __future__ import annotations
 
@@ -44,7 +44,11 @@ def list_workloads_cmd() -> None:
 
 @benchmark_app.command("run")
 def run_cmd(
-    workload: str = typer.Option("chat", "--workload", help="Workload name"),
+    workload: str = typer.Option(
+        "chat",
+        "--workload",
+        help="Workload name (LLMBENCH_WORKLOAD, when set, overrides this flag)",
+    ),
     model: list[str] = typer.Option([], "--model", help="Registry model id(s) to benchmark"),  # noqa: B008
     family: str | None = typer.Option(None, "--family", help="Benchmark all models in a family"),
     direct: bool = typer.Option(False, "--direct", help="Only benchmark direct backend access"),

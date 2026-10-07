@@ -1,7 +1,7 @@
 """Raw launchd primitives (kickstart/load/unload) used by provider lifecycle.
 
-Separate from the LiteLLM proxy restart, which llmbench no longer owns:
-since 2026-09-21 wt bounces the proxy itself after every route change
+Separate from the LiteLLM proxy restart, which wt owns: since 2026-09-21
+wt bounces the proxy itself after every route change
 (`wt/internal/litellm/restart.go`, honoring `WT_LITELLM_RESTART_CMD` and
 the legacy `MODELMAN_LITELLM_RESTART_CMD`). This module is the raw
 `launchctl` primitive provider lifecycle code calls directly (e.g. to

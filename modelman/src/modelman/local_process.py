@@ -1,11 +1,11 @@
 """Shared local-provider process types and HTTP probe helper.
 
-Neutral home for code that both `llmbench.benchmark.isolation` (isolating a
-provider for a benchmark run) and `llmbench.providers.lifecycle` (isolating
-a provider for `modelman start`/`modelman stop`) need. Neither concept
-belongs to one side more than the other, so living under `benchmark/` or
-`providers/` made the other package's import backwards — this module has no
-dependency on either.
+What modelman's own provider classes and `local_control` still use of it.
+The benchmark isolation and the provider lifecycle this module was first
+written for moved to llmbench and use `llmbench.local_process`; this copy
+re-exports llmbench's `ProcessResult` and keeps the constants modelman reads
+(`tests/test_llmbench_reexports.py` holds the two copies equal). Deleted
+with modelman.
 """
 
 from __future__ import annotations
