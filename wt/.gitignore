@@ -5,6 +5,8 @@ bin/wt
 # Root-anchored: only ignores a stray `wt` binary at the repo root (from
 # `go build ./cmd/wt`), not the `cmd/wt` source directory.
 /wt
+# The same stray binary from `go build` run inside cmd/wt.
+/cmd/wt/wt
 
 # NOTE: a global ~/.gitignore (outside this repo's control) ignores `.claude/`.
 # This repo intentionally tracks `.claude/skills/` — a local negation pattern
