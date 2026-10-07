@@ -88,10 +88,42 @@ func ExpandHome(path string) (string, error) { return expandHome(path) }
 // which would shadow the real registry when its target comes back (#248).
 var ErrRegistryLink = errors.New("registry link is broken")
 
+// brokenLinkAbove returns ErrRegistryLink when path does not exist because a
+// directory above it is a symlink that cannot be followed, and nil when the
+// path is simply absent. It asks the nearest ancestor that is there: every
+// ancestor below that one is missing for the same reason path is, and one
+// that is a real directory, or a link that resolves, means nothing is broken.
+func brokenLinkAbove(path string) error {
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		info, err := os.Lstat(dir)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink == 0 {
+				return nil
+			}
+			_, statErr := os.Stat(dir)
+			if statErr == nil {
+				return nil
+			}
+			dest, _ := os.Readlink(dir)
+			if os.IsNotExist(statErr) {
+				return fmt.Errorf("%w: %s, a directory above %s, is a symlink to %s, which does not exist", ErrRegistryLink, dir, path, dest)
+			}
+			return fmt.Errorf("%w: %s, a directory above %s, is a symlink to %s, which cannot be followed: %v", ErrRegistryLink, dir, path, dest, statErr)
+		}
+		if !os.IsNotExist(err) || dir == filepath.Dir(dir) {
+			return nil
+		}
+	}
+}
+
 // resolveRegistryFile applies the symlink rule the registry's reader and
 // writer share (#248) to path, the registry path as named:
 //
 //   - nothing there: (path, false, nil) — the registry is missing.
+//   - nothing there because a directory above it is a symlink that leads
+//     nowhere (the whole registry directory linked into a checkout or a volume
+//     that is not there now): ErrRegistryLink, as for the file itself. Lstat
+//     reports that exactly like a missing registry, so it is looked for.
 //   - a regular file: (path, true, nil).
 //   - a symlink that leads to a file: (the file it leads to, true, nil), so a
 //     writer renames onto the real file and the link survives.
@@ -100,6 +132,9 @@ var ErrRegistryLink = errors.New("registry link is broken")
 func resolveRegistryFile(path string) (target string, exists bool, err error) {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
+		if linkErr := brokenLinkAbove(path); linkErr != nil {
+			return "", false, linkErr
+		}
 		return path, false, nil
 	}
 	if err != nil {

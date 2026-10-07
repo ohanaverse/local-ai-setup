@@ -46,7 +46,9 @@
   as a broken link, naming the link and its target, instead of `model
   registry not found` (#248). An unconfigured agent no longer launches with no
   model routing in that case, and the hint no longer says to seed a registry
-  that exists behind the link.
+  that exists behind the link. The same goes for a registry whose directory
+  is the broken link (`~/.config/local-ai` linked into a checkout or a volume
+  that is not there).
 - The `wt` picker says which omlx models a start unloaded (#258). The line
   was printed only on stderr, which the full-screen picker hides, so a model
   another session was using could go without a word. It is now on the

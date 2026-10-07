@@ -155,3 +155,98 @@ func TestRegistryFixHintForABrokenLink(t *testing.T) {
 		t.Errorf("hint = %q, want %q", got, want)
 	}
 }
+
+// TestResolveRegistryFileWhenADirectoryAboveIsABrokenLink pins the same rule
+// one level up: the whole registry directory linked into a dotfiles checkout
+// or a volume that is not there right now. Lstat on the registry path says
+// "no such file" then, exactly as for a machine with no registry, so without
+// the walk up the path the broken link reads as missing — the unconfigured
+// agent launches unrouted and a writer is asked to create a registry the
+// user already has. A link above the path that does resolve, with no registry
+// in the directory it leads to, is still plain "missing".
+func TestResolveRegistryFileWhenADirectoryAboveIsABrokenLink(t *testing.T) {
+	dir := t.TempDir()
+	gone := filepath.Join(dir, "unmounted", "local-ai")
+	broken := filepath.Join(dir, "broken")
+	if err := os.Symlink(gone, broken); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{
+		"the registry's directory":  filepath.Join(broken, "registry.toml"),
+		"a directory further above": filepath.Join(broken, "local-ai", "registry.toml"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, exists, err := resolveRegistryFile(path)
+			if !errors.Is(err, ErrRegistryLink) || exists {
+				t.Fatalf("resolveRegistryFile = (exists %v, %v), want ErrRegistryLink", exists, err)
+			}
+			for _, want := range []string{path, broken, gone, "does not exist"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q should contain %q", err, want)
+				}
+			}
+			if got := RegistryFixHint(err); got != "fix the link or move it aside" {
+				t.Errorf("hint = %q, want the broken-link hint", got)
+			}
+		})
+	}
+
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good := filepath.Join(dir, "good")
+	if err := os.Symlink(real, good); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{
+		"a resolving link above, no registry in it": filepath.Join(good, "registry.toml"),
+		"a resolving link above, no such subdir":    filepath.Join(good, "local-ai", "registry.toml"),
+		"no link anywhere above":                    filepath.Join(real, "local-ai", "registry.toml"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, exists, err := resolveRegistryFile(path)
+			if err != nil || exists || got != path {
+				t.Errorf("resolveRegistryFile = (%q, %v, %v), want (%q, false, nil): only a broken link is ErrRegistryLink", got, exists, err, path)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesARegistryUnderABrokenDirectoryLink pins what Load does when
+// the registry's directory, not the file, is the dangling link: it is
+// ErrRegistryLink with no Config, never ErrRegistryMissing, and reading
+// creates nothing at the link's target. Read as "missing", wt would launch an
+// unconfigured agent with no model routing and tell the user to seed a
+// registry that is sitting behind the link.
+func TestLoadRefusesARegistryUnderABrokenDirectoryLink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	link := filepath.Join(home, "local-ai")
+	target := filepath.Join(t.TempDir(), "dotfiles", "local-ai")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if !errors.Is(err, ErrRegistryLink) {
+		t.Fatalf("Load error = %v, want ErrRegistryLink", err)
+	}
+	if errors.Is(err, ErrRegistryMissing) {
+		t.Error("a dangling directory link must not be reported as ErrRegistryMissing")
+	}
+	if cfg != nil {
+		t.Errorf("Load returned a Config (%+v) for a broken registry link; want nil", cfg)
+	}
+	for _, want := range []string{link, target} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should name %s", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "seed it") {
+		t.Errorf("error %q tells the user to seed a registry they already have", err)
+	}
+	if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+		t.Errorf("reading must not create the link's target; Lstat error = %v", statErr)
+	}
+}
