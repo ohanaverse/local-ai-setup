@@ -17,6 +17,11 @@
 
 ### Fixed
 
+- An omlx model that is still loading is no longer treated as loaded (#259).
+  `wt start` on it waits for the load instead of printing `already running`,
+  and the pickers show `load` in the RUNNING column and start it on Enter
+  instead of launching an agent on a model that cannot answer yet. It still
+  counts as occupying the pool and keeps its route.
 - The omlx scan's single-model fallback matches omlx (#263). A model
   directory that is itself a LoRA adapter, or that holds a Hugging Face cache
   entry, is no longer listed as a model omlx does not serve. wt and modelman

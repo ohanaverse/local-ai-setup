@@ -32,6 +32,16 @@ wt stop <target> --yes           # skip the in-use confirmation
 - Already running: the model is left running. Its LiteLLM route is written
   if it is missing (`wt: LiteLLM route for <id> updated` on stderr), then wt
   prints `wt: <id> is already running` and exits 0.
+- Still loading (omlx): the model cannot answer yet, so `wt start <id>` waits
+  for the load that is already in progress, with the usual progress on
+  stderr, then prints `wt: <id> is running`. It asks nothing, because it
+  loads nothing new. In the pickers the row's RUNNING column reads `load`,
+  and selecting it waits the same way. `wt` without `-M` never picks a model
+  that is still loading. `wt stop <id>` on it fails with
+  `omlx still has <id> loaded`, because omlx does not unload a model in the
+  middle of a load; `wt stop omlx` stops the service and the load with it.
+  wt sees a load only through omlx's status endpoint: on a server with an
+  API key the registry does not name, a loading model reads as not running.
 - Not on disk (a registry entry whose artifact is missing): not listed;
   `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
   first`.
@@ -142,6 +152,9 @@ recently used when a load does not fit.
 nothing. `status` is `running`, `fits`, `would_unload` or `unknown` (wt
 could not tell what would be unloaded); `would_unload` is empty for every
 status but `would_unload`.
+
+A model omlx is still loading reports `fits` with an empty `would_unload`.
+Starting it waits for the load and prints `started`.
 
 ```json
 {"id": "omlx/B", "status": "would_unload",
