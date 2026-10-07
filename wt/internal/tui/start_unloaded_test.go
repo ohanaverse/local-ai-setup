@@ -37,7 +37,7 @@ func TestFailedStartShowsWhatOmlxUnloaded(t *testing.T) {
 	stubStartModel(t, unloadingStart(errors.New("boom"), "omlx/old", "omlx/older"))
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got, _ = updateMsg(got, recvStart(t, got))
-	if want := "omlx unloaded omlx/old, omlx/older to make room; failed to start omlx/qwen3.8: boom"; got.status != want {
+	if want := "omlx unloaded omlx/old, omlx/older to make room\nfailed to start omlx/qwen3.8: boom"; got.status != want {
 		t.Errorf("status = %q\nwant     %q", got.status, want)
 	}
 	if got.phase != phaseModel {
@@ -83,7 +83,7 @@ func TestCancelledStartShowsWhatOmlxUnloaded(t *testing.T) {
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got, _ = updateMsg(got, tea.KeyMsg{Type: tea.KeyEsc})
 	got, _ = updateMsg(got, recvStart(t, got))
-	if want := "omlx unloaded omlx/old to make room; cancelled"; got.status != want {
+	if want := "omlx unloaded omlx/old to make room\ncancelled"; got.status != want {
 		t.Errorf("status = %q, want %q", got.status, want)
 	}
 }
@@ -106,7 +106,7 @@ func TestSuccessfulStartPrintsWhatOmlxUnloadedAboveTheAgent(t *testing.T) {
 	if want := "wt: omlx unloaded omlx/old to make room\n"; pendingRouteNotes != want {
 		t.Errorf("route notes = %q, want %q", pendingRouteNotes, want)
 	}
-	if want := "omlx unloaded omlx/old to make room; launch failed: "; !strings.HasPrefix(got.status, want) {
+	if want := "omlx unloaded omlx/old to make room\nlaunch failed: "; !strings.HasPrefix(got.status, want) {
 		t.Errorf("status = %q, want it to begin %q", got.status, want)
 	}
 }
@@ -125,7 +125,7 @@ func TestUnloadedNoteIsTakenOnce(t *testing.T) {
 	stubStartModel(t, unloadingStart(nil, "omlx/old"))
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got, _ = updateMsg(got, recvStart(t, got))
-	if !strings.HasPrefix(got.status, "omlx unloaded omlx/old to make room; launch failed: ") {
+	if !strings.HasPrefix(got.status, "omlx unloaded omlx/old to make room\nlaunch failed: ") {
 		t.Fatalf("status = %q, want the first failure to carry the note", got.status)
 	}
 	again, _ := got.launchSelected()
@@ -147,7 +147,7 @@ func TestUnloadedNoteIsShownWhenNoRowIsLeftToLaunch(t *testing.T) {
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got.models.SetItems(nil) // nothing selected when the start reports
 	got, _ = updateMsg(got, recvStart(t, got))
-	if want := "omlx unloaded omlx/old to make room; no model selected"; got.status != want {
+	if want := "omlx unloaded omlx/old to make room\nno model selected"; got.status != want {
 		t.Errorf("status = %q, want %q", got.status, want)
 	}
 	if got.startNote != "" {
@@ -160,10 +160,10 @@ func TestUnloadedNoteIsShownWhenNoRowIsLeftToLaunch(t *testing.T) {
 
 // TestUnloadedNoteSurvivesALongFailureAtEightyColumns verifies the note is
 // still on screen when the failure that follows it is longer than the
-// terminal. The status line is one line cut at the terminal's width, and
-// omlx's own refusal text runs to several hundred characters: with the note
-// after it, the one fact the user cannot find anywhere else would be the part
-// cut off.
+// terminal. Each line of the status is cut at the terminal's width, and omlx's
+// own refusal text runs to several hundred characters: the note has a line of
+// its own, so the cut falls on the failure and never on the one fact the user
+// cannot find anywhere else.
 func TestUnloadedNoteSurvivesALongFailureAtEightyColumns(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	stubStartModel(t, unloadingStart(errors.New(strings.Repeat("omlx says no. ", 40)), "omlx/old"))
@@ -177,22 +177,24 @@ func TestUnloadedNoteSurvivesALongFailureAtEightyColumns(t *testing.T) {
 	assertFits(t, "picker after a failed start", view, 80, 24)
 }
 
-// TestUnloadedNoteWithRealModelIDsAtEightyColumns pins the price of putting the
-// note first. With ids as long as real ones, the note and "failed to start
-// <id>: " already fill an 80-column status line, so the reason for the failure
-// is what gets cut. That is the accepted trade: the unloaded model is the fact
-// found nowhere else, and `wt start <id>` on the command line prints the
-// reason in full. What must hold is that the note is whole, the line still
-// says the start failed, and nothing overflows.
+// TestUnloadedNoteWithRealModelIDsAtEightyColumns verifies the failure is
+// readable when the unloaded ids are as long as real ones. On one line, two
+// real ids filled all 80 columns and the view said nothing about the start
+// having failed, let alone why. The note and the failure are two lines of the
+// status, so the failure and its reason are whole however long the note is;
+// only the list of ids can be cut, and `wt start <id>` prints that in full.
 func TestUnloadedNoteWithRealModelIDsAtEightyColumns(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/Ornith-1.5-35B-6bit", "Ornith-1.5-35B-6bit")
-	stubStartModel(t, unloadingStart(errors.New("boom"), "omlx/Qwen3.8-27B-4bit"))
+	stubStartModel(t, unloadingStart(errors.New("boom"), "omlx/Qwen3.8-27B-4bit", "omlx/Ornith-1.5-35B-4bit"))
 	got, _ := enterStartRow(t, m, "omlx/Ornith-1.5-35B-6bit")
 	got, cmd := updateMsg(got, recvStart(t, got))
 	got = drainCmds(t, got, cmd)
 	view := got.View()
-	if !strings.Contains(view, "omlx unloaded omlx/Qwen3.8-27B-4bit to make room; failed to start") {
-		t.Errorf("the 80-column picker does not show the note and that the start failed:\n%s", view)
+	if !strings.Contains(view, "omlx unloaded omlx/Qwen3.8-27B-4bit") {
+		t.Errorf("the 80-column picker does not show the note:\n%s", view)
+	}
+	if !strings.Contains(view, "failed to start omlx/Ornith-1.5-35B-6bit: boom") {
+		t.Errorf("the 80-column picker does not show the failure and its reason:\n%s", view)
 	}
 	assertFits(t, "picker after a failed start", view, 80, 24)
 }

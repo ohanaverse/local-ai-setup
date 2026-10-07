@@ -405,14 +405,14 @@ func unloadedNote(ids []string) string {
 	return "omlx unloaded " + strings.Join(ids, ", ") + " to make room"
 }
 
-// withNote puts note ahead of status, joined with "; ". The note goes first
-// because the status line is one line, cut at the terminal's width, and the
-// text after it has no fixed length.
+// withNote puts note on a line of its own above status. The view cuts each
+// line of the status at the terminal's width, so on one line a note naming two
+// models left no room for the failure after it.
 func withNote(note, status string) string {
 	if note == "" {
 		return status
 	}
-	return note + "; " + status
+	return note + "\n" + status
 }
 
 func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
