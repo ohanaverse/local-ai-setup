@@ -34,6 +34,17 @@ func (s *mockStore) CountsForAgent(agent string, ids []string) map[string]usage.
 	return s.Counts(ids)
 }
 
+// AllCounts returns every model the mock knows, the way the real store
+// reports every model with a launch. The mock models no agent attribution,
+// so like CountsForAgent above it ignores agent.
+func (s *mockStore) AllCounts(agent string) map[string]usage.UsageCounts {
+	res := make(map[string]usage.UsageCounts, len(s.counts))
+	for id, c := range s.counts {
+		res[id] = c
+	}
+	return res
+}
+
 // TestModelItemLineFormat verifies the selector table's one-line model
 // rendering: header columns, then per row the family, model ID, location,
 // status, running flag, cost cell, and the separate 1D/7D/30D usage
