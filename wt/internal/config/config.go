@@ -491,8 +491,8 @@ type Agent struct {
 // ── Config ────────────────────────────────────────────────
 
 // Config is wt's in-memory configuration: Agents + DefaultTag come from
-// wt-owned config.toml; Providers + Models come from modelman-owned
-// registry.toml and are never persisted by wt (see Save).
+// wt-owned config.toml; Providers + Models come from the shared
+// registry.toml and are never persisted from a Config (see Save).
 type Config struct {
 	DefaultTag string     `toml:"default_tag"`
 	Providers  []Provider `toml:"providers"`
@@ -543,7 +543,7 @@ func Path() string {
 }
 
 // Load reads config.toml (Agents + DefaultTag — wt-owned) and joins it with
-// modelman-owned registry.toml (Providers + Models) into one in-memory
+// the shared registry.toml (Providers + Models) into one in-memory
 // Config. The registry is checked before any schema-migration save so a
 // missing registry fails closed before wt rewrites config.toml: legacy
 // provider/model sections must survive on disk for `modelman migrate` to
@@ -606,7 +606,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	// Join modelman-owned registry LAST so wt never mutates registry data
+	// Join the registry LAST so wt never mutates registry data
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
@@ -913,7 +913,7 @@ func (c *Config) AgentByName(name string) (*Agent, error) {
 var ErrLocation = errors.New("invalid location")
 
 // RegistryFixHint is the hint for a config error whose repair is in
-// registry.toml — modelman's file, which `wt config` cannot edit — or "" for
+// registry.toml — a file `wt config` cannot edit — or "" for
 // any other error (and nil). Today that is a location error (ErrLocation) and
 // a registry path that is a broken symlink (ErrRegistryLink). It is the one
 // source of the wording, so the commands that refuse to run on such an error
@@ -929,7 +929,7 @@ func RegistryFixHint(err error) string {
 }
 
 // Valid reports whether l is one of the two locations the registry defines.
-// The registry is modelman's file and wt only reads it, so any other value —
+// The registry is shared with modelman, so any other value —
 // a typo such as "Local", a word from some other scheme — is not interpreted:
 // reading "Local" as local would paper over a file that modelman itself reads
 // differently (anything that is not exactly "local" is not local to it).
@@ -1069,7 +1069,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 // Save writes cfg to the config path using an atomic temp-file + rename,
 // under WithLock so it can never interleave with a PatchSave's
 // read-modify-write. Only wt-owned fields are persisted: Providers/Models
-// live in modelman-owned registry.toml and are never written by wt.
+// live in registry.toml, which Save never writes (UpdateRegistry does).
 //
 // Prefer PatchSave (or, for Load's own self-persisting migrations,
 // lockedApply) over Save whenever cfg may be a stale snapshot (loaded

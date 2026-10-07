@@ -1,6 +1,6 @@
 // Package configeditor provides a TUI for viewing and editing the agent
-// section of config.toml. Providers and models live in modelman-owned
-// registry.toml and are read-only for wt, so the editor only manages agents.
+// section of config.toml. Providers and models live in the shared
+// registry.toml, which this editor never writes, so it only manages agents.
 package configeditor
 
 import (

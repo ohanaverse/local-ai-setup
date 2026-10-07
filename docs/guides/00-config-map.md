@@ -12,7 +12,7 @@ None — this is a reference doc, not a procedure.
 
 | File | Owner (writes) | Consumers | Purpose |
 |---|---|---|---|
-| `~/.config/local-ai/registry.toml` | `modelman` (TUI add/edit, `modelman migrate`) | `wt` (read-only; source of the LiteLLM routes), `llmbench` (read-only) | Canonical providers + models |
+| `~/.config/local-ai/registry.toml` | `modelman` (TUI add/edit, `modelman migrate`) and `wt` (`wt model init`: creates it, adds provider rows) | `wt` (source of the LiteLLM routes), `modelman`, `llmbench` (read-only) | Canonical providers + models |
 | `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only: the `price_refresh_last_run` date, and `[litellm]` only as a legacy fallback — no per-model key) | Per-machine state: downloads, running hints, family display names (its `[litellm]` table is a legacy read-only fallback) |
 | `~/.config/local-ai/benchmarks/latest.toml` | `llmbench` | `llmbench` | Latest-run pointers behind `--latest`; the run directories sit beside it |
 | `~/.config/local-ai/settings.yaml` | `modelman` | `modelman` | User preferences (theme) |
@@ -35,8 +35,8 @@ Ollama has no LaunchAgent plist — it runs as the Ollama.app login item (`com.o
 
 ### `~/.config/local-ai/registry.toml`
 
-- **Owner:** `modelman` — TUI queue applies on exit, and `modelman migrate`.
-- **Consumers:** `wt` (read-only; joins it in memory with `~/.config/agent-wt/config.toml` and builds the LiteLLM `model_list` entries from it, copying each model's `model_info`).
+- **Owner:** two writers until modelman is retired. `modelman` — TUI queue applies on exit, and `modelman migrate`. `wt` — `wt model init` only, for now: it creates the file when it is missing and appends provider rows, never editing a row that exists. wt takes a lock (`registry.toml.lock`, beside the file) and re-checks the file before replacing it; modelman refuses to save over a file another program changed since it loaded it (`Registry not saved: registry.toml changed on disk; reload` — restart modelman).
+- **Consumers:** `wt` (joins it in memory with `~/.config/agent-wt/config.toml` and builds the LiteLLM `model_list` entries from it, copying each model's `model_info`), `llmbench` (read-only).
 - **Purpose:** canonical providers + models. `providers` may be empty (`providers = []`) when only discovered models are recorded; discovered entries carry `source = "discovered"` (entries modelman registered from an on-disk artifact — distinct from a *discovered model*, a local model on disk with no entry at all, which wt lists and routes anyway: [02-providers-and-models](02-providers-and-models.md) Step 3). See what yours holds with `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (model count) and `grep '^provider_id = ' ~/.config/local-ai/registry.toml | sort | uniq -c` (models per provider).
 - **Env override:** `WT_REGISTRY` (legacy alias `MODELMAN_REGISTRY`, read after it). wt, modelman and llmbench all honor both.
 

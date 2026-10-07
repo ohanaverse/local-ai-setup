@@ -83,13 +83,13 @@ Model rotation happens inside the TUI — there are no `--code`/`--design`/`--na
 
 The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag.
 
-Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`, owned by `modelman` and seeded with `modelman migrate`. `wt` loads that file read-only and joins it in memory with `config.toml`; `wt config` never writes providers or models.
+Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`. `wt model init` creates that file and adds the default provider rows; models are added with `modelman` for now. `wt` joins the registry in memory with `config.toml`; `wt config` never writes providers or models.
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
 ### Migration from legacy `models.conf`
 
-On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, so that a subsequent `modelman migrate` can import them into `registry.toml`; `wt` itself only ever reads Providers/Models back out of the registry.
+On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, so that a subsequent `modelman migrate` can import them into `registry.toml`; `wt` itself reads Providers/Models back out of the registry, and writes that file only through `wt model init`.
 
 ## User preferences (`wt config`)
 

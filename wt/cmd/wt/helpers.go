@@ -101,10 +101,12 @@ var stdinTTY = isStdinTTY
 // which `wt config` edits. A mistyped location is in registry.toml, modelman's
 // file, which `wt config` cannot repair — so that one names the file instead.
 // ErrRegistryMissing is a special case: the registry is missing entirely, so
-// there's nothing to edit; the hint should say to seed it with modelman.
+// there's nothing to edit, and the error itself already names the command
+// that creates one (`wt model init`). No hint is added: it would say the
+// same thing a second time.
 func configError(err error) error {
 	if errors.Is(err, config.ErrRegistryMissing) {
-		return fmt.Errorf("config error: %w (seed the registry with `modelman migrate`)", err)
+		return fmt.Errorf("config error: %w", err)
 	}
 	if hint := config.RegistryFixHint(err); hint != "" {
 		return fmt.Errorf("config error: %w (%s)", err, hint)

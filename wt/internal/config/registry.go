@@ -10,7 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// ErrRegistryMissing is returned by loadRegistry when the modelman-owned
+// ErrRegistryMissing is returned by loadRegistry when the shared
 // registry.toml does not exist yet. cmd/wt tolerates it for command agents
 // (which have no model layer) while still failing closed for real agents.
 var ErrRegistryMissing = errors.New("model registry not found")
@@ -164,7 +164,7 @@ func resolveRegistryFile(path string) (target string, exists bool, err error) {
 	return "", false, fmt.Errorf("%w: %s is a symlink to %s, which cannot be followed: %v", ErrRegistryLink, path, dest, err)
 }
 
-// loadRegistry decodes modelman-owned registry.toml into providers and
+// loadRegistry decodes the shared registry.toml into providers and
 // models. Registry fields wt doesn't consume (fetch) are ignored by the
 // decoder; model_info is decoded into Model.ModelInfo and merged into the
 // LiteLLM rows wt writes; model_dir and auth fields are parsed into the
@@ -172,12 +172,12 @@ func resolveRegistryFile(path string) (target string, exists bool, err error) {
 // truth for native-ness, consumed by driver dispatch and route resolution.
 //
 // Fail-closed: a missing or malformed registry is an error — wt has no
-// editor for this file; seed it once with `modelman migrate`.
+// editor for this file; `wt model init` creates it.
 // A symlinked registry is read through; a link that leads nowhere is
 // ErrRegistryLink, never "missing" (resolveRegistryFile).
 func loadRegistry() ([]Provider, []Model, error) {
 	path := RegistryPath()
-	missing := fmt.Errorf("%w at %s — seed it with `modelman migrate`", ErrRegistryMissing, path)
+	missing := fmt.Errorf("%w at %s — seed it with `wt model init`", ErrRegistryMissing, path)
 	target, exists, err := resolveRegistryFile(path)
 	if err != nil {
 		return nil, nil, err

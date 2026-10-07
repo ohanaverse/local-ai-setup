@@ -25,7 +25,7 @@ modelman reads three files under `~/.config/local-ai/` (table copied from the mo
 
 | File | Purpose | Env override |
 |------|---------|--------------|
-| `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `WT_REGISTRY` (legacy alias `MODELMAN_REGISTRY`) |
+| `registry.toml` | Canonical model/provider definitions (shared; `wt model init` also writes it) | `WT_REGISTRY` (legacy alias `MODELMAN_REGISTRY`) |
 | `modelman.toml` | Per-machine mutable state: download markers, family display names, the `running` hint | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 
@@ -71,7 +71,7 @@ The model screen derives its provider pane from each model's `provider_id` field
 
 ### 2. Add a cloud provider (OpenRouter)
 
-`registry.toml` is canonical — add the provider block to `~/.config/local-ai/registry.toml` (hand-edit, or via the TUI's add flow; both write this file). Documented TOML shape, copied from the modelman README:
+`registry.toml` is canonical — add the provider block to `~/.config/local-ai/registry.toml` (hand-edit, or via the TUI's add flow; both write this file). If `wt model init` already added an `openrouter` row (it does when a configured agent lists openrouter), do not add a second one: add `secret_ref` to the row that is there. Documented TOML shape, copied from the modelman README:
 
 ```toml
 [[providers]]

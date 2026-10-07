@@ -4,7 +4,7 @@ Internals reference for `wt/`, reached from [`wt/CLAUDE.md`](../../CLAUDE.md). B
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) is wt-owned and holds **only Agents, DefaultTag, and the `[litellm]` routing table**. Providers/Models live in the registry (below); wt never writes them.
+`~/.config/agent-wt/config.toml` (TOML) is wt-owned and holds **only Agents, DefaultTag, and the `[litellm]` routing table**. Providers/Models live in the registry (below); nothing that writes `config.toml` touches them.
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic`, `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 
@@ -24,11 +24,11 @@ Whether non-native models route through the LiteLLM proxy (`Config.IsLitellm()`)
 
 Toggling is routing policy only — it never touches the proxy. `LitellmBaseURL()` trims trailing slashes so drivers append `/v1` (or nothing for claude) cleanly. The proxy reads `config.yaml` only at startup; see [docs/wt-agents/README.md#litellm-proxy-lifecycle](../wt-agents/README.md#litellm-proxy-lifecycle).
 
-## Registry (modelman-owned)
+## Registry (shared with modelman until it is retired)
 
 `~/.config/local-ai/registry.toml` holds the canonical Providers/Models. Path precedence (`config.RegistryPath`): `WT_REGISTRY` > `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`. `WT_REGISTRY` is the name the three tools share; `MODELMAN_REGISTRY` is the older name and stays as an alias. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order, and each of the three has a precedence test — keep them in sync. A value starting with `~/` (or exactly `~`) is expanded via `expandHome` to match Python's `Path.expanduser()`; Go never expands `~` itself, so this parity is deliberate.
 
-wt loads it read-only via `config.Load` (fail-closed: missing/malformed registry is an error; seed with `modelman migrate`) and joins it in memory with `config.toml`. Decoded extra fields: `model_info` (`Model.ModelInfo`, merged into the LiteLLM rows wt writes — `internal/litellm/entry.go`), `cost` (`config.ModelCost`, rendered as the picker's price columns), `model_dir`, `auth.base_url`, `auth.secret_ref`. `fetch` is ignored.
+wt loads it via `config.Load` (fail-closed: missing/malformed registry is an error; `wt model init` creates one) and joins it in memory with `config.toml`. `Load` never writes it and never seeds it. Decoded extra fields: `model_info` (`Model.ModelInfo`, merged into the LiteLLM rows wt writes — `internal/litellm/entry.go`), `cost` (`config.ModelCost`, rendered as the picker's price columns), `model_dir`, `auth.base_url`, `auth.secret_ref`. `fetch` is ignored.
 
 **A symlinked registry.** `resolveRegistryFile` (`internal/config/registry.go`) is the one place that decides what a registry path is (#248). A symlink that leads to a file is read through. A symlink that leads nowhere — its target is gone, or the links loop — is `config.ErrRegistryLink`, never `ErrRegistryMissing`: a link is the user's pointer at where their registry lives (a dotfiles checkout, a volume that is not mounted), so wt neither launches as if there were no registry nor offers to seed one. `RegistryFixHint` gives it the hint `fix the link or move it aside`. The same holds one level up: when the path is absent because a directory above it is a link that leads nowhere (the whole `local-ai` directory linked into a checkout that is not there), that is `ErrRegistryLink` too, naming the directory link. Only a path with nothing at it, under directories that are really there, is "missing".
 
@@ -54,7 +54,9 @@ wt loads it read-only via `config.Load` (fail-closed: missing/malformed registry
 
 wt does not read modelman's retired `exposed`/`litellm_exposed` keys, nor any other per-model `[model_state]` key (`ready`, legacy `downloaded`, `running`): what is on disk and what is running come from wt's live probes, and the picker has no EXPOSED column. Whether a model is routed is `wt litellm list` (`config.yaml` membership). Design: [../docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md](../../../docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md), which supersedes the predicate design in [../docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md](../../../docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md).
 
-> **`unknown provider "X"` errors are usually a registry data gap, not a wt bug** — e.g. models referencing `provider_id`s with `providers = []`. Fix with `modelman sync`/`modelman migrate` on that machine (`sync` recreates default provider entries), not a code change here.
+> **`unknown provider "X"` errors are usually a registry data gap, not a wt bug** — e.g. models referencing `provider_id`s with `providers = []`. Fix with `wt model init` on that machine, not a code change here.
+
+**Seeding.** `config.SeedRegistryDefaults(d *RegistryDoc, env SeedEnv)` (`registry_seed.go`) is the one seeding implementation, the Go port of modelman's `_ensure_provider_entries` and `sync_agent_providers` plus one trigger modelman lacks. It appends the default row for ollama, omlx, mtplx or mlx_lm_server when a model references it, when a configured agent lists it in `supported_providers`, or (the first three) when its command is on PATH — an installed omlx is skipped when an `omlx-6bit` row exists; a default row for openrouter when an agent lists it (name, address and `auth.type = "api_key"`, with no `secret_ref`: the key is the user's to add); and a native cloud row for each agent in `config.toml`. The agent trigger exists because `Config.Validate` refuses an agent that lists a provider with no row. The agents are read as the next `Load` will see them: `seedAgents` applies `migrateAgentRefs` (the agent half of `migrateConfigSchema`: an `agy` agent is added, `opencode` lists `ollama` only) to its own read of `config.toml`, because `Load` migrates that file only once the registry loads. It returns the ids it added and, separately, the providers an agent lists that still have no row because wt has no default for them; `wt model init` names those (`providers_unseeded` in `--json`). It never edits a row that exists; modelman's `backfill_provider_defaults` is deliberately not ported. It takes a `RegistryDoc`, so it runs inside the caller's own `UpdateRegistry`: `wt model init` today, `wt model add` next. `config.DefaultSeedEnv()` reads the real machine; `cmd/wt` reaches it through the `seedEnv` seam.
 
 **No subprocess discovery.** `newApp()` only loads config. `localmodels.Inventory` does HTTP + filesystem discovery only. The only execs are `internal/lifecycle` (provider binaries `omlx`, `mtplx`) and the pre-launch `ollamacheck.Check` (see Agents).
 
