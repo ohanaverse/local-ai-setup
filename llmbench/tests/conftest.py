@@ -128,3 +128,5 @@ def _no_real_config(monkeypatch, tmp_path):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "no-registry.toml"))
     monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "no-latest.toml"))
+    # ...and the one-time fallback read of modelman.toml's [benchmarks] table.
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "no-modelman.toml"))
