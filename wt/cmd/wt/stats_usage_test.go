@@ -101,9 +101,7 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
 	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	oldNow := statsNow
-	statsNow = func() time.Time { return asOf }
-	t.Cleanup(func() { statsNow = oldNow })
+	pinStatsNow(t, asOf)
 
 	stdout, stderr := runStats(t, a, "--window", "7d")
 
@@ -214,8 +212,8 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 // for each outcome: ok, not_configured (nothing names a database, or the
 // spend package refused a blank connection string), unavailable (anything
 // else that failed) and skipped (--agent). The status is how a caller tells
-// the cases apart; "not configured" must not be lumped with "the database
-// is down".
+// the cases apart, and what --json consumers branch on (spend_status); "not
+// configured" must not be lumped with "the database is down".
 func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
 	a, _ := newTestApp(t)
 	asOf := time.Now().UTC()

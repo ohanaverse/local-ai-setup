@@ -21,11 +21,16 @@ import (
 const statsAllAgents = "(all)"
 
 // statsRow is one rendered row of `wt stats`: either a per-model "(all)"
-// aggregate (Agent == statsAllAgents) or one (agent, model) combo.
+// aggregate (Aggregate) or one (agent, model) combo. Agent is the label the
+// table prints, and statsAllAgents is only that label: an agent may be
+// configured under the name "(all)", so the string cannot answer whether a
+// row is the aggregate; Aggregate can.
 type statsRow struct {
 	ModelID string
 	Agent   string
 	Stats   survey.Stats
+	// Aggregate marks the per-model all-agents row built from ModelStats.
+	Aggregate bool
 }
 
 // statsCmd returns the `wt stats` command. It is a report, never a gate:
@@ -49,7 +54,8 @@ func statsCmd(a *app) *cobra.Command {
 			"Without psql, a reachable database or a configured URL, the launches\n" +
 			"still print, the spend cells show \"-\", and one note on stderr says why.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			window, err := parseStatsWindow(mustGetString(cmd, "window"))
+			windowName := mustGetString(cmd, "window")
+			window, err := parseStatsWindow(windowName)
 			if err != nil {
 				return err
 			}
@@ -61,22 +67,38 @@ func statsCmd(a *app) *cobra.Command {
 			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, modelFilter, agentFilter)
 
 			out := cmd.OutOrStdout()
-			if table := surveyTableRows(rows); len(table) == 0 {
-				fmt.Fprintln(out, "no survey data")
+			asJSON, _ := cmd.Flags().GetBool("json")
+			var rep usageReport
+			if asJSON {
+				if windowName == "" {
+					windowName = "30d"
+				}
+				// One JSON document: writeStatsJSON writes nothing until it is
+				// complete, so there is no first table to show before the spend
+				// query: query, then write.
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
+				if err := writeStatsJSON(out, buildStatsJSON(windowName, asOf, rows, rep)); err != nil {
+					return err
+				}
 			} else {
-				fmt.Fprintln(out, renderTable(surveyHeaders, table, a.theme))
-			}
-			fmt.Fprintln(out)
+				if table := surveyTableRows(rows); len(table) == 0 {
+					fmt.Fprintln(out, "no survey data")
+				} else {
+					fmt.Fprintln(out, renderTable(surveyHeaders, table, a.theme))
+				}
+				fmt.Fprintln(out)
 
-			// After the survey table: collectUsage runs the spend query (psql,
-			// up to a few seconds against a down or hanging database), and the
-			// survey table does not need it — printing first keeps the first
-			// table off that critical path.
-			rep := collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
-			if len(rep.Rows) == 0 {
-				fmt.Fprintln(out, "no usage data")
-			} else {
-				fmt.Fprintln(out, renderUsageTable(rep.Rows, stdoutWidth()))
+				// After the survey table: collectUsage runs the spend query (psql,
+				// up to a few seconds against a down or hanging database), and
+				// the survey table does not need it — printing first keeps the
+				// first table off that critical path. (--json waits anyway: one
+				// document prints only when complete.)
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
+				if len(rep.Rows) == 0 {
+					fmt.Fprintln(out, "no usage data")
+				} else {
+					fmt.Fprintln(out, renderUsageTable(rep.Rows, stdoutWidth()))
+				}
 			}
 			notes := rep.notes()
 			if familyFilter != "" && a.loadErr != nil {
@@ -94,11 +116,13 @@ func statsCmd(a *app) *cobra.Command {
 	// Local, so it shadows the root's persistent -F/--family (a comma list
 	// for the picker) on this command, as --model above shadows -M/--model.
 	cmd.Flags().String("family", "", "Filter the usage table to one model family")
+	cmd.Flags().Bool("json", false, "Print one JSON document (window, as_of, survey, usage) instead of the tables")
 	return cmd
 }
 
 // statsNow is the report's "as of" instant, the end of the window the
-// spend query covers. A seam so a test can pin it.
+// spend query covers and the as_of a --json document carries. A seam so a
+// test can pin it.
 var statsNow = func() time.Time { return time.Now().UTC() }
 
 var surveyHeaders = []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}
@@ -171,7 +195,7 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 		}
 		if agentFilter == "" {
 			if s := modelStats[id]; s.Answered > 0 || s.Skipped > 0 {
-				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Stats: s})
+				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
 			}
 		}
 	}
@@ -190,9 +214,10 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 
 	sort.Slice(rows, func(i, j int) bool {
 		// Aggregate rows sort before real-agent rows regardless of how
-		// a configured agent name compares to "(all)" byte-wise.
-		if (rows[i].Agent == statsAllAgents) != (rows[j].Agent == statsAllAgents) {
-			return rows[i].Agent == statsAllAgents
+		// a configured agent name compares to "(all)" byte-wise — including
+		// an agent named "(all)", which is a real-agent row.
+		if rows[i].Aggregate != rows[j].Aggregate {
+			return rows[i].Aggregate
 		}
 		if rows[i].Agent != rows[j].Agent {
 			return rows[i].Agent < rows[j].Agent
