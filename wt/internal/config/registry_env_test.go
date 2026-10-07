@@ -10,8 +10,8 @@ import (
 // TestRegistryPathPrecedence pins which file is the registry: WT_REGISTRY,
 // then MODELMAN_REGISTRY, then $XDG_CONFIG_HOME/local-ai, then ~/.config.
 // modelman (test_registry.py) and llmbench (test_registry.py) pin the same
-// order. If wt alone resolved a different file, a scratch run would have wt
-// write one registry while the Python tools read another.
+// order. If wt alone resolved a different file, a scratch run would have
+// modelman saving one registry while wt read another.
 func TestRegistryPathPrecedence(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -64,7 +64,7 @@ func TestRegistryRedirectedSeesWTRegistry(t *testing.T) {
 // every isolating TestMain relies on: after it runs, neither registry
 // variable is set and the registry resolves under the throwaway home. A
 // developer with WT_REGISTRY exported would otherwise have every wt test run
-// read (and, once wt writes, write) their real registry.
+// read their real registry.
 func TestIsolateConfigHomeForTestClearsBothRegistryNames(t *testing.T) {
 	// t.Setenv restores all three after the test; the helper's own
 	// os.Setenv/os.Unsetenv calls are then undone with them.

@@ -107,8 +107,8 @@ def test_both_refuse_a_dangling_legacy_symlink(home, monkeypatch, tmp_path):
 
 def test_both_read_the_registry_wt_registry_names(home, monkeypatch, tmp_path):
     """WT_REGISTRY outranks MODELMAN_REGISTRY in both readers, as it does in
-    wt. If one reader still preferred the older name, wt would write one file
-    while that tool read another."""
+    wt. If one reader still preferred the older name, modelman would save one
+    file while wt and that reader looked at another."""
     _write(home / ".config" / "local-ai" / "registry.toml")
     monkeypatch.setenv("MODELMAN_REGISTRY", str(_write(tmp_path / "old.toml")))
     named = _write(tmp_path / "new.toml")

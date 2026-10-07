@@ -55,13 +55,15 @@ func TestRegistryPathHonorsXDG(t *testing.T) {
 	}
 }
 
-// MODELMAN_REGISTRY is the highest-precedence override in
-// RegistryPath()'s chain (MODELMAN_REGISTRY > XDG_CONFIG_HOME >
-// ~/.config). When set, it must win even if XDG_CONFIG_HOME is also
-// set — without this guard a developer's stale export could be
-// shadowed by a CI XDG value, making wt read the wrong registry.
-// Locks in the override path that lets ops and .envrcs pin a specific
-// registry without touching XDG.
+// MODELMAN_REGISTRY is an outright override in RegistryPath()'s chain
+// (WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config). When set,
+// it must win even if XDG_CONFIG_HOME is also set — without this guard a
+// developer's stale export could be shadowed by a CI XDG value, making wt
+// read the wrong registry. Locks in the override path that lets ops and
+// .envrcs pin a specific registry without touching XDG. It beats XDG only
+// because no WT_REGISTRY is set: this package's TestMain clears one inherited
+// from the developer's shell, and TestRegistryPathPrecedence pins the name
+// that outranks it.
 func TestRegistryPathHonorsModelmanRegistryOverride(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "/custom/registry.toml")
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")

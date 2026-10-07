@@ -132,8 +132,9 @@ def _default_registry_path() -> Path:
 
     Precedence: WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config.
     This must stay in sync with wt's config.RegistryPath and llmbench's
-    registry_path: wt writes the registry and all three read it, so they must
-    agree on which file it is.
+    registry_path. This module is the registry's only writer — wt loads it
+    read-only via config.Load and llmbench reads it read-only — so a
+    disagreement would have this one save over a file neither of them reads.
     """
     override = _registry_override()
     if override:

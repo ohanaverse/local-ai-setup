@@ -51,9 +51,10 @@ def test_default_registry_path_modelman_registry_override_wins(monkeypatch):
 
 def test_default_registry_path_precedence(monkeypatch, tmp_path):
     """WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config: the
-    order wt's config.RegistryPath and llmbench's registry_path use. wt writes
-    the registry, so a modelman that resolved another file under WT_REGISTRY
-    would show (and save over) a registry wt is not editing."""
+    order wt's config.RegistryPath and llmbench's registry_path use. modelman
+    is the registry's writer, so a modelman that resolved another file under
+    WT_REGISTRY would show (and save over) a registry wt and llmbench are not
+    reading."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     assert _default_registry_path() == tmp_path / "home/.config/local-ai/registry.toml"
