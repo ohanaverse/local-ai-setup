@@ -38,7 +38,8 @@ func usageCells(r usageRow) [6]string {
 // spend-only id is whatever the proxy logged as model_group: a raw escape
 // sequence there would repaint the terminal and throw off the column
 // widths, and a bidi override would show the row's numbers in another
-// order than they were printed.
+// order than they were printed. --json prints ids through encoding/json,
+// which escapes them by its own rules.
 //
 // A backslash already in an id is left as it is — an id with none of these
 // characters prints unchanged, which is what makes it safe to copy — so the

@@ -173,12 +173,17 @@ What differs from `modelman usage report`:
 It needs `psql` on `PATH` and finds the database with nothing exported:
 `WT_LITELLM_DATABASE_URL`, then `MODELMAN_LITELLM_DATABASE_URL`, then
 `general_settings.database_url` in LiteLLM's `config.yaml`, then
-`DATABASE_URL` — the last two looked up in your shell and then in the
-proxy's LaunchAgent plist, as the proxy itself sees them. If the database
+`DATABASE_URL` — `DATABASE_URL`, and a `config.yaml` value written
+`os.environ/NAME`, are looked up in your shell and then in the proxy's
+LaunchAgent plist, as the proxy itself sees them. If the database
 cannot be reached, the note names the host and port wt tried. Totals can
 differ from `modelman usage report` at the edges of the window: `wt stats`
 compares the proxy's timestamps as UTC. Full reference:
 [wt/docs/wt-stats.md](../../wt/docs/wt-stats.md).
+
+For a copy to keep, `wt stats --json` prints the same report as one JSON
+line; append it to a file to build a history (`wt stats --json >>
+~/notes/wt-stats.jsonl`).
 
 ## Verification
 
