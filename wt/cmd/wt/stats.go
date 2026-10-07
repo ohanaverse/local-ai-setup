@@ -142,22 +142,15 @@ var statsNow = func() time.Time { return time.Now().UTC() }
 
 var surveyHeaders = []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}
 
-// surveyTableRows renders the survey rows as table cells.
+// surveyTableRows renders the survey rows as table cells: every row it is
+// given, one for one. Which rows exist is buildStatsRows' decision, shared
+// with buildStatsJSON; a rule about that here would let the table and the
+// document disagree.
 func surveyTableRows(rows []statsRow) [][]string {
 	tableRows := make([][]string, 0, len(rows))
 	for _, r := range rows {
 		quality, qok := r.Stats.QualityAvg()
 		speed, sok := r.Stats.SpeedAvg()
-
-		// Exclude rows with no data: rows where both Answered == 0 and
-		// Skipped == 0 have no survey information at all. Rows with
-		// Answered == 0 but Skipped > 0 ("all skipped") are kept to show
-		// that the agent×model combo was tried but never produced data.
-		// buildStatsRows applies the same rule.
-		if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
-			continue
-		}
-
 		tableRows = append(tableRows, []string{
 			r.ModelID,
 			r.Agent,
@@ -186,45 +179,48 @@ func parseStatsWindow(s string) (time.Duration, error) {
 
 // buildStatsRows merges the per-model "(all)" aggregate with every
 // per-(agent,model) combo into one row list, applies the --model/--agent
-// filters (f.family is not read: a survey row carries no family), drops rows with zero answered and zero skipped in the window,
-// and sorts by agent name (the "(all)" aggregate rows first, then model
-// id). The aggregate-first placement is enforced explicitly rather than
-// by lexicographic luck: agent names are user-configured and may sort
-// before "(" (digits, "-", non-ASCII).
+// filters (f.family is not read: a survey row carries no family), drops the
+// rows with no data, and sorts by agent name (the "(all)" aggregate rows
+// first, then model id). The aggregate-first placement is enforced
+// explicitly rather than by lexicographic luck: agent names are
+// user-configured and may sort before "(" (digits, "-", non-ASCII).
+//
+// This is the one place that decides which survey rows exist: the table
+// (surveyTableRows) and the document (buildStatsJSON) both render exactly
+// the rows returned here.
 func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, f statsFilter) []statsRow {
 	modelStats := survey.ModelStats(events, window, asOf)
 	combos := survey.AllAgentModelStats(events, window, asOf)
 
-	modelIDs := make(map[string]bool, len(modelStats))
-	for id := range modelStats {
-		modelIDs[id] = true
-	}
-	for _, c := range combos {
-		modelIDs[c.ModelID] = true
-	}
-
-	var rows []statsRow
-	for id := range modelIDs {
-		if f.model != "" && id != f.model {
-			continue
-		}
-		if f.agent == "" {
-			if s := modelStats[id]; s.Answered > 0 || s.Skipped > 0 {
-				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
-			}
+	var candidates []statsRow
+	if f.agent == "" {
+		for id, s := range modelStats {
+			candidates = append(candidates, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
 		}
 	}
 	for _, c := range combos {
-		if f.model != "" && c.ModelID != f.model {
-			continue
-		}
 		if f.agent != "" && c.Agent != f.agent {
 			continue
 		}
-		if c.Stats.Answered == 0 && c.Stats.Skipped == 0 {
+		candidates = append(candidates, statsRow{ModelID: c.ModelID, Agent: c.Agent, Stats: c.Stats})
+	}
+
+	var rows []statsRow
+	for _, r := range candidates {
+		if f.model != "" && r.ModelID != f.model {
 			continue
 		}
-		rows = append(rows, statsRow{ModelID: c.ModelID, Agent: c.Agent, Stats: c.Stats})
+		// A row with no data is left out: nothing answered and nothing
+		// skipped is no survey information at all (an event that recorded
+		// neither still creates its model and its combo). A row with
+		// nothing answered but something skipped ("all skipped") is kept: it
+		// shows the agent×model combo was tried and never produced a
+		// verdict. The rule is stated here and nowhere else, for the
+		// aggregate rows and the combo rows alike.
+		if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
+			continue
+		}
+		rows = append(rows, r)
 	}
 
 	sort.Slice(rows, func(i, j int) bool {

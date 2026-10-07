@@ -40,10 +40,11 @@ Only an invalid flag is an error.
 
 One row per model's `(all)`-agents aggregate, plus one row per observed
 (agent, model) combo — sorted by agent name with `(all)` first, then by
-model id. A combo with no real data (zero answered surveys, and no
-calculated averages) is omitted — this includes rows where all surveys
-were skipped. An empty store (or a filter matching nothing) prints
-`no survey data`.
+model id. A row with no data at all (nothing answered and nothing skipped
+in the window) is omitted. A row whose every survey was skipped is kept,
+with `-` in the three averaged columns: the combo was tried and never got a
+verdict. `--json` holds exactly the rows the table prints. An empty store
+(or a filter matching nothing) prints `no survey data`.
 
 ```
 $ wt stats

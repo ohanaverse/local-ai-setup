@@ -20,6 +20,8 @@ Four `TestMain`s guarantee no Go test probes a real server, starts a real model,
 
 **`wt stats` has one clock.** `statsNow` is read once per run and every window in the report is measured back from that value: `buildStatsRows` takes it, `collectUsage` hands it to both `querySpend` and `(*usage.StoreImpl).AllCounts(agent, asOf)`, and `--json` prints it as `as_of`. `AllCounts` never reads `internal/usage`'s own unexported `now` (that clock stamps `RecordFor` and feeds the picker's `Counts`/`CountsForAgent`), so `pinStatsNow(t, at)` pins the whole report from `cmd/wt`. Pin first, then seed: `seedLaunches` measures its ages back from `statsNow()`, and `seedLaunchesAt` takes absolute timestamps for a test about the window's edges (`TestStatsLaunchesAndSpendShareOneInstant`). `AllCounts` is not on the `usage.Store` interface — `wt stats` holds the concrete store — so a `usage.Store` double does not implement it.
 
+**`wt stats` decides its rows once, and renders twice.** `buildStatsRows` (survey) and `buildUsageRows` (usage) decide which rows exist; `surveyTableRows`, `renderUsageTable` and `buildStatsJSON` render every row they are handed. A rule about which rows exist belongs in a builder, never in a renderer — `TestStatsNoDataRuleHasOneHome` pins that for the survey's "no data" rule, and `TestStatsJSONAgreesWithTheTable` runs the command both ways and compares both halves, row for row and cell for cell (it reads the bordered survey table back with ANSI sequences stripped, the one place that is worth the coupling).
+
 **Prefer asserting on unexported functions directly** — same-package tests can call them (e.g. `buildStatsRows`); parsing rendered lipgloss output couples tests to border glyphs/padding and flakes under forced-color ANSI.
 
 ```bash
