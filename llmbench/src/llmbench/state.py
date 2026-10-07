@@ -51,7 +51,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError):  # ValueError: TOMLDecodeError and UnicodeDecodeError
         return {}
 
 

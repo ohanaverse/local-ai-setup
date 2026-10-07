@@ -109,12 +109,15 @@ def test_the_fallback_is_read_once(paths):
         'benchmarks = "not a table"\n',
         "[benchmarks]\nlast_run_dir = 7\n",  # not a string: not a pointer
         "[model_state]\n",  # no [benchmarks] table
+        b'[benchmarks]\nlast_run = "\xff\xfe"\n',  # not UTF-8
     ],
-    ids=["absent", "corrupt", "not-a-table", "wrong-type", "no-table"],
+    ids=["absent", "corrupt", "not-a-table", "wrong-type", "no-table", "bytes"],
 )
 def test_an_unusable_modelman_toml_reads_as_no_pointers(paths, legacy_text):
     _, legacy = paths
-    if legacy_text is not None:
+    if isinstance(legacy_text, bytes):
+        legacy.write_bytes(legacy_text)
+    elif legacy_text is not None:
         legacy.write_text(legacy_text, encoding="utf-8")
     assert load_state().extra.get("benchmarks", {}) == {}
 
@@ -126,7 +129,13 @@ def test_a_corrupt_latest_toml_reads_as_no_pointers_and_is_replaced(paths):
     legacy.write_text(MODELMAN_TOML, encoding="utf-8")
     latest.parent.mkdir(parents=True)
     latest.write_text("last_run = \n", encoding="utf-8")
+    _assert_replaced(latest, legacy)
 
+    latest.write_bytes(b'last_run = "\xff\xfe"\n')  # not UTF-8
+    _assert_replaced(latest, legacy)
+
+
+def _assert_replaced(latest, legacy):
     store = load_state()
     assert store.extra.get("benchmarks", {}) == {}  # present: no fallback either
     store.extra.setdefault("benchmarks", {})["last_run_dir"] = "/results"
