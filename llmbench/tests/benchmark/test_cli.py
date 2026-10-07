@@ -136,3 +136,34 @@ def test_run_takes_the_workload_from_the_environment(monkeypatch, env, want):
         result = CliRunner().invoke(app, ["run", "--workload", "code"])
     assert result.exit_code == 1
     assert seen == [want]
+
+
+@pytest.mark.parametrize("run_id", ["..", "../../x"])
+def test_show_results_refuses_a_run_id_outside_the_results_dir(tmp_path, run_id):
+    """#277: show-results joined --run-id onto the results dir unchecked, so
+    `..` printed whatever summary.md sat above it. Same usage error as
+    `eval show`, and nothing is read."""
+    results_dir = tmp_path / "a" / "b" / "results"
+    results_dir.mkdir(parents=True)
+    outside = results_dir / run_id
+    outside.mkdir(parents=True, exist_ok=True)
+    (outside / "summary.md").write_text("OUTSIDE-THE-RESULTS-DIR", encoding="utf-8")
+
+    with patch("llmbench.benchmark.cli.DEFAULT_RESULTS_DIR", results_dir):
+        result = CliRunner().invoke(app, ["show-results", "--run-id", run_id])
+
+    assert result.exit_code == 1, result.output
+    assert f"error: invalid --run-id {run_id!r}" in result.output
+    assert "OUTSIDE-THE-RESULTS-DIR" not in result.output
+
+
+def test_show_results_prints_the_summary_for_a_valid_run_id(tmp_path):
+    run_dir = tmp_path / "20260905-143200"
+    run_dir.mkdir()
+    (run_dir / "summary.md").write_text("# summary", encoding="utf-8")
+
+    with patch("llmbench.benchmark.cli.DEFAULT_RESULTS_DIR", tmp_path):
+        result = CliRunner().invoke(app, ["show-results", "--run-id", "20260905-143200"])
+
+    assert result.exit_code == 0, result.output
+    assert "# summary" in result.output

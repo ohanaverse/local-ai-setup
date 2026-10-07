@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -121,10 +122,66 @@ def _render_markdown(run: BenchmarkRun) -> str:
     return "\n".join(lines)
 
 
+# One plain directory name. Every id a runner generates fits: the throughput
+# and agent runners use `%Y%m%d-%H%M%S`, the eval runner `eval-<that>` with a
+# `-<n>` suffix when two runs start in the same second.
+# Rules:
+# - Must match [A-Za-z0-9._-]+ (alphanumeric, dot, underscore, hyphen)
+# - Must not be "." or ".."
+# - Must not start with "." (hidden directories like .git, .config)
+# - Must not exceed 255 bytes (filesystem filename limit)
+# - Trailing slash is stripped (shell tab-completion friendly)
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+_MAX_RUN_ID_BYTES = 255
+
+
+class RunDirError(ValueError):
+    """Raised when run_id validation fails."""
+
+    pass
+
+
+def run_dir(results_dir: Path, run_id: str) -> Path:
+    """`results_dir/run_id` for a `--run-id` the user typed, refusing an id
+    that could name anything but a child of `results_dir`.
+
+    The one place the rule lives: show-results, agent show, agent judge, eval
+    show and eval judge all resolve through it, so `--run-id ..` is the same
+    usage error everywhere and never a read (or, for the judge commands, a
+    rewrite) of a directory outside the results tree.
+
+    Returns the resolved Path, or raises RunDirError with a user-facing message.
+    """
+    # Strip trailing slash (from shell tab-completion)
+    if run_id.endswith("/"):
+        run_id = run_id.rstrip("/")
+
+    if not run_id:
+        raise RunDirError("error: invalid --run-id ''")
+
+    if run_id in (".", ".."):
+        raise RunDirError(f"error: invalid --run-id {run_id!r}")
+
+    if run_id.startswith("."):
+        raise RunDirError(
+            f"error: invalid --run-id {run_id!r} (hidden directory names not allowed)"
+        )
+
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise RunDirError(f"error: invalid --run-id {run_id!r}")
+
+    if len(run_id.encode("utf-8")) > _MAX_RUN_ID_BYTES:
+        raise RunDirError(
+            f"error: invalid --run-id {run_id!r} (exceeds {_MAX_RUN_ID_BYTES} byte filename limit)"
+        )
+
+    return results_dir / run_id
+
+
 def write_results(run: BenchmarkRun, base_dir: Path) -> Path:
     """Write JSON, Markdown, and payload artifacts for a run."""
-    run_dir = base_dir / run.run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = run_dir(base_dir, run.run_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "run_id": run.run_id,
@@ -132,7 +189,7 @@ def write_results(run: BenchmarkRun, base_dir: Path) -> Path:
         "started_at": run.started_at.isoformat(),
         "metadata": run.metadata,
     }
-    (run_dir / "payload.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (out_dir / "payload.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     results = {
         "run_id": run.run_id,
@@ -142,8 +199,8 @@ def write_results(run: BenchmarkRun, base_dir: Path) -> Path:
         "summary": _aggregate(run.results),
         "metadata": run.metadata,
     }
-    (run_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    (out_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
 
-    (run_dir / "summary.md").write_text(_render_markdown(run), encoding="utf-8")
+    (out_dir / "summary.md").write_text(_render_markdown(run), encoding="utf-8")
 
-    return run_dir
+    return out_dir
