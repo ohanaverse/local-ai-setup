@@ -323,6 +323,39 @@ def test_a_save_during_a_load_does_not_poison_the_record(tmp_path, monkeypatch):
     assert [m.id for m in load_registry(path).models] == ["ollama/first", "ollama/second"]
 
 
+def test_a_save_landing_while_a_load_records_does_not_poison_the_record(tmp_path, monkeypatch):
+    """The load's disk check and the record it leaves are not one step: a save
+    landing between them (modelman's own, on another thread) used to be read
+    as another program's change, and left the record describing the file the
+    load had opened — replaced by then. Every later save in the process was
+    refused though nothing foreign had been written."""
+    path = tmp_path / "registry.toml"
+    screen_registry = _seed(path)
+    _add_model(screen_registry, "first")
+    save_registry(screen_registry, path)
+
+    real_note = registry_module._note_loaded
+    saved: list[bool] = []
+
+    def note_after_a_save(p, stamp):
+        if not saved:
+            saved.append(True)
+            _add_model(screen_registry, "second")
+            save_registry(screen_registry, path)
+        return real_note(p, stamp)
+
+    monkeypatch.setattr(registry_module, "_note_loaded", note_after_a_save)
+    load_registry(path)  # the price-refresh worker's load
+
+    _add_model(screen_registry, "third")
+    save_registry(screen_registry, path)  # no other program wrote: not refused
+    assert [m.id for m in load_registry(path).models] == [
+        "ollama/first",
+        "ollama/second",
+        "ollama/third",
+    ]
+
+
 def test_a_refused_save_at_the_end_of_an_apply_is_reported(tmp_path):
     """The path a TUI user sees: a queued Apply ends with one save, and when
     that save is refused the run reports `save:fail` with the reload message

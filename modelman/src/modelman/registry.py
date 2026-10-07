@@ -616,12 +616,25 @@ def _disk_stamp(path: Path) -> tuple[int, int, int] | None:
 
 def _note_loaded(path: Path, stamp: tuple[int, int, int] | None) -> tuple[str, int]:
     """Record what a load found at `path` (None: no file). Returns the
-    (resolved path, foreign-change count) the loaded Registry carries."""
+    (resolved path, foreign-change count) the loaded Registry carries.
+
+    The file is stat'd again here, under the lock, against the `stamp` the
+    load read: a write landing between that read and this call (another
+    thread's save, another program) must not be recorded as the stamp that
+    was read — that would leave the record describing a file that is gone and
+    make every later save in this process look stale. The record is left to
+    whoever wrote it instead, and a path this process never looked at is
+    stored as "no file", so saving what was read here (already out of date)
+    is still refused.
+    """
     key = os.path.realpath(path)
     with _SEEN_LOCK:
-        if key in _SEEN_ON_DISK and _SEEN_ON_DISK[key] != stamp:
-            _FOREIGN_CHANGES[key] = _FOREIGN_CHANGES.get(key, 0) + 1
-        _SEEN_ON_DISK[key] = stamp
+        if _disk_stamp(path) == stamp:
+            if key in _SEEN_ON_DISK and _SEEN_ON_DISK[key] != stamp:
+                _FOREIGN_CHANGES[key] = _FOREIGN_CHANGES.get(key, 0) + 1
+            _SEEN_ON_DISK[key] = stamp
+        elif key not in _SEEN_ON_DISK:
+            _SEEN_ON_DISK[key] = None
         return key, _FOREIGN_CHANGES.get(key, 0)
 
 
@@ -668,19 +681,11 @@ def load_registry(path: Path | None = None) -> Registry:
     with open(registry_path, "rb") as f:
         raw = tomllib.load(f)
         # The file that was read, stamped while it is open: a stat by name
-        # afterwards could describe a file written in between.
+        # afterwards could describe a file written in between. _note_loaded
+        # re-checks it under the lock, so a write landing between this read
+        # and that record is left to whoever wrote it.
         stamp = _stamp_of(os.fstat(f.fileno()))
-    if _disk_stamp(registry_path) == stamp:
-        loaded_at = _note_loaded(registry_path, stamp)
-    else:
-        # Replaced while it was being read (a save on another thread, or
-        # another program): leave the record to whoever wrote it. Recording
-        # the stamp just read would make every later save look stale. With
-        # no record yet this stores "no file", so a save of what was read
-        # here, which is already out of date, is refused.
-        with _SEEN_LOCK:
-            recorded = _SEEN_ON_DISK.get(os.path.realpath(registry_path))
-        loaded_at = _note_loaded(registry_path, recorded)
+    loaded_at = _note_loaded(registry_path, stamp)
     if registry_path != write_path:
         # The pre-XDG fallback: a save goes to write_path, not the file read.
         loaded_at = _note_loaded(write_path, _disk_stamp(write_path))
