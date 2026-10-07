@@ -1,28 +1,28 @@
-name: modelman-ci
+name: llmbench-ci
 
 on:
   push:
     branches: [main]
     paths:
-      - "modelman/**"
       - "llmbench/**"
-      - "docs/contracts/**"
+      - "benchmarks/tasks/**"
+      - "docs/contracts/registry*.toml"
       - "bin/check-config-dirs-untouched"
-      - ".github/workflows/modelman-ci.yml"
+      - ".github/workflows/llmbench-ci.yml"
   pull_request:
     paths:
-      - "modelman/**"
       - "llmbench/**"
-      - "docs/contracts/**"
+      - "benchmarks/tasks/**"
+      - "docs/contracts/registry*.toml"
       - "bin/check-config-dirs-untouched"
-      - ".github/workflows/modelman-ci.yml"
+      - ".github/workflows/llmbench-ci.yml"
 
 jobs:
   test:
     runs-on: ubuntu-26.04
     defaults:
       run:
-        working-directory: modelman
+        working-directory: llmbench
     steps:
       - uses: actions/checkout@v7
       # setup-uv publishes no floating major tag past v7, so pin the exact release.
