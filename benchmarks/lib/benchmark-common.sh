@@ -14,11 +14,11 @@
 # extra args.
 
 BENCHMARK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODELMAN_DIR="$(cd "$BENCHMARK_LIB_DIR/../../modelman" && pwd)"
-MODELMAN_PROVIDER=(uv run --directory "$MODELMAN_DIR" modelman provider)
+LLMBENCH_DIR="$(cd "$BENCHMARK_LIB_DIR/../../llmbench" && pwd)"
+LLMBENCH_PROVIDER=(uv run --directory "$LLMBENCH_DIR" llmbench provider)
 
 command -v uv >/dev/null 2>&1 || {
-    echo "[setup] error: 'uv' is required to isolate local providers (calls modelman provider via uv run) but is not on PATH" >&2
+    echo "[setup] error: 'uv' is required to isolate local providers (calls llmbench provider via uv run) but is not on PATH" >&2
     exit 1
 }
 
@@ -48,7 +48,7 @@ PYEOF
 # --- Service management ----------------------------------------------------
 
 # Stop other local providers, then start+warmup only the requested backend's
-# model (modelman provider isolate polls until the model actually answers).
+# model (llmbench provider isolate polls until the model actually answers).
 # Every backend now goes through the CLI's positional MODEL argument —
 # forward DIRECT_MODELS[$key] explicitly so isolation selects the model this
 # run actually requested, instead of falling back to the CLI's own env-var or
@@ -67,14 +67,14 @@ isolate_one() {
     # space-separated list of additional positional args, empty for
     # every current single-arg backend.
     # shellcheck disable=SC2086
-    "${MODELMAN_PROVIDER[@]}" isolate "${ISOLATE_ID[$key]}" "${DIRECT_MODELS[$key]}" ${ISOLATE_EXTRA[$key]:-} >/dev/null
+    "${LLMBENCH_PROVIDER[@]}" isolate "${ISOLATE_ID[$key]}" "${DIRECT_MODELS[$key]}" ${ISOLATE_EXTRA[$key]:-} >/dev/null
 }
 
 # Ensure all local services are running (called at script start). Delegates
-# to the already-idempotent `modelman provider restore` (it no-ops per-service
+# to the already-idempotent `llmbench provider restore` (it no-ops per-service
 # when already up) rather than duplicating its start/poll logic here.
 #
-# Best-effort, like the inline version this replaced: `modelman provider
+# Best-effort, like the inline version this replaced: `llmbench provider
 # restore` exits 1 when any one service fails its health poll, and these
 # scripts run under set -e, so an unchecked call would abort the whole run
 # (including the OpenRouter rows that need no local service) leaving a
@@ -82,7 +82,7 @@ isolate_one() {
 # beats a zero-row run, so warn and continue instead.
 ensure_all_local_started() {
     echo "[setup] ensuring all local services are running..."
-    if ! "${MODELMAN_PROVIDER[@]}" restore; then
+    if ! "${LLMBENCH_PROVIDER[@]}" restore; then
         echo "[setup] WARNING: one or more local providers failed to start; " \
             "affected rows will error out, cloud rows still run" >&2
     fi
