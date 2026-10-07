@@ -55,6 +55,37 @@ def test_run_records_latest_even_when_restore_failed(tmp_path):
         assert state.extra["benchmarks"]["last_run_dir"] == str(run_dir)
 
 
+def test_run_records_the_run_dir_so_show_results_latest_finds_it(tmp_path):
+    """A completed run records its OWN directory in `last_run_dir`, not the
+    results base dir: show-results --latest appends `/summary.md` to whatever
+    is stored, and write_results puts summary.md in `<base>/<run_id>`.
+    Regression: the base dir was stored, so --latest reported "results not
+    found: <base>/summary.md" for every completed run."""
+    run = BenchmarkRun(
+        run_id="20260905-143200",
+        workload_name="chat",
+        started_at=datetime(2026, 8, 28, 14, 32, 0, tzinfo=UTC),
+        results=[],
+    )
+
+    with (
+        patch("llmbench.benchmark.cli.load_registry"),
+        patch("llmbench.benchmark.cli.run_benchmark", return_value=run),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(app, ["run", "--results-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+
+        # Where results.write_results puts it: <base>/<run_id>/summary.md.
+        run_dir = tmp_path / run.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "summary.md").write_text("# summary", encoding="utf-8")
+
+        shown = runner.invoke(app, ["show-results", "--latest"])
+        assert shown.exit_code == 0, shown.output
+        assert "# summary" in shown.output
+
+
 def test_run_without_model_or_family_exits_2():
     """#179: no exposed-models default — `benchmark run` with neither --model
     nor --family is a usage error (exit 2, the runner's message), and nothing

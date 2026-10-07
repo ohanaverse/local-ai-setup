@@ -27,7 +27,12 @@ benchmark_app.add_typer(eval_app, name="eval")
 
 
 def _record_latest(run: BenchmarkRun, run_dir: Path) -> None:
-    """Record the --latest pointer for a completed run in state."""
+    """Record the --latest pointer for a completed run in state.
+
+    `run_dir` is the run's OWN directory (`<results-dir>/<run_id>`), the one
+    holding `summary.md` — not the results base dir. `show-results --latest`
+    reads it back verbatim and appends `/summary.md`, so a base dir here makes
+    `--latest` fail with "results not found" for every completed run."""
     state = load_state()
     benchmarks = state.extra.setdefault("benchmarks", {})
     benchmarks["last_run"] = run.started_at.isoformat()
@@ -99,10 +104,11 @@ def run_cmd(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
 
-    _record_latest(run, results_dir or DEFAULT_RESULTS_DIR)
+    results_base = results_dir or DEFAULT_RESULTS_DIR
+    _record_latest(run, results_base / run.run_id)
 
     typer.echo(f"Benchmark complete: {run.run_id}")
-    typer.echo(f"Results: {(results_dir or DEFAULT_RESULTS_DIR) / run.run_id}")
+    typer.echo(f"Results: {results_base / run.run_id}")
 
 
 @benchmark_app.command("show-results")
