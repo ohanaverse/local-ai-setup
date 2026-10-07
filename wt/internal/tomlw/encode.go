@@ -90,7 +90,7 @@ func writeTable(b *strings.Builder, t *Table, name string, inAOT bool) error {
 			display = name + "." + display
 		}
 		if err := writeTable(b, sub.table, display, sub.inAOT); err != nil {
-			return err
+			return fmt.Errorf("%s: %w", sub.key, err)
 		}
 	}
 	return nil
@@ -212,15 +212,13 @@ func formatFloat(f float64) string {
 // formatTime prints t as Python's str() prints the matching datetime, date or
 // time. BurntSushi marks the three local kinds with a named zone at the
 // machine's offset; they are printed from their wall clock as parsed, never
-// converted — converting to UTC is the stock encoder's bug.
+// converted — converting to UTC is the stock encoder's bug. Python keeps
+// microseconds, and tomllib drops any digit past the sixth when it reads, so
+// the same digits are dropped here.
 func formatTime(t time.Time) string {
 	frac := ""
-	if ns := t.Nanosecond(); ns != 0 {
-		if ns%1000 == 0 {
-			frac = fmt.Sprintf(".%06d", ns/1000)
-		} else {
-			frac = fmt.Sprintf(".%09d", ns)
-		}
+	if us := t.Nanosecond() / 1000; us != 0 {
+		frac = fmt.Sprintf(".%06d", us)
 	}
 	switch t.Location().String() {
 	case "date-local":

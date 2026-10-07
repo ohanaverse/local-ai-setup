@@ -95,6 +95,9 @@ func TestEncodeKeepsALocalTimesWallClock(t *testing.T) {
 		{time.Date(0, 1, 1, 7, 32, 0, 5000, time.FixedZone("time-local", tokyo)), "v = 07:32:00.000005\n"},
 		{time.Date(2026, 10, 1, 12, 30, 0, 0, time.UTC), "v = 2026-10-01 12:30:00+00:00\n"},
 		{time.Date(2026, 10, 1, 12, 30, 0, 250000000, time.FixedZone("", -(7*60+30)*60)), "v = 2026-10-01 12:30:00.250000-07:30\n"},
+		// Past the sixth digit tomllib drops, it does not round.
+		{time.Date(1979, 5, 27, 7, 32, 0, 123456789, time.UTC), "v = 1979-05-27 07:32:00.123456+00:00\n"},
+		{time.Date(0, 1, 1, 7, 32, 0, 999, time.FixedZone("time-local", tokyo)), "v = 07:32:00\n"},
 	}
 	for _, c := range cases {
 		if got := encodeOne(t, "v", c.v); got != c.want {
@@ -179,5 +182,22 @@ func TestEncodeRefusesAValueItCannotWrite(t *testing.T) {
 	_, err := Encode(doc)
 	if err == nil || !strings.Contains(err.Error(), "bad") {
 		t.Fatalf("want an error naming the key, got %v", err)
+	}
+}
+
+// TestEncodeNamesTheTableOfAValueItCannotWrite pins that the error for a bad
+// value under a [header] table carries the whole key path, as it already does
+// for an inline row: "bad: cannot encode" alone does not say which of a
+// registry's many tables holds the key.
+func TestEncodeNamesTheTableOfAValueItCannotWrite(t *testing.T) {
+	doc := tableOf(t, "models", tableOf(t, "model_info", tableOf(t, "bad", uint8(1))))
+	_, err := Encode(doc)
+	if err == nil || !strings.Contains(err.Error(), "models: model_info: bad: ") {
+		t.Fatalf("want an error naming models, model_info and bad, got %v", err)
+	}
+	long := strings.Repeat("x", 120)
+	rows := tableOf(t, "models", []any{tableOf(t, "id", long, "bad", uint8(1))})
+	if _, err := Encode(rows); err == nil || !strings.Contains(err.Error(), "models: bad: ") {
+		t.Fatalf("want an error naming models and bad, got %v", err)
 	}
 }
