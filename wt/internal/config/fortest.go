@@ -9,8 +9,8 @@ import "os"
 // their tests launch stub agents, record usage, take profile locks and load
 // the config, and without this every run rewrote the real rotation.state with
 // a test model and appended wt-stub launches to the real usage.jsonl.
-// MODELMAN_REGISTRY is cleared for the same reason: it would send Load to the
-// developer's registry whatever XDG says. A test that sets its own
+// WT_REGISTRY and MODELMAN_REGISTRY are cleared for the same reason: either
+// would send Load to the developer's registry whatever XDG says. A test that sets its own
 // XDG_CONFIG_HOME (t.Setenv) still wins. The returned home names the
 // throwaway directory (its name is what
 // TestConfigHomeIsNotTheDevelopersOwn pins on); the returned cleanup removes
@@ -23,6 +23,8 @@ func IsolateConfigHomeForTest() (home string, cleanup func()) {
 		panic(err)
 	}
 	os.Setenv("XDG_CONFIG_HOME", dir)
-	os.Unsetenv("MODELMAN_REGISTRY")
+	for _, name := range registryEnvNames {
+		os.Unsetenv(name)
+	}
 	return dir, func() { os.RemoveAll(dir) }
 }

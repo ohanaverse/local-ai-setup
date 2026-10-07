@@ -202,6 +202,7 @@ func TestRun_EmptyConfig_Launches(t *testing.T) {
 // same source, and any other config error keeps its wording with no hint (this
 // editor is where those are fixed).
 func TestLoadedMsgLocationErrorNamesTheRegistry(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -232,6 +233,7 @@ func TestLoadedMsgLocationErrorNamesTheRegistry(t *testing.T) {
 // the extra lines take, so the view is still no taller than the terminal
 // (Bubble Tea drops a too-tall view's TOP lines: the title and this status).
 func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
 	cfg := &config.Config{
 		DefaultTag: "code",

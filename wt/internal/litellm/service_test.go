@@ -1286,6 +1286,7 @@ func redirectedRegistry(t *testing.T) string {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", home+"/scratch/registry.toml")
 	t.Setenv("WT_LITELLM_CONFIG", "")
 	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
@@ -1294,7 +1295,7 @@ func redirectedRegistry(t *testing.T) string {
 
 // TestRouteWritesRefuseARedirectedRegistry pins the guard against syncing a
 // scratch registry onto the real proxy config. The registry follows
-// MODELMAN_REGISTRY and XDG_CONFIG_HOME; config.yaml follows neither. So a run
+// WT_REGISTRY, MODELMAN_REGISTRY and XDG_CONFIG_HOME; config.yaml follows none of them. So a run
 // that redirects only the registry (an ad-hoc `modelman migrate` against a
 // throwaway registry did exactly this) reconciled the developer's real
 // config.yaml against it: every marked route the scratch registry lacked was
