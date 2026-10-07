@@ -111,6 +111,53 @@ func TestSuccessfulStartPrintsWhatOmlxUnloadedAboveTheAgent(t *testing.T) {
 	}
 }
 
+// TestUnloadedNoteIsTakenOnce verifies the note of one start is not repeated
+// on a later launch from the same picker. A start that succeeded hands its
+// note to the launch that follows; if that launch fails the picker comes back,
+// and the next launch failure the user sees there has nothing to do with what
+// omlx unloaded earlier. Without the clear in launchSelected the second
+// "launch failed" would again begin "omlx unloaded omlx/old", blaming a launch
+// that unloaded nothing.
+func TestUnloadedNoteIsTakenOnce(t *testing.T) {
+	stubRouteNotes(t)
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	m.agent = "not-a-real-agent"
+	stubStartModel(t, unloadingStart(nil, "omlx/old"))
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, recvStart(t, got))
+	if !strings.HasPrefix(got.status, "omlx unloaded omlx/old to make room; launch failed: ") {
+		t.Fatalf("status = %q, want the first failure to carry the note", got.status)
+	}
+	again, _ := got.launchSelected()
+	if !strings.HasPrefix(again.status, "launch failed: ") {
+		t.Errorf("second launch status = %q, want it to begin %q: the note belongs to the first launch only", again.status, "launch failed: ")
+	}
+}
+
+// TestUnloadedNoteIsShownWhenNoRowIsLeftToLaunch covers the one way a
+// successful start returns to the picker without reaching the launch: the
+// picker has no selected row by the time the start ends. That path used to say
+// only "no model selected" and leave the note on the model, where the next
+// failed launch would have shown it. The note must be on the status line now
+// and gone afterwards.
+func TestUnloadedNoteIsShownWhenNoRowIsLeftToLaunch(t *testing.T) {
+	stubRouteNotes(t)
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	stubStartModel(t, unloadingStart(nil, "omlx/old"))
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got.models.SetItems(nil) // nothing selected when the start reports
+	got, _ = updateMsg(got, recvStart(t, got))
+	if want := "omlx unloaded omlx/old to make room; no model selected"; got.status != want {
+		t.Errorf("status = %q, want %q", got.status, want)
+	}
+	if got.startNote != "" {
+		t.Errorf("startNote = %q, want it cleared: a later launch is not about this start", got.startNote)
+	}
+	if got.phase != phaseModel {
+		t.Errorf("phase = %v, want the picker", got.phase)
+	}
+}
+
 // TestUnloadedNoteSurvivesALongFailureAtEightyColumns verifies the note is
 // still on screen when the failure that follows it is longer than the
 // terminal. The status line is one line cut at the terminal's width, and
