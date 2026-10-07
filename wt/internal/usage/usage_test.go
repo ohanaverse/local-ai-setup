@@ -359,6 +359,17 @@ func TestStoreInterfaceIncludesCountsForAgent(t *testing.T) {
 	}
 }
 
+// TestStoreInterfaceIncludesAllCounts is a compile-time guard that the Store
+// interface exposes the id-less counts, so `wt stats` can take a Store (and
+// tests a mock) instead of the concrete StoreImpl — the same seam
+// CountsForAgent has above.
+func TestStoreInterfaceIncludesAllCounts(t *testing.T) {
+	var s Store = NewStoreAt(t.TempDir())
+	if got := s.AllCounts(""); got == nil || len(got) != 0 {
+		t.Errorf("AllCounts(\"\") = %#v, want an empty non-nil map", got)
+	}
+}
+
 // writeEvents replaces the store's usage.jsonl with the given events, plus
 // any raw lines appended verbatim (for malformed-line cases).
 func writeEvents(t *testing.T, store *StoreImpl, events []event, raw ...string) {

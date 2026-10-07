@@ -37,13 +37,10 @@ type ProxyEnv struct {
 }
 
 // IsSet reports whether name is set for the proxy. A variable set to the
-// empty string is set: LiteLLM reads it as "", not as None.
+// empty string is set: LiteLLM reads it as "", not as None. It is Lookup's
+// answer read as a boolean.
 func (e ProxyEnv) IsSet(name string) bool {
-	if e.ambient {
-		_, ok := os.LookupEnv(name)
-		return ok
-	}
-	_, ok := e.vars[name]
+	_, ok := e.Lookup(name)
 	return ok
 }
 

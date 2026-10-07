@@ -62,7 +62,10 @@ const connectTimeout = "3"
 var deadline = 10 * time.Second
 
 // lookPath finds psql. A seam: tests point it at a fake or fail it.
-var lookPath = exec.LookPath
+var lookPath = realLookPath
+
+// realLookPath is the production lookPath.
+func realLookPath(name string) (string, error) { return exec.LookPath(name) }
 
 // runPsql runs the psql binary and returns what it printed and its exit
 // status. A seam: no test may run the real psql against a real database.
@@ -112,7 +115,8 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	if err != nil {
 		return Result{}, ErrNoPsql
 	}
-	ctx, cancel := context.WithTimeout(ctx, deadline)
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, deadline)
 	defer cancel()
 
 	args := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", dsn, "-c", querySQL(start, end)}
@@ -123,12 +127,12 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	env := append(os.Environ(), "PGCONNECT_TIMEOUT="+connectTimeout, "PGTZ=UTC", "LC_MESSAGES=C")
 	stdout, stderr, exit, err := runPsql(ctx, bin, args, env)
 	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return Result{}, fmt.Errorf("%w: no answer within %s", ErrUnreachable, deadline)
-	case ctx.Err() != nil:
-		// The caller's context was cancelled: not a timeout, and nothing is
+	case parent.Err() != nil:
+		// The caller's own context ended: not our deadline, and nothing is
 		// known about the database.
 		return Result{}, fmt.Errorf("%w: cancelled before psql answered", ErrQuery)
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return Result{}, fmt.Errorf("%w: no answer within %s", ErrUnreachable, deadline)
 	case err != nil:
 		// The process could not be run at all. Go's error names the binary,
 		// never its arguments.

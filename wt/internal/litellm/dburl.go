@@ -93,11 +93,15 @@ func DatabaseURL() (string, error) {
 			ErrNoDatabase, path, has, proxyDatabaseEnv, looked)
 	}
 	v := strings.TrimSpace(n.Value)
-	name, isRef := strings.CutPrefix(v, environRef)
-	if !isRef {
+	if !strings.HasPrefix(v, environRef) {
 		return v, nil
 	}
-	if name == "" {
+	// The variable LiteLLM looks up is the value with every "os.environ/"
+	// dropped, not only the leading one (get_secret:
+	// secret_name.replace("os.environ/", "")) — the same rule
+	// ollamaServeWarnings applies to an api_base (configfile.go).
+	name := strings.ReplaceAll(v, environRef, "")
+	if strings.TrimSpace(name) == "" {
 		// No variable is named "": the sentence below would print two holes.
 		// The spelling gets its own message, as it does for an api_base
 		// (ollamaServeWarnings in configfile.go).
