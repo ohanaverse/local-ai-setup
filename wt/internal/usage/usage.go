@@ -39,6 +39,7 @@ type Store interface {
 	RecordFor(agent, modelID string) error
 	Counts(modelIDs []string) map[string]UsageCounts
 	CountsForAgent(agent string, modelIDs []string) map[string]UsageCounts
+	AllCounts(agent string) map[string]UsageCounts
 }
 
 // StoreImpl reads and appends to the usage history file.
@@ -144,28 +145,78 @@ func (s *StoreImpl) CountsForAgent(agent string, modelIDs []string) map[string]U
 	return s.countsWhere(modelIDs, func(ev event) bool { return agent != "" && ev.Agent == agent })
 }
 
+// AllCounts returns 1d/7d/30d counts for every model that has a launch in
+// the file within the last 30 days. Unlike Counts it takes no id list, so
+// it also reports models that have since left the registry — `wt stats`
+// has no other way to learn which models were launched. An empty agent
+// counts every launch, legacy agent-less lines included (the Counts rule);
+// a named agent counts only launches recorded for it (the CountsForAgent
+// rule). A model whose only events are older than 30 days is left out, so a
+// missing file and a stale one both read as an empty map. A line with no
+// model id is not a launch of any model and is left out too: wt never
+// writes one, and a hand-edited file must not give `wt stats` a row with no
+// name.
+func (s *StoreImpl) AllCounts(agent string) map[string]UsageCounts {
+	out := map[string]UsageCounts{}
+	s.scan(func(ev event, age time.Duration) {
+		if ev.ModelID == "" {
+			return
+		}
+		if agent != "" && ev.Agent != agent {
+			return
+		}
+		if age >= retentionWindow {
+			return
+		}
+		out[ev.ModelID] = out[ev.ModelID].add(age)
+	})
+	return out
+}
+
+// add returns c with one launch of the given age counted in every window
+// it falls inside.
+func (c UsageCounts) add(age time.Duration) UsageCounts {
+	if age < 24*time.Hour {
+		c.OneDay++
+	}
+	if age < 7*24*time.Hour {
+		c.SevenDay++
+	}
+	if age < retentionWindow {
+		c.ThirtyDay++
+	}
+	return c
+}
+
 // countsWhere returns 1d/7d/30d counts for each model in modelIDs, zero-filling
 // every requested ID (a missing file or a model with no recent events reads
 // as zero counts).
-//
-// Best-effort for display: if the scan aborts partway (e.g. a single corrupt
-// line exceeding bufio.Scanner's token limit), the counts accumulated so far
-// are returned with no error — a truncated read only skews displayed
-// numbers. RecordFor's prune path is where scan errors are surfaced, because
-// there the result overwrites the on-disk history.
 func (s *StoreImpl) countsWhere(modelIDs []string, match func(event) bool) map[string]UsageCounts {
-	want := map[string]bool{}
-	for _, id := range modelIDs {
-		want[id] = true
-	}
 	out := map[string]UsageCounts{}
 	for _, id := range modelIDs {
 		out[id] = UsageCounts{}
 	}
+	s.scan(func(ev event, age time.Duration) {
+		if _, want := out[ev.ModelID]; !want || !match(ev) {
+			return
+		}
+		out[ev.ModelID] = out[ev.ModelID].add(age)
+	})
+	return out
+}
 
+// scan calls fn once per parseable event in the file, with the event's age
+// as of now. A missing file yields no calls.
+//
+// Best-effort for display: if the scan aborts partway (e.g. a single corrupt
+// line exceeding bufio.Scanner's token limit), the events seen so far have
+// been reported and no error is returned — a truncated read only skews
+// displayed numbers. RecordFor's prune path is where scan errors are
+// surfaced, because there the result overwrites the on-disk history.
+func (s *StoreImpl) scan(fn func(ev event, age time.Duration)) {
 	f, err := os.Open(s.path())
 	if err != nil {
-		return out
+		return
 	}
 	defer f.Close()
 
@@ -176,21 +227,6 @@ func (s *StoreImpl) countsWhere(modelIDs []string, match func(event) bool) map[s
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			continue
 		}
-		if !want[ev.ModelID] || !match(ev) {
-			continue
-		}
-		age := today.Sub(ev.Timestamp.UTC())
-		c := out[ev.ModelID]
-		if age < 24*time.Hour {
-			c.OneDay++
-		}
-		if age < 7*24*time.Hour {
-			c.SevenDay++
-		}
-		if age < retentionWindow {
-			c.ThirtyDay++
-		}
-		out[ev.ModelID] = c
+		fn(ev, today.Sub(ev.Timestamp.UTC()))
 	}
-	return out
 }
