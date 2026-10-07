@@ -308,6 +308,36 @@ func TestQueryCancelledIsNotATimeout(t *testing.T) {
 	}
 }
 
+// TestQueryKeepsARunThatAnswersAtTheDeadline verifies a psql that finishes
+// with exit 0 as the deadline fires keeps its answer: a completed run is an
+// answer, and reporting "no answer within 20ms" over the rows it printed
+// would cost a report its spend columns for nothing. The stub answers at
+// the instant the deadline expires, so the outcome and the timeout arrive
+// in the same classification step.
+func TestQueryKeepsARunThatAnswersAtTheDeadline(t *testing.T) {
+	old := deadline
+	deadline = 20 * time.Millisecond
+	t.Cleanup(func() { deadline = old })
+	oldLook, oldRun := lookPath, runPsql
+	lookPath = func(string) (string, error) { return "/fake/psql", nil }
+	runPsql = func(c context.Context, bin string, args, env []string) ([]byte, []byte, int, error) {
+		select {
+		case <-c.Done():
+		case <-time.After(time.Second): // keeps the test bounded should the deadline ever stop firing
+		}
+		return []byte(`[{"model":"m","requests":1,"prompt_tokens":0,"completion_tokens":0,"spend":0}]`), nil, 0, nil
+	}
+	t.Cleanup(func() { lookPath, runPsql = oldLook, oldRun })
+
+	got, err := Query(context.Background(), "postgresql://h/db", winStart, winEnd)
+	if err != nil {
+		t.Fatalf("err = %v, want the rows psql printed at the deadline", err)
+	}
+	if len(got.Rows) != 1 || got.Rows[0].Model != "m" || got.Rows[0].Requests != 1 {
+		t.Errorf("Rows = %+v, want the answered row", got.Rows)
+	}
+}
+
 // TestQueryNeverLeaksTheConnectionString verifies the only pieces of a
 // connection string an error can show are the host and port, and those only
 // when the string is written so libpq cannot have taken them from the user

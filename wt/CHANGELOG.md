@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- `wt stats` reports launches and LiteLLM spend per model. Below the survey
+  table it prints a second table for the same `--window`: MODEL, LAUNCHES,
+  REQUESTS, PROMPT, COMPLETION, SPEND. Launches come from `usage.jsonl`;
+  the rest is one query against the proxy's `"LiteLLM_SpendLogs"` table
+  through `psql`. The database is found the way the proxy finds it, with
+  nothing to export: `WT_LITELLM_DATABASE_URL` (legacy alias
+  `MODELMAN_LITELLM_DATABASE_URL`), else `general_settings.database_url` in
+  LiteLLM's `config.yaml`, else `DATABASE_URL` — an `os.environ/NAME` value
+  and `DATABASE_URL` are read from wt's environment and then from the
+  proxy's LaunchAgent plist. Without `psql`, a reachable database or a
+  configured URL, the launch counts still print, the spend cells show `-`,
+  one note on stderr says why (an unreachable database is named by host and
+  port, and by nothing else from the connection string), and the exit code
+  stays 0. Requests the proxy logged under the other spelling of a wt id —
+  `mtplx/Org/Name` for `mtplx/Org--Name` — are added to that id's row, when
+  the logged id is not itself a registry or launched id. `--family` narrows
+  the new table; `--agent` narrows its launch counts and leaves spend out.
+  `--family` is `stats`' own flag and takes one exact family: the root
+  command's `-F` shorthand, which `wt stats` used to accept and ignore, is
+  now an error there. This replaces `modelman usage report`, which still works until modelman
+  is removed. Not carried over: `--days N`, the Markdown output, the
+  Reconciliation sections and the "Last wt launch" line.
+
 ### Changed
 
 - omlx is handled as the multi-model pool it is (#213). `wt start` loads an

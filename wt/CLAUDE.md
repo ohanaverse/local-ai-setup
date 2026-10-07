@@ -83,7 +83,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
-- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/litellm` and `internal/survey` point `XDG_CONFIG_HOME` at a throwaway directory, stub the inventory probe, hard-fail model starts, and no-op the route check. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/litellm` and `internal/survey` point `XDG_CONFIG_HOME` at a throwaway directory, stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
@@ -100,7 +100,7 @@ From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint 
 
 ## Go module
 
-Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,configeditor,ollamacheck,catalog,localmodels,lifecycle,litellm,smoke}`.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,configeditor,ollamacheck,catalog,localmodels,lifecycle,litellm,spend,smoke}`.
 
 | Path | Purpose |
 |---|---|
@@ -112,14 +112,16 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/start.go` | `startForLaunch` — non-TUI start driver: stderr progress, Ctrl+C cancel, replace confirmation, `allowReplace` |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers; TTY seams and picker-TTY errors |
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `launchFiltered` (`launchFilteredImpl`), `launchPassthroughImpl`, `runAgentCmd`; profile apply (`applyProfileForLaunch`, `applyResolvedProfile`) |
-| `cmd/wt/stats.go` | `wt stats` — read-only report over `survey.jsonl` |
+| `cmd/wt/stats.go` | `wt stats` — read-only report: the survey table over `survey.jsonl`, then the usage table |
+| `cmd/wt/stats_usage.go` | `wt stats`' usage half: `collectUsage` (launches from `usage.jsonl` joined with LiteLLM spend), `buildUsageRows`, the `querySpend` and `stdoutWidth` seams |
+| `cmd/wt/stats_usage_table.go` | `renderUsageTable` — the borderless, width-aware usage table (an id is never truncated) |
 | `cmd/wt/model_cmds.go` | `wt start` / `wt stop` |
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |
 | `cmd/wt/profile.go` | `wt profile list/show/status/on/off`; `setEnabledLine`'s surgical `enabled = ...` edit |
 | `cmd/wt/litellm.go` | `wt litellm ...` |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
-| `internal/usage/` | append-only JSONL launch history (1d/7d/30d); `RecordFor` tags the agent; `CountsForAgent` per agent×model, legacy agent-less lines count toward `Counts` only |
+| `internal/usage/` | append-only JSONL launch history (1d/7d/30d); `RecordFor` tags the agent; `CountsForAgent` per agent×model, legacy agent-less lines count toward `Counts` only; `AllCounts(agent)` enumerates every model in the file (for `wt stats`) |
 | `internal/refcount/` | live-session "in use" counts: JSONL keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point |
 | `internal/survey/` | post-session survey + stats; stop picker and stop loop (`Picker`, `PickerWith`, `StopCandidates`, `StopEntries`) |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, capabilities), picker catalog, drivers, `RunAndCleanup` (shared apply-run-cleanup core for both launch paths), `BuildPassthroughCmd` |
@@ -128,7 +130,8 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/catalog/` | the shared row policy for every model list wt shows or resolves: `Build` (local rows only from the inventory), `Find` (includes discovered rows), `MissingReason` (why a pinned registry id has no row), `Row.Action` (launch/start/block), `Row.BlockReason`, presence status (`ok`/`unknown`; `new` for discovered, including discovered models handed in via `Input.Models`). No rendering, counts or sorting |
 | `internal/localmodels/` | local inventory — see [Local-model resolution](#local-model-resolution) |
 | `internal/lifecycle/` | local-model start/stop engine — see [Lifecycle](#lifecycle-internallifecycle) |
-| `internal/litellm/` | the sole implementation of LiteLLM `config.yaml` route management (replaced modelman's Python writer): `configfile.go`, `entry.go`/`policy.go` (entries, provider mappings), `service.go` (`ApplyChange` — the targeted route writer the lifecycle hook uses, its unit `Change` with `RemoveFamilies`; `DiscoveredModel`, `RowFamily`; `Sync`/`PlanSync`), `restart.go` (`RestartContext`, `Listening`, `WaitReady`) |
+| `internal/litellm/` | the sole implementation of LiteLLM `config.yaml` route management (replaced modelman's Python writer): `configfile.go`, `entry.go`/`policy.go` (entries, provider mappings), `service.go` (`ApplyChange` — the targeted route writer the lifecycle hook uses, its unit `Change` with `RemoveFamilies`; `DiscoveredModel`, `RowFamily`; `Sync`/`PlanSync`), `restart.go` (`RestartContext`, `Listening`, `WaitReady`), `dburl.go` (`DatabaseURL` — the spend database's connection string; reads, never writes) |
+| `internal/spend/` | per-model request, token and cost totals from the proxy's `"LiteLLM_SpendLogs"` table: one aggregated query through `psql` (`Query`), typed failures (`ErrNoConnectionString` for a blank string, refused before `psql` is looked for; `ErrNoPsql`, `ErrUnreachable`, `ErrQuery`), no Postgres driver |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | repo detection, enumeration, creation |
 | `internal/initseed/` | `--init` seeding |
@@ -241,6 +244,7 @@ Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row dire
 - **An `os.environ/VAR` api_base stays as written**; "set for the proxy" comes from `litellm.ProxyEnv` (the LaunchAgent plist), which `os.Getenv` cannot answer.
 - `status` shows the api key only as `api_key_set` / last 4 chars.
 - Path `WT_LITELLM_CONFIG`, default `~/.config/litellm/config.yaml`; restart `WT_LITELLM_RESTART_CMD`, else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. A redirected registry without `WT_LITELLM_CONFIG` is refused (`litellm.ErrRegistryRedirected`).
+- The spend database is `litellm.DatabaseURL()`: `WT_LITELLM_DATABASE_URL`, legacy `MODELMAN_LITELLM_DATABASE_URL`, then `general_settings.database_url` in `config.yaml`. An `os.environ/NAME` value — and `DATABASE_URL`, when `config.yaml` names no `database_url` — is looked up in wt's own environment and then in the proxy's (`ProxyEnv.Lookup` over `LoadProxyEnv`, the LaunchAgent plist); wt's own wins, and a blank value is unset everywhere. Read-only, used only by `wt stats`; under a redirected registry with `config.yaml` unnamed it answers `ErrNoDatabase` rather than read the default file or the plist. Its errors name variables and files, never a value; a `spend.ErrUnreachable` names the host and port `psql` tried and nothing else from the connection string.
 
 Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before changing sync's desired set, row ownership or adoption, the `api_base` repair, ollama-serve warnings, or `config.yaml` I/O.
 
@@ -295,7 +299,7 @@ wt start <id> --plan --json          # dry run: what a start would unload (statu
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt profile show -A <agent> -M <id>   # dry-run profile resolution
-wt stats                             # survey report
+wt stats [--window 7d] [--family F]  # survey table, then launches and LiteLLM spend per model
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
 make test-agents                     # live agent × model matrix in both routing modes
                                      # (flips routing via `wt litellm off|on`, snapshotting and restoring wt's config.toml; --modes current for one pass)

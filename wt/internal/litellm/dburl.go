@@ -28,6 +28,23 @@ const environRef = "os.environ/"
 // names no database_url.
 const proxyDatabaseEnv = "DATABASE_URL"
 
+// aliasValue resolves a value written as a whole-value YAML alias —
+// `general_settings: *base`, `database_url: *conn` — to the node the anchor
+// holds, as LiteLLM's own YAML loader resolves one before reading it. An
+// unresolved alias is not "the value is not a string": it is the value the
+// anchor holds. The same rule ollamaServeWarnings states and applies for the
+// rows it scans (configfile.go). The chase is bounded but not recursive: an
+// anchor may name an anchor, and a self-referential one must not loop.
+func aliasValue(n *yaml.Node) *yaml.Node {
+	for i := 0; i < 32; i++ {
+		if n == nil || n.Kind != yaml.AliasNode || n.Alias == nil {
+			return n
+		}
+		n = n.Alias
+	}
+	return n
+}
+
 // DatabaseURL resolves the connection string of the database the LiteLLM
 // proxy logs spend to, the way the proxy itself would see it:
 // WT_LITELLM_DATABASE_URL, then the legacy MODELMAN_LITELLM_DATABASE_URL,
@@ -35,7 +52,9 @@ const proxyDatabaseEnv = "DATABASE_URL"
 // WT_LITELLM_CONFIG is honored). A config value of the form os.environ/NAME
 // is looked up in wt's own environment and then in the proxy's (proxyVar).
 // When config.yaml exists and names no database_url, DATABASE_URL is looked
-// up the same two ways — LiteLLM's own fallback.
+// up the same two ways — LiteLLM's own fallback. A value written as a whole
+// YAML alias is resolved first, the way the loader LiteLLM runs resolves
+// one (aliasValue).
 //
 // A value that is empty or only whitespace counts as unset, whatever it came
 // from: handed to psql it is a connection string with no host, and libpq
@@ -73,7 +92,8 @@ func DatabaseURL() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	n := mergedGet(mergedGet(f.root(), "general_settings"), "database_url")
+	gs := aliasValue(mergedGet(f.root(), "general_settings"))
+	n := aliasValue(mergedGet(gs, "database_url"))
 	if n == nil || n.Kind != yaml.ScalarNode || isNull(n) || strings.TrimSpace(n.Value) == "" {
 		v, looked := proxyVar(proxyDatabaseEnv)
 		if v != "" {

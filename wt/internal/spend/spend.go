@@ -127,6 +127,11 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	env := append(os.Environ(), "PGCONNECT_TIMEOUT="+connectTimeout, "PGTZ=UTC", "LC_MESSAGES=C")
 	stdout, stderr, exit, err := runPsql(ctx, bin, args, env)
 	switch {
+	case err == nil && exit == 0:
+		// psql answered: its output is parsed below, even when the deadline
+		// or the caller's context fired in the same instant. A run that
+		// completed is an answer; testing the clock first would report "no
+		// answer within …" over the rows psql just printed.
 	case parent.Err() != nil:
 		// The caller's own context ended: not our deadline, and nothing is
 		// known about the database.
