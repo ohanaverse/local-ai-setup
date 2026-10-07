@@ -242,3 +242,88 @@ func TestInventoryOmlxListedButUnloadedIsNotRunning(t *testing.T) {
 		t.Errorf("mixed pool, status refused: status = %q down = %v, want %q and not down", got, snap.Down["omlx"], StatusPartial)
 	}
 }
+
+// TestInventoryMarksAnOmlxModelMidLoad pins #259 at its source. omlx counts a
+// model that is still loading as occupying the pool, and the inventory read
+// that as plain Running: `wt start` on it printed "already running" and
+// returned, and a launch handed an agent a model that could not answer yet.
+// The entry now says Loading as well, for a registered model and a discovered
+// one alike, and only for the model that is mid-load.
+func TestInventoryMarksAnOmlxModelMidLoad(t *testing.T) {
+	dir := t.TempDir()
+	mkOmlxModels(t, dir, "A", "B", "C")
+	// A and B are registered; C is on disk only, so its entry is discovered.
+	models := []config.Model{{ID: "omlx/A", ProviderID: "omlx", ModelName: "A"}, {ID: "omlx/B", ProviderID: "omlx", ModelName: "B"}}
+	for _, loading := range []string{"A", "C"} {
+		t.Run(loading, func(t *testing.T) {
+			srv := &fakeOmlx{listed: []string{"A", "B", "C"}, pool: map[string]bool{"A": false, "B": true, "C": false}, loading: loading}
+			snap := inventory(&config.Config{Providers: []config.Provider{localProvider("omlx", srv.serve(t), dir)}, Models: models}, testClient)
+			for _, id := range []string{"omlx/A", "omlx/B", "omlx/C"} {
+				en, ok := byModelID(snap, id)
+				if !ok {
+					t.Fatalf("no entry for %s", id)
+				}
+				wantLoading := id == "omlx/"+loading
+				wantRunning := wantLoading || id == "omlx/B"
+				if en.Running != wantRunning || en.Loading != wantLoading {
+					t.Errorf("%s: Running=%v Loading=%v, want %v/%v", id, en.Running, en.Loading, wantRunning, wantLoading)
+				}
+			}
+		})
+	}
+}
+
+// TestInventoryFallbackPoolReadingNeverSaysLoading pins the limit of #259's
+// fix: a keyed omlx whose key the registry does not name answers only through
+// /health and the list, which cannot see a model mid-load. Such a model reads
+// as not running, as it did before, and is never marked Loading — a flag wt
+// invented there would make `wt start` wait on a load it cannot observe.
+func TestInventoryFallbackPoolReadingNeverSaysLoading(t *testing.T) {
+	dir := t.TempDir()
+	mkOmlxModels(t, dir, "A")
+	srv := &fakeOmlx{listed: []string{"A"}, pool: map[string]bool{"A": false}, loading: "A", key: "sk-omlx"}
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("omlx", srv.serve(t), dir)},
+		Models:    []config.Model{{ID: "omlx/A", ProviderID: "omlx", ModelName: "A"}},
+	}
+	snap := inventory(cfg, testClient)
+	en, ok := byModelID(snap, "omlx/A")
+	if !ok || en.Running || en.Loading {
+		t.Errorf("omlx/A = %+v ok=%v, want an entry that is neither running nor loading", en, ok)
+	}
+	if snap.OmlxPool == nil || snap.OmlxPool.SizesKnown {
+		t.Errorf("pool = %+v, want the fallback reading (no sizes)", snap.OmlxPool)
+	}
+}
+
+// TestInventoryLoadingFlagEdges covers two readings the plain mid-load case
+// does not. omlx can report a model loaded and is_loading at once (a reload):
+// it can answer, so it is running and not Loading, and stays a launch row. And
+// two registry rows, omlx and omlx-6bit, can name the one model that is
+// mid-load: both entries must say Loading, or the row that does not would be
+// offered for launch while the other is offered for start.
+func TestInventoryLoadingFlagEdges(t *testing.T) {
+	dir := t.TempDir()
+	mkOmlxModels(t, dir, "A")
+	run := func(f *fakeOmlx, models ...config.Model) Snapshot {
+		url := f.serve(t)
+		return inventory(&config.Config{
+			Providers: []config.Provider{localProvider("omlx", url, dir), localProvider("omlx-6bit", url, dir)},
+			Models:    models,
+		}, testClient)
+	}
+	plain := config.Model{ID: "omlx/A", ProviderID: "omlx", ModelName: "A"}
+	sixBit := config.Model{ID: "omlx-6bit/A", ProviderID: "omlx-6bit", ModelName: "A"}
+
+	snap := run(&fakeOmlx{listed: []string{"A"}, pool: map[string]bool{"A": true}, loading: "A"}, plain)
+	if en, _ := byModelID(snap, "omlx/A"); !en.Running || en.Loading {
+		t.Errorf("loaded and is_loading: Running=%v Loading=%v, want running and not loading", en.Running, en.Loading)
+	}
+
+	snap = run(&fakeOmlx{listed: []string{"A"}, pool: map[string]bool{"A": false}, loading: "A"}, plain, sixBit)
+	for _, id := range []string{"omlx/A", "omlx-6bit/A"} {
+		if en, ok := byModelID(snap, id); !ok || !en.Running || !en.Loading {
+			t.Errorf("%s = %+v ok=%v, want running and loading", id, en, ok)
+		}
+	}
+}

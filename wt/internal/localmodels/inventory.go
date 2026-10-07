@@ -63,6 +63,14 @@ type Entry struct {
 	ModelName  string // provider-side name: the registry model_name when registered, else the artifact name
 	Registered bool
 	Running    bool // serving right now (live probe only)
+	// Loading: omlx reports the model mid-load, not loaded yet (#259). Running
+	// is true as well — a loading model occupies the pool, keeps its route and
+	// is still offered by `wt stop` — but it cannot answer a request yet, so a
+	// start waits for it and the pickers do not offer it for launch. Only
+	// omlx's status reading can say so: it is false for every other family, and
+	// for an omlx that answered through the fallback reading (Pool.SizesKnown
+	// false).
+	Loading bool
 	// ArtifactKnown reports whether the probe actually determined this entry's
 	// artifact presence. False means unknown, NOT missing: the family's
 	// discovery failed (StatusUnreachable, so artifacts was never populated) or
@@ -220,6 +228,19 @@ func (s *source) isRunning(name string) bool {
 		return len(s.loaded) > 0 && s.registered == 1
 	}
 	return false
+}
+
+// isLoading reports whether the model name denotes is mid-load: the omlx pool
+// lists it loading and not loaded. It asks Pool.Find, so the name resolves to
+// the same pool model a load or unload of it would act on. The fallback pool
+// reading marks every model it names loaded, and no other family has a pool,
+// so both answer false.
+func (s *source) isLoading(name string) bool {
+	if s.pool == nil {
+		return false
+	}
+	m, ok := s.pool.Find(name)
+	return ok && m.Loading && !m.Loaded
 }
 
 // familyOrigin is the probe origin for a family: the first registry provider
@@ -507,6 +528,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				name = m.ModelName
 			}
 			e.Running = src.isRunning(name)
+			e.Loading = e.Running && src.isLoading(name)
 		}
 		snap.Entries = append(snap.Entries, e)
 	}
@@ -540,12 +562,14 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 			if consumed[f+"\x00"+a] {
 				continue
 			}
+			running := src.isRunning(a)
 			snap.Entries = append(snap.Entries, Entry{
 				ProviderID:    familyProviderID(cfg, f),
 				Artifact:      a,
 				ModelID:       config.DiscoveredModelID(f, a),
 				ModelName:     a,
-				Running:       src.isRunning(a),
+				Running:       running,
+				Loading:       running && src.isLoading(a),
 				ArtifactKnown: true,
 			})
 		}
