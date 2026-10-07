@@ -127,6 +127,15 @@ var statsNow = func() time.Time { return time.Now().UTC() }
 
 var surveyHeaders = []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}
 
+// surveyEmptyStats reports a Stats with no answered and no skipped events:
+// the model (or the agent×model pair) produced no survey data in the window.
+// Row selection (buildStatsRows) and both renderers (surveyTableRows,
+// buildStatsJSON) drop such rows — one rule, so the rows a --json document
+// holds are the same rows the text tables show. Rows with answered == 0 but
+// skipped > 0 ("all skipped") are kept: they show the combo was tried but
+// never produced data.
+func surveyEmptyStats(s survey.Stats) bool { return s.Answered == 0 && s.Skipped == 0 }
+
 // surveyTableRows renders the survey rows as table cells.
 func surveyTableRows(rows []statsRow) [][]string {
 	tableRows := make([][]string, 0, len(rows))
@@ -134,12 +143,9 @@ func surveyTableRows(rows []statsRow) [][]string {
 		quality, qok := r.Stats.QualityAvg()
 		speed, sok := r.Stats.SpeedAvg()
 
-		// Exclude rows with no data: rows where both Answered == 0 and
-		// Skipped == 0 have no survey information at all. Rows with
-		// Answered == 0 but Skipped > 0 ("all skipped") are kept to show
-		// that the agent×model combo was tried but never produced data.
-		// buildStatsRows applies the same rule.
-		if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
+		// buildStatsRows already applied this rule; repeated here so a row
+		// reaching the renderer from anywhere else is dropped the same way.
+		if surveyEmptyStats(r.Stats) {
 			continue
 		}
 
@@ -194,7 +200,7 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 			continue
 		}
 		if agentFilter == "" {
-			if s := modelStats[id]; s.Answered > 0 || s.Skipped > 0 {
+			if s := modelStats[id]; !surveyEmptyStats(s) {
 				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
 			}
 		}
@@ -206,7 +212,7 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 		if agentFilter != "" && c.Agent != agentFilter {
 			continue
 		}
-		if c.Stats.Answered == 0 && c.Stats.Skipped == 0 {
+		if surveyEmptyStats(c.Stats) {
 			continue
 		}
 		rows = append(rows, statsRow{ModelID: c.ModelID, Agent: c.Agent, Stats: c.Stats})
