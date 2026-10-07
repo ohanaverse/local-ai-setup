@@ -86,6 +86,27 @@ func TestDatabaseURLEnvNeedsNoConfigFile(t *testing.T) {
 	}
 }
 
+// TestDatabaseURLResolvesAliasedValues verifies a value written as a YAML
+// alias — the database_url itself, or the whole general_settings mapping —
+// is resolved to what its anchor holds, the way LiteLLM's loader resolves
+// one. Without the resolution the alias node reads as "not a string" and
+// wt stats reports no LiteLLM database on a machine whose proxy is logging
+// spend through exactly such a config.yaml.
+func TestDatabaseURLResolvesAliasedValues(t *testing.T) {
+	for _, body := range []string{
+		// The database_url itself is an alias.
+		"conn: &conn postgresql://aliased/db\ngeneral_settings:\n  database_url: *conn\n",
+		// The whole general_settings mapping is an alias.
+		"base: &gs\n  database_url: postgresql://aliased/db\ngeneral_settings: *gs\n",
+	} {
+		dbConfig(t, body)
+		got, err := DatabaseURL()
+		if err != nil || got != "postgresql://aliased/db" {
+			t.Errorf("body:\n%s\nDatabaseURL() = %q, %v; want the anchor's value", body, got, err)
+		}
+	}
+}
+
 // TestDatabaseURLResolvesAnEnvironReference verifies a config value written
 // the way LiteLLM's own docs write it — os.environ/NAME — is resolved the way
 // the proxy would see it: from wt's own environment, else from the proxy's
