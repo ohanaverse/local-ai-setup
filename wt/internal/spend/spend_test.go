@@ -306,6 +306,12 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 		{"an @ in the password, read as the host", "postgresql://FAKEuser:FAKEp@ss@db.example:5432/FAKEdb",
 			"psql: error: could not translate host name \"ss@db.example\" to address: nodename nor servname provided, or not known\n", 2,
 			"cannot reach the LiteLLM database: the database host name did not resolve"},
+		{"an @ in the password, then a comma, read as a host list", "postgresql://FAKEuser:FAKEp@ss,word@db.example:5432/FAKEdb",
+			"psql: error: could not translate host name \"ss\" to address: nodename nor servname provided, or not known\n", 2,
+			"cannot reach the LiteLLM database: the database host name did not resolve"},
+		{"an @ in the password, then a comma, read as a host list that refuses", "postgresql://FAKEuser:FAKEp@ss,word@db.example:5432/FAKEdb",
+			"psql: error: connection to server at \"ss\" (10.0.0.7), port 5432 failed: Connection refused\n", 2,
+			"cannot reach the LiteLLM database: Connection refused"},
 		{"an @ in the password, and a tail that is a host name", "postgresql://FAKEuser:FAKEp@ss.example:54321/x@db.example:5432/FAKEdb",
 			"psql: error: connection to server at \"ss.example\" (10.0.0.7), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
@@ -328,7 +334,7 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 			if err.Error() != c.want {
 				t.Errorf("err = %q\nwant  %q", err, c.want)
 			}
-			for _, piece := range []string{"FAKE", "zzword", "ss@", "ss.example", "54321", "10.0.0", "%", "postgresql://"} {
+			for _, piece := range []string{"FAKE", "zzword", "ss@", "ss:", "at ss", "ss.example", "54321", "10.0.0", "%", "postgresql://"} {
 				if strings.Contains(err.Error(), piece) {
 					t.Errorf("err = %q leaks %q from the connection string", err, piece)
 				}

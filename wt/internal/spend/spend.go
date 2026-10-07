@@ -252,8 +252,10 @@ func address(host, port, socket string) string {
 // libpq splits a URI at the first "/" or "@" it meets, so a password with
 // an unencoded "/" turns user:password into host:port — `u:1234/x@db` is
 // host "u", port 1234. That leaves an "@" after the authority, where a
-// well-formed URI has none. (An unencoded "@" in a password puts its tail
-// in the host, which hostShape then refuses.) In a keyword string, a
+// well-formed URI has none. An unencoded "@" in a password puts its tail in
+// the host; hostShape refuses most tails, but not one that a "," makes look
+// like a host list (`p@ss,word@db` reads hosts "ss" and "word@db"), so a
+// URI with more than one "@" in its authority is refused too. In a keyword string, a
 // password with an unquoted space ends early, and what follows it can be
 // read as a port. For any such string the address is left out of the error;
 // the reason alone is still shown.
@@ -264,7 +266,11 @@ func plainAddress(dsn string) bool {
 	}
 	if isURI {
 		i := strings.IndexAny(rest, "/?#")
-		return i < 0 || !strings.Contains(rest[i:], "@")
+		authority := rest
+		if i >= 0 {
+			authority = rest[:i]
+		}
+		return strings.Count(authority, "@") <= 1 && (i < 0 || !strings.Contains(rest[i:], "@"))
 	}
 	// A keyword/value string: every field a plain key=value, and the address
 	// written before the user and password, never after them.
