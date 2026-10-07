@@ -127,6 +127,8 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			}
 		}
 		if len(targets) == 0 {
+			// modelman matches the text of these two refusals: reword them
+			// only together with it (TestRefusalsKeepTheWordingModelmanMatches).
 			if config.IndexModelByID(cfg.Models, arg) >= 0 {
 				return fmt.Errorf("model %q is not running", arg)
 			}
