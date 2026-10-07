@@ -17,18 +17,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-
-class WtBridgeError(Exception):
-    """wt could not process the request (nothing was changed)."""
-
-
-class WtNotFoundError(WtBridgeError):
-    """The wt binary is not on PATH."""
-
-
-class WtBridgeTimeoutError(WtBridgeError):
-    """wt timed out; a write it was doing (`sync`) may have already applied
-    to config.yaml before the kill."""
+# One exception hierarchy for both packages: llmbench's lifecycle raises these
+# from its own `wt warm` call, and modelman's callers catch them by these
+# names. WtBridgeTimeoutError on a `sync` means the write may have already
+# applied to config.yaml before the kill.
+from llmbench.wt_bridge import WtBridgeError as WtBridgeError
+from llmbench.wt_bridge import WtBridgeTimeoutError as WtBridgeTimeoutError
+from llmbench.wt_bridge import WtNotFoundError as WtNotFoundError
 
 
 class WtRegistryRedirectedError(WtBridgeError):

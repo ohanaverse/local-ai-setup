@@ -13,17 +13,10 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 
-
-@dataclass
-class ProcessResult:
-    provider: str
-    model: str
-    direct_url: str
-    ok: bool
-    error: str | None
-
+# One ProcessResult for both packages: the lifecycle that builds it lives in
+# llmbench, and modelman's start/stop read what it returns.
+from llmbench.local_process import ProcessResult as ProcessResult
 
 # Provider ids whose lifecycle backend resolves its model from a single
 # LLM_ISOLATE_*_MODEL env var (backends/base.py's _resolve_model).
