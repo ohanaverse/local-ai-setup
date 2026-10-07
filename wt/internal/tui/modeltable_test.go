@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +246,42 @@ func TestRenderTableStartRowNotStartableWhenRouteUnresolvable(t *testing.T) {
 	it := tbl.items[0]
 	if it.start || it.blocked == "" || it.exception != "(litellm required)" {
 		t.Errorf("start=%v blocked=%q exception=%q, want a blocked, non-startable row", it.start, it.blocked, it.exception)
+	}
+}
+
+// TestRenderTableShowsALoadingModelAsLoad pins #259 in the picker. A model
+// omlx is still loading used to render as "run" and launch on Enter, handing
+// the agent a model that could not answer. Its RUNNING cell now reads "load"
+// and Enter starts it, which joins the load and waits. "load" fits the
+// column's fixed width, so the header and the other rows do not move, and
+// the loading row's own later columns stay under their headers: its line is
+// the running row's with the one cell changed.
+func TestRenderTableShowsALoadingModelAsLoad(t *testing.T) {
+	rows := tableTestRows()
+	// omlx/Qwen3.8-27B-4bit: Running and Loading. The shared rows leave its
+	// provider empty, which a launch row never needs and a start row does.
+	rows[1].Loading, rows[1].Model.ProviderID = true, "omlx"
+	tbl := renderTable(rows, nil, "", nil, "")
+	it := tbl.items[1]
+	fields := strings.Fields(it.line)
+	if !slices.Contains(fields, "load") || slices.Contains(fields, "run") {
+		t.Errorf("loading line = %q, want a RUNNING cell of load", it.line)
+	}
+	if !it.start || it.blocked != "" {
+		t.Errorf("loading row: start = %v blocked = %q, want a start row", it.start, it.blocked)
+	}
+	plain := renderTable(tableTestRows(), nil, "", nil, "")
+	if plain.header != tbl.header {
+		t.Errorf("a loading row changed the header:\n%q\n%q", plain.header, tbl.header)
+	}
+	for i := range plain.items {
+		want := plain.items[i].line
+		if i == 1 {
+			// Same width, so every column after RUNNING keeps its place.
+			want = strings.Replace(want, " run ", " load", 1)
+		}
+		if tbl.items[i].line != want {
+			t.Errorf("row %d moved or changed beside a loading row:\n got %q\nwant %q", i, tbl.items[i].line, want)
+		}
 	}
 }

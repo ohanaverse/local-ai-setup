@@ -1607,3 +1607,29 @@ func TestLaunchAfterStartSkipsEnsureRoute(t *testing.T) {
 		t.Fatalf("status = %q, want the launch to have been attempted", next.status)
 	}
 }
+
+// TestEnterOnALoadingRowJoinsTheLoad drives #259 through the real picker: the
+// inventory reports the model mid-load, and Enter on its row must run the
+// start flow (whose engine waits for the load) instead of launching the agent
+// on a model that cannot answer yet. The row is not marked by hand: it is a
+// start row because the catalog says a loading row is.
+func TestEnterOnALoadingRowJoinsTheLoad(t *testing.T) {
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true, Loading: true},
+	}})
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	m := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	idx := indexOfID(m, "omlx/qwen3.8")
+	if idx < 0 {
+		t.Fatalf("no row for the loading model in %v", itemIDs(m))
+	}
+	m.models.Select(idx)
+	got, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.phase != phaseStarting {
+		t.Fatalf("phase = %v, want phaseStarting: Enter on a loading row must start, not launch", got.phase)
+	}
+	waitStartCalls(t, calls, 1)
+	if id := calls.at(0).target.ModelID; id != "omlx/qwen3.8" {
+		t.Errorf("started %q, want omlx/qwen3.8", id)
+	}
+}

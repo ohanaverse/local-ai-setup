@@ -694,3 +694,19 @@ func TestStopEntriesSkipsSettleWhenNothingOwed(t *testing.T) {
 		t.Errorf("every stop failed: settles = %d, want 0", allFailed.settles)
 	}
 }
+
+// TestStopCandidatesIncludeAModelMidLoad verifies the loading flag does not
+// hide a model from `wt stop`: it stays a stop candidate, in `wt stop <id>` and
+// in the stop picker. A user who sees the model occupying the pool must be able
+// to name it there. (omlx 0.7.0 refuses to unload a model mid-load, so the stop
+// itself reports that omlx is still loading <id> and will not unload it
+// mid-load; `wt stop omlx` is what calls a load off, and the message says so.)
+func TestStopCandidatesIncludeAModelMidLoad(t *testing.T) {
+	loading := runningEntry("omlx", "omlx/x", "x")
+	loading.Loading = true
+	h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{loading}}}
+	cands := stopCandidates(&config.Config{}, h.deps())
+	if len(cands) != 1 || cands[0].Entry.ModelID != "omlx/x" {
+		t.Errorf("candidates = %+v, want the loading omlx/x", cands)
+	}
+}

@@ -132,3 +132,25 @@ func TestSortRowsNativeTieBreak(t *testing.T) {
 		t.Errorf("order = %s\nwant    %s", got, want)
 	}
 }
+
+// TestSortRowsPutsALoadingModelWithTheStartRows pins where a model that omlx
+// is still loading sorts (#259). The sort order is also the default selection,
+// and group 1 is what a bare Enter launches at once: a loading model left
+// there sorts first on its $0 cost and becomes the default pick while it
+// cannot answer. It belongs with the other rows Enter starts.
+func TestSortRowsPutsALoadingModelWithTheStartRows(t *testing.T) {
+	local := func(id string, running, loading bool) tableRow {
+		return tableRow{Row: catalog.Row{Location: config.LocationLocal, Running: running, Loading: loading, Model: config.Model{ID: id}}}
+	}
+	rows := []tableRow{
+		local("m-loading", true, true),
+		local("z-off", false, false),
+		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "cloud", Cost: config.ModelCost{OutputPricePerMillion: f64(1)}}}},
+		local("run", true, false),
+		local("a-off", false, false),
+	}
+	sortRows(rows)
+	if got, want := strings.Join(rowIDs(rows), ","), "run,cloud,a-off,m-loading,z-off"; got != want {
+		t.Errorf("order = %s\nwant    %s", got, want)
+	}
+}

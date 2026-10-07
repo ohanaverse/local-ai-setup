@@ -168,7 +168,7 @@ Full rules (catalog membership, passthrough, decoded fields): [docs/internals/co
 
 ## Local-model resolution
 
-Every model row wt shows or resolves — the TUI picker, `wt start`/`wt smoke`'s picker, the non-TUI launch path — is built by `internal/catalog` from the agent's eligible list plus one `localmodels.Inventory` snapshot. A row's action is **launch** (cloud, or a local model the probe reports running), **start** (a non-running local row of ollama/omlx/omlx-6bit/mtplx), or **block**.
+Every model row wt shows or resolves — the TUI picker, `wt start`/`wt smoke`'s picker, the non-TUI launch path — is built by `internal/catalog` from the agent's eligible list plus one `localmodels.Inventory` snapshot. A row's action is **launch** (cloud, or a local model the probe reports running and loaded), **start** (a local row of ollama/omlx/omlx-6bit/mtplx that is not running, or that omlx is still loading), or **block**.
 
 - Local rows come only from the live inventory, which probes servers and disk and ignores modelman's `running` flag.
 - **`localmodels.ServedIDs` is the one answer to "what is this server serving"** — omlx's `/v1/models` lists its whole pool, loaded or not (#201).

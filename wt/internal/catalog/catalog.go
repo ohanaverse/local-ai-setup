@@ -27,17 +27,20 @@ const (
 type Action int
 
 const (
-	ActionLaunch Action = iota // cloud row, or a local model already running
+	ActionLaunch Action = iota // cloud row, or a local model that is running and loaded
 	ActionStart                // a local model wt can start (its provider has a lifecycle backend)
 	ActionBlock                // cannot proceed; BlockReason says why
 )
 
 // Row is one model-selector row before rendering.
 type Row struct {
-	Model      config.Model
-	Location   config.Location
-	Status     Status
-	Running    bool
+	Model    config.Model
+	Location config.Location
+	Status   Status
+	Running  bool
+	// Loading: the model is mid-load on omlx (localmodels.Entry.Loading,
+	// #259). Running is true too; Ready is what says it can take a request.
+	Loading    bool
 	Discovered bool
 	// Unmapped marks a cloud row whose provider has no LiteLLM mapping: it
 	// is in the catalog (every configured model is, #179) but sync never
@@ -98,7 +101,7 @@ func Build(in Input) []Row {
 		}
 		r := Row{Model: m, Location: loc, Status: StatusOK}
 		if de, isDisc := discByID[m.ID]; isDisc && m.Source == config.SourceDiscovered && loc == config.LocationLocal {
-			r.Status, r.Running, r.Discovered = StatusNew, de.Running, true
+			r.Status, r.Running, r.Loading, r.Discovered = StatusNew, de.Running, de.Loading, true
 		} else if loc == config.LocationLocal && in.Inventory != nil {
 			e, ok := byID[m.ID]
 			if !ok || !listed(e) {
@@ -110,7 +113,7 @@ func Build(in Input) []Row {
 				seen[m.ID] = true
 				continue
 			}
-			r.Running = e.Running
+			r.Running, r.Loading = e.Running, e.Loading
 			if !e.Running && !e.ArtifactKnown {
 				r.Status = StatusUnknown
 			}
@@ -134,7 +137,7 @@ func Build(in Input) []Row {
 					ID: e.ModelID, ProviderID: e.ProviderID, ModelName: e.Artifact,
 					Location: config.LocationLocal, Source: config.SourceDiscovered,
 				},
-				Location: config.LocationLocal, Status: StatusNew, Running: e.Running, Discovered: true,
+				Location: config.LocationLocal, Status: StatusNew, Running: e.Running, Loading: e.Loading, Discovered: true,
 			})
 			seen[e.ModelID] = true
 		}
@@ -211,11 +214,19 @@ func Find(rows []Row, id string) (Row, bool) {
 // so adding a backend there updates every picker with no second edit here.
 func startable(providerID string) bool { return lifecycle.Startable(providerID) }
 
-// Action reports what selecting r does. A non-running local row is startable
-// when its provider has a lifecycle backend (a model missing from disk has no
-// row at all).
+// Ready reports whether the row's model can take a request now: running, and
+// not still loading. A cloud row is never Running, so it is never Ready; its
+// launch does not depend on this.
+func (r Row) Ready() bool { return r.Running && !r.Loading }
+
+// Action reports what selecting r does. A local row that is not Ready is
+// startable when its provider has a lifecycle backend (a model missing from
+// disk has no row at all). That includes a model omlx is still loading (#259):
+// starting it joins the load in progress and returns once the model is
+// loaded, where launching it would hand an agent a model that cannot answer
+// yet.
 func (r Row) Action() Action {
-	if r.Location != config.LocationLocal || r.Running {
+	if r.Location != config.LocationLocal || r.Ready() {
 		return ActionLaunch
 	}
 	if !startable(r.Model.ProviderID) {

@@ -432,3 +432,37 @@ func TestMissingReason(t *testing.T) {
 		t.Errorf("MissingReason(nil snapshot) = %q, want empty (no probe ran)", got)
 	}
 }
+
+// TestALoadingRowIsAStartRow pins #259 for every model list wt builds. A model
+// omlx is still loading keeps Running — it occupies the pool and stays listed
+// — but selecting it must start (join the load and wait), not launch: a launch
+// hands an agent a model that cannot answer yet. The flag has to survive all
+// three ways Build makes a local row: a registry model, a discovered entry,
+// and a discovered model handed back in through Models.
+func TestALoadingRowIsAStartRow(t *testing.T) {
+	inv := &localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/a", Artifact: "a", Registered: true, Running: true, Loading: true},
+		{ProviderID: "omlx", ModelID: "omlx/disc", Artifact: "disc", Running: true, Loading: true},
+		{ProviderID: "omlx", ModelID: "omlx/ready", Artifact: "ready", Running: true},
+	}}
+	registry := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
+	rows := Build(Input{Config: catalogTestCfg(), Agent: "claude", Models: registry, Inventory: inv})
+	// Second pass: the rows' own models fed back in, as `wt start`'s picker does.
+	var again []config.Model
+	for _, r := range rows {
+		again = append(again, r.Model)
+	}
+	for name, got := range map[string][]Row{"first build": rows, "rows fed back": Build(Input{Config: catalogTestCfg(), Models: again, Inventory: inv})} {
+		if ids := strings.Join(rowIDs(got), ","); ids != "omlx/a,omlx/disc,omlx/ready" {
+			t.Fatalf("%s: rows = %s", name, ids)
+		}
+		for _, r := range got[:2] {
+			if !r.Running || !r.Loading || r.Ready() || r.Action() != ActionStart {
+				t.Errorf("%s: %s Running=%v Loading=%v Ready=%v action=%v, want a running, loading start row", name, r.Model.ID, r.Running, r.Loading, r.Ready(), r.Action())
+			}
+		}
+		if r := got[2]; r.Loading || !r.Ready() || r.Action() != ActionLaunch {
+			t.Errorf("%s: %s Loading=%v Ready=%v action=%v, want a loaded launch row", name, r.Model.ID, r.Loading, r.Ready(), r.Action())
+		}
+	}
+}

@@ -135,7 +135,10 @@ func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string)
 // omlxUnload unloads one model and leaves the service and every other loaded
 // model up. The goal is "not loaded", so omlx's "not loaded" (400) and "no
 // such model" (404) answers are success, and the pool is read afterwards: a
-// model it still shows loaded is a failed stop whatever the POST said.
+// model it still shows loaded is a failed stop whatever the POST said. So is
+// one it shows loading: omlx answers an unload of a model mid-load "not
+// loaded" and goes on loading it, and the error names that state and the
+// command that does call the load off.
 //
 // Unload has no keyless equivalent. When omlx refuses it and the registry
 // names no key, the error says both ways out — name the key, or stop the
@@ -164,7 +167,10 @@ func omlxUnload(ctx context.Context, e *env, cfg *config.Config, modelName strin
 		return fmt.Errorf("omlx could not unload %s: HTTP %d: %s", id, code, detail)
 	}
 	if pool, perr := localmodels.OmlxPool(cfg, e.probeClient); perr == nil {
-		if m, ok := pool.Find(modelName); ok && (m.Loaded || m.Loading) {
+		switch m, ok := pool.Find(modelName); {
+		case ok && m.Loading && !m.Loaded:
+			return fmt.Errorf("omlx is still loading %s and will not unload it mid-load; `wt stop omlx` stops the service and the load with it", id)
+		case ok && m.Loaded:
 			return fmt.Errorf("omlx still has %s loaded", id)
 		}
 	}

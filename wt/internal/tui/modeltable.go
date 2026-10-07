@@ -145,9 +145,15 @@ func maxRunes(min int, ss ...string) int {
 	return w
 }
 
-func flag(b bool, yes string) string {
-	if b {
-		return yes
+// runningText is a row's RUNNING cell: "run" for a model that is serving,
+// "load" for one omlx is still loading (#259; Enter starts it, which waits for
+// the load), "-" otherwise. Both words fit the column's fixed width of 7.
+func runningText(r catalog.Row) string {
+	switch {
+	case r.Running && r.Loading:
+		return "load"
+	case r.Running:
+		return "run"
 	}
 	return "-"
 }
@@ -256,7 +262,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		// column-aligned).
 		cells := [numCols]string{
 			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(loc, 5), padRunes(string(r.Status), wS),
-			padRunes(flag(r.Running, "run"), 7), padRunes(cost[i], costW),
+			padRunes(runningText(r.Row), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
 			survey.FormatPickerSegment(r.stats),
 		}

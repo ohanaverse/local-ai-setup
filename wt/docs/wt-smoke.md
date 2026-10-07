@@ -49,10 +49,11 @@ wt smoke <model-id> --cwd        # run the agents in the current directory
 An agent is eligible for a model when selecting it would launch or could
 launch after a start: the model's provider is in the agent's
 `supported_providers` and the row is a launch row (cloud, or a local model
-the live probe reports running) or a start row (an idle local model wt can
-start). Rows that cannot run — no lifecycle backend, or an unmapped cloud
-model whose route goes through LiteLLM — are excluded, and a
-local model that is not on disk has no row; passing either by id names the
+the live probe reports running and loaded) or a start row (an idle local
+model wt can start, or one omlx is still loading). Rows that cannot run —
+no lifecycle backend, or an unmapped cloud model whose route goes through
+LiteLLM — are excluded, and a local model that is not on disk has no row;
+passing either by id names the
 reason (not on disk, no lifecycle backend) as `wt start` does, while other ineligible ids (for
 example a model no agent supports) get a generic "cannot be smoke-tested"
 message
@@ -62,7 +63,8 @@ wt routes it under its discovered id when it starts it, so agents that go
 through LiteLLM can run it. A target that is already running — whoever
 started it — has its route written first if it is missing
 (`wt: LiteLLM route for <id> updated`).
-An idle pick is started first through the shared start driver, honouring
+An idle pick, or one omlx is still loading, is started first through the
+shared start driver, honouring
 the root `--replace` flag when another model occupies an mtplx
 (one model per process) slot, or an omlx load would unload another model.
 

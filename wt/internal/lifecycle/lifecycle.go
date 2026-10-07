@@ -161,13 +161,28 @@ func ProbeTrusted(snap localmodels.Snapshot, family string) bool {
 	return st == localmodels.StatusOK
 }
 
-// isRunning reports whether live Inventory already shows the target serving.
+// isRunning reports whether live Inventory already shows the target serving:
+// running, and not still loading. A target omlx is mid-load on is not serving
+// yet (#259); isLoading answers for it.
 func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
+	return targetIs(snap, family, t, func(en localmodels.Entry) bool { return en.Running && !en.Loading })
+}
+
+// isLoading reports whether live Inventory shows the target mid-load. A start
+// on such a target is not a no-op: it joins the load and returns when the
+// model is loaded.
+func isLoading(snap localmodels.Snapshot, family string, t Target) bool {
+	return targetIs(snap, family, t, func(en localmodels.Entry) bool { return en.Running && en.Loading })
+}
+
+// targetIs reports whether a trusted snapshot has an entry for the target that
+// satisfies is.
+func targetIs(snap localmodels.Snapshot, family string, t Target, is func(localmodels.Entry) bool) bool {
 	if !ProbeTrusted(snap, family) {
 		return false
 	}
 	for _, en := range snap.Entries {
-		if en.Running && localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
+		if is(en) && localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
 			return true
 		}
 	}
@@ -225,7 +240,9 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 	return victims, false
 }
 
-// Start starts t. It is a no-op when live Inventory shows t already running,
+// Start starts t. It is a no-op when live Inventory shows t already running.
+// A t that omlx is still loading is not running yet: Start joins that load
+// and returns once the model is loaded, asking nothing (see evictions). It
 // returns *OccupiedError (touching nothing) when it would replace a running
 // model and opts.AllowReplace is false, returns *OccupancyUnknownError
 // (touching nothing) when its server accepted a connection but could not say
@@ -301,8 +318,15 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if ProbeTrusted(snap, family) {
 		before = runningOthers(snap, family, t)
 	}
+	// A start that joins a load planned nothing itself (evictions): what that
+	// load evicts was put to whoever began it, so none of it is this start's
+	// surprise and none is marked "not predicted".
+	planned := victims
+	if ProbeTrusted(snap, family) && isLoading(snap, family, t) {
+		planned = before
+	}
 	err := b.start(ctx, e, cfg, t, report)
-	e.reconcilePool(ctx, cfg, before, victims, opts)
+	e.reconcilePool(ctx, cfg, before, planned, opts)
 	return err
 }
 
@@ -310,7 +334,8 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 // omlx no longer has loaded — and, for each, removes its route (the deferred
 // write Start's one settling bounce applies), says so, and tells the caller.
 // planned is what the eviction plan named; anything else is marked, because
-// omlx evicts from a soft watermark wt cannot see.
+// omlx evicts from a soft watermark wt cannot see. A start that joined a load
+// passes before as planned: the plan was the first start's, not its own.
 //
 // Only a status reading (SizesKnown) can show an eviction. The fallback
 // reading names what is loaded by the ids of omlx's list, which gives an
