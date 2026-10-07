@@ -30,7 +30,7 @@ uv sync
 |---|---|---|---|
 | `family` per model | `~/.config/local-ai/registry.toml` (canonical) | `wt` (`-F` family filter), `modelman` (TUI tables) | modelman TUI: add a family, then add the model from inside its family screen |
 | display name per family | `~/.config/local-ai/registry.toml` `[[families]]` (canonical) | `modelman` TUI only — **never read by `wt`** | modelman TUI family screen: `a` (new family + display name), `e` (rename display) |
-| `tags` per model (rotation groups, e.g. `code`/`design`) | `~/.config/local-ai/registry.toml` | `wt` (`-T` filter, tag rotation) | No TUI editor today — hand-edit (modelman-owned file), see Gotchas |
+| `tags` per model (rotation groups, e.g. `code`/`design`) | `~/.config/local-ai/registry.toml` | `wt` (`-T` filter, tag rotation) | No TUI editor today — hand-edit (a file modelman rewrites), see Gotchas |
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman
@@ -107,7 +107,7 @@ If this equals the `[[models]]` count from Prerequisites, no model is tagged yet
 
 <!-- UNVERIFIED — no tag editor exists to drive. modelman's add/edit model dialog asks exactly one field, the model name (source: `ModelForm` docstring, `src/modelman/screens/forms.py`); tags are carried through but never set by it. -->
 
-There is no TUI path to assign tags today. To make `wt -T`/tag rotation meaningful you must hand-add tags to `~/.config/local-ai/registry.toml` (modelman-owned; edits by hand survive until modelman next rewrites the file). What wt does with them:
+There is no TUI path to assign tags today. To make `wt -T`/tag rotation meaningful you must hand-add tags to `~/.config/local-ai/registry.toml` (edits by hand survive until modelman next rewrites the file). What wt does with them:
 
 - `-T/--tags code,design` — model must have at least one matching tag (OR within the flag);
 - `-F/--family` — model's `family` must equal one of the listed families (OR within the flag);
@@ -120,7 +120,7 @@ There is no TUI path to assign tags today. To make `wt -T`/tag rotation meaningf
 
 ### 4. How the `wt` picker derives its options
 
-`wt` picks worktree → agent → model from the joined catalog (registry-consumer design: `~/.config/local-ai/registry.toml` loaded **read-only** for Providers/Models, joined in memory with `~/.config/agent-wt/config.toml` for Agents + `default_tag`; a missing/malformed registry fails closed). Local rows come from wt's live inventory, not from the registry: a local entry only adds family, tags and cost to a model wt finds on disk or running, and an entry whose artifact is missing is not offered (see [02-providers-and-models](02-providers-and-models.md) Step 3).
+`wt` picks worktree → agent → model from the joined catalog (registry-consumer design: `~/.config/local-ai/registry.toml` read for Providers/Models, joined in memory with `~/.config/agent-wt/config.toml` for Agents + `default_tag`; a missing/malformed registry fails closed). Local rows come from wt's live inventory, not from the registry: a local entry only adds family, tags and cost to a model wt finds on disk or running, and an entry whose artifact is missing is not offered (see [02-providers-and-models](02-providers-and-models.md) Step 3).
 
 ```bash
 wt --help
@@ -221,7 +221,7 @@ ollama/glm-5.3-flash:cloud
 
 - **Tags and families drive agent rotation — editing them changes what `wt` offers next launch.** The picker cursor starts after `rotation.state`'s last-launched id; narrow the tag/family sets too far and you get `no models for agent "…" in tag "…" — edit your config`.
 - **Display names are per-machine mutable state (`modelman.toml`), consumed by modelman only.** They never change what `wt` shows or rotates.
-- **Family/tag structure is canonical in `registry.toml` (modelman-owned).** `wt` reads it read-only; change families/tags through modelman (or hand-edit knowing modelman owns it).
+- **Family/tag structure is canonical in `registry.toml`.** `wt` never edits a family or a tag there (its one write, `wt model init`, adds provider rows); change families/tags through modelman (or hand-edit knowing modelman rewrites the file).
 - **`~/.config/local-ai/families/` is LEGACY** (per-family YAML manifests such as `ornith-1.5.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per [00-config-map](00-config-map.md): don't resurrect it.
 - **TUI behavior:** there is no `d` tag-toggle key, `rotation.state` is a single global slot, and per-tag `rotation-<tag>.state` files are legacy migration inputs that are deleted after migration.
 - **A `wt` binary built before the registry-consumer merge (2026-08-28) serves a stale catalog.** Symptom: `wt rotate code`/`design` return models although `registry.toml` has no tags — the old build still serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks, so its catalog can be missing models the registry has (and list ones it doesn't). A rebuild from `~/github/ohanaverse/local-ai-setup/wt` (`go build -o /Users/keith/.local/bin/wt ./cmd/wt` — build over the PATH copy, not GOPATH, which `~/.local/bin` shadows; see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4) makes `registry.toml` authoritative — expected to fail the `wt rotate code/design` pair-check above until tags exist.

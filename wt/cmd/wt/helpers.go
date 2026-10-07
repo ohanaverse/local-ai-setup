@@ -98,8 +98,10 @@ var stdinTTY = isStdinTTY
 
 // configError words a config load or validation error for the user, with a
 // hint that names where to fix it. Most problems are in wt's own config.toml,
-// which `wt config` edits. A mistyped location is in registry.toml, modelman's
-// file, which `wt config` cannot repair — so that one names the file instead.
+// which `wt config` edits. Two are not, and config.RegistryFixHint words
+// them: a mistyped location is in registry.toml, which `wt config` cannot
+// edit, so the hint names the file; a registry path that is a broken symlink
+// has no file to name, so the hint says to fix the link or move it aside.
 // ErrRegistryMissing is a special case: the registry is missing entirely, so
 // there's nothing to edit, and the error itself already names the command
 // that creates one (`wt model init`). No hint is added: it would say the

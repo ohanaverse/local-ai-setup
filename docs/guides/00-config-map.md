@@ -19,7 +19,7 @@ None — this is a reference doc, not a procedure.
 | `~/.config/local-ai/config.yaml` | you by hand (pre-modelman) | `modelman migrate` (read-only input) | Legacy provider types — superseded by `registry.toml` |
 | `~/.config/local-ai/families/*.yaml` | pre-registry modelman tooling | `modelman migrate` (read-only input) | Legacy per-family variants + download markers |
 | `~/.config/litellm/config.yaml` | `wt` (`wt litellm ...`; `modelman` asks wt to sync), you by hand | LiteLLM proxy | `model_list`, general settings |
-| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag, and the `[litellm]` routing state (enabled/url/api_key). (NO providers/models — modelman owns those in registry.toml) |
+| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag, and the `[litellm]` routing state (enabled/url/api_key). (NO providers/models — those live in registry.toml) |
 | `~/.config/agent-wt/themes.toml` | `wt` (`wt config theme`) | `wt` | Active theme |
 | `~/.config/agent-wt/models.conf` | you by hand (pre-wt bash era) | `wt` first-run migration (read-only input) | Legacy bash rotation config |
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `modelman usage` | Launch log |
@@ -181,7 +181,7 @@ model_list:
 
 - **Owner:** `wt` (`wt config` editor; writes atomically on save).
 - **Consumers:** `wt` only.
-- **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — modelman owns those in `registry.toml`; `wt` joins that file in memory and `wt config` never writes providers or models.
+- **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — those live in `registry.toml`; `wt` joins that file in memory and `wt config` never writes providers or models.
 - **LiteLLM routing state lives here (wt-owned).** The `[litellm]` table (`enabled`/`url`/`api_key`; file is 0600 when a key is stored) is controlled with `wt litellm status|on|off|set --url ... --api-key ...` (`modelman litellm ...` passes through to the same commands). On the first wt load where this file already exists, wt copies modelman.toml's legacy `[litellm]` table in once; afterwards wt's copy wins and modelman.toml's is ignored. A legacy `[gateway]` block is dropped on wt's next save with a notice and is not imported — re-enter the values with `wt litellm set --url ... --api-key ...`. Writes to this file are whole-file last-writer-wins: an open `wt config` editor session and a `wt litellm on|off|set` will overwrite each other's changes (issue #143).
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them as an exchange format for `modelman migrate`. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
@@ -309,7 +309,7 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 
 ## Gotchas
 
-- **Never hand-edit `registry.toml` to change what `wt` sees.** It is read-only to `wt`; change models through `modelman` (TUI, `sync`) and routes through `wt litellm ...`.
+- **Never hand-edit `registry.toml` to change what `wt` sees.** `wt` writes it only in `wt model init`, which adds provider rows; change models through `modelman` (TUI, `sync`) and routes through `wt litellm ...`.
 - **Routing is derived, not stored.** There is no routing flag to edit (the per-model `exposed` flag went in #179): `wt` builds `model_list` from `registry.toml` plus live probes, so the `config.yaml` entry is the only copy that exists and `wt litellm list` is the way to read it. Don't hand-edit a managed row — change the registry (or start/stop the model) and let the sync that follows do the writing.
 - **`~/.config/agent-wt/config.toml` trap:** the `[[providers]]`/`[[models]]` blocks you see there are stale migration output that `wt` ignores. Only `default_tag` and `[[agents]]` are live; providers/models come from `registry.toml`.
 - **Legacy files are migration inputs, not config:** `~/.config/local-ai/config.yaml`, `~/.config/local-ai/families/*.yaml`, and `~/.config/agent-wt/models.conf` are read only by `modelman migrate` / wt's first-run migration. Fix models in the new files, don't resurrect the old ones.

@@ -76,7 +76,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 - `docs/wt-agents/profiles.md` — local-model launch profiles
 - `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md` — command references
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — wt design specs and plans (newer cross-package specs live in the monorepo's [../docs/superpowers/](../docs/superpowers/))
-- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (modelman owns `registry.toml`/`modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
+- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt's `wt model init`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
 
 ## Go tests
 
@@ -171,7 +171,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 
 > **Fixture gotcha.** `config.toml` lives in `$XDG_CONFIG_HOME/agent-wt/` and `registry.toml` in `$XDG_CONFIG_HOME/local-ai/` — fixtures populate both. LiteLLM's `config.yaml` follows neither variable, so a fixture that redirects the registry also names config.yaml (`WT_LITELLM_CONFIG` or `litellm.Options.Path`), or route writes refuse with `litellm.ErrRegistryRedirected`. `migrateConfigSchema` always ensures an `agy` agent, so a registry fixture with agents needs an `agy` provider or `Load`/`Validate` fails with `unknown provider "agy"`.
 
-Full rules (catalog membership, passthrough, decoded fields): [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry-modelman-owned).
+Full rules (catalog membership, passthrough, decoded fields): [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry-shared-with-modelman-until-it-is-retired).
 
 ## Local-model resolution
 
