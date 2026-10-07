@@ -45,11 +45,11 @@ func writeEmptyRegistry(t *testing.T, home string) {
 }
 
 // withCleanConfigEnv sets XDG_CONFIG_HOME to a fixture path and clears any
-// inherited WT_REGISTRY or MODELMAN_REGISTRY so RegistryPath() cannot short-circuit on the
-// developer's shell environment. All tests that exercise the launch path must
-// call this before touching config.Load or RegistryPath() — otherwise a stray
-// `export WT_REGISTRY=...` in the dev's env makes the test read their
-// real registry instead of the temp fixture.
+// inherited WT_REGISTRY or MODELMAN_REGISTRY so RegistryPath() cannot
+// short-circuit on the developer's shell environment. All tests that exercise
+// the launch path must call this before touching config.Load or
+// RegistryPath() — otherwise a stray `export WT_REGISTRY=...` in the dev's env
+// makes the test read their real registry instead of the temp fixture.
 func withCleanConfigEnv(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)

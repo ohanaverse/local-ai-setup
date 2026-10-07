@@ -47,12 +47,12 @@ func RegistryPath() string {
 
 // ModelmanPath returns the modelman-owned modelman.toml location. It uses the
 // same XDG base-directory resolution as RegistryPath(): XDG_CONFIG_HOME (with
-// tilde expansion), falling back to ~/.config. It honors NEITHER
-// WT_REGISTRY or MODELMAN_REGISTRY NOR modelman's MODELMAN_STATE override — a deliberate
-// asymmetry: wt is a read-only consumer and never needs to redirect the state
-// file the way tests (or wt itself) redirect the registry. The subset wt
-// reads (price_refresh_last_run and the legacy [litellm] table) is pinned by
-// docs/contracts/modelman.sample.toml. wt reads this file read-only.
+// tilde expansion), falling back to ~/.config. It honors none of
+// WT_REGISTRY, MODELMAN_REGISTRY or modelman's MODELMAN_STATE override — a
+// deliberate asymmetry: wt is a read-only consumer and never needs to redirect
+// the state file the way tests (or wt itself) redirect the registry. The
+// subset wt reads (price_refresh_last_run and the legacy [litellm] table) is
+// pinned by docs/contracts/modelman.sample.toml. wt reads this file read-only.
 func ModelmanPath() string {
 	return filepath.Join(baseConfigHome(), "local-ai", "modelman.toml")
 }
@@ -60,7 +60,8 @@ func ModelmanPath() string {
 // expandHome expands a leading "~" or "~/" in path to the user's home
 // directory, matching Python's Path.expanduser() semantics used by
 // modelman's _default_registry_path so WT_REGISTRY and MODELMAN_REGISTRY
-// behave the same in both tools. Paths that don't start with "~" are returned unchanged.
+// behave the same in both tools. Paths that don't start with "~" are returned
+// unchanged.
 //
 // "~username/..." forms are NOT expanded: Go has no portable equivalent
 // of Python's pwd.getpwnam. Returning the literal keeps the failure mode
@@ -204,13 +205,13 @@ func loadRegistry() ([]Provider, []Model, error) {
 
 // RegistryRedirected reports whether the environment sends RegistryPath
 // somewhere other than the default ~/.config/local-ai/registry.toml —
-// WT_REGISTRY, MODELMAN_REGISTRY or XDG_CONFIG_HOME naming another place. LiteLLM's
-// config.yaml follows neither variable (litellm.DefaultPath), so a run that
-// redirects the registry alone would pair a scratch registry with the real
-// proxy config; the route writers ask this before they write. The paths are
-// compared, not the variables: spelling the default out is not a redirect.
-// With no home directory there is no default to compare against, and the
-// answer is false.
+// WT_REGISTRY, MODELMAN_REGISTRY or XDG_CONFIG_HOME naming another place.
+// LiteLLM's config.yaml follows none of them (litellm.DefaultPath), so a run
+// that redirects the registry alone would pair a scratch registry with the
+// real proxy config; the route writers ask this before they write. The paths
+// are compared, not the variables: spelling the default out is not a
+// redirect. With no home directory there is no default to compare against,
+// and the answer is false.
 func RegistryRedirected() bool {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

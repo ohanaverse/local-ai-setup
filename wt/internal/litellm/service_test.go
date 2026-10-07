@@ -1295,13 +1295,13 @@ func redirectedRegistry(t *testing.T) string {
 
 // TestRouteWritesRefuseARedirectedRegistry pins the guard against syncing a
 // scratch registry onto the real proxy config. The registry follows
-// WT_REGISTRY, MODELMAN_REGISTRY and XDG_CONFIG_HOME; config.yaml follows none of them. So a run
-// that redirects only the registry (an ad-hoc `modelman migrate` against a
-// throwaway registry did exactly this) reconciled the developer's real
-// config.yaml against it: every marked route the scratch registry lacked was
-// removed and the live proxy restarted. Sync, its dry run and the lifecycle
-// hooks' ApplyChange all refuse instead, and neither the file nor the proxy
-// is touched.
+// WT_REGISTRY, MODELMAN_REGISTRY and XDG_CONFIG_HOME; config.yaml follows
+// none of them. So a run that redirects only the registry (an ad-hoc
+// `modelman migrate` against a throwaway registry did exactly this)
+// reconciled the developer's real config.yaml against it: every marked route
+// the scratch registry lacked was removed and the live proxy restarted. Sync,
+// its dry run and the lifecycle hooks' ApplyChange all refuse instead, and
+// neither the file nor the proxy is touched.
 func TestRouteWritesRefuseARedirectedRegistry(t *testing.T) {
 	p := redirectedRegistry(t)
 	before, _ := os.ReadFile(p)
