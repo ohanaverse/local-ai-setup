@@ -30,6 +30,17 @@ from modelman.state import StateStore
 STALE = "registry.toml changed on disk; reload"
 
 
+@pytest.fixture(autouse=True)
+def _no_record_from_an_earlier_test():
+    """The guard's record is per process, so it outlives a test. Every test
+    here uses its own tmp_path today; clearing the record keeps a test that
+    reuses a path (a fixed name under a shared directory, a monkeypatched
+    HOME) from being refused, or let through, because of an earlier one."""
+    with registry_module._SEEN_LOCK:
+        registry_module._SEEN_ON_DISK.clear()
+        registry_module._FOREIGN_CHANGES.clear()
+
+
 def _seed(path: Path) -> Registry:
     """Write a one-provider registry at `path` and load it, as a TUI would."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,6 +225,24 @@ def test_a_registry_created_after_modelman_found_none_is_not_overwritten(tmp_pat
 
     with pytest.raises(RegistryError, match=STALE):
         save_registry(Registry(), path)
+    assert path.read_text(encoding="utf-8") == wt_text
+
+
+def test_a_background_load_does_not_bless_the_empty_registry(tmp_path):
+    """The same fresh machine, one step later: after `wt model init` created
+    the file, the TUI's price-refresh worker loads it, so the file on disk is
+    the one this process last read. The screen's empty Registry was built in
+    memory, not loaded, and must still be refused — saving it would wipe
+    every row wt seeded."""
+    path = tmp_path / "registry.toml"
+    with pytest.raises(RegistryNotFoundError):
+        load_registry(path)
+    screen_registry = Registry()
+    _seed(path)  # wt creates the file; the load inside is the worker's
+    wt_text = path.read_text(encoding="utf-8")
+
+    with pytest.raises(RegistryError, match=STALE):
+        save_registry(screen_registry, path)
     assert path.read_text(encoding="utf-8") == wt_text
 
 

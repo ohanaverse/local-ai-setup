@@ -231,7 +231,7 @@ class Registry:
     models: list[ModelEntry] = field(default_factory=list)
     # Set by load_registry for the stale-snapshot guard: (resolved path, how
     # many foreign changes loads had seen there). None for a Registry built in
-    # memory.
+    # memory, which the guard treats as older than any foreign change.
     _loaded_at: tuple[str, int] | None = field(default=None, repr=False, compare=False)
 
     def provider(self, provider_id: str) -> ProviderEntry:
@@ -637,12 +637,20 @@ def _refuse_stale_snapshot(registry: Registry, path: Path) -> None:
     """Raise when the file at `path` is not the one this process last read or
     wrote, or when `registry` was loaded before a load that found another
     program's change. A path this process never looked at has no snapshot to
-    be stale against, so a first save is never refused."""
+    be stale against, so a first save is never refused.
+
+    A Registry built in memory carries no load to count from, so it is held
+    to "no foreign change seen at this path yet": the empty Registry the TUI
+    opens with when there is no file must not be saved over a registry that
+    wt created and a later load (the price-refresh worker) has since read.
+    """
     key = os.path.realpath(path)
     with _SEEN_LOCK:
         stale = key in _SEEN_ON_DISK and _disk_stamp(path) != _SEEN_ON_DISK[key]
         loaded = registry._loaded_at
-        if loaded is not None and loaded[0] == key:
+        if loaded is None:
+            stale = stale or _FOREIGN_CHANGES.get(key, 0) != 0
+        elif loaded[0] == key:
             stale = stale or loaded[1] != _FOREIGN_CHANGES.get(key, 0)
     if stale:
         raise RegistryError("registry.toml changed on disk; reload")
