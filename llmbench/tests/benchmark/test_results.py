@@ -60,7 +60,23 @@ def test_run_dir_joins_an_id_a_runner_can_produce(tmp_path, run_id):
 
 @pytest.mark.parametrize(
     "run_id",
-    ["", ".", "..", "../x", "../../x", "a/b", "/etc", "a\\b", "a b", "a\n", "~"],
+    [
+        "",
+        ".",
+        "..",
+        "../x",
+        "../../x",
+        "a/b",
+        "/etc",
+        "a\\b",
+        "a b",
+        "a\n",
+        "~",
+        # What shell tab-completion of a run directory produces. Refused on
+        # purpose, not stripped: eval show/judge always refused it, and the
+        # other three commands now match them.
+        "20260905-143200/",
+    ],
 )
 def test_run_dir_refuses_an_id_that_is_not_one_plain_directory_name(tmp_path, capsys, run_id):
     """#277: the id is joined onto results_dir, so it must name a child of it.
