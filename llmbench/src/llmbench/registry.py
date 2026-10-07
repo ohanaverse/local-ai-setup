@@ -169,7 +169,7 @@ def load_registry(path: Path | None = None) -> Registry:
     try:
         with open(registry_file, "rb") as f:
             raw = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError) as exc:  # ValueError: TOMLDecodeError and UnicodeDecodeError
         raise RegistryError(f"cannot read {registry_file}: {exc}") from exc
     return Registry(
         providers=[_parse_provider(p) for p in raw.get("providers", [])],

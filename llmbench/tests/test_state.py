@@ -135,6 +135,21 @@ def test_a_corrupt_latest_toml_reads_as_no_pointers_and_is_replaced(paths):
     _assert_replaced(latest, legacy)
 
 
+def test_latest_toml_yields_only_string_pointers(paths):
+    """latest.toml is read by hand when a run goes missing, so it gets edited
+    by hand too. `show-results --latest` passes last_run_dir to Path(): a
+    number there must read as "no latest run", not raise TypeError, and the
+    pointers beside it must survive."""
+    latest, _ = paths
+    latest.parent.mkdir(parents=True)
+    latest.write_text(
+        'last_run_dir = 7\nagent_last_run = "/results/agent-1"\nnote = "mine"\n'
+        "[eval_last_run]\nx = 1\n",
+        encoding="utf-8",
+    )
+    assert load_state().extra["benchmarks"] == {"agent_last_run": "/results/agent-1"}
+
+
 def _assert_replaced(latest, legacy):
     store = load_state()
     assert store.extra.get("benchmarks", {}) == {}  # present: no fallback either
@@ -158,6 +173,11 @@ def test_the_fallback_finds_modelman_toml_where_modelman_kept_it(monkeypatch, tm
     xdg_file.write_text('[benchmarks]\nlast_run_dir = "/from-xdg"\n', encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert load_state().extra["benchmarks"] == {"last_run_dir": "/from-xdg"}
+
+    named_file = tmp_path / "named.toml"
+    named_file.write_text('[benchmarks]\nlast_run_dir = "/from-named"\n', encoding="utf-8")
+    monkeypatch.setenv("MODELMAN_STATE", str(named_file))  # XDG_CONFIG_HOME still set
+    assert load_state().extra["benchmarks"] == {"last_run_dir": "/from-named"}
 
 
 def test_an_explicit_path_never_falls_back(paths, tmp_path):

@@ -55,12 +55,18 @@ def _read_toml(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _modelman_pointers() -> dict[str, str]:
-    """The pointers modelman.toml's `[benchmarks]` table still holds."""
-    table = _read_toml(_modelman_state_path()).get("benchmarks")
+def _pointers(table: Any) -> dict[str, str]:
+    """The pointer keys of `table` that hold a string. Anything else in a
+    file a person can edit by hand (another key, `last_run_dir = 7`) is not
+    a pointer, and the CLIs pass these values straight to Path()."""
     if not isinstance(table, dict):
         return {}
     return {k: table[k] for k in _POINTER_KEYS if isinstance(table.get(k), str)}
+
+
+def _modelman_pointers() -> dict[str, str]:
+    """The pointers modelman.toml's `[benchmarks]` table still holds."""
+    return _pointers(_read_toml(_modelman_state_path()).get("benchmarks"))
 
 
 def load_state(path: Path | None = None) -> StateStore:
@@ -72,7 +78,7 @@ def load_state(path: Path | None = None) -> StateStore:
     again."""
     latest = Path(path) if path else latest_path()
     if latest.exists():
-        pointers = _read_toml(latest)
+        pointers = _pointers(_read_toml(latest))
     elif path is None:
         pointers = _modelman_pointers()
     else:

@@ -1,6 +1,7 @@
 """The read-only registry reader: where it looks, and what it reads."""
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -115,7 +116,17 @@ def test_load_registry_tolerates_unknown_top_level_keys(tmp_path):
 
 def test_load_registry_reports_a_file_it_cannot_parse(tmp_path):
     path = _write(tmp_path / "registry.toml", "[[models]\n")
-    with pytest.raises(RegistryError, match=f"cannot read {path}"):
+    with pytest.raises(RegistryError, match=re.escape(f"cannot read {path}")):
+        load_registry(path)
+
+
+def test_load_registry_reports_a_file_that_is_not_utf8(tmp_path):
+    """tomllib raises UnicodeDecodeError, not TOMLDecodeError, for bytes that
+    are not UTF-8. Every benchmark command loads the registry unguarded, so
+    it must come back as the RegistryError they report, not a traceback."""
+    path = tmp_path / "registry.toml"
+    path.write_bytes(b'[[models]]\nid = "\xff\xfe"\n')
+    with pytest.raises(RegistryError, match=re.escape(f"cannot read {path}")):
         load_registry(path)
 
 
