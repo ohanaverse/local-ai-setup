@@ -40,12 +40,14 @@ func statsCmd(a *app) *cobra.Command {
 			"speed) per model and per agent×model combo.\n\n" +
 			"The usage table: per model, wt launches from usage.jsonl beside the\n" +
 			"requests, prompt and completion tokens and spend the LiteLLM proxy logged.\n" +
-			"Spend is read with psql from the proxy's database, found the way the proxy\n" +
-			"finds it: WT_LITELLM_DATABASE_URL, else general_settings.database_url in\n" +
-			"LiteLLM's config.yaml, else DATABASE_URL — the last two looked up in wt's\n" +
-			"environment and then in the proxy's LaunchAgent plist. Without psql, a\n" +
-			"reachable database or a configured URL, the launches still print, the\n" +
-			"spend cells show \"-\", and one note on stderr says why.",
+			"Spend is read with psql from the proxy's database. Its connection string\n" +
+			"is the first of: WT_LITELLM_DATABASE_URL; MODELMAN_LITELLM_DATABASE_URL\n" +
+			"(the legacy alias); general_settings.database_url in LiteLLM's config.yaml;\n" +
+			"and DATABASE_URL, when config.yaml names none. A config.yaml value written\n" +
+			"os.environ/NAME, and DATABASE_URL, are looked up in wt's environment and\n" +
+			"then in the EnvironmentVariables of the proxy's LaunchAgent plist.\n\n" +
+			"Without psql, a reachable database or a configured URL, the launches\n" +
+			"still print, the spend cells show \"-\", and one note on stderr says why.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			window, err := parseStatsWindow(mustGetString(cmd, "window"))
 			if err != nil {
@@ -73,7 +75,7 @@ func statsCmd(a *app) *cobra.Command {
 			}
 			notes := rep.notes()
 			if familyFilter != "" && a.loadErr != nil {
-				notes = append(notes, registryNote)
+				notes = append(notes, registryNote(a.loadErr))
 			}
 			for _, note := range notes {
 				fmt.Fprintf(cmd.ErrOrStderr(), "wt: %s\n", note)
@@ -90,8 +92,8 @@ func statsCmd(a *app) *cobra.Command {
 	return cmd
 }
 
-// statsNow is the report's "as of" instant. A seam so a test can pin the
-// as_of a --json document carries.
+// statsNow is the report's "as of" instant, the end of the window the
+// spend query covers. A seam so a test can pin it.
 var statsNow = func() time.Time { return time.Now().UTC() }
 
 var surveyHeaders = []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}

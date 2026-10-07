@@ -143,11 +143,32 @@ func TestBuildUsageRowsFamilyAndFilters(t *testing.T) {
 		{"", "ollama", "ollama/blank,ollama/gone:cloud"},
 		{"", "gemma4", "ollama/gemma4:9b"},
 		{"", "openrouter", "openrouter/x/y"},
-		{"", "gemma", ""}, // exact, not a prefix
+		{"", "gemma", ""},                     // exact, not a prefix
+		{"", "unknown", "/no-prefix,bare-id"}, // the fallback family is a value --family takes
 		{"ollama/gemma4:9b", "ollama", ""},
 	} {
 		if got := ids(tc.model, tc.family); got != tc.want {
 			t.Errorf("--model %q --family %q: rows = %q, want %q", tc.model, tc.family, got, tc.want)
 		}
+	}
+}
+
+// TestBuildUsageRowsNeverMakesANamelessRow verifies an empty model id gets
+// no row, whether it arrives as a launch count or as a spend row. usage.jsonl
+// is a plain file: a hand-edited line with no model_id used to print as a
+// row with a blank MODEL cell and LAUNCHES 1, which no --model value could
+// select and which read as a rendering bug. The named models beside it are
+// untouched.
+func TestBuildUsageRowsNeverMakesANamelessRow(t *testing.T) {
+	c := map[string]usage.UsageCounts{"": counts(1, 1, 1), "ollama/a": counts(2, 2, 2)}
+	sp := &spend.Result{Rows: []spend.Row{{Model: "", Requests: 9}, {Model: "ollama/a", Requests: 4}}}
+	for name, s := range map[string]*spend.Result{"with spend": sp, "without spend": nil} {
+		rows := buildUsageRows(c, survey.Window30d, s, nil, "", "")
+		if len(rows) != 1 || rows[0].Model != "ollama/a" || rows[0].Launches != 2 {
+			t.Errorf("%s: rows = %+v, want the one ollama/a row and none with an empty id", name, rows)
+		}
+	}
+	if rows := buildUsageRows(c, survey.Window30d, sp, nil, "", "unknown"); len(rows) != 0 {
+		t.Errorf("--family unknown: rows = %+v, want none (the empty id has no family row either)", rows)
 	}
 }

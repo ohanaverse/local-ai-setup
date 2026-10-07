@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -62,6 +63,12 @@ func launchesIn(c usage.UsageCounts, window time.Duration) int {
 // it has a launch in the window or a spend row; sp is nil when there is no
 // spend data. Both filters are exact matches and apply to every observed
 // id, registered or not. Rows are sorted by model id.
+//
+// An empty id never gets a row, from either side: it would print as a line
+// with a blank MODEL cell that no --model value can name. usage.AllCounts
+// and spend.Query both leave such entries out already (spend counts them as
+// Unattributed); this is the join's own guarantee, for whatever else fills
+// the two inputs.
 func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, sp *spend.Result, families map[string]string, modelFilter, familyFilter string) []usageRow {
 	byModel := map[string]*usageRow{}
 	row := func(id string) *usageRow {
@@ -76,13 +83,15 @@ func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, s
 		return r
 	}
 	for id, c := range counts {
-		if n := launchesIn(c, window); n > 0 {
+		if n := launchesIn(c, window); n > 0 && id != "" {
 			row(id).Launches = n
 		}
 	}
 	if sp != nil {
 		for _, s := range sp.Rows {
-			row(s.Model).Spend = &s
+			if s.Model != "" {
+				row(s.Model).Spend = &s
+			}
 		}
 	}
 
@@ -117,10 +126,17 @@ type usageReport struct {
 	Narrowed     bool   // --model or --family was given: Rows is part of the window
 }
 
-// registryNote is the extra note for --family when the registry did not
-// load: every family is then an id's provider prefix, and a registry family
-// (gemma4) matches nothing.
-const registryNote = "the registry did not load (run `wt config` to repair), so --family matched each id's provider prefix"
+// registryNote is the extra note for --family when wt's configuration did
+// not load: there are then no registry families, every family is an id's
+// provider prefix, and a registry family (gemma4) matches nothing. loadErr
+// is config.Load's error, which is about config.toml (unparseable, a failed
+// migration) as often as about registry.toml, so the note quotes it rather
+// than name a file itself. The error names files and keys, never a secret;
+// it is folded onto one line because a TOML parse error can span several.
+func registryNote(loadErr error) string {
+	return fmt.Sprintf("wt's configuration did not load (%s; run `wt config` to repair), so --family matched each id's provider prefix",
+		strings.Join(strings.Fields(loadErr.Error()), " "))
+}
 
 // querySpend asks the LiteLLM database for per-model totals between start
 // and end. A seam: cmd/wt's TestMain replaces it, so no test resolves a
@@ -159,7 +175,10 @@ func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration,
 		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
 	} else if res, err := querySpend(ctx, asOf.Add(-window), asOf); err != nil {
 		rep.SpendStatus = spendUnavailable
-		if errors.Is(err, litellm.ErrNoDatabase) {
+		// spend.ErrNoConnectionString is the same answer from the other
+		// package: DatabaseURL never returns a blank string, but a querySpend
+		// that got one some other way was refused, not failed.
+		if errors.Is(err, litellm.ErrNoDatabase) || errors.Is(err, spend.ErrNoConnectionString) {
 			rep.SpendStatus = spendNotConfigured
 		}
 		rep.SpendReason = "spend unavailable: " + err.Error()

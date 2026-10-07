@@ -3,11 +3,17 @@
 // (rather than through survey.Record) so timestamps can be placed at
 // precise offsets from "now" without reaching into the survey package's
 // internal now() seam.
+//
+// These tests read stdout only. Each discards stderr, where `wt stats`
+// writes its notes (here TestMain's "querySpend not stubbed"), so a run
+// does not print them to the terminal; stats_usage_test.go checks the
+// notes.
 package main
 
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,6 +55,7 @@ func TestStatsCmdEmptyStorePrintsMessage(t *testing.T) {
 	cmd := statsCmd(a)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -72,6 +79,7 @@ func TestStatsCmdReportsAllAgentAndComboRows(t *testing.T) {
 	cmd := statsCmd(a)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -100,6 +108,7 @@ func TestStatsCmdWindowFilter(t *testing.T) {
 	cmd := statsCmd(a)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--window", "1d"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -111,6 +120,7 @@ func TestStatsCmdWindowFilter(t *testing.T) {
 	cmd30 := statsCmd(a)
 	var out30 bytes.Buffer
 	cmd30.SetOut(&out30)
+	cmd30.SetErr(io.Discard)
 	cmd30.SetArgs([]string{"--window", "30d"})
 	if err := cmd30.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -133,6 +143,7 @@ func TestStatsCmdModelAndAgentFilters(t *testing.T) {
 	cmd := statsCmd(a)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--model", "model-a"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -144,6 +155,7 @@ func TestStatsCmdModelAndAgentFilters(t *testing.T) {
 	cmd2 := statsCmd(a)
 	var out2 bytes.Buffer
 	cmd2.SetOut(&out2)
+	cmd2.SetErr(io.Discard)
 	cmd2.SetArgs([]string{"--agent", "codex"})
 	if err := cmd2.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -159,6 +171,7 @@ func TestStatsCmdInvalidWindow(t *testing.T) {
 	a, _ := newTestApp(t)
 	cmd := statsCmd(a)
 	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--window", "5d"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected an error for an invalid --window value")
@@ -186,6 +199,7 @@ func TestStatsCmdExcludesEmptyRows(t *testing.T) {
 	cmd := statsCmd(a)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--window", "1d"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)

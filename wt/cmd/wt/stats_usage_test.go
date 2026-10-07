@@ -168,10 +168,11 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 }
 
 // TestCollectUsageClassifiesMissingSpend verifies the report's spend status
-// for each outcome: ok, not_configured (nothing names a database),
-// unavailable (anything else that failed) and skipped (--agent). The status
-// is what --json consumers branch on; "not configured" must not be lumped
-// with "the database is down".
+// for each outcome: ok, not_configured (nothing names a database, or the
+// spend package refused a blank connection string), unavailable (anything
+// else that failed) and skipped (--agent). The status is how a caller tells
+// the cases apart; "not configured" must not be lumped with "the database
+// is down".
 func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
 	a, _ := newTestApp(t)
 	asOf := time.Now().UTC()
@@ -182,8 +183,10 @@ func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
 	}{
 		{"ok", "", nil, spendOK},
 		{"no database", "", fmt.Errorf("%w: reason", litellm.ErrNoDatabase), spendNotConfigured},
+		{"a blank connection string", "", spend.ErrNoConnectionString, spendNotConfigured},
 		{"bad config.yaml", "", fmt.Errorf("%w: reason", litellm.ErrInvalid), spendUnavailable},
 		{"no psql", "", spend.ErrNoPsql, spendUnavailable},
+		{"database down", "", fmt.Errorf("%w at 127.0.0.1:5432: Connection refused", spend.ErrUnreachable), spendUnavailable},
 		{"agent", "claude", nil, spendSkipped},
 	} {
 		stubSpend(t, spend.Result{Unattributed: 2}, tc.err)
@@ -194,13 +197,12 @@ func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
 		if (rep.SpendReason == "") != (tc.want == spendOK) {
 			t.Errorf("%s: SpendReason = %q, want a reason exactly when spend is missing", tc.name, rep.SpendReason)
 		}
-		if wantUn := int64(0); tc.want == spendOK {
+		wantUn := int64(0) // no spend data, no count
+		if tc.want == spendOK {
 			wantUn = 2
-			if rep.Unattributed != wantUn {
-				t.Errorf("%s: Unattributed = %d, want %d", tc.name, rep.Unattributed, wantUn)
-			}
-		} else if rep.Unattributed != 0 {
-			t.Errorf("%s: Unattributed = %d, want 0 without spend data", tc.name, rep.Unattributed)
+		}
+		if rep.Unattributed != wantUn {
+			t.Errorf("%s: Unattributed = %d, want %d", tc.name, rep.Unattributed, wantUn)
 		}
 	}
 }
@@ -344,8 +346,11 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 			}
 			// The app as production builds it for this machine.
 			a, err := newApp()
-			if err != nil || a.loadErr == nil || a.cfg == nil || len(a.cfg.Models) != 0 {
-				t.Fatalf("newApp() = cfg %+v, loadErr %v, err %v; want an empty config, a load error and no fatal error", a.cfg, a.loadErr, err)
+			if err != nil {
+				t.Fatalf("newApp(): %v; want no fatal error", err)
+			}
+			if a.loadErr == nil || a.cfg == nil || len(a.cfg.Models) != 0 {
+				t.Fatalf("newApp() = cfg %+v, loadErr %v; want an empty config and a load error", a.cfg, a.loadErr)
 			}
 			seedLaunches(t, tmp, launch{"ollama/gone:cloud", "claude", time.Hour}, launch{"openrouter/x", "claude", time.Hour})
 			stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/gone:cloud", Requests: 3}}}, nil)
@@ -357,8 +362,12 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 			if stdout != want {
 				t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
 			}
-			if stderr != "wt: "+registryNote+"\n" {
+			if stderr != "wt: "+registryNote(a.loadErr)+"\n" {
 				t.Errorf("stderr = %q, want the one note that --family matched prefixes", stderr)
+			}
+			// The note says what failed, in config.Load's words, on one line.
+			if !strings.Contains(stderr, "registry") || strings.Count(stderr, "\n") != 1 {
+				t.Errorf("stderr = %q, want one line that names the registry as what did not load", stderr)
 			}
 
 			// Without --family nothing depends on the registry: both rows, no note.
@@ -453,5 +462,43 @@ func TestStatsNeverReachesADatabaseByDefault(t *testing.T) {
 	_, err := realQuerySpend(context.Background(), time.Now().Add(-time.Hour), time.Now())
 	if !errors.Is(err, litellm.ErrNoDatabase) {
 		t.Fatalf("realQuerySpend err = %v, want litellm.ErrNoDatabase (redirected registry, config.yaml unnamed)", err)
+	}
+}
+
+// TestRegistryNoteSaysWhatFailed verifies the --family note quotes the load
+// error instead of blaming the registry for every failure. config.Load
+// fails for an unparseable config.toml as well as for a registry problem;
+// a note that said "the registry did not load" then sent the user to repair
+// a file that was fine. A multi-line error (a TOML parse error with its
+// source excerpt) is folded onto one line, since a note is one line.
+func TestRegistryNoteSaysWhatFailed(t *testing.T) {
+	got := registryNote(errors.New("load /x/agent-wt/config.toml: toml: line 3:\n  expected = after a key\n"))
+	want := "wt's configuration did not load (load /x/agent-wt/config.toml: toml: line 3: expected = after a key; run `wt config` to repair), so --family matched each id's provider prefix"
+	if got != want {
+		t.Errorf("registryNote =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestStatsHelpNamesEverySourceOfTheConnectionString verifies `wt stats
+// --help` lists each place the spend database's connection string can come
+// from: both variables (the legacy MODELMAN_ alias included), config.yaml's
+// key, DATABASE_URL, the os.environ/NAME form and the LaunchAgent plist. A
+// user whose report shows the wrong database has only this text and the
+// note to work out which source won.
+func TestStatsHelpNamesEverySourceOfTheConnectionString(t *testing.T) {
+	a, _ := newTestApp(t)
+	long := statsCmd(a).Long
+	for _, source := range []string{
+		"WT_LITELLM_DATABASE_URL", "MODELMAN_LITELLM_DATABASE_URL", "general_settings.database_url",
+		"config.yaml", "DATABASE_URL, when config.yaml names none", "os.environ/NAME", "wt's environment", "LaunchAgent plist",
+	} {
+		if !strings.Contains(long, source) {
+			t.Errorf("wt stats --help does not name %q:\n%s", source, long)
+		}
+	}
+	for _, line := range strings.Split(long, "\n") {
+		if len(line) > 80 {
+			t.Errorf("help line is %d characters, want at most 80: %q", len(line), line)
+		}
 	}
 }

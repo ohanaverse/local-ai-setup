@@ -105,7 +105,9 @@ and one too long even for that is printed on a line of its own with its
 numbers on the next line. An id is never shortened. When stdout is not a
 terminal (`wt stats | grep qwen`, `> file`), every model is one line.
 Control characters in an id (the proxy logs whatever name a client was
-routed by) are shown escaped, as `\n` or `\x1b`.
+routed by) are shown escaped, as `\n` or `\x1b`, and so are characters
+that take no space or reorder the text around them — bidi overrides,
+zero-width characters, non-ASCII spaces — as `\u202e`.
 
 Nothing is printed for an empty table but `no usage data`.
 
@@ -150,11 +152,13 @@ Keep the password out of it (a `~/.pgpass` entry or `PGPASSWORD` works with
 When the database cannot be reached, the note names the host and port wt
 tried — `cannot reach the LiteLLM database at 127.0.0.1:5432: Connection
 refused` — so a wrong address shows. wt prints no other part of the
-connection string, in a note or in `--json`: not the user, the password or
+connection string in a note: not the user, the password or
 the database name. When the string is written so that `psql` may have read
 part of the password as the host or port (an unencoded `/` or `@` in the
 password, or a keyword string that quotes a value or names `host` or
-`port` after `user` or `password`), the address is left out as well.
+`port` after any other keyword), the address is left out as well. The
+reason is shown only when it is one wt knows cannot name the user or the
+database.
 
 ## When spend is missing
 
@@ -171,12 +175,13 @@ wt: spend unavailable: psql not found on PATH
 | Note | Meaning |
 |---|---|
 | `spend unavailable: psql not found on PATH` | Install a Postgres client that puts `psql` on `PATH` |
-| `spend unavailable: cannot reach the LiteLLM database at <host>:<port>: …` | `psql` could not connect to that address (`at socket <path>` for a socket), or got no answer in 10 seconds (no address is shown for that). The reason follows: `Connection refused`, `password authentication failed for user "..."` (names are blanked), `the database host name did not resolve`. If the address is not the one you expect, "Where spend comes from" lists where it can come from. When `psql`'s message could quote the connection string — it does for one it cannot parse — wt says so instead of printing it, and shows no address; run `psql` yourself to see it |
+| `spend unavailable: cannot reach the LiteLLM database at <host>:<port>: …` | `psql` could not connect to that address (`at socket <path>` for a socket), or got no answer in 10 seconds (no address is shown for that). The reason follows: `Connection refused`, `password authentication failed for user "..."` (names are blanked), `the database host name did not resolve`. A reason wt does not recognise — a server that answers in another language, a connection pooler's own wording — is replaced by `the reason psql gave is not shown because it can quote the connection string`, with the address kept. When `psql` tried several addresses for one host, the last attempt is the one reported. If the address is not the one you expect, "Where spend comes from" lists where it can come from. When `psql`'s message could quote the connection string — it does for one it cannot parse — wt says so instead of printing it, and shows no address; run `psql` yourself to see it |
 | `spend unavailable: no LiteLLM database configured: …` | Nothing names a database; the rest says where wt looked — `config.yaml`, the variable it names, wt's environment and the proxy's plist — and which variable to set. It never quotes a value |
 | `spend unavailable: the spend query failed: …` | Connected, but the query failed. The server's `ERROR:` line follows (for example the table does not exist: spend logging is not set up), or `psql`'s exit status |
 | `spend unavailable: LiteLLM config is invalid: …` | `config.yaml` exists and cannot be parsed |
+| `spend unavailable: open …/config.yaml: …` | `config.yaml` exists and cannot be read at all; the system's reason follows (`permission denied`, `is a directory`) |
 | `--agent narrows launches only; …` | `--agent` was given |
-| `the registry did not load …` | `--family` was given and `registry.toml` could not be read, so only provider prefixes (`ollama`, `openrouter`) match |
+| `wt's configuration did not load (…) …` | `--family` was given and wt could not load its configuration — `config.toml` or `registry.toml`; the parentheses quote what failed — so there are no registry families and only provider prefixes (`ollama`, `openrouter`) match |
 
 A `-` means "not read". A `0` means the proxy logged nothing for that model.
 
