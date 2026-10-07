@@ -201,3 +201,32 @@ func TestEncodeNamesTheTableOfAValueItCannotWrite(t *testing.T) {
 		t.Fatalf("want an error naming models and bad, got %v", err)
 	}
 }
+
+// TestEncodeRefusesTextThatWouldNotReadBack pins the values Encode could
+// print but no reader would give back: a year that is not four digits is not
+// TOML at all (the registry would stop loading in wt and modelman alike), a
+// UTC offset with seconds is printed without them (another instant), and a
+// string or key that is not UTF-8 would be written with U+FFFD in place of
+// each bad byte. Each is an error, as any other value Encode cannot write is.
+func TestEncodeRefusesTextThatWouldNotReadBack(t *testing.T) {
+	bad := map[string]*Table{
+		"year 10000":           tableOf(t, "v", time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)),
+		"a year before 0000":   tableOf(t, "v", time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)),
+		"an offset in seconds": tableOf(t, "v", time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("", 3630))),
+		"a string":             tableOf(t, "v", "a\xffb"),
+		"a string in a row":    tableOf(t, "rows", []any{tableOf(t, "v", "a\xffb")}),
+		"a key":                tableOf(t, "a\xffb", int64(1)),
+		"a key in a row":       tableOf(t, "rows", []any{tableOf(t, "a\xffb", int64(1))}),
+	}
+	for name, doc := range bad {
+		if out, err := Encode(doc); err == nil {
+			t.Errorf("%s: Encode should be an error, wrote %q", name, out)
+		}
+	}
+	// What the decoder hands back is still written: year 0000, and a local
+	// time of day, which carries the year 0 and this machine's offset.
+	const src = "d = 0000-01-01\nt = 07:32:00\n"
+	if got := roundTrip(t, src); got != src {
+		t.Errorf("decoded values came back as %q", got)
+	}
+}

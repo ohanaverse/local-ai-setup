@@ -21,7 +21,9 @@ const (
 // row fits in 100 characters, else as [[header]] tables; every other array
 // one item per line with a trailing comma; floats and datetimes as Python
 // prints them. A value that is not a document value is an error, never a
-// guess.
+// guess, and so is one whose text would not read back as the same value: a
+// nil table, a string or key that is not UTF-8, a year outside 0000-9999, a
+// UTC offset that is not whole minutes.
 func Encode(root *Table) ([]byte, error) {
 	var b strings.Builder
 	if err := writeTable(&b, root, "", false); err != nil {
@@ -38,25 +40,33 @@ type subTable struct {
 
 // writeTable is tomli-w's gen_table_chunks.
 func writeTable(b *strings.Builder, t *Table, name string, inAOT bool) error {
+	if t == nil {
+		return errNilTable
+	}
 	var literals []string
 	var tables []subTable
 	for _, k := range t.keys {
+		if err := checkKey(k); err != nil {
+			return err
+		}
 		v := t.vals[k]
 		if sub, ok := v.(*Table); ok {
 			tables = append(tables, subTable{k, sub, false})
 			continue
 		}
 		if rows, ok := tableRows(v); ok {
-			inline, err := allRowsFitInline(rows)
+			items, err := inlineRows(rows)
 			if err != nil {
 				return fmt.Errorf("%s: %w", k, err)
 			}
-			if !inline {
+			if items == nil {
 				for _, row := range rows {
 					tables = append(tables, subTable{k, row, true})
 				}
 				continue
 			}
+			literals = append(literals, formatKey(k)+" = "+arrayLiteral(items, 0)+"\n")
+			continue
 		}
 		lit, err := literal(v, 0)
 		if err != nil {
@@ -114,21 +124,25 @@ func tableRows(v any) ([]*Table, bool) {
 	return rows, true
 }
 
-// allRowsFitInline is tomli-w's is_suitable_inline_table over every row: the
-// row, indented and with its trailing comma, is at most 100 characters and
-// holds no newline (so no non-empty array, which always spans lines).
-func allRowsFitInline(rows []*Table) (bool, error) {
-	for _, row := range rows {
+// inlineRows is tomli-w's is_suitable_inline_table over every row: the row,
+// indented and with its trailing comma, is at most 100 characters and holds
+// no newline (so no non-empty array, which always spans lines). It returns
+// each row's inline text, kept so a row is rendered once (tomli-w caches it
+// for the same reason), or nil when a row does not fit.
+func inlineRows(rows []*Table) ([]string, error) {
+	items := make([]string, len(rows))
+	for i, row := range rows {
 		s, err := inlineTable(row)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		line := arrayIndent + s + ","
 		if utf8.RuneCountInString(line) > maxLineLength || strings.Contains(line, "\n") {
-			return false, nil
+			return nil, nil
 		}
+		items[i] = s
 	}
-	return true, nil
+	return items, nil
 }
 
 func literal(v any, nest int) (string, error) {
@@ -140,8 +154,14 @@ func literal(v any, nest int) (string, error) {
 	case float64:
 		return formatFloat(x), nil
 	case string:
+		if !utf8.ValidString(x) {
+			return "", fmt.Errorf("tomlw: string %q is not valid UTF-8", x)
+		}
 		return formatString(x), nil
 	case time.Time:
+		if err := checkTime(x); err != nil {
+			return "", err
+		}
 		return formatTime(x), nil
 	case *Table:
 		return inlineTable(x)
@@ -152,11 +172,17 @@ func literal(v any, nest int) (string, error) {
 }
 
 func inlineTable(t *Table) (string, error) {
+	if t == nil {
+		return "", errNilTable
+	}
 	if len(t.keys) == 0 {
 		return "{}", nil
 	}
 	parts := make([]string, 0, len(t.keys))
 	for _, k := range t.keys {
+		if err := checkKey(k); err != nil {
+			return "", err
+		}
 		// tomli-w formats an inline table's values at nest level 0.
 		lit, err := literal(t.vals[k], 0)
 		if err != nil {
@@ -171,18 +197,27 @@ func inlineArray(arr []any, nest int) (string, error) {
 	if len(arr) == 0 {
 		return "[]", nil
 	}
-	indent := strings.Repeat(arrayIndent, nest+1)
-	var b strings.Builder
-	b.WriteString("[\n")
-	for _, item := range arr {
+	items := make([]string, len(arr))
+	for i, item := range arr {
 		lit, err := literal(item, nest+1)
 		if err != nil {
 			return "", err
 		}
-		b.WriteString(indent + lit + ",\n")
+		items[i] = lit
+	}
+	return arrayLiteral(items, nest), nil
+}
+
+// arrayLiteral lays a non-empty array's rendered items out one per line.
+func arrayLiteral(items []string, nest int) string {
+	indent := strings.Repeat(arrayIndent, nest+1)
+	var b strings.Builder
+	b.WriteString("[\n")
+	for _, item := range items {
+		b.WriteString(indent + item + ",\n")
 	}
 	b.WriteString(strings.Repeat(arrayIndent, nest) + "]")
-	return b.String(), nil
+	return b.String()
 }
 
 // formatFloat prints f as Python's str(float) does: the shortest digits that
@@ -229,6 +264,35 @@ func formatTime(t time.Time) string {
 		return t.Format("2006-01-02 15:04:05") + frac
 	}
 	return t.Format("2006-01-02 15:04:05") + frac + t.Format("-07:00")
+}
+
+// checkTime refuses a time formatTime would print as text that is not TOML or
+// that reads back as another instant: a year that is not four digits, or a
+// UTC offset with seconds (RFC 3339 has no place for them). A local time of
+// day carries no date, and the three local kinds carry no offset.
+func checkTime(t time.Time) error {
+	switch t.Location().String() {
+	case "time-local":
+		return nil
+	case "date-local", "datetime-local":
+	default:
+		if _, offset := t.Zone(); offset%60 != 0 {
+			return fmt.Errorf("tomlw: a UTC offset of %ds is not whole minutes", offset)
+		}
+	}
+	if y := t.Year(); y < 0 || y > 9999 {
+		return fmt.Errorf("tomlw: year %d does not fit a TOML date", y)
+	}
+	return nil
+}
+
+// checkKey refuses a key that is not UTF-8: formatString would write U+FFFD
+// in place of each bad byte, which is a different key.
+func checkKey(k string) error {
+	if !utf8.ValidString(k) {
+		return fmt.Errorf("tomlw: key %q is not valid UTF-8", k)
+	}
+	return nil
 }
 
 func isBareKey(s string) bool {

@@ -40,7 +40,7 @@ func Decode(data []byte) (*Table, error) {
 	}
 	for _, k := range md.Keys() {
 		if emptyKeyUnderArray(raw, k) {
-			return nil, fmt.Errorf("tomlw: cannot place key %s: the decoder's key list and its values disagree", k)
+			return nil, fmt.Errorf("tomlw: cannot place key %s: an empty key beneath an array is not supported (the decoder can drop the array's other elements)", k)
 		}
 	}
 	o := &orderer{keys: md.Keys(), header: map[arrayRef]bool{}, current: map[arrayRef]int{}}
@@ -58,7 +58,10 @@ func Decode(data []byte) (*Table, error) {
 // emptyKeyUnderArray reports whether k ends in an empty-string part and sits
 // beneath an array-valued key. BurntSushi v1.6.0 then replaces the whole
 // array with that one inline table and drops its other elements, so the
-// decoded tree has lost data; Decode refuses such a document.
+// decoded tree has lost data; Decode refuses such a document. The decoded
+// values cannot tell that array from a [[header]] one (see orderer.header),
+// so an empty key in a [[header]] row or a table beneath it is refused too,
+// though the decoder reads those correctly.
 func emptyKeyUnderArray(raw map[string]any, k toml.Key) bool {
 	if len(k) < 2 || k[len(k)-1] != "" {
 		return false

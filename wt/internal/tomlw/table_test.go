@@ -1,6 +1,7 @@
 package tomlw
 
 import (
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -242,5 +243,68 @@ func TestSameDoesNotPanicOnValuesOutsideTheDocument(t *testing.T) {
 		if Same(p[0], p[1]) {
 			t.Errorf("Same(%#v, %#v) = true, want false", p[0], p[1])
 		}
+	}
+}
+
+// TestSameComparesNumbersExactly pins the two edges of the number rule. An
+// integer past 2^53 is not the float it rounds to, so a patch between the two
+// must be written, not skipped as "unchanged"; and NaN, which Go's == calls
+// different from itself, is written `nan` both times, so a document holding
+// one must not look changed on every comparison.
+func TestSameComparesNumbersExactly(t *testing.T) {
+	const big = int64(1)<<53 + 1
+	if Same(big, float64(1<<53)) || Same(float64(1<<53), big) {
+		t.Error("an integer past 2^53 and the float it rounds to are different numbers")
+	}
+	if !Same(int64(1)<<53, float64(1<<53)) {
+		t.Error("an integer and the float that holds it exactly should be Same")
+	}
+	if Same(int64(math.MaxInt64), math.Inf(1)) || Same(int64(math.MaxInt64), float64(1<<63)) || Same(int64(0), math.NaN()) {
+		t.Error("no integer is infinity, 2^63 or NaN")
+	}
+	if !Same(int64(math.MinInt64), -float64(1<<63)) {
+		t.Error("the smallest integer and -2^63 are one number")
+	}
+	if !Same(math.NaN(), math.NaN()) {
+		t.Error("NaN is written the same both times and should be Same")
+	}
+	doc, err := Decode([]byte("v = nan\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Same(doc, doc.Clone()) {
+		t.Error("a document holding nan should be Same as its copy")
+	}
+}
+
+// TestANilTableDoesNotPanic pins that a nil *Table stored with Set — which
+// keeps what it is given, so Value never sees it — is an error from Encode
+// and plain "different" to Same, and survives Clone. Each used to be a
+// nil-pointer panic that took the whole command down, far from the caller
+// that passed the nil.
+func TestANilTableDoesNotPanic(t *testing.T) {
+	var none *Table
+	docs := map[string]*Table{
+		"as a sub-table":   tableOf(t, "cost", none),
+		"as an inline row": tableOf(t, "rows", []any{NewTable(), none}),
+		"as a header row":  tableOf(t, "rows", []any{tableOf(t, "tags", []any{"a"}), none}),
+		"in an array":      tableOf(t, "mixed", []any{"a", none}),
+	}
+	for name, doc := range docs {
+		if _, err := Encode(doc); err == nil {
+			t.Errorf("Encode with a nil table %s should be an error", name)
+		}
+		if cp := doc.Clone(); cp.Len() != doc.Len() {
+			t.Errorf("Clone with a nil table %s: %d keys, want %d", name, cp.Len(), doc.Len())
+		}
+	}
+	if _, err := Encode(nil); err == nil {
+		t.Error("Encode(nil) should be an error")
+	}
+	if none.Clone() != nil {
+		t.Error("a nil table should copy to nil")
+	}
+	if Same(none, NewTable()) || Same(NewTable(), none) || Same(none, none) {
+		t.Error("a nil table is not a document value and is the same as nothing")
 	}
 }

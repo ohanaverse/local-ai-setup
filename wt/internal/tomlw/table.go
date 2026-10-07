@@ -15,11 +15,17 @@
 package tomlw
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"time"
 )
+
+// errNilTable is what a nil *Table gets wherever one is handed over or
+// written: Set stores what it is given, so Encode meets one too.
+var errNilTable = errors.New("tomlw: nil table")
 
 // Table is a TOML table whose keys keep their order. A value is one of bool,
 // int64, float64, string, time.Time, []any (an array of values) or *Table.
@@ -117,8 +123,12 @@ func (t *Table) Delete(k string) bool {
 	return true
 }
 
-// Clone returns a deep copy: no table or array is shared with t.
+// Clone returns a deep copy: no table or array is shared with t. A nil table
+// copies to nil.
 func (t *Table) Clone() *Table {
+	if t == nil {
+		return nil
+	}
 	out := &Table{keys: slices.Clone(t.keys), vals: make(map[string]any, len(t.vals))}
 	for k, v := range t.vals {
 		out.vals[k] = cloneValue(v)
@@ -140,8 +150,9 @@ func cloneValue(v any) any {
 	return v
 }
 
-// Value converts a Go value into a document value. Integers become int64,
-// string and table slices become []any, and a map becomes a *Table with its
+// Value converts a Go value into a document value. An int becomes int64 (no
+// other integer width, and no float32, is converted), string and table
+// slices become []any, and a map becomes a *Table with its
 // keys sorted (a Go map has no order to keep; pass a *Table to choose one).
 // Anything TOML cannot hold is an error.
 func Value(v any) (any, error) {
@@ -152,7 +163,7 @@ func Value(v any) (any, error) {
 		return int64(x), nil
 	case *Table:
 		if x == nil {
-			return nil, fmt.Errorf("tomlw: nil table")
+			return nil, errNilTable
 		}
 		return x, nil
 	case map[string]any:
@@ -190,7 +201,7 @@ func Value(v any) (any, error) {
 		out := make([]any, len(x))
 		for i := range x {
 			if x[i] == nil {
-				return nil, fmt.Errorf("tomlw: nil table")
+				return nil, errNilTable
 			}
 			out[i] = x[i]
 		}
@@ -213,10 +224,12 @@ func Value(v any) (any, error) {
 // same when they hold the same keys with the same values, in any order;
 // arrays compare element by element. An integer and a float with the same
 // numeric value are the same value — the rule that stops a caller's 3.0
-// rewriting a file's `3` as `3.0`. Two times are the same when they are
-// written the same: `Z` and `+00:00` are one value, and one instant at two
-// offsets is two. Anything that is not a document value is the same as
-// nothing, itself included.
+// rewriting a file's `3` as `3.0` — and the comparison is exact, so an
+// integer past 2^53 is not the float it would round to. NaN is the same as
+// NaN: both are written `nan`. Two times are the same when they are written
+// the same: `Z` and `+00:00` are one value, and one instant at two offsets
+// is two. Anything that is not a document value, a nil table included, is
+// the same as nothing, itself included.
 func Same(a, b any) bool {
 	switch x := a.(type) {
 	case int64:
@@ -224,15 +237,15 @@ func Same(a, b any) bool {
 		case int64:
 			return x == y
 		case float64:
-			return float64(x) == y
+			return sameNumber(x, y)
 		}
 		return false
 	case float64:
 		switch y := b.(type) {
 		case int64:
-			return x == float64(y)
+			return sameNumber(y, x)
 		case float64:
-			return x == y
+			return x == y || (math.IsNaN(x) && math.IsNaN(y))
 		}
 		return false
 	case time.Time:
@@ -240,7 +253,7 @@ func Same(a, b any) bool {
 		return ok && formatTime(x) == formatTime(y)
 	case *Table:
 		y, ok := b.(*Table)
-		if !ok || len(x.vals) != len(y.vals) {
+		if !ok || x == nil || y == nil || len(x.vals) != len(y.vals) {
 			return false
 		}
 		for k, v := range x.vals {
@@ -269,4 +282,11 @@ func Same(a, b any) bool {
 		return ok && x == y
 	}
 	return false
+}
+
+// sameNumber reports whether f is exactly the integer i. Converting i to a
+// float instead would round it past 2^53 and call two different numbers one.
+func sameNumber(i int64, f float64) bool {
+	const limit = 1 << 63 // float64(math.MaxInt64) rounds up to this
+	return f == math.Trunc(f) && f >= -limit && f < limit && int64(f) == i
 }
