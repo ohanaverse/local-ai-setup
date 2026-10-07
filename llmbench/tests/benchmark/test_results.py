@@ -2,9 +2,14 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-import typer
 
-from llmbench.benchmark.results import BenchmarkRun, TargetResult, run_dir, write_results
+from llmbench.benchmark.results import (
+    BenchmarkRun,
+    RunDirError,
+    TargetResult,
+    run_dir,
+    write_results,
+)
 from llmbench.benchmark.workloads.base import BenchmarkMetrics
 
 
@@ -51,37 +56,43 @@ def test_write_results_creates_json_and_markdown(tmp_path):
         "eval-20260905-143200-2",  # eval runner, second run in the same second
         "run-2026-01-01",
         "my.run_1",
-        "...",  # odd, but a plain child name: it cannot leave results_dir
+        "20260905-143200/",  # trailing slash from shell tab-completion is stripped
     ],
 )
 def test_run_dir_joins_an_id_a_runner_can_produce(tmp_path, run_id):
-    assert run_dir(tmp_path, run_id) == tmp_path / run_id
+    expected = tmp_path / run_id.rstrip("/")
+    assert run_dir(tmp_path, run_id) == expected
 
 
 @pytest.mark.parametrize(
-    "run_id",
+    "run_id, expected_msg",
     [
-        "",
-        ".",
-        "..",
-        "../x",
-        "../../x",
-        "a/b",
-        "/etc",
-        "a\\b",
-        "a b",
-        "a\n",
-        "~",
-        # What shell tab-completion of a run directory produces. Refused on
-        # purpose, not stripped: eval show/judge always refused it, and the
-        # other three commands now match them.
-        "20260905-143200/",
+        ("", "error: invalid --run-id ''"),
+        (".", "error: invalid --run-id '.'"),
+        ("..", "error: invalid --run-id '..'"),
+        ("../x", "error: invalid --run-id '../x' (hidden directory names not allowed)"),
+        ("../../x", "error: invalid --run-id '../../x' (hidden directory names not allowed)"),
+        ("a/b", "error: invalid --run-id 'a/b'"),
+        ("/etc", "error: invalid --run-id '/etc'"),
+        ("a\\b", "error: invalid --run-id 'a\\\\b'"),
+        ("a b", "error: invalid --run-id 'a b'"),
+        ("a\n", "error: invalid --run-id 'a\\n'"),
+        ("~", "error: invalid --run-id '~'"),
+        ("...", "error: invalid --run-id '...' (hidden directory names not allowed)"),
+        (".git", "error: invalid --run-id '.git' (hidden directory names not allowed)"),
+        (".config", "error: invalid --run-id '.config' (hidden directory names not allowed)"),
     ],
 )
-def test_run_dir_refuses_an_id_that_is_not_one_plain_directory_name(tmp_path, capsys, run_id):
-    """#277: the id is joined onto results_dir, so it must name a child of it.
-    The refusal is the usage error `eval show` has always printed."""
-    with pytest.raises(typer.Exit) as excinfo:
+def test_run_dir_refuses_invalid_ids(tmp_path, run_id, expected_msg):
+    """The id is joined onto results_dir, so it must name a child of it."""
+    with pytest.raises(RunDirError) as excinfo:
         run_dir(tmp_path, run_id)
-    assert excinfo.value.exit_code == 1
-    assert capsys.readouterr().err == f"error: invalid --run-id {run_id!r}\n"
+    assert str(excinfo.value) == expected_msg
+
+
+def test_run_dir_refuses_overlong_id(tmp_path):
+    """Run IDs exceeding 255 bytes (filesystem limit) are refused."""
+    long_id = "a" * 256  # 256 bytes > 255 limit
+    with pytest.raises(RunDirError) as excinfo:
+        run_dir(tmp_path, long_id)
+    assert "exceeds 255 byte filename limit" in str(excinfo.value)

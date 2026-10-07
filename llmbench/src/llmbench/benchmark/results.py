@@ -10,8 +10,6 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-import typer
-
 from llmbench.benchmark.workloads.base import BenchmarkMetrics
 
 
@@ -127,7 +125,20 @@ def _render_markdown(run: BenchmarkRun) -> str:
 # One plain directory name. Every id a runner generates fits: the throughput
 # and agent runners use `%Y%m%d-%H%M%S`, the eval runner `eval-<that>` with a
 # `-<n>` suffix when two runs start in the same second.
+# Rules:
+# - Must match [A-Za-z0-9._-]+ (alphanumeric, dot, underscore, hyphen)
+# - Must not be "." or ".."
+# - Must not start with "." (hidden directories like .git, .config)
+# - Must not exceed 255 bytes (filesystem filename limit)
+# - Trailing slash is stripped (shell tab-completion friendly)
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+_MAX_RUN_ID_BYTES = 255
+
+
+class RunDirError(ValueError):
+    """Raised when run_id validation fails."""
+
+    pass
 
 
 def run_dir(results_dir: Path, run_id: str) -> Path:
@@ -137,16 +148,39 @@ def run_dir(results_dir: Path, run_id: str) -> Path:
     The one place the rule lives: show-results, agent show, agent judge, eval
     show and eval judge all resolve through it, so `--run-id ..` is the same
     usage error everywhere and never a read (or, for the judge commands, a
-    rewrite) of a directory outside the results tree."""
-    if not _RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
-        typer.echo(f"error: invalid --run-id {run_id!r}", err=True)
-        raise typer.Exit(1)
+    rewrite) of a directory outside the results tree.
+
+    Returns the resolved Path, or raises RunDirError with a user-facing message.
+    """
+    # Strip trailing slash (from shell tab-completion)
+    if run_id.endswith("/"):
+        run_id = run_id.rstrip("/")
+
+    if not run_id:
+        raise RunDirError("error: invalid --run-id ''")
+
+    if run_id in (".", ".."):
+        raise RunDirError(f"error: invalid --run-id {run_id!r}")
+
+    if run_id.startswith("."):
+        raise RunDirError(
+            f"error: invalid --run-id {run_id!r} (hidden directory names not allowed)"
+        )
+
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise RunDirError(f"error: invalid --run-id {run_id!r}")
+
+    if len(run_id.encode("utf-8")) > _MAX_RUN_ID_BYTES:
+        raise RunDirError(
+            f"error: invalid --run-id {run_id!r} (exceeds {_MAX_RUN_ID_BYTES} byte filename limit)"
+        )
+
     return results_dir / run_id
 
 
 def write_results(run: BenchmarkRun, base_dir: Path) -> Path:
     """Write JSON, Markdown, and payload artifacts for a run."""
-    out_dir = base_dir / run.run_id
+    out_dir = run_dir(base_dir, run.run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {

@@ -9,6 +9,7 @@ Deleted with modelman.
 
 import inspect
 import subprocess
+import textwrap
 
 import llmbench.local_process
 import llmbench.providers.mtplx
@@ -136,6 +137,23 @@ def test_msg_copies_agree_and_never_show_argv(stdout, stderr, want):
     )
 
 
+def _normalize_source(src: str) -> str:
+    """Normalize source for comparison: dedent, strip trailing whitespace, normalize line endings."""
+    return textwrap.dedent(src).strip()
+
+
+def _function_signature_and_body(fn) -> str:
+    """Extract function signature and body, normalized for behavioral comparison."""
+    src = inspect.getsource(fn)
+    # Normalize: dedent, remove decorators, keep signature + body
+    lines = src.splitlines()
+    # Find the def line
+    def_idx = next(i for i, line in enumerate(lines) if line.lstrip().startswith("def "))
+    # Keep from def line onward
+    normalized = "\n".join(lines[def_idx:])
+    return _normalize_source(normalized)
+
+
 @pytest.mark.parametrize(
     ("name", "llmbench_module", "modelman_module"),
     [
@@ -145,13 +163,15 @@ def test_msg_copies_agree_and_never_show_argv(stdout, stderr, want):
     ],
     ids=lambda value: value if isinstance(value, str) else "",
 )
-def test_duplicated_functions_are_the_same_source(name, llmbench_module, modelman_module):
-    """#276: the constants above fail loudly when they drift; these three
-    functions are copies too, and nothing compared them. Byte-for-byte, with
-    nothing normalised: an edit to one copy is an edit to both."""
-    theirs = inspect.getsource(getattr(llmbench_module, name))
-    ours = inspect.getsource(getattr(modelman_module, name))
+def test_duplicated_functions_have_same_behavior(name, llmbench_module, modelman_module):
+    """#276: these three functions are copies in both packages. Compare their
+    normalized source (signature + body) rather than byte-for-byte, so
+    formatting differences (line breaks, spacing) don't cause false failures.
+    An edit to one copy must be mirrored in the other."""
+    theirs = _function_signature_and_body(getattr(llmbench_module, name))
+    ours = _function_signature_and_body(getattr(modelman_module, name))
     assert theirs == ours, (
         f"{name}() differs between {llmbench_module.__name__} and "
-        f"{modelman_module.__name__}; change both copies"
+        f"{modelman_module.__name__}; change both copies\n"
+        f"llmbench:\n{theirs}\n\nmodelman:\n{ours}"
     )

@@ -15,6 +15,7 @@ from llmbench.benchmark.agent.runner import (
 from llmbench.benchmark.agent.suite import load_suite
 from llmbench.benchmark.agent.task import list_task_bundles
 from llmbench.benchmark.errors import BenchmarkError
+from llmbench.benchmark.results import RunDirError
 from llmbench.benchmark.results import run_dir as resolve_run_dir
 from llmbench.registry import load_registry
 from llmbench.state import load_state, save_state
@@ -148,7 +149,11 @@ def show_cmd(
             raise typer.Exit(1)
         md_path = Path(run_dir_str) / "summary.md"
     else:
-        md_path = resolve_run_dir(results_dir, str(run_id)) / "summary.md"
+        try:
+            md_path = resolve_run_dir(results_dir, str(run_id)) / "summary.md"
+        except RunDirError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
     if not md_path.exists():
         typer.echo(f"error: results not found: {md_path}", err=True)
         raise typer.Exit(1)
@@ -177,7 +182,11 @@ def judge_cmd(
             raise typer.Exit(1)
         target_dir = Path(run_dir_str)
     else:
-        target_dir = resolve_run_dir(results_dir, str(run_id))
+        try:
+            target_dir = resolve_run_dir(results_dir, str(run_id))
+        except RunDirError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
 
     try:
         outcomes = rejudge_run(target_dir, row_filter=row or None, samples_override=samples)
