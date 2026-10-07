@@ -166,7 +166,7 @@ Keep the password out of it (a `~/.pgpass` entry or `PGPASSWORD` works with
 When the database cannot be reached, the note names the host and port wt
 tried — `cannot reach the LiteLLM database at 127.0.0.1:5432: Connection
 refused` — so a wrong address shows. wt prints no other part of the
-connection string in a note: not the user, the password or
+connection string, in a note or in `--json`: not the user, the password or
 the database name. When the string is written so that `psql` may have read
 part of the password as the host or port (an unencoded `/` or `@` in the
 password, or a keyword string that quotes a value or names `host` or
@@ -230,7 +230,9 @@ Example (illustrative values, wrapped here for reading):
 - `usage.unattributed_requests` counts requests with no model in the whole
   window, whatever `--model` or `--family` selected.
 - Model ids are JSON strings, so a control character in one is escaped by
-  JSON's own rules (`\n`, `\u001b`), not the table's.
+  JSON's own rules (`\n`, `\u001b`), not the table's. JSON leaves most
+  invisible characters (a bidi override, a zero-width space) as they are;
+  the table escapes them.
 - `survey` and `usage.rows` are always arrays, `[]` when empty.
 
 To keep a history, append one line per run: `wt stats --json >> ~/notes/wt-stats.jsonl`.

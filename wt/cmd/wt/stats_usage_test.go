@@ -214,8 +214,8 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 // for each outcome: ok, not_configured (nothing names a database, or the
 // spend package refused a blank connection string), unavailable (anything
 // else that failed) and skipped (--agent). The status is how a caller tells
-// the cases apart; "not configured" must not be lumped with "the database
-// is down".
+// the cases apart, and what --json consumers branch on (spend_status); "not
+// configured" must not be lumped with "the database is down".
 func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
 	a, _ := newTestApp(t)
 	asOf := time.Now().UTC()

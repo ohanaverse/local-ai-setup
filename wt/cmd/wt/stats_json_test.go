@@ -129,27 +129,99 @@ func TestStatsJSONIsOneDocumentInEveryMode(t *testing.T) {
 	})
 }
 
-// TestStatsJSONAgreesWithTheTable verifies the document and the text
-// tables are two renderings of one report: the same filters select the same
-// models in both. A --json that ignored --family or --model would archive
-// numbers the user did not ask for.
-func TestStatsJSONAgreesWithTheTable(t *testing.T) {
+// TestStatsJSONNullsWhereTheTableShowsADash verifies the survey fields
+// that have no value are null, not 0: worked_pct for a model whose every
+// prompt was skipped, and quality_avg and speed_avg for one that was
+// answered but never rated. The table prints "-" in those cells; a 0 in the
+// document would read as "never worked" and "rated zero" to whatever parses
+// the archive.
+func TestStatsJSONNullsWhereTheTableShowsADash(t *testing.T) {
 	a, tmp := newTestApp(t)
-	seedLaunches(t, tmp, launch{"ollama/a", "claude", time.Hour}, launch{"openrouter/b", "claude", time.Hour})
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	pinStatsNow(t, asOf)
+	seedSurveyEvents(t, tmp, []survey.Event{
+		{Agent: "claude", ModelID: "m/skipped", Timestamp: asOf.Add(-time.Hour), Skipped: true},
+		{Agent: "claude", ModelID: "m/unrated", Timestamp: asOf.Add(-time.Hour), Worked: boolPtr(true)},
+	})
 	stubSpend(t, spend.Result{}, nil)
 
-	for _, args := range [][]string{{"--family", "openrouter"}, {"--model", "openrouter/b"}} {
-		text, _ := runStats(t, a, args...)
-		stdout, _ := runStats(t, a, append([]string{"--json"}, args...)...)
+	stdout, _ := runStats(t, a, "--json", "--agent", "claude")
+	var doc statsJSON
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("stdout is not the document: %v\n%s", err, stdout)
+	}
+	if len(doc.Survey) != 2 || doc.Survey[0].Model != "m/skipped" || doc.Survey[1].Model != "m/unrated" {
+		t.Fatalf("survey = %+v, want the m/skipped and m/unrated rows", doc.Survey)
+	}
+	if r := doc.Survey[0]; r.Skipped != 1 || r.Answered != 0 || r.WorkedPct != nil || r.QualityAvg != nil || r.SpeedAvg != nil {
+		t.Errorf("all-skipped row = %+v, want skipped 1 and three nulls", r)
+	}
+	if r := doc.Survey[1]; r.WorkedPct == nil || *r.WorkedPct != 100 || r.QualityAvg != nil || r.SpeedAvg != nil {
+		t.Errorf("unrated row = %+v, want worked_pct 100 and null quality_avg and speed_avg", r)
+	}
+	for _, field := range []string{`"worked_pct":null`, `"quality_avg":null`, `"speed_avg":null`} {
+		if !strings.Contains(stdout, field) {
+			t.Errorf("stdout = %s\nwant %s spelled as null", stdout, field)
+		}
+	}
+}
+
+// TestStatsJSONAgreesWithTheTable verifies the document and the text
+// tables are two renderings of one report: the same filters select the same
+// models in both, and each model carries the same launches, requests,
+// tokens and spend in both. A --json that ignored --family or --model, or
+// read its numbers from somewhere the table does not, would archive
+// figures the user never saw on screen.
+func TestStatsJSONAgreesWithTheTable(t *testing.T) {
+	a, tmp := newTestApp(t)
+	seedLaunches(t, tmp,
+		launch{"ollama/a", "claude", time.Hour},
+		launch{"openrouter/b", "claude", time.Hour}, launch{"openrouter/b", "codex", 2 * time.Hour},
+	)
+	stubSpend(t, spend.Result{Rows: []spend.Row{
+		{Model: "ollama/a", Requests: 7, PromptTokens: 70, CompletionTokens: 700, Spend: 0},
+		{Model: "openrouter/b", Requests: 1204, PromptTokens: 51700, CompletionTokens: 3135, Spend: 0.0085},
+	}}, nil)
+
+	// tableRows reads the usage table back: model id -> its five cells.
+	tableRows := func(text string) map[string][]string {
+		_, usagePart, _ := strings.Cut(text, "\n\n")
+		out := map[string][]string{}
+		for _, line := range strings.Split(strings.TrimSpace(usagePart), "\n")[1:] {
+			f := strings.Fields(line)
+			out[f[0]] = f[1:]
+		}
+		return out
+	}
+	for _, c := range []struct {
+		args []string
+		want []string
+	}{
+		{nil, []string{"ollama/a", "openrouter/b"}},
+		{[]string{"--family", "openrouter"}, []string{"openrouter/b"}},
+		{[]string{"--model", "openrouter/b"}, []string{"openrouter/b"}},
+	} {
+		text, _ := runStats(t, a, c.args...)
+		stdout, _ := runStats(t, a, append([]string{"--json"}, c.args...)...)
 		var doc statsJSON
 		if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 			t.Fatal(err)
 		}
-		if len(doc.Usage.Rows) != 1 || doc.Usage.Rows[0].Model != "openrouter/b" {
-			t.Errorf("%v --json rows = %+v, want only openrouter/b", args, doc.Usage.Rows)
+		table := tableRows(text)
+		if len(doc.Usage.Rows) != len(c.want) || len(table) != len(c.want) {
+			t.Fatalf("%v: --json rows = %+v, table rows = %v; want %v in both", c.args, doc.Usage.Rows, table, c.want)
 		}
-		if strings.Contains(text, "ollama/a") || !strings.Contains(text, "openrouter/b") {
-			t.Errorf("%v text =\n%s\nwant only openrouter/b", args, text)
+		for i, r := range doc.Usage.Rows {
+			if r.Model != c.want[i] {
+				t.Errorf("%v: --json row %d is %s, want %s", c.args, i, r.Model, c.want[i])
+			}
+			fromJSON := []string{
+				formatCount(int64(r.Launches)), formatCount(*r.Requests), formatCount(*r.PromptTokens),
+				formatCount(*r.CompletionTokens), fmt.Sprintf("$%.4f", *r.Spend),
+			}
+			if got := table[r.Model]; strings.Join(got, " ") != strings.Join(fromJSON, " ") {
+				t.Errorf("%v: %s is %v in the table and %v in --json", c.args, r.Model, got, fromJSON)
+			}
 		}
 	}
 }
