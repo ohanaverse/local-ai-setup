@@ -73,7 +73,7 @@ PR #165 (`cc-session-transcripts`) touches root `CLAUDE.md` and the `Makefile`. 
 
 ## Step 0 — pre-work
 
-**#259: loading is not loaded.** `localmodels.Entry` and `catalog.Row` gain `Loading bool`, true when the omlx pool reports the model with `Loading && !Loaded`. `Running` stays true for a loading model, so it still occupies the pool, keeps its route and can be stopped. What changes: `wt start` on a loading model waits for the load instead of printing "already running", and a loading model is a start row in the pickers, not a launch row. The fallback pool reading has no loading signal and keeps today's behaviour.
+**#259: loading is not loaded.** `localmodels.Entry` and `catalog.Row` gain `Loading bool`, true when the omlx pool reports the model with `Loading && !Loaded`. `Running` stays true for a loading model, so it still occupies the pool, keeps its route and is still offered by `wt stop`. (omlx 0.7.0 refuses to unload a model mid-load, so that stop fails with omlx's answer; `wt stop omlx` is what calls a load off.) What changes: `wt start` on a loading model waits for the load instead of printing "already running", and a loading model is a start row in the pickers, not a launch row. The fallback pool reading has no loading signal and keeps today's behaviour.
 
 **#258: show what a start unloaded.** The TUI start flow passes `Options.OnUnloaded` and puts "omlx unloaded X to make room" on the picker status line.
 
