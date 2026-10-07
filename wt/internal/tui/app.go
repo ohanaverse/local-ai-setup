@@ -92,6 +92,7 @@ type model struct {
 	initialAgent string       // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
 	pinnedModel  string       // model from --model flag; "" = no model pinned (model picker is shown)
 	launchModel  config.Model // the model being launched, captured when the launch began (the routing phase finishes an Update later)
+	startNote    string       // what the start that led to this launch made omlx unload (unloadedNote, #258); launchSelected, or proceedToLaunch when it has no row to launch, takes it once and puts it ahead of the failure
 
 	// filter inputs (PR 3b): -T/--tags and -F/--family values from the CLI;
 	// forwarded to the model screen so the picker can pre-filter the catalog.
@@ -1065,7 +1066,12 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// single source of truth.
 	highlighted, ok := m.models.SelectedItem().(*modelItem)
 	if !ok {
-		m.status = "no model selected"
+		// Reached after a start too (finishStart), and this way back to the
+		// picker never gets to launchSelected: the start's note (#258) is
+		// shown and dropped here, or it would sit on the model and be put
+		// ahead of some later, unrelated launch failure.
+		m.status = withNote(m.startNote, "no model selected")
+		m.startNote = ""
 		return m.refreshTable()
 	}
 	// Capture the model so launchAndRecord records exactly this pick, also
@@ -1105,9 +1111,13 @@ func (m model) launchSelected() (model, tea.Cmd) {
 	// wt starts the agent fresh. Whether to continue an earlier conversation
 	// is the agent's business: the user says so with the agent's own flags
 	// after `--` (m.extraArgs), which launchAgent passes through unchanged.
+	// The note of the start that led here (#258), taken once: a later launch
+	// from the same picker is not about that start.
+	note := m.startNote
+	m.startNote = ""
 	cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.cfg, m.extraArgs)
 	if err != nil {
-		m.status = "launch failed: " + err.Error()
+		m.status = withNote(note, "launch failed: "+err.Error())
 		return m.refreshTable()
 	}
 	return m.launchAndRecord(cmd)

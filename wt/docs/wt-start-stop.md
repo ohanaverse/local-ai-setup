@@ -111,6 +111,15 @@ recently used when a load does not fit.
   removes that model's route and prints
   `wt: omlx unloaded <id> to make room (not predicted)`. A load omlx refuses
   as too large fails with omlx's own explanation of what holds the memory.
+- The full-screen `wt` picker hides that stderr line, so the picker reports
+  the unloaded models itself, without the `(not predicted)` marker: after a
+  start that fails or is cancelled the status shows
+  `omlx unloaded <id> to make room` on the line above the failure, and after
+  a start that succeeds `wt: omlx unloaded <id> to make room` is printed
+  above the agent's output. If the agent then fails to launch, the picker's
+  status shows the same note on the line above `launch failed`. The engine
+  still writes its own line to stderr, so `wt 2>log` records each unloaded
+  model there as well.
 - `wt stop <omlx model>` unloads that one model. The service and the other
   models stay up, even when it was the last one.
 - `wt stop omlx` (or `omlx-6bit`) halts the service and every model in it.

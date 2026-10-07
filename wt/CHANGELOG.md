@@ -17,6 +17,12 @@
 
 ### Fixed
 
+- The `wt` picker says which omlx models a start unloaded (#258). The line
+  was printed only on stderr, which the full-screen picker hides, so a model
+  another session was using could go without a word. It is now on the
+  picker's status line after a failed or cancelled start, and above the
+  agent's output after a successful one (and on the status line again if
+  the agent then fails to launch).
 - An omlx model that is still loading is no longer treated as loaded (#259).
   `wt start` on it waits for the load instead of printing `already running`,
   and the pickers show `load` in the RUNNING column and start it on Enter
