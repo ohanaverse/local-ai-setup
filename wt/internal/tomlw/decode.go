@@ -173,6 +173,16 @@ func (t *Table) note(k string) {
 	}
 }
 
+// refuse records that the key list named a key the decoded tree has no
+// place for. The first such key is kept: it is where the two witnesses
+// first disagree, and the error should name that point no matter how many
+// further keys walk the same broken path.
+func (o *orderer) refuse(k toml.Key) {
+	if o.lost == nil {
+		o.lost = k
+	}
+}
+
 // step places the key at o.pos, which is not inside an inline array.
 func (o *orderer) step(root *Table) {
 	k := o.keys[o.pos]
@@ -180,7 +190,7 @@ func (o *orderer) step(root *Table) {
 	cur := root
 	for _, part := range k[:len(k)-1] {
 		if !cur.Has(part) {
-			o.lost = k
+			o.refuse(k)
 			return
 		}
 		cur.note(part)
@@ -190,17 +200,24 @@ func (o *orderer) step(root *Table) {
 		case []any:
 			ref := arrayRef{cur, part}
 			n, started := o.current[ref]
+			// An array the walk reaches that it cannot place the key in
+			// (not a [[header]] row's array, its element index not started,
+			// or run past the array's end) is the same disagreement in
+			// another shape: refuse it, don't silently leave the key to
+			// finish()'s sorted tail.
 			if !o.header[ref] || !started || n >= len(v) {
+				o.refuse(k)
 				return
 			}
 			cur = v[n].(*Table)
 		default:
+			o.refuse(k)
 			return
 		}
 	}
 	last := k[len(k)-1]
 	if !cur.Has(last) {
-		o.lost = k
+		o.refuse(k)
 		return
 	}
 	cur.note(last)

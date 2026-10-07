@@ -76,7 +76,7 @@ func buildStatsJSON(window string, asOf time.Time, survey []statsRow, rep usageR
 		Usage:  usageJSON{SpendStatus: rep.SpendStatus, SpendReason: rep.SpendReason, Rows: []usageRowJSON{}},
 	}
 	for _, r := range survey {
-		if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
+		if surveyEmptyStats(r.Stats) {
 			continue
 		}
 		j := surveyRowJSON{

@@ -18,6 +18,8 @@ Four `TestMain`s guarantee no Go test probes a real server, starts a real model,
 
 `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` for other packages. `internal/lifecycle` uses a different convention: every seam (HTTP clients, exec, inventory, timeouts, pidfile paths) lives in one `env` struct that `defaultEnv()` fills and tests rebuild with `testEnv()`; its `TestMain` doubles as a fake `mtplx` helper process when `LIFECYCLE_HELPER=mtplx`.
 
+**Registry writes.** `internal/config` has two seams of its own: `registryWriteGuard` (set by `IsolateConfigHomeForTest`; `UpdateRegistry` asks it before taking the lock, so a guarded write creates nothing) and `registryBeforeRename` (a test swaps it to play another program writing the file between wt's read and its rename). A new package whose tests reach `config.UpdateRegistry` must call `config.IsolateConfigHomeForTest` from its `TestMain`, and assert `config.RegistryWriteGuardArmed()` in one test: the guard is off unless a `TestMain` arms it, so a binary that forgot fails open.
+
 **Prefer asserting on unexported functions directly** — same-package tests can call them (e.g. `buildStatsRows`); parsing rendered lipgloss output couples tests to border glyphs/padding and flakes under forced-color ANSI.
 
 ```bash
