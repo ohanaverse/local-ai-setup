@@ -105,9 +105,9 @@ func rowCostKey(r tableRow) costKey {
 // subscription model. The native/non-native split is the only special case:
 // each half then falls through to the same group rules — group 1 (cloud +
 // running local) by cost ascending then 7-day usage ascending then id; group 2
-// (local that is not running, or still loading) alphabetical by id — so a native row that resolves local
-// and is not running still sorts after the native group-1 rows, by id, not
-// "in group-1 order".
+// (local that is not running, or still loading) alphabetical by id — so a
+// native row that resolves local and is not running still sorts after the
+// native group-1 rows, by id, not "in group-1 order".
 //
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and

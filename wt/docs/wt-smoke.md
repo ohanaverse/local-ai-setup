@@ -50,9 +50,10 @@ An agent is eligible for a model when selecting it would launch or could
 launch after a start: the model's provider is in the agent's
 `supported_providers` and the row is a launch row (cloud, or a local model
 the live probe reports running and loaded) or a start row (an idle local
-model wt can start, or one omlx is still loading). Rows that cannot run — no lifecycle backend, or an unmapped cloud
-model whose route goes through LiteLLM — are excluded, and a
-local model that is not on disk has no row; passing either by id names the
+model wt can start, or one omlx is still loading). Rows that cannot run —
+no lifecycle backend, or an unmapped cloud model whose route goes through
+LiteLLM — are excluded, and a local model that is not on disk has no row;
+passing either by id names the
 reason (not on disk, no lifecycle backend) as `wt start` does, while other ineligible ids (for
 example a model no agent supports) get a generic "cannot be smoke-tested"
 message
