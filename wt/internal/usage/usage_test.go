@@ -476,3 +476,59 @@ func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
 		t.Errorf("AllCounts(\"\") = %+v, want exactly %v", got, ids)
 	}
 }
+
+// TestAllCountsSkipsALineWithNoModelID verifies a parseable line with a
+// recent timestamp and no model id (or an empty one) is not counted under
+// the key "". wt never writes such a line, but usage.jsonl is a plain file
+// people edit; counted, it becomes a `wt stats` row with a blank MODEL cell
+// that no --model value can name.
+func TestAllCountsSkipsALineWithNoModelID(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	writeEvents(t, store, []event{
+		{ModelID: "", Agent: "claude", Timestamp: fixed.Add(-time.Hour)},
+		{ModelID: "ollama/a:1", Agent: "claude", Timestamp: fixed.Add(-time.Hour)},
+	}, `{"agent":"claude","timestamp":"2026-10-07T11:00:00Z"}`)
+
+	for _, agent := range []string{"", "claude"} {
+		got := store.AllCounts(agent)
+		if _, nameless := got[""]; nameless || len(got) != 1 || got["ollama/a:1"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+			t.Errorf("AllCounts(%q) = %+v, want only ollama/a:1 with one launch and no \"\" key", agent, got)
+		}
+	}
+}
+
+// TestAllCountsAgentFilterAndOddTimestamps pins two corners the other
+// AllCounts tests leave open. Under a named agent, a legacy agent-less line
+// and that agent's own out-of-window launch are both left out in the same
+// file, so the model does not appear at all. And an event dated in the
+// future (a clock that was wrong when it was written) counts in all three
+// buckets, the rule Counts has always applied, so `wt stats` and the
+// picker's 1d/7d/30d columns agree on such a line.
+func TestAllCountsAgentFilterAndOddTimestamps(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	writeEvents(t, store, []event{
+		{ModelID: "ollama/a:1", Timestamp: fixed.Add(-time.Hour)},                           // legacy, no agent
+		{ModelID: "ollama/a:1", Agent: "codex", Timestamp: fixed.Add(-31 * 24 * time.Hour)}, // codex, too old
+		{ModelID: "ollama/future", Agent: "codex", Timestamp: fixed.Add(2 * time.Hour)},     // clock skew
+	})
+
+	got := store.AllCounts("codex")
+	if _, listed := got["ollama/a:1"]; listed {
+		t.Errorf("AllCounts(\"codex\") = %+v, want no ollama/a:1 (one line has no agent, the other is too old)", got)
+	}
+	want := UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}
+	if got["ollama/future"] != want {
+		t.Errorf("AllCounts(\"codex\")[ollama/future] = %+v, want %+v", got["ollama/future"], want)
+	}
+	if c := store.Counts([]string{"ollama/future"})["ollama/future"]; c != want {
+		t.Errorf("Counts()[ollama/future] = %+v, want %+v (the same rule)", c, want)
+	}
+}

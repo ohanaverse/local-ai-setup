@@ -151,10 +151,16 @@ func (s *StoreImpl) CountsForAgent(agent string, modelIDs []string) map[string]U
 // counts every launch, legacy agent-less lines included (the Counts rule);
 // a named agent counts only launches recorded for it (the CountsForAgent
 // rule). A model whose only events are older than 30 days is left out, so a
-// missing file and a stale one both read as an empty map.
+// missing file and a stale one both read as an empty map. A line with no
+// model id is not a launch of any model and is left out too: wt never
+// writes one, and a hand-edited file must not give `wt stats` a row with no
+// name.
 func (s *StoreImpl) AllCounts(agent string) map[string]UsageCounts {
 	out := map[string]UsageCounts{}
 	s.scan(func(ev event, age time.Duration) {
+		if ev.ModelID == "" {
+			return
+		}
 		if agent != "" && ev.Agent != agent {
 			return
 		}
