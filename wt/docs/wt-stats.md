@@ -14,7 +14,7 @@ Reports two tables for one window:
   LiteLLM proxy logged for it: requests, prompt and completion tokens, spend.
 
 ```bash
-wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>]
+wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>] [--json]
 ```
 
 - `--window` — defaults to `30d`. One window for both tables: survey
@@ -26,6 +26,8 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>
 - `--family` — narrow the usage table to one model family: one exact value,
   not the comma list `wt -F` takes, and with no `-F` shorthand on `stats`.
   The survey table ignores it.
+- `--json` — print one JSON document instead of the two tables; see
+  [`--json`](#--json).
 
 `wt stats` is a report, never a gate: it exits 0 with empty stores, without
 `psql`, with the database down, and with a `registry.toml` it cannot read.
@@ -196,6 +198,42 @@ wt: spend unavailable: psql not found on PATH
 | `wt's configuration did not load (…) …` | `--family` was given and wt could not load its configuration — `config.toml` or `registry.toml`; the parentheses quote what failed — so there are no registry families and only provider prefixes (`ollama`, `openrouter`) match |
 
 A `-` means "not read". A `0` means the proxy logged nothing for that model.
+
+## `--json`
+
+`wt stats --json` prints one JSON document on one line instead of the two
+tables. Notes still go to stderr, so stdout is always exactly the document.
+Example (illustrative values, wrapped here for reading):
+
+```json
+{"window":"7d","as_of":"2026-10-07T12:00:00Z",
+ "survey":[
+  {"model":"ollama/gemma4:9b","agent":null,"answered":2,"worked":1,"failed":1,"skipped":0,
+   "worked_pct":50,"quality_avg":5,"speed_avg":4},
+  {"model":"ollama/gemma4:9b","agent":"claude","answered":2,"worked":1,"failed":1,"skipped":0,
+   "worked_pct":50,"quality_avg":5,"speed_avg":4}],
+ "usage":{"spend_status":"ok","spend_reason":"","unattributed_requests":3,
+  "rows":[
+   {"model":"ollama/gemma4:9b","family":"gemma4","launches":1,
+    "requests":4,"prompt_tokens":152,"completion_tokens":630,"spend":0}]}}
+```
+
+- `window` is the `--window` value; `as_of` is the end of the window, UTC.
+- `survey` holds the survey table's rows. `agent` is `null` for a model's
+  all-agents aggregate (`(all)` in the table). `worked_pct`, `quality_avg`
+  and `speed_avg` are unrounded, and `null` where the table shows `-`.
+- `usage.spend_status` is `ok`, `not_configured`, `unavailable` or `skipped`
+  (`--agent`); `usage.spend_reason` is the note's text, `""` for `ok`.
+- `usage.rows` holds the usage table's rows, with each model's `family`.
+  `requests`, `prompt_tokens`, `completion_tokens` and `spend` are `null`
+  unless `spend_status` is `ok`, and so is `unattributed_requests`.
+- `usage.unattributed_requests` counts requests with no model in the whole
+  window, whatever `--model` or `--family` selected.
+- Model ids are JSON strings, so a control character in one is escaped by
+  JSON's own rules (`\n`, `\u001b`), not the table's.
+- `survey` and `usage.rows` are always arrays, `[]` when empty.
+
+To keep a history, append one line per run: `wt stats --json >> ~/notes/wt-stats.jsonl`.
 
 ## Where the survey data comes from
 

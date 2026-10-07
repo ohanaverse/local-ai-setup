@@ -180,6 +180,10 @@ differ from `modelman usage report` at the edges of the window: `wt stats`
 compares the proxy's timestamps as UTC. Full reference:
 [wt/docs/wt-stats.md](../../wt/docs/wt-stats.md).
 
+For a copy to keep, `wt stats --json` prints the same report as one JSON
+line; append it to a file to build a history (`wt stats --json >>
+~/notes/wt-stats.jsonl`).
+
 ## Verification
 
 - Exit code 0 and Markdown on stdout:

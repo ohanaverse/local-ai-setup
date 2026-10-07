@@ -49,7 +49,8 @@ func statsCmd(a *app) *cobra.Command {
 			"Without psql, a reachable database or a configured URL, the launches\n" +
 			"still print, the spend cells show \"-\", and one note on stderr says why.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			window, err := parseStatsWindow(mustGetString(cmd, "window"))
+			windowName := mustGetString(cmd, "window")
+			window, err := parseStatsWindow(windowName)
 			if err != nil {
 				return err
 			}
@@ -62,16 +63,25 @@ func statsCmd(a *app) *cobra.Command {
 			rep := collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
 
 			out := cmd.OutOrStdout()
-			if table := surveyTableRows(rows); len(table) == 0 {
-				fmt.Fprintln(out, "no survey data")
+			if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+				if windowName == "" {
+					windowName = "30d"
+				}
+				if err := writeStatsJSON(out, buildStatsJSON(windowName, asOf, rows, rep)); err != nil {
+					return err
+				}
 			} else {
-				fmt.Fprintln(out, renderTable(surveyHeaders, table, a.theme))
-			}
-			fmt.Fprintln(out)
-			if len(rep.Rows) == 0 {
-				fmt.Fprintln(out, "no usage data")
-			} else {
-				fmt.Fprintln(out, renderUsageTable(rep.Rows, stdoutWidth()))
+				if table := surveyTableRows(rows); len(table) == 0 {
+					fmt.Fprintln(out, "no survey data")
+				} else {
+					fmt.Fprintln(out, renderTable(surveyHeaders, table, a.theme))
+				}
+				fmt.Fprintln(out)
+				if len(rep.Rows) == 0 {
+					fmt.Fprintln(out, "no usage data")
+				} else {
+					fmt.Fprintln(out, renderUsageTable(rep.Rows, stdoutWidth()))
+				}
 			}
 			notes := rep.notes()
 			if familyFilter != "" && a.loadErr != nil {
@@ -89,6 +99,7 @@ func statsCmd(a *app) *cobra.Command {
 	// Local, so it shadows the root's persistent -F/--family (a comma list
 	// for the picker) on this command, as --model above shadows -M/--model.
 	cmd.Flags().String("family", "", "Filter the usage table to one model family")
+	cmd.Flags().Bool("json", false, "Print one JSON document (window, as_of, survey, usage) instead of the tables")
 	return cmd
 }
 
