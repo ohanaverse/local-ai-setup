@@ -207,11 +207,11 @@ x_note.why = "test"
 	}
 }
 
-// TestDecodeRefusesAnInlineRowWithAnEmptyKey pins a known limit of the order
-// recovery. BurntSushi decodes this inline array as []map[string]any, the
-// type it gives a [[header]] array, so the rows' keys cannot be told apart.
-// No registry key is empty, so the document is refused rather than written
-// back with its keys in a guessed order.
+// TestDecodeRefusesAnInlineRowWithAnEmptyKey pins a known limit of the
+// decoder. BurntSushi decodes an inline array holding an inline table with an
+// empty key as []map[string]any (the type of a [[header]] array) and drops the
+// array's other elements, so the document is refused rather than written back
+// with data lost.
 func TestDecodeRefusesAnInlineRowWithAnEmptyKey(t *testing.T) {
 	const src = `t = [
     { n = 1 },
@@ -221,5 +221,20 @@ func TestDecodeRefusesAnInlineRowWithAnEmptyKey(t *testing.T) {
 	_, err := Decode([]byte(src))
 	if err == nil || !strings.Contains(err.Error(), "cannot place key") {
 		t.Fatalf("Decode = %v, want a refusal", err)
+	}
+}
+
+// TestDecodeRefusesAnEmptyKeyThatDropsElements covers the silent case: the
+// decoder replaces the array with the one table and drops "keep".
+func TestDecodeRefusesAnEmptyKeyThatDropsElements(t *testing.T) {
+	for _, src := range []string{
+		"x = [\"keep\", {\"\" = 1}]\n",
+		"x = [[{\"\" = true}]]\n",
+		"[a]\nx = [\"keep\", {b = {\"\" = 1}}]\n",
+	} {
+		_, err := Decode([]byte(src))
+		if err == nil || !strings.Contains(err.Error(), "cannot place key") {
+			t.Errorf("Decode(%q) = %v, want a refusal", src, err)
+		}
 	}
 }

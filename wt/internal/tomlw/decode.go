@@ -38,6 +38,11 @@ func Decode(data []byte) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, k := range md.Keys() {
+		if emptyKeyUnderArray(raw, k) {
+			return nil, fmt.Errorf("tomlw: cannot place key %s: the decoder's key list and its values disagree", k)
+		}
+	}
 	o := &orderer{keys: md.Keys(), header: map[arrayRef]bool{}, current: map[arrayRef]int{}}
 	root := o.fromRaw(raw).(*Table)
 	for o.pos < len(o.keys) {
@@ -48,6 +53,32 @@ func Decode(data []byte) (*Table, error) {
 	}
 	finish(root)
 	return root, nil
+}
+
+// emptyKeyUnderArray reports whether k ends in an empty-string part and sits
+// beneath an array-valued key. BurntSushi v1.6.0 then replaces the whole
+// array with that one inline table and drops its other elements, so the
+// decoded tree has lost data; Decode refuses such a document.
+func emptyKeyUnderArray(raw map[string]any, k toml.Key) bool {
+	if len(k) < 2 || k[len(k)-1] != "" {
+		return false
+	}
+	var cur any = raw
+	for _, part := range k[:len(k)-1] {
+		switch x := cur.(type) {
+		case map[string]any:
+			cur = x[part]
+		case []map[string]any, []any:
+			return true
+		default:
+			return false
+		}
+	}
+	switch cur.(type) {
+	case []map[string]any, []any:
+		return true
+	}
+	return false
 }
 
 // arrayRef names one array: the table that holds it and its key there.
@@ -64,9 +95,10 @@ type orderer struct {
 	// is the only place the two forms can be told apart per array: the
 	// metadata's type is per key path, and one path can be a header array in
 	// one row and an inline array in the next. One exception is known: an
-	// inline array with an empty-string key in a later row also decodes as
-	// []map[string]any. Its rows' keys then find no place, and Decode
-	// refuses the document (lost) rather than guess their order.
+	// inline array holding an inline table with an empty-string key also
+	// decodes as []map[string]any, and the decoder drops the array's other
+	// elements. Decode refuses such a document up front
+	// (emptyKeyUnderArray) rather than lose them.
 	header map[arrayRef]bool
 	// current is the index of the element a header array is on.
 	current map[arrayRef]int
