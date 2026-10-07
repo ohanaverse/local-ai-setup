@@ -144,7 +144,9 @@ The existing `ErrRegistryRedirected` rule is unchanged: a registry write under a
 
 `config.SeedRegistryDefaults` is the Go port of modelman's default-provider logic: add the default row for ollama, omlx, mtplx or mlx_lm_server when a model references it, or (for the first three) when its command is on PATH; add a native provider row for each configured agent. It runs inside one `UpdateRegistry` and creates the file when it is missing. It has two callers: `wt model init [--json]`, and `wt model add` (Step 3) in the same locked write. Reads never seed.
 
-The "seed the registry with `modelman migrate`" hints in `cmd/wt/helpers.go` and `internal/config/registry.go` change to name `wt model init`.
+One trigger goes beyond modelman's: a provider that a configured agent lists in `supported_providers` gets a row too, so that wt's own config validation passes after `wt model init` on a machine with a `config.toml` and no registry. A default local provider gets its default row, installed or not. openrouter gets a row with its address and no key. Any other id is not seeded, and `wt model init` names it. The agents are read as the next `Load` will migrate them.
+
+The missing-registry error names `wt model init` where it named `modelman migrate`, and names it once: the hint stays in `internal/config/registry.go`, and the second copy that `cmd/wt/helpers.go` appends is dropped.
 
 ### Env name
 
@@ -152,7 +154,9 @@ The "seed the registry with `modelman migrate`" hints in `cmd/wt/helpers.go` and
 
 ### Interim: two writers
 
-modelman's registry lock is in-process only and its TUI saves a whole snapshot, so an open modelman TUI would revert a wt edit on its next save. The one modelman change in this migration: `load_registry` records the file's `mtime_ns` and size, and `_write_registry` raises `RegistryError("registry.toml changed on disk; reload")` when they differ; a successful write updates the recorded values. This must merge before Step 3's first writing PR.
+modelman's registry lock is in-process only and its TUI saves a whole snapshot, so an open modelman TUI would revert a wt edit on its next save. The one modelman change in this step: `load_registry` records the file's `mtime_ns`, size and inode, or that there was no file, and `_write_registry` raises `RegistryError("registry.toml changed on disk; reload")` when the file no longer matches; a successful write updates the record. This must merge before PR 5 (`wt model init`, the first wt writer), not merely before Step 3.
+
+After a wt write, an open modelman TUI refuses every save until it is restarted. That window ends in Step 3: modelman's TUI is disabled when the Models tab ships.
 
 ### Contract fixture
 
@@ -202,6 +206,7 @@ Each writing verb does one `UpdateRegistry` and then one route sync. Exit 0 when
 - **Saving.** Each saved form and each confirmed removal writes the registry at once. The Agents tab keeps its buffer and `ctrl+s`; its quit prompt concerns agent edits only.
 - **Routes.** The tab does not sync routes per change. It marks routes pending on the status line and runs one sync when the editor exits, only if the registry changed. If the editor dies first, the next `wt start`, `wt stop` or launch through LiteLLM repairs the routes, as it does today. Requirement, verified in this step: a sync that leaves `config.yaml` byte-identical does not restart the proxy.
 - **Probing** runs in a `tea.Cmd`, never on the update loop.
+- **modelman's TUI.** The PR series that ships the tab also disables modelman's TUI: bare `modelman` prints where the Models tab is and exits non-zero. modelman's non-interactive commands keep working until Step 6.
 - **Layout.** The wide-table sizing helpers (`fitTo`, `listFrame`, the column-dropping table) move from `internal/tui` to a package both `tui` and `configeditor` import; `tableColumns` is generalised from fixed arrays to slices with a per-table drop order. The tab is added to the fit tests at 40/80/120 by 12/24/50, with assertions that the header row and the focused form field are present, and real screens are captured through the pty driver at 80x24 before the form PR merges.
 
 ### mlx_lm_server pairings

@@ -19,9 +19,9 @@
 - The stock `toml.Encoder` is never used on the registry: it sorts keys and formats local dates in UTC.
 - `ErrRegistryRedirected` behaviour is unchanged: a registry write under a redirected registry succeeds, and the route sync that follows is refused unless `WT_LITELLM_CONFIG` is set.
 - Env precedence, identical in all three readers and landed in one PR: `WT_REGISTRY` > `MODELMAN_REGISTRY` > `$XDG_CONFIG_HOME/local-ai/registry.toml` > `~/.config/local-ai/registry.toml`.
-- One seeding implementation, `config.SeedRegistryDefaults`. Reads never seed. Its callers are `wt model init [--json]` (this plan) and `wt model add` (Step 3).
-- Hint text: `seed the registry with modelman migrate` becomes `wt model init` in `cmd/wt/helpers.go` and `internal/config/registry.go`.
-- modelman is frozen to bug fixes. Its only source changes here are `WT_REGISTRY` in `_default_registry_path` (PR 2) and the stale-snapshot guard (PR 6): `load_registry` records the file's `mtime_ns` and size, `_write_registry` raises `RegistryError("registry.toml changed on disk; reload")` when they differ, and a successful write updates the recorded values. The plan's guard records two things more than that floor, the file's inode and "there was no file", and remembers on each loaded `Registry` whether a later load found another program's change (Decisions table). PR 6 must merge before PR 5: PR 5 ships wt's first registry write (`wt model init`), which is earlier than the spec's deadline of Step 3's first writing PR.
+- One seeding implementation, `config.SeedRegistryDefaults`. Reads never seed. Its callers are `wt model init [--json]` (this plan) and `wt model add` (Step 3). A provider row is seeded for three reasons: a model references the provider, its command is installed, or a configured agent lists it. The third, the agent trigger, is an owner decision (2026-10-07) that modelman's seeding does not have: it is what makes wt's own config validation pass after `wt model init` on a machine with a `config.toml` and no registry. Seeding never writes a key or a `secret_ref`.
+- Hint text: `modelman migrate` becomes `wt model init`, and the missing-registry line names the command once (owner decision, 2026-10-07). `loadRegistry`'s error in `internal/config/registry.go` carries `— seed it with `wt model init``; `configError` in `cmd/wt/helpers.go` no longer adds a second `(seed the registry with …)`.
+- modelman is frozen to bug fixes. Its only source changes here are `WT_REGISTRY` in `_default_registry_path` (PR 2) and the stale-snapshot guard (PR 6): `load_registry` records the file's `mtime_ns`, size and inode, or that there was no file, `_write_registry` raises `RegistryError("registry.toml changed on disk; reload")` when the file no longer matches, and a successful write updates the record. The plan's guard also remembers on each loaded `Registry` whether a later load found another program's change (Decisions table). PR 6 must merge before PR 5, as the spec says: PR 5 ships wt's first registry write (`wt model init`). modelman's TUI is not disabled in this step (owner decision, 2026-10-07): the PR series that ships wt's Models tab in Step 3 disables it, and that is what ends the window in which an open TUI refuses every save after a wt write.
 - The test guard is a package-level seam set by `IsolateConfigHomeForTest` and `TestMain`. No `import "testing"` in shipped code.
 - In this step wt gains exactly one writer of the registry, `wt model init`. Docs must not claim more.
 - `make test-all` (monorepo root) passes at the end of every PR, with modelman still working.
@@ -42,7 +42,7 @@
 3. **A developer with `WT_REGISTRY` exported runs the test suites.** Expected: no test reads or writes that file. Pinned in Task 3 (`TestIsolateConfigHomeForTestClearsBothRegistryNames`, and the `WT_REGISTRY=… go test ./...` run in its Step 7), Task 4 (`test_conftest_clears_both_registry_names`), Task 5 (`test_default_config_paths_are_under_the_scratch_home`, and the `WT_REGISTRY=… uv run pytest` runs in its Step 5), Task 11 (`TestTestMainGuardsTheDevelopersRegistry`) and Task 15 (`TestRegistryWriteGuardIsArmedHere`).
 4. **One key that is an inline array in one row and a `[[header]]` array in the next** (tomli-w picks the form per array, by row length). Expected: every row keeps its own key order. Pinned in Task 8 (`TestOneKeyInBothArrayFormsKeepsItsOrder`).
 5. **A registry symlink that loops, chains through another link, or is relative.** Expected: a chain or a relative link resolves; a loop is `ErrRegistryLink`, like a dangling link. Pinned in Task 1 (`TestResolveRegistryFile`).
-6. **First run on a machine that has a `config.toml` but no registry.** Expected: after `wt model init`, `wt` loads and validates when every provider an agent lists is the agent's own native row or a default provider that is installed or used by a model — including the `agy` agent wt's own migration adds on the next load. A provider wt has no default row for (`openrouter`), or a default one that is not installed (an agent that lists `ollama` on a machine without it), stays a hand edit of `registry.toml`, as it is with modelman: the spec's seeding rule has no "an agent lists it" trigger. Pinned in Task 14 (`TestSeedAgentNamesFollowWhatLoadWillValidate`).
+6. **First run on a machine that has a `config.toml` but no registry.** Expected: after `wt model init`, `wt` loads and validates — including when an agent lists a default provider that is not installed (`ollama`, which wt's own migration gives the `opencode` agent), when an agent lists `openrouter`, and for the `agy` agent that migration adds on the next load. Seeding reads the agents as that load will see them. The `openrouter` row is seeded with no key and no `secret_ref`. One case is left: a provider wt has no default row for (a `corp-gateway` of the user's own) is not seeded; `wt model init` names it in its output and it stays a hand edit of `registry.toml`. Pinned in Task 14 (`TestSeedMakesAFreshConfigLoad`, `TestSeedRowsForTheProvidersAgentsList`, `TestSeedAgentNamesFollowWhatLoadWillValidate`) and Task 15 (`TestModelInitMakesAFreshConfigUsable`).
 7. **A bad row someone else left in the registry** (no `family`, a negative price), then an edit of a different row or the removal of the bad one. Expected: both succeed; only an edit that leaves a touched row invalid is refused. Pinned in Task 12 (`TestUpdateRegistryValidatesOnlyTheRowsItTouched`).
 8. **modelman open, and the registry is deleted, or changed without changing its size, or reached through a symlink; or created by wt after modelman found none; or written by wt and then loaded by modelman's own background price refresh.** Expected: modelman's next save of the older snapshot is refused in every case. Pinned in Task 17 (`test_a_registry_deleted_since_it_was_loaded_is_refused`, `test_a_change_that_keeps_the_size_is_still_caught`, `test_a_symlinked_registry_is_judged_by_its_target`, `test_a_registry_created_after_modelman_found_none_is_not_overwritten`, `test_a_background_load_does_not_bless_an_older_snapshot`).
 
@@ -83,17 +83,22 @@ The spec states the behaviour; these are the choices it leaves open. Each is pin
 | Which top-level keys does wt write into a new registry? | Only the ones it has rows for. No `families = []`, no `models = []`. | modelman loads a file without them and adds them on its next save; wt has no reason to. | Task 14, `TestSeedCreatesAMissingRegistry` |
 | What does a default provider row hold? | Exactly what modelman writes: `protocols` is left out when it is `["openai-chat"]`. | `_provider_to_dict` drops it; both tools default to it. | Task 14, `TestSeedWritesTheRowsModelmanWrites` |
 | Is modelman's `backfill_provider_defaults` ported? | No. Seeding appends rows and never edits one. | The spec's seeding paragraph lists additions only, and a user's own `base_url` must never be reset. | Task 14, `TestSeedIsIdempotentAndNeverEditsARow` |
-| Which agents get a native provider row? | Those in `config.toml`, plus `agy` whenever `config.toml` exists. | `migrateConfigSchema` adds an `agy` agent on the next `Load`; without the row that load fails validation. | Task 14, `TestSeedAgentNamesFollowWhatLoadWillValidate` |
-| What is `SeedRegistryDefaults`'s signature? | `SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added []string, err error)`. `SeedEnv` carries the agent names and an `OnPath` function, gathered before the lock. | It has to run inside the caller's own `UpdateRegistry` (Step 3's `wt model add`), and `apply` must be pure. | Task 14, `TestSeedWritesTheRowsModelmanWrites` |
+| Which agents get a native provider row? | Those in `config.toml` as the next `Load` will see it, which adds `agy` whenever `config.toml` exists. | `migrateConfigSchema` adds an `agy` agent on the next `Load`; without the row that load fails validation. | Task 14, `TestSeedAgentNamesFollowWhatLoadWillValidate` |
+| Which providers does an agent's `supported_providers` list seed? (the agent trigger; owner decision, 2026-10-07) | A default local provider (ollama, omlx, mlx_lm_server, mtplx) gets its default row, installed or not, and beside an `omlx-6bit` row too. `openrouter` gets a default row. Any other id gets no row and is reported. | `Config.Validate` refuses an agent that lists a provider with no row, so without this trigger `wt model init` leaves a fresh machine with a config error. modelman's seeding has no such trigger; the spec's Seeding section now does. If it is wrong, it is one trigger to remove from `SeedRegistryDefaults`. | Task 14, `TestSeedAddsOnlyWhatTheMachineNeeds`, `TestSeedMakesAFreshConfigLoad` |
+| What is in the seeded `openrouter` row? | `id`, `name = "OpenRouter"`, `location = "cloud"`, `auth.type = "api_key"`, `auth.base_url = "https://openrouter.ai/api/v1"`. No `secret_ref` and no key. It is seeded only when an agent lists it, never for a model or from PATH. | wt's validation and modelman's loader need `id` and `auth.type`. `name` is there so modelman's next save does not add one. The address is public and is what a direct route dials; it is the row guide 02 and the contract fixture show, less the key. Where the key is kept is the user's to say, so seeding writes no secret and guesses no variable name. Until the user adds `secret_ref`, a LiteLLM route built for one of the provider's models carries an empty `api_key`. | Task 14, `TestSeedRowsForTheProvidersAgentsList` |
+| What happens to a listed provider wt has no default row for? | No row is seeded. `SeedRegistryDefaults` returns it in `unseeded`, on every run; `wt model init` prints `no default row for provider: <id> (an agent lists it; add it to registry.toml by hand)` and still exits 0. | wt cannot know a custom provider's address or how it authenticates, and a guessed row is worse than a named gap. | Task 14, `TestSeedRowsForTheProvidersAgentsList`; Task 15, `TestModelInitCreatesTheRegistryAndSaysWhatItAdded` |
+| How does seeding know what the next `Load` will validate? | `seedAgents` reads `config.toml` and applies `migrateAgentRefs` to that read. `migrateAgentRefs` is the agent half of `migrateConfigSchema` (google becomes agy, an `agy` agent is added, `opencode` lists `ollama` only), split out so it touches no file and prints nothing. Seeding writes nothing to `config.toml`. | `Load` migrates `config.toml` only once the registry loads, so on a fresh machine the file still has its old agent lists when `wt model init` runs. One function, so seeding cannot drift from the migration. | Task 14, `TestSeedMakesAFreshConfigLoad` |
+| What is `SeedRegistryDefaults`'s signature? | `SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string, err error)`. `SeedEnv` carries the agent names, the provider ids those agents list and an `OnPath` function, gathered before the lock. | It has to run inside the caller's own `UpdateRegistry` (Step 3's `wt model add`), and `apply` must be pure. | Task 14, `TestSeedWritesTheRowsModelmanWrites` |
 | What does bare `wt model` do until Step 3? | Prints the group's help; an unknown word under it is an error. | Step 3 makes it open the Models tab. | Task 15, `TestModelCommandGroup` |
 | Does `wt model init` sync routes? | Once, only when it changed the registry. A sync that cannot run is a warning and exit 0. With no `config.yaml` at all it is skipped silently, without probing providers. | Spec, Step 3: a writing verb does one `UpdateRegistry` and then one route sync, and exits 0 when the write succeeded. | Task 15, `TestModelInitUnderARedirectedRegistry` |
-| What does `wt model init --json` print? | One object: `registry`, `created`, `changed`, `providers_added`, `warnings`. Arrays are never null. | The spec names the flag, not the shape. | Task 15, `TestModelInitJSON` |
-| What does `wt model init` print as text? | `registry: <path>`, with ` (created)` after it when the file is new; then one `added provider: <id>` line per row, or `nothing to add`. Warnings go to stderr. | The spec names the command, not its output. | Task 15, `TestModelInitCreatesTheRegistryAndSaysWhatItAdded` |
-| Does the missing-registry line keep both hints? | Yes: `… — seed it with `wt model init` (seed the registry with `wt model init`)`. The line says the same thing twice, as it does today with `modelman migrate`. | The spec changes the hint in both files and removes neither. Dropping the one in `cmd/wt/helpers.go` is a wording change for the owner to ask for, not one this plan makes. | Task 16, `TestConfigErrorForAMissingRegistryNamesModelInit` |
-| Does the modelman guard have to precede `wt model init`? | Yes: PR 6 merges before PR 5. | The spec only requires it before Step 3, but `wt model init` is a wt write that an open modelman TUI would revert, and PR 5's docs state modelman's refusal as fact. | The "Branches and PRs" table |
+| What does `wt model init --json` print? | One object: `registry`, `created`, `changed`, `providers_added`, `providers_unseeded`, `warnings`. Arrays are never null. | The spec names the flag, not the shape. | Task 15, `TestModelInitJSON` |
+| What does `wt model init` print as text? | `registry: <path>`, with ` (created)` after it when the file is new; then one `added provider: <id>` line per row, or `nothing to add`; then one `no default row for provider: <id> (an agent lists it; add it to registry.toml by hand)` line per listed provider that could not be seeded. Warnings go to stderr. | The spec names the command, not its output. | Task 15, `TestModelInitCreatesTheRegistryAndSaysWhatItAdded` |
+| Does the missing-registry line keep both hints? | No (owner decision, 2026-10-07). It names the command once: `… — seed it with `wt model init``. `loadRegistry`'s error carries the hint and `configError` adds none. | Today the line says the same thing twice (`— seed it with `modelman migrate` (seed the registry with `modelman migrate`)`). The spec now says the hint appears once. If that is wrong, it is one string in `configError`. | Task 16, `TestConfigErrorForAMissingRegistryNamesModelInit` |
+| Does the modelman guard have to precede `wt model init`? | Yes: PR 6 merges before PR 5. | The spec says so: `wt model init` is a wt write that an open modelman TUI would revert, and PR 5's docs state modelman's refusal as fact. | The "Branches and PRs" table |
+| When is modelman's TUI disabled? | In Step 3, by the PR series that ships wt's Models tab (owner decision, 2026-10-07): bare `modelman` then prints where the Models tab is and exits non-zero. Not in this step. | Disabling it now would leave no model editor until Step 3. Until then the guard (PR 6) covers an open TUI, at the price that it refuses every save after a wt write until it is restarted; Step 3 ends that. The guard keeps covering modelman's non-interactive writers until Step 6. | Not pinned here; it is Step 3's plan to pin |
 | Where is modelman's snapshot record kept? | Per process, keyed by the resolved path. A path this process never looked at has no record and is never refused; a path it found absent is recorded as absent, and so is the path a save will write when the load fell back to the pre-XDG file. A file deleted since it was loaded counts as changed. | modelman's own background save (`app.py:138`) must not make the screen's next save look stale. A registry wt creates after modelman found none (the fresh-machine flow `wt model init` exists for) must not be overwritten by modelman's empty snapshot. | Task 17, `test_modelmans_own_saves_never_trip_the_guard`, `test_a_first_save_is_never_refused`, `test_a_registry_created_after_modelman_found_none_is_not_overwritten`, `test_the_pre_xdg_fallback_guards_the_path_a_save_writes` |
 | What stops modelman's own background load from making an older snapshot look current? | A per-path count of loads that found the file changed by another program. Each loaded `Registry` remembers the count it was loaded at (`Registry._loaded_at`); a save is refused when the file differs from the record or the count has moved on. | The TUI's price refresh loads the file on a worker (`app.py:111`, `:138`). With the record alone, that load would accept wt's write on behalf of the screen's older snapshot, and the screen's next save would revert it. | Task 17, `test_a_background_load_does_not_bless_an_older_snapshot` |
-| What is in modelman's stamp of the file? | `(mtime_ns, size, inode)`. | The spec's `mtime_ns` and size are the floor. wt replaces the file by rename, so the inode changes on every wt write; it catches a same-size write inside one tick of a coarse file clock (modelman-ci's filesystem). | Task 17, `test_a_replacement_with_the_same_size_and_time_is_caught` |
+| What is in modelman's stamp of the file? | `(mtime_ns, size, inode)`. | The spec names the three. wt replaces the file by rename, so the inode changes on every wt write; it catches a same-size write inside one tick of a coarse file clock (modelman-ci's filesystem). | Task 17, `test_a_replacement_with_the_same_size_and_time_is_caught` |
 | What does a load do when the file was replaced while it was being read? | It leaves the record as it was. | The price-refresh worker loads without the lock; recording the file it opened, after the screen's save replaced it, would make every later save in that TUI look stale. | Task 17, `test_a_save_during_a_load_does_not_poison_the_record` |
 | Do `modelman migrate` and `modelman ollama-catalog sync` report a refusal cleanly? | No: a refusal there is a traceback ending in the reload message. Their handlers are not widened. | modelman is frozen to bug fixes, and both windows are a few milliseconds (a registry created while `migrate` runs; a write between `locked_registry`'s own load and save). The TUI and the three CLI saves that already catch `RegistryError` report it in one line. | Not pinned (accepted) |
 | What is in the written fixture, and how is it made? | Synthetic rows, produced with `tomli_w.dumps`. It has no comments, because tomli-w writes none; its purpose is recorded in its three tests. Unknown keys are at every level below the top; an unknown top-level key cannot be in it, because modelman's loader and wt's writer both refuse one (#247). That refusal is pinned by Task 10, `TestNewRegistryDocRefusesAnUnexpectedTopLevel`. | A hand-typed file would not be in tomli-w form. The spec's "unknown keys at every level" cannot include the top level without a fixture neither writer accepts. | Task 9, `test_tomli_w_reproduces_the_written_fixture` |
@@ -164,6 +169,7 @@ A working prototype of the document and the emitter was written before this plan
 | `wt/internal/config/registry_validate.go` | create | 4 | `validateTouched`, `ErrRegistryInvalid` |
 | `wt/internal/config/registry_doc_test.go`, `registry_write_test.go`, `registry_validate_test.go` | create | 4 | Their tests |
 | `wt/internal/config/registry_seed.go`, `registry_seed_test.go` | create | 5 | `SeedRegistryDefaults`, `SeedEnv`, `DefaultSeedEnv` |
+| `wt/internal/config/migrate.go` | modify | 5 | `migrateAgentRefs` split out of `migrateConfigSchema`, so seeding reads the agents as `Load` will |
 | `wt/cmd/wt/model.go`, `model_test.go` | create | 5 | `wt model` group, `wt model init`, the `seedEnv` and `syncRoutesAfterWrite` seams |
 | `wt/cmd/wt/main.go`, `helpers.go`, `testmain_test.go` | modify | 5 | Register the group; hint text; stub the two seams |
 | `modelman/tests/test_registry_stale_snapshot.py` | create | 6 | The guard's tests |
@@ -215,6 +221,8 @@ Expected: exit 0.
 **A flaky test that is not this work's.** `TestEnsureModelRouteToSendsItsOutputToTheCaller` in `wt/internal/lifecycle` fails now and then on `main` itself, on the order of two lines written by two goroutines (seen once in a full run while this plan was written, and reproduced on an untouched `main` with `go test -count=200 -run TestEnsureModelRouteToSendsItsOutputToTheCaller ./internal/lifecycle`). If it is the only failure, run the suite again. Do not change it in these PRs; tell the owner.
 
 **How this plan's code was checked.** Every listing below was built and run in a scratch copy of the repository at `4a7e10a` before it was written here: the Go suite, `make check`, both Python suites and `make test-all` passed on the six PRs applied together; PRs 1, 2 and 3 were also run alone on `main` (PR 2 in both its Go and its Python half, with modelman's suite passing at Task 4's commit and again after Task 5), PR 4 on top of those three, and PR 6 alone on `main` with modelman's whole suite. The emitter was compared against `tomli_w.dumps(tomllib.loads(x))` on 9,000 generated documents in tomli-w's own form, on every contract fixture, and on the prototype's private copies of a real registry (compared only; never printed), with no difference. A second run used 24,000 documents, half of them rewritten the way a person types TOML (dotted keys, comments, inline tables, both array forms): no output differed, and `Decode` refused four. Those four are the documents on which the decoder alone had lost a key without an error (the Decisions row on `Decode`).
+
+**The amendment of 2026-10-07.** The owner's decisions after review (the agent trigger in seeding, the hint said once, modelman's TUI disabled in Step 3) changed Tasks 14, 15 and 16 and the prose of Task 17. Those three tasks were replayed from this file's own text, in order, on the combined tree with PR 5 taken back out: each red state and each green state was observed, then the Go suite, `make check`, `make test-all` and Task 16's throwaway-home run with the built binary. One thing was not replayed: the `wt/CHANGELOG.md` edit of Task 16 was not applied, because that tree does not carry the PR 2 changelog entry it is anchored on.
 
 ---
 
@@ -6375,16 +6383,22 @@ Branch `feat/wt-model-init`, cut after PRs 4 and 6 have merged. This is the PR t
 
 The Go port of modelman's default-provider logic: `_ensure_provider_entries` (`modelman/src/modelman/sync.py:132`) and `sync_agent_providers` (`modelman/src/modelman/registry.py:333`), with the rows of `_DEFAULT_PROVIDER_TEMPLATES` (`registry.py:283`) as `_provider_to_dict` writes them. `backfill_provider_defaults` (`sync.py:170`) is not ported: seeding appends rows and never edits one.
 
+One trigger is added that modelman does not have (owner decision, 2026-10-07): a provider a configured agent lists in `supported_providers` gets a row. For a default local provider that is its default row, installed or not. For `openrouter` it is a default row with the provider's name, address and `auth.type`, and no key and no `secret_ref`. A listed provider with no default row is not seeded: it is returned in `unseeded` so the caller can name it. The reason is wt's own validation: `Config.Validate` refuses an agent that lists a provider with no row (`config.go:753`), so without this a machine with a `config.toml` and no registry still has a config error after `wt model init`.
+
+Seeding has to see the agents as the next `Load` will. `Load` runs `migrateConfigSchema` only after the registry has loaded, so on a fresh machine `config.toml` is still unmigrated when `wt model init` runs: the `opencode` agent may list `opencode` where `Load` will make it list `ollama`, and the `agy` agent is not there yet. Step 3 splits the agent half of that migration into `migrateAgentRefs`, which seeding applies to its own read of the file.
+
 **Files:**
 - Create: `wt/internal/config/registry_seed.go`
+- Modify: `wt/internal/config/migrate.go:341` (`migrateConfigSchema`: split out `migrateAgentRefs`)
 - Test: `wt/internal/config/registry_seed_test.go`
 
 **Interfaces:**
-- Consumes: `RegistryDoc.AddProvider(table map[string]any) error`, `d.rows`, `rowID` (PR 4, Task 10); `UpdateRegistry`, `scratchRegistry`, `readFile` (Task 11); `readConfigFile() (cfg *Config, exists bool, err error)` (`config.go:1108`); `loadRegistry()`.
+- Consumes: `RegistryDoc.AddProvider(table map[string]any) error`, `d.rows`, `rowID` (PR 4, Task 10); `UpdateRegistry`, `scratchRegistry`, `readFile` (Task 11); `readConfigFile() (cfg *Config, exists bool, err error)` (`config.go:1108`); `migrateConfigSchema(cfg *Config) (bool, error)` and `upsertAgent` (`migrate.go:341`, `:417`); `loadRegistry()`, `Load()`, `(*Config).ValidateAll()`.
 - Produces (package `config`):
-  - `type SeedEnv struct { Agents []string; OnPath func(command string) bool }`
+  - `type SeedEnv struct { Agents []string; AgentProviders []string; OnPath func(command string) bool }`
   - `func DefaultSeedEnv() SeedEnv`
-  - `func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added []string, err error)`
+  - `func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string, err error)` — `unseeded` is the providers an agent lists that have no row and no default
+  - unexported: `func migrateAgentRefs(cfg *Config) bool`, `func seedAgents() (names, providers []string)`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6406,15 +6420,22 @@ func onPath(commands ...string) func(string) bool {
 
 func seed(t *testing.T, env SeedEnv) (added []string, changed bool) {
 	t.Helper()
+	added, _, changed = seedReport(t, env)
+	return added, changed
+}
+
+// seedReport is seed with the providers seeding had no row for.
+func seedReport(t *testing.T, env SeedEnv) (added, unseeded []string, changed bool) {
+	t.Helper()
 	changed, err := UpdateRegistry(func(d *RegistryDoc) error {
 		var err error
-		added, err = SeedRegistryDefaults(d, env)
+		added, unseeded, err = SeedRegistryDefaults(d, env)
 		return err
 	})
 	if err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
-	return added, changed
+	return added, unseeded, changed
 }
 
 // TestSeedWritesTheRowsModelmanWrites pins every default row byte for byte
@@ -6514,7 +6535,11 @@ model_name = "org/target"
 // nobody references and nothing installs gets no row (wt would probe a server
 // the machine does not have); mlx_lm_server never comes from PATH; an
 // installed omlx stays out when an omlx-6bit row already stands for that
-// server, but a model that references `omlx` still gets its row.
+// server, but a model that references `omlx`, or an agent that lists it,
+// still gets its row. A provider an agent lists gets its default row whether
+// or not it is installed, because wt refuses a config whose agent lists a
+// provider with no row; openrouter comes from an agent only, never from a
+// model or from PATH.
 func TestSeedAddsOnlyWhatTheMachineNeeds(t *testing.T) {
 	const sixBit = `[[providers]]
 id = "omlx-6bit"
@@ -6532,6 +6557,12 @@ family = "f"
 provider_id = "omlx"
 model_name = "m"
 `
+	const openrouterModel = `[[models]]
+id = "openrouter/m"
+family = "f"
+provider_id = "openrouter"
+model_name = "org/m"
+`
 	cases := []struct {
 		name     string
 		registry string
@@ -6546,6 +6577,11 @@ model_name = "m"
 		{"but a model that references omlx gets the row", sixBit + omlxModel, SeedEnv{OnPath: onPath("omlx")}, []string{"omlx"}},
 		{"an agent whose name is already a provider is skipped", sixBit, SeedEnv{Agents: []string{"omlx-6bit", "", "pi"}}, []string{"pi"}},
 		{"an agent named like a default provider gets the default row, once", "", SeedEnv{Agents: []string{"ollama"}, OnPath: onPath("ollama")}, []string{"ollama"}},
+		{"an agent lists a default provider that is not installed", "", SeedEnv{AgentProviders: []string{"ollama", "mlx_lm_server"}}, []string{"ollama", "mlx_lm_server"}},
+		{"an agent lists omlx beside an omlx-6bit row", sixBit, SeedEnv{AgentProviders: []string{"omlx"}}, []string{"omlx"}},
+		{"an agent lists openrouter", "", SeedEnv{AgentProviders: []string{"openrouter"}}, []string{"openrouter"}},
+		{"an agent lists a provider that has its row", sixBit, SeedEnv{AgentProviders: []string{"omlx-6bit"}}, nil},
+		{"openrouter is not seeded for a model or from PATH", openrouterModel, SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -6628,18 +6664,15 @@ func TestSeedCreatesAMissingRegistry(t *testing.T) {
 // is always among them, because Load's schema migration adds an agy agent to
 // every existing config.toml and a registry with no agy provider then fails
 // validation with `unknown provider "agy"`. The end-to-end check is that a
-// registry seeded from this list loads and validates. That holds when every
-// provider an agent lists is the agent's own native row, as here, or a
-// default provider that is installed or used by a model. An agent that lists
-// a provider wt has no default row for (openrouter), or a default one that is
-// not installed, still needs a hand edit of registry.toml, as with modelman.
+// registry seeded from this list loads and validates. A config.toml that
+// cannot be read names nothing, so seeding still works beside a broken one.
 func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", "")
-	if got := seedAgentNames(); got != nil {
-		t.Errorf("with no config.toml: agents = %v, want none", got)
+	if names, providers := seedAgents(); names != nil || providers != nil {
+		t.Errorf("with no config.toml: agents = %v, providers = %v, want none", names, providers)
 	}
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		t.Fatal(err)
@@ -6647,8 +6680,9 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := seedAgentNames(), []string{"claude", "agy"}; !slices.Equal(got, want) {
-		t.Fatalf("agents = %v, want %v", got, want)
+	names, providers := seedAgents()
+	if want := []string{"claude", "agy"}; !slices.Equal(names, want) || !slices.Equal(providers, want) {
+		t.Fatalf("agents = %v, providers = %v, want %v for both", names, providers, want)
 	}
 	env := DefaultSeedEnv()
 	env.OnPath = nil // this machine's PATH is not the test's business
@@ -6666,8 +6700,133 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	if err := os.WriteFile(Path(), []byte("this is not toml [[["), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := seedAgentNames(); got != nil {
-		t.Errorf("with an unreadable config.toml: agents = %v, want none", got)
+	if names, providers := seedAgents(); names != nil || providers != nil {
+		t.Errorf("with an unreadable config.toml: agents = %v, providers = %v, want none", names, providers)
+	}
+}
+
+// TestSeedRowsForTheProvidersAgentsList pins the rows the agent trigger
+// writes and what it reports. A default local provider gets the same row it
+// would get if it were installed. openrouter gets a row with its address and
+// no key: the key is the user's secret, and seeding must never write one or
+// guess where it is kept. A provider wt has no default row for is left out
+// and reported, on every run, so the command can tell the user which row to
+// write by hand.
+func TestSeedRowsForTheProvidersAgentsList(t *testing.T) {
+	path := scratchRegistry(t, "")
+	env := SeedEnv{AgentProviders: []string{"ollama", "corp-gateway", "openrouter", "", "corp-gateway"}}
+	added, unseeded, changed := seedReport(t, env)
+	if want := []string{"ollama", "openrouter"}; !slices.Equal(added, want) || !changed {
+		t.Fatalf("added = %v (changed %v), want %v", added, changed, want)
+	}
+	if want := []string{"corp-gateway"}; !slices.Equal(unseeded, want) {
+		t.Errorf("unseeded = %v, want %v", unseeded, want)
+	}
+	const want = `[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+protocols = [
+    "anthropic",
+    "openai-chat",
+]
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:11434"
+
+[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+base_url = "https://openrouter.ai/api/v1"
+`
+	if got := readFile(t, path); got != want {
+		t.Errorf("seeded registry:\n%s\nwant:\n%s", got, want)
+	}
+
+	added, unseeded, changed = seedReport(t, env)
+	if len(added) != 0 || changed {
+		t.Errorf("second run: added %v (changed %v), want nothing", added, changed)
+	}
+	if want := []string{"corp-gateway"}; !slices.Equal(unseeded, want) {
+		t.Errorf("second run: unseeded = %v, want %v", unseeded, want)
+	}
+}
+
+// TestSeedMakesAFreshConfigLoad is the first run on a machine that has a
+// config.toml and no registry, end to end: nothing is installed, one agent
+// lists openrouter, and the opencode agent is one Load's migration rewires to
+// ollama. After seeding, Load succeeds and the config validates — without the
+// agent trigger every wt command would stop on `unknown provider "ollama"`
+// and `unknown provider "openrouter"` until the user wrote both rows by hand.
+// A provider wt has no default row for is the one case seeding cannot fix:
+// it is reported, and validation names it.
+func TestSeedMakesAFreshConfigLoad(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	if err := os.MkdirAll(Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const agents = `default_tag = "code"
+
+[[agents]]
+name = "claude"
+supported_providers = ["claude", "openrouter"]
+
+[[agents]]
+name = "opencode"
+supported_providers = ["opencode"]
+`
+	if err := os.WriteFile(Path(), []byte(agents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := DefaultSeedEnv()
+	env.OnPath = nil // nothing is installed
+	if want := []string{"claude", "openrouter", "ollama", "agy"}; !slices.Equal(env.AgentProviders, want) {
+		t.Fatalf("providers the agents list = %v, want %v", env.AgentProviders, want)
+	}
+	added, unseeded, _ := seedReport(t, env)
+	if want := []string{"ollama", "openrouter", "claude", "opencode", "agy"}; !slices.Equal(added, want) {
+		t.Fatalf("added = %v, want %v", added, want)
+	}
+	if len(unseeded) != 0 {
+		t.Errorf("unseeded = %v, want none", unseeded)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load after seeding: %v", err)
+	}
+	if err := cfg.ValidateAll(); err != nil {
+		t.Errorf("the seeded registry should validate against config.toml: %v", err)
+	}
+	if strings.Contains(readFile(t, RegistryPath()), "secret_ref") {
+		t.Error("seeding wrote a secret_ref: the key is the user's to name")
+	}
+
+	// A provider with no default row: reported, not seeded, and still the
+	// one thing validation complains about.
+	if err := os.WriteFile(Path(), []byte(agents+"\n[[agents]]\nname = \"pi\"\nsupported_providers = [\"corp-gateway\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env = DefaultSeedEnv()
+	env.OnPath = nil
+	added, unseeded, _ = seedReport(t, env)
+	if !slices.Equal(added, []string{"pi"}) || !slices.Equal(unseeded, []string{"corp-gateway"}) {
+		t.Fatalf("added = %v, unseeded = %v; want [pi] and [corp-gateway]", added, unseeded)
+	}
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const wantErr = `agent "pi": unknown provider "corp-gateway"`
+	if err := cfg.ValidateAll(); err == nil || err.Error() != wantErr {
+		t.Errorf("ValidateAll = %v, want only %q", err, wantErr)
 	}
 }
 
@@ -6691,9 +6850,90 @@ func TestPyTitleMatchesPython(t *testing.T) {
 
 Run, from `wt/`: `go test ./internal/config -run 'Seed|PyTitle'`
 
-Expected: FAIL — the package does not build: `undefined: SeedEnv`, `undefined: SeedRegistryDefaults`, `undefined: DefaultSeedEnv`, `undefined: seedAgentNames`, `undefined: pyTitle`.
+Expected: FAIL — the package does not build. The compiler prints `undefined: SeedEnv` and `undefined: SeedRegistryDefaults` and stops after ten errors (`too many errors`), so `DefaultSeedEnv`, `seedAgents` and `pyTitle`, which are undefined too, may not be listed.
 
-- [ ] **Step 3: Write the seeding**
+- [ ] **Step 3: Split the agent fixups out of `migrateConfigSchema`**
+
+A refactor with no change in behaviour: the three fixups that rewrite `cfg.Agents` move into their own function, which reads no file and prints nothing, so seeding can apply them to its own read of `config.toml`. `migrateConfigSchema` calls it and keeps the fourth fixup (the legacy `[gateway]` notice), which does both.
+
+In `wt/internal/config/migrate.go`, replace:
+
+```go
+func migrateConfigSchema(cfg *Config) (bool, error) {
+	changed := false
+
+	// ── Fixup 1: rename "google" → "agy" in agent references ────────
+```
+
+with:
+
+```go
+func migrateConfigSchema(cfg *Config) (bool, error) {
+	changed := migrateAgentRefs(cfg)
+
+	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
+	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
+	// [litellm] table (managed with `wt litellm ...`). The decoded Config
+	// simply has no Gateway field, so re-saving drops the block; this
+	// fixup only detects its presence to point the user at the new
+	// control surface. Self-extinguishing: after the triggered Save, the
+	// block is gone and the probe no longer matches.
+	if dropLegacyGateway(Path()) {
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// migrateAgentRefs is the part of migrateConfigSchema that rewrites
+// cfg.Agents (fixups 1 to 3), with no file access and no output. Registry
+// seeding calls it on its own read of config.toml to learn which providers
+// the agents will name once Load has migrated the file. Reports whether it
+// changed cfg.
+func migrateAgentRefs(cfg *Config) bool {
+	changed := false
+
+	// ── Fixup 1: rename "google" → "agy" in agent references ────────
+```
+
+Then, lower in what is now `migrateAgentRefs`, replace:
+
+```go
+	if upsertAgent(cfg, "opencode", []string{"ollama"}, "ollama", false) {
+		changed = true
+	}
+
+	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
+	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
+	// [litellm] table (managed with `wt litellm ...`). The decoded Config
+	// simply has no Gateway field, so re-saving drops the block; this
+	// fixup only detects its presence to point the user at the new
+	// control surface. Self-extinguishing: after the triggered Save, the
+	// block is gone and the probe no longer matches.
+	if dropLegacyGateway(Path()) {
+		changed = true
+	}
+
+	return changed, nil
+}
+```
+
+with:
+
+```go
+	if upsertAgent(cfg, "opencode", []string{"ollama"}, "ollama", false) {
+		changed = true
+	}
+
+	return changed
+}
+```
+
+The seeding tests still do not build, so check this step on the tests that already exist. Run, from `wt/`: `go build ./... && go vet ./internal/config`
+
+Expected: `go build` prints nothing and exits 0; `go vet` stops on the one file that does not build yet, with `vet: internal/config/registry_seed_test.go:14:29: undefined: SeedEnv`. The migration's own tests (`TestMigrate…`, `TestLoad…` in `internal/config`, and `internal/configeditor`) run in Step 5 with the rest of the package.
+
+- [ ] **Step 4: Write the seeding**
 
 Create `wt/internal/config/registry_seed.go`:
 
@@ -6713,15 +6953,20 @@ import (
 type SeedEnv struct {
 	// Agents are the agent names wt is configured with, in config.toml order.
 	Agents []string
+	// AgentProviders are the provider ids those agents list in
+	// supported_providers, as the next Load will validate them.
+	AgentProviders []string
 	// OnPath reports whether a command is installed. nil means none is.
 	OnPath func(command string) bool
 }
 
-// DefaultSeedEnv describes the real machine: the agents in wt's config.toml
-// and what exec.LookPath finds.
+// DefaultSeedEnv describes the real machine: the agents in wt's config.toml,
+// the providers they list, and what exec.LookPath finds.
 func DefaultSeedEnv() SeedEnv {
+	names, providers := seedAgents()
 	return SeedEnv{
-		Agents: seedAgentNames(),
+		Agents:         names,
+		AgentProviders: providers,
 		OnPath: func(command string) bool {
 			_, err := exec.LookPath(command)
 			return err == nil
@@ -6729,25 +6974,30 @@ func DefaultSeedEnv() SeedEnv {
 	}
 }
 
-// seedAgentNames lists the agents config.toml names. A missing or unreadable
-// config.toml names none — seeding tolerates an absent wt setup, as
-// modelman's sync_agent_providers does. When the file exists `agy` is always
-// in the list: Load's schema migration adds an agy agent to every existing
-// config.toml, so a registry seeded without an agy provider would fail
-// validation on the very next run.
-func seedAgentNames() []string {
+// seedAgents lists the agents config.toml names and the providers they
+// list, as the next Load will see them: Load's schema migration adds an agy
+// agent to every existing config.toml and rewrites two older spellings
+// (google becomes agy; the opencode agent lists ollama only), and it runs
+// only once the registry loads, so on a fresh machine it has not run yet. A
+// registry seeded from the file as written would then fail validation on the
+// very next run. A missing or unreadable config.toml names nothing — seeding
+// tolerates an absent wt setup, as modelman's sync_agent_providers does.
+// Nothing is written: the migration is applied to this read only.
+func seedAgents() (names, providers []string) {
 	cfg, exists, err := readConfigFile()
 	if err != nil || !exists {
-		return nil
+		return nil, nil
 	}
-	names := make([]string, 0, len(cfg.Agents)+1)
+	migrateAgentRefs(cfg)
 	for _, a := range cfg.Agents {
 		names = append(names, a.Name)
+		for _, id := range a.SupportedProviders {
+			if !slices.Contains(providers, id) {
+				providers = append(providers, id)
+			}
+		}
 	}
-	if !slices.Contains(names, "agy") {
-		names = append(names, "agy")
-	}
-	return names
+	return names, providers
 }
 
 // defaultProviderIDs are the local providers with a default row, in the
@@ -6756,8 +7006,8 @@ var defaultProviderIDs = []string{"ollama", "omlx", "mlx_lm_server", "mtplx"}
 
 // installedProviderCommands maps a default provider to the command whose
 // presence on PATH shows it is installed. mlx_lm_server has none — it is a
-// module run from omlx's Python — so it only ever gets a row from a model
-// that references it.
+// module run from omlx's Python — so it gets a row only from a model that
+// references it or an agent that lists it.
 var installedProviderCommands = map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx"}
 
 // defaultProviderRow is the row modelman writes for a default provider
@@ -6791,36 +7041,67 @@ func defaultProviderRow(id string) map[string]any {
 	return nil
 }
 
+// cloudProviderIDs are the cloud providers with a default row: the ones wt
+// can route (internal/litellm's policy table).
+var cloudProviderIDs = []string{"openrouter"}
+
+// cloudProviderRow is the default row for a cloud provider: its name, its
+// public address and how it authenticates. It names no key and no place a
+// key is kept — auth.secret_ref is the user's to add, and seeding must never
+// write or guess one. A fresh map on every call.
+func cloudProviderRow(id string) map[string]any {
+	if id == "openrouter" {
+		return map[string]any{
+			"id": "openrouter", "name": "OpenRouter", "location": "cloud",
+			"auth": map[string]any{"type": "api_key", "base_url": "https://openrouter.ai/api/v1"},
+		}
+	}
+	return nil
+}
+
 // SeedRegistryDefaults adds the provider rows a working registry needs and
 // reports the ids it added, in the order it added them. It is the Go port of
 // modelman's default-provider logic (sync.py's _ensure_provider_entries and
-// registry.py's sync_agent_providers) and the one seeding implementation in
-// wt. It only ever appends rows: a row that exists is never edited.
+// registry.py's sync_agent_providers) plus one trigger modelman lacks, and
+// the one seeding implementation in wt. It only ever appends rows: a row
+// that exists is never edited.
 //
 //   - A default local provider (ollama, omlx, mlx_lm_server, mtplx) gets its
-//     default row when a model references it, or — for the three that have a
-//     command — when that command is on PATH. An installed omlx gets no row
-//     when an `omlx-6bit` row exists: the two are one server, and a second
-//     row would change which one discovery uses.
+//     default row when a model references it, when an agent lists it, or —
+//     for the three that have a command — when that command is on PATH. An
+//     installed omlx gets no row when an `omlx-6bit` row exists: the two are
+//     one server, and a second row would change which one discovery uses.
+//   - A cloud provider with a default row (openrouter) gets it when an agent
+//     lists it. The row holds no key.
 //   - Every agent in env.Agents gets a native cloud provider row under its
 //     own name.
+//
+// The agent trigger is what lets wt's own validation pass after seeding on a
+// machine that has a config.toml and no registry: Config.Validate refuses an
+// agent that lists a provider with no row. unseeded names the providers an
+// agent lists that still have no row, because wt has no default for them;
+// the caller tells the user, and those stay a hand edit of registry.toml.
 //
 // It runs on the document UpdateRegistry hands an apply function, so a caller
 // can seed and make its own change in one locked write:
 //
-//	var added []string
+//	var added, unseeded []string
 //	changed, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
 //		var err error
-//		added, err = config.SeedRegistryDefaults(d, env)
+//		added, unseeded, err = config.SeedRegistryDefaults(d, env)
 //		return err
 //	})
 //
 // Reads never seed: Load does not call this, and a missing registry stays
 // ErrRegistryMissing until `wt model init` or a write creates one.
-func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added []string, err error) {
+func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string, err error) {
 	existing := map[string]bool{}
 	for _, row := range d.rows("providers") {
 		existing[rowID(row)] = true
+	}
+	listed := map[string]bool{}
+	for _, id := range env.AgentProviders {
+		listed[id] = true
 	}
 	wanted := map[string]bool{}
 	for _, row := range d.rows("models") {
@@ -6839,15 +7120,30 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added []string, err erro
 		}
 		wanted[id] = true
 	}
-	for _, id := range defaultProviderIDs {
-		if !wanted[id] || existing[id] {
-			continue
-		}
-		if err := d.AddProvider(defaultProviderRow(id)); err != nil {
-			return nil, err
+	add := func(row map[string]any) error {
+		id, _ := row["id"].(string)
+		if err := d.AddProvider(row); err != nil {
+			return err
 		}
 		existing[id] = true
 		added = append(added, id)
+		return nil
+	}
+	for _, id := range defaultProviderIDs {
+		if existing[id] || !(wanted[id] || listed[id]) {
+			continue
+		}
+		if err := add(defaultProviderRow(id)); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, id := range cloudProviderIDs {
+		if existing[id] || !listed[id] {
+			continue
+		}
+		if err := add(cloudProviderRow(id)); err != nil {
+			return nil, nil, err
+		}
 	}
 	for _, name := range env.Agents {
 		if name == "" || existing[name] {
@@ -6857,13 +7153,16 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added []string, err erro
 			"id": name, "name": pyTitle(name), "location": "cloud",
 			"auth": map[string]any{"type": "native"},
 		}
-		if err := d.AddProvider(row); err != nil {
-			return nil, err
+		if err := add(row); err != nil {
+			return nil, nil, err
 		}
-		existing[name] = true
-		added = append(added, name)
 	}
-	return added, nil
+	for _, id := range env.AgentProviders {
+		if id != "" && !existing[id] && !slices.Contains(unseeded, id) {
+			unseeded = append(unseeded, id)
+		}
+	}
+	return added, unseeded, nil
 }
 
 // pyTitle is Python's str.title(), which modelman names an agent's provider
@@ -6890,17 +7189,17 @@ func pyTitle(s string) string {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
-Run, from `wt/`: `go test -count=1 ./internal/config`
+Run, from `wt/`: `go test -count=1 ./internal/config ./internal/configeditor`
 
-Expected: `ok`.
+Expected: both `ok`. `TestSeedAgentNamesFollowWhatLoadWillValidate`, `TestSeedMakesAFreshConfigLoad` and a few older tests print wt's one-time notice `wt: migrated config to native-provider alignment …` on stderr when run with `-v`; that is `Load` migrating a throwaway `config.toml`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 test -z "$(gofmt -l .)" && go vet ./...
-git add internal/config/registry_seed.go internal/config/registry_seed_test.go
+git add internal/config/registry_seed.go internal/config/registry_seed_test.go internal/config/migrate.go
 git commit -m "feat(wt): SeedRegistryDefaults, the default provider rows in Go"
 ```
 
@@ -6913,7 +7212,7 @@ git commit -m "feat(wt): SeedRegistryDefaults, the default provider rows in Go"
 - Test: `wt/cmd/wt/model_test.go`
 
 **Interfaces:**
-- Consumes: `config.UpdateRegistry`, `config.SeedRegistryDefaults`, `config.SeedEnv`, `config.DefaultSeedEnv`, `config.RegistryPath`, `config.RegistryFixHint`, `config.Load`, `config.RegistryWriteGuardArmed() bool` (Task 11); `runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error` (`cmd/wt/litellm.go:130`); `litellm.DefaultPath() string`, `litellm.ErrMissing`, `litellm.ErrRegistryRedirected`; test helpers `withCleanConfigEnv(t, home)` and `stubProbeInventory(t, snap)`.
+- Consumes: `config.UpdateRegistry`, `config.SeedRegistryDefaults(d, env) (added, unseeded []string, err error)`, `config.SeedEnv`, `config.DefaultSeedEnv`, `config.Dir`, `config.Path`, `config.RegistryPath`, `config.RegistryFixHint`, `config.Load`, `config.RegistryWriteGuardArmed() bool` (Task 11); `runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error` (`cmd/wt/litellm.go:130`); `litellm.DefaultPath() string`, `litellm.ErrMissing`, `litellm.ErrRegistryRedirected`; test helpers `withCleanConfigEnv(t, home)` and `stubProbeInventory(t, snap)`.
 - Produces (package `main`):
   - `func modelCmd(_ *app) *cobra.Command` — the `wt model` group (Step 3 adds `list`, `add`, `edit`, `rm` to it)
   - `func runModelInit(out, errOut io.Writer, asJSON bool) error`
@@ -6935,7 +7234,15 @@ registry: /Users/me/.config/local-ai/registry.toml
 nothing to add
 ```
 
-`--json` prints one object: `{"registry":"…","created":true,"changed":true,"providers_added":["ollama","claude"],"warnings":[]}`.
+When an agent lists a provider wt has no default row for, every run says so on its last line of stdout, and the exit status is still 0:
+
+```
+registry: /Users/me/.config/local-ai/registry.toml
+nothing to add
+no default row for provider: corp-gateway (an agent lists it; add it to registry.toml by hand)
+```
+
+`--json` prints one object: `{"registry":"…","created":true,"changed":true,"providers_added":["ollama","claude"],"providers_unseeded":[],"warnings":[]}`. `providers_unseeded` holds the ids the text form names in its `no default row` lines.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7005,21 +7312,26 @@ func onPath(commands ...string) func(string) bool {
 
 // TestModelInitCreatesTheRegistryAndSaysWhatItAdded pins the first run on a
 // new machine, as the user sees it: the registry is created, each provider
-// row added is named, and the routes are synced once. This is the command the
+// row added is named, a provider an agent lists that wt has no default row
+// for is named too (on every run, since it stays a config error until the
+// user adds it), and the routes are synced once. This is the command the
 // "model registry not found" error sends people to, so it has to work with
 // no registry and no config at all.
 func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
-	stubSeedEnv(t, config.SeedEnv{Agents: []string{"claude"}, OnPath: onPath("ollama")})
+	stubSeedEnv(t, config.SeedEnv{
+		Agents: []string{"claude"}, AgentProviders: []string{"claude", "corp-gateway"}, OnPath: onPath("ollama"),
+	})
 	synced := stubRouteSync(t, "")
+	const unseeded = "no default row for provider: corp-gateway (an agent lists it; add it to registry.toml by hand)\n"
 
 	var out, errOut bytes.Buffer
 	if err := runModelInit(&out, &errOut, false); err != nil {
 		t.Fatalf("runModelInit: %v", err)
 	}
-	want := "registry: " + registry + " (created)\nadded provider: ollama\nadded provider: claude\n"
+	want := "registry: " + registry + " (created)\nadded provider: ollama\nadded provider: claude\n" + unseeded
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), want)
 	}
@@ -7040,7 +7352,7 @@ func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 	if err := runModelInit(&out, &errOut, false); err != nil {
 		t.Fatalf("second runModelInit: %v", err)
 	}
-	if want := "registry: " + registry + "\nnothing to add\n"; out.String() != want {
+	if want := "registry: " + registry + "\nnothing to add\n" + unseeded; out.String() != want {
 		t.Errorf("second run stdout = %q, want %q", out.String(), want)
 	}
 	if after, _ := os.ReadFile(registry); !bytes.Equal(before, after) {
@@ -7059,7 +7371,7 @@ func TestModelInitJSON(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
-	stubSeedEnv(t, config.SeedEnv{OnPath: onPath("mtplx")})
+	stubSeedEnv(t, config.SeedEnv{AgentProviders: []string{"corp-gateway"}, OnPath: onPath("mtplx")})
 	old := syncRoutesAfterWrite
 	syncRoutesAfterWrite = func(out, _ io.Writer) string {
 		io.WriteString(out, "some/model: routed\n")
@@ -7071,7 +7383,7 @@ func TestModelInitJSON(t *testing.T) {
 	if err := runModelInit(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"registry":"` + registry + `","created":true,"changed":true,"providers_added":["mtplx"],"warnings":["LiteLLM routes not synced: proxy down"]}` + "\n"
+	want := `{"registry":"` + registry + `","created":true,"changed":true,"providers_added":["mtplx"],"providers_unseeded":["corp-gateway"],"warnings":["LiteLLM routes not synced: proxy down"]}` + "\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %s stderr = %q\nwant stdout %s and no stderr", out.String(), errOut.String(), want)
 	}
@@ -7079,9 +7391,71 @@ func TestModelInitJSON(t *testing.T) {
 	if err := runModelInit(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
-	want = `{"registry":"` + registry + `","created":false,"changed":false,"providers_added":[],"warnings":[]}` + "\n"
+	want = `{"registry":"` + registry + `","created":false,"changed":false,"providers_added":[],"providers_unseeded":["corp-gateway"],"warnings":[]}` + "\n"
 	if out.String() != want {
 		t.Errorf("no-op stdout = %s\nwant %s", out.String(), want)
+	}
+
+	// With nothing unseeded the key is an empty array, like the others.
+	stubSeedEnv(t, config.SeedEnv{OnPath: onPath("mtplx")})
+	out.Reset()
+	if err := runModelInit(&out, &errOut, true); err != nil {
+		t.Fatal(err)
+	}
+	want = `{"registry":"` + registry + `","created":false,"changed":false,"providers_added":[],"providers_unseeded":[],"warnings":[]}` + "\n"
+	if out.String() != want {
+		t.Errorf("nothing unseeded: stdout = %s\nwant %s", out.String(), want)
+	}
+}
+
+// TestModelInitMakesAFreshConfigUsable is the reason `wt model init` seeds
+// for the providers agents list: on a machine with a config.toml and no
+// registry, one run of the command must leave wt able to load and validate
+// its config. Here ollama is not installed and no model uses it, and one
+// agent lists openrouter — the two rows a user used to have to write by hand
+// before any wt command would start.
+func TestModelInitMakesAFreshConfigUsable(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const agents = `default_tag = "code"
+
+[[agents]]
+name = "claude"
+supported_providers = ["claude", "openrouter"]
+
+[[agents]]
+name = "pi"
+supported_providers = ["ollama"]
+`
+	if err := os.WriteFile(config.Path(), []byte(agents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The real reading of config.toml, on a machine with nothing installed.
+	env := config.DefaultSeedEnv()
+	env.OnPath = nil
+	stubSeedEnv(t, env)
+	stubRouteSync(t, "")
+
+	var out, errOut bytes.Buffer
+	if err := runModelInit(&out, &errOut, false); err != nil {
+		t.Fatalf("runModelInit: %v", err)
+	}
+	want := "registry: " + registry + " (created)\n" +
+		"added provider: ollama\nadded provider: openrouter\n" +
+		"added provider: claude\nadded provider: pi\nadded provider: agy\n"
+	if out.String() != want || errOut.Len() != 0 {
+		t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), want)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load after init: %v", err)
+	}
+	if err := cfg.ValidateAll(); err != nil {
+		t.Errorf("the config should validate after init: %v", err)
 	}
 }
 
@@ -7266,7 +7640,7 @@ func TestRegistryWriteGuardIsArmedHere(t *testing.T) {
 
 Run, from `wt/`: `go test ./cmd/wt -run 'ModelInit|ModelCommandGroup'`
 
-Expected: FAIL — the package does not build: `undefined: seedEnv`, `undefined: syncRoutesAfterWrite`, `undefined: realSyncRoutesAfterWrite`, `undefined: runModelInit`.
+Expected: FAIL — the package does not build: `undefined: seedEnv`, `undefined: syncRoutesAfterWrite`, `undefined: realSyncRoutesAfterWrite`. The compiler stops after ten errors (`too many errors`), so `runModelInit`, which is undefined too, may not be listed.
 
 - [ ] **Step 3: Write the command**
 
@@ -7289,8 +7663,8 @@ import (
 )
 
 // seedEnv describes the machine `wt model init` seeds for: the configured
-// agents and what is on PATH. A seam so tests do not depend on what the
-// developer has installed.
+// agents, the providers they list, and what is on PATH. A seam so tests do
+// not depend on what the developer has installed or configured.
 var seedEnv = config.DefaultSeedEnv
 
 // syncRoutesAfterWrite runs the one LiteLLM route sync that follows a
@@ -7339,9 +7713,14 @@ func modelCmd(_ *app) *cobra.Command {
 		Short: "Create registry.toml if it is missing and add the default provider rows",
 		Long: "Create the model registry if it does not exist, and add the provider rows wt\n" +
 			"needs and the registry lacks:\n\n" +
-			"  - ollama, omlx, mtplx: when the command is installed, or a model uses it\n" +
-			"  - mlx_lm_server:       when a model uses it\n" +
+			"  - ollama, omlx, mtplx: when the command is installed, or a model or a\n" +
+			"                         configured agent uses it\n" +
+			"  - mlx_lm_server:       when a model or a configured agent uses it\n" +
+			"  - openrouter:          when a configured agent uses it; the row has no key,\n" +
+			"                         so add auth.secret_ref to it in registry.toml\n" +
 			"  - each configured agent: a native provider row under the agent's name\n\n" +
+			"A provider an agent lists that wt has no default row for is named in the\n" +
+			"output and left for you to add to registry.toml.\n\n" +
 			"A row that exists is never changed, so running it again is safe. When it\n" +
 			"changes the registry it then syncs the LiteLLM routes once; a sync that\n" +
 			"cannot run is a warning, and the exit status is still 0.",
@@ -7366,7 +7745,10 @@ type modelInitJSON struct {
 	Created        bool     `json:"created"`
 	Changed        bool     `json:"changed"`
 	ProvidersAdded []string `json:"providers_added"`
-	Warnings       []string `json:"warnings"`
+	// ProvidersUnseeded are providers an agent lists that have no row and no
+	// default: wt reports a config error until the user adds them.
+	ProvidersUnseeded []string `json:"providers_unseeded"`
+	Warnings          []string `json:"warnings"`
 }
 
 func runModelInit(out, errOut io.Writer, asJSON bool) error {
@@ -7375,11 +7757,11 @@ func runModelInit(out, errOut io.Writer, asJSON bool) error {
 	missing := os.IsNotExist(statErr)
 
 	env := seedEnv()
-	var added []string
+	var added, unseeded []string
 	changed, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		// Assigned afresh on every run: apply may run more than once.
 		var err error
-		added, err = config.SeedRegistryDefaults(d, env)
+		added, unseeded, err = config.SeedRegistryDefaults(d, env)
 		return err
 	})
 	if err != nil {
@@ -7390,7 +7772,9 @@ func runModelInit(out, errOut io.Writer, asJSON bool) error {
 	}
 	doc := modelInitJSON{
 		Registry: path, Created: missing && changed, Changed: changed,
-		ProvidersAdded: append([]string{}, added...), Warnings: []string{},
+		ProvidersAdded:    append([]string{}, added...),
+		ProvidersUnseeded: append([]string{}, unseeded...),
+		Warnings:          []string{},
 	}
 	// The sync's own lines follow the registry lines in text mode and are
 	// left out of the JSON document; its probe warnings go to stderr either way.
@@ -7413,6 +7797,9 @@ func runModelInit(out, errOut io.Writer, asJSON bool) error {
 	}
 	if len(added) == 0 {
 		fmt.Fprintln(out, "nothing to add")
+	}
+	for _, id := range unseeded {
+		fmt.Fprintf(out, "no default row for provider: %s (an agent lists it; add it to registry.toml by hand)\n", id)
 	}
 	_, _ = io.Copy(out, &syncOut)
 	for _, w := range doc.Warnings {
@@ -7488,11 +7875,11 @@ git commit -m "feat(wt): wt model init creates the registry and seeds provider r
 
 **Interfaces:**
 - Consumes: `wt model init` (Task 15).
-- Produces: the exact text `config error: model registry not found at <path> — seed it with `wt model init` (seed the registry with `wt model init`)`.
+- Produces: the exact text `config error: model registry not found at <path> — seed it with `wt model init``. The command is named once.
 
 `modelman migrate` is a legacy-YAML import, and modelman is being retired; the command that creates a registry is now `wt model init`. Other mentions of `modelman migrate` in wt's Go comments (`config.go:549`, `migrate_test.go:15`) describe that legacy import and stay.
 
-The line a user reads says the same thing twice: `loadRegistry`'s error carries `— seed it with …`, and `configError` adds `(seed the registry with …)`. It does that today with `modelman migrate`. The spec changes the hint in both files and removes neither, so both stay and both are pinned (the Decisions table has the row). Removing the second one is a one-line change in `configError` if the owner wants it.
+Today the line a user reads says the same thing twice: `loadRegistry`'s error carries `— seed it with …`, and `configError` adds `(seed the registry with …)`. The owner's decision (2026-10-07) is that the hint appears once. `loadRegistry`'s error keeps it, because that error is also what `wt litellm sync` and the commands that do not go through `configError` print; `configError` stops adding its own. The Decisions table has the row.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7539,8 +7926,8 @@ Append to `wt/cmd/wt/helpers_test.go`:
 ```go
 // TestConfigErrorForAMissingRegistryNamesModelInit pins the whole line a
 // user reads when there is no registry: where it was looked for and the one
-// command that creates it. It used to name `modelman migrate`, a legacy
-// import in a tool that is being retired.
+// command that creates it, named once. It used to name `modelman migrate`, a
+// legacy import in a tool that is being retired, and to say it twice.
 func TestConfigErrorForAMissingRegistryNamesModelInit(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
@@ -7550,7 +7937,7 @@ func TestConfigErrorForAMissingRegistryNamesModelInit(t *testing.T) {
 	}
 	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
 	want := "config error: model registry not found at " + registry +
-		" — seed it with `wt model init` (seed the registry with `wt model init`)"
+		" — seed it with `wt model init`"
 	if got := configError(loadErr).Error(); got != want {
 		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
 	}
@@ -7568,7 +7955,7 @@ go test ./cmd/wt -run TestConfigErrorForAMissingRegistryNamesModelInit
 
 Expected: both FAIL. The first prints `error should point at `wt model init``; the second prints the old line, ending `— seed it with `modelman migrate` (seed the registry with `modelman migrate`)`.
 
-- [ ] **Step 3: Change the two hints**
+- [ ] **Step 3: Change the hint, and say it once**
 
 In `wt/internal/config/registry.go`, in `loadRegistry`, replace:
 
@@ -7609,10 +7996,12 @@ with:
 
 ```go
 // ErrRegistryMissing is a special case: the registry is missing entirely, so
-// there's nothing to edit; the hint names the command that creates it.
+// there's nothing to edit, and the error itself already names the command
+// that creates one (`wt model init`). No hint is added: it would say the
+// same thing a second time.
 func configError(err error) error {
 	if errors.Is(err, config.ErrRegistryMissing) {
-		return fmt.Errorf("config error: %w (seed the registry with `wt model init`)", err)
+		return fmt.Errorf("config error: %w", err)
 	}
 ```
 
@@ -7783,7 +8172,7 @@ Fix with `modelman sync`/`modelman migrate` on that machine (`sync` recreates de
 with:
 
 ```text
-Fix with `wt model init` on that machine (it adds the default provider rows and a native row per configured agent; a provider it has no default for is a hand edit of `registry.toml`), not a code change here.
+Fix with `wt model init` on that machine (it adds a default row for each provider that is installed, used by a model or listed by a configured agent, and a native row per configured agent; a provider it has no default row for is named in its output and is a hand edit of `registry.toml`), not a code change here.
 ```
 
 In `wt/CLAUDE.md`, replace:
@@ -7859,7 +8248,7 @@ with:
 ```text
 Fix with `wt model init` on that machine, not a code change here.
 
-**Seeding.** `config.SeedRegistryDefaults(d *RegistryDoc, env SeedEnv)` (`registry_seed.go`) is the one seeding implementation, the Go port of modelman's `_ensure_provider_entries` and `sync_agent_providers`. It appends the default row for ollama, omlx, mtplx or mlx_lm_server when a model references it, or (the first three) when its command is on PATH — an installed omlx is skipped when an `omlx-6bit` row exists — and a native cloud row for each agent in `config.toml` (plus `agy` whenever `config.toml` exists, because `migrateConfigSchema` adds that agent on the next `Load`). It never edits a row that exists; modelman's `backfill_provider_defaults` is deliberately not ported. It takes a `RegistryDoc`, so it runs inside the caller's own `UpdateRegistry`: `wt model init` today, `wt model add` next. `config.DefaultSeedEnv()` reads the real machine; `cmd/wt` reaches it through the `seedEnv` seam.
+**Seeding.** `config.SeedRegistryDefaults(d *RegistryDoc, env SeedEnv)` (`registry_seed.go`) is the one seeding implementation, the Go port of modelman's `_ensure_provider_entries` and `sync_agent_providers` plus one trigger modelman lacks. It appends the default row for ollama, omlx, mtplx or mlx_lm_server when a model references it, when a configured agent lists it in `supported_providers`, or (the first three) when its command is on PATH — an installed omlx is skipped when an `omlx-6bit` row exists; a default row for openrouter when an agent lists it (name, address and `auth.type = "api_key"`, with no `secret_ref`: the key is the user's to add); and a native cloud row for each agent in `config.toml`. The agent trigger exists because `Config.Validate` refuses an agent that lists a provider with no row. The agents are read as the next `Load` will see them: `seedAgents` applies `migrateAgentRefs` (the agent half of `migrateConfigSchema`: an `agy` agent is added, `opencode` lists `ollama` only) to its own read of `config.toml`, because `Load` migrates that file only once the registry loads. It returns the ids it added and, separately, the providers an agent lists that still have no row because wt has no default for them; `wt model init` names those (`providers_unseeded` in `--json`). It never edits a row that exists; modelman's `backfill_provider_defaults` is deliberately not ported. It takes a `RegistryDoc`, so it runs inside the caller's own `UpdateRegistry`: `wt model init` today, `wt model add` next. `config.DefaultSeedEnv()` reads the real machine; `cmd/wt` reaches it through the `seedEnv` seam.
 ```
 
 In `wt/docs/internals/testing.md`, replace:
@@ -7932,6 +8321,18 @@ with:
 
 ```text
 (shared; `wt model init` also writes it)
+```
+
+In `docs/guides/02-providers-and-models.md` only, replace:
+
+```text
+`registry.toml` is canonical — add the provider block to `~/.config/local-ai/registry.toml` (hand-edit, or via the TUI's add flow; both write this file).
+```
+
+with:
+
+```text
+`registry.toml` is canonical — add the provider block to `~/.config/local-ai/registry.toml` (hand-edit, or via the TUI's add flow; both write this file). If `wt model init` already added an `openrouter` row (it does when a configured agent lists openrouter), do not add a second one: add `secret_ref` to the row that is there.
 ```
 
 In `wt/docs/wt-agents/shell-wt.md`, replace:
@@ -8007,18 +8408,20 @@ with:
 ```text
   which keeps working as an alias; modelman and llmbench read the same name.
 - `wt model init [--json]` creates the model registry when it is missing and
-  adds the provider rows it lacks: ollama, omlx and mtplx when installed or
-  used by a model, mlx_lm_server when used by a model, and a native row for
-  each configured agent. It never changes a row that exists. The "model
-  registry not found" error now names this command instead of `modelman
-  migrate`.
+  adds the provider rows it lacks: ollama, omlx and mtplx when installed, used
+  by a model or listed by a configured agent; mlx_lm_server when used by a
+  model or listed by an agent; openrouter, without a key, when an agent lists
+  it; and a native row for each configured agent. It never changes a row that
+  exists, and it names any provider an agent lists that it has no default row
+  for. The "model registry not found" error now names this command, once,
+  where it named `modelman migrate` twice.
 ```
 
 `docs/guides/01-initial-setup.md` still seeds a new machine with `modelman migrate`, which still works. It is rewritten with the other guides in the retirement's last step (the spec's Step 6, slice 1), not here.
 
 - [ ] **Step 7: Try the command on a throwaway home**
 
-This check uses a temporary `HOME` holding three fake provider commands and a `config.toml`. Nothing under the real home is read or written, and no provider is contacted: with no LiteLLM `config.yaml` in that home the route sync is skipped before it probes anything.
+This check uses a temporary `HOME` holding two fake provider commands and a `config.toml`. ollama is not installed there: its row has to come from the agent trigger, through the `opencode` agent that `Load` will rewire to ollama, and the `openrouter` row from the `claude` agent's list. Nothing under the real home is read or written, and no provider is contacted: with no LiteLLM `config.yaml` in that home the route sync is skipped before it probes anything.
 
 Run, from `wt/`:
 
@@ -8026,8 +8429,8 @@ Run, from `wt/`:
 go build -o /tmp/wt-verify ./cmd/wt
 H=$(mktemp -d)
 mkdir -p "$H/fakebin" "$H/.config/agent-wt"
-for c in ollama omlx mtplx; do printf '#!/bin/sh\nexit 0\n' > "$H/fakebin/$c"; chmod +x "$H/fakebin/$c"; done
-printf 'default_tag = "code"\n\n[[agents]]\nname = "claude"\nsupported_providers = ["claude"]\n' > "$H/.config/agent-wt/config.toml"
+for c in omlx mtplx; do printf '#!/bin/sh\nexit 0\n' > "$H/fakebin/$c"; chmod +x "$H/fakebin/$c"; done
+printf 'default_tag = "code"\n\n[[agents]]\nname = "claude"\nsupported_providers = ["claude", "openrouter"]\n\n[[agents]]\nname = "opencode"\nsupported_providers = ["opencode"]\n' > "$H/.config/agent-wt/config.toml"
 env -i HOME="$H" PATH="$H/fakebin:/usr/bin:/bin" /tmp/wt-verify model init
 ```
 
@@ -8038,9 +8441,13 @@ registry: $H/.config/local-ai/registry.toml (created)
 added provider: ollama
 added provider: omlx
 added provider: mtplx
+added provider: openrouter
 added provider: claude
+added provider: opencode
 added provider: agy
 ```
+
+The seeded `openrouter` row must hold no key. Run `grep -c secret_ref "$H/.config/local-ai/registry.toml"`. Expected: `0`.
 
 Then check that modelman reads what wt wrote, and that its own save changes only what it always adds. Run, from the monorepo root:
 
@@ -8063,7 +8470,7 @@ Expected:
 
 ```
 tomli-w form: True
-providers: ['ollama', 'omlx', 'mtplx', 'claude', 'agy']
+providers: ['ollama', 'omlx', 'mtplx', 'openrouter', 'claude', 'opencode', 'agy']
 modelman added: 'families = []\nmodels = []\n\n'
 ```
 
@@ -8079,6 +8486,8 @@ Expected: on stderr, wt's one-time notice `wt: migrated config to native-provide
 registry: $H/.config/local-ai/registry.toml
 nothing to add
 ```
+
+That the migration ran without an error is the end-to-end check of the agent trigger: the migrated `config.toml` now has an `opencode` agent that lists `ollama` and an `agy` agent, and the registry seeded before the migration already had both rows. `grep -A2 'name = "opencode"' "$H/.config/agent-wt/config.toml"` shows `supported_providers = ["ollama"]`.
 
 Clean up with `rm -r "$H" /tmp/wt-verify`. If any output differs, stop and report it; do not adjust the expected text.
 
@@ -8130,6 +8539,8 @@ Two things this task leaves as they are, on purpose:
 
 - **Two writers do not catch `RegistryError`**: `modelman migrate` (`main.py:507`, a bare `save_registry`) and `modelman ollama-catalog sync` (`ollama_catalog_cli.py:159`, whose `locked_registry` block catches `OSError` only, at line 176). A refusal there ends in a traceback whose last line is the reload message. Both windows are milliseconds wide, and modelman is frozen to bug fixes, so the handlers are not widened (Decisions table).
 - **The TUI cannot reload a registry**: `ModelScreen.reload()` (`screens/models.py:475`) only redraws the table. "reload" in the message therefore means quit modelman and open it again, and after one write by another program every save in that session is refused. That includes the one save at the end of a queued Apply, whose deletes and downloads have already run by then. Step 5 says so in `modelman/CLAUDE.md`.
+
+What bounds that. The owner's decision (2026-10-07) is that modelman's TUI is disabled when wt's Models tab ships, in Step 3: the PR series that ships the tab makes bare `modelman` print where the Models tab is and exit non-zero. It is not disabled in this step, which would leave no model editor until then. So an open TUI that refuses every save exists only between `wt model init` (PR 5) and Step 3, and in that window the one wt write is `wt model init`, which changes the registry only when a provider row is missing. This task ships the guard as planned, and nothing in it disables the TUI. After Step 3 the guard still protects the registry from modelman's non-interactive writers, until modelman is deleted in Step 6.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -8695,8 +9106,9 @@ Stop here. Pushing `fix/modelman-stale-registry-snapshot` and opening the PR nee
 
 - `RegistryDoc` is the API Steps 3 and 4 build on. A new operation belongs in `registry_doc.go` with a test, not in a caller reaching into a `*tomlw.Table`.
 - `validateTouched` does not check the two `Config.Validate` rules that need other rows: a `location` that resolves to `local` or `cloud` (the model's own, or its provider's), and a `provider_id` that names a provider row. A `PatchModel` that sets `location = "mars"` or `provider_id = "nope"` is written, and every wt command then reports a config error. Step 2's only caller cannot do that (it adds provider rows). Step 3 must add both checks to `registry_validate.go`, with cases in `TestUpdateRegistryValidatesOnlyTheRowsItTouched`, before `wt model add` or `wt model edit` ships.
-- `SeedRegistryDefaults` adds a default provider row when a model uses it or its command is installed, never because an agent lists it. A `config.toml` whose agent lists `ollama` on a machine without ollama (wt's own schema migration rewires `opencode` that way), or lists `openrouter`, still fails validation after `wt model init`; modelman's seeding has the same gap. If Step 3 wants `wt model init` to cover that, it is a new seeding trigger and a spec change, not a fix here.
-- Step 3's `wt model add` calls `config.SeedRegistryDefaults(d, env)` inside its own `UpdateRegistry` apply, and its writing verbs call `syncRoutesAfterWrite`.
+- Step 3's `wt model add` calls `config.SeedRegistryDefaults(d, env)` inside its own `UpdateRegistry` apply, and its writing verbs call `syncRoutesAfterWrite`. It should print the `unseeded` ids the way `wt model init` does.
+- The `openrouter` row seeding writes has no `secret_ref`. A LiteLLM route built for a model under such a row carries an empty `api_key` (`internal/litellm/entry.go`, `providerAPIKey`: an empty ref resolves to an empty key without an error). Step 2 adds no models, so nothing here builds that route. Step 3's `wt model add openrouter …` is where a keyless provider row should be refused or warned about.
 - The hint in `wt litellm sync` and a few other commands wraps a load error as `(run `wt config` to repair)` without going through `configError` (`cmd/wt/litellm.go:564`), so on a missing registry it reads `… — seed it with `wt model init` (run `wt config` to repair)`. That wording predates this plan; the spec's Step 6 strings sweep is where it goes.
 - `modelman/tests/commands/test_migrate.py:122` quotes wt's old hint in a docstring. modelman is frozen; it is deleted with modelman.
-- modelman's guard makes an open TUI refuse every save after wt writes the registry, until it is restarted, and `modelman migrate` and `modelman ollama-catalog sync` report a refusal as a traceback. Both are accepted for the interim; they end when modelman is removed (the spec's Step 6).
+- modelman's guard makes an open TUI refuse every save after wt writes the registry, until it is restarted. That window closes in Step 3: the PR series that ships wt's Models tab also disables modelman's TUI (bare `modelman` prints where the Models tab is and exits non-zero) and leaves modelman's non-interactive commands working until Step 6 (owner decision, 2026-10-07; the spec's Step 3, "Models tab"). Step 3's plan owns that change.
+- `modelman migrate` and `modelman ollama-catalog sync` report a refusal by the guard as a traceback. Accepted for the interim; it ends when modelman is removed (the spec's Step 6).
