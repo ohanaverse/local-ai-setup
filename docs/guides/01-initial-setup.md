@@ -63,12 +63,13 @@ echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY —
 ollama pull qwen3.8:27b-mlx
 
 # 4. modelman setup + start a model (which routes it through LiteLLM)
+# modelman and wt both need ~/.config/local-ai/registry.toml. `wt model init` creates it when it is missing, with a
+# provider row for each local tool it finds on PATH (ollama, omlx, mtplx); it never changes a row that exists.
+# (needs `wt` on PATH — `make install` from the repo root.)
+wt model init
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
-# FRESH MACHINE ONLY — modelman and wt both need ~/.config/local-ai/registry.toml. `migrate` creates it, with a
-# provider row for each local tool it finds on PATH (ollama, omlx, mtplx); skip this if the file exists.
-[ -e ~/.config/local-ai/registry.toml ] || uv run modelman migrate
-# uv run modelman        # TUI (interactive) — skip in one-shot mode; 'start' below is non-interactive
+# (bare `uv run modelman` used to open a TUI; it is disabled — models are added by hand in registry.toml, guide 02)
 uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its name or its `ollama/<name:tag>` id). No routing step: every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH); a pulled ollama model stays routed after a stop
 
 # 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the sync — this is only needed if that restart was skipped or failed)
@@ -229,7 +230,7 @@ brew services list | grep omlx
 omlx          none            keith   # 2026-09-30 rebuild — deliberately NO service ("started" was the old machine)
 ```
 
-(It used to run as a brew service; since the wt/modelman lifecycle engines it's **optional**. Starting any omlx model — `wt start`, TUI `s`, `llmbench provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
+(It used to run as a brew service; since the wt/modelman lifecycle engines it's **optional**. Starting any omlx model — `wt start`, `modelman start`, `llmbench provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
 
 oMLX auto-discovers models in `~/.omlx/models/` (set via `~/.omlx/settings.json`, key `model.model_dirs`). Get a model in with the HF CLI:
 
@@ -304,7 +305,7 @@ hf auth whoami   # -> user=gitmanntoo orgs=Wisconsin,mlx-community
 
 What hf is needed for here:
 
-- **Downloading oMLX artifacts** the modelman registry references — e.g. the Tier-1 starter `hf download mlx-community/Qwen3.8-27B-4bit --local-dir ~/.omlx/models/Qwen3.8-27B-4bit` (paths must match the registry `disk_path`, and the directory must be **flat** — oMLX cannot parse the nested HF-cache layout; modelman's own TUI download path does the same snapshot-to-flat-dir correctly if you queue the download there instead)
+- **Downloading oMLX artifacts** the modelman registry references — e.g. the Tier-1 starter `hf download mlx-community/Qwen3.8-27B-4bit --local-dir ~/.omlx/models/Qwen3.8-27B-4bit` (the directory must be **flat** and sit in oMLX's model directory — oMLX cannot parse the nested HF-cache layout, which a bare `hf download <repo>` without `--local-dir` produces. This command is the download path now: modelman's TUI, which used to queue the same download, is disabled, and wt downloads nothing — [02-providers-and-models](02-providers-and-models.md) Step 5 has the command for each provider)
 - `bin/mlx-quantize` (see [10-mlx-lm-quantization](10-mlx-lm-quantization.md)) and `benchmarks/` scripts that fetch models
 
 (Auth is not required for public repos like `mlx-community`; it raises rate limits and covers gated orgs.)
@@ -540,7 +541,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 
   ```bash
   # from: ~/github/ohanaverse/local-ai-setup/modelman
-  uv run modelman          # bare = TUI
+  uv run modelman          # bare = the disabled TUI: prints where to go in wt, exits 1
   uv run modelman sync     # reconcile ready/running state, then one route sync
   uv run modelman start <model-id>   # ...and a start routes it while it runs
   ```
@@ -559,4 +560,4 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
 - oMLX backend reference: [`../reference/oMLX%20Download%20and%20Run.md`](../reference/oMLX%20Download%20and%20Run.md)
 - Hugging Face downloads (`hf download`, cache layout): [`../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md`](../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md)
-- Next in this set — register models via modelman: [02-providers-and-models](02-providers-and-models.md)
+- Next in this set — register models in `registry.toml`: [02-providers-and-models](02-providers-and-models.md)

@@ -65,7 +65,7 @@ Read `docs/internals/tui.md` before changing `ModelScreen` (columns, `r`/`s` key
 
 ### Adding a new TUI screen
 
-See the `adding-a-tui-screen` skill (`.claude/skills/adding-a-tui-screen/SKILL.md`).
+Don't: the TUI is disabled and modelman is frozen until it is retired — new model-management UI goes in wt. The `adding-a-tui-screen` skill (`.claude/skills/adding-a-tui-screen/SKILL.md`) describes the screen code that is still in the tree.
 
 ### Pending changes queue
 
@@ -111,7 +111,7 @@ Moved to llmbench (`../llmbench/src/llmbench/providers/lifecycle/`): see `../llm
 
 ### Local-model lifecycle
 
-`modelman start <id>` / `stop <id>` / `stop --all` and the TUI's `s` key are the sanctioned non-benchmark start/stop paths (`local_control.py`). **Per-provider process limits:** multiple local models may run concurrently across providers (advisory only). ollama is multi-tenant; omlx is a pool that can hold several loaded models, and its start and stop go through `wt` (`wt start --json`, `wt stop`; modelman needs a `wt` that has them), so starting an omlx model leaves the others loaded unless omlx evicts and `modelman stop <omlx model>` unloads just that one — asked of wt even for a model modelman has no running flag for; mtplx and mlx_lm_server serve one model per process, so starting a different model replaces the occupant. `omlx`/`omlx-6bit` are ONE server (shared port 8000). `modelman stop --all` and `modelman provider isolate|stop|restore` (benchmarks) still halt or restart the omlx service through the Python backend.
+`modelman start <id>` / `stop <id>` / `stop --all` are the sanctioned non-benchmark start/stop paths (`local_control.py`); the TUI's `s` key is the same path, in code no command reaches now. **Per-provider process limits:** multiple local models may run concurrently across providers (advisory only). ollama is multi-tenant; omlx is a pool that can hold several loaded models, and its start and stop go through `wt` (`wt start --json`, `wt stop`; modelman needs a `wt` that has them), so starting an omlx model leaves the others loaded unless omlx evicts and `modelman stop <omlx model>` unloads just that one — asked of wt even for a model modelman has no running flag for; mtplx and mlx_lm_server serve one model per process, so starting a different model replaces the occupant. `omlx`/`omlx-6bit` are ONE server (shared port 8000). `modelman stop --all` and `modelman provider isolate|stop|restore` (benchmarks) still halt or restart the omlx service through the Python backend.
 
 - Every start and stop closes with one `wt litellm sync`, after its state writes and outside the lock; sync warnings never fail the operation.
 - An occupant's flag is cleared only after its teardown is confirmed. An omlx start sets its target's flag and clears the flags of the ids wt reports `unloaded`; a failed start changes no flag, and an omlx stop wt refuses clears one only when the pool wt reads does not hold the model ("cannot say" never clears one — only a refused connection at the registry's omlx origin does). The omlx probe likewise answers "cannot say" when nothing answered; only a refused connection reads as "nothing loaded".

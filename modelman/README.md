@@ -1,12 +1,17 @@
 # modelman
 
-A terminal UI and CLI for managing LLM models across providers (Ollama,
+A CLI for managing LLM models across providers (Ollama,
 oMLX, MTPLX, mlx_lm_server, OpenRouter, and native agent providers like
 `claude`, `codex`; the llama.cpp provider is retired — see
 `../docs/reference/provider-artifacts.md`). Models and providers live in a
 shared `registry.toml`; per-machine state (ready markers, running hints) lives
-in `modelman.toml`. The TUI shows every model in one table, queues changes
-(delete/ready/move) that are applied on exit, and starts/stops local models.
+in `modelman.toml`.
+
+**The terminal UI is disabled.** It showed every model in one table, queued
+changes (delete/ready/move) applied on exit, and started/stopped local models.
+wt writes `registry.toml` now, so bare `modelman` prints where to go and exits
+1 — see [TUI](#tui) for what replaces each thing it did. The subcommands below
+still work.
 
 **Requires `wt` on PATH.** LiteLLM management is owned by the `wt` launcher
 (since 2026-09-21): modelman never edits LiteLLM's `config.yaml` or restarts
@@ -23,7 +28,7 @@ the `modelman/` directory:
 ```bash
 cd modelman
 uv sync
-uv run modelman
+uv run modelman --help
 ```
 
 Because the repo root has no `pyproject.toml`, running `uv run modelman` from the
@@ -149,7 +154,7 @@ For flag-only providers (OpenRouter, native agents like `claude`) it means
 or delete on disk.
 
 `running` (local models only; defaults to `false` when absent) records that
-`modelman start` — or the TUI's `s` keybinding — started this model and has
+`modelman start` started this model and has
 not stopped it. It is a hint, not ground truth: modelman and `wt` both
 confirm it with a live probe of the provider before treating the model as
 running, and a flag whose probe fails is treated as stopped (and
@@ -161,7 +166,7 @@ provider starts.
 
 Family display names now live in `registry.toml`'s `[[families]]` section.
 The legacy `[families.*]` table here is still loaded as a read-side
-fallback, but the TUI no longer writes it.
+fallback; nothing writes it.
 
 This file is optional — a fresh install starts with an empty store.
 
@@ -209,9 +214,24 @@ for benchmarking); `restore` brings them all back.
 ### TUI
 
 > **Disabled.** Bare `modelman` no longer opens the TUI: it prints where to go
-> in wt and exits 1. wt writes `registry.toml` now; until wt's Models tab ships,
-> a model is added, edited or removed by editing `registry.toml` by hand, then
-> `wt litellm sync`. The rest of this section describes the screen as it was.
+> in wt and exits 1. wt writes `registry.toml` now. What replaces the screen
+> until wt's Models tab ships:
+>
+> - **create the registry and its provider rows** — `wt model init`
+> - **add, edit or remove a model** — edit `registry.toml` by hand, then
+>   `wt litellm sync` (the procedure and a `[[models]]` block per provider
+>   kind: `../docs/guides/02-providers-and-models.md` Steps 1–4)
+> - **download a model** — the provider's own tool, since wt downloads
+>   nothing: `ollama pull <name:tag>`;
+>   `hf download <org>/<repo> --local-dir ~/.omlx/models/<repo>` for oMLX;
+>   `mtplx pull <org>/<name>` for MTPLX (guide 02 Step 5)
+> - **start or stop a local model** — `wt start` / `wt stop` (or
+>   `modelman start` / `stop`, which still work)
+> - **see what is on disk and running** — `wt start` (its picker), or
+>   `wt served <provider>` for what a server is serving
+>
+> The rest of this section describes the screen as it was; none of its keys
+> can be pressed today.
 
 The TUI has a single screen:
 
@@ -311,12 +331,12 @@ wt litellm list      # what is routed right now — the authoritative answer
 wt litellm sync      # reconcile by hand; modelman runs this itself after a change
 ```
 
-modelman runs one `wt litellm sync` after anything that can affect routing:
-a TUI exit that changed `registry.toml` (add/edit write it immediately), a
-queue applied on TUI exit, `modelman sync`, `migrate`, `refresh-prices`,
-`ollama-catalog sync`, every `start`/`stop`, and a TUI mount that found a
-`running` flag gone stale (that model's route pointed at a dead backend, and
-nothing else would drop it). wt restarts the proxy only when `config.yaml`
+modelman runs one `wt litellm sync` after each subcommand that can affect
+routing: `modelman sync`, `migrate`, `refresh-prices`, `ollama-catalog sync`
+and every `start`/`stop`. (The disabled TUI did too: on an exit that changed
+`registry.toml`, after a queue it applied, and on a mount that found a
+`running` flag gone stale.) A hand edit of `registry.toml` is seen by no
+command — run `wt litellm sync` after it yourself. wt restarts the proxy only when `config.yaml`
 actually changed, so a no-op sync costs nothing. Warnings — a provider whose
 probe couldn't be trusted, routes deliberately left alone — are printed to
 stderr and never fail the command.
@@ -343,7 +363,7 @@ switch, and the per-row `ollama_chat`/`openai` bridge parameters) — see
 The proxy restart is wt's too: `WT_LITELLM_RESTART_CMD` (legacy alias
 `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k
 gui/$(id -u)/local.litellm.proxy`. The LiteLLM routing on/off state
-(`modelman litellm status|on|off|set`, the TUI `l` key) lives in wt's
+(`modelman litellm status|on|off|set`) lives in wt's
 `~/.config/agent-wt/config.toml`; modelman.toml's `[litellm]` table is only a
 legacy read-only fallback that modelman round-trips untouched.
 
@@ -351,10 +371,9 @@ legacy read-only fallback that modelman round-trips untouched.
 
 Providers whose `auth.type` is `"native"` (or whose id matches an agent in
 `~/.config/agent-wt/config.toml`) represent models handled by external
-agents (e.g. `claude`, `codex`). They have no download mechanics:
-pressing `r` simply toggles the `ready` flag, and there is no disk path or
-size. These providers are synced into `registry.toml` automatically on TUI
-launch from the wt config.
+agents (e.g. `claude`, `codex`). They have no download mechanics: there is
+no disk path or size. `wt model init` adds a row for each agent in the wt
+config (the TUI used to do that on launch).
 
 ### Sync
 
@@ -426,7 +445,7 @@ make clean       # remove caches
 - `src/modelman/settings.py` — user preferences (`settings.yaml`).
 - `src/modelman/providers/` — one module per backend (`ollama.py`, `omlx.py`, `mtplx.py`, `mlx_lm_server.py`, retired `llamacpp.py`). Each registers itself with `ProviderRegistry` at import time and implements `is_downloaded`, `download`, `list_local`, and optionally `size_of`/`path_of`/`resolve_local`.
 - `../llmbench/src/llmbench/providers/lifecycle/` — start/stop/isolate/restore of local provider servers (`llmbench provider ...`, still mounted as `modelman provider ...`); it moved to the `llmbench` package, which modelman depends on. `src/modelman/local_control.py` — `modelman start`/`stop` and the TUI `s` key.
-- `src/modelman/pricing.py` — OpenRouter price refresh (`modelman refresh-prices`, plus a daily check when the TUI starts).
+- `src/modelman/pricing.py` — OpenRouter price refresh (`modelman refresh-prices`; the daily check ran when the TUI started, so it no longer runs — wt's stale-pricing notice says when to refresh).
 - `src/modelman/manifest.py` / `config.py` — legacy `families/*.yaml` / `config.yaml` loaders, read only by `migrate`.
 
 To add a new provider (e.g. vLLM) — the full checklist is the

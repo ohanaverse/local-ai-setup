@@ -13,7 +13,7 @@ Launching `wt config` with no subcommand opens a full-screen TUI that
 lets you browse and edit the **Agents** section of `config.toml`.
 Providers and models live in `registry.toml`, which `wt config` never
 writes (`wt model init` creates it and adds provider rows; models are
-edited with modelman).
+edited by hand for now, then `wt litellm sync` — modelman's TUI is disabled).
 
 ### Agent list
 

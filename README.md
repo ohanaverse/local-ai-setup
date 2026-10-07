@@ -7,7 +7,7 @@ components — fresh install starts at
 | Component | Role |
 |---|---|
 | Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
-| `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, download state, usage |
+| `modelman/` | model registry CLI (its TUI is disabled; being retired into `wt`) — download state, usage, price and catalog refresh. Models are added to `registry.toml` by hand for now: `docs/guides/02-providers-and-models.md` |
 | `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
@@ -81,7 +81,7 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 │   ├── contracts/      # cross-language config-format fixtures (read by wt Go + modelman and llmbench Python tests)
 │   ├── archive/        # superseded docs
 │   └── superpowers/    # plans + specs
-├── modelman/           # model registry TUI/CLI (Python/uv) — has its own CLAUDE.md
+├── modelman/           # model registry CLI, TUI disabled (Python/uv) — has its own CLAUDE.md
 ├── llmbench/           # benchmarks + provider isolation (Python/uv) — has its own CLAUDE.md
 ├── wt/                 # worktree agent launcher (Go) — has its own CLAUDE.md
 ├── .github/workflows/ # CI: shell-ci, wt-ci, modelman-ci, llmbench-ci

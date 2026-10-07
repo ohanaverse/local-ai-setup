@@ -57,8 +57,7 @@ the proxy's `model_list`: wt derives it from `registry.toml` plus live probes,
 so a cloud model is routed whenever it is configured, with no toggle to flip
 (#179). `wt litellm list` is the answer to "is it routed?"; there is no
 hand-write command any more (`wt litellm expose`/`unexpose` went with the flag),
-and the TUI `l` key is the separate LiteLLM *routing* on/off toggle
-(`wt litellm on|off`). See guide 04 for the workflow. No TOML to copy here —
+and `wt litellm on|off` is the separate LiteLLM *routing* on/off toggle. See guide 04 for the workflow. No TOML to copy here —
 the state file is machine state, not a config to hand-edit.
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration
@@ -115,12 +114,13 @@ wt -A pi -M openrouter/z-ai/glm-5.3-flash
 wt --cwd -A pi -M openrouter/z-ai/glm-5.3-flash -- -p "Your prompt"
 ```
 
-### Via modelman TUI
+### Check that it is registered and routed
+
+modelman's TUI, which used to list the model, is disabled. Ask the files and wt instead:
 
 ```bash
-cd ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman
-# Model appears in the list (no exposure column — check `wt litellm list`)
+grep -n -A6 'id = "openrouter/z-ai/glm-5.3-flash"' ~/.config/local-ai/registry.toml   # its [[models]] block
+wt litellm list | grep glm-5.3-flash                                                   # its route
 ```
 
 ## Model Characteristics

@@ -309,7 +309,7 @@ func (m *model) View() string {
 		if s := m.statusBlock(); s != "" {
 			status = s + "\n\n"
 		}
-		return "Agents (providers/models are managed by modelman)\n\n" + status + m.list.View()
+		return "Agents (providers/models: edit registry.toml by hand)\n\n" + status + m.list.View()
 	}
 }
 

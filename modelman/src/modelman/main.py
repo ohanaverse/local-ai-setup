@@ -439,6 +439,10 @@ TUI_DISABLED_MESSAGE = (
     "  - create the registry and its provider rows: wt model init\n"
     "  - add, edit or remove a model: edit registry.toml by hand, then run `wt litellm sync`\n"
     "    (wt's Models tab in `wt config` replaces this TUI when it ships)\n"
+    "  - download a model (wt does not): `ollama pull <name:tag>` for ollama,\n"
+    "    `hf download <org>/<repo> --local-dir ~/.omlx/models/<repo>` for omlx,\n"
+    "    `mtplx pull <org>/<name>` for mtplx\n"
+    "  - start or stop a local model: wt start / wt stop\n"
     "  - modelman's subcommands still work: modelman --help"
 )
 

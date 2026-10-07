@@ -54,6 +54,11 @@ def test_no_args_does_not_open_the_tui_and_says_where_to_go():
     assert "wt model init" in result.output
     assert "wt litellm sync" in result.output
     assert "modelman --help" in result.output
+    # wt downloads nothing, so the notice names each provider's own tool.
+    assert "ollama pull" in result.output
+    assert "hf download" in result.output
+    assert "mtplx pull" in result.output
+    assert "wt start" in result.output
 
 
 def test_a_subcommand_still_runs_with_the_tui_disabled():
