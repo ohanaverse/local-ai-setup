@@ -1,13 +1,40 @@
 """Shared pytest fixtures: the guards that keep the suite off this machine's
 live providers and real config."""
 
+import atexit
 import os
+import shutil
 import subprocess
+import sys
+import tempfile
 import urllib.error
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+
+# A scratch HOME, set before anything imports llmbench.
+#
+# llmbench computes its machine-level inputs from Path.home() when its modules
+# are imported: the LiteLLM LaunchAgent plist (benchmark/_routes.py and
+# providers/lifecycle/launchd.py; it holds the OpenRouter key),
+# ~/.pi/agent/models.json (the LiteLLM key), the three DEFAULT_RESULTS_DIR
+# constants and the latest-run pointer file. Several are also bound as default
+# arguments (`plist_path: Path = LITELLM_PLIST`), which no later monkeypatch
+# of the constant reaches. Pointing HOME at an empty directory first redirects
+# all of them at once, so a test that forgets to pass a path reads nothing and
+# writes into a directory that is deleted at exit.
+#
+# tests/test_conftest_guards.py fails if this stops working.
+if any(name == "llmbench" or name.startswith("llmbench.") for name in sys.modules):
+    raise pytest.UsageError(
+        "llmbench was imported before tests/conftest.py set the scratch HOME; "
+        "its Path.home() constants already point at the real home directory"
+    )
+_SCRATCH_HOME = tempfile.mkdtemp(prefix="llmbench-test-home-")
+atexit.register(shutil.rmtree, _SCRATCH_HOME, ignore_errors=True)
+os.environ["HOME"] = _SCRATCH_HOME
+os.environ.pop("XDG_CONFIG_HOME", None)
 
 
 def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
