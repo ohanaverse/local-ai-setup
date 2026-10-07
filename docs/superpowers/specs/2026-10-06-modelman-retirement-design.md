@@ -156,7 +156,7 @@ The missing-registry error names `wt model init` where it named `modelman migrat
 
 modelman's registry lock is in-process only and its TUI saves a whole snapshot, so an open modelman TUI would revert a wt edit on its next save. The one modelman change in this step: `load_registry` records the file's `mtime_ns`, size and inode, or that there was no file, and `_write_registry` raises `RegistryError("registry.toml changed on disk; reload")` when the file no longer matches; a successful write updates the record. This must merge before PR 5 (`wt model init`, the first wt writer), not merely before Step 3.
 
-After a wt write, an open modelman TUI refuses every save until it is restarted. That window ends in Step 3: modelman's TUI is disabled when the Models tab ships.
+After a wt write, an open modelman TUI would refuse every save until it is restarted. So the TUI is disabled in this step, in the PR that ships `wt model init`, the first wt command that writes the registry: bare `modelman` prints where to go (`wt model init`, a hand edit of `registry.toml` followed by `wt litellm sync`, and `modelman --help`) and exits non-zero. Its code and tests stay in the tree, and modelman's non-interactive commands keep working until Step 6. Until Step 3 ships `wt model` and the Models tab, a model is added, edited or removed by editing `registry.toml` by hand.
 
 ### Contract fixture
 
@@ -206,7 +206,7 @@ Each writing verb does one `UpdateRegistry` and then one route sync. Exit 0 when
 - **Saving.** Each saved form and each confirmed removal writes the registry at once. The Agents tab keeps its buffer and `ctrl+s`; its quit prompt concerns agent edits only.
 - **Routes.** The tab does not sync routes per change. It marks routes pending on the status line and runs one sync when the editor exits, only if the registry changed. If the editor dies first, the next `wt start`, `wt stop` or launch through LiteLLM repairs the routes, as it does today. Requirement, verified in this step: a sync that leaves `config.yaml` byte-identical does not restart the proxy.
 - **Probing** runs in a `tea.Cmd`, never on the update loop.
-- **modelman's TUI.** The PR series that ships the tab also disables modelman's TUI: bare `modelman` prints where the Models tab is and exits non-zero. modelman's non-interactive commands keep working until Step 6.
+- **modelman's TUI.** It was disabled in Step 2. The PR series that ships the tab changes the notice bare `modelman` prints to name `wt model` and the Models tab.
 - **Layout.** The wide-table sizing helpers (`fitTo`, `listFrame`, the column-dropping table) move from `internal/tui` to a package both `tui` and `configeditor` import; `tableColumns` is generalised from fixed arrays to slices with a per-table drop order. The tab is added to the fit tests at 40/80/120 by 12/24/50, with assertions that the header row and the focused form field are present, and real screens are captured through the pty driver at 80x24 before the form PR merges.
 
 ### mlx_lm_server pairings
