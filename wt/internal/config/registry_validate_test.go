@@ -77,6 +77,12 @@ input_price_per_million = -1
 		{"a subscription with no period", map[string]any{"cost.subscription_price": 20}, nil, "subscription_period must be month or year"},
 		{"a subscription period that is not one", map[string]any{"cost.subscription_price": 20, "cost.subscription_period": "week"}, nil, "subscription_period must be month or year"},
 		{"an unknown legacy cost kind", map[string]any{"cost.kind": "metered"}, nil, "kind must be free/per_token/subscription"},
+		{"a negative legacy per-token price", map[string]any{"cost.kind": "per_token", "cost.price_per_million_tokens": -1}, nil, "price_per_million_tokens must be non-negative"},
+		{"a legacy subscription price that is not a number", map[string]any{"cost.kind": "subscription", "cost.price_per_period": "20", "cost.period": "month"}, nil, "price_per_period must be a number"},
+		{"a legacy subscription with no period", map[string]any{"cost.kind": "subscription", "cost.price_per_period": 20}, nil, "period must be month or year"},
+		{"a legacy period that is not a string", map[string]any{"cost.kind": "subscription", "cost.period": 12}, nil, "period must be a string"},
+		{"fetch that is not a table", map[string]any{"fetch": "org/beta"}, nil, "fetch must be a table"},
+		{"draft that is not a table", map[string]any{"draft": []string{"org/draft"}}, nil, "draft must be a table"},
 		{"time_prices that are not rows", map[string]any{"cost.time_prices": "off-peak"}, nil, "time_prices must be an array of tables"},
 		{"a time price with an unknown zone", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "Mars/Olympus", "windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "01:00"}}}}}, nil, `timezone "Mars/Olympus" is not a known IANA timezone`},
 		{"a time price with no zone", map[string]any{"cost.time_prices": []map[string]any{{"windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "01:00"}}}}}, nil, `timezone "" is not a known IANA timezone`},
@@ -103,16 +109,58 @@ input_price_per_million = -1
 			}
 		})
 	}
-	t.Run("a provider row with no auth type", func(t *testing.T) {
-		scratchRegistry(t, docRegistry)
-		for _, row := range []map[string]any{
-			{"id": "p1", "name": "P"},
-			{"id": "p2", "name": "P", "auth": map[string]any{"base_url": "http://x"}},
-			{"id": "p3", "name": "P", "auth": map[string]any{"type": "none"}, "protocols": "openai-chat"},
+	// The accepting side: every shape of cost row modelman loads must get
+	// through, or a price refresh or an edit of a good row is refused.
+	offPeak := []map[string]any{{
+		"label": "off-peak", "timezone": "UTC", "input_price_per_million": 1.5,
+		"windows": []map[string]any{{"days": []string{"sat", "sun"}, "start": "00:00", "end": "24:00"}},
+	}}
+	valid := []struct {
+		name string
+		set  map[string]any
+		want string
+	}{
+		{"integer and float prices", map[string]any{"cost.input_price_per_million": 3, "cost.cache_price_per_million": 0.3, "cost.output_price_per_million": 0}, "cache_price_per_million = 0.3"},
+		{"a subscription by the month", map[string]any{"cost.subscription_price": 20, "cost.subscription_period": "month"}, `subscription_period = "month"`},
+		{"a period with no price", map[string]any{"cost.subscription_period": "year"}, `subscription_period = "year"`},
+		{"an empty cost table", map[string]any{"cost": map[string]any{}}, "[models.cost]"},
+		{"a time price", map[string]any{"cost.time_prices": offPeak}, `timezone = "UTC"`},
+		{"the legacy free kind", map[string]any{"cost.kind": "free"}, `kind = "free"`},
+		{"a legacy per-token price", map[string]any{"cost.kind": "per_token", "cost.price_per_million_tokens": 2.5}, "price_per_million_tokens = 2.5"},
+		{"a legacy subscription", map[string]any{"cost.kind": "subscription", "cost.price_per_period": 20, "cost.period": "year"}, `period = "year"`},
+		{"fetch and draft tables", map[string]any{"fetch.repo": "org/beta", "draft": map[string]any{"repo": "org/draft"}}, "[models.draft]"},
+	}
+	for _, c := range valid {
+		t.Run("accepted: "+c.name, func(t *testing.T) {
+			path := scratchRegistry(t, docRegistry)
+			changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+				return d.PatchModel("ollama/beta", c.set, nil)
+			})
+			if err != nil || !changed {
+				t.Fatalf("UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+			}
+			if got := readFile(t, path); !strings.Contains(got, c.want) {
+				t.Errorf("the written file should contain %q:\n%s", c.want, got)
+			}
+		})
+	}
+
+	t.Run("a provider row that would not load", func(t *testing.T) {
+		path := scratchRegistry(t, docRegistry)
+		for _, c := range []struct {
+			row  map[string]any
+			want string
+		}{
+			{map[string]any{"id": "p1", "name": "P"}, "auth must be a table"},
+			{map[string]any{"id": "p2", "name": "P", "auth": map[string]any{"base_url": "http://x"}}, "auth: type is required"},
+			{map[string]any{"id": "p3", "name": "P", "auth": map[string]any{"type": "none"}, "protocols": "openai-chat"}, "protocols"},
 		} {
-			_, err := UpdateRegistry(func(d *RegistryDoc) error { return d.AddProvider(row) })
-			if !errors.Is(err, ErrRegistryInvalid) || !strings.Contains(err.Error(), fmt.Sprintf("provider %q", row["id"])) {
-				t.Errorf("AddProvider(%v): err = %v, want ErrRegistryInvalid naming the row", row, err)
+			changed, err := UpdateRegistry(func(d *RegistryDoc) error { return d.AddProvider(c.row) })
+			if !errors.Is(err, ErrRegistryInvalid) || changed || !strings.Contains(err.Error(), fmt.Sprintf("provider %q", c.row["id"])) || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("AddProvider(%v) = (%v, %v), want ErrRegistryInvalid naming the row and %q", c.row, changed, err, c.want)
+			}
+			if got := readFile(t, path); got != docRegistry {
+				t.Errorf("a refused provider row %q changed the file", c.row["id"])
 			}
 		}
 	})

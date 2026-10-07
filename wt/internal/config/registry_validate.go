@@ -71,6 +71,16 @@ func validateModelRow(row *tomlw.Table) error {
 			return fmt.Errorf("cost: %w", err)
 		}
 	}
+	// modelman reads these two with dict methods, so anything but a table
+	// makes its load crash rather than report; wt's Model has no field for
+	// either, so the typed decode below would not notice.
+	for _, k := range []string{"fetch", "draft"} {
+		if v, ok := row.Get(k); ok {
+			if _, isTable := v.(*tomlw.Table); !isTable {
+				return fmt.Errorf("%s must be a table", k)
+			}
+		}
+	}
 	return typedDecode("models", row, &struct {
 		Models []Model `toml:"models"`
 	}{})
@@ -121,10 +131,25 @@ var (
 // _validate_cost, time_pricing.py parse_time_prices).
 func validateCost(cost *tomlw.Table) error {
 	if kind, ok := cost.Get("kind"); ok {
-		// The legacy shape, which modelman still migrates on load. Its other
-		// keys are read under different names; only the kind is checked.
-		if s, _ := kind.(string); !slices.Contains(legacyCostKinds, s) {
+		// The legacy shape, which modelman still migrates on load. It reads
+		// the price and the period under their old names, and holds them to
+		// the same rules as the new ones.
+		s, _ := kind.(string)
+		if !slices.Contains(legacyCostKinds, s) {
 			return fmt.Errorf("kind must be free/per_token/subscription, got %v", kind)
+		}
+		switch s {
+		case "per_token":
+			if err := checkPrice(cost, "price_per_million_tokens"); err != nil {
+				return err
+			}
+		case "subscription":
+			if err := checkPrice(cost, "price_per_period"); err != nil {
+				return err
+			}
+			if err := checkPeriod(cost, "price_per_period", "period"); err != nil {
+				return err
+			}
 		}
 	} else {
 		for _, k := range append(slices.Clone(priceKeys), "subscription_price") {
@@ -132,14 +157,8 @@ func validateCost(cost *tomlw.Table) error {
 				return err
 			}
 		}
-		period, hasPeriod := cost.Get("subscription_period")
-		if _, isString := period.(string); hasPeriod && !isString {
-			return errors.New("subscription_period must be a string")
-		}
-		if cost.Has("subscription_price") {
-			if s, _ := period.(string); !slices.Contains(subscriptionPeriods, s) {
-				return fmt.Errorf("subscription_period must be month or year when subscription_price is set, got %q", s)
-			}
+		if err := checkPeriod(cost, "subscription_price", "subscription_period"); err != nil {
+			return err
 		}
 	}
 	raw, ok := cost.Get("time_prices")
@@ -153,6 +172,21 @@ func validateCost(cost *tomlw.Table) error {
 	for i, row := range rows {
 		if err := validateTimePrice(row); err != nil {
 			return fmt.Errorf("time_prices[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// checkPeriod: the period key is a string when present, and month or year
+// when the price key beside it is set.
+func checkPeriod(cost *tomlw.Table, priceKey, periodKey string) error {
+	period, hasPeriod := cost.Get(periodKey)
+	if _, isString := period.(string); hasPeriod && !isString {
+		return fmt.Errorf("%s must be a string", periodKey)
+	}
+	if cost.Has(priceKey) {
+		if s, _ := period.(string); !slices.Contains(subscriptionPeriods, s) {
+			return fmt.Errorf("%s must be month or year when %s is set, got %q", periodKey, priceKey, s)
 		}
 	}
 	return nil
@@ -190,6 +224,9 @@ func validateTimePrice(row *tomlw.Table) error {
 	if name == "" || name == "Local" {
 		return fmt.Errorf("timezone %q is not a known IANA timezone", name)
 	}
+	// Known limit: LoadLocation reads the host's zone database and wt does not
+	// embed one (time/tzdata), so on a host without it every zone but UTC is
+	// refused here. macOS, wt's platform, ships one.
 	if _, err := time.LoadLocation(name); err != nil {
 		return fmt.Errorf("timezone %q is not a known IANA timezone", name)
 	}

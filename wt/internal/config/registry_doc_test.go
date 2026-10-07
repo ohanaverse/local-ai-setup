@@ -321,7 +321,11 @@ local_path = "/models/alpha"
 
 // TestRemoveModelReturnsTheRow pins RemoveModel: the row is gone from the
 // document and handed back whole, because `wt model rm` never deletes weights
-// and has to print where they are from the row it just removed.
+// and has to print where they are from the row it just removed. It also pins
+// what a removal or an unset leaves behind, which must be what modelman
+// writes: `models = []` after the last row goes, and the empty table after a
+// table's last key is unset. Dropping either would make wt's write differ
+// from a modelman save of the same registry.
 func TestRemoveModelReturnsTheRow(t *testing.T) {
 	doc := parseDoc(t, docRegistry)
 	row, err := doc.RemoveModel("ollama/alpha")
@@ -352,6 +356,27 @@ func TestRemoveModelReturnsTheRow(t *testing.T) {
 	}
 	if got := docText(t, emptied); !strings.Contains(got, "[models.model_info]\n\n[models.fetch]") {
 		t.Errorf("unsetting a table's last key should leave the empty table:\n%s", got)
+	}
+}
+
+// TestPatchModelCopiesTableRowsItIsGiven pins that a patch value of table
+// rows is copied in: the rows a write is validated with must be the rows that
+// are written, so a caller changing its own row afterwards must not reach the
+// document, and a nil row is refused instead of panicking in a later Clone.
+func TestPatchModelCopiesTableRowsItIsGiven(t *testing.T) {
+	doc := parseDoc(t, docRegistry)
+	mine := tomlw.NewTable()
+	mine.Set("label", "off-peak")
+	if err := doc.PatchModel("ollama/beta", map[string]any{"cost.time_prices": []*tomlw.Table{mine}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	mine.Set("label", "changed by the caller")
+	if got := docText(t, doc); !strings.Contains(got, `label = "off-peak"`) || strings.Contains(got, "changed by the caller") {
+		t.Errorf("the document should hold its own copy of the row:\n%s", got)
+	}
+	err := doc.PatchModel("ollama/beta", map[string]any{"cost.time_prices": []*tomlw.Table{mine, nil}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "nil table") {
+		t.Errorf("a nil row: err = %v, want a nil table error", err)
 	}
 }
 

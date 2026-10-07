@@ -392,6 +392,18 @@ func orderedValue(v any, schemas map[string][]string, path string) (any, error) 
 			out[i] = row
 		}
 		return out, nil
+	case []*tomlw.Table:
+		// Cloned like a lone table, so the caller's rows are never the
+		// document's: a later change through the caller's pointer must not
+		// reach a row that was already validated.
+		out := make([]*tomlw.Table, len(x))
+		for i := range x {
+			if x[i] == nil {
+				return nil, errors.New("nil table")
+			}
+			out[i] = x[i].Clone()
+		}
+		return tomlw.Value(out)
 	case []any:
 		out := make([]any, len(x))
 		for i := range x {
