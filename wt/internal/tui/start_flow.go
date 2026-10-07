@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // startModel is a test seam: production starts the model through the lifecycle
@@ -262,6 +263,9 @@ type startStageMsg struct {
 type startDoneMsg struct {
 	id  int
 	err error
+	// unloaded is the ids of the models omlx unloaded to make room for this
+	// start (lifecycle.Options.OnUnloaded), set whether or not it succeeded.
+	unloaded []string
 }
 type startTickMsg struct{ id int }
 
@@ -288,6 +292,10 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 	start := startModel
 	go func() {
 		defer close(ch)
+		// The engine calls OnUnloaded on this goroutine, before start returns,
+		// so the slice needs no lock: it is complete when the done message
+		// carries it to the update goroutine.
+		var unloaded []string
 		err := start(ctx, cfg, t, lifecycle.Options{
 			AllowReplace: allow,
 			Progress: func(s lifecycle.Stage) {
@@ -296,8 +304,9 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 				case <-ctx.Done():
 				}
 			},
+			OnUnloaded: func(en localmodels.Entry) { unloaded = append(unloaded, en.ModelID) },
 		})
-		ch <- startDoneMsg{id: id, err: err}
+		ch <- startDoneMsg{id: id, err: err, unloaded: unloaded}
 	}()
 	return ch
 }
@@ -386,12 +395,35 @@ func (m model) handleStartMsg(msg tea.Msg) (model, tea.Cmd) {
 	return m, nil
 }
 
+// unloadedNote words what a pool start unloaded: "omlx unloaded A, B to make
+// room", or "" when it unloaded nothing. The engine prints the same sentence
+// per model on stderr, which the alt screen hides (#258).
+func unloadedNote(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return "omlx unloaded " + strings.Join(ids, ", ") + " to make room"
+}
+
+// withNote puts note ahead of status, joined with "; ". The note goes first
+// because the status line is one line, cut at the terminal's width, and the
+// text after it has no fixed length.
+func withNote(note, status string) string {
+	if note == "" {
+		return status
+	}
+	return note + "; " + status
+}
+
 func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	st := m.start
 	m.start = nil
 	st.cancel()
+	// omlx can unload a model and then fail the load, or be cancelled, so the
+	// note is shown on every way out, not only after a success.
+	note := unloadedNote(msg.unloaded)
 	back := func(status string) (model, tea.Cmd) {
-		m.status = status
+		m.status = withNote(note, status)
 		m.phase = phaseModel
 		// The table was built before the attempt and a start can have stopped
 		// the occupant and then failed, so re-probe instead of showing stale
@@ -406,6 +438,15 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		// The launch that follows routes through LiteLLM: settle the route
 		// hook's async proxy restart before handing the model to an agent.
 		waitPendingRoutes()
+		// The launch follows a successful start, and proceedToLaunch clears
+		// the status line, so the note takes the route notes' way out: onto
+		// the real terminal, above the agent's output. If that launch fails
+		// the picker comes back instead, so launchSelected is also handed the
+		// note and puts it ahead of the failure on the status line.
+		if note != "" {
+			m.recordRouteNotes("wt: " + note + "\n")
+			m.startNote = note
+		}
 		return m.proceedToLaunch()
 	}
 	var occ *lifecycle.OccupiedError
