@@ -1,7 +1,7 @@
 """Shared local-provider process types and HTTP probe helper.
 
-Neutral home for code that both `modelman.benchmark.isolation` (isolating a
-provider for a benchmark run) and `modelman.providers.lifecycle` (isolating
+Neutral home for code that both `llmbench.benchmark.isolation` (isolating a
+provider for a benchmark run) and `llmbench.providers.lifecycle` (isolating
 a provider for `modelman start`/`modelman stop`) need. Neither concept
 belongs to one side more than the other, so living under `benchmark/` or
 `providers/` made the other package's import backwards — this module has no

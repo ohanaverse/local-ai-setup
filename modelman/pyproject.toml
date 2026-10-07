@@ -18,15 +18,19 @@ dependencies = [
     "requests>=2.32.0",
     "psycopg2-binary>=2.9.10",
     "ruamel-yaml>=0.18",
+    "llmbench",
 ]
 
 [project.optional-dependencies]
 eval = [
-    "evalplus>=0.3.1",
+    "llmbench[eval]",
 ]
 
 [project.scripts]
 modelman = "modelman.main:app"
+
+[tool.uv.sources]
+llmbench = { path = "../llmbench", editable = true }
 
 [build-system]
 requires = ["hatchling"]

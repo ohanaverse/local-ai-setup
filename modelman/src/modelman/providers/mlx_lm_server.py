@@ -29,7 +29,7 @@ def _model_dir(config: dict) -> Path:
 
 def _resolve_local_path(raw: str) -> Path:
     """Normalize a user-supplied local_path the same way
-    modelman.benchmark.isolation._normalize_pairing_arg does (expanduser +
+    llmbench.benchmark.isolation._normalize_pairing_arg does (expanduser +
     abspath + normpath), so the provider and the isolation helper agree on
     which directory a relative or tilde path names. Otherwise a registry
     local_path like `~/mlx/quant/dwq-model` is read literally (a directory
