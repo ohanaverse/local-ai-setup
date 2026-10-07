@@ -28,6 +28,11 @@ var (
 	// ErrQuery: psql connected and the query failed, or its output was not
 	// the JSON document the query asks for.
 	ErrQuery = errors.New("the spend query failed")
+	// ErrNoConnectionString: Query was given an empty or whitespace-only
+	// connection string. It is the "not configured" answer, and psql is not
+	// run: libpq reads a string with no host as "the local default socket",
+	// where a server that is not the proxy's database may be listening.
+	ErrNoConnectionString = errors.New("no connection string for the LiteLLM database")
 )
 
 // Row is one model's totals in the window.
@@ -91,13 +96,18 @@ func querySQL(start, end time.Time) string {
 // Query returns per-model totals for requests the proxy logged between
 // start and end, both inclusive. dsn is a libpq connection string or URI.
 //
-// Every failure is one of ErrNoPsql, ErrUnreachable or ErrQuery, wrapped
-// with a one-line reason. An ErrUnreachable names the host and port psql
-// tried (or the socket), so a wrong address can be seen; no other part of
-// dsn appears in any error — not the user, the password or the database
+// A blank dsn is refused with ErrNoConnectionString before anything else is
+// looked at, so no caller can have psql connect to libpq's default server.
+// Every other failure is one of ErrNoPsql, ErrUnreachable or ErrQuery,
+// wrapped with a one-line reason. An ErrUnreachable names the host and port
+// psql tried (or the socket), so a wrong address can be seen; no other part
+// of dsn appears in any error — not the user, the password or the database
 // name. psql's own text is used only in the shapes unreachable and
 // queryReason allow.
 func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return Result{}, ErrNoConnectionString
+	}
 	bin, err := lookPath("psql")
 	if err != nil {
 		return Result{}, ErrNoPsql
@@ -106,11 +116,19 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	defer cancel()
 
 	args := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", dsn, "-c", querySQL(start, end)}
-	env := append(os.Environ(), "PGCONNECT_TIMEOUT="+connectTimeout, "PGTZ=UTC")
+	// LC_MESSAGES=C: unreachable reads libpq's English connect-failure line,
+	// and under a translated one it can only withhold the address and the
+	// reason. (An LC_ALL in the user's environment still wins; the note is
+	// then the withheld one, never a leak.)
+	env := append(os.Environ(), "PGCONNECT_TIMEOUT="+connectTimeout, "PGTZ=UTC", "LC_MESSAGES=C")
 	stdout, stderr, exit, err := runPsql(ctx, bin, args, env)
 	switch {
-	case ctx.Err() != nil:
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return Result{}, fmt.Errorf("%w: no answer within %s", ErrUnreachable, deadline)
+	case ctx.Err() != nil:
+		// The caller's context was cancelled: not a timeout, and nothing is
+		// known about the database.
+		return Result{}, fmt.Errorf("%w: cancelled before psql answered", ErrQuery)
 	case err != nil:
 		// The process could not be run at all. Go's error names the binary,
 		// never its arguments.
@@ -177,6 +195,46 @@ var (
 // quotedValue matches a double-quoted value in a libpq or server message.
 var quotedValue = regexp.MustCompile(`"[^"]*"`)
 
+// knownReason is every reason for a failed connection that an error may
+// show, matched against the whole reason after its double-quoted values
+// were blanked to "...". The first group is the operating system's and
+// libpq's own; the second is the server's refusals (its FATAL lines), which
+// name the user and the database only inside the quotes just blanked.
+//
+// It is an allow-list because blanking alone is not enough: a server that
+// answers in another language quotes names its own way (»x«), a name that
+// holds a double quote leaves its tail outside the blank, and a connection
+// pooler in front of Postgres words its refusals as it likes. A reason that
+// is not on the list is replaced by unknownReason.
+var knownReason = regexp.MustCompile(`^(?:` + strings.Join([]string{
+	`Connection refused`,
+	`Connection timed out`,
+	`Operation timed out`,
+	`timeout expired`,
+	`No route to host`,
+	`Network is unreachable`,
+	`Host is down`,
+	`Connection reset by peer`,
+	`No such file or directory`,
+	`Permission denied`,
+	`server closed the connection unexpectedly`,
+
+	`password authentication failed for user "\.\.\."`,
+	`(?:Peer|Ident) authentication failed for user "\.\.\."`,
+	`role "\.\.\." does not exist`,
+	`role "\.\.\." is not permitted to log in`,
+	`database "\.\.\." does not exist`,
+	`database "\.\.\." is not currently accepting connections`,
+	`permission denied for database "\.\.\."`,
+	`(?:no pg_hba\.conf entry|pg_hba\.conf rejects connection) for host "\.\.\.", user "\.\.\.", database "\.\.\.", (?:no encryption|SSL encryption|GSS encryption|SSL on|SSL off)`,
+	`too many connections for (?:role|database) "\.\.\."`,
+	`sorry, too many clients already`,
+	`the database system is (?:starting up|shutting down|in recovery mode)`,
+}, "|") + `)$`)
+
+// unknownReason stands in for a reason knownReason does not list.
+const unknownReason = "the reason psql gave is not shown because it can quote the connection string"
+
 // stderrLines are the non-empty lines psql wrote, without its
 // "psql: error: " prefix.
 func stderrLines(stderr []byte) []string {
@@ -201,27 +259,38 @@ func stderrLines(stderr []byte) []string {
 // for connection option "port"`. So nothing is passed through as it came.
 // Of a "connection to server … failed: <reason>" line the reason is kept
 // with every quoted value blanked — the server's refusals name the user and
-// the database (`password authentication failed for user "x"`) — and the
-// host and port, or the socket path, only as address allows. A host name
-// that did not resolve is named on the same terms. Anything else is
-// withheld.
+// the database (`password authentication failed for user "x"`) — and only
+// when what is left is a reason knownReason lists; the host and port, or
+// the socket path, are kept only as address allows. A host name that did
+// not resolve is named on the same terms. Anything else is withheld.
+//
+// libpq prints one such line for each address it tried: a name with two
+// addresses ("localhost" is ::1 and 127.0.0.1), or a string that lists
+// several hosts. The last line is the attempt that decided the outcome — a
+// refused ::1 followed by a login the server at 127.0.0.1 turned down is a
+// login problem — so the last line libpq printed in a known shape is the
+// one reported. Every line goes through the same shapes, whichever is
+// picked.
 func unreachable(dsn string, stderr []byte) error {
 	plain := plainAddress(dsn)
 	where, reason := "", "psql could not connect; its message is not shown because it can quote the connection string"
 	for _, line := range stderrLines(stderr) {
 		if m := connectFailed.FindStringSubmatch(line); m != nil {
 			reason = quotedValue.ReplaceAllString(strings.TrimSpace(strings.TrimPrefix(m[4], "FATAL:")), `"..."`)
+			if !knownReason.MatchString(reason) {
+				reason = unknownReason
+			}
+			where = ""
 			if plain {
 				where = address(m[1], m[2], m[3])
 			}
-			break
+			continue
 		}
 		if m := translateFailed.FindStringSubmatch(line); m != nil {
-			reason = "the database host name did not resolve"
+			reason, where = "the database host name did not resolve", ""
 			if plain && hostShape.MatchString(m[1]) {
 				where = m[1]
 			}
-			break
 		}
 	}
 	if where == "" {
@@ -255,10 +324,16 @@ func address(host, port, socket string) string {
 // well-formed URI has none. An unencoded "@" in a password puts its tail in
 // the host; hostShape refuses most tails, but not one that a "," makes look
 // like a host list (`p@ss,word@db` reads hosts "ss" and "word@db"), so a
-// URI with more than one "@" in its authority is refused too. In a keyword string, a
-// password with an unquoted space ends early, and what follows it can be
-// read as a port. For any such string the address is left out of the error;
-// the reason alone is still shown.
+// URI with more than one "@" in its authority is refused too.
+//
+// In a keyword string, a value with an unquoted space ends early, and what
+// follows it can be read as a host or a port. Any value can be a secret —
+// password, sslpassword, passfile, a service name — so the address counts
+// only when host, hostaddr and port are written before every other
+// keyword, and no field is anything but a plain key=value.
+//
+// For any other string the address is left out of the error; the reason
+// alone is still shown.
 func plainAddress(dsn string) bool {
 	rest, isURI := strings.CutPrefix(dsn, "postgresql://")
 	if !isURI {
@@ -272,19 +347,18 @@ func plainAddress(dsn string) bool {
 		}
 		return strings.Count(authority, "@") <= 1 && (i < 0 || !strings.Contains(rest[i:], "@"))
 	}
-	// A keyword/value string: every field a plain key=value, and the address
-	// written before the user and password, never after them.
 	fields := strings.Fields(dsn)
-	afterCredentials := false
+	afterOther := false
 	for _, f := range fields {
-		k, _, ok := strings.Cut(f, "=")
+		k, v, ok := strings.Cut(f, "=")
+		isAddress := k == "host" || k == "hostaddr" || k == "port"
 		switch {
-		case !ok || k == "":
+		case !ok || k == "" || strings.ContainsAny(v, `'\`):
 			return false
-		case k == "user" || k == "password":
-			afterCredentials = true
-		case afterCredentials && (k == "host" || k == "hostaddr" || k == "port"):
+		case isAddress && afterOther:
 			return false
+		case !isAddress:
+			afterOther = true
 		}
 	}
 	return len(fields) > 0
