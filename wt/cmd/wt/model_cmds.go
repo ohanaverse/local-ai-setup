@@ -232,7 +232,7 @@ func startCmd(a *app) *cobra.Command {
 			"the full model picker over every local model that is on disk or running,\n" +
 			"registered or detected (requires a TTY).\n\n" +
 			"A model that is already running is left running; its LiteLLM route is\n" +
-			"written if it is missing.\n\n" +
+			"written if it is missing. A model omlx is still loading is waited for.\n\n" +
 			"On a provider that serves one model (mtplx), starting another replaces it.\n" +
 			"On omlx a model loads beside the ones already loaded; when it does not fit,\n" +
 			"omlx unloads the least recently used. wt asks before either; --replace skips\n" +
