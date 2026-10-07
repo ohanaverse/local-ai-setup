@@ -23,7 +23,8 @@ import (
 
 // Table is a TOML table whose keys keep their order. A value is one of bool,
 // int64, float64, string, time.Time, []any (an array of values) or *Table.
-// Value converts other Go values into these.
+// Value converts other Go values into these. The zero Table is an empty table
+// ready to use.
 type Table struct {
 	keys []string
 	vals map[string]any
@@ -56,6 +57,14 @@ func (t *Table) Set(k string, v any) {
 	if _, ok := t.vals[k]; !ok {
 		t.keys = append(t.keys, k)
 	}
+	t.put(k, v)
+}
+
+// put stores v under k, making the map on a zero Table's first write.
+func (t *Table) put(k string, v any) {
+	if t.vals == nil {
+		t.vals = map[string]any{}
+	}
 	t.vals[k] = v
 }
 
@@ -71,7 +80,7 @@ func (t *Table) SetAt(k string, v any, schema []string) {
 		t.vals[k] = v
 		return
 	}
-	t.vals[k] = v
+	t.put(k, v)
 	t.keys = slices.Insert(t.keys, t.position(k, schema), k)
 }
 
@@ -180,6 +189,9 @@ func Value(v any) (any, error) {
 	case []*Table:
 		out := make([]any, len(x))
 		for i := range x {
+			if x[i] == nil {
+				return nil, fmt.Errorf("tomlw: nil table")
+			}
 			out[i] = x[i]
 		}
 		return out, nil
@@ -201,7 +213,10 @@ func Value(v any) (any, error) {
 // same when they hold the same keys with the same values, in any order;
 // arrays compare element by element. An integer and a float with the same
 // numeric value are the same value — the rule that stops a caller's 3.0
-// rewriting a file's `3` as `3.0`.
+// rewriting a file's `3` as `3.0`. Two times are the same when they are
+// written the same: `Z` and `+00:00` are one value, and one instant at two
+// offsets is two. Anything that is not a document value is the same as
+// nothing, itself included.
 func Same(a, b any) bool {
 	switch x := a.(type) {
 	case int64:
@@ -222,7 +237,7 @@ func Same(a, b any) bool {
 		return false
 	case time.Time:
 		y, ok := b.(time.Time)
-		return ok && x.Equal(y) && x.Location().String() == y.Location().String()
+		return ok && formatTime(x) == formatTime(y)
 	case *Table:
 		y, ok := b.(*Table)
 		if !ok || len(x.vals) != len(y.vals) {
@@ -246,6 +261,12 @@ func Same(a, b any) bool {
 			}
 		}
 		return true
+	case bool:
+		y, ok := b.(bool)
+		return ok && x == y
+	case string:
+		y, ok := b.(string)
+		return ok && x == y
 	}
-	return a == b
+	return false
 }

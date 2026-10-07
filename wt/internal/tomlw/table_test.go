@@ -158,10 +158,89 @@ func TestSameTreatsAnIntegerAndAFloatAlike(t *testing.T) {
 		{tableOf(t, "a", int64(1)), tableOf(t, "b", int64(1))},
 		{now, now.Add(time.Second)},
 		{now, "2026-10-01"},
+		{"a", "b"},
+		{true, false},
+		{"true", true},
 	}
 	for _, p := range different {
 		if Same(p[0], p[1]) {
 			t.Errorf("Same(%v, %v) = true, want false", p[0], p[1])
+		}
+	}
+}
+
+// TestTheZeroTableIsUsable pins that a Table declared without NewTable takes
+// Set and SetAt like any other: the type is exported, and a nil-map panic in
+// the registry writer would take the whole command down.
+func TestTheZeroTableIsUsable(t *testing.T) {
+	var set Table
+	set.Set("a", int64(1))
+	if v, ok := set.Get("a"); !ok || v != int64(1) || set.Len() != 1 {
+		t.Errorf("Set on a zero Table: got %v, %v, len %d", v, ok, set.Len())
+	}
+	var at Table
+	at.SetAt("b", "x", []string{"a", "b"})
+	at.SetAt("a", "y", []string{"a", "b"})
+	if got := at.Keys(); !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("SetAt on a zero Table: keys %v, want [a b]", got)
+	}
+	var empty Table
+	if empty.Has("a") || empty.Delete("a") || empty.Clone().Len() != 0 {
+		t.Error("a zero Table should read as empty")
+	}
+}
+
+// TestValueRefusesANilTableInASlice pins that a nil row is refused when it is
+// handed over, as a nil *Table and a nil inside []any already are: accepted,
+// it would panic later in Clone or Encode, far from the caller that passed it.
+func TestValueRefusesANilTableInASlice(t *testing.T) {
+	if _, err := Value([]*Table{NewTable(), nil}); err == nil {
+		t.Error("Value([]*Table{..., nil}) should be an error")
+	}
+	v, err := Value([]*Table{tableOf(t, "id", "a")})
+	if err != nil || len(v.([]any)) != 1 {
+		t.Errorf("a slice of real tables should convert, got %v, %v", v, err)
+	}
+}
+
+// TestSameComparesTimesAsTheyAreWritten pins that two times are the same
+// exactly when Encode writes them the same. Comparing instants and zone names
+// got both directions wrong: a hand-written `Z` differed from the `+00:00` it
+// is rewritten as, so an unchanged value looked changed, and one instant at
+// two offsets compared equal, so a patch of only the offset would be skipped.
+func TestSameComparesTimesAsTheyAreWritten(t *testing.T) {
+	utc := time.Date(1979, 5, 27, 7, 32, 0, 0, time.UTC)
+	zero := time.Date(1979, 5, 27, 7, 32, 0, 0, time.FixedZone("", 0))
+	if !Same(utc, zero) {
+		t.Error("Z and +00:00 are written the same and should be Same")
+	}
+	plusOne := time.Date(1979, 5, 27, 10, 0, 0, 0, time.FixedZone("", 3600))
+	plusTwo := time.Date(1979, 5, 27, 11, 0, 0, 0, time.FixedZone("", 7200))
+	if !plusOne.Equal(plusTwo) {
+		t.Fatal("the two offsets should name one instant")
+	}
+	if Same(plusOne, plusTwo) {
+		t.Error("one instant at two offsets is written differently and should not be Same")
+	}
+	local := time.Date(1979, 5, 27, 7, 32, 0, 0, time.FixedZone("datetime-local", 0))
+	if Same(utc, local) {
+		t.Error("a local datetime and an offset datetime should not be Same")
+	}
+}
+
+// TestSameDoesNotPanicOnValuesOutsideTheDocument pins that two values of a
+// type no document holds compare as different instead of panicking: Set
+// stores what it is given, and Go's == panics on two slices or two maps.
+func TestSameDoesNotPanicOnValuesOutsideTheDocument(t *testing.T) {
+	pairs := [][2]any{
+		{[]string{"a"}, []string{"a"}},
+		{map[string]any{"a": 1}, map[string]any{"a": 1}},
+		{nil, nil},
+		{int64(1), nil},
+	}
+	for _, p := range pairs {
+		if Same(p[0], p[1]) {
+			t.Errorf("Same(%#v, %#v) = true, want false", p[0], p[1])
 		}
 	}
 }
