@@ -35,7 +35,10 @@ start with another directory. Adding a backend:
    it).
 3. **Add an env var if it needs one.** If the backend resolves its model
    from a single env var (like ollama/omlx do), add it to
-   `ENV_VAR_BY_PROVIDER` in `src/llmbench/local_process.py`. A
+   `ENV_VAR_BY_PROVIDER` in `src/llmbench/local_process.py` and, until
+   modelman is retired, to its copy in
+   `modelman/src/modelman/local_process.py`
+   (`modelman/tests/test_llmbench_reexports.py` fails if the two differ). A
    backend that takes a target+draft pairing (like `mlx_lm_server`) uses
    its own two env vars defined in its own backend module instead — see
    `backends/mlx_lm_server.py`'s `TARGET_ENV_VAR`/`DRAFT_ENV_VAR`.
@@ -74,7 +77,11 @@ start with another directory. Adding a backend:
    `benchmarks/lib/benchmark-common.sh`'s `isolate_one`/
    `ensure_all_local_started`) in the benchmark script(s) you want it to
    appear in.
-8. Add the model to `~/.config/litellm/config.yaml`.
+8. **Route it through LiteLLM.** Never edit
+   `~/.config/litellm/config.yaml` by hand: `wt` owns that file and derives
+   the routes from `registry.toml` plus live probes. Once the model is in
+   the registry and running, run `wt litellm sync` and confirm the route
+   with `wt litellm list`.
 9. **Smoke test:** `./benchmarks/qwen3.8-benchmark 30` and
    `uv run llmbench provider isolate <new-backend>` (from `llmbench/`, or
    `uv run --directory llmbench llmbench provider isolate <new-backend>`
