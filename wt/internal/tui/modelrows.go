@@ -105,7 +105,7 @@ func rowCostKey(r tableRow) costKey {
 // subscription model. The native/non-native split is the only special case:
 // each half then falls through to the same group rules — group 1 (cloud +
 // running local) by cost ascending then 7-day usage ascending then id; group 2
-// (non-running local) alphabetical by id — so a native row that resolves local
+// (local that is not running, or still loading) alphabetical by id — so a native row that resolves local
 // and is not running still sorts after the native group-1 rows, by id, not
 // "in group-1 order".
 //
@@ -114,7 +114,10 @@ func rowCostKey(r tableRow) costKey {
 // enterModelPhase's no-rotation fallback picks the first actionable row. A
 // native model in the list therefore becomes what a bare Enter launches.
 func sortRows(rows []tableRow) {
-	group1 := func(r tableRow) bool { return r.Location != config.LocationLocal || r.Running }
+	// Ready, not Running: a model omlx is still loading is a start row (#259)
+	// and sorts with them, so it is never the default pick while it cannot
+	// answer.
+	group1 := func(r tableRow) bool { return r.Location != config.LocationLocal || r.Ready() }
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		if a.Model.Native != b.Model.Native {
