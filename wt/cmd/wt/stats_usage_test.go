@@ -128,6 +128,49 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 	}
 }
 
+// TestStatsCmdFoldsTheSlashSpelling verifies the whole command prints one
+// row for a model the proxy logged under two spellings: wt's id, with the
+// "/" in the model's name written "--", and provider/model_name with the "/"
+// kept. Against a real database the model showed twice — 20 launches and 4
+// requests on one line, 0 launches and 5 requests on the next. The known ids
+// here come from usage.jsonl alone (the registry is empty), --model with the
+// wt id includes the folded requests, and --model with the logged spelling
+// names no row.
+func TestStatsCmdFoldsTheSlashSpelling(t *testing.T) {
+	a, tmp := newTestApp(t)
+	seedLaunches(t, tmp,
+		launch{"mtplx/Org--Qwen-Balance", "claude", time.Hour},
+		launch{"mtplx/Org--Qwen-Balance", "pi", 2 * time.Hour},
+	)
+	stubSpend(t, spend.Result{Rows: []spend.Row{
+		{Model: "mtplx/Org--Qwen-Balance", Requests: 4, PromptTokens: 100, CompletionTokens: 10},
+		{Model: "mtplx/Org/Qwen-Balance", Requests: 5, PromptTokens: 23, CompletionTokens: 5, Spend: 0.5},
+		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 1},
+	}}, nil)
+
+	one := "mtplx/Org--Qwen-Balance             2         9     123          15  $0.5000\n"
+	head := "MODEL                        LAUNCHES  REQUESTS  PROMPT  COMPLETION    SPEND\n"
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, head + one + "openrouter/qwen/qwen3.8-27b         0         1       0           0  $0.0000\n"},
+		{[]string{"--model", "mtplx/Org--Qwen-Balance"}, "\nmtplx/Org--Qwen-Balance         2         9     123          15  $0.5000\n"},
+		{[]string{"--model", "mtplx/Org/Qwen-Balance"}, "no usage data\n"},
+	} {
+		stdout, stderr := runStats(t, a, tc.args...)
+		if !strings.HasSuffix(stdout, tc.want) {
+			t.Errorf("wt stats %v: stdout =\n%s\nwant it to end with\n%s", tc.args, stdout, tc.want)
+		}
+		if strings.Contains(stdout, "mtplx/Org/Qwen-Balance") {
+			t.Errorf("wt stats %v: stdout still has a row for the logged spelling:\n%s", tc.args, stdout)
+		}
+		if stderr != "" {
+			t.Errorf("wt stats %v: stderr = %q, want nothing", tc.args, stderr)
+		}
+	}
+}
+
 // TestStatsCmdDegradesWhenSpendIsUnavailable verifies the spec's
 // degradation for each cause — no psql, no reachable database, no
 // configured URL: the launch counts print, the spend cells show "-",

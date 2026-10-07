@@ -94,6 +94,18 @@ provider prefix (the part before the first `/`), else `unknown`. When
 `registry.toml` is missing or cannot be read, every family is the prefix,
 and `--family` adds a note on stderr saying so.
 
+**One model, two spellings.** wt writes a `/` inside a model's name as `--`
+(`mtplx/Org--Name`), and the proxy has logged some requests as
+`provider/model_name` with the `/` kept (`mtplx/Org/Name`). Those requests
+are added to the wt id's row instead of making a second one. A logged id is
+folded only when it is not a known id itself and, with every `/` after the
+provider prefix (the text up to and including the first `/`) written `--`,
+it is exactly a known id — one in `registry.toml`, or one wt launched in the
+last 30 days. When both spellings are known ids (`openrouter/z-ai/glm` beside
+`openrouter/z-ai--glm`) they are two models and keep two rows. `--model` and
+`--family` see the folded rows: `--model mtplx/Org--Name` includes those
+requests, and `--model mtplx/Org/Name` matches nothing.
+
 Requests the proxy logged with no model (failed requests, mostly) are not a
 row. They are counted in a note on stderr: `wt: 12 requests had no model and
 are not shown`. The count covers the whole window, so the note is left out

@@ -28,6 +28,9 @@ type usageRow struct {
 	Family   string
 	Launches int
 	Spend    *spend.Row
+	// AlsoLoggedAs lists the other spellings of Model whose spend rows were
+	// folded into Spend (see foldTarget), sorted; nil when there are none.
+	AlsoLoggedAs []string
 }
 
 // familyFor is a model's family: the registry's, else the id's provider
@@ -57,12 +60,44 @@ func launchesIn(c usage.UsageCounts, window time.Duration) int {
 	return c.ThirtyDay
 }
 
+// foldTarget is the wt id a spend row logged as s belongs to, when s is
+// another spelling of one. wt spells a "/" inside a model's name as "--"
+// (mtplx/Org--Name, an MTPLX directory name), and LiteLLM logged some
+// requests as provider/model_name with the "/" kept (mtplx/Org/Name), so one
+// model reached the join under two ids. A wrong fold moves money to the
+// wrong model, so all of this must hold:
+//
+//   - s is not a known id itself. Both spellings can be real, distinct ids
+//     (a registry holds openrouter/z-ai/glm-5.3-flash as well as ids like
+//     openrouter/google--gemma-4-31b-it), and a known id is never renamed.
+//   - s has a provider prefix, and a "/" after it.
+//   - s with every "/" after the provider prefix (the text up to and
+//     including the first "/") written "--" is a known id. The prefix is
+//     compared as it is, so nothing folds across providers.
+func foldTarget(s string, known func(string) bool) (string, bool) {
+	if known(s) {
+		return "", false
+	}
+	i := strings.Index(s, "/")
+	if i <= 0 || !strings.Contains(s[i+1:], "/") {
+		return "", false
+	}
+	k := s[:i+1] + strings.ReplaceAll(s[i+1:], "/", "--")
+	return k, known(k)
+}
+
 // buildUsageRows joins launch counts with spend rows on the model id — the
 // LiteLLM route's model_name is the registry id, so the proxy's model_group
-// and usage.jsonl's model_id are the same string. A model gets a row when
-// it has a launch in the window or a spend row; sp is nil when there is no
-// spend data. Both filters are exact matches and apply to every observed
-// id, registered or not. Rows are sorted by model id.
+// and usage.jsonl's model_id are the same string, except for the other
+// spelling foldTarget recognises: such a spend row is added to its wt id's
+// row and its id is listed in that row's AlsoLoggedAs. The known ids a row
+// can fold into are the keys of families (every registry id, whatever its
+// family) and of counts (every id launched in the last 30 days, not only in
+// this window). A model gets a row when it has a launch in the window or a
+// spend row; sp is nil when there is no spend data. Both filters are exact
+// matches, apply to every observed id, registered or not, and apply after
+// folding: a folded spelling has no row of its own to match. Rows are
+// sorted by model id.
 //
 // An empty id never gets a row, from either side: it would print as a line
 // with a blank MODEL cell that no --model value can name. usage.AllCounts
@@ -88,10 +123,33 @@ func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, s
 		}
 	}
 	if sp != nil {
-		for _, s := range sp.Rows {
-			if s.Model != "" {
-				row(s.Model).Spend = &s
+		known := func(id string) bool {
+			if id == "" {
+				return false
 			}
+			_, registered := families[id]
+			_, launched := counts[id]
+			return registered || launched
+		}
+		for _, s := range sp.Rows {
+			if s.Model == "" {
+				continue
+			}
+			id := s.Model
+			if k, ok := foldTarget(id, known); ok {
+				id = k
+			}
+			r := row(id)
+			if id != s.Model {
+				r.AlsoLoggedAs = append(r.AlsoLoggedAs, s.Model)
+			}
+			r.Spend.Requests += s.Requests
+			r.Spend.PromptTokens += s.PromptTokens
+			r.Spend.CompletionTokens += s.CompletionTokens
+			r.Spend.Spend += s.Spend
+		}
+		for _, r := range byModel {
+			sort.Strings(r.AlsoLoggedAs)
 		}
 	}
 

@@ -172,3 +172,185 @@ func TestBuildUsageRowsNeverMakesANamelessRow(t *testing.T) {
 		t.Errorf("--family unknown: rows = %+v, want none (the empty id has no family row either)", rows)
 	}
 }
+
+// TestBuildUsageRowsFoldsTheSlashSpelling verifies a spend row logged under
+// the other spelling of a wt id lands on that id's row. wt writes a "/"
+// inside a model's name as "--" (mtplx/Org--Name), LiteLLM logged some
+// requests as provider/model_name with the "/" kept (mtplx/Org/Name), and an
+// exact join then printed one model twice: launches on one line, requests on
+// another. The rule is narrow because a wrong fold moves money to the wrong
+// model: the logged id must not be a known id itself, the "--" spelling must
+// be one (in the registry, or launched), and only the "/" after the provider
+// prefix are rewritten.
+func TestBuildUsageRowsFoldsTheSlashSpelling(t *testing.T) {
+	type want struct {
+		model    string
+		launches int
+		requests int64
+		also     string // AlsoLoggedAs, comma-joined
+	}
+	for _, tc := range []struct {
+		name     string
+		launched []string // ids with one launch each
+		registry []string // registry ids, with no launch
+		spend    []spend.Row
+		want     []want
+	}{
+		{
+			name:     "the slash spelling folds into the launched id",
+			launched: []string{"mtplx/Org--Name"},
+			spend:    []spend.Row{{Model: "mtplx/Org--Name", Requests: 4}, {Model: "mtplx/Org/Name", Requests: 5}},
+			want:     []want{{"mtplx/Org--Name", 1, 9, "mtplx/Org/Name"}},
+		},
+		{
+			name:     "a registry id with no launch is known too",
+			registry: []string{"mtplx/Org--Name"},
+			spend:    []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}},
+			want:     []want{{"mtplx/Org--Name", 0, 5, "mtplx/Org/Name"}},
+		},
+		{
+			name:     "no fold when the logged id is itself known",
+			launched: []string{"openrouter/z-ai--glm"},
+			registry: []string{"openrouter/z-ai/glm"},
+			spend:    []spend.Row{{Model: "openrouter/z-ai/glm", Requests: 5}},
+			want:     []want{{"openrouter/z-ai--glm", 1, 0, ""}, {"openrouter/z-ai/glm", 0, 5, ""}},
+		},
+		{
+			name:  "no fold when the -- spelling is not known",
+			spend: []spend.Row{{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5}},
+			want:  []want{{"openrouter/qwen/qwen3.8-27b", 0, 5, ""}},
+		},
+		{
+			name:     "no fold across providers",
+			launched: []string{"omlx/Org--Name"},
+			spend:    []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}},
+			want:     []want{{"mtplx/Org/Name", 0, 5, ""}, {"omlx/Org--Name", 1, 0, ""}},
+		},
+		{
+			name:     "the provider prefix's own slash is never rewritten",
+			launched: []string{"mtplx--Org--Name", "mtplx--Name"},
+			spend:    []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}, {Model: "mtplx/Name", Requests: 2}},
+			want: []want{
+				{"mtplx--Name", 1, 0, ""}, {"mtplx--Org--Name", 1, 0, ""},
+				{"mtplx/Name", 0, 2, ""}, {"mtplx/Org/Name", 0, 5, ""},
+			},
+		},
+		{
+			name:     "every slash after the prefix is rewritten, or none",
+			launched: []string{"mtplx/a--b--c", "mtplx/x/y--z"},
+			spend:    []spend.Row{{Model: "mtplx/a/b/c", Requests: 3}, {Model: "mtplx/x/y/z", Requests: 7}},
+			want: []want{
+				{"mtplx/a--b--c", 1, 3, "mtplx/a/b/c"},
+				{"mtplx/x/y--z", 1, 0, ""}, {"mtplx/x/y/z", 0, 7, ""},
+			},
+		},
+		{
+			name:     "a mixed spelling folds as well",
+			launched: []string{"mtplx/a--b--c"},
+			spend:    []spend.Row{{Model: "mtplx/a/b--c", Requests: 2}},
+			want:     []want{{"mtplx/a--b--c", 1, 2, "mtplx/a/b--c"}},
+		},
+		{
+			name:     "an id with no provider prefix never folds",
+			launched: []string{"/Org--Name"},
+			spend:    []spend.Row{{Model: "/Org/Name", Requests: 5}},
+			want:     []want{{"/Org--Name", 1, 0, ""}, {"/Org/Name", 0, 5, ""}},
+		},
+	} {
+		c := map[string]usage.UsageCounts{}
+		for _, id := range tc.launched {
+			c[id] = counts(1, 1, 1)
+		}
+		families := map[string]string{}
+		for _, id := range tc.registry {
+			families[id] = "fam"
+		}
+		rows := buildUsageRows(c, survey.Window30d, &spend.Result{Rows: tc.spend}, families, "", "")
+		if len(rows) != len(tc.want) {
+			t.Errorf("%s: rows = %+v, want %d", tc.name, rows, len(tc.want))
+			continue
+		}
+		for i, w := range tc.want {
+			r := rows[i]
+			got := want{r.Model, r.Launches, r.Spend.Requests, strings.Join(r.AlsoLoggedAs, ",")}
+			if got != w {
+				t.Errorf("%s: rows[%d] = %+v, want %+v", tc.name, i, got, w)
+			}
+			if r.Spend.Model != r.Model {
+				t.Errorf("%s: rows[%d].Spend.Model = %q, want the row's id %q", tc.name, i, r.Spend.Model, r.Model)
+			}
+		}
+	}
+}
+
+// TestBuildUsageRowsSumsFoldedSpellings verifies that when several logged
+// spellings fold into one id, every figure adds up — requests, both token
+// counts and the spend — whatever order the database returned them in, and
+// the row lists the spellings sorted. A fold that kept only the last row
+// would silently drop money from the report. The folded row takes the wt
+// id's family (the registry's), not the logged spelling's.
+func TestBuildUsageRowsSumsFoldedSpellings(t *testing.T) {
+	c := map[string]usage.UsageCounts{"mtplx/a--b--c": counts(2, 2, 2)}
+	families := map[string]string{"mtplx/a--b--c": "qwen"}
+	in := []spend.Row{
+		{Model: "mtplx/a/b/c", Requests: 5, PromptTokens: 100, CompletionTokens: 10, Spend: 0.5},
+		{Model: "mtplx/a--b--c", Requests: 4, PromptTokens: 20, CompletionTokens: 2, Spend: 0.25},
+		{Model: "mtplx/a--b/c", Requests: 1, PromptTokens: 3, CompletionTokens: 1, Spend: 0.125},
+	}
+	for _, order := range [][]int{{0, 1, 2}, {2, 1, 0}, {1, 2, 0}} {
+		sp := &spend.Result{}
+		for _, i := range order {
+			sp.Rows = append(sp.Rows, in[i])
+		}
+		rows := buildUsageRows(c, survey.Window30d, sp, families, "", "")
+		if len(rows) != 1 {
+			t.Fatalf("order %v: rows = %+v, want one", order, rows)
+		}
+		r := rows[0]
+		wantSpend := spend.Row{Model: "mtplx/a--b--c", Requests: 10, PromptTokens: 123, CompletionTokens: 13, Spend: 0.875}
+		if r.Model != "mtplx/a--b--c" || r.Family != "qwen" || r.Launches != 2 || *r.Spend != wantSpend {
+			t.Errorf("order %v: row = %+v with spend %+v, want family qwen, 2 launches and %+v", order, r, *r.Spend, wantSpend)
+		}
+		if got := strings.Join(r.AlsoLoggedAs, ","); got != "mtplx/a--b/c,mtplx/a/b/c" {
+			t.Errorf("order %v: AlsoLoggedAs = %q, want both spellings, sorted", order, got)
+		}
+	}
+	if in[0].Requests != 5 || in[1].Requests != 4 {
+		t.Errorf("the caller's spend rows were changed: %+v", in)
+	}
+}
+
+// TestBuildUsageRowsFiltersApplyAfterFolding verifies --model and --family
+// see the folded rows: --model <wt id> includes the spend logged under the
+// other spelling, --model <other spelling> matches nothing (that id has no
+// row any more), and --family matches the wt id's family, not the logged
+// spelling's prefix. Filtering first would bring back the split the fold
+// removes. A spelling that is itself known is still a row --model can name.
+func TestBuildUsageRowsFiltersApplyAfterFolding(t *testing.T) {
+	c := map[string]usage.UsageCounts{"mtplx/Org--Name": counts(1, 1, 1)}
+	families := map[string]string{"mtplx/Org--Name": "qwen", "openrouter/z-ai/glm": "glm"}
+	sp := &spend.Result{Rows: []spend.Row{
+		{Model: "mtplx/Org--Name", Requests: 4},
+		{Model: "mtplx/Org/Name", Requests: 5},
+		{Model: "openrouter/z-ai/glm", Requests: 2},
+	}}
+	for _, tc := range []struct {
+		model, family string
+		want          string // "id:requests", comma-joined
+	}{
+		{"mtplx/Org--Name", "", "mtplx/Org--Name:9"},
+		{"mtplx/Org/Name", "", ""},
+		{"", "qwen", "mtplx/Org--Name:9"},
+		{"", "mtplx", ""},
+		{"mtplx/Org--Name", "qwen", "mtplx/Org--Name:9"},
+		{"openrouter/z-ai/glm", "", "openrouter/z-ai/glm:2"},
+	} {
+		var got []string
+		for _, r := range buildUsageRows(c, survey.Window30d, sp, families, tc.model, tc.family) {
+			got = append(got, r.Model+":"+formatCount(r.Spend.Requests))
+		}
+		if g := strings.Join(got, ","); g != tc.want {
+			t.Errorf("--model %q --family %q: rows = %q, want %q", tc.model, tc.family, g, tc.want)
+		}
+	}
+}
