@@ -43,8 +43,11 @@ const proxyDatabaseEnv = "DATABASE_URL"
 //
 // It only reads. It returns ErrNoDatabase (wrapped, with the reason) when
 // nothing names a database, and ErrInvalid when config.yaml exists but
-// cannot be parsed. No error it returns contains a connection string: the
-// reasons name variables and files, never a value.
+// cannot be parsed. A config.yaml that exists and cannot be read at all
+// (permission denied, a directory in its place) is neither: the os error
+// comes back as it is, naming the path and the cause. No error it returns
+// contains a connection string: the reasons name variables and files, never
+// a value.
 //
 // Neither config.yaml nor the proxy's environment is consulted when the
 // registry is redirected and nothing names config.yaml — the rule
@@ -76,8 +79,18 @@ func DatabaseURL() (string, error) {
 		if v != "" {
 			return v, nil
 		}
-		return "", fmt.Errorf("%w: %s has no general_settings.database_url, and %s is not set in %s (set WT_LITELLM_DATABASE_URL)",
-			ErrNoDatabase, path, proxyDatabaseEnv, looked)
+		// Say what is wrong with the key when it is there: "has no" would
+		// send the reader looking for a key they can see in the file.
+		has := "has no general_settings.database_url"
+		switch {
+		case n == nil || isNull(n):
+		case n.Kind != yaml.ScalarNode:
+			has = "has a general_settings.database_url that is not a string"
+		default:
+			has = "has a blank general_settings.database_url"
+		}
+		return "", fmt.Errorf("%w: %s %s, and %s is not set in %s (set WT_LITELLM_DATABASE_URL)",
+			ErrNoDatabase, path, has, proxyDatabaseEnv, looked)
 	}
 	v := strings.TrimSpace(n.Value)
 	name, isRef := strings.CutPrefix(v, environRef)

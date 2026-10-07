@@ -320,22 +320,31 @@ func TestProxyEnvLookupReturnsTheValue(t *testing.T) {
 // an os.environ/ reference that names no variable — all with DATABASE_URL
 // set nowhere. `wt stats` turns ErrNoDatabase into one quiet note and still
 // prints launches; any other error here would read as a broken install on a
-// machine that simply runs LiteLLM without spend logging.
+// machine that simply runs LiteLLM without spend logging. The note also
+// says what is wrong with a key that is present: "has no database_url" for
+// a key the reader can see in the file sends them looking in the wrong
+// place.
 func TestDatabaseURLNotConfigured(t *testing.T) {
-	cases := map[string]string{
-		"missing file":        "",
-		"no general_settings": "model_list: []\n",
-		"no database_url":     "general_settings:\n  master_key: x\n",
-		"null value":          "general_settings:\n  database_url:\n",
-		"empty value":         "general_settings:\n  database_url: \"\"\n",
-		"blank value":         "general_settings:\n  database_url: \"  \"\n",
-		"a mapping":           "general_settings:\n  database_url:\n    host: x\n",
-		"bare os.environ/":    "general_settings:\n  database_url: os.environ/\n",
-		"settings not a map":  "general_settings: 3\n",
+	const (
+		absent  = " has no general_settings.database_url, and DATABASE_URL is not set"
+		blank   = " has a blank general_settings.database_url, and DATABASE_URL is not set"
+		notText = " has a general_settings.database_url that is not a string, and DATABASE_URL is not set"
+	)
+	cases := map[string]struct{ body, says string }{
+		"missing file":        {"", " does not exist"},
+		"no general_settings": {"model_list: []\n", absent},
+		"no database_url":     {"general_settings:\n  master_key: x\n", absent},
+		"null value":          {"general_settings:\n  database_url:\n", absent},
+		"empty value":         {"general_settings:\n  database_url: \"\"\n", blank},
+		"blank value":         {"general_settings:\n  database_url: \"  \"\n", blank},
+		"a mapping":           {"general_settings:\n  database_url:\n    host: x\n", notText},
+		"a list":              {"general_settings:\n  database_url: [x]\n", notText},
+		"bare os.environ/":    {"general_settings:\n  database_url: os.environ/\n", " with no variable name"},
+		"settings not a map":  {"general_settings: 3\n", absent},
 	}
-	for name, body := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			p := dbConfig(t, body)
+			p := dbConfig(t, c.body)
 			got, err := DatabaseURL()
 			if got != "" || !errors.Is(err, ErrNoDatabase) {
 				t.Fatalf("DatabaseURL() = %q, %v; want \"\" and ErrNoDatabase", got, err)
@@ -343,23 +352,58 @@ func TestDatabaseURLNotConfigured(t *testing.T) {
 			if !strings.Contains(err.Error(), p) {
 				t.Errorf("err = %q, want it to name %s", err, p)
 			}
+			if !strings.Contains(err.Error(), c.says) {
+				t.Errorf("err = %q, want it to say %q", err, c.says)
+			}
 		})
 	}
 }
 
-// TestDatabaseURLInvalidConfigIsNotNoDatabase verifies an unparseable
-// config.yaml is ErrInvalid, not ErrNoDatabase: the user has a proxy config
-// and it is broken, which `wt stats` must say rather than report "nothing
-// configured". It also pins that the file is not rewritten by the read.
+// TestDatabaseURLInvalidConfigIsNotNoDatabase verifies a config.yaml that
+// is not a usable proxy config is ErrInvalid, not ErrNoDatabase: the user
+// has a proxy config and it is broken, which `wt stats` must say rather
+// than report "nothing configured". That covers a file that does not parse
+// and one that holds no mapping at all — a blank line or only a comment,
+// which is what a freshly created config.yaml looks like and what Open
+// refuses for every other reader too. It also pins that the file is not
+// rewritten by the read.
 func TestDatabaseURLInvalidConfigIsNotNoDatabase(t *testing.T) {
-	p := dbConfig(t, "general_settings: [unclosed\n")
-	before, _ := os.ReadFile(p)
-	_, err := DatabaseURL()
-	if !errors.Is(err, ErrInvalid) || errors.Is(err, ErrNoDatabase) {
-		t.Fatalf("err = %v, want ErrInvalid and not ErrNoDatabase", err)
+	for name, body := range map[string]string{
+		"does not parse": "general_settings: [unclosed\n",
+		"a blank line":   "\n",
+		"only a comment": "# nothing here yet\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := dbConfig(t, body)
+			before, _ := os.ReadFile(p)
+			_, err := DatabaseURL()
+			if !errors.Is(err, ErrInvalid) || errors.Is(err, ErrNoDatabase) {
+				t.Fatalf("err = %v, want ErrInvalid and not ErrNoDatabase", err)
+			}
+			if after, _ := os.ReadFile(p); string(after) != string(before) {
+				t.Errorf("config.yaml changed:\n%s", after)
+			}
+		})
 	}
-	if after, _ := os.ReadFile(p); string(after) != string(before) {
-		t.Errorf("config.yaml changed:\n%s", after)
+}
+
+// TestDatabaseURLUnreadableConfig verifies a config.yaml that exists and
+// cannot be read — here a directory in its place, which fails the same way
+// for every user, root included — is reported as the os error: neither "no
+// database configured" nor "invalid YAML", and naming the path. `wt stats`
+// prints it as its "spend unavailable" note, and the cause (is a directory,
+// permission denied) is what tells the user which of the two to fix.
+func TestDatabaseURLUnreadableConfig(t *testing.T) {
+	p := dbConfig(t, "")
+	if err := os.Mkdir(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DatabaseURL()
+	if got != "" || err == nil || errors.Is(err, ErrNoDatabase) || errors.Is(err, ErrInvalid) {
+		t.Fatalf("DatabaseURL() = %q, %v; want \"\" and the os error, not ErrNoDatabase or ErrInvalid", got, err)
+	}
+	if !strings.Contains(err.Error(), p) {
+		t.Errorf("err = %q, want it to name %s", err, p)
 	}
 }
 
