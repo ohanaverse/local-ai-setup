@@ -378,8 +378,8 @@ command, and nothing is written.
 Compare local model backends side-by-side. The benchmarks now live in the `llmbench` package (`../llmbench/`); `modelman benchmark ...` still runs them, and `uv run --directory llmbench llmbench ...` is the same commands without the `benchmark` word:
 
 ```bash
-modelman benchmark run
-modelman benchmark run --workload short
+modelman benchmark run --family <family>          # no default targets: name --model or --family, or it exits 2
+modelman benchmark run --family <family> --workload short
 modelman benchmark run --model ollama/ornith-1.5:35b --direct
 modelman benchmark list-workloads
 modelman benchmark show-results --latest

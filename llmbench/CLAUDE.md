@@ -15,7 +15,7 @@ CLI (`src/llmbench/main.py`):
 | `eval list-categories\|list-items\|run\|show\|judge` | Cross-category capability benchmark (`benchmark/eval/cli.py`) |
 | `provider isolate\|stop\|stop-all\|restore\|list` | Per-provider lifecycle (`providers/lifecycle/cli.py`) |
 
-Run it from this directory (`uv run llmbench ...`) or from the repo root (`uv run --directory llmbench llmbench ...`). It is not installed globally.
+Run it from this directory (`uv run llmbench ...`) or from the repo root (`uv run --directory llmbench llmbench ...`). Either way the working directory is `llmbench/`, so relative path arguments (`--suite`, `--root`, `--results-dir`) resolve from here: `../benchmarks/suites/smoke.toml`. It is not installed globally.
 
 User guides: `../docs/guides/05-benchmarks.md` (throughput and isolation), `../docs/guides/09-agent-benchmarks.md` (agent), `../docs/guides/11-capability-eval-benchmark.md` (eval).
 

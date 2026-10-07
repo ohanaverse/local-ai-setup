@@ -49,10 +49,10 @@ A suite (`benchmarks/suites/*.toml`) picks a task and a `[[rows]]` matrix (model
 ### 3. Run it
 
 ```bash
-uv run llmbench agent run --suite <path> [--row <label-or-index>]... [--passes N] [--skip-judge] [--dry-run]
+uv run llmbench agent run --suite <path> [--row <label-or-index>]... [--skip-judge] [--dry-run]
 ```
 
-Local rows are grouped by provider and isolated once per group (stop-others, start, warmup) via the same in-process `src/llmbench/providers/lifecycle/orchestrate.py` isolate/restore functions `llmbench` uses — see [05-benchmarks](05-benchmarks.md) Step 1 for exactly what isolation does per backend. Judging always runs *after* `restore_providers()`, so a cloud judge call never contends with a loaded local model.
+There is no `--passes` flag: passes per row are the suite file's top-level `passes` key. Local rows are grouped by provider and isolated once per group (stop-others, start, warmup) via the same in-process `src/llmbench/providers/lifecycle/orchestrate.py` isolate/restore functions `llmbench` uses — see [05-benchmarks](05-benchmarks.md) Step 1 for exactly what isolation does per backend. Judging always runs *after* `restore_providers()`, so a cloud judge call never contends with a loaded local model.
 
 ### 4. Read the report
 

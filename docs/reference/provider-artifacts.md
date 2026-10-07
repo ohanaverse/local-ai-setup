@@ -145,7 +145,8 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
   `auth.base_url = "http://localhost:8001/v1"` (`_DEFAULT_PROVIDER_TEMPLATES`
   in `modelman/src/modelman/registry.py`); one variant = one target+draft
   pairing (`ModelEntry.fetch` = target, `ModelEntry.draft` = draft).
-- Code wiring: `DEFAULT_PROVIDER_IDS` (`registry.py`), `SUPPORTED_PROVIDER_IDS`
+- Code wiring: `DEFAULT_PROVIDER_IDS` (`modelman/src/modelman/registry.py`
+  and `llmbench/src/llmbench/registry.py`), `SUPPORTED_PROVIDER_IDS`
   (`llmbench/src/llmbench/providers/lifecycle/backends/__init__.py`,
   re-exported by `llmbench/src/llmbench/benchmark/isolation.py`),
   the provider→LiteLLM mapping table (`wt/internal/litellm/policy.go`; modelman reads it via `wt litellm providers`), the

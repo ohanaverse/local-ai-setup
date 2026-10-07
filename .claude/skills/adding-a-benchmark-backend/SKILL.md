@@ -17,7 +17,8 @@ benchmarks call `orchestrate.py` directly, in-process, via
 `llmbench/src/llmbench/benchmark/isolation.py`. `modelman start`/`stop` reach
 the same code through modelman's path dependency on llmbench, so run
 modelman's suite too. Paths below are relative to `llmbench/` unless they
-start with another directory. Adding a backend:
+start with another directory; a bare `backends/...` is under
+`src/llmbench/providers/lifecycle/`. Adding a backend:
 
 1. **Add the backend module.** Create
    `src/llmbench/providers/lifecycle/backends/<id>.py` subclassing
@@ -63,6 +64,10 @@ start with another directory. Adding a backend:
    and, until modelman is retired, in `modelman/src/modelman/registry.py`,
    which `modelman sync` and the TUI seed provider rows from
    (`modelman/tests/test_llmbench_reexports.py` fails if the two differ).
+   Give the id a `_DEFAULT_PROVIDER_TEMPLATES` entry in that same modelman
+   file too: `default_provider_entry()` raises `KeyError` for an id in
+   `DEFAULT_PROVIDER_IDS` with no template, which fails `modelman sync`
+   the first time it has to seed that provider's row.
 6. **Update the drift trip-wire.** `tests/benchmark/test_isolation.py`'s
    `test_supported_provider_ids_matches_the_backends_registry_documented_list`
    hand-writes a literal copy of `SUPPORTED_PROVIDER_IDS` specifically so a

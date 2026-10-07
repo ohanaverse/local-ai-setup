@@ -10,7 +10,7 @@
 - `./benchmarks/qwen3.8-benchmark-multi N [max_tokens] [cooldown]` — multi-pass for stable medians
 - `./benchmarks/ornith-1.5-benchmark [max_tokens]` — single-pass (3 Ornith-1.5-35B local variants: ollama, omlx 4-bit, omlx 6-bit; no OpenRouter)
 - `./benchmarks/ornith-1.5-benchmark-multi N` — multi-pass
-- `uv run --directory llmbench llmbench agent run --suite <path>` — agentic coding benchmark (real task, gates + judge); see `docs/guides/09-agent-benchmarks.md`
+- `uv run --directory llmbench llmbench agent run --suite <path>` — agentic coding benchmark (real task, gates + judge); see `docs/guides/09-agent-benchmarks.md`. `--directory` makes `llmbench/` the working directory, so a relative `<path>` (here and in `eval run`, `--root`, `--results-dir`) resolves from there: `../benchmarks/suites/smoke.toml`, not `benchmarks/suites/smoke.toml`
 - `uv run --directory llmbench llmbench eval run --suite <path>` — cross-category capability benchmark (reasoning/planning/coding/code_review/doc_summary, single-turn, judged + EvalPlus); see `docs/guides/11-capability-eval-benchmark.md`
 - `uv run --directory llmbench llmbench provider isolate <ollama|omlx|omlx-6bit|mtplx>` — stop others, start+warmup one (for the benchmarks; llamacpp is retired-only, present in `BACKENDS` but excluded from `SUPPORTED_PROVIDER_IDS` — see `docs/reference/provider-artifacts.md`)
 - `uv run --directory llmbench llmbench provider isolate mlx_lm_server <target> --draft <draft>` — isolate a target+draft speculative-decoding pairing on port 8001; no default pairing exists, target/draft must always be passed (positional `target` + `--draft`, or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`)
