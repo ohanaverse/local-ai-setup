@@ -7,6 +7,9 @@ miss a failure llmbench raised, and turn a missing `wt` into a traceback.
 Deleted with modelman.
 """
 
+import inspect
+import subprocess
+
 import llmbench.local_process
 import llmbench.providers.mtplx
 import llmbench.providers.registry
@@ -61,4 +64,94 @@ def test_duplicated_constants_agree(name, llmbench_module, modelman_module):
     assert theirs == ours, (
         f"{name} differs: {llmbench_module.__name__} has {theirs!r}, "
         f"{modelman_module.__name__} has {ours!r}; change both copies"
+    )
+
+
+# One argv for every _msg case, carrying what _msg exists to keep out of a
+# traceback and the TUI. The value is fake.
+_FAKE_KEY = "sk-FAKE-not-a-real-key-0000"
+_ARGV_WITH_KEY = ["wt", "litellm", "set", "--api-key", _FAKE_KEY]
+
+# (case id, stdout, stderr, the one line both copies must produce)
+_MSG_CASES = [
+    ("cobra Error: prefix", "", "Error: no such model\n", "no such model"),
+    ("wt: prefix", "", "wt: no such model\n", "no such model"),
+    ("both prefixes on one line", "", "Error: wt: no such model\n", "no such model"),
+    (
+        "cobra's line and wt's own line collapse to one",
+        "",
+        "Error: no such model\nwt: no such model\n",
+        "no such model",
+    ),
+    (
+        "distinct lines join with '; '",
+        "",
+        "Error: first\nwt: second\n",
+        "first; second",
+    ),
+    ("blank lines and padding are dropped", "", "\n  Error:   padded  \n\n", "padded"),
+    ("an unprefixed line passes through", "", "plain failure\n", "plain failure"),
+    (
+        "a prefix is stripped only at the start of a line",
+        "",
+        "saw Error: x\n",
+        "saw Error: x",
+    ),
+    ("stdout is used when stderr is empty", "wt: from stdout\n", "", "from stdout"),
+    ("stdout is used when stderr is only whitespace", "wt: from stdout\n", "  \n", "from stdout"),
+    ("stderr wins over stdout", "wt: from stdout\n", "wt: from stderr\n", "from stderr"),
+    ("no output at all gives the fallback", "", "", "the fallback"),
+    ("only whitespace gives the fallback", " \n", "\n\n", "the fallback"),
+]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "want"),
+    [case[1:] for case in _MSG_CASES],
+    ids=[case[0] for case in _MSG_CASES],
+)
+def test_msg_copies_agree_and_never_show_argv(stdout, stderr, want):
+    """#276: `_msg` is what keeps `--api-key <value>` out of every error wt's
+    bridge raises, and it exists twice (modelman is frozen, so it is a copy,
+    not a re-export). A prefix one copy learns to strip, or an argv field one
+    copy starts interpolating, has to fail here rather than drift silently."""
+    proc = subprocess.CompletedProcess(
+        args=_ARGV_WITH_KEY, returncode=1, stdout=stdout, stderr=stderr
+    )
+    theirs = llmbench.wt_bridge._msg(proc, "the fallback")
+    ours = wt_bridge._msg(proc, "the fallback")
+    both = f"{llmbench.wt_bridge.__name__}._msg and {wt_bridge.__name__}._msg"
+    assert theirs == ours, (
+        f"_msg differs: {llmbench.wt_bridge.__name__} returned {theirs!r}, "
+        f"{wt_bridge.__name__} returned {ours!r}; change both copies"
+    )
+    for secret in ("--api-key", _FAKE_KEY):
+        assert secret not in theirs, (
+            f"_msg put argv in its message: {both} must build it from wt's output only; "
+            "change both copies"
+        )
+    assert theirs == want, (
+        f"_msg changed: {both} now return {theirs!r} where this table expects {want!r}; "
+        "change both copies, then this case"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "llmbench_module", "modelman_module"),
+    [
+        ("ensure_wt", llmbench.wt_bridge, wt_bridge),
+        ("_msg", llmbench.wt_bridge, wt_bridge),
+        ("http_models_ids", llmbench.local_process, local_process),
+    ],
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_duplicated_functions_are_the_same_source(name, llmbench_module, modelman_module):
+    """#276: the constants above fail loudly when they drift; these three
+    functions are copies too, and nothing compared them. Byte-for-byte, with
+    nothing normalised: an edit to one copy is an edit to both."""
+    theirs = inspect.getsource(getattr(llmbench_module, name))
+    ours = inspect.getsource(getattr(modelman_module, name))
+    assert theirs == ours, (
+        f"{name}() differs between {llmbench_module.__name__} and "
+        f"{modelman_module.__name__}; change both copies"
     )
