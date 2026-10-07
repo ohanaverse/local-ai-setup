@@ -191,9 +191,18 @@ type usageReport struct {
 // migration) as often as about registry.toml, so the note quotes it rather
 // than name a file itself. The error names files and keys, never a secret;
 // it is folded onto one line because a TOML parse error can span several.
+// The repair hint mirrors configError's (helpers.go): `wt config` cannot
+// repair a registry problem (a link to fix, a location to move, a missing
+// registry to seed), so those name the working repair.
 func registryNote(loadErr error) string {
-	return fmt.Sprintf("wt's configuration did not load (%s; run `wt config` to repair), so --family matched each id's provider prefix",
-		strings.Join(strings.Fields(loadErr.Error()), " "))
+	hint := "run `wt config` to repair"
+	if errors.Is(loadErr, config.ErrRegistryMissing) {
+		hint = "seed the registry with `modelman migrate`"
+	} else if h := config.RegistryFixHint(loadErr); h != "" {
+		hint = h
+	}
+	return fmt.Sprintf("wt's configuration did not load (%s; %s), so --family matched each id's provider prefix",
+		strings.Join(strings.Fields(loadErr.Error()), " "), hint)
 }
 
 // querySpend asks the LiteLLM database for per-model totals between start

@@ -59,7 +59,6 @@ func statsCmd(a *app) *cobra.Command {
 
 			asOf := statsNow()
 			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, modelFilter, agentFilter)
-			rep := collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
 
 			out := cmd.OutOrStdout()
 			if table := surveyTableRows(rows); len(table) == 0 {
@@ -68,6 +67,12 @@ func statsCmd(a *app) *cobra.Command {
 				fmt.Fprintln(out, renderTable(surveyHeaders, table, a.theme))
 			}
 			fmt.Fprintln(out)
+
+			// After the survey table: collectUsage runs the spend query (psql,
+			// up to a few seconds against a down or hanging database), and the
+			// survey table does not need it — printing first keeps the first
+			// table off that critical path.
+			rep := collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
 			if len(rep.Rows) == 0 {
 				fmt.Fprintln(out, "no usage data")
 			} else {
