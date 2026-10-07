@@ -271,7 +271,7 @@ Nothing new is stored. The stale-price notice derives the date from the newest `
 `wt stats` keeps its survey table and prints a second per-model table for the same `--window`: MODEL, LAUNCHES, REQUESTS, PROMPT, COMPLETION, SPEND.
 
 - **Launches:** `usage.StoreImpl.AllCounts(agent)` enumerates every model in `usage.jsonl`.
-- **Connection string:** `WT_LITELLM_DATABASE_URL`, then `MODELMAN_LITELLM_DATABASE_URL`, then `general_settings.database_url` in LiteLLM's `config.yaml`; an `os.environ/NAME` value is resolved from the environment.
+- **Connection string:** `WT_LITELLM_DATABASE_URL`, then `MODELMAN_LITELLM_DATABASE_URL`, then `general_settings.database_url` in LiteLLM's `config.yaml`; an `os.environ/NAME` value is looked up in wt's own environment and then in the LiteLLM LaunchAgent plist's `EnvironmentVariables` (the existing `litellm.LoadProxyEnv`), and when `config.yaml` names no `database_url`, `DATABASE_URL` is looked up the same two ways (LiteLLM's own fallback); a blank value from any source counts as unset.
 - **Query:** one aggregated query over `"LiteLLM_SpendLogs"` through `psql -X -w -q -At -v ON_ERROR_STOP=1`, returning one JSON document, with `PGCONNECT_TIMEOUT=3` and a 10-second deadline.
 - **Degradation:** with no `psql`, no reachable database or no configured URL, the launch counts print, spend cells show `-`, one note goes to stderr and the exit code is 0. Requests with no model are counted in a stderr note.
 - **Flags:** `--family` (new; usage table only), `--json` (new; one document with `window`, `as_of`, `survey`, `usage`). `--agent` filters launches and skips spend with a note.

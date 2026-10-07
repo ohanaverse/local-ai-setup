@@ -15,18 +15,19 @@
 - wt Go and docs only. **No file under `modelman/` changes**: `modelman usage report`, its code (`modelman/src/modelman/usage/`), its tests and the `psycopg2-binary` dependency all stay until Step 6.
 - The usage table's columns are exactly `MODEL`, `LAUNCHES`, `REQUESTS`, `PROMPT`, `COMPLETION`, `SPEND`, for the same `--window` as the survey table.
 - Launches come from `usage.StoreImpl.AllCounts(agent)`.
-- Connection string order, exact: `WT_LITELLM_DATABASE_URL`, then `MODELMAN_LITELLM_DATABASE_URL`, then `general_settings.database_url` in LiteLLM's `config.yaml` (the path `litellm.DefaultPath()` resolves, so `WT_LITELLM_CONFIG` is honoured). An `os.environ/NAME` value is resolved from the environment.
+- Connection string order, exact: `WT_LITELLM_DATABASE_URL`, then `MODELMAN_LITELLM_DATABASE_URL`, then `general_settings.database_url` in LiteLLM's `config.yaml` (the path `litellm.DefaultPath()` resolves, so `WT_LITELLM_CONFIG` is honoured). An `os.environ/NAME` value is looked up in wt's own environment and then in the LiteLLM LaunchAgent plist's `EnvironmentVariables`, through the existing `litellm.LoadProxyEnv`; when `config.yaml` names no `database_url`, `DATABASE_URL` is looked up the same two ways (LiteLLM's own fallback). No second plist parser is written.
+- A connection string that is empty or only whitespace counts as unset, whichever source it came from.
 - One aggregated query over `"LiteLLM_SpendLogs"`, through `psql -X -w -q -At -v ON_ERROR_STOP=1`, returning one JSON document, with `PGCONNECT_TIMEOUT=3` and a 10-second deadline.
 - Degradation, exact: with no `psql`, no reachable database or no configured URL, the launch counts print, spend cells show `-`, **one** note goes to stderr and the exit code is 0. Requests with no model are counted in a stderr note.
 - Flags: `--family` (new; usage table only), `--json` (new; one document with `window`, `as_of`, `survey`, `usage`). `--agent` filters launches and skips spend with a note.
 - **Dropped, and must not appear anywhere in code, flags, output or docs as a wt feature:** arbitrary `--days N`, the Markdown output, the Reconciliation sections, the "Last wt launch" line, and the reverse-index fallback for rows with an empty model group.
 - Tests stub the query through a package-level seam and **never reach a database**. No test runs the real `psql`.
 - The usage table is measured at 80 columns.
-- No note, error or `--json` field carries any part of a connection string: not the password, and not the host, port, user or database name either. `psql`'s own text is never passed through where it can quote one (see "How are `psql` failures classified?" below).
-- **Never, in any step of this plan:** connect to the owner's real LiteLLM database, run `psql` against a real connection string, or print a connection string, an API key, the contents of `~/.config/litellm/config.yaml` or of a LaunchAgent plist. The one task that reads the real database (Task 8, Steps 2 and 3) is run by the owner or with their explicit OK, and prints only the report. Every other command in this plan that runs the built binary does so in a throwaway home with a connection string that points at `127.0.0.1:1`. Never hand `psql` an empty connection string, or one without a host: libpq then tries the local default socket, where a real server may be listening.
+- The note for an unreachable database names the host and port `psql` tried (`cannot reach the LiteLLM database at 127.0.0.1:5432: Connection refused`), or the socket path. No note, error or `--json` field carries any other part of a connection string: not the user, the password or the database name. `psql`'s own text is never passed through where it can quote one (see "How much of `psql`'s own message goes in the note?" below).
+- **Never, in any step of this plan:** connect to the owner's real LiteLLM database, run `psql` against a real connection string, or print a connection string, an API key, the contents of `~/.config/litellm/config.yaml` or of a LaunchAgent plist. The one task that reads the real database (Task 8, Steps 2 and 3) is run by the controller, under the owner's OK of 2026-10-07 ("you may run against the real database"), and prints only the report; no implementer subagent runs it. Every other command in this plan that runs the built binary does so in a throwaway home with a connection string that points at `127.0.0.1:1`. Never hand `psql` an empty connection string, or one without a host: libpq then tries the local default socket, where a real server may be listening.
 - Run every Go command from `wt/`, never the monorepo root. A commit step says which directory its `git add` paths are relative to.
 - Every `Test*` function has a top-level `//` comment saying what it tests and why a regression matters to a user.
-- Tests never touch the developer's machine: nothing under `~/.config`, no real `config.yaml`, no real database. `cmd/wt` tests rely on `TestMain`; the new `internal/spend` package gets its own.
+- Tests never touch the developer's machine: nothing under `~/.config`, no real `config.yaml`, no real LaunchAgent plist, no real database. A test that resolves a connection string replaces `loadProxyEnv` (the `litellm` package's existing seam) or names a temp plist through `WT_LITELLM_PLIST`. `cmd/wt` tests rely on `TestMain`; the new `internal/spend` package gets its own.
 - Guides never embed live model state: every example table in a doc is labelled illustrative.
 - Per slice, from `wt/`: `test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./... && make check`. `gofmt -l` exits 0 even when it lists files, which is why it is wrapped in `test -z`. At the end, `make test-all` from the monorepo root.
 - Commit messages follow the repo's conventional style (`feat(wt): …`, `test(wt): …`, `docs(wt): …`), with the attribution trailer your session is told to add, if any.
@@ -35,10 +36,10 @@
 
 ## Review Focus
 
-1. **`config.yaml` says `database_url: os.environ/DATABASE_URL` and the variable is set only for the proxy (the LaunchAgent plist), not in the shell `wt stats` runs in.** Expected: launch counts print, and the one note names the variable and says to set it or `WT_LITELLM_DATABASE_URL` — not a `psql` error about a database called `os.environ/DATABASE_URL`. Pinned in Task 2 (`TestDatabaseURLResolvesAnEnvironReference`).
+1. **`config.yaml` says `database_url: os.environ/DATABASE_URL` — or names no `database_url` at all — and the variable is set only for the proxy (the LaunchAgent plist), not in the shell `wt stats` runs in.** Expected: spend prints with nothing exported, because wt reads the value from the plist; a value in wt's own shell wins over the plist's. When neither has it, launch counts print and the one note names the variable and both places wt looked, never a value — not a `psql` error about a database called `os.environ/DATABASE_URL`. A blank value anywhere is unset. Pinned in Task 2 (`TestDatabaseURLResolvesAnEnvironReference`, `TestDatabaseURLFallsBackToDatabaseURL`, `TestDatabaseURLWhenThePlistCannotBeRead`, `TestDatabaseURLBlankCountsAsUnset`).
 2. **Real model ids on an 80-column terminal, and the same report piped to `grep`.** Expected: no line of the usage table wider than 80 on the terminal, no id shortened; one line per model when stdout is not a terminal. (The survey table above it keeps its bordered renderer and its width; see "The 80-Column Measurement".) Pinned in Task 5 (`TestRenderUsageTableFitsEightyColumns`, `TestRenderUsageTableWithoutAWidthLimit`, `TestRenderUsageTableOnANarrowTerminal`) and Task 6 (`TestStatsCmdUsesTheTerminalWidth`).
-3. **`wt stats` run under a scratch `XDG_CONFIG_HOME` or `MODELMAN_REGISTRY`, or from a test.** Expected: it never queries the real proxy's database unless the database or `config.yaml` is named. Pinned in Task 2 (`TestDatabaseURLSkipsTheDefaultConfigUnderARedirectedRegistry`), Task 3 (`TestSeamsFailClosedByDefault`) and Task 6 (`TestStatsNeverReachesADatabaseByDefault`).
-4. **A database end that misbehaves: a connection string `psql` cannot use and quotes back (a password with an unencoded `/`, a bad percent escape), or a host that accepts the connection and never answers.** Expected: no part of the string is in the note or in `--json`, and `wt stats` returns within about 10 seconds with launches, `-` cells and one note. Pinned in Task 3 (`TestQueryNeverLeaksTheConnectionString`, which uses the messages libpq really prints, and `TestQueryGivesUpAtTheDeadline`).
+3. **`wt stats` run under a scratch `XDG_CONFIG_HOME` or `MODELMAN_REGISTRY`, or from a test.** Expected: it never queries the real proxy's database, and never reads the real LaunchAgent plist, unless the database or `config.yaml` is named. Pinned in Task 2 (`TestDatabaseURLSkipsTheDefaultConfigUnderARedirectedRegistry`), Task 3 (`TestSeamsFailClosedByDefault`) and Task 6 (`TestStatsNeverReachesADatabaseByDefault`).
+4. **A database end that misbehaves: a connection string `psql` cannot use and quotes back (a password with an unencoded `/`, a bad percent escape), or a host that accepts the connection and never answers.** Expected: the note and `--json` show the host and port for a well-formed string and nothing else from it; for a string libpq mis-splits they show no address at all, because what libpq then calls the host and port are the user name and a piece of the password. `wt stats` returns within about 10 seconds with launches, `-` cells and one note. Pinned in Task 3 (`TestQueryNeverLeaksTheConnectionString`, which uses the messages libpq really prints, `TestQueryErrorMapping` and `TestQueryGivesUpAtTheDeadline`).
 5. **Model ids wt does not control: one the registry no longer has, one with odd or control characters, an empty one, and a registry that cannot be read at all.** Expected: the first two are rows (family from the id's prefix; control characters shown escaped in the table), the empty one is counted in a note, and with no readable registry the report still prints and `--family` says it is matching prefixes. Pinned in Task 3 (`TestQueryKeepsOddModelIDsWhole`, `TestQueryParsesTheAggregate`), Task 4 (`TestBuildUsageRowsFamilyAndFilters`), Task 5 (`TestRenderUsageTableEscapesControlCharacters`) and Task 6 (`TestStatsCmdNotesRequestsWithNoModel`, `TestStatsCmdWorksWithoutARegistry`).
 
 ## Decisions This Plan Makes
@@ -58,13 +59,15 @@ The spec states the behaviour; these are the choices it leaves open. Each is pin
 | What width is used? | The terminal's, when stdout is one; no limit otherwise. | A pipe has no width, and `grep`/`awk` need one row per line. | Task 5, `TestRenderUsageTableWithoutAWidthLimit`; Task 6, `TestStatsCmdUsesTheTerminalWidth` |
 | What prints when a table is empty? | Each table has its own line: `no survey data`, a blank line, `no usage data`. The two existing tests that asserted stdout was only `no survey data` are updated. | Both tables always appear in the same order, so the output's shape never depends on the data. | Task 6, `TestStatsCmdEmptyStorePrintsMessage` (edited) |
 | Is "no configured URL" silent? | No: it is the same one note as the other causes, `wt: spend unavailable: <reason>`. The causes are told apart only in `--json` (`not_configured` vs `unavailable`). | The spec lists it with the other two under "one note goes to stderr". | Task 6, `TestStatsCmdDegradesWhenSpendIsUnavailable`, `TestCollectUsageClassifiesMissingSpend` |
-| Where is `os.environ/NAME` resolved from? | wt's own process environment only. Unset or empty is "not configured", with a note naming the variable. The LaunchAgent plist is not read. | The spec says "resolved from the environment". `litellm.ProxyEnv` can answer only whether the plist sets a name, not its value. If Task 8 finds the owner's `config.yaml` uses such a reference, that is a follow-up for the owner to decide. | Task 2, `TestDatabaseURLResolvesAnEnvironReference` |
-| Is `config.yaml` read under a redirected registry? | Not when nothing names it: `DatabaseURL` returns `ErrNoDatabase`. Naming the database or `config.yaml` lifts it. | The rule `checkRegistryPairing` (`configfile.go:72`) applies to route writes, for the same reason: a scratch run must not act on the real proxy. It is also the third of three guards that keep tests off the database. | Task 2, `TestDatabaseURLSkipsTheDefaultConfigUnderARedirectedRegistry` |
+| Where is `os.environ/NAME` resolved from? | wt's own environment first, then the proxy's: `litellm.LoadProxyEnv`, the LaunchAgent plist's `EnvironmentVariables`. wt's own value wins when both have one. Unset in both is "not configured", with a note that names the variable and where wt looked, never a value. When the plist cannot answer (missing, binary, or a restart command is configured) `LoadProxyEnv` already stands wt's environment in for it, and the note then names only wt's environment. | The owner's ruling (2026-10-07): resolve automatically from the local LiteLLM configuration, the way the proxy itself would see it. The plist is where a LaunchAgent install keeps the variable. The existing reader is reused: `ProxyEnv` gains `Lookup`, the value behind `IsSet`, and no second plist parser is written. If wrong, the plist lookup is one branch in `proxyVar`. | Task 2, `TestDatabaseURLResolvesAnEnvironReference`, `TestDatabaseURLWhenThePlistCannotBeRead`, `TestProxyEnvLookupReturnsTheValue` |
+| What if `config.yaml` names no `database_url`? | `DATABASE_URL` is looked up the same two ways: wt's environment, then the proxy's. Only when `config.yaml` exists; with no file, `DATABASE_URL` is not consulted. A literal `database_url` is never overridden by it. | LiteLLM's own fallback, and in the owner's ruling. The "only when the file exists" part is this plan's narrowing, not the ruling's: `DATABASE_URL` is a name many tools use, and without a proxy config nothing says the one in the shell is LiteLLM's. It is one `if` to move. | Task 2, `TestDatabaseURLFallsBackToDatabaseURL` |
+| A connection string that is empty or only whitespace? | Unset, at every source: the two variables, the `config.yaml` value, a referenced variable in either environment, `DATABASE_URL`. The lookup moves on to the next source; a real value has its surrounding whitespace dropped. | The owner's ruling. A host-less string makes libpq try the local default socket, where a server that is not the proxy's may listen. No valid URL is blank. | Task 2, `TestDatabaseURLBlankCountsAsUnset` |
+| Is `config.yaml` read under a redirected registry? | Not when nothing names it, and neither is the proxy's environment (the plist) or `DATABASE_URL`: `DatabaseURL` returns `ErrNoDatabase` before any of them. Naming the database or `config.yaml` lifts it. | The rule `checkRegistryPairing` (`configfile.go:72`) applies to route writes, for the same reason: a scratch run must not act on the real proxy. It is also the third of three guards that keep tests off the database. | Task 2, `TestDatabaseURLSkipsTheDefaultConfigUnderARedirectedRegistry` |
 | An unparseable `config.yaml`? | `unavailable` (the error is `litellm.ErrInvalid`), not `not_configured`. | The user has a proxy config and it is broken; "nothing configured" would send them the wrong way. | Task 2, `TestDatabaseURLInvalidConfigIsNotNoDatabase` |
 | How does the connection string reach `psql`? | On its argument list, after `-d`; the statement after `-c`. `PGTZ=UTC` is set beside `PGCONNECT_TIMEOUT=3`. | libpq does not expand a URI given in `PGDATABASE`. The cost: the string is visible in `ps` for the second the query runs; `litellm-session-logs/02_export_proxy_server_request.sh` does the same. Documented in `wt-stats.md`. | Task 3, `TestQueryInvocation` |
 | How is the window written in SQL? | `"startTime" >= timestamp '<UTC>' AND "startTime" <= timestamp '<UTC>'`, zone-less literals formatted by Go. Nothing else is interpolated. | `startTime` is a zone-less `DateTime` in LiteLLM's Prisma schema, filled with UTC. Python passed zone-aware values. Totals can therefore differ from modelman's at the window's edges; the guide says so. | Task 3, `TestQuerySQL` |
 | How are `psql` failures classified? | Exit status 2 is "cannot reach the LiteLLM database"; any other failure, or output that is not the JSON asked for, is "the spend query failed". | Status 2 is psql's own code for a failed connection (observed against an unreachable host). | Task 3, `TestQueryErrorMapping`, `TestQueryExitStatusFromARealProcess` |
-| How much of `psql`'s own message goes in the note? | Only text that cannot hold part of the connection string. For status 2: libpq's reason after `connection to server … failed:` with every double-quoted value replaced by `"..."` (`Connection refused`, `password authentication failed for user "..."`); `the database host name did not resolve`; otherwise a fixed sentence saying the message is withheld. For a query failure: the server's `ERROR:` line, else `psql exited with status N`. No host, port, user or database name is ever printed. There is no redaction pass. | Observed with fake strings (Task 3): libpq quotes a mis-split password back as a `port`, a percent token, a keyword or a host name, and Go's `url.Parse` fails on the same strings, so redacting "the password" cannot work. An allow-list of shapes can. The same text is `usage.spend_reason` in `--json`, which the guide tells people to append to a file. The owner may prefer to see the host and port; that is one regular expression to loosen. | Task 3, `TestQueryNeverLeaksTheConnectionString`, `TestQueryErrorMapping` |
+| How much of `psql`'s own message goes in the note? | The host and port it tried, and libpq's reason: `cannot reach the LiteLLM database at 127.0.0.1:5432: Connection refused`. Over a socket, the socket path (`at socket /tmp/.s.PGSQL.5432`); for a name that did not resolve, the name. Nothing else from the connection string: not the user, the password or the database name (every double-quoted value in the reason becomes `"..."`), and not the IP a name resolved to. The address is taken only from libpq's `connection to server at "<host>" (<ip>), port <n> failed:` line (or its `on socket` and `could not translate host name` forms), only when it has the shape of a host name or IP address and a port number, and only when the string is written so libpq cannot have taken it from the user name or password: a URI with no `@` after its authority, or a keyword string of plain `key=value` fields with no `host` or `port` after `user` or `password`. Otherwise the reason alone is shown. Text in no known shape becomes a fixed sentence saying the message is withheld. For a query failure: the server's `ERROR:` line, else `psql exited with status N`. There is no redaction pass. | The owner's ruling (2026-10-07): name the host and port, to debug a wrong address, and never the user, database name or password. Observed with fake strings (Task 3): libpq quotes a mis-split password back as a `port`, a percent token, a keyword or a host name, and Go's `url.Parse` fails on the same strings, so redacting "the password" cannot work; an allow-list of shapes can. The written-plainly condition is this plan's addition to the ruling: for `u:1234/x@db` libpq's "host" is the user and its "port" the start of the password, so printing what libpq calls the address would print both. The same text is `usage.spend_reason` in `--json`, which the guide tells people to append to a file. If wrong, it is one function (`unreachable`) in the spend package. | Task 3, `TestQueryNeverLeaksTheConnectionString`, `TestQueryErrorMapping` |
 | What is a "request with no model"? | A row whose `model_group` is NULL or empty. Their requests are summed into one count; their tokens and spend are not shown anywhere. | modelman dropped them silently (`reconcile.py:58-61`); the spec asks for a count. | Task 3, `TestQueryParsesTheAggregate`; Task 6, `TestStatsCmdNotesRequestsWithNoModel` |
 | Is that note printed under `--model` or `--family`? | No. The count is the whole window's (the query is never filtered), so beside one model's rows it would read as that model's. `--json` still carries it, as `unattributed_requests`, documented as window-wide. | A note must be true of what is on the screen. | Task 6, `TestStatsCmdNotesRequestsWithNoModel` |
 | Which clock ends the window? | `statsNow()` for the survey table and the spend query, and it is `--json`'s `as_of`. Launches are bucketed by `usage`'s own clock (`usage.now`) a few milliseconds later, because `AllCounts(agent)` keeps the signature the spec writes. | A launch would have to land in those milliseconds to be counted differently. The cost is in tests: one that pins `statsNow` still seeds launches relative to `time.Now()`. | Task 6, `TestStatsCmdPrintsTheUsageTable` (pins `statsNow`, seeds launches by age) |
@@ -82,7 +85,7 @@ Read `modelman/src/modelman/usage/` before starting; it is small. What moves and
 | Python | Go | Notes |
 |---|---|---|
 | `db.py:84-96`, the row-by-row `SELECT … FROM "LiteLLM_SpendLogs" WHERE "startTime" >= %s AND "startTime" <= %s` | `spend.querySQL` | Same table, same window predicate. Aggregated in SQL (`count(*)`, `sum`) instead of in Python; `request_id`, `model`, `custom_llm_provider`, `total_tokens` are no longer fetched (they were never shown). |
-| `db.py:115-139`, `database_url` | `litellm.DatabaseURL` | Same order, with the `WT_` name first. |
+| `db.py:115-139`, `database_url` | `litellm.DatabaseURL` | Same order, with the `WT_` name first. Go goes further in two places Python stopped: an `os.environ/NAME` value and LiteLLM's `DATABASE_URL` fallback are resolved (wt's environment, then the proxy's plist), where Python handed the literal to the driver; and a blank value is unset. |
 | `reconcile.py:52-62`, group rows by `model_group` | `GROUP BY 1` on `coalesce(model_group, '')` | The join key: a LiteLLM route's `model_name` is the registry id (`wt/internal/litellm/entry.go`), so `model_group` equals `usage.jsonl`'s `model_id`. |
 | `reconcile.py:56-57`, the `_reverse_model_index` fallback | not ported | Dropped by the owner. |
 | `reconcile.py:58-61`, drop rows with no model | `spend.Result.Unattributed` | Counted instead of dropped. |
@@ -131,9 +134,10 @@ The survey table keeps `renderTable`: the spec says it is kept, and its ids-plus
 |---|---|---|---|
 | `wt/internal/usage/usage.go` | modify | 1 | `AllCounts`; `countsWhere` shares one `scan` with it |
 | `wt/internal/usage/usage_test.go` | modify | 1 | `AllCounts` tests |
-| `wt/internal/litellm/dburl.go` | create | 1 | `DatabaseURL`, `ErrNoDatabase` |
-| `wt/internal/litellm/dburl_test.go` | create | 1 | Its tests |
-| `wt/internal/spend/spend.go` | create | 1 | `Query`, the SQL, the `psql` run, error mapping, and the short list of `psql` message shapes an error may carry |
+| `wt/internal/litellm/dburl.go` | create | 1 | `DatabaseURL`, `ErrNoDatabase`, `proxyVar` |
+| `wt/internal/litellm/proxyenv.go` | modify | 1 | `ProxyEnv.Lookup`, the value behind `IsSet`; the plist reader itself is unchanged |
+| `wt/internal/litellm/dburl_test.go` | create | 1 | Their tests |
+| `wt/internal/spend/spend.go` | create | 1 | `Query`, the SQL, the `psql` run, error mapping, and the short list of `psql` message shapes an error may carry — the host and port among them |
 | `wt/internal/spend/testmain_test.go` | create | 1 | Fails both seams by default |
 | `wt/internal/spend/spend_test.go` | create | 1 | Its tests |
 | `wt/cmd/wt/stats_usage.go` | create | 2 | `usageRow`, `buildUsageRows`, `familyFor`; then `usageReport`, `collectUsage`, the `querySpend` and `stdoutWidth` seams |
@@ -163,7 +167,7 @@ Three PR slices, in this order, as the spec lists them. Each is one branch off a
 | 2 | 4, 5, 6, 7, 8 | `feat/wt-stats-usage-table` | The usage table, `--family`, the notes |
 | 3 | 9 | `feat/wt-stats-json` | `--json` |
 
-Task 8 is the check against the real database. It needs the owner, changes no file and gates PR 2's handoff.
+Task 8 is the check against the real database. The controller runs it under the owner's OK (2026-10-07); it is not dispatched to a subagent, changes no file and gates PR 2's handoff.
 
 Start each branch after the previous PR has merged, from the remote's `main`. This form also works inside a git worktree, where `git switch main` fails because `main` is checked out elsewhere:
 
@@ -176,7 +180,7 @@ This plan is not on `main` until the branch that carries it (`docs/modelman-reti
 
 Line numbers below are as of `main` at `4a7e10a`. Within a PR they drift as earlier tasks land; each step also names the function or quotes the text, and that is what to match on.
 
-Every code block in this plan was built and run in a scratch copy of `wt/` at `4a7e10a`, task by task in this order, with each "expected" line taken from that run.
+Every code block in this plan was built and run in a scratch copy of `wt/` at `4a7e10a`, task by task in this order, with each "expected" line taken from that run — again after the owner's decisions of 2026-10-07 (host and port in the note, automatic resolution through the plist, blank values) were written in. The scratch runs used `psql` only against `postgresql://127.0.0.1:1/x`.
 
 ---
 
@@ -445,19 +449,26 @@ git commit -m "feat(wt): usage.AllCounts enumerates every launched model"
 
 ### Task 2: `litellm.DatabaseURL`
 
-`internal/litellm` already resolves `config.yaml` (`DefaultPath`, `configfile.go:42`: `WT_LITELLM_CONFIG`, then `MODELMAN_LITELLM_CONFIG`, then `~/.config/litellm/config.yaml`) and parses it into a `yaml.Node` tree (`Open`, `:124`), but reads only `model_list` from it. This task adds the one read of `general_settings.database_url`.
+`internal/litellm` already resolves `config.yaml` (`DefaultPath`, `configfile.go:42`: `WT_LITELLM_CONFIG`, then `MODELMAN_LITELLM_CONFIG`, then `~/.config/litellm/config.yaml`) and parses it into a `yaml.Node` tree (`Open`, `:124`), but reads only `model_list` from it. This task adds the one read of `general_settings.database_url`, resolved the way the proxy itself would see it.
 
-The package's `TestMain` (`testmain_test.go`) stubs only `runShell`; it does **not** redirect any path. So every test here names its own `config.yaml` through `WT_LITELLM_CONFIG` and clears the two database variables — the `dbConfig` helper below — and the redirected-registry test uses the existing `redirectedRegistry` helper (`service_test.go:1275`), which points `HOME` at a temp directory. No test may reach `DefaultPath()`'s real default.
+That is the owner's ruling (2026-10-07): the connection string resolves automatically from the local LiteLLM configuration. On a LaunchAgent install `config.yaml` either says `database_url: os.environ/DATABASE_URL` or says nothing and lets LiteLLM read `DATABASE_URL` itself, and the variable is set only in the proxy's plist — not in the shell `wt stats` is typed in. The package already reads that plist: `LoadProxyEnv` (`proxyenv.go:74`) returns a `ProxyEnv`, which today answers only `IsSet(name)`. This task gives it `Lookup(name)`, the value behind `IsSet` — one small method over the map the existing parser already fills — and `DatabaseURL` asks it. **Do not write a second plist parser**, and do not read the plist anywhere else.
+
+The lookup, in order: `WT_LITELLM_DATABASE_URL`; `MODELMAN_LITELLM_DATABASE_URL`; `general_settings.database_url` in `config.yaml`. A value `os.environ/NAME` is looked up in wt's own environment and then in the proxy's. When `config.yaml` exists and names no `database_url`, `DATABASE_URL` is looked up the same two ways. A value that is empty or only whitespace is unset wherever it is found.
+
+The package's `TestMain` (`testmain_test.go`) stubs only `runShell`; it does **not** redirect any path, and it does not replace `loadProxyEnv`. So every test here names its own `config.yaml` through `WT_LITELLM_CONFIG`, clears the database variables and replaces `loadProxyEnv` (the package's existing seam, `proxyenv.go:70`) — the `dbConfig` and `stubProxyEnv` helpers below — and the redirected-registry test uses the existing `redirectedRegistry` helper (`service_test.go:1275`), which points `HOME` at a temp directory. Two tests run the real plist reader, against a temp file named by `WT_LITELLM_PLIST` (the existing `writePlist` helper, `proxyenv_test.go:37`). No test may reach `DefaultPath()`'s real default or the real plist.
 
 **Files:**
 - Create: `wt/internal/litellm/dburl.go`
+- Modify: `wt/internal/litellm/proxyenv.go:41-48` (one method added after `IsSet`)
 - Test: `wt/internal/litellm/dburl_test.go`
 
 **Interfaces:**
-- Consumes (existing, package `litellm`): `func DefaultPath() string` (`configfile.go:42`), `func namedPath() (string, bool)` (`:51`), `func Open(path string) (*File, error)` (`:124`, returns `ErrMissing` or `ErrInvalid`), `func (f *File) root() *yaml.Node` (`:152`), `func isNull(n *yaml.Node) bool` (`:178`), `func mergedGet(m *yaml.Node, key string) *yaml.Node` (`:470`, nil-safe, follows `<<` merges), `var ErrMissing`, `var ErrInvalid` (`:28`, `:31`); `config.RegistryRedirected() bool` and `config.RegistryPath() string` (`internal/config/registry.go:119`, `:23`); test helper `func redirectedRegistry(t *testing.T) string` (`service_test.go:1275`).
+- Consumes (existing, package `litellm`): `func DefaultPath() string` (`configfile.go:42`), `func namedPath() (string, bool)` (`:51`), `func Open(path string) (*File, error)` (`:124`, returns `ErrMissing` or `ErrInvalid`), `func (f *File) root() *yaml.Node` (`:152`), `func isNull(n *yaml.Node) bool` (`:178`), `func mergedGet(m *yaml.Node, key string) *yaml.Node` (`:470`, nil-safe, follows `<<` merges), `var ErrMissing`, `var ErrInvalid` (`:28`, `:31`); `config.RegistryRedirected() bool` and `config.RegistryPath() string` (`internal/config/registry.go:119`, `:23`); the proxy-environment reader in `proxyenv.go` — `type ProxyEnv struct { Source string; vars map[string]string; ambient bool }` (`:28`; `ambient` is set when the plist could not answer and wt's own environment stands in), `func (e ProxyEnv) IsSet(name string) bool` (`:41`), the seam `var loadProxyEnv = realLoadProxyEnv` (`:70`), `func LoadProxyEnv() ProxyEnv` (`:74`), `func realLoadProxyEnv() ProxyEnv` (`:85`); test helpers `func redirectedRegistry(t *testing.T) string` (`service_test.go:1275`), `func writePlist(t *testing.T, body string) string` and `const proxyPlist` (`proxyenv_test.go:37`, `:11`; the plist sets `IN_PLIST` to `http://box:11434` and `EMPTY_IN_PLIST` to `""`).
 - Produces:
+  - `func (e ProxyEnv) Lookup(name string) (string, bool)` — the value `name` has for the proxy and whether it is set there; wt's own environment when `e.ambient`
   - `var ErrNoDatabase = errors.New("no LiteLLM database configured")`
-  - `func DatabaseURL() (string, error)` — the connection string, or an error that wraps `ErrNoDatabase` (nothing names a database) or `ErrInvalid` (`config.yaml` unparseable). No returned error contains a connection string.
+  - `func DatabaseURL() (string, error)` — the connection string, never blank, with surrounding whitespace dropped; or an error that wraps `ErrNoDatabase` (nothing names a database) or `ErrInvalid` (`config.yaml` unparseable). No returned error contains a connection string or any variable's value: the reasons name variables, `config.yaml` and the plist path.
+  - unexported `func proxyVar(name string) (value, looked string)` — wt's environment, then `loadProxyEnv()`; `looked` is where it searched, for the note
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -474,10 +485,24 @@ import (
 	"testing"
 )
 
+// stubProxyEnv replaces the proxy-environment seam (loadProxyEnv) for this
+// test with a LaunchAgent environment holding vars, restored on cleanup. No
+// test here may read the developer's real plist: it can hold the real
+// connection string.
+func stubProxyEnv(t *testing.T, vars map[string]string) {
+	t.Helper()
+	old := loadProxyEnv
+	loadProxyEnv = func() ProxyEnv {
+		return ProxyEnv{Source: "the test proxy environment", vars: vars}
+	}
+	t.Cleanup(func() { loadProxyEnv = old })
+}
+
 // dbConfig points WT_LITELLM_CONFIG at a fresh config.yaml holding body (no
-// file when body is ""), and clears every variable DatabaseURL reads, so no
-// test here can fall through to the developer's real config.yaml or pick up
-// a connection string from their shell. It returns the file's path.
+// file when body is ""), clears every variable DatabaseURL reads and gives
+// the proxy an empty environment, so no test here can fall through to the
+// developer's real config.yaml or plist, or pick up a connection string from
+// their shell. It returns the file's path.
 func dbConfig(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "config.yaml")
@@ -490,6 +515,8 @@ func dbConfig(t *testing.T, body string) string {
 	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
 	t.Setenv("WT_LITELLM_DATABASE_URL", "")
 	t.Setenv("MODELMAN_LITELLM_DATABASE_URL", "")
+	t.Setenv("DATABASE_URL", "")
+	stubProxyEnv(t, nil)
 	return p
 }
 
@@ -537,29 +564,50 @@ func TestDatabaseURLEnvNeedsNoConfigFile(t *testing.T) {
 }
 
 // TestDatabaseURLResolvesAnEnvironReference verifies a config value written
-// the way LiteLLM's own docs write it — os.environ/NAME — is resolved from
-// wt's environment rather than handed to psql as a literal, that an unset
-// variable is "not configured" with a message naming the variable, and that
-// a bare "os.environ/" gets a message of its own.
-// Passed through verbatim (modelman's behaviour) it reaches psql as a
-// database called "os.environ/DATABASE_URL" and fails with a baffling error.
+// the way LiteLLM's own docs write it — os.environ/NAME — is resolved the way
+// the proxy would see it: from wt's own environment, else from the proxy's
+// LaunchAgent environment, with wt's own winning when both have it. On the
+// usual install the variable is set only in the plist, so a lookup in wt's
+// shell alone reports "not configured" on a machine whose proxy is logging
+// spend. Unset in both, it is "not configured" with a message that names the
+// variable and both places and holds no value from either.
 func TestDatabaseURLResolvesAnEnvironReference(t *testing.T) {
 	p := dbConfig(t, "general_settings:\n  database_url: os.environ/WT_TEST_DB_URL\n")
 
-	t.Setenv("WT_TEST_DB_URL", "postgresql://resolved/db")
-	if got, err := DatabaseURL(); err != nil || got != "postgresql://resolved/db" {
-		t.Fatalf("DatabaseURL() = %q, %v; want the variable's value", got, err)
+	// Only the proxy has it.
+	stubProxyEnv(t, map[string]string{"WT_TEST_DB_URL": "postgresql://proxy/db"})
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://proxy/db" {
+		t.Fatalf("set only for the proxy: DatabaseURL() = %q, %v; want the proxy's value", got, err)
 	}
 
+	// Both have it: the shell wt was typed in wins.
+	t.Setenv("WT_TEST_DB_URL", "postgresql://shell/db")
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://shell/db" {
+		t.Fatalf("set in both: DatabaseURL() = %q, %v; want wt's own value", got, err)
+	}
+
+	// Only wt's environment has it.
+	stubProxyEnv(t, nil)
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://shell/db" {
+		t.Fatalf("set only for wt: DatabaseURL() = %q, %v; want wt's own value", got, err)
+	}
+
+	// Neither has it. The proxy does have other variables, one of them a
+	// connection string: none of their values may reach the message.
 	t.Setenv("WT_TEST_DB_URL", "")
+	stubProxyEnv(t, map[string]string{"OTHER_DB_URL": "postgresql://u:FAKEsecret@other/db"})
 	_, err := DatabaseURL()
 	if !errors.Is(err, ErrNoDatabase) {
-		t.Fatalf("err = %v, want ErrNoDatabase", err)
+		t.Fatalf("set in neither: err = %v, want ErrNoDatabase", err)
 	}
-	for _, want := range []string{"os.environ/WT_TEST_DB_URL", "WT_TEST_DB_URL is not set", p} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("err = %q, want it to contain %q", err, want)
-		}
+	want := "no LiteLLM database configured: general_settings.database_url in " + p +
+		" is os.environ/WT_TEST_DB_URL, and WT_TEST_DB_URL is not set in wt's environment or the test proxy environment" +
+		" (set it, or WT_LITELLM_DATABASE_URL)"
+	if err.Error() != want {
+		t.Errorf("err = %q\nwant  %q", err, want)
+	}
+	if strings.Contains(err.Error(), "FAKEsecret") || strings.Contains(err.Error(), "postgresql://") {
+		t.Errorf("err = %q quotes a value from the proxy's environment", err)
 	}
 
 	// The prefix with no name after it: there is no variable to report as
@@ -574,13 +622,182 @@ func TestDatabaseURLResolvesAnEnvironReference(t *testing.T) {
 	}
 }
 
+// TestDatabaseURLFallsBackToDatabaseURL verifies LiteLLM's own fallback: a
+// config.yaml that names no database_url leaves the proxy reading
+// DATABASE_URL from its environment, which is how a LaunchAgent install is
+// usually wired. wt looks the variable up the same two ways as a reference —
+// its own environment, then the proxy's — and says so by name when neither
+// has it. A missing config.yaml is not that case: with no proxy config there
+// is nothing to say a DATABASE_URL in the shell belongs to LiteLLM.
+func TestDatabaseURLFallsBackToDatabaseURL(t *testing.T) {
+	const noURL = "general_settings:\n  master_key: x\n"
+
+	p := dbConfig(t, noURL)
+	stubProxyEnv(t, map[string]string{"DATABASE_URL": "postgresql://proxy/db"})
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://proxy/db" {
+		t.Fatalf("DATABASE_URL set only for the proxy: DatabaseURL() = %q, %v; want the proxy's value", got, err)
+	}
+	t.Setenv("DATABASE_URL", "postgresql://shell/db")
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://shell/db" {
+		t.Fatalf("DATABASE_URL set in both: DatabaseURL() = %q, %v; want wt's own value", got, err)
+	}
+
+	t.Setenv("DATABASE_URL", "")
+	stubProxyEnv(t, nil)
+	_, err := DatabaseURL()
+	want := "no LiteLLM database configured: " + p + " has no general_settings.database_url," +
+		" and DATABASE_URL is not set in wt's environment or the test proxy environment (set WT_LITELLM_DATABASE_URL)"
+	if !errors.Is(err, ErrNoDatabase) || err.Error() != want {
+		t.Errorf("DATABASE_URL set in neither: err = %q\nwant  %q", err, want)
+	}
+
+	// A literal database_url is never overridden by DATABASE_URL.
+	dbConfig(t, "general_settings:\n  database_url: postgresql://file/db\n")
+	t.Setenv("DATABASE_URL", "postgresql://shell/db")
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://file/db" {
+		t.Errorf("config.yaml names a database: DatabaseURL() = %q, %v; want the file's value", got, err)
+	}
+
+	// No config.yaml at all: DATABASE_URL is not consulted.
+	dbConfig(t, "")
+	t.Setenv("DATABASE_URL", "postgresql://shell/db")
+	stubProxyEnv(t, map[string]string{"DATABASE_URL": "postgresql://proxy/db"})
+	if got, err := DatabaseURL(); got != "" || !errors.Is(err, ErrNoDatabase) {
+		t.Errorf("no config.yaml: DatabaseURL() = %q, %v; want \"\" and ErrNoDatabase", got, err)
+	}
+}
+
+// TestDatabaseURLWhenThePlistCannotBeRead verifies the lookup with the real
+// plist reader and a LaunchAgent plist that cannot answer — missing, binary,
+// or bypassed by a configured restart command. wt's own environment is then
+// the only source: a variable set there still resolves, and one that is not
+// is reported as unset in wt's environment, with no claim about a plist that
+// was never read. The plist here is a temp file named by WT_LITELLM_PLIST.
+func TestDatabaseURLWhenThePlistCannotBeRead(t *testing.T) {
+	dbConfig(t, "general_settings:\n  database_url: os.environ/WT_TEST_DB_URL\n")
+	old := loadProxyEnv
+	loadProxyEnv = realLoadProxyEnv
+	t.Cleanup(func() { loadProxyEnv = old })
+
+	check := func(label string) {
+		t.Helper()
+		t.Setenv("WT_TEST_DB_URL", "postgresql://shell/db")
+		if got, err := DatabaseURL(); err != nil || got != "postgresql://shell/db" {
+			t.Errorf("%s: DatabaseURL() = %q, %v; want wt's own value", label, got, err)
+		}
+		t.Setenv("WT_TEST_DB_URL", "")
+		_, err := DatabaseURL()
+		if !errors.Is(err, ErrNoDatabase) || !strings.HasSuffix(err.Error(), "and WT_TEST_DB_URL is not set in wt's environment (set it, or WT_LITELLM_DATABASE_URL)") {
+			t.Errorf("%s: err = %v, want ErrNoDatabase naming wt's environment only", label, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "LaunchAgent") {
+			t.Errorf("%s: err = %q claims the LaunchAgent plist was consulted", label, err)
+		}
+	}
+	writePlist(t, "")
+	check("no plist")
+	writePlist(t, "bplist00\x01\x02binary")
+	check("binary plist")
+	writePlist(t, proxyPlist)
+	t.Setenv("WT_LITELLM_RESTART_CMD", "systemctl restart litellm")
+	check("a restart command is configured")
+
+	// The same reader, with a plist it can read: the value comes from the
+	// file, and the note for a variable it lacks names the file.
+	plist := writePlist(t, proxyPlist)
+	dbConfig(t, "general_settings:\n  database_url: os.environ/IN_PLIST\n")
+	loadProxyEnv = realLoadProxyEnv
+	if got, err := DatabaseURL(); err != nil || got != "http://box:11434" {
+		t.Errorf("readable plist: DatabaseURL() = %q, %v; want the plist's value for IN_PLIST", got, err)
+	}
+	dbConfig(t, "general_settings:\n  database_url: os.environ/NOT_IN_PLIST\n")
+	loadProxyEnv = realLoadProxyEnv
+	if _, err := DatabaseURL(); err == nil || !strings.Contains(err.Error(), "NOT_IN_PLIST is not set in wt's environment or the proxy LaunchAgent's EnvironmentVariables ("+plist+")") {
+		t.Errorf("readable plist without the variable: err = %v, want it to name the plist %s", err, plist)
+	}
+}
+
+// TestDatabaseURLBlankCountsAsUnset verifies a value that is empty or only
+// whitespace is "unset" at every source: each of the two variables, the
+// config.yaml value, a referenced variable in wt's environment and in the
+// proxy's, and DATABASE_URL. A blank string handed to psql is a connection
+// string with no host, and libpq then tries the local default socket — a
+// server that is not the proxy's database. So the lookup moves on to the
+// next source, and with none left answers ErrNoDatabase, never "".
+func TestDatabaseURLBlankCountsAsUnset(t *testing.T) {
+	const blank = " \t "
+	const fromFile = "general_settings:\n  database_url: postgresql://file/db\n"
+
+	// A blank WT_ variable does not win; the legacy variable is next.
+	dbConfig(t, fromFile)
+	t.Setenv("WT_LITELLM_DATABASE_URL", blank)
+	t.Setenv("MODELMAN_LITELLM_DATABASE_URL", "postgresql://legacy/db")
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://legacy/db" {
+		t.Errorf("blank WT variable: DatabaseURL() = %q, %v; want the legacy variable's value", got, err)
+	}
+	// Both blank: config.yaml is next.
+	t.Setenv("MODELMAN_LITELLM_DATABASE_URL", blank)
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://file/db" {
+		t.Errorf("both variables blank: DatabaseURL() = %q, %v; want the file's value", got, err)
+	}
+
+	// A blank value in config.yaml is no database_url: DATABASE_URL is next,
+	// and a blank DATABASE_URL in wt's environment yields to the proxy's.
+	dbConfig(t, "general_settings:\n  database_url: \"   \"\n")
+	t.Setenv("DATABASE_URL", blank)
+	stubProxyEnv(t, map[string]string{"DATABASE_URL": "postgresql://proxy/db"})
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://proxy/db" {
+		t.Errorf("blank config value and blank DATABASE_URL: DatabaseURL() = %q, %v; want the proxy's value", got, err)
+	}
+
+	// Blank everywhere a reference can be resolved: not configured.
+	dbConfig(t, "general_settings:\n  database_url: os.environ/WT_TEST_DB_URL\n")
+	t.Setenv("WT_TEST_DB_URL", blank)
+	stubProxyEnv(t, map[string]string{"WT_TEST_DB_URL": blank})
+	got, err := DatabaseURL()
+	if got != "" || !errors.Is(err, ErrNoDatabase) ||
+		!strings.HasSuffix(err.Error(), "and WT_TEST_DB_URL is not set in wt's environment or the test proxy environment (set it, or WT_LITELLM_DATABASE_URL)") {
+		t.Errorf("blank in both environments: DatabaseURL() = %q, %v; want \"\" and ErrNoDatabase naming the variable and both places", got, err)
+	}
+
+	// Surrounding whitespace on a real value is dropped, not passed to psql.
+	dbConfig(t, "")
+	t.Setenv("WT_LITELLM_DATABASE_URL", "  postgresql://wt/db\n")
+	if got, err := DatabaseURL(); err != nil || got != "postgresql://wt/db" {
+		t.Errorf("padded value: DatabaseURL() = %q, %v; want it trimmed", got, err)
+	}
+}
+
+// TestProxyEnvLookupReturnsTheValue verifies ProxyEnv.Lookup, the value
+// behind IsSet: the plist's string for a variable it sets (the empty string
+// included), nothing for one only wt's shell has, and wt's own environment
+// when that stands in for an unreadable plist. DatabaseURL resolves the
+// proxy's connection string through it.
+func TestProxyEnvLookupReturnsTheValue(t *testing.T) {
+	writePlist(t, proxyPlist)
+	t.Setenv("ONLY_IN_SHELL", "x")
+	env := LoadProxyEnv()
+	for name, want := range map[string]struct {
+		value string
+		set   bool
+	}{"IN_PLIST": {"http://box:11434", true}, "EMPTY_IN_PLIST": {"", true}, "ONLY_IN_SHELL": {"", false}} {
+		if got, ok := env.Lookup(name); got != want.value || ok != want.set {
+			t.Errorf("Lookup(%q) = %q, %v; want %q, %v", name, got, ok, want.value, want.set)
+		}
+	}
+	writePlist(t, "")
+	if got, ok := LoadProxyEnv().Lookup("ONLY_IN_SHELL"); got != "x" || !ok {
+		t.Errorf("no plist: Lookup(ONLY_IN_SHELL) = %q, %v; want wt's own value", got, ok)
+	}
+}
+
 // TestDatabaseURLNotConfigured verifies each way of having no database is
 // ErrNoDatabase and names config.yaml: no file, no general_settings, no
-// database_url, a null or empty value, a value that is not a string, an
-// os.environ/ reference that names no variable. `wt
-// stats` turns ErrNoDatabase into one quiet note and still prints launches;
-// any other error here would read as a broken install on a machine that
-// simply runs LiteLLM without spend logging.
+// database_url, a null, empty or blank value, a value that is not a string,
+// an os.environ/ reference that names no variable — all with DATABASE_URL
+// set nowhere. `wt stats` turns ErrNoDatabase into one quiet note and still
+// prints launches; any other error here would read as a broken install on a
+// machine that simply runs LiteLLM without spend logging.
 func TestDatabaseURLNotConfigured(t *testing.T) {
 	cases := map[string]string{
 		"missing file":        "",
@@ -588,6 +805,7 @@ func TestDatabaseURLNotConfigured(t *testing.T) {
 		"no database_url":     "general_settings:\n  master_key: x\n",
 		"null value":          "general_settings:\n  database_url:\n",
 		"empty value":         "general_settings:\n  database_url: \"\"\n",
+		"blank value":         "general_settings:\n  database_url: \"  \"\n",
 		"a mapping":           "general_settings:\n  database_url:\n    host: x\n",
 		"bare os.environ/":    "general_settings:\n  database_url: os.environ/\n",
 		"settings not a map":  "general_settings: 3\n",
@@ -638,11 +856,22 @@ func TestDatabaseURLReadsThroughAMergeKey(t *testing.T) {
 // config.yaml, DatabaseURL answers ErrNoDatabase and never returns the
 // database_url the default config.yaml holds. Without it, every `wt stats`
 // in a test or under a scratch XDG_CONFIG_HOME would query the developer's
-// real spend database. Naming the database or config.yaml lifts the guard.
+// real spend database. The guard comes before the DATABASE_URL fallback and
+// before the proxy's environment is read at all, so a scratch run cannot
+// pick the real connection string out of the LaunchAgent plist either.
+// Naming the database or config.yaml lifts the guard.
 func TestDatabaseURLSkipsTheDefaultConfigUnderARedirectedRegistry(t *testing.T) {
 	p := redirectedRegistry(t)
 	t.Setenv("WT_LITELLM_DATABASE_URL", "")
 	t.Setenv("MODELMAN_LITELLM_DATABASE_URL", "")
+	t.Setenv("DATABASE_URL", "postgresql://shell/db")
+	asked := 0
+	old := loadProxyEnv
+	loadProxyEnv = func() ProxyEnv {
+		asked++
+		return ProxyEnv{Source: "the test proxy environment", vars: map[string]string{"DATABASE_URL": "postgresql://proxy/db"}}
+	}
+	t.Cleanup(func() { loadProxyEnv = old })
 	body := "general_settings:\n  database_url: postgresql://real/db\n"
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -654,6 +883,9 @@ func TestDatabaseURLSkipsTheDefaultConfigUnderARedirectedRegistry(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "registry is redirected") {
 		t.Errorf("err = %q, want the redirected-registry reason", err)
+	}
+	if asked != 0 {
+		t.Errorf("the proxy's environment was read %d times under the guard, want 0", asked)
 	}
 
 	t.Setenv("WT_LITELLM_CONFIG", p)
@@ -670,11 +902,28 @@ func TestDatabaseURLSkipsTheDefaultConfigUnderARedirectedRegistry(t *testing.T) 
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run from `wt/`: `go test -count=1 ./internal/litellm -run TestDatabaseURL`
+Run from `wt/`: `go test -count=1 ./internal/litellm -run 'TestDatabaseURL|TestProxyEnvLookup'`
 
-Expected: the build fails with `undefined: DatabaseURL` and `undefined: ErrNoDatabase`.
+Expected: the build fails with `undefined: DatabaseURL` and `undefined: ErrNoDatabase` (the compiler stops at ten errors, before it reaches `env.Lookup undefined`).
 
 - [ ] **Step 3: Implement**
+
+In `wt/internal/litellm/proxyenv.go`, directly after the `IsSet` method (it ends at line 48) and before the comment `// ProxyPlistPath is the proxy's LaunchAgent plist: WT_LITELLM_PLIST, else the`, insert:
+
+```go
+// Lookup returns the value name has for the proxy, and whether it is set
+// there — the value behind IsSet, read from the same place: the plist's
+// EnvironmentVariables, or wt's own environment when that stands in.
+func (e ProxyEnv) Lookup(name string) (string, bool) {
+	if e.ambient {
+		return os.LookupEnv(name)
+	}
+	v, ok := e.vars[name]
+	return v, ok
+}
+```
+
+Nothing else in `proxyenv.go` changes: `plistEnvironment` already parses the values, and `IsSet` keeps its meaning (a variable set to `""` is set — it is `DatabaseURL` that treats a blank connection string as unset).
 
 Create `wt/internal/litellm/dburl.go`:
 
@@ -705,25 +954,37 @@ var databaseURLEnv = []string{"WT_LITELLM_DATABASE_URL", "MODELMAN_LITELLM_DATAB
 // environment variable instead of holding the value.
 const environRef = "os.environ/"
 
+// proxyDatabaseEnv is the variable LiteLLM itself reads when config.yaml
+// names no database_url.
+const proxyDatabaseEnv = "DATABASE_URL"
+
 // DatabaseURL resolves the connection string of the database the LiteLLM
-// proxy logs spend to: WT_LITELLM_DATABASE_URL, then the legacy
-// MODELMAN_LITELLM_DATABASE_URL, then general_settings.database_url in
-// config.yaml (DefaultPath, so WT_LITELLM_CONFIG is honored). A config value
-// of the form os.environ/NAME is resolved from wt's own environment.
+// proxy logs spend to, the way the proxy itself would see it:
+// WT_LITELLM_DATABASE_URL, then the legacy MODELMAN_LITELLM_DATABASE_URL,
+// then general_settings.database_url in config.yaml (DefaultPath, so
+// WT_LITELLM_CONFIG is honored). A config value of the form os.environ/NAME
+// is looked up in wt's own environment and then in the proxy's (proxyVar).
+// When config.yaml exists and names no database_url, DATABASE_URL is looked
+// up the same two ways — LiteLLM's own fallback.
+//
+// A value that is empty or only whitespace counts as unset, whatever it came
+// from: handed to psql it is a connection string with no host, and libpq
+// then tries the local default socket, where some other server may listen.
 //
 // It only reads. It returns ErrNoDatabase (wrapped, with the reason) when
 // nothing names a database, and ErrInvalid when config.yaml exists but
-// cannot be parsed. No error it returns contains the connection string.
+// cannot be parsed. No error it returns contains a connection string: the
+// reasons name variables and files, never a value.
 //
-// config.yaml is not consulted when the registry is redirected and nothing
-// names config.yaml — the rule checkRegistryPairing applies to route writes.
-// A scratch-registry run (a test, an experiment under XDG_CONFIG_HOME) must
-// not go on to query the real proxy's database; the two variables above
-// still work there, because naming the database is as explicit as naming
-// config.yaml.
+// Neither config.yaml nor the proxy's environment is consulted when the
+// registry is redirected and nothing names config.yaml — the rule
+// checkRegistryPairing applies to route writes. A scratch-registry run (a
+// test, an experiment under XDG_CONFIG_HOME) must not go on to query the
+// real proxy's database; the two variables above still work there, because
+// naming the database is as explicit as naming config.yaml.
 func DatabaseURL() (string, error) {
 	for _, k := range databaseURLEnv {
-		if v := os.Getenv(k); v != "" {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			return v, nil
 		}
 	}
@@ -741,7 +1002,12 @@ func DatabaseURL() (string, error) {
 	}
 	n := mergedGet(mergedGet(f.root(), "general_settings"), "database_url")
 	if n == nil || n.Kind != yaml.ScalarNode || isNull(n) || strings.TrimSpace(n.Value) == "" {
-		return "", fmt.Errorf("%w: %s has no general_settings.database_url (set WT_LITELLM_DATABASE_URL)", ErrNoDatabase, path)
+		v, looked := proxyVar(proxyDatabaseEnv)
+		if v != "" {
+			return v, nil
+		}
+		return "", fmt.Errorf("%w: %s has no general_settings.database_url, and %s is not set in %s (set WT_LITELLM_DATABASE_URL)",
+			ErrNoDatabase, path, proxyDatabaseEnv, looked)
 	}
 	v := strings.TrimSpace(n.Value)
 	name, isRef := strings.CutPrefix(v, environRef)
@@ -755,21 +1021,46 @@ func DatabaseURL() (string, error) {
 		return "", fmt.Errorf("%w: general_settings.database_url in %s is %s with no variable name (spell it os.environ/<VAR>, or set WT_LITELLM_DATABASE_URL)",
 			ErrNoDatabase, path, environRef)
 	}
-	if resolved := os.Getenv(name); resolved != "" {
+	resolved, looked := proxyVar(name)
+	if resolved != "" {
 		return resolved, nil
 	}
-	return "", fmt.Errorf("%w: general_settings.database_url in %s is %s%s, and %s is not set in wt's environment (set it, or WT_LITELLM_DATABASE_URL)",
-		ErrNoDatabase, path, environRef, name, name)
+	return "", fmt.Errorf("%w: general_settings.database_url in %s is %s%s, and %s is not set in %s (set it, or WT_LITELLM_DATABASE_URL)",
+		ErrNoDatabase, path, environRef, name, name, looked)
+}
+
+// proxyVar returns the value of a variable the proxy's configuration relies
+// on: from wt's own environment first — what the user set in this shell wins
+// — and then from the proxy's (LoadProxyEnv: the LaunchAgent plist's
+// EnvironmentVariables). The plist is read only when wt's environment does
+// not answer. A blank value is unset in both places.
+//
+// When there is no value, looked says where it was searched for, for the
+// note to quote. When the plist cannot answer, LoadProxyEnv already stands
+// wt's environment in for it, so only that is named: the note must not
+// claim a file that was not read.
+func proxyVar(name string) (value, looked string) {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v, ""
+	}
+	env := loadProxyEnv()
+	if env.ambient {
+		return "", "wt's environment"
+	}
+	if v, _ := env.Lookup(name); strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v), ""
+	}
+	return "", "wt's environment or " + env.Source
 }
 ```
 
 - [ ] **Step 4: Run the tests**
 
-Run from `wt/`: `go test -count=1 ./internal/litellm -run TestDatabaseURL -v`
+Run from `wt/`: `go test -count=1 ./internal/litellm -run 'TestDatabaseURL|TestProxyEnvLookup' -v`
 
-Expected: seven `--- PASS` lines (`TestDatabaseURLPrecedence`, `…EnvNeedsNoConfigFile`, `…ResolvesAnEnvironReference`, `…NotConfigured`, `…InvalidConfigIsNotNoDatabase`, `…ReadsThroughAMergeKey`, `…SkipsTheDefaultConfigUnderARedirectedRegistry`), then `ok`.
+Expected: eleven `--- PASS` lines (`TestDatabaseURLPrecedence`, `…EnvNeedsNoConfigFile`, `…ResolvesAnEnvironReference`, `…FallsBackToDatabaseURL`, `…WhenThePlistCannotBeRead`, `…BlankCountsAsUnset`, `TestProxyEnvLookupReturnsTheValue`, `TestDatabaseURLNotConfigured`, `…InvalidConfigIsNotNoDatabase`, `…ReadsThroughAMergeKey`, `…SkipsTheDefaultConfigUnderARedirectedRegistry`), then `ok`.
 
-Then the whole package: `go test -count=1 ./internal/litellm` → `ok`.
+Then the whole package: `go test -count=1 ./internal/litellm` → `ok`. The existing `TestProxyEnv*` and `TestSync*` tests pass unchanged; they are the proof `proxyenv.go`'s reader behaves as before.
 
 - [ ] **Step 5: Commit**
 
@@ -777,7 +1068,7 @@ Run from `wt/` (the `git add` paths are relative to it):
 
 ```bash
 test -z "$(gofmt -l .)" && go vet ./internal/litellm
-git add internal/litellm/dburl.go internal/litellm/dburl_test.go
+git add internal/litellm/dburl.go internal/litellm/dburl_test.go internal/litellm/proxyenv.go
 git commit -m "feat(wt): litellm.DatabaseURL resolves the spend database"
 ```
 
@@ -814,9 +1105,12 @@ Three things follow.
 
 - A failed connection is exit status 2, and so is a connection string libpq cannot use. The first line is the useful one; later lines are hints.
 - **`psql` quotes pieces of the connection string back, and the piece can be the password.** An unencoded `/` in a password (common in base64) makes libpq read `user:password` as `host:port`; a bad percent escape is printed whole; a stray `@` puts the tail of the password in a "host name". Go's `url.Parse` rejects the first two strings, so a redaction pass that asks Go for "the password" removes nothing exactly when it matters.
-- So `Query` never passes `psql`'s text through. For exit status 2 it keeps one known shape — `connection to server at "<host>" (<ip>), port <n> failed: <reason>`, or the `on socket "<path>"` form — and from it only `<reason>`, with every double-quoted value replaced by `"..."` (libpq's reason for a refused login is `FATAL:  password authentication failed for user "<user>"`, and a mis-split string can put anything in a user or database name). A `could not translate host name` line becomes a fixed phrase. Everything else becomes one fixed sentence. For any other exit status it keeps a line only if the server wrote it about the statement (`ERROR: …`), which cannot contain the connection string.
+- So `Query` never passes `psql`'s text through. For exit status 2 it keeps one known shape — `connection to server at "<host>" (<ip>), port <n> failed: <reason>`, or the `on socket "<path>"` form — and from it `<reason>`, with every double-quoted value replaced by `"..."` (libpq's reason for a refused login is `FATAL:  password authentication failed for user "<user>"`, and a mis-split string can put anything in a user or database name). A `could not translate host name` line becomes a fixed phrase. Everything else becomes one fixed sentence. For any other exit status it keeps a line only if the server wrote it about the statement (`ERROR: …`), which cannot contain the connection string.
+- **The owner wants the host and port in the note** (ruling, 2026-10-07), to debug a wrong address: `cannot reach the LiteLLM database at 127.0.0.1:5432: Connection refused`. They come from the same line, `<host>` and `<n>` (the socket path for the socket form, the name for a `could not translate host name` line; never `<ip>`), and pass two checks. First, shape: a host name or IP address, a port of one to five digits, a path ending `.s.PGSQL.<n>`. Second, the connection string must be written so that libpq's host and port are the user's: the second observation above means that for `postgresql://u:1234/x@db/…` libpq's "host" is `u` and its "port" is `1234`, the start of the password. Such a string always leaves an `@` after the first `/`, where a well-formed URI has none; `plainAddress` checks that (and, for a keyword string, that every field is a plain `key=value` with no `host` or `port` after `user` or `password`). When either check fails the note is the reason alone, as it was before the ruling.
 
-The statement itself was checked for syntax with libpg_query (the real Postgres parser, through `pglast`, no server): it parses as one statement. The column names are from LiteLLM's installed Prisma schema (`model LiteLLM_SpendLogs`: `spend Float`, `prompt_tokens Int`, `completion_tokens Int`, `startTime DateTime`, `model_group String?`, with an index on `startTime`), the same ones `modelman/src/modelman/usage/db.py:84-96` and `litellm-session-logs/01_export_session_logs.sql` select. **The statement has not been run against a real `"LiteLLM_SpendLogs"` table**; Task 8 does that with the owner.
+Only the first message above (`127.0.0.1`, port 1) was observed for the connect-failure shape. The `(<ip>)`, IPv6, `on socket` and FATAL forms in the tests are libpq's documented formats, written by hand; no server was contacted to produce them.
+
+The statement itself was checked for syntax with libpg_query (the real Postgres parser, through `pglast`, no server): it parses as one statement. The column names are from LiteLLM's installed Prisma schema (`model LiteLLM_SpendLogs`: `spend Float`, `prompt_tokens Int`, `completion_tokens Int`, `startTime DateTime`, `model_group String?`, with an index on `startTime`), the same ones `modelman/src/modelman/usage/db.py:84-96` and `litellm-session-logs/01_export_session_logs.sql` select. **The statement has not been run against a real `"LiteLLM_SpendLogs"` table**; Task 8 does that, against the real database, under the owner's OK.
 
 The package has two seams and a `TestMain` that fails both, so a test that forgets to stub cannot find `psql`, let alone run it. Three tests run a real child process: a shell script written to a temp directory, never `psql`.
 
@@ -830,7 +1124,7 @@ The package has two seams and a `TestMain` that fails both, so a test that forge
   - `type Row struct { Model string; Requests, PromptTokens, CompletionTokens int64; Spend float64 }` (JSON tags `model`, `requests`, `prompt_tokens`, `completion_tokens`, `spend`)
   - `type Result struct { Rows []Row; Unattributed int64 }` — `Rows` in the order the database returned them (its collation, not Go's byte order; `buildUsageRows` sorts), never with an empty `Model`
   - `func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error)`
-  - `var ErrNoPsql`, `var ErrUnreachable`, `var ErrQuery` — every `Query` error is or wraps one of them, and none contains any part of `dsn`
+  - `var ErrNoPsql`, `var ErrUnreachable`, `var ErrQuery` — every `Query` error is or wraps one of them. An `ErrUnreachable` reads `cannot reach the LiteLLM database at <host>:<port>: <reason>` (`at socket <path>`, or no `at …` when the address is withheld); no error contains any other part of `dsn`
   - unexported seams `lookPath func(string) (string, error)` and `runPsql func(ctx context.Context, bin string, args, env []string) (stdout, stderr []byte, exit int, err error)`; `var deadline = 10 * time.Second`
 
 - [ ] **Step 1: Write the `TestMain` and the failing tests**
@@ -1032,9 +1326,10 @@ func TestQuerySQL(t *testing.T) {
 // (exit 2, with the stderr text psql 16 really prints), a login the server
 // refused, a host name that does not resolve, a SQL error, and output that
 // is not JSON. `wt stats` prints the message as its one note, and the type
-// decides between "not reachable" and "broken" in --json. The reasons name
-// no host, port, user or database: the note is also --json's spend_reason,
-// which people append to a history file.
+// decides between "not reachable" and "broken" in --json. An unreachable
+// database is named by host and port (or socket path) so a wrong address
+// can be seen; the user and the database name are blanked, and a host or
+// port that is not shaped like one is left out.
 func TestQueryErrorMapping(t *testing.T) {
 	const refused = "psql: error: connection to server at \"127.0.0.1\", port 1 failed: Connection refused\n" +
 		"\tIs the server running on that host and accepting TCP/IP connections?\n"
@@ -1045,6 +1340,12 @@ func TestQueryErrorMapping(t *testing.T) {
 		"FATAL:  database \"litellm\" does not exist\n"
 	const noSuchHost = "psql: error: could not translate host name \"db.example\" to address: " +
 		"nodename nor servname provided, or not known\n"
+	const ipv6 = "psql: error: connection to server at \"::1\", port 5432 failed: Connection refused\n"
+	const oddHost = "psql: error: connection to server at \"not a host!\", port 5432 failed: Connection refused\n"
+	const oddPort = "psql: error: connection to server at \"db.example\", port 54x failed: Connection refused\n"
+	const oddName = "psql: error: could not translate host name \"not a host!\" to address: " +
+		"nodename nor servname provided, or not known\n"
+	const oddSocket = "psql: error: connection to server on socket \"/tmp/a b/.s.PGSQL.5432\" failed: No such file or directory\n"
 	const withheld = "cannot reach the LiteLLM database: psql could not connect; its message is not shown because it can quote the connection string"
 	cases := []struct {
 		name           string
@@ -1054,12 +1355,22 @@ func TestQueryErrorMapping(t *testing.T) {
 		wantMsg        string
 	}{
 		{"connection refused", "", refused, 2, ErrUnreachable,
-			"cannot reach the LiteLLM database: Connection refused"},
+			"cannot reach the LiteLLM database at 127.0.0.1:1: Connection refused"},
 		{"login refused", "", badLogin, 2, ErrUnreachable,
-			`cannot reach the LiteLLM database: password authentication failed for user "..."`},
-		{"no such database", "", noSuchDB, 2, ErrUnreachable,
-			`cannot reach the LiteLLM database: database "..." does not exist`},
+			`cannot reach the LiteLLM database at db.example:5432: password authentication failed for user "..."`},
+		{"no such database, over a socket", "", noSuchDB, 2, ErrUnreachable,
+			`cannot reach the LiteLLM database at socket /tmp/.s.PGSQL.5432: database "..." does not exist`},
 		{"no such host", "", noSuchHost, 2, ErrUnreachable,
+			"cannot reach the LiteLLM database at db.example: the database host name did not resolve"},
+		{"an IPv6 address", "", ipv6, 2, ErrUnreachable,
+			"cannot reach the LiteLLM database at [::1]:5432: Connection refused"},
+		{"a host that is not shaped like one", "", oddHost, 2, ErrUnreachable,
+			"cannot reach the LiteLLM database: Connection refused"},
+		{"a port that is not a number", "", oddPort, 2, ErrUnreachable,
+			"cannot reach the LiteLLM database: Connection refused"},
+		{"a socket path that is not shaped like one", "", oddSocket, 2, ErrUnreachable,
+			"cannot reach the LiteLLM database: No such file or directory"},
+		{"an unresolved name that is not shaped like a host", "", oddName, 2, ErrUnreachable,
 			"cannot reach the LiteLLM database: the database host name did not resolve"},
 		{"an unknown connection failure", "", "psql: error: something libpq has not said before\n", 2, ErrUnreachable, withheld},
 		{"exit 2 and no message", "", "", 2, ErrUnreachable, withheld},
@@ -1099,32 +1410,75 @@ func TestQueryErrorMapping(t *testing.T) {
 	})
 }
 
-// TestQueryNeverLeaksTheConnectionString feeds Query the messages psql 16
-// really prints for connection strings it cannot use — each recorded with
-// made-up credentials against an address nothing listens on — and verifies
-// no piece of the string survives into the error: not the password libpq
-// mistook for a port, a percent token, a keyword or a host name, and not
-// the host, user or database either. Go's url.Parse rejects the first two
-// strings outright, so nothing that asks Go for "the password" can protect
-// them. `wt stats` prints the error on the terminal and in --json's
-// spend_reason, which ends up in scrollback, history files and bug reports.
+// TestQueryNeverLeaksTheConnectionString verifies the only pieces of a
+// connection string an error can show are the host and port, and those only
+// when the string is written so libpq cannot have taken them from the user
+// name or password. Every credential here starts with FAKE: the user, the
+// password and the database name must never appear, whatever psql said.
+//
+// The first block is well-formed strings — a password with percent-escapes,
+// a keyword string, a socket directory — where the address is shown and the
+// names the server quotes back are blanked. The second is strings libpq
+// mis-splits: an unencoded "/" or "@" in the password, a bad percent escape,
+// a space in a keyword value. Four of those messages are the ones psql 16
+// prints (recorded with made-up credentials against an address nothing
+// listens on). The others are written in libpq's connect-failure shape for
+// a mis-split string that happens to name a host that answers — there the
+// "host" is the user name or the tail of the password, and the "port" a
+// piece of the password, so the address is left out. Go's url.Parse
+// rejects some of these strings and reads others the way libpq does, so
+// nothing that asks Go for "the password" can protect them.
+// `wt stats` prints the error on the terminal and in --json's spend_reason,
+// which ends up in scrollback, history files and bug reports.
 func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
+	const withheld = "cannot reach the LiteLLM database: psql could not connect; its message is not shown because it can quote the connection string"
+	const refusedAtDB = "psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: Connection refused\n"
 	cases := []struct {
 		name, dsn, stderr string
 		exit              int
+		want              string
 	}{
-		{"a slash in the password, read as host:port", "postgresql://litellm:FAKEabc/def@db.example:5432/spend",
-			"psql: error: invalid integer value \"FAKEabc\" for connection option \"port\"\n", 2},
-		{"a bad percent escape in the password", "postgresql://litellm:FAKEpa%zzword@db.example:5432/spend",
-			"psql: error: invalid percent-encoded token: \"FAKEpa%zzword\"\n", 2},
-		{"a keyword string with a space in the password", "host=db.example port=5432 user=litellm password=FAKEabc FAKEdef",
-			"psql: error: missing \"=\" after \"FAKEdef\" in connection info string\n", 2},
-		{"an @ in the password, read as the host", "postgresql://litellm:FAKEp@ss@db.example:5432/spend",
-			"psql: error: could not translate host name \"ss@db.example\" to address: nodename nor servname provided, or not known\n", 2},
-		{"a refused login naming the user and database", "postgresql://litellm:FAKEpw@db.example:5432/spend",
-			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: FATAL:  no pg_hba.conf entry for host \"10.0.0.9\", user \"litellm\", database \"spend\", no encryption\n", 2},
-		{"some other failure that echoes the whole string", "postgresql://litellm:FAKEpw@db.example:5432/spend",
-			"psql: error: could not use postgresql://litellm:FAKEpw@db.example:5432/spend\n", 1},
+		// Well-formed: the address is shown, nothing else.
+		{"a refused login naming the user and database", "postgresql://FAKEuser:FAKEpw@db.example:5432/FAKEdb",
+			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: FATAL:  no pg_hba.conf entry for host \"10.0.0.9\", user \"FAKEuser\", database \"FAKEdb\", no encryption\n", 2,
+			`cannot reach the LiteLLM database at db.example:5432: no pg_hba.conf entry for host "...", user "...", database "...", no encryption`},
+		{"a password with percent-escapes", "postgresql://FAKEuser:FAKEp%40ss%2Fw%25@db.example:5432/FAKEdb",
+			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: FATAL:  password authentication failed for user \"FAKEuser\"\n", 2,
+			`cannot reach the LiteLLM database at db.example:5432: password authentication failed for user "..."`},
+		{"a keyword string", "host=db.example port=5432 user=FAKEuser password=FAKEpw dbname=FAKEdb",
+			refusedAtDB, 2,
+			"cannot reach the LiteLLM database at db.example:5432: Connection refused"},
+		{"a socket directory", "postgresql://FAKEuser:FAKEpw@%2Fvar%2Frun%2Fpostgresql/FAKEdb",
+			"psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: FATAL:  database \"FAKEdb\" does not exist\n", 2,
+			`cannot reach the LiteLLM database at socket /var/run/postgresql/.s.PGSQL.5432: database "..." does not exist`},
+		{"a query failure that echoes the whole string", "postgresql://FAKEuser:FAKEpw@db.example:5432/FAKEdb",
+			"psql: error: could not use postgresql://FAKEuser:FAKEpw@db.example:5432/FAKEdb\n", 1,
+			"the spend query failed: psql exited with status 1"},
+		{"a connection failure that echoes the whole string", "postgresql://FAKEuser:FAKEpw@db.example:5432/FAKEdb",
+			"psql: error: could not use postgresql://FAKEuser:FAKEpw@db.example:5432/FAKEdb\n", 2, withheld},
+
+		// Mis-split by libpq: no address, whatever psql called the host.
+		{"a slash in the password, read as host:port", "postgresql://FAKEuser:FAKEabc/def@db.example:5432/FAKEdb",
+			"psql: error: invalid integer value \"FAKEabc\" for connection option \"port\"\n", 2, withheld},
+		{"a slash after digits in the password, read as a real port", "postgresql://FAKEuser:54321/FAKEdef@db.example:5432/FAKEdb",
+			"psql: error: connection to server at \"FAKEuser\" (10.0.0.7), port 54321 failed: Connection refused\n", 2,
+			"cannot reach the LiteLLM database: Connection refused"},
+		{"a bad percent escape in the password", "postgresql://FAKEuser:FAKEpa%zzword@db.example:5432/FAKEdb",
+			"psql: error: invalid percent-encoded token: \"FAKEpa%zzword\"\n", 2, withheld},
+		{"an @ in the password, read as the host", "postgresql://FAKEuser:FAKEp@ss@db.example:5432/FAKEdb",
+			"psql: error: could not translate host name \"ss@db.example\" to address: nodename nor servname provided, or not known\n", 2,
+			"cannot reach the LiteLLM database: the database host name did not resolve"},
+		{"an @ in the password, and a tail that is a host name", "postgresql://FAKEuser:FAKEp@ss.example:54321/x@db.example:5432/FAKEdb",
+			"psql: error: connection to server at \"ss.example\" (10.0.0.7), port 54321 failed: Connection refused\n", 2,
+			"cannot reach the LiteLLM database: Connection refused"},
+		{"a keyword string with a space in the password", "host=db.example port=5432 user=FAKEuser password=FAKEabc FAKEdef",
+			"psql: error: missing \"=\" after \"FAKEdef\" in connection info string\n", 2, withheld},
+		{"a keyword string with a quoted password", "host=db.example port=5432 user=FAKEuser password='FAKE a'",
+			refusedAtDB, 2,
+			"cannot reach the LiteLLM database: Connection refused"},
+		{"a keyword string whose password has a space before port=", "host=db.example user=FAKEuser password=FAKEab port=54321",
+			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 54321 failed: Connection refused\n", 2,
+			"cannot reach the LiteLLM database: Connection refused"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1133,7 +1487,10 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 			if err == nil {
 				t.Fatal("err = nil, want an error")
 			}
-			for _, piece := range []string{"FAKE", "zzword", "ss@", "litellm:", "db.example", "5432", "10.0.0", `"litellm"`, `"spend"`} {
+			if err.Error() != c.want {
+				t.Errorf("err = %q\nwant  %q", err, c.want)
+			}
+			for _, piece := range []string{"FAKE", "zzword", "ss@", "ss.example", "54321", "10.0.0", "%", "postgresql://"} {
 				if strings.Contains(err.Error(), piece) {
 					t.Errorf("err = %q leaks %q from the connection string", err, piece)
 				}
@@ -1199,8 +1556,8 @@ func TestQueryExitStatusFromARealProcess(t *testing.T) {
 exit 2
 `)
 	_, err := Query(context.Background(), "postgresql://h/db", winStart, winEnd)
-	if !errors.Is(err, ErrUnreachable) || err.Error() != "cannot reach the LiteLLM database: Connection refused" {
-		t.Fatalf("err = %v, want ErrUnreachable with libpq's reason", err)
+	if !errors.Is(err, ErrUnreachable) || err.Error() != "cannot reach the LiteLLM database at 127.0.0.1:1: Connection refused" {
+		t.Fatalf("err = %v, want ErrUnreachable with the address and libpq's reason", err)
 	}
 }
 
@@ -1242,6 +1599,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
@@ -1322,8 +1680,11 @@ func querySQL(start, end time.Time) string {
 // start and end, both inclusive. dsn is a libpq connection string or URI.
 //
 // Every failure is one of ErrNoPsql, ErrUnreachable or ErrQuery, wrapped
-// with a one-line reason. No part of dsn appears in an error: psql's own
-// text is used only in the shapes unreachableReason and queryReason allow.
+// with a one-line reason. An ErrUnreachable names the host and port psql
+// tried (or the socket), so a wrong address can be seen; no other part of
+// dsn appears in any error — not the user, the password or the database
+// name. psql's own text is used only in the shapes unreachable and
+// queryReason allow.
 func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error) {
 	bin, err := lookPath("psql")
 	if err != nil {
@@ -1343,7 +1704,7 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 		// never its arguments.
 		return Result{}, fmt.Errorf("%w: psql could not be run (%v)", ErrQuery, err)
 	case exit == 2:
-		return Result{}, fmt.Errorf("%w: %s", ErrUnreachable, unreachableReason(stderr))
+		return Result{}, unreachable(dsn, stderr)
 	case exit != 0:
 		return Result{}, fmt.Errorf("%w: %s", ErrQuery, queryReason(stderr, exit))
 	}
@@ -1381,11 +1742,25 @@ func realRunPsql(ctx context.Context, bin string, args, env []string) (stdout, s
 }
 
 // connectFailed matches the line libpq prints when it reached for a server
-// and got no session, in its TCP and its socket form:
+// and got no session, in its TCP and its socket form, capturing the host,
+// the port, the socket path and the reason:
 //
 //	connection to server at "db" (10.0.0.5), port 5432 failed: <reason>
 //	connection to server on socket "/tmp/.s.PGSQL.5432" failed: <reason>
-var connectFailed = regexp.MustCompile(`^connection to server (?:at "[^"]*"(?: \([^)]*\))?, port \S+|on socket "[^"]*") failed: (.+)$`)
+var connectFailed = regexp.MustCompile(`^connection to server (?:at "([^"]*)"(?: \([^)]*\))?, port (\S+)|on socket "([^"]*)") failed: (.+)$`)
+
+// translateFailed matches libpq's line for a host name with no address,
+// capturing the name.
+var translateFailed = regexp.MustCompile(`^could not translate host name "([^"]*)" to address: `)
+
+// The only shapes of host, port and socket path an error may show: a host
+// name or an IPv4 or IPv6 address, a port number, and a Postgres socket
+// file. Anything else psql printed in their place is left out.
+var (
+	hostShape   = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
+	portShape   = regexp.MustCompile(`^[0-9]{1,5}$`)
+	socketShape = regexp.MustCompile(`^/[A-Za-z0-9._/-]*\.s\.PGSQL\.[0-9]{1,5}$`)
+)
 
 // quotedValue matches a double-quoted value in a libpq or server message.
 var quotedValue = regexp.MustCompile(`"[^"]*"`)
@@ -1402,29 +1777,99 @@ func stderrLines(stderr []byte) []string {
 	return out
 }
 
-// unreachableReason turns psql's stderr for exit status 2 into a reason
-// that cannot contain any part of the connection string.
+// unreachable turns psql's stderr for exit status 2 into an ErrUnreachable
+// that says where psql tried to connect and why it failed, and nothing else
+// from the connection string:
+//
+//	cannot reach the LiteLLM database at 127.0.0.1:5432: Connection refused
 //
 // psql quotes pieces of a connection string it cannot use, and the piece
 // can be the password: an unencoded "/" in one makes libpq read
 // user:password as host:port and report `invalid integer value "<password>"
 // for connection option "port"`. So nothing is passed through as it came.
-// Of a "connection to server … failed: <reason>" line only the reason is
-// kept, with every quoted value blanked — the server's refusals name the
-// user and the database (`password authentication failed for user "x"`).
-// A host name that did not resolve is reported without the name, which may
-// be the tail of a password that held an "@". Anything else is withheld.
-func unreachableReason(stderr []byte) string {
+// Of a "connection to server … failed: <reason>" line the reason is kept
+// with every quoted value blanked — the server's refusals name the user and
+// the database (`password authentication failed for user "x"`) — and the
+// host and port, or the socket path, only as address allows. A host name
+// that did not resolve is named on the same terms. Anything else is
+// withheld.
+func unreachable(dsn string, stderr []byte) error {
+	plain := plainAddress(dsn)
+	where, reason := "", "psql could not connect; its message is not shown because it can quote the connection string"
 	for _, line := range stderrLines(stderr) {
 		if m := connectFailed.FindStringSubmatch(line); m != nil {
-			reason := strings.TrimSpace(strings.TrimPrefix(m[1], "FATAL:"))
-			return quotedValue.ReplaceAllString(reason, `"..."`)
+			reason = quotedValue.ReplaceAllString(strings.TrimSpace(strings.TrimPrefix(m[4], "FATAL:")), `"..."`)
+			if plain {
+				where = address(m[1], m[2], m[3])
+			}
+			break
 		}
-		if strings.HasPrefix(line, "could not translate host name ") {
-			return "the database host name did not resolve"
+		if m := translateFailed.FindStringSubmatch(line); m != nil {
+			reason = "the database host name did not resolve"
+			if plain && hostShape.MatchString(m[1]) {
+				where = m[1]
+			}
+			break
 		}
 	}
-	return "psql could not connect; its message is not shown because it can quote the connection string"
+	if where == "" {
+		return fmt.Errorf("%w: %s", ErrUnreachable, reason)
+	}
+	return fmt.Errorf("%w at %s: %s", ErrUnreachable, where, reason)
+}
+
+// address formats where libpq said it tried to connect: host:port, or
+// "socket <path>". It returns "" when a piece is not in the shape of a host
+// name, an IP address, a port number or a Postgres socket file.
+func address(host, port, socket string) string {
+	switch {
+	case socket != "":
+		if socketShape.MatchString(socket) {
+			return "socket " + socket
+		}
+	case hostShape.MatchString(host) && portShape.MatchString(port):
+		return net.JoinHostPort(host, port)
+	}
+	return ""
+}
+
+// plainAddress reports whether dsn is written so that the host and port
+// libpq reports are the ones the user meant, and not pieces of the user name
+// or password.
+//
+// libpq splits a URI at the first "/" or "@" it meets, so a password with
+// an unencoded "/" turns user:password into host:port — `u:1234/x@db` is
+// host "u", port 1234. That leaves an "@" after the authority, where a
+// well-formed URI has none. (An unencoded "@" in a password puts its tail
+// in the host, which hostShape then refuses.) In a keyword string, a
+// password with an unquoted space ends early, and what follows it can be
+// read as a port. For any such string the address is left out of the error;
+// the reason alone is still shown.
+func plainAddress(dsn string) bool {
+	rest, isURI := strings.CutPrefix(dsn, "postgresql://")
+	if !isURI {
+		rest, isURI = strings.CutPrefix(dsn, "postgres://")
+	}
+	if isURI {
+		i := strings.IndexAny(rest, "/?#")
+		return i < 0 || !strings.Contains(rest[i:], "@")
+	}
+	// A keyword/value string: every field a plain key=value, and the address
+	// written before the user and password, never after them.
+	fields := strings.Fields(dsn)
+	afterCredentials := false
+	for _, f := range fields {
+		k, _, ok := strings.Cut(f, "=")
+		switch {
+		case !ok || k == "":
+			return false
+		case k == "user" || k == "password":
+			afterCredentials = true
+		case afterCredentials && (k == "host" || k == "hostaddr" || k == "port"):
+			return false
+		}
+	}
+	return len(fields) > 0
 }
 
 // queryReason is the reason for a failure after psql connected: the
@@ -2282,8 +2727,8 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 		note string
 	}{
 		{"no psql", spend.ErrNoPsql, "wt: spend unavailable: psql not found on PATH\n"},
-		{"database down", fmt.Errorf("%w: Connection refused", spend.ErrUnreachable),
-			"wt: spend unavailable: cannot reach the LiteLLM database: Connection refused\n"},
+		{"database down", fmt.Errorf("%w at 127.0.0.1:5432: Connection refused", spend.ErrUnreachable),
+			"wt: spend unavailable: cannot reach the LiteLLM database at 127.0.0.1:5432: Connection refused\n"},
 		{"no url", fmt.Errorf("%w: /x/config.yaml has no general_settings.database_url (set WT_LITELLM_DATABASE_URL)", litellm.ErrNoDatabase),
 			"wt: spend unavailable: no LiteLLM database configured: /x/config.yaml has no general_settings.database_url (set WT_LITELLM_DATABASE_URL)\n"},
 	}
@@ -2574,9 +3019,11 @@ func TestStatsCmdUsesTheTerminalWidth(t *testing.T) {
 // querySpend stub: an unstubbed `wt stats` reports "not stubbed" instead of
 // querying. Second, the real seam itself under this package's throwaway
 // config home: the registry is redirected and nothing names config.yaml, so
-// litellm.DatabaseURL refuses before psql is looked for. PATH is emptied
-// for that half so that, if the guard ever regresses, the worst this test
-// can do is fail — it still cannot run psql.
+// litellm.DatabaseURL refuses before it reads config.yaml or the proxy's
+// LaunchAgent plist, and before psql is looked for. PATH is emptied and the
+// plist path pointed at nothing for that half so that, if the guard ever
+// regresses, the worst this test can do is fail — it still cannot read the
+// real plist or run psql.
 func TestStatsNeverReachesADatabaseByDefault(t *testing.T) {
 	a, _ := newTestApp(t)
 	_, stderr := runStats(t, a)
@@ -2585,7 +3032,8 @@ func TestStatsNeverReachesADatabaseByDefault(t *testing.T) {
 	}
 
 	t.Setenv("PATH", t.TempDir())
-	for _, k := range []string{"WT_LITELLM_DATABASE_URL", "MODELMAN_LITELLM_DATABASE_URL", "WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG"} {
+	t.Setenv("WT_LITELLM_PLIST", filepath.Join(t.TempDir(), "no-such.plist"))
+	for _, k := range []string{"WT_LITELLM_DATABASE_URL", "MODELMAN_LITELLM_DATABASE_URL", "WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG", "DATABASE_URL"} {
 		t.Setenv(k, "")
 	}
 	_, err := realQuerySpend(context.Background(), time.Now().Add(-time.Hour), time.Now())
@@ -2865,9 +3313,11 @@ func statsCmd(a *app) *cobra.Command {
 			"speed) per model and per agent×model combo.\n\n" +
 			"The usage table: per model, wt launches from usage.jsonl beside the\n" +
 			"requests, prompt and completion tokens and spend the LiteLLM proxy logged.\n" +
-			"Spend is read with psql from the database named by WT_LITELLM_DATABASE_URL,\n" +
-			"or by general_settings.database_url in LiteLLM's config.yaml. Without psql,\n" +
-			"a reachable database or a configured URL, the launches still print, the\n" +
+			"Spend is read with psql from the proxy's database, found the way the proxy\n" +
+			"finds it: WT_LITELLM_DATABASE_URL, else general_settings.database_url in\n" +
+			"LiteLLM's config.yaml, else DATABASE_URL — the last two looked up in wt's\n" +
+			"environment and then in the proxy's LaunchAgent plist. Without psql, a\n" +
+			"reachable database or a configured URL, the launches still print, the\n" +
 			"spend cells show \"-\", and one note on stderr says why.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			window, err := parseStatsWindow(mustGetString(cmd, "window"))
@@ -2982,7 +3432,7 @@ no survey data
 
 MODEL             LAUNCHES  REQUESTS  PROMPT  COMPLETION  SPEND
 ollama/gemma4:9b         1         -       -           -      -
-wt: spend unavailable: cannot reach the LiteLLM database: Connection refused
+wt: spend unavailable: cannot reach the LiteLLM database at 127.0.0.1:1: Connection refused
 exit=0
 ```
 
@@ -2990,10 +3440,40 @@ Then without the variable, which exercises the redirected-registry guard:
 
 ```bash
 env -i HOME="$H" XDG_CONFIG_HOME="$H/xdg" PATH="$PATH" /tmp/wt-verify stats 2>&1 | tail -1
-rm -rf "$H" /tmp/wt-verify
 ```
 
 Expected: `wt: spend unavailable: no LiteLLM database configured: the registry is redirected to <H>/xdg/local-ai/registry.toml and nothing names config.yaml (set WT_LITELLM_DATABASE_URL, or WT_LITELLM_CONFIG)`.
+
+Then the automatic resolution, still inside the throwaway home: a `config.yaml` that names a variable, and a LaunchAgent plist — both temp files, named by `WT_LITELLM_CONFIG` and `WT_LITELLM_PLIST` — that sets it to the same dead address. Nothing is exported to `wt`:
+
+```bash
+printf 'general_settings:\n  database_url: os.environ/DATABASE_URL\n' > "$H/config.yaml"
+cat > "$H/proxy.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>EnvironmentVariables</key>
+<dict><key>DATABASE_URL</key><string>postgresql://127.0.0.1:1/x</string></dict>
+</dict></plist>
+EOF
+env -i HOME="$H" XDG_CONFIG_HOME="$H/xdg" PATH="$PATH" \
+  WT_LITELLM_CONFIG="$H/config.yaml" WT_LITELLM_PLIST="$H/proxy.plist" /tmp/wt-verify stats 2>&1 | tail -1
+printf '<plist version="1.0"><dict></dict></plist>\n' > "$H/proxy.plist"
+env -i HOME="$H" XDG_CONFIG_HOME="$H/xdg" PATH="$PATH" \
+  WT_LITELLM_CONFIG="$H/config.yaml" WT_LITELLM_PLIST="$H/proxy.plist" /tmp/wt-verify stats 2>&1 | tail -1
+rm -rf "$H" /tmp/wt-verify
+```
+
+Expected, first (the plist supplied the string, so `psql` was run against the dead address):
+
+```
+wt: spend unavailable: cannot reach the LiteLLM database at 127.0.0.1:1: Connection refused
+```
+
+Expected, second (the plist no longer sets it; `<H>` is the temp directory):
+
+```
+wt: spend unavailable: no LiteLLM database configured: general_settings.database_url in <H>/config.yaml is os.environ/DATABASE_URL, and DATABASE_URL is not set in wt's environment or the proxy LaunchAgent's EnvironmentVariables (<H>/proxy.plist) (set it, or WT_LITELLM_DATABASE_URL)
+```
 
 - [ ] **Step 9: Verify the slice so far, and commit**
 
@@ -3132,17 +3612,29 @@ Nothing is printed for an empty table but `no usage data`.
 ## Where spend comes from
 
 wt runs one aggregated query against the proxy's Postgres table
-`"LiteLLM_SpendLogs"` with `psql`, which must be on `PATH`. The connection
-string is the first of:
+`"LiteLLM_SpendLogs"` with `psql`, which must be on `PATH`. It finds the
+database the way the proxy does, so there is normally nothing to export.
+The connection string is the first of:
 
 1. `WT_LITELLM_DATABASE_URL`
 2. `MODELMAN_LITELLM_DATABASE_URL` (legacy alias)
 3. `general_settings.database_url` in LiteLLM's `config.yaml`
-   (`WT_LITELLM_CONFIG`, default `~/.config/litellm/config.yaml`). A value
-   written `os.environ/NAME` is resolved from the environment `wt stats`
-   runs in.
+   (`WT_LITELLM_CONFIG`, default `~/.config/litellm/config.yaml`)
+4. `DATABASE_URL`, when `config.yaml` exists and names no `database_url` —
+   LiteLLM's own fallback
 
-`config.yaml` is not read when the registry is redirected
+A `config.yaml` value written `os.environ/NAME`, and `DATABASE_URL` in
+step 4, are looked up in the environment `wt stats` runs in and then in the
+proxy's: the `EnvironmentVariables` of its LaunchAgent plist
+(`WT_LITELLM_PLIST`, default
+`~/Library/LaunchAgents/local.litellm.proxy.plist`), which is where a
+LaunchAgent install keeps the variable. A value in your shell wins over the
+plist's. When the plist cannot be read, or `WT_LITELLM_RESTART_CMD` says
+something other than that LaunchAgent starts the proxy, only wt's own
+environment is consulted. A value that is empty or only whitespace counts
+as unset at every step.
+
+Neither `config.yaml` nor the plist is read when the registry is redirected
 (`MODELMAN_REGISTRY`, `XDG_CONFIG_HOME`) and nothing names `config.yaml`:
 set `WT_LITELLM_DATABASE_URL` or `WT_LITELLM_CONFIG` for a scratch setup.
 
@@ -3155,8 +3647,13 @@ or so the query runs it is visible to other users of the machine in `ps`.
 Keep the password out of it (a `~/.pgpass` entry or `PGPASSWORD` works with
 `psql` as usual) on a shared machine.
 
-wt itself never prints any part of the connection string — not in a note,
-not in `--json`. That includes the host, port, user and database name.
+When the database cannot be reached, the note names the host and port wt
+tried — `cannot reach the LiteLLM database at 127.0.0.1:5432: Connection
+refused` — so a wrong address shows. wt prints no other part of the
+connection string, in a note or in `--json`: not the user, the password or
+the database name. When the string is written so that `psql` may have read
+part of the password as the host or port (an unencoded `/` or `@` in the
+password), the address is left out as well.
 
 ## When spend is missing
 
@@ -3172,8 +3669,8 @@ wt: spend unavailable: psql not found on PATH
 | Note | Meaning |
 |---|---|
 | `spend unavailable: psql not found on PATH` | Install a Postgres client that puts `psql` on `PATH` |
-| `spend unavailable: cannot reach the LiteLLM database: …` | `psql` could not connect, or got no answer in 10 seconds. The reason follows: `Connection refused`, `password authentication failed for user "..."` (names are blanked), `the database host name did not resolve`. When `psql`'s message could quote the connection string — it does for one it cannot parse — wt says so instead of printing it; run `psql` yourself to see it |
-| `spend unavailable: no LiteLLM database configured: …` | Nothing names a database; the rest says where wt looked and which variable to set |
+| `spend unavailable: cannot reach the LiteLLM database at <host>:<port>: …` | `psql` could not connect to that address (`at socket <path>` for a socket), or got no answer in 10 seconds (no address is shown for that). The reason follows: `Connection refused`, `password authentication failed for user "..."` (names are blanked), `the database host name did not resolve`. If the address is not the one you expect, "Where spend comes from" lists where it can come from. When `psql`'s message could quote the connection string — it does for one it cannot parse — wt says so instead of printing it, and shows no address; run `psql` yourself to see it |
+| `spend unavailable: no LiteLLM database configured: …` | Nothing names a database; the rest says where wt looked — `config.yaml`, the variable it names, wt's environment and the proxy's plist — and which variable to set. It never quotes a value |
 | `spend unavailable: the spend query failed: …` | Connected, but the query failed. The server's `ERROR:` line follows (for example the table does not exist: spend logging is not set up), or `psql`'s exit status |
 | `spend unavailable: LiteLLM config is invalid: …` | `config.yaml` exists and cannot be parsed |
 | `--agent narrows launches only; …` | `--agent` was given |
@@ -3273,7 +3770,7 @@ with:
 
 ````text
 A redirected registry without `WT_LITELLM_CONFIG` is refused (`litellm.ErrRegistryRedirected`).
-- The spend database is `litellm.DatabaseURL()`: `WT_LITELLM_DATABASE_URL`, legacy `MODELMAN_LITELLM_DATABASE_URL`, then `general_settings.database_url` in `config.yaml` (an `os.environ/NAME` value is resolved from wt's own environment, not the plist). Read-only, used only by `wt stats`; under a redirected registry with `config.yaml` unnamed it answers `ErrNoDatabase` rather than read the default file.
+- The spend database is `litellm.DatabaseURL()`: `WT_LITELLM_DATABASE_URL`, legacy `MODELMAN_LITELLM_DATABASE_URL`, then `general_settings.database_url` in `config.yaml`. An `os.environ/NAME` value — and `DATABASE_URL`, when `config.yaml` names no `database_url` — is looked up in wt's own environment and then in the proxy's (`ProxyEnv.Lookup` over `LoadProxyEnv`, the LaunchAgent plist); wt's own wins, and a blank value is unset everywhere. Read-only, used only by `wt stats`; under a redirected registry with `config.yaml` unnamed it answers `ErrNoDatabase` rather than read the default file or the plist. Its errors name variables and files, never a value; a `spend.ErrUnreachable` names the host and port `psql` tried and nothing else from the connection string.
 ````
 
 - [ ] **Step 4: Update `wt/docs/internals/testing.md`**
@@ -3314,7 +3811,7 @@ with:
 
 ````text
 - `internal/survey`: `flushTTY` is a no-op.
-- `internal/spend`: `lookPath` and `runPsql` both fail, so no test finds or runs the real `psql`. Tests use `stubPsql` (canned output and exit status) or `fakePsqlBinary` (a shell script run as a real child process, for the exec plumbing and the deadline). `cmd/wt`'s `TestMain` replaces `querySpend` one level up with a failure, so an unstubbed `wt stats` test gets the degraded report; `stubSpend(t, result, err)` supplies spend rows. `TestStatsNeverReachesADatabaseByDefault` pins both, and `litellm.DatabaseURL` adds a third guard: under the throwaway config home the registry is redirected, so it will not read the default `config.yaml`.
+- `internal/spend`: `lookPath` and `runPsql` both fail, so no test finds or runs the real `psql`. Tests use `stubPsql` (canned output and exit status) or `fakePsqlBinary` (a shell script run as a real child process, for the exec plumbing and the deadline). `cmd/wt`'s `TestMain` replaces `querySpend` one level up with a failure, so an unstubbed `wt stats` test gets the degraded report; `stubSpend(t, result, err)` supplies spend rows. `TestStatsNeverReachesADatabaseByDefault` pins both, and `litellm.DatabaseURL` adds a third guard: under the throwaway config home the registry is redirected, so it will not read the default `config.yaml` or the proxy's LaunchAgent plist. `internal/litellm`'s own `DatabaseURL` tests replace `loadProxyEnv` (`stubProxyEnv`) or name a temp plist (`writePlist`); none reads the real one.
 ````
 
 - [ ] **Step 5: Add the `wt/CHANGELOG.md` entry**
@@ -3338,11 +3835,16 @@ with:
   table it prints a second table for the same `--window`: MODEL, LAUNCHES,
   REQUESTS, PROMPT, COMPLETION, SPEND. Launches come from `usage.jsonl`;
   the rest is one query against the proxy's `"LiteLLM_SpendLogs"` table
-  through `psql`, using `WT_LITELLM_DATABASE_URL` (legacy alias
-  `MODELMAN_LITELLM_DATABASE_URL`) or `general_settings.database_url` in
-  LiteLLM's `config.yaml`. Without `psql`, a reachable database or a
+  through `psql`. The database is found the way the proxy finds it, with
+  nothing to export: `WT_LITELLM_DATABASE_URL` (legacy alias
+  `MODELMAN_LITELLM_DATABASE_URL`), else `general_settings.database_url` in
+  LiteLLM's `config.yaml`, else `DATABASE_URL` — an `os.environ/NAME` value
+  and `DATABASE_URL` are read from wt's environment and then from the
+  proxy's LaunchAgent plist. Without `psql`, a reachable database or a
   configured URL, the launch counts still print, the spend cells show `-`,
-  one note on stderr says why, and the exit code stays 0. `--family` narrows
+  one note on stderr says why (an unreachable database is named by host and
+  port, and by nothing else from the connection string), and the exit code
+  stays 0. `--family` narrows
   the new table; `--agent` narrows its launch counts and leaves spend out.
   `--family` is `stats`' own flag and takes one exact family: the root
   command's `-F` shorthand, which `wt stats` used to accept and ignore, is
@@ -3365,7 +3867,7 @@ with:
 
 ````text
 wt refuses to write (or dry-run) routes until `WT_LITELLM_CONFIG` names the `config.yaml` that registry belongs to.
-- **Spend database:** `wt stats` reads spend from the database named by `WT_LITELLM_DATABASE_URL` (legacy alias `MODELMAN_LITELLM_DATABASE_URL`), else by `general_settings.database_url` in this file. It only reads. See [07-usage-and-spend](07-usage-and-spend.md).
+- **Spend database:** `wt stats` reads spend from the database named by `WT_LITELLM_DATABASE_URL` (legacy alias `MODELMAN_LITELLM_DATABASE_URL`), else by `general_settings.database_url` in this file, else by `DATABASE_URL`. An `os.environ/NAME` value in this file, and `DATABASE_URL`, are read from wt's environment and then from the proxy's LaunchAgent plist, so the proxy's own setup is enough. It only reads. See [07-usage-and-spend](07-usage-and-spend.md).
 ````
 
 - [ ] **Step 7: Add the `wt stats` section to `docs/guides/07-usage-and-spend.md`**
@@ -3411,10 +3913,14 @@ What differs from `modelman usage report`:
 | Exits 1 when `registry.toml` is missing or unreadable | Prints the report; a model's family is then its id's provider prefix |
 | Requests with no model are dropped silently | Counted in a note on stderr |
 | `--model`, `--family` | Same flags; `--agent` also narrows the launch counts (and leaves spend out) |
+| Needs the connection string as a literal in `config.yaml`, or exported | Also resolves an `os.environ/NAME` value, and `DATABASE_URL`, from the proxy's LaunchAgent plist |
 
-It needs `psql` on `PATH` and finds the database the same way:
+It needs `psql` on `PATH` and finds the database with nothing exported:
 `WT_LITELLM_DATABASE_URL`, then `MODELMAN_LITELLM_DATABASE_URL`, then
-`general_settings.database_url` in LiteLLM's `config.yaml`. Totals can
+`general_settings.database_url` in LiteLLM's `config.yaml`, then
+`DATABASE_URL` — the last two looked up in your shell and then in the
+proxy's LaunchAgent plist, as the proxy itself sees them. If the database
+cannot be reached, the note names the host and port wt tried. Totals can
 differ from `modelman usage report` at the edges of the window: `wt stats`
 compares the proxy's timestamps as UTC. Full reference:
 [wt/docs/wt-stats.md](../../wt/docs/wt-stats.md).
@@ -3444,15 +3950,15 @@ git add wt/docs/wt-stats.md wt/CLAUDE.md wt/docs/internals/testing.md wt/CHANGEL
 git commit -m "docs(wt): wt stats reports launches and LiteLLM spend"
 ```
 
-### Task 8: Check against the real database, then hand PR 2 off (needs the owner)
+### Task 8: Check against the real database, then hand PR 2 off (run by the controller)
 
-Everything so far ran against stubs, a shell script and an address nothing listens on. Three things can only be learned from the owner's real proxy database, and none of them may be learned without the owner:
+Everything so far ran against stubs, a shell script and an address nothing listens on. Three things can only be learned from the owner's real proxy database:
 
 1. that the statement runs against the real `"LiteLLM_SpendLogs"` table;
 2. that `model_group` holds wt model ids for this proxy's traffic (rows with both launches and requests exist);
-3. where the connection string comes from on this machine — a literal in `config.yaml`, or an `os.environ/NAME` reference that only the proxy's LaunchAgent can resolve.
+3. that the connection string resolves on this machine with nothing exported — from a literal in `config.yaml`, an `os.environ/NAME` reference, or `DATABASE_URL`, the last two through the proxy's LaunchAgent plist.
 
-**Steps 2 and 3 read the owner's database, read-only. Do not run either yourself unless the owner has said to in this session.** Steps 1, 4 and 5 touch no database and need no one's OK. Never print, `echo`, `cat` or `grep` the connection string, `~/.config/litellm/config.yaml` or the LaunchAgent plist; `wt stats` itself prints none of them.
+**The owner has said this may run against the real database (2026-10-07: "you may run against the real database"). The controller runs this task itself; it is never dispatched to a subagent.** Steps 2 and 3 read the owner's database, read-only. Steps 1, 4 and 5 touch no database. Never print, `echo`, `cat` or `grep` the connection string, `~/.config/litellm/config.yaml` or the LaunchAgent plist — not even to find out which of them supplied the string: `wt stats` prints none of them, and its notes say where it looked. Never export a connection string either: the point of the task is that none is needed.
 
 **Files:** none.
 
@@ -3466,20 +3972,23 @@ Run from `wt/`: `go build -o /tmp/wt-verify ./cmd/wt`
 
 (`~/.local/bin/wt` is whatever was last installed and predates the branch.)
 
-- [ ] **Step 2: The owner runs the report in an 80-column terminal**
+- [ ] **Step 2: Run the report with nothing exported**
+
+Run in the real environment, with the three variables that could name a database unset for this one command, so that what is tested is the automatic lookup:
 
 ```bash
-tput cols                         # 80, or note what it is
-/tmp/wt-verify stats --window 7d
+env -u WT_LITELLM_DATABASE_URL -u MODELMAN_LITELLM_DATABASE_URL -u DATABASE_URL \
+  /tmp/wt-verify stats --window 7d
 ```
 
 Check, and write down:
 
-- The usage table appears under the survey table, and no line is wider than the terminal.
-- **If the note is `spend unavailable: no LiteLLM database configured: general_settings.database_url in … is os.environ/NAME, and NAME is not set in wt's environment`:** the owner's `config.yaml` uses an environment reference. `modelman usage report` cannot have worked from the file either in that case. Stop and ask the owner which they want: `WT_LITELLM_DATABASE_URL` exported in their shell profile (works today), or a follow-up issue for wt to read the value from the LaunchAgent plist. Do not add the plist read in this PR.
+- The usage table appears under the survey table. (Run outside a terminal, as a controller's shell usually is, every model is one line whatever its length; the 80-column layout is Task 5's and Task 6's tests. In a terminal, no line of the usage table is wider than it.)
+- **If there is no `spend unavailable` note:** the connection string resolved and the query ran (facts 1 and 3). At least one row should have both `LAUNCHES` and `REQUESTS` above zero (fact 2). Write down the count in any `requests had no model` note.
+- **If the note is `spend unavailable: no LiteLLM database configured: …`:** the automatic lookup found nothing. The note holds only variable names and file paths, so copy it whole. It says which case this is: `config.yaml` does not exist; it has no `general_settings.database_url` and `DATABASE_URL` is not set; or it names `os.environ/NAME` and `NAME` is not set. "…is not set in wt's environment or the proxy LaunchAgent's EnvironmentVariables (<path>)" means the plist was read and does not set it; "…is not set in wt's environment" alone means the plist could not be read, or `WT_LITELLM_RESTART_CMD` is set. Stop and report the note to the owner. Do not open `config.yaml` or the plist to look further.
+- **If the note is `spend unavailable: cannot reach the LiteLLM database at <host>:<port>: <reason>`:** the string resolved and `psql` could not connect there. Copy the note — the host and port are what the owner asked to see — and report it: either the database is down or the address is wrong.
+- **If the note is `spend unavailable: cannot reach the LiteLLM database: …` with no address:** either `psql` gave no answer in 10 seconds, or the string is one wt will not quote an address from (`psql could not connect; its message is not shown …`, or a reason with no `at`). Report the note as it is. Do not run `psql` by hand with the string, and do not ask the owner to paste it.
 - **If the note is `spend unavailable: the spend query failed: ERROR: …`:** copy the line (it is the server's message about the statement, and holds nothing from the connection string) and stop. The statement or a column name is wrong for this LiteLLM version; that is a bug in Task 3 to fix before handoff.
-- **If the note is `spend unavailable: cannot reach the LiteLLM database: psql could not connect; its message is not shown …`:** `psql` rejected the connection string or failed in a way wt does not recognise, and wt will not repeat what it said. The owner runs `psql` with their string themselves to read the message; do not ask them to paste it.
-- Otherwise: at least one row has both `LAUNCHES` and `REQUESTS` above zero (fact 2), and the count in any `requests had no model` note.
 
 - [ ] **Step 3: Compare one model with the Python report**
 
@@ -3487,14 +3996,17 @@ Pick a model id from a row with requests. Run from the monorepo root:
 
 ```bash
 uv run --directory modelman modelman usage report --days 7 --model '<id>'
-/tmp/wt-verify stats --window 7d --model '<id>'
+env -u WT_LITELLM_DATABASE_URL -u MODELMAN_LITELLM_DATABASE_URL -u DATABASE_URL \
+  /tmp/wt-verify stats --window 7d --model '<id>'
 ```
 
 Expected: the same Requests, Prompt tokens, Completion tokens and Spend, or a difference of a few requests that fall within one UTC offset of either end of the 7-day window (wt compares the proxy's timestamps as UTC; Python passed zone-aware values). The launch count is modelman's middle (`7d`) number. A larger difference is a finding: report both outputs to the owner.
 
+`modelman usage report` resolves less than `wt stats` does: it needs the connection string as a literal in `config.yaml` or in `MODELMAN_LITELLM_DATABASE_URL`. If it fails to connect where `wt stats` succeeded, that is the difference this step's plan change made, not a finding. Write down that the comparison could not be made and go on; do not export a connection string to make the Python report work.
+
 - [ ] **Step 4: The two safe degraded runs**
 
-These need no owner and cannot reach a database on any machine: both run in a throwaway home, with a connection string that points at an address nothing listens on, and the first with a `PATH` that holds no `psql` at all. Do not run them in the real environment (`PATH=/usr/bin:/bin wt stats` is only safe where `psql` happens to live elsewhere).
+These cannot reach a database on any machine: both run in a throwaway home, with a connection string that points at an address nothing listens on, and the first with a `PATH` that holds no `psql` at all. Do not run them in the real environment (`PATH=/usr/bin:/bin wt stats` is only safe where `psql` happens to live elsewhere).
 
 ```bash
 H=$(mktemp -d)
@@ -3522,7 +4034,7 @@ Expected, second run (nothing listening):
 ```
 MODEL             LAUNCHES  REQUESTS  PROMPT  COMPLETION  SPEND
 ollama/gemma4:9b         1         -       -           -      -
-wt: spend unavailable: cannot reach the LiteLLM database: Connection refused
+wt: spend unavailable: cannot reach the LiteLLM database at 127.0.0.1:1: Connection refused
 ```
 
 - [ ] **Step 5: Clean up and hand off**
@@ -3534,7 +4046,7 @@ rm -f /tmp/wt-verify
 Run from the monorepo root: `make test-all`
 Expected: lint passes, the llmbench and modelman suites pass, and every wt `go test` line starts with `ok`.
 
-Stop here. Tell the owner: what Steps 2 to 4 showed (or that Steps 2 and 3 were not run, and so the statement is still untested against a real table), and what `make test-all` printed. Push and open the PR only after their OK. Suggested title: `feat(wt): wt stats reports launches and LiteLLM spend per model (retirement step 5, 2 of 3)`. The body lists what is not carried over from `modelman usage report` (`--days N`, Markdown, Reconciliation, "Last wt launch", the reverse-index fallback), says modelman's report is untouched until Step 6, and states the one deliberate difference from the Python join (a launched model that has left the registry keeps its row).
+Stop here. Tell the owner: what Steps 2 to 4 showed — whether the string resolved with nothing exported, and any note, copied whole — and what `make test-all` printed. Push and open the PR only after their OK. Suggested title: `feat(wt): wt stats reports launches and LiteLLM spend per model (retirement step 5, 2 of 3)`. The body lists what is not carried over from `modelman usage report` (`--days N`, Markdown, Reconciliation, "Last wt launch", the reverse-index fallback), says modelman's report is untouched until Step 6, and states the deliberate differences from the Python report (a launched model that has left the registry keeps its row; the connection string also resolves through the proxy's LaunchAgent plist).
 
 ---
 
