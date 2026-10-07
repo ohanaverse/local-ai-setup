@@ -151,7 +151,8 @@ environment is consulted. A value that is empty or only whitespace counts
 as unset at every step.
 
 Neither `config.yaml` nor the plist is read when the registry is redirected
-(`MODELMAN_REGISTRY`, `XDG_CONFIG_HOME`) and nothing names `config.yaml`:
+(`WT_REGISTRY`, its legacy alias `MODELMAN_REGISTRY`, or `XDG_CONFIG_HOME`
+naming another place) and nothing names `config.yaml`:
 set `WT_LITELLM_DATABASE_URL` or `WT_LITELLM_CONFIG` for a scratch setup.
 
 The query waits at most 3 seconds for a connection and 10 seconds in all,

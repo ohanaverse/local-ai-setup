@@ -57,9 +57,10 @@ func (e ProxyEnv) Lookup(name string) (string, bool) {
 
 // ProxyPlistPath is the proxy's LaunchAgent plist: WT_LITELLM_PLIST, else the
 // one the default restart command kickstarts. A leading "~" is expanded the
-// way every wt path override is (config.ExpandHome, the helper
-// MODELMAN_REGISTRY uses); on an error there the literal path stays, which
-// the caller below reads with a failure and answers wt's own environment to.
+// way every wt path override is (config.ExpandHome, the helper WT_REGISTRY
+// and its alias MODELMAN_REGISTRY use); on an error there the literal path
+// stays, which the caller below reads with a failure and answers wt's own
+// environment to.
 func ProxyPlistPath() string {
 	p := os.Getenv("WT_LITELLM_PLIST")
 	if p == "" {

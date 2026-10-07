@@ -42,7 +42,7 @@ The suite runs in about 15 seconds and is safe to run while agents use the local
 
 | Thing | Where | Override |
 |---|---|---|
-| Registry (read-only) | `~/.config/local-ai/registry.toml` | `MODELMAN_REGISTRY`, then `XDG_CONFIG_HOME` |
+| Registry (read-only) | `~/.config/local-ai/registry.toml` | `WT_REGISTRY`, then `MODELMAN_REGISTRY`, then `XDG_CONFIG_HOME` |
 | Results | `~/.config/local-ai/benchmarks/<run-id>/` | `--results-dir` |
 | Latest-run pointers | `~/.config/local-ai/benchmarks/latest.toml` | `LLMBENCH_LATEST` |
 | OpenRouter key | `OPENROUTER_API_KEY`, else the LiteLLM LaunchAgent plist | |

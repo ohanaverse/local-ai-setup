@@ -96,10 +96,28 @@ def test_credentials_are_not_read_from_this_machine(monkeypatch):
     assert not found_live_models, "read the real ~/.pi/agent/models.json"
 
 
+@pytest.fixture(scope="module")
+def wt_registry_exported_in_the_shell(tmp_path_factory):
+    """WT_REGISTRY as a developer's shell would export it. Module scope, so it
+    is set before conftest's function-scoped autouse fixtures run."""
+    exported = pytest.MonkeyPatch()
+    exported.setenv("WT_REGISTRY", str(tmp_path_factory.mktemp("shell") / "exported.toml"))
+    yield
+    exported.undo()
+
+
+def test_conftest_clears_an_inherited_wt_registry(wt_registry_exported_in_the_shell):
+    """conftest must remove a WT_REGISTRY the shell exported: it outranks the
+    scratch MODELMAN_REGISTRY conftest sets, so every test that loads the
+    registry would read the developer's real one."""
+    assert "WT_REGISTRY" not in os.environ
+    assert registry.registry_path() == Path(os.environ["MODELMAN_REGISTRY"])
+
+
 def test_default_config_paths_are_under_the_scratch_home(monkeypatch):
     """Even with every override removed, the registry, the pointer file and
     the modelman.toml fallback resolve under the scratch home."""
-    for name in ("MODELMAN_REGISTRY", "LLMBENCH_LATEST", "MODELMAN_STATE"):
+    for name in ("WT_REGISTRY", "MODELMAN_REGISTRY", "LLMBENCH_LATEST", "MODELMAN_STATE"):
         monkeypatch.delenv(name, raising=False)
     assert registry.registry_path().is_relative_to(Path.home())
     assert state.latest_path().is_relative_to(Path.home())

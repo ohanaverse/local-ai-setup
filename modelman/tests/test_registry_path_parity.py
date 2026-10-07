@@ -21,6 +21,7 @@ REGISTRY = '[[models]]\nid = "mtplx/a"\nfamily = "f"\nprovider_id = "mtplx"\nmod
 @pytest.fixture
 def home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("WT_REGISTRY", raising=False)
     monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return tmp_path / "home"
@@ -101,4 +102,27 @@ def test_both_refuse_a_dangling_legacy_symlink(home, monkeypatch, tmp_path):
     with pytest.raises(modelman_registry.RegistryPathError):
         modelman_registry._registry_read_path()
     with pytest.raises(bench_registry.RegistryError, match="is a symlink to"):
+        bench_registry.registry_read_path()
+
+
+def test_both_read_the_registry_wt_registry_names(home, monkeypatch, tmp_path):
+    """WT_REGISTRY outranks MODELMAN_REGISTRY in both readers, as it does in
+    wt. If one reader still preferred the older name, modelman would save one
+    file while wt and that reader looked at another."""
+    _write(home / ".config" / "local-ai" / "registry.toml")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(_write(tmp_path / "old.toml")))
+    named = _write(tmp_path / "new.toml")
+    monkeypatch.setenv("WT_REGISTRY", str(named))
+    assert _both_read() == named
+
+
+def test_neither_falls_back_past_wt_registry(home, monkeypatch, tmp_path):
+    """A WT_REGISTRY that names no file is an error in both readers, not a
+    reason to read the default registry: a scratch run with a mistyped path
+    would otherwise act on the real one."""
+    _write(home / ".config" / "local-ai" / "registry.toml")
+    monkeypatch.setenv("WT_REGISTRY", str(tmp_path / "scratch.toml"))
+    with pytest.raises(modelman_registry.RegistryNotFoundError):
+        modelman_registry._registry_read_path()
+    with pytest.raises(bench_registry.RegistryError, match="Registry file not found"):
         bench_registry.registry_read_path()

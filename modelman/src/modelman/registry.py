@@ -112,14 +112,31 @@ class RegistryPathError(RegistryError):
         super().__init__(f"{link} is a symlink to {target}, which does not exist")
 
 
+# The variables that name registry.toml outright, in precedence order.
+# WT_REGISTRY is the name wt, llmbench and modelman share; MODELMAN_REGISTRY is
+# the older name, kept as an alias.
+_REGISTRY_ENV_NAMES = ("WT_REGISTRY", "MODELMAN_REGISTRY")
+
+
+def _registry_override() -> str | None:
+    """The registry path the environment names outright, or None."""
+    for name in _REGISTRY_ENV_NAMES:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def _default_registry_path() -> Path:
     """Compute the registry path lazily so env overrides work in tests.
 
-    Precedence: MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config. This must
-    stay in sync with wt's config.RegistryPath (wt reads the
-    registry read-only and has no independent default).
+    Precedence: WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config.
+    This must stay in sync with wt's config.RegistryPath and llmbench's
+    registry_path. This module is the registry's only writer — wt loads it
+    read-only via config.Load and llmbench reads it read-only — so a
+    disagreement would have this one save over a file neither of them reads.
     """
-    override = os.environ.get("MODELMAN_REGISTRY")
+    override = _registry_override()
     if override:
         return Path(override).expanduser()
     base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
@@ -505,10 +522,11 @@ def _registry_read_path(path: Path | None = None) -> Path:
     # Fall back to the pre-XDG location for users who created a registry
     # before the XDG alignment and have XDG_CONFIG_HOME set. The next
     # save_registry writes to the canonical (XDG) path, migrating it.
-    # Not past MODELMAN_REGISTRY: that names the file outright, and a
-    # missing one there is missing, not "use the one in ~/.config".
+    # Not past WT_REGISTRY or MODELMAN_REGISTRY: either names the file
+    # outright, and a missing one there is missing, not "use the one in
+    # ~/.config".
     legacy = Path("~/.config/local-ai/registry.toml").expanduser()
-    if path is None and not os.environ.get("MODELMAN_REGISTRY") and registry_path != legacy:
+    if path is None and not _registry_override() and registry_path != legacy:
         # The same refusal for the file being fallen back to: a dangling link
         # there read as "no registry", and the save that followed wrote a new
         # one at the XDG path — which shadows the linked registry just the

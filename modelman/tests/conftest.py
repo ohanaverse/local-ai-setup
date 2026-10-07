@@ -42,6 +42,20 @@ def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedP
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_registry_override(monkeypatch):
+    """Clear both names that point modelman at a registry outright.
+
+    WT_REGISTRY outranks MODELMAN_REGISTRY, so a developer who exports it (to
+    aim wt at a scratch registry) would otherwise send every test that sets
+    MODELMAN_REGISTRY to that scratch file instead of the test's own. Clearing
+    MODELMAN_REGISTRY too makes the starting point the same on every machine.
+    A test that sets either name still wins.
+    """
+    monkeypatch.delenv("WT_REGISTRY", raising=False)
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _default_litellm_config(monkeypatch, tmp_path):
     """Point default_litellm_config_path() at a scratch config.yaml.
 

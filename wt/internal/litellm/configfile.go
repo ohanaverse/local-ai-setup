@@ -63,12 +63,13 @@ func namedPath() (string, bool) {
 // checkRegistryPairing refuses the one combination no caller means: a
 // registry the environment redirected (config.RegistryRedirected) with a
 // config.yaml nobody named. The two paths resolve independently — the
-// registry follows MODELMAN_REGISTRY and XDG_CONFIG_HOME, config.yaml only
-// WT_LITELLM_CONFIG — so redirecting the registry alone reconciles the
-// developer's real proxy config against a scratch registry: every marked
-// route that registry lacks is removed and the live proxy restarted. Naming
-// config.yaml (the environment, or Options.Path) says which proxy config the
-// registry belongs to and is always honored, the default file included.
+// registry follows WT_REGISTRY, MODELMAN_REGISTRY and XDG_CONFIG_HOME,
+// config.yaml only WT_LITELLM_CONFIG — so redirecting the registry alone
+// reconciles the developer's real proxy config against a scratch registry:
+// every marked route that registry lacks is removed and the live proxy
+// restarted. Naming config.yaml (the environment, or Options.Path) says which
+// proxy config the registry belongs to and is always honored, the default
+// file included.
 func checkRegistryPairing(o Options) error {
 	if o.Path != "" {
 		return nil

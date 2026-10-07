@@ -4,6 +4,8 @@
 
 ### Added
 
+- `WT_REGISTRY` names the model registry file. It outranks `MODELMAN_REGISTRY`,
+  which keeps working as an alias; modelman and llmbench read the same name.
 - `wt stats` reports launches and LiteLLM spend per model. Below the survey
   table it prints a second table for the same `--window`: MODEL, LAUNCHES,
   REQUESTS, PROMPT, COMPLETION, SPEND. Launches come from `usage.jsonl`;
