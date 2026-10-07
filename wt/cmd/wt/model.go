@@ -67,11 +67,15 @@ func modelCmd(_ *app) *cobra.Command {
 			"  - ollama, omlx, mtplx: when the command is installed, or a model or a\n" +
 			"                         configured agent uses it\n" +
 			"  - mlx_lm_server:       when a model or a configured agent uses it\n" +
-			"  - openrouter:          when a configured agent uses it; the row has no key,\n" +
-			"                         so add auth.secret_ref to it in registry.toml\n" +
+			"  - openrouter:          when a configured agent uses it; the row holds no key,\n" +
+			"                         only auth.secret_ref = \"OPENROUTER_API_KEY\", the\n" +
+			"                         environment variable wt reads the key from (edit\n" +
+			"                         it in registry.toml if you keep the key elsewhere)\n" +
 			"  - each configured agent: a native provider row under the agent's name\n\n" +
 			"A provider an agent lists that wt has no default row for is named in the\n" +
 			"output and left for you to add to registry.toml.\n\n" +
+			"A config.toml that cannot be read is a warning: no row is added for its\n" +
+			"agents until it is fixed and the command is run again.\n\n" +
 			"A row that exists is never changed, so running it again is safe. When it\n" +
 			"changes the registry it then syncs the LiteLLM routes once; a sync that\n" +
 			"cannot run is a warning, and the exit status is still 0.",
@@ -126,6 +130,9 @@ func runModelInit(out, errOut io.Writer, asJSON bool) error {
 		ProvidersAdded:    append([]string{}, added...),
 		ProvidersUnseeded: append([]string{}, unseeded...),
 		Warnings:          []string{},
+	}
+	if env.ConfigErr != nil {
+		doc.Warnings = append(doc.Warnings, "config.toml could not be read, so no provider row was added for its agents (fix it and run `wt model init` again): "+env.ConfigErr.Error())
 	}
 	// The sync's own lines follow the registry lines in text mode and are
 	// left out of the JSON document; its probe warnings go to stderr either way.

@@ -71,7 +71,7 @@ The model screen derives its provider pane from each model's `provider_id` field
 
 ### 2. Add a cloud provider (OpenRouter)
 
-`registry.toml` is canonical — add the provider block to `~/.config/local-ai/registry.toml` (hand-edit, or via the TUI's add flow; both write this file). If `wt model init` already added an `openrouter` row (it does when a configured agent lists openrouter), do not add a second one: add `secret_ref` to the row that is there. Documented TOML shape, copied from the modelman README:
+`registry.toml` is canonical — add the provider block to `~/.config/local-ai/registry.toml` (hand-edit, or via the TUI's add flow; both write this file). If `wt model init` already added an `openrouter` row (it does when a configured agent lists openrouter), do not add a second one: that row has `secret_ref = "OPENROUTER_API_KEY"`, the name of the environment variable wt reads the key from — export the variable, or change `secret_ref` on the row that is there to where you keep the key. Documented TOML shape, copied from the modelman README:
 
 ```toml
 [[providers]]

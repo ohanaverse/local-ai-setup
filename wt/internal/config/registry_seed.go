@@ -7,9 +7,11 @@ import (
 	"unicode"
 )
 
-// SeedEnv is what seeding needs to know about the machine. It is gathered
+// SeedEnv is what seeding needs to know about the machine. It is built
 // before the registry is locked and passed in, so the apply function that
-// seeds stays pure and tests can describe a machine without being one.
+// seeds stays pure and tests can describe a machine without being one. The
+// agents are read once, up front; OnPath is asked while apply runs, which is
+// still pure: a PATH lookup changes nothing and answers the same on a retry.
 type SeedEnv struct {
 	// Agents are the agent names wt is configured with, in config.toml order.
 	Agents []string
@@ -18,15 +20,20 @@ type SeedEnv struct {
 	AgentProviders []string
 	// OnPath reports whether a command is installed. nil means none is.
 	OnPath func(command string) bool
+	// ConfigErr is why config.toml could not be read, when it is there and
+	// could not be. Agents and AgentProviders are then empty: seeding goes on
+	// without them, and the caller tells the user why no agent got a row.
+	ConfigErr error
 }
 
 // DefaultSeedEnv describes the real machine: the agents in wt's config.toml,
 // the providers they list, and what exec.LookPath finds.
 func DefaultSeedEnv() SeedEnv {
-	names, providers := seedAgents()
+	names, providers, err := seedAgents()
 	return SeedEnv{
 		Agents:         names,
 		AgentProviders: providers,
+		ConfigErr:      err,
 		OnPath: func(command string) bool {
 			_, err := exec.LookPath(command)
 			return err == nil
@@ -41,12 +48,13 @@ func DefaultSeedEnv() SeedEnv {
 // only once the registry loads, so on a fresh machine it has not run yet. A
 // registry seeded from the file as written would then fail validation on the
 // very next run. A missing or unreadable config.toml names nothing — seeding
-// tolerates an absent wt setup, as modelman's sync_agent_providers does.
+// tolerates an absent wt setup, as modelman's sync_agent_providers does — and
+// an unreadable one is also returned as err, for the caller to report.
 // Nothing is written: the migration is applied to this read only.
-func seedAgents() (names, providers []string) {
+func seedAgents() (names, providers []string, err error) {
 	cfg, exists, err := readConfigFile()
 	if err != nil || !exists {
-		return nil, nil
+		return nil, nil, err
 	}
 	migrateAgentRefs(cfg)
 	for _, a := range cfg.Agents {
@@ -57,7 +65,7 @@ func seedAgents() (names, providers []string) {
 			}
 		}
 	}
-	return names, providers
+	return names, providers, nil
 }
 
 // defaultProviderIDs are the local providers with a default row, in the
@@ -105,15 +113,25 @@ func defaultProviderRow(id string) map[string]any {
 // can route (internal/litellm's policy table).
 var cloudProviderIDs = []string{"openrouter"}
 
+// OpenRouterKeyEnv is the environment variable the seeded openrouter row
+// names as its key: the name OpenRouter's own tools and this repo's LiteLLM
+// setup use.
+const OpenRouterKeyEnv = "OPENROUTER_API_KEY"
+
 // cloudProviderRow is the default row for a cloud provider: its name, its
-// public address and how it authenticates. It names no key and no place a
-// key is kept — auth.secret_ref is the user's to add, and seeding must never
-// write or guess one. A fresh map on every call.
+// public address and how it authenticates. auth.secret_ref is the NAME of
+// the environment variable that holds the key, never a key: seeding must not
+// write a secret or guess where one is kept. The name is there so that a
+// missing key fails loudly — a row with no secret_ref gives a LiteLLM route
+// with an empty api_key, while a named variable that is unset is refused
+// ("resolved empty") and the route is not written. A user who keeps the key
+// elsewhere edits secret_ref; seeding never changes a row that exists. A
+// fresh map on every call.
 func cloudProviderRow(id string) map[string]any {
 	if id == "openrouter" {
 		return map[string]any{
 			"id": "openrouter", "name": "OpenRouter", "location": "cloud",
-			"auth": map[string]any{"type": "api_key", "base_url": "https://openrouter.ai/api/v1"},
+			"auth": map[string]any{"type": "api_key", "secret_ref": OpenRouterKeyEnv, "base_url": "https://openrouter.ai/api/v1"},
 		}
 	}
 	return nil
@@ -132,9 +150,12 @@ func cloudProviderRow(id string) map[string]any {
 //     installed omlx gets no row when an `omlx-6bit` row exists: the two are
 //     one server, and a second row would change which one discovery uses.
 //   - A cloud provider with a default row (openrouter) gets it when an agent
-//     lists it. The row holds no key.
+//     lists it. The row holds no key, only the name of the environment
+//     variable the key is read from (OpenRouterKeyEnv).
 //   - Every agent in env.Agents gets a native cloud provider row under its
-//     own name.
+//     own name — unless that name is one of the providers above, which then
+//     gets its own default row: a native row under `ollama` would take the
+//     id every ollama model resolves through.
 //
 // The agent trigger is what lets wt's own validation pass after seeding on a
 // machine that has a config.toml and no registry: Config.Validate refuses an
@@ -162,6 +183,10 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string
 	listed := map[string]bool{}
 	for _, id := range env.AgentProviders {
 		listed[id] = true
+	}
+	// An agent named after a provider with a default row asks for that row.
+	for _, name := range env.Agents {
+		listed[name] = true
 	}
 	wanted := map[string]bool{}
 	for _, row := range d.rows("models") {

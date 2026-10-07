@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"gopkg.in/yaml.v3"
 )
 
 // stubSeedEnv makes `wt model init` seed for the machine env describes.
@@ -205,6 +207,99 @@ supported_providers = ["ollama"]
 	}
 	if err := cfg.ValidateAll(); err != nil {
 		t.Errorf("the config should validate after init: %v", err)
+	}
+}
+
+// TestModelInitSeedsAnOpenRouterRowThatFailsLoudlyWithoutItsKey pins why the
+// seeded openrouter row names OPENROUTER_API_KEY. With no secret_ref the
+// route wt builds for an openrouter model carries `api_key: ""` and every
+// request fails at OpenRouter with nothing in wt's output to say why. With
+// the variable named, an unset variable refuses the route ("resolved
+// empty"), and a set one is the key that is sent. The registry itself never
+// holds the key.
+func TestModelInitSeedsAnOpenRouterRowThatFailsLoudlyWithoutItsKey(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	stubSeedEnv(t, config.SeedEnv{AgentProviders: []string{"openrouter"}})
+	stubRouteSync(t, "")
+	t.Setenv("OPENROUTER_API_KEY", "sk-or-test-not-a-real-key")
+	if err := runModelInit(io.Discard, io.Discard, false); err != nil {
+		t.Fatalf("runModelInit: %v", err)
+	}
+	data, err := os.ReadFile(config.RegistryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `secret_ref = "OPENROUTER_API_KEY"`) || strings.Contains(string(data), "sk-or-test") {
+		t.Fatalf("the row should name the variable and never hold the key:\n%s", data)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load after init: %v", err)
+	}
+	provider := cfg.ProviderByID("openrouter")
+	if provider == nil {
+		t.Fatal("no openrouter provider after init")
+	}
+	model := config.Model{ID: "openrouter/m", ProviderID: "openrouter", ModelName: "org/m"}
+
+	entry, err := litellm.BuildEntry(model, *provider)
+	if err != nil {
+		t.Fatalf("BuildEntry with the key in the environment: %v", err)
+	}
+	if text, _ := yaml.Marshal(entry); !strings.Contains(string(text), "api_key: sk-or-test-not-a-real-key") {
+		t.Errorf("the route should carry the key from the environment:\n%s", text)
+	}
+
+	t.Setenv("OPENROUTER_API_KEY", "")
+	if _, err := litellm.BuildEntry(model, *provider); err == nil || !strings.Contains(err.Error(), "resolved empty") {
+		t.Errorf("BuildEntry with the variable unset: err = %v, want the `resolved empty` refusal", err)
+	}
+}
+
+// TestModelInitWarnsWhenConfigTomlCannotBeRead pins what the user is told
+// when config.toml is there and does not parse. The command still seeds what
+// it can and exits 0, but it must say that no agent got a row and why:
+// without the warning the output is the same "nothing to add" a healthy
+// machine prints, and the next wt command fails on the config.
+func TestModelInitWarnsWhenConfigTomlCannotBeRead(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(), []byte("this is not toml [[["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := config.DefaultSeedEnv()
+	env.OnPath = nil
+	stubSeedEnv(t, env)
+	stubRouteSync(t, "")
+
+	var out, errOut bytes.Buffer
+	if err := runModelInit(&out, &errOut, false); err != nil {
+		t.Fatalf("runModelInit: %v", err)
+	}
+	// A first run that adds nothing still creates the registry, and says so.
+	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	if want := "registry: " + registry + " (created)\nnothing to add\n"; out.String() != want {
+		t.Errorf("stdout = %q, want %q", out.String(), want)
+	}
+	if _, err := os.Stat(registry); err != nil {
+		t.Errorf("the registry was not created: %v", err)
+	}
+	const wantWarn = "warning: config.toml could not be read, so no provider row was added for its agents (fix it and run `wt model init` again): parse config: "
+	if !strings.HasPrefix(errOut.String(), wantWarn) || strings.Count(errOut.String(), "\n") != 1 {
+		t.Errorf("stderr = %q, want one line starting %q", errOut.String(), wantWarn)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if err := runModelInit(&out, &errOut, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"warnings":["config.toml could not be read`) || errOut.Len() != 0 {
+		t.Errorf("--json: stdout = %s stderr = %q, want the warning in the document only", out.String(), errOut.String())
 	}
 }
 

@@ -34,8 +34,9 @@ func seedReport(t *testing.T, env SeedEnv) (added, unseeded []string, changed bo
 // TestSeedWritesTheRowsModelmanWrites pins every default row byte for byte
 // against what modelman writes for the same machine (the expected rows were
 // produced by modelman's default_provider_entry and sync_agent_providers
-// through tomli-w), placed ahead of the models as modelman orders the file. A base_url or name that differs would give wt and
-// modelman two ideas of the same provider for as long as both exist.
+// through tomli-w), placed ahead of the models as modelman orders the file.
+// A base_url or name that differs would give wt and modelman two ideas of
+// the same provider for as long as both exist.
 func TestSeedWritesTheRowsModelmanWrites(t *testing.T) {
 	path := scratchRegistry(t, `[[models]]
 id = "mlx_lm_server/pair"
@@ -187,6 +188,34 @@ model_name = "org/m"
 	}
 }
 
+// TestSeedAnAgentNamedAfterAProviderGetsThatProvidersRow pins what the agent
+// trigger writes for an agent whose name is a provider with a default row,
+// when nothing else asks for that provider. The agent's "own" row would be a
+// native cloud row under the id `ollama` or `openrouter`, and every model of
+// that provider would then resolve through it: no address, no key, wrong
+// location. The provider's default row is written instead, once.
+func TestSeedAnAgentNamedAfterAProviderGetsThatProvidersRow(t *testing.T) {
+	path := scratchRegistry(t, "")
+	added, unseeded, _ := seedReport(t, SeedEnv{Agents: []string{"openrouter", "ollama", "pi"}})
+	if want := []string{"ollama", "openrouter", "pi"}; !slices.Equal(added, want) || len(unseeded) != 0 {
+		t.Fatalf("added = %v, unseeded = %v, want %v and none", added, unseeded, want)
+	}
+	got := readFile(t, path)
+	if n := strings.Count(got, `type = "native"`); n != 1 {
+		t.Errorf("%d native rows, want pi's only:\n%s", n, got)
+	}
+	for _, want := range []string{
+		"id = \"ollama\"\nname = \"Ollama\"\nlocation = \"local\"\n",
+		"base_url = \"http://localhost:11434\"\n",
+		"id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\n",
+		"type = \"api_key\"\nsecret_ref = \"OPENROUTER_API_KEY\"\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the seeded registry lacks %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestSeedIsIdempotentAndNeverEditsARow pins the two safety properties of
 // seeding. Run twice it changes nothing the second time (so `wt model add`
 // can seed on every call for free). And a row that exists is left exactly as
@@ -264,8 +293,8 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", "")
-	if names, providers := seedAgents(); names != nil || providers != nil {
-		t.Errorf("with no config.toml: agents = %v, providers = %v, want none", names, providers)
+	if names, providers, err := seedAgents(); names != nil || providers != nil || err != nil {
+		t.Errorf("with no config.toml: agents = %v, providers = %v, err = %v, want none and no error", names, providers, err)
 	}
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		t.Fatal(err)
@@ -273,7 +302,10 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	names, providers := seedAgents()
+	names, providers, err := seedAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if want := []string{"claude", "agy"}; !slices.Equal(names, want) || !slices.Equal(providers, want) {
 		t.Fatalf("agents = %v, providers = %v, want %v for both", names, providers, want)
 	}
@@ -290,19 +322,30 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 		t.Errorf("the seeded registry should validate against config.toml: %v", err)
 	}
 
+	// An unreadable config.toml names nothing, and says why: the caller
+	// reports it, or the user sees "nothing to add" with no reason.
 	if err := os.WriteFile(Path(), []byte("this is not toml [[["), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if names, providers := seedAgents(); names != nil || providers != nil {
+	names, providers, err = seedAgents()
+	if names != nil || providers != nil {
 		t.Errorf("with an unreadable config.toml: agents = %v, providers = %v, want none", names, providers)
+	}
+	if err == nil || !strings.Contains(err.Error(), "parse config") {
+		t.Errorf("with an unreadable config.toml: err = %v, want the parse error", err)
+	}
+	if env := DefaultSeedEnv(); env.ConfigErr == nil || len(env.Agents) != 0 {
+		t.Errorf("DefaultSeedEnv with an unreadable config.toml: ConfigErr = %v, agents = %v", env.ConfigErr, env.Agents)
 	}
 }
 
 // TestSeedRowsForTheProvidersAgentsList pins the rows the agent trigger
 // writes and what it reports. A default local provider gets the same row it
 // would get if it were installed. openrouter gets a row with its address and
-// no key: the key is the user's secret, and seeding must never write one or
-// guess where it is kept. A provider wt has no default row for is left out
+// no key, only the name of the environment variable the key is read from: a
+// row with no secret_ref at all would give a LiteLLM route with an empty
+// api_key, where a named variable that is unset is refused out loud. A
+// provider wt has no default row for is left out
 // and reported, on every run, so the command can tell the user which row to
 // write by hand.
 func TestSeedRowsForTheProvidersAgentsList(t *testing.T) {
@@ -335,6 +378,7 @@ location = "cloud"
 
 [providers.auth]
 type = "api_key"
+secret_ref = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 `
 	if got := readFile(t, path); got != want {
@@ -398,8 +442,13 @@ supported_providers = ["opencode"]
 	if err := cfg.ValidateAll(); err != nil {
 		t.Errorf("the seeded registry should validate against config.toml: %v", err)
 	}
-	if strings.Contains(readFile(t, RegistryPath()), "secret_ref") {
-		t.Error("seeding wrote a secret_ref: the key is the user's to name")
+	// The one secret_ref seeding writes is a variable's name, never a key —
+	// even with a key in the environment.
+	if got := strings.Count(readFile(t, RegistryPath()), "secret_ref"); got != 1 {
+		t.Errorf("the seeded registry has %d secret_ref lines, want openrouter's only", got)
+	}
+	if ref := cfg.ProviderByID("openrouter").Auth.SecretRef; ref != OpenRouterKeyEnv {
+		t.Errorf("openrouter's secret_ref = %q, want the variable name %q", ref, OpenRouterKeyEnv)
 	}
 
 	// A provider with no default row: reported, not seeded, and still the
