@@ -354,3 +354,25 @@ func TestBuildUsageRowsFiltersApplyAfterFolding(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildUsageRowsFoldsIntoAnIdLaunchedOutsideTheWindow verifies a launched
+// id counts as known for the whole 30 days usage.jsonl covers, not only
+// inside --window: a model launched three days ago and not in the registry
+// still takes the spend logged under its slash spelling in a 1-day report,
+// as one row with zero launches. Deciding "known" from the window's launch
+// count instead would bring the second row back for exactly the reports
+// (--window 1d, 7d) where a launch is most likely to fall outside.
+func TestBuildUsageRowsFoldsIntoAnIdLaunchedOutsideTheWindow(t *testing.T) {
+	c := map[string]usage.UsageCounts{"mtplx/Org--Name": counts(0, 0, 1)}
+	sp := &spend.Result{Rows: []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}}}
+	for _, window := range []time.Duration{survey.Window1d, survey.Window7d} {
+		rows := buildUsageRows(c, window, sp, nil, "", "")
+		if len(rows) != 1 {
+			t.Fatalf("window %v: rows = %+v, want one", window, rows)
+		}
+		r := rows[0]
+		if r.Model != "mtplx/Org--Name" || r.Launches != 0 || r.Spend == nil || r.Spend.Requests != 5 || strings.Join(r.AlsoLoggedAs, ",") != "mtplx/Org/Name" {
+			t.Errorf("window %v: row = %+v with spend %+v, want mtplx/Org--Name with 0 launches, the 5 folded requests and the slash spelling in AlsoLoggedAs", window, r, r.Spend)
+		}
+	}
+}
