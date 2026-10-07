@@ -8,7 +8,7 @@
 
 - Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`; **`homebrew.mxcl.omlx.plist` is optional since the 2026-09-30 rebuild** — wt/modelman lifecycle backends run `omlx start` on demand, and the rebuild omits it; `brew services start omlx` restores it if you want oMLX always-on) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
 - modelman runnable from its repo, not a global install (it is not installed as a `uv tool` — guide 02 Gotchas).
-- This repo checked out — `modelman` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `modelman/`, and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
+- This repo checked out — `llmbench` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `llmbench/`, and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
 
 ## TL;DR
