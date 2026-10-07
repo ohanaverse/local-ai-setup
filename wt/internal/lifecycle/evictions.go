@@ -20,6 +20,7 @@ const poolAdmissionMarginPct = 15
 // false when the snapshot's probe for the family cannot be trusted — a caller
 // acting on "nobody" there would displace a model it never saw. A family whose
 // server refused the connection is the exception: that is known, and empty.
+// So is a target that is itself mid-load: it displaces nobody new.
 func Evictions(t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, known bool) {
 	family := localmodels.Family(t.ProviderID)
 	b := backendsByFamily[family]
@@ -42,6 +43,15 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 	}
 	if !ProbeTrusted(snap, family) {
 		return nil, false
+	}
+	// A target that is already loading was admitted by the start that began
+	// the load: whatever omlx evicts for it is decided, and a second start
+	// only waits. Planning it again would count the target's size on top of a
+	// pool that may already hold it, and ask about models this start cannot
+	// displace (#259). What the load did unload is found afterwards
+	// (reconcilePool).
+	if isLoading(snap, family, t) {
+		return nil, true
 	}
 	others := runningOthers(snap, family, t)
 	if ten == Exclusive {

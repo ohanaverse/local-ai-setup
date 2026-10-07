@@ -161,13 +161,28 @@ func ProbeTrusted(snap localmodels.Snapshot, family string) bool {
 	return st == localmodels.StatusOK
 }
 
-// isRunning reports whether live Inventory already shows the target serving.
+// isRunning reports whether live Inventory already shows the target serving:
+// running, and not still loading. A target omlx is mid-load on is not serving
+// yet (#259); isLoading answers for it.
 func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
+	return targetIs(snap, family, t, func(en localmodels.Entry) bool { return en.Running && !en.Loading })
+}
+
+// isLoading reports whether live Inventory shows the target mid-load. A start
+// on such a target is not a no-op: it joins the load and returns when the
+// model is loaded.
+func isLoading(snap localmodels.Snapshot, family string, t Target) bool {
+	return targetIs(snap, family, t, func(en localmodels.Entry) bool { return en.Running && en.Loading })
+}
+
+// targetIs reports whether a trusted snapshot has an entry for the target that
+// satisfies is.
+func targetIs(snap localmodels.Snapshot, family string, t Target, is func(localmodels.Entry) bool) bool {
 	if !ProbeTrusted(snap, family) {
 		return false
 	}
 	for _, en := range snap.Entries {
-		if en.Running && localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
+		if is(en) && localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
 			return true
 		}
 	}
@@ -225,7 +240,9 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 	return victims, false
 }
 
-// Start starts t. It is a no-op when live Inventory shows t already running,
+// Start starts t. It is a no-op when live Inventory shows t already running.
+// A t that omlx is still loading is not running yet: Start joins that load
+// and returns once the model is loaded, asking nothing (see evictions). It
 // returns *OccupiedError (touching nothing) when it would replace a running
 // model and opts.AllowReplace is false, returns *OccupancyUnknownError
 // (touching nothing) when its server accepted a connection but could not say
