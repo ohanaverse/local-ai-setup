@@ -17,16 +17,16 @@ CLI (`src/modelman/main.py`, Typer; bare `modelman` opens the TUI via `@app.call
 | `ollama-catalog sync [--dry-run] [--yes --approve-removals DIGEST] [--force]` | Mirror ollama.com/pricing into the registry and ollama (prices, added/removed cloud models), then one `wt litellm sync`. Flags, confirmation and exit codes 1–5: the `ollama-catalog` skill (`.claude/skills/ollama-catalog/SKILL.md`) |
 | `refresh-prices` | Refresh OpenRouter-priced models' per-token prices from OpenRouter (`pricing.py`); stamps `price_refresh_last_run` only when it updated at least one model |
 | `delete-family <name>` | Remove an empty family's lingering `[[families]]` entry (queue.py keeps families sticky); refuses if the family still has models |
-| `provider isolate\|stop\|stop-all\|restore\|list` | Low-level per-provider lifecycle (`providers/lifecycle/cli.py`) |
-| `benchmark ...` | `benchmark/cli.py`, plus `benchmark agent` / `benchmark eval` sub-apps |
+| `provider isolate\|stop\|stop-all\|restore\|list` | llmbench's `provider_app`, mounted here until modelman is retired; prefer `llmbench provider ...` |
+| `benchmark ...` | llmbench's `benchmark_app`, mounted here until modelman is retired; prefer `llmbench ...` |
 | `usage report` | `usage/cli.py` — wt launch history × LiteLLM spend |
 
-Sub-Typer apps mounted in `main.py`: `benchmark`, `usage`, `provider`, `litellm`.
+Sub-Typer apps mounted in `main.py`: `usage`, `litellm`, and from llmbench `benchmark` and `provider`.
 
 ## Monorepo context
 
 - `wt/` (Go sibling) reads `registry.toml` and `modelman.toml` read-only. The cross-language schema is pinned by the `docs/contracts/` fixtures, loaded by `tests/contracts/` here and `wt/internal/config` there — change a fixture without updating both sides and both CI jobs fail.
-- `modelman benchmark` and `local_control.py` call `providers/lifecycle/orchestrate.py` in-process (issue #79). Nothing in modelman shells out to `bin/`.
+- **`../llmbench/` owns the benchmarks and the provider lifecycle** (carved out 2026-10; modelman has an editable path dependency on it, `[tool.uv.sources]` in `pyproject.toml`). `local_control.py` calls `llmbench.benchmark.isolation` and `llmbench.providers.lifecycle` in-process (issue #79); `local_process.ProcessResult` and `wt_bridge`'s `WtBridgeError`/`WtNotFoundError`/`WtBridgeTimeoutError` are re-exports of llmbench's classes; `tests/test_registry_path_parity.py` keeps the two registry readers on one file. Change that code in `../llmbench/` (see `../llmbench/CLAUDE.md`), then run both suites. Nothing in modelman shells out to `bin/`.
 
 ## Common development commands
 
@@ -104,14 +104,9 @@ Read `docs/internals/registry-and-state.md` before changing any of these, `sync.
 
 Read `docs/internals/providers.md` before changing a provider class, the ollama not-found rules, or `ollama_caps.py`. Adding a provider: the `adding-a-provider` skill (`.claude/skills/adding-a-provider/SKILL.md`).
 
-### Provider lifecycle (`src/modelman/providers/lifecycle/`)
+### Provider lifecycle
 
-Isolate/stop/stop-all/restore for local providers. `orchestrate.py` holds the operations; `backends/` has one backend per provider (`BACKENDS`), with `SUPPORTED_PROVIDER_IDS` excluding retired `llamacpp`; `cli.py` is `modelman provider ...`.
-
-- **Backend tests patch the name as imported into the backend module** (`patch("modelman.providers.lifecycle.backends.mtplx.subprocess.run")`).
-- `stop_all()`'s `keep` takes a provider id, resolved to its `occupancy_key`.
-
-Module map and primitives: `docs/internals/providers.md`.
+Moved to llmbench (`../llmbench/src/llmbench/providers/lifecycle/`): see `../llmbench/CLAUDE.md`, "Provider lifecycle". modelman's tests patch it under its new name (`patch("llmbench.providers.lifecycle.stop")`), and `tests/conftest.py`'s autouse guards patch `llmbench.providers.lifecycle.*`.
 
 ### Local-model lifecycle
 
@@ -128,13 +123,7 @@ Read `docs/internals/local-model-lifecycle.md` before changing start/stop, name 
 
 ### Benchmark subsystem
 
-User guides: `../docs/guides/09-agent-benchmarks.md` (agent) and `../docs/guides/11-capability-eval-benchmark.md` (eval). Module map:
-
-- `benchmark/` — `cli.py` (`benchmark_app`: `list-workloads`, `run`, `show-results`), `isolation.py`, `runner.py`, `results.py`, `workloads/`; shared helpers `runmeta.py` (`git_sha()`), `errors.py` (`RunSavedButRestoreFailed`), `judge_core.py` (strict-JSON rubric scoring, retry-on-malformed, multi-sample median), and `_routes.py` — the **single source** for OpenRouter key resolution (env, then the LiteLLM LaunchAgent plist) and LiteLLM apiKey/baseUrl from `~/.pi/agent/models.json`; fix a credential-format change there, once.
-- `benchmark/agent/` — `suite.py`, `task.py`, `workspace.py`, `pidriver.py`, `gates.py` (nine-gate taxonomy), `judge.py`, `report.py`, `runner.py`, `cli.py`.
-  - `gates.toml`'s `tests_dir` must name a real subdirectory, never `"."`/`""` — `task.py::load_task` rejects them because gates 6/7 compare `Path.parts` tuples and an empty tuple is a prefix of every path.
-- `benchmark/eval/` — `category.py`, `suite.py` (deliberately parallel to `agent/suite.py`, not shared), `judged_runner.py`, `evalplus_runner.py` (reports EvalPlus's "+"/hardened pass@1, not base), `runner.py` (incl. `rejudge_run` from persisted `response.txt`), `report.py`, `cli.py`.
-- Tests mirror modules: `tests/benchmark/` (incl. `test_routes.py`, `test_judge_core.py`), `tests/benchmark/agent/` (plus `fixtures/`), `tests/benchmark/eval/` (plus `test_rejudge.py`).
+Moved to llmbench (`../llmbench/src/llmbench/benchmark/`): see `../llmbench/CLAUDE.md`, "Benchmark subsystem". `modelman benchmark ...` still runs it, mounted from llmbench in `main.py`; its tests live in `../llmbench/tests/benchmark/`.
 
 ### Usage/spend tracking
 

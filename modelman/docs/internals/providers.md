@@ -13,9 +13,6 @@ Internals reference for `modelman/`, reached from [`modelman/CLAUDE.md`](../../C
 - `ollama_caps.py` — `auto_detect_model_info()` runs `ollama show` and maps `Capabilities` (e.g. `tools` → `supports_function_calling`); `ModelForm` calls it on add.
 - Adding a provider: see the `adding-a-provider` skill (`.claude/skills/adding-a-provider/SKILL.md`).
 
-## Provider lifecycle (`src/modelman/providers/lifecycle/`)
+## Provider lifecycle
 
-Isolate/stop/stop-all/restore for local providers (ported from bash, issue #79). `orchestrate.py` holds the operations; `backends/` has one backend per provider, registered in `backends/__init__.py`'s `BACKENDS`, with `SUPPORTED_PROVIDER_IDS` (`ollama`, `omlx`, `omlx-6bit`, `mlx_lm_server`, `mtplx`) excluding the retired-only `llamacpp`. mtplx and mlx_lm_server subclass `PidfileTrackedBackend` (`backends/base.py`); `pidproc.py`'s `PidfileProcess` is the spawn/stop/log-tail primitive; `probe.py`/`launchd.py`/`binaries.py` are shared primitives; `cli.py` is `modelman provider ...`. `src/modelman/local_process.py` is the neutral home for process/probe types shared with `benchmark/isolation.py` (living under either package would make the other's import backwards).
-
-- `stop_all()`'s `keep` takes a **provider id** (like `isolate()`/`stop()`), resolved internally to its `occupancy_key` — `--keep omlx-6bit` keeps both omlx variants — and an unknown id returns `ok=False` before any teardown.
-- **Testing pattern:** backend tests patch the name *as imported into the backend module* (`patch("modelman.providers.lifecycle.backends.mtplx.subprocess.run")`, `...backends.mtplx.probe.wait_for_port_closed`, `...backends.mtplx._PROC`), never the origin module — "patch where it's used" across the whole `lifecycle/` package. Distinct from the `Provider`-class `runner=` seam.
+Moved to llmbench (`../llmbench/src/llmbench/providers/lifecycle/`). Its module map, the `stop_all()` `keep` rule and the "patch where it's used" testing pattern are in [`llmbench/CLAUDE.md`](../../../llmbench/CLAUDE.md), "Provider lifecycle".
