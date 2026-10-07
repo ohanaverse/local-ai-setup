@@ -358,3 +358,121 @@ func TestStoreInterfaceIncludesCountsForAgent(t *testing.T) {
 		t.Errorf("got %+v, want zero", got["m"])
 	}
 }
+
+// writeEvents replaces the store's usage.jsonl with the given events, plus
+// any raw lines appended verbatim (for malformed-line cases).
+func writeEvents(t *testing.T, store *StoreImpl, events []event, raw ...string) {
+	t.Helper()
+	var data []byte
+	for _, e := range events {
+		line, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, append(line, '\n')...)
+	}
+	for _, r := range raw {
+		data = append(data, []byte(r+"\n")...)
+	}
+	if err := os.WriteFile(store.path(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAllCountsEnumeratesEveryModelInTheFile verifies AllCounts needs no id
+// list: it reports every model with a launch in the last 30 days, in the
+// same 1d/7d/30d buckets Counts uses, and skips unparseable lines. `wt
+// stats` builds its launch column from it; a model missing here is a model
+// whose launches the usage table silently leaves out.
+func TestAllCountsEnumeratesEveryModelInTheFile(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	writeEvents(t, store, []event{
+		{ModelID: "ollama/a:1", Agent: "claude", Timestamp: fixed.Add(-30 * time.Minute)},
+		{ModelID: "ollama/a:1", Agent: "codex", Timestamp: fixed.Add(-26 * time.Hour)},
+		{ModelID: "ollama/a:1", Timestamp: fixed.Add(-10 * 24 * time.Hour)}, // legacy, no agent
+		{ModelID: "removed/from-registry", Agent: "claude", Timestamp: fixed.Add(-2 * time.Hour)},
+		{ModelID: "ollama/stale", Agent: "claude", Timestamp: fixed.Add(-40 * 24 * time.Hour)},
+	}, "not json", `{"model_id":"ollama/a:1","timestamp":"garbage"}`)
+
+	got := store.AllCounts("")
+	want := map[string]UsageCounts{
+		"ollama/a:1":            {OneDay: 1, SevenDay: 2, ThirtyDay: 3},
+		"removed/from-registry": {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("AllCounts(\"\") = %+v, want exactly %+v (a model with no launch in 30 days is left out)", got, want)
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("AllCounts(\"\")[%q] = %+v, want %+v", id, got[id], w)
+		}
+	}
+}
+
+// TestAllCountsScopesToOneAgent verifies a named agent counts only the
+// launches recorded for it: legacy agent-less lines and other agents'
+// launches are left out, and a model that agent never launched does not
+// appear at all. `wt stats --agent codex` would otherwise show every
+// agent's launches under a filter that claims to narrow them.
+func TestAllCountsScopesToOneAgent(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	writeEvents(t, store, []event{
+		{ModelID: "ollama/a:1", Agent: "claude", Timestamp: fixed.Add(-1 * time.Hour)},
+		{ModelID: "ollama/a:1", Agent: "codex", Timestamp: fixed.Add(-2 * time.Hour)},
+		{ModelID: "ollama/a:1", Timestamp: fixed.Add(-3 * time.Hour)},
+		{ModelID: "ollama/b:1", Agent: "claude", Timestamp: fixed.Add(-4 * time.Hour)},
+	})
+
+	got := store.AllCounts("codex")
+	if len(got) != 1 || got["ollama/a:1"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("AllCounts(\"codex\") = %+v, want only ollama/a:1 with one launch", got)
+	}
+	if got := store.AllCounts("nobody"); len(got) != 0 {
+		t.Errorf("AllCounts(\"nobody\") = %+v, want an empty map", got)
+	}
+}
+
+// TestAllCountsWindowEdgesAndMissingFile verifies the bucket edges are the
+// ones Counts uses (an event exactly 24h, 7d or 30d old is outside that
+// window) and that a missing usage.jsonl reads as an empty, non-nil map.
+// `wt stats` on a fresh install must print "no usage data", not crash, and
+// its launch column must agree with the picker's 1d/7d/30d columns.
+func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	if got := store.AllCounts(""); got == nil || len(got) != 0 {
+		t.Fatalf("AllCounts on a missing file = %#v, want an empty non-nil map", got)
+	}
+
+	writeEvents(t, store, []event{
+		{ModelID: "day", Timestamp: fixed.Add(-24 * time.Hour)},
+		{ModelID: "week", Timestamp: fixed.Add(-7 * 24 * time.Hour)},
+		{ModelID: "month", Timestamp: fixed.Add(-30 * 24 * time.Hour)},
+		{ModelID: "month", Timestamp: fixed.Add(-30*24*time.Hour + time.Second)},
+	})
+	got := store.AllCounts("")
+	want := map[string]UsageCounts{
+		"day":   {SevenDay: 1, ThirtyDay: 1},
+		"week":  {ThirtyDay: 1},
+		"month": {ThirtyDay: 1},
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("AllCounts(\"\")[%q] = %+v, want %+v", id, got[id], w)
+		}
+	}
+	if ids := []string{"day", "week", "month"}; len(got) != len(ids) {
+		t.Errorf("AllCounts(\"\") = %+v, want exactly %v", got, ids)
+	}
+}
