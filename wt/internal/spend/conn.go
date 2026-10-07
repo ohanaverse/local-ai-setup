@@ -50,7 +50,8 @@ import (
 //     service file's; as PGSERVICE the file would override them;
 //   - a URI with a space or control character (libpq 16 takes them into
 //     the value; later releases are stricter), a bad percent-escape, or
-//     %00;
+//     %00 — anywhere in it, as libpq fails the string at the first one, also
+//     in a part a later parameter replaces;
 //   - a keyword string libpq cannot read, or one with a byte 0x85 or 0xA0
 //     outside quotes: C's isspace() says yes or no to those by locale (yes
 //     on macOS), which decides where a value ends. Both occur inside UTF-8
@@ -121,7 +122,8 @@ func connEnv(dsn string) ([]string, error) {
 		if !ok {
 			return nil, errUnsupported
 		}
-		// An environment entry cannot hold a NUL, and libpq refuses %00.
+		// An environment entry cannot hold a NUL. (A URI's %00 is refused
+		// where it is decoded; this is a raw one in a keyword string.)
 		if strings.ContainsRune(v, 0) {
 			return nil, errUnreadable
 		}
@@ -172,9 +174,12 @@ func uriOptions(p string) (map[string]string, error) {
 	}
 	opts := map[string]string{}
 	var bad bool
+	// libpq fails the whole string at the first bad escape or %00, so a part
+	// that a later parameter replaces is refused here too, not only one that
+	// reaches the environment.
 	decode := func(raw string) string {
 		v, err := url.PathUnescape(raw)
-		if err != nil {
+		if err != nil || strings.IndexByte(v, 0) >= 0 {
 			bad = true
 		}
 		return v

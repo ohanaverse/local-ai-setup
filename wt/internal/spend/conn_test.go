@@ -20,9 +20,12 @@ const oddPassword = `FAKEp/@:% "é`
 // database name, the host — is among psql's arguments, for a URI and for a
 // keyword string, and that the environment carries each value decoded: the
 // URI's percent-escapes undone, the keyword string's quotes and backslashes
-// removed. Arguments are readable by every user of the machine (`ps -ww`)
-// while `wt stats` runs; that was the database password (#282). A value
-// decoded wrongly is a login that fails for a password that is right.
+// removed. A connect_timeout in the string reaches psql once, in place of
+// wt's 3 seconds. Arguments are readable by every user of the machine
+// (`ps -ww`) while `wt stats` runs; that was the database password (#282). A
+// value decoded wrongly is a login that fails for a password that is right;
+// a timeout wt overrode would cut off a database that is slow to answer and
+// was given longer.
 func TestQueryKeepsTheConnectionOutOfArgv(t *testing.T) {
 	cases := []struct {
 		name, dsn string
@@ -36,6 +39,8 @@ func TestQueryKeepsTheConnectionOutOfArgv(t *testing.T) {
 			[]string{"PGCONNECT_TIMEOUT=3", "PGDATABASE=FAKE/db", "PGHOST=db.example", "PGPASSWORD=" + oddPassword, "PGPORT=5432", "PGTZ=UTC", "PGUSER=FAKE user"}},
 		{"a URI with a raw quote and a raw é in the password", `postgresql://FAKEuser:FAKEp:%25"é@db.example/FAKEdb`,
 			[]string{"PGCONNECT_TIMEOUT=3", "PGDATABASE=FAKEdb", "PGHOST=db.example", `PGPASSWORD=FAKEp:%"é`, "PGTZ=UTC", "PGUSER=FAKEuser"}},
+		{"a URI with its own connect_timeout", "postgresql://db.example/FAKEdb?connect_timeout=30",
+			[]string{"PGCONNECT_TIMEOUT=30", "PGDATABASE=FAKEdb", "PGHOST=db.example", "PGTZ=UTC"}},
 		{"a keyword string", "host=db.example port=5432 user=FAKEuser password=FAKEpass dbname=FAKEdb sslmode=require",
 			[]string{"PGCONNECT_TIMEOUT=3", "PGDATABASE=FAKEdb", "PGHOST=db.example", "PGPASSWORD=FAKEpass", "PGPORT=5432", "PGSSLMODE=require", "PGTZ=UTC", "PGUSER=FAKEuser"}},
 		{"a keyword string with a quoted password", `host=db.example user='FAKE user' password='FAKEp/@:% "é' dbname=FAKEdb`,
@@ -136,6 +141,15 @@ func TestQueryRefusesWhatItCannotCarryOver(t *testing.T) {
 		{"a bad percent escape", "postgresql://FAKEuser:FAKEpa%zzword@db.example/FAKEdb", unreadable},
 		{"a truncated percent escape", "postgresql://FAKEuser:FAKEpass@db.example/FAKEdb%2", unreadable},
 		{"an escaped NUL", "postgresql://FAKEuser:FAKEpa%00ss@db.example/FAKEdb", unreadable},
+		// libpq fails the whole string at the first %00, also where a later
+		// parameter replaces the value that held it.
+		{"an escaped NUL in a user a parameter replaces", "postgresql://FAKEuser%00@db.example/FAKEdb?user=FAKEother", unreadable},
+		{"an escaped NUL in a password a parameter replaces", "postgresql://FAKEuser:FAKEpa%00ss@db.example/FAKEdb?password=FAKEpass", unreadable},
+		{"an escaped NUL in a host a parameter replaces", "postgresql://db%00.example/FAKEdb?host=db.example", unreadable},
+		{"an escaped NUL in a port a parameter replaces", "postgresql://db.example:54%0032/FAKEdb?port=5432", unreadable},
+		{"an escaped NUL in a database name a parameter replaces", "postgresql://db.example/FAKE%00db?dbname=FAKEdb", unreadable},
+		{"an escaped NUL in a parameter given again", uri + "?sslmode=FAKE%00&sslmode=require", unreadable},
+		{"an escaped NUL in a parameter name", uri + "?ssl%00mode=require", unreadable},
 		{"a space in a URI", "postgresql://FAKEuser:FAKEpa ss@db.example/FAKEdb", unreadable},
 		{"a space after a URI", uri + " ", unreadable},
 		{"a newline in a URI", "postgresql://FAKEuser:FAKEpa\nss@db.example/FAKEdb", unreadable},
@@ -194,6 +208,8 @@ func TestConnEnvReadsAStringAsLibpqDoes(t *testing.T) {
 			[]string{"PGDATABASE=FAKEdb", "PGHOST=::1", "PGPORT=5433", "PGUSER=FAKEuser"}},
 		{"a socket directory", "postgresql://FAKEuser@%2Fvar%2Frun%2Fpostgresql/FAKEdb",
 			[]string{"PGDATABASE=FAKEdb", "PGHOST=/var/run/postgresql", "PGUSER=FAKEuser"}},
+		{"an escaped port", "postgresql://db.example:54%332/FAKEdb",
+			[]string{"PGDATABASE=FAKEdb", "PGHOST=db.example", "PGPORT=5432"}},
 		{"several hosts", "postgresql://db-a.example:5432,db-b.example:6432/FAKEdb?target_session_attrs=read-write",
 			[]string{"PGDATABASE=FAKEdb", "PGHOST=db-a.example,db-b.example", "PGPORT=5432,6432", "PGTARGETSESSIONATTRS=read-write"}},
 		{"several hosts, one without a port", "postgresql://db-a.example,db-b.example:6432/FAKEdb",
