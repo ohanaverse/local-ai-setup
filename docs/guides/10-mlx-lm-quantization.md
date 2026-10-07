@@ -19,9 +19,9 @@ Two independent features, both built on the same `mlx_lm.*` tooling bundled insi
 # from: /Users/keith/github/ohanaverse/local-ai-setup
 bin/mlx-quantize convert --model mlx-community/some-model -q --mlx-path /tmp/some-model-4bit
 # → Output written to: /tmp/some-model-4bit
-#   Next: register it in modelman by hand-editing registry.toml — add an
-#   [[models]] entry with provider_id = "omlx" and a [models.fetch]
-#   local_path = "/tmp/some-model-4bit" (absolute path).
+#   Next: register it by hand-editing registry.toml — add an [[models]] entry
+#   with provider_id = "omlx" and a [models.fetch] local_path = "/tmp/some-model-4bit"
+#   (absolute path). See docs/guides/10-mlx-lm-quantization.md.
 
 uv run --directory llmbench llmbench provider isolate mlx_lm_server org/target-repo --draft org/draft-repo --json
 # → {"provider":"mlx_lm_server","model":"org/target-repo (+draft org/draft-repo)",
@@ -112,7 +112,7 @@ Confirms `mlx_lm_server` was stopped, port 8001 closed, pidfile removed — `llm
 
 ## Gotchas
 
-- **modelman never deletes a `local_path` artifact.** A directory from `mlx_lm.convert`/`dwq` is user-produced (possibly hours of GPU time), not something modelman downloaded — deleting the registry entry (or a ready-off toggle) leaves the directory on disk. Clean up failed experiments with a manual `rm -rf`.
+- **modelman never deletes a `local_path` artifact.** A directory from `mlx_lm.convert`/`dwq` is user-produced (possibly hours of GPU time), not something modelman downloaded — deleting the registry entry leaves the directory on disk. Clean up failed experiments with a manual `rm -rf`.
 - **No default target/draft pairing exists anywhere in this repo.** Every `mlx_lm_server` isolate call — manual or from `llmbench` — must supply both sides; there's no fallback to guess from.
 - **`mlx_lm_server` is one-model-per-process**, unlike ollama (single daemon, any model) or omlx (one daemon, both 4-bit/6-bit variants). Sweeping multiple pairings in one benchmark run restarts the process between them.
 - **The omlx keg version drifts on `brew upgrade omlx`.** `bin/mlx-quantize` and the `llmbench provider isolate` lifecycle backends (`src/llmbench/providers/lifecycle/binaries.py`) resolve `mlx_lm.*` by globbing the keg and taking the newest match — never hardcode a version path.

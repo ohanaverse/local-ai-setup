@@ -94,9 +94,11 @@ quantizations = ["Q4_K_M"]
 ```
 
 `model_info` is freeform and copied into LiteLLM's `model_list` entry when
-`wt` routes the model. For Ollama models it is auto-populated on add by
-running `ollama show <name>` and translating known capabilities (e.g.
-`tools` → `supports_function_calling: true`).
+`wt` routes the model. The disabled TUI's add dialog used to fill it for
+Ollama models from `ollama show <name>`; by hand, read the capabilities
+`ollama show <name>` lists and set the matching keys yourself (e.g.
+`tools` → `supports_function_calling = true`, `vision` →
+`supports_vision = true`).
 
 `cost` is validated on load: each price field must be a non-negative
 finite number; `subscription_period` must be `month` or `year` when

@@ -9,8 +9,8 @@
 # the subcommand are forwarded verbatim to the resolved binary; this script
 # never reimplements or validates mlx-lm's own flag surface, which would
 # only drift out of sync with upstream. modelman deliberately does not run
-# these tools itself ("register-only") — this script plus a manual TUI
-# registration step is the whole workflow.
+# these tools itself ("register-only") — this script plus a hand-written
+# registry.toml entry is the whole workflow.
 #
 # Usage:
 #   mlx-quantize convert --model <hf-repo-or-local-path> -q [--mlx-path <out-dir>]
@@ -72,7 +72,6 @@ done
 
 echo
 echo "Output written to: $out_dir"
-echo "Next: register it in modelman by hand-editing registry.toml (the TUI's"
-echo "omlx dialog has no local-path field — add an [[models]] entry with"
-echo "provider_id = \"omlx\" and a [models.fetch] local_path = \"$out_dir\""
+echo "Next: register it by hand-editing registry.toml — add an [[models]] entry"
+echo "with provider_id = \"omlx\" and a [models.fetch] local_path = \"$out_dir\""
 echo "(absolute path). See docs/guides/10-mlx-lm-quantization.md."

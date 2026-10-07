@@ -27,7 +27,7 @@ modelman reads three files under `~/.config/local-ai/` (table copied from the mo
 | File | Purpose | Env override |
 |------|---------|--------------|
 | `registry.toml` | Canonical model/provider definitions (shared; `wt model init` also writes it) | `WT_REGISTRY` (legacy alias `MODELMAN_REGISTRY`) |
-| `modelman.toml` | Per-machine mutable state: download markers, family display names, the `running` hint | `MODELMAN_STATE` |
+| `modelman.toml` | Per-machine mutable state: download markers, the `running` hint (and a legacy `[families]` display-name table, read as a fallback only) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 
 Full map including wt and LaunchAgent surfaces: [00-config-map](00-config-map.md)
@@ -360,7 +360,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 
 ## Gotchas
 
-- **`registry.toml` is canonical.** Which cloud models agents see, and the family, tags and cost of every model, change HERE — edit `~/.config/local-ai/registry.toml` by hand (Step 1), not wt's config. Which *local* models agents see is what wt's probes find on disk or running (Step 3), with or without an entry. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `running`; `[families]` display names); never treat it as the model catalog. It carries **no routing field** — a legacy `exposed` key from before #179 is ignored by both modelman and wt, and modelman drops it on its next write.
+- **`registry.toml` is canonical.** Which cloud models agents see, and the family, tags and cost of every model, change HERE — edit `~/.config/local-ai/registry.toml` by hand (Step 1), not wt's config. Which *local* models agents see is what wt's probes find on disk or running (Step 3), with or without an entry. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `running`; a legacy `[families]` table — display names live in `registry.toml`'s `[[families]]` now); never treat it as the model catalog. It carries **no routing field** — a legacy `exposed` key from before #179 is ignored by both modelman and wt, and modelman drops it on its next write.
 - **Run modelman from the `modelman/` directory.** modelman is not installed as a global `uv tool`. Always run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman <subcommand> …`; bare `uv run modelman` (the TUI) is disabled.
 - **`sync` semantics:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), unconfigured models ignored, no models added, then one `wt litellm sync` so the routes follow whatever it changed; ollama `:cloud` stubs are managed by `modelman ollama-catalog sync`, not `sync`. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
 - **A provider row for every model.** A `[[models]]` block whose `provider_id` names no `[[providers]]` row stops every wt launch with `config error: … unknown provider`, and `wt litellm sync` silently leaves the model unrouted; `wt model init` adds the default row for a local provider a model references (Step 1).

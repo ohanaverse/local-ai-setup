@@ -158,24 +158,21 @@ Editing `family`/`tags` changes what `wt` offers on the **next launch** — the 
 
 ## Verification
 
-Display-name round trip — Example (illustrative — your ids will differ; substitute one of your own family ids; historically live-verified 2026-08-29 with modelman.toml restored byte-exact afterwards):
+Display-name check — read the `[[families]]` entries back from `registry.toml`, where Step 2 put the name:
 
 ```bash
-# from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run python -c "from modelman.state import load_state; from pathlib import Path; s = load_state(Path.home() / '.config/local-ai/modelman.toml'); print(s.family_display_name('ornith-1.5:35b'))"
+grep -n -A2 '^\[\[families\]\]' ~/.config/local-ai/registry.toml
 ```
 
-Suppose a temporary `[families."ornith-1.5:35b"]` → `display_name = "Ornith 1.5"` is appended to `~/.config/local-ai/modelman.toml`:
+Each entry prints its `name` and, when one is set, its `display_name`. Example (illustrative — your ids and line numbers will differ):
 
 ```text
-Ornith 1.5
+12:[[families]]
+13-name = "ornith"
+14-display_name = "Ornith"
 ```
 
-After restoring the file (no display name for that family), the fallback returns the raw id:
-
-```text
-ornith-1.5:35b
-```
+No output means the registry has no `[[families]]` entry, which is valid — a family exists as soon as a model names it. That grep is the whole check: nothing displays the name today (Step 2), so there is no screen to confirm it on.
 
 <!-- UNVERIFIED — interactive TUI. The wt picker regrouping after a family edit was not driven from this session. -->
 

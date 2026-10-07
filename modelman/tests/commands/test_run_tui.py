@@ -59,6 +59,8 @@ def test_no_args_does_not_open_the_tui_and_says_where_to_go():
     assert "hf download" in result.output
     assert "mtplx pull" in result.output
     assert "wt start" in result.output
+    # wt has no backend for an mlx_lm_server pairing; modelman still starts it.
+    assert "modelman start" in result.output
 
 
 def test_a_subcommand_still_runs_with_the_tui_disabled():

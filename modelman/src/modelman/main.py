@@ -443,6 +443,7 @@ TUI_DISABLED_MESSAGE = (
     "    `hf download <org>/<repo> --local-dir ~/.omlx/models/<repo>` for omlx,\n"
     "    `mtplx pull <org>/<name>` for mtplx\n"
     "  - start or stop a local model: wt start / wt stop\n"
+    "    (an mlx_lm_server pairing: modelman start / modelman stop)\n"
     "  - modelman's subcommands still work: modelman --help"
 )
 
