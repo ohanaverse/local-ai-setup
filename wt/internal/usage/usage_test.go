@@ -387,8 +387,6 @@ func writeEvents(t *testing.T, store *StoreImpl, events []event, raw ...string) 
 func TestAllCountsEnumeratesEveryModelInTheFile(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
 	writeEvents(t, store, []event{
 		{ModelID: "ollama/a:1", Agent: "claude", Timestamp: fixed.Add(-30 * time.Minute)},
@@ -421,8 +419,6 @@ func TestAllCountsEnumeratesEveryModelInTheFile(t *testing.T) {
 func TestAllCountsScopesToOneAgent(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
 	writeEvents(t, store, []event{
 		{ModelID: "ollama/a:1", Agent: "claude", Timestamp: fixed.Add(-1 * time.Hour)},
@@ -448,8 +444,6 @@ func TestAllCountsScopesToOneAgent(t *testing.T) {
 func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
 	if got := store.AllCounts("", fixed); got == nil || len(got) != 0 {
 		t.Fatalf("AllCounts on a missing file = %#v, want an empty non-nil map", got)
@@ -485,8 +479,6 @@ func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
 func TestAllCountsSkipsALineWithNoModelID(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
 	writeEvents(t, store, []event{
 		{ModelID: "", Agent: "claude", Timestamp: fixed.Add(-time.Hour)},

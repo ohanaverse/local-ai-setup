@@ -37,8 +37,11 @@ type statsRow struct {
 // the flag was not given, and each match is exact. The three travel as one
 // value with named fields, never as adjacent strings: handed on positionally,
 // a model id in the family's place is legal Go that selects no row and still
-// exits 0 (#288).
+// exits 0 (#288). The blank first field makes the compiler hold a literal to
+// that: statsFilter{"a", "b", "c"} does not compile, and go vet would not
+// have flagged it (its composites check covers imported types only).
 type statsFilter struct {
+	_      struct{}
 	model  string // --model: both tables
 	family string // --family: the usage table only
 	agent  string // --agent: the survey table and the launch counts
@@ -188,7 +191,21 @@ func parseStatsWindow(s string) (time.Duration, error) {
 // This is the one place that decides which survey rows exist: the table
 // (surveyTableRows) and the document (buildStatsJSON) both render exactly
 // the rows returned here.
+//
+// asOf is the end of the window as well as where it is measured from: an
+// answer dated after it is left out, as AllCounts leaves out a launch dated
+// after it, and one dated exactly asOf is counted. The bound is applied here
+// and not in survey's inWindow, which the picker and the after-session
+// summary share and which keeps counting such an answer for them.
 func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, f statsFilter) []statsRow {
+	upTo := make([]survey.Event, 0, len(events))
+	for _, ev := range events {
+		if !ev.Timestamp.After(asOf) {
+			upTo = append(upTo, ev)
+		}
+	}
+	events = upTo
+
 	modelStats := survey.ModelStats(events, window, asOf)
 	combos := survey.AllAgentModelStats(events, window, asOf)
 

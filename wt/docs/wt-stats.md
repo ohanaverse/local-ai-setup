@@ -20,8 +20,8 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>
 - `--window` — defaults to `30d`. One window for both tables: survey
   answers, launches and spend all cover the same period, measured back from
   one instant read once when the command starts (`as_of` in `--json`). A
-  launch recorded after that instant — or dated after it by a clock that was
-  wrong — is not counted, as a request after it is not.
+  launch or a survey answer recorded after that instant — or dated after it
+  by a clock that was wrong — is not counted, as a request after it is not.
 - `--model` — narrow both tables to one model id (exact match).
 - `--agent` — narrow the survey table and the launch counts to one agent.
   The spend log does not record which agent sent a request, so spend is not
