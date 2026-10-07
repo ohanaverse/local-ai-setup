@@ -4,10 +4,16 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -92,4 +98,107 @@ func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, s
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Model < rows[j].Model })
 	return rows
+}
+
+// The four answers to "is there spend data in this report".
+const (
+	spendOK            = "ok"
+	spendNotConfigured = "not_configured" // nothing names a database
+	spendUnavailable   = "unavailable"    // psql missing, database down, query failed
+	spendSkipped       = "skipped"        // --agent: the spend log has no agent
+)
+
+// usageReport is everything the usage table and its notes are built from.
+type usageReport struct {
+	Rows         []usageRow
+	SpendStatus  string
+	SpendReason  string // why spend is missing; "" when SpendStatus is spendOK
+	Unattributed int64  // requests the proxy logged with no model, in the whole window
+	Narrowed     bool   // --model or --family was given: Rows is part of the window
+}
+
+// registryNote is the extra note for --family when the registry did not
+// load: every family is then an id's provider prefix, and a registry family
+// (gemma4) matches nothing.
+const registryNote = "the registry did not load (run `wt config` to repair), so --family matched each id's provider prefix"
+
+// querySpend asks the LiteLLM database for per-model totals between start
+// and end. A seam: cmd/wt's TestMain replaces it, so no test resolves a
+// connection string or runs psql.
+var querySpend = realQuerySpend
+
+func realQuerySpend(ctx context.Context, start, end time.Time) (spend.Result, error) {
+	dsn, err := litellm.DatabaseURL()
+	if err != nil {
+		return spend.Result{}, err
+	}
+	return spend.Query(ctx, dsn, start, end)
+}
+
+// stdoutWidth is the terminal's width in columns, or 0 when stdout is not
+// a terminal (a pipe or a file has no width to fit). A seam so tests do not
+// depend on where `go test` was run.
+var stdoutWidth = realStdoutWidth
+
+func realStdoutWidth() int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil {
+		return 0
+	}
+	return w
+}
+
+// collectUsage builds the usage report for one window ending at asOf.
+// It never fails: every way of having no spend data is a status and a
+// reason, and the launch counts are reported regardless.
+func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, modelFilter, familyFilter, agentFilter string) usageReport {
+	rep := usageReport{SpendStatus: spendOK, Narrowed: modelFilter != "" || familyFilter != ""}
+	var sp *spend.Result
+	if agentFilter != "" {
+		rep.SpendStatus = spendSkipped
+		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+	} else if res, err := querySpend(ctx, asOf.Add(-window), asOf); err != nil {
+		rep.SpendStatus = spendUnavailable
+		if errors.Is(err, litellm.ErrNoDatabase) {
+			rep.SpendStatus = spendNotConfigured
+		}
+		rep.SpendReason = "spend unavailable: " + err.Error()
+	} else {
+		sp = &res
+		rep.Unattributed = res.Unattributed
+	}
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(agentFilter), window, sp, registryFamilies(cfg), modelFilter, familyFilter)
+	return rep
+}
+
+// notes are the lines `wt stats` writes to stderr after the tables: at
+// most one about missing spend, and one counting requests with no model.
+// The count is the whole window's — the query is never filtered — so it is
+// left out when --model or --family narrowed the rows, where it would read
+// as a fact about the model shown.
+func (r usageReport) notes() []string {
+	var out []string
+	if r.SpendReason != "" {
+		out = append(out, r.SpendReason)
+	}
+	switch {
+	case r.Narrowed:
+	case r.Unattributed == 1:
+		out = append(out, "1 request had no model and is not shown")
+	case r.Unattributed > 1:
+		out = append(out, formatCount(r.Unattributed)+" requests had no model and are not shown")
+	}
+	return out
+}
+
+// registryFamilies maps each registry model id to its family. cfg is never
+// nil (newApp substitutes an empty config when the registry does not load),
+// and an empty model list simply yields no families: familyFor then falls
+// back to each id's prefix.
+func registryFamilies(cfg *config.Config) map[string]string {
+	out := map[string]string{}
+	for _, m := range cfg.Models {
+		out[m.ID] = m.Family
+	}
+	return out
 }

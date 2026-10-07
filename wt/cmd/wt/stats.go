@@ -1,7 +1,9 @@
-// wt stats — a read-only report over survey.jsonl (wt collects, wt
-// reports). Never touches the modelman catalog: model ids are read
-// straight from the survey events, so the command works even for a model
-// that has since been removed from registry.toml.
+// wt stats — a read-only report: the survey table over survey.jsonl (wt
+// collects, wt reports), then the usage table (stats_usage.go) joining
+// usage.jsonl's launches with the LiteLLM proxy's spend log. Model ids are
+// read straight from the events and the spend rows, so both tables work
+// for a model that has since been removed from registry.toml; the registry
+// is consulted only for a model's family.
 package main
 
 import (
@@ -26,15 +28,24 @@ type statsRow struct {
 	Stats   survey.Stats
 }
 
-// statsCmd returns the `wt stats` command. It never affects the exit code
-// on a missing/empty store — only a malformed --window value is an error.
+// statsCmd returns the `wt stats` command. It is a report, never a gate:
+// an empty store, a missing psql and an unreachable database all exit 0.
+// Only a malformed --window value is an error.
 func statsCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stats",
-		Short: "Report accumulated session survey stats",
-		Long: "Report accumulated post-session survey stats (worked%, quality, speed)\n" +
-			"per model and per agent×model combo, collected by the post-session\n" +
-			"survey prompt.",
+		Short: "Report survey stats, launches and LiteLLM spend per model",
+		Long: "Report two tables for one window.\n\n" +
+			"The survey table: accumulated post-session survey stats (worked%, quality,\n" +
+			"speed) per model and per agent×model combo.\n\n" +
+			"The usage table: per model, wt launches from usage.jsonl beside the\n" +
+			"requests, prompt and completion tokens and spend the LiteLLM proxy logged.\n" +
+			"Spend is read with psql from the proxy's database, found the way the proxy\n" +
+			"finds it: WT_LITELLM_DATABASE_URL, else general_settings.database_url in\n" +
+			"LiteLLM's config.yaml, else DATABASE_URL — the last two looked up in wt's\n" +
+			"environment and then in the proxy's LaunchAgent plist. Without psql, a\n" +
+			"reachable database or a configured URL, the launches still print, the\n" +
+			"spend cells show \"-\", and one note on stderr says why.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			window, err := parseStatsWindow(mustGetString(cmd, "window"))
 			if err != nil {
@@ -42,49 +53,76 @@ func statsCmd(a *app) *cobra.Command {
 			}
 			modelFilter := mustGetString(cmd, "model")
 			agentFilter := mustGetString(cmd, "agent")
+			familyFilter := mustGetString(cmd, "family")
 
-			events := survey.NewStore().Events()
-			asOf := time.Now().UTC()
-			rows := buildStatsRows(events, window, asOf, modelFilter, agentFilter)
+			asOf := statsNow()
+			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, modelFilter, agentFilter)
+			rep := collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
 
-			if len(rows) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "no survey data")
-				return nil
+			out := cmd.OutOrStdout()
+			if table := surveyTableRows(rows); len(table) == 0 {
+				fmt.Fprintln(out, "no survey data")
+			} else {
+				fmt.Fprintln(out, renderTable(surveyHeaders, table, a.theme))
 			}
-
-			headers := []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}
-			tableRows := make([][]string, 0, len(rows))
-			for _, r := range rows {
-				quality, qok := r.Stats.QualityAvg()
-				speed, sok := r.Stats.SpeedAvg()
-
-				// Exclude rows with no data: rows where both Answered == 0 and
-				// Skipped == 0 have no survey information at all. Rows with
-				// Answered == 0 but Skipped > 0 ("all skipped") are kept to show
-				// that the agent×model combo was tried but never produced data.
-				// This matches the filter logic in buildStatsRows (lines 127, 139-141).
-				if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
-					continue
-				}
-
-				tableRows = append(tableRows, []string{
-					r.ModelID,
-					r.Agent,
-					formatPctCell(r.Stats),
-					formatAvgCell(quality, qok),
-					formatAvgCell(speed, sok),
-					strconv.Itoa(r.Stats.Answered),
-					strconv.Itoa(r.Stats.Skipped),
-				})
+			fmt.Fprintln(out)
+			if len(rep.Rows) == 0 {
+				fmt.Fprintln(out, "no usage data")
+			} else {
+				fmt.Fprintln(out, renderUsageTable(rep.Rows, stdoutWidth()))
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), renderTable(headers, tableRows, a.theme))
+			notes := rep.notes()
+			if familyFilter != "" && a.loadErr != nil {
+				notes = append(notes, registryNote)
+			}
+			for _, note := range notes {
+				fmt.Fprintf(cmd.ErrOrStderr(), "wt: %s\n", note)
+			}
 			return nil
 		},
 	}
-	cmd.Flags().String("window", "30d", "Stats window: 1d, 7d, or 30d")
-	cmd.Flags().String("model", "", "Filter to one model id")
-	cmd.Flags().String("agent", "", "Filter to one agent")
+	cmd.Flags().String("window", "30d", "Window for both tables: 1d, 7d, or 30d")
+	cmd.Flags().String("model", "", "Filter both tables to one model id")
+	cmd.Flags().String("agent", "", "Filter to one agent (survey and launches; spend is then not shown)")
+	// Local, so it shadows the root's persistent -F/--family (a comma list
+	// for the picker) on this command, as --model above shadows -M/--model.
+	cmd.Flags().String("family", "", "Filter the usage table to one model family")
 	return cmd
+}
+
+// statsNow is the report's "as of" instant. A seam so a test can pin the
+// as_of a --json document carries.
+var statsNow = func() time.Time { return time.Now().UTC() }
+
+var surveyHeaders = []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}
+
+// surveyTableRows renders the survey rows as table cells.
+func surveyTableRows(rows []statsRow) [][]string {
+	tableRows := make([][]string, 0, len(rows))
+	for _, r := range rows {
+		quality, qok := r.Stats.QualityAvg()
+		speed, sok := r.Stats.SpeedAvg()
+
+		// Exclude rows with no data: rows where both Answered == 0 and
+		// Skipped == 0 have no survey information at all. Rows with
+		// Answered == 0 but Skipped > 0 ("all skipped") are kept to show
+		// that the agent×model combo was tried but never produced data.
+		// buildStatsRows applies the same rule.
+		if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
+			continue
+		}
+
+		tableRows = append(tableRows, []string{
+			r.ModelID,
+			r.Agent,
+			formatPctCell(r.Stats),
+			formatAvgCell(quality, qok),
+			formatAvgCell(speed, sok),
+			strconv.Itoa(r.Stats.Answered),
+			strconv.Itoa(r.Stats.Skipped),
+		})
+	}
+	return tableRows
 }
 
 // parseStatsWindow maps a --window flag value to its duration.

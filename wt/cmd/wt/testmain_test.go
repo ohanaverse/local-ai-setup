@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -62,6 +64,15 @@ func TestMain(m *testing.M) {
 	// No test may read the developer's refcount file for session counts.
 	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	confirmStop = func(string) (bool, error) { return false, nil }
+	// `wt stats` seams: no test may resolve the developer's LiteLLM database
+	// or run psql against it. Unstubbed, a stats test sees "spend
+	// unavailable" (the degraded report) and never a query. Tests that
+	// want spend rows call stubSpend. The width is pinned to "not a
+	// terminal" so a table does not depend on where `go test` was started.
+	querySpend = func(context.Context, time.Time, time.Time) (spend.Result, error) {
+		return spend.Result{}, errors.New("querySpend not stubbed in this test")
+	}
+	stdoutWidth = func() int { return 0 }
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)

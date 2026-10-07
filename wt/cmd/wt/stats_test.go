@@ -42,8 +42,8 @@ func seedSurveyEvents(t *testing.T, tmp string, events []survey.Event) {
 }
 
 // TestStatsCmdEmptyStorePrintsMessage verifies `wt stats` never errors on
-// a fresh install (no survey.jsonl yet) — it reports "no survey data"
-// instead.
+// a fresh install (no survey.jsonl, no usage.jsonl, no spend) — it reports
+// "no survey data" and "no usage data", one per table, instead.
 func TestStatsCmdEmptyStorePrintsMessage(t *testing.T) {
 	a, _ := newTestApp(t)
 	cmd := statsCmd(a)
@@ -53,8 +53,8 @@ func TestStatsCmdEmptyStorePrintsMessage(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if strings.TrimSpace(out.String()) != "no survey data" {
-		t.Fatalf("output = %q, want \"no survey data\"", out.String())
+	if out.String() != "no survey data\n\nno usage data\n" {
+		t.Fatalf("output = %q, want \"no survey data\", a blank line, \"no usage data\"", out.String())
 	}
 }
 
@@ -104,8 +104,8 @@ func TestStatsCmdWindowFilter(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if strings.TrimSpace(out.String()) != "no survey data" {
-		t.Errorf("output = %q, want \"no survey data\" (10-day-old event excluded from 1d window)", out.String())
+	if !strings.HasPrefix(out.String(), "no survey data\n") {
+		t.Errorf("output = %q, want \"no survey data\" first (10-day-old event excluded from 1d window)", out.String())
 	}
 
 	cmd30 := statsCmd(a)
