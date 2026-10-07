@@ -242,8 +242,7 @@ func TestStatsRowsSortsAgentsWithAllFirst(t *testing.T) {
 		survey.NewStore().Events(),
 		survey.Window30d,
 		now,
-		"", // no model filter
-		"", // no agent filter
+		statsFilter{}, // no filters
 	)
 
 	// Verify we have both aggregate and combo rows

@@ -33,6 +33,17 @@ type statsRow struct {
 	Aggregate bool
 }
 
+// statsFilter is what --model, --family and --agent asked for; "" means
+// the flag was not given, and each match is exact. The three travel as one
+// value with named fields, never as adjacent strings: handed on positionally,
+// a model id in the family's place is legal Go that selects no row and still
+// exits 0 (#288).
+type statsFilter struct {
+	model  string // --model: both tables
+	family string // --family: the usage table only
+	agent  string // --agent: the survey table and the launch counts
+}
+
 // statsCmd returns the `wt stats` command. It is a report, never a gate:
 // an empty store, a missing psql and an unreachable database all exit 0.
 // Only a malformed --window value is an error.
@@ -59,12 +70,14 @@ func statsCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			modelFilter := mustGetString(cmd, "model")
-			agentFilter := mustGetString(cmd, "agent")
-			familyFilter := mustGetString(cmd, "family")
+			f := statsFilter{
+				model:  mustGetString(cmd, "model"),
+				family: mustGetString(cmd, "family"),
+				agent:  mustGetString(cmd, "agent"),
+			}
 
 			asOf := statsNow()
-			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, modelFilter, agentFilter)
+			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, f)
 
 			out := cmd.OutOrStdout()
 			asJSON, _ := cmd.Flags().GetBool("json")
@@ -76,7 +89,7 @@ func statsCmd(a *app) *cobra.Command {
 				// One JSON document: writeStatsJSON writes nothing until it is
 				// complete, so there is no first table to show before the spend
 				// query: query, then write.
-				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, f)
 				if err := writeStatsJSON(out, buildStatsJSON(windowName, asOf, rows, rep)); err != nil {
 					return err
 				}
@@ -93,7 +106,7 @@ func statsCmd(a *app) *cobra.Command {
 				// the survey table does not need it — printing first keeps the
 				// first table off that critical path. (--json waits anyway: one
 				// document prints only when complete.)
-				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, f)
 				if len(rep.Rows) == 0 {
 					fmt.Fprintln(out, "no usage data")
 				} else {
@@ -101,7 +114,7 @@ func statsCmd(a *app) *cobra.Command {
 				}
 			}
 			notes := rep.notes()
-			if familyFilter != "" && a.loadErr != nil {
+			if f.family != "" && a.loadErr != nil {
 				notes = append(notes, registryNote(a.loadErr))
 			}
 			for _, note := range notes {
@@ -173,12 +186,12 @@ func parseStatsWindow(s string) (time.Duration, error) {
 
 // buildStatsRows merges the per-model "(all)" aggregate with every
 // per-(agent,model) combo into one row list, applies the --model/--agent
-// filters, drops rows with zero answered and zero skipped in the window,
+// filters (f.family is not read: a survey row carries no family), drops rows with zero answered and zero skipped in the window,
 // and sorts by agent name (the "(all)" aggregate rows first, then model
 // id). The aggregate-first placement is enforced explicitly rather than
 // by lexicographic luck: agent names are user-configured and may sort
 // before "(" (digits, "-", non-ASCII).
-func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, modelFilter, agentFilter string) []statsRow {
+func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, f statsFilter) []statsRow {
 	modelStats := survey.ModelStats(events, window, asOf)
 	combos := survey.AllAgentModelStats(events, window, asOf)
 
@@ -192,20 +205,20 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 
 	var rows []statsRow
 	for id := range modelIDs {
-		if modelFilter != "" && id != modelFilter {
+		if f.model != "" && id != f.model {
 			continue
 		}
-		if agentFilter == "" {
+		if f.agent == "" {
 			if s := modelStats[id]; s.Answered > 0 || s.Skipped > 0 {
 				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
 			}
 		}
 	}
 	for _, c := range combos {
-		if modelFilter != "" && c.ModelID != modelFilter {
+		if f.model != "" && c.ModelID != f.model {
 			continue
 		}
-		if agentFilter != "" && c.Agent != agentFilter {
+		if f.agent != "" && c.Agent != f.agent {
 			continue
 		}
 		if c.Stats.Answered == 0 && c.Stats.Skipped == 0 {

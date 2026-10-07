@@ -349,7 +349,7 @@ func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
 		{"agent", "claude", nil, spendSkipped},
 	} {
 		stubSpend(t, spend.Result{Unattributed: 2}, tc.err)
-		rep := collectUsage(context.Background(), a.cfg, survey.Window30d, asOf, "", "", tc.agent)
+		rep := collectUsage(context.Background(), a.cfg, survey.Window30d, asOf, statsFilter{agent: tc.agent})
 		if rep.SpendStatus != tc.want {
 			t.Errorf("%s: SpendStatus = %q, want %q", tc.name, rep.SpendStatus, tc.want)
 		}

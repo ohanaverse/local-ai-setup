@@ -94,17 +94,18 @@ func foldTarget(s string, known func(string) bool) (string, bool) {
 // can fold into are the keys of families (every registry id, whatever its
 // family) and of counts (every id launched in the last 30 days, not only in
 // this window). A model gets a row when it has a launch in the window or a
-// spend row; sp is nil when there is no spend data. Both filters are exact
-// matches, apply to every observed id, registered or not, and apply after
-// folding: a folded spelling has no row of its own to match. Rows are
-// sorted by model id.
+// spend row; sp is nil when there is no spend data. f.model and f.family are
+// exact matches, apply to every observed id, registered or not, and apply
+// after folding: a folded spelling has no row of its own to match. f.agent
+// is not read here: the launch counts arrive already narrowed to it, and a
+// spend row has no agent. Rows are sorted by model id.
 //
 // An empty id never gets a row, from either side: it would print as a line
 // with a blank MODEL cell that no --model value can name. usage.AllCounts
 // and spend.Query both leave such entries out already (spend counts them as
 // Unattributed); this is the join's own guarantee, for whatever else fills
 // the two inputs.
-func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, sp *spend.Result, families map[string]string, modelFilter, familyFilter string) []usageRow {
+func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, sp *spend.Result, families map[string]string, f statsFilter) []usageRow {
 	byModel := map[string]*usageRow{}
 	row := func(id string) *usageRow {
 		r, ok := byModel[id]
@@ -155,10 +156,10 @@ func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, s
 
 	rows := make([]usageRow, 0, len(byModel))
 	for _, r := range byModel {
-		if modelFilter != "" && r.Model != modelFilter {
+		if f.model != "" && r.Model != f.model {
 			continue
 		}
-		if familyFilter != "" && r.Family != familyFilter {
+		if f.family != "" && r.Family != f.family {
 			continue
 		}
 		rows = append(rows, *r)
@@ -236,10 +237,10 @@ func realStdoutWidth() int {
 // usage.jsonl dates inside that same window (a launch after asOf is in
 // neither half). It never fails: every way of having no spend data is a status and a
 // reason, and the launch counts are reported regardless.
-func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, modelFilter, familyFilter, agentFilter string) usageReport {
-	rep := usageReport{SpendStatus: spendOK, Narrowed: modelFilter != "" || familyFilter != ""}
+func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, f statsFilter) usageReport {
+	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}
 	var sp *spend.Result
-	if agentFilter != "" {
+	if f.agent != "" {
 		rep.SpendStatus = spendSkipped
 		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
 	} else if res, err := querySpend(ctx, asOf.Add(-window), asOf); err != nil {
@@ -257,7 +258,7 @@ func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration,
 	}
 	// The same asOf the spend query ends at: launches are bucketed against
 	// the report's instant, never against a second read of the clock.
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(agentFilter, asOf), window, sp, registryFamilies(cfg), modelFilter, familyFilter)
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, registryFamilies(cfg), f)
 	return rep
 }
 
