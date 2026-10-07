@@ -94,18 +94,34 @@ func TestRenderUsageTableShowsDashesWithoutSpend(t *testing.T) {
 
 // TestRenderUsageTableOnANarrowTerminal verifies a terminal too narrow for
 // even the number columns (40 columns) still gets every id whole and every
-// number: the MODEL column shrinks to its header and the lines run past the
-// edge for the terminal to wrap. Truncating an id to fit would print
-// something that cannot be pasted into `wt -M`.
+// number, in this exact layout: the MODEL column shrinks to its header, so
+// each id is on a line of its own, and the number lines (58 columns) run
+// past the edge for the terminal to wrap, still aligned under the headers.
+// Truncating an id to fit would print something that cannot be pasted into
+// `wt -M`; and a layout that kept ids whole but let the numbers drift from
+// their headers would pass a check that only looked for the ids.
 func TestRenderUsageTableOnANarrowTerminal(t *testing.T) {
 	got := renderUsageTable(realisticRows(), 40)
-	for _, r := range realisticRows() {
-		if !strings.Contains(got, r.Model+"\n") && !strings.Contains(got, r.Model+" ") {
-			t.Errorf("model id %s is missing or truncated at 40 columns:\n%s", r.Model, got)
-		}
+	want := strings.Join([]string{
+		"MODEL  LAUNCHES  REQUESTS      PROMPT  COMPLETION     SPEND",
+		"mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+		"              3     1,204  12,345,678   1,234,567   $0.0000",
+		"ollama/deepseek-v4-flash:cloud",
+		"             17         0           0           0   $0.0000",
+		"ollama/gemma4:9b",
+		"              5         4         152         630   $0.0000",
+		"omlx/mlx-community--Qwen3.8-27B-4bit",
+		"              2        88     912,004      40,117   $0.0000",
+		"openrouter/qwen/qwen3.8-27b",
+		"              0         5         517       3,135  $12.3456",
+	}, "\n")
+	if got != want {
+		t.Errorf("table at 40 columns =\n%s\nwant\n%s", got, want)
 	}
-	if !strings.Contains(got, "12,345,678") || !strings.Contains(got, "$12.3456") {
-		t.Errorf("numbers are missing at 40 columns:\n%s", got)
+	// A width below the header's own is the same table: there is nothing
+	// left to narrow.
+	if tiny := renderUsageTable(realisticRows(), 1); tiny != want {
+		t.Errorf("table at 1 column =\n%s\nwant the 40-column table", tiny)
 	}
 }
 
@@ -119,6 +135,40 @@ func TestRenderUsageTableEscapesControlCharacters(t *testing.T) {
 	got := renderUsageTable([]usageRow{{Model: "evil\x1b[31mred\nline2", Launches: 1234, Spend: &spend.Row{Requests: 1}}}, 80)
 	want := "MODEL                   LAUNCHES  REQUESTS  PROMPT  COMPLETION    SPEND\n" +
 		`evil\x1b[31mred\nline2     1,234         1       0           0  $0.0000`
+	if got != want {
+		t.Errorf("table =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestVisibleIDEscapesInvisibleCharacters verifies an id is printed with
+// every character that is not a visible one spelled out: bidi overrides and
+// isolates, zero-width characters, the byte order mark, the line and
+// paragraph separators and non-ASCII spaces, as well as control characters.
+// A right-to-left override in a proxy-logged model_group shows the numbers
+// after it in reverse on a terminal that honours it, and a zero-width space
+// makes two different ids look the same. Everything a real id is made of —
+// letters in any script, digits, punctuation, the ASCII space, a backslash —
+// is left exactly as it is, so a clean id can be copied from the table.
+func TestVisibleIDEscapesInvisibleCharacters(t *testing.T) {
+	bom := string(rune(0xFEFF))
+	for in, want := range map[string]string{
+		"ollama/gemma4:9b":             "ollama/gemma4:9b",
+		`a b\n/é:漢字-ü_@"'`:             `a b\n/é:漢字-ü_@"'`,
+		"evil\u202e9b:4ammeg":          `evil\u202e9b:4ammeg`,
+		"iso\u2066x\u2069\u200f\u061c": `iso\u2066x\u2069\u200f\u061c`,
+		"zero\u200bwidth\u200d" + bom:  `zero\u200bwidth\u200d\ufeff`,
+		"line\u2028para\u2029":         `line\u2028para\u2029`,
+		"nb\u00a0sp\u3000":             `nb\u00a0sp\u3000`,
+		"ctl\x1b[31m\n\t\x7f":          `ctl\x1b[31m\n\t\x7f`,
+	} {
+		if got := visibleID(in); got != want {
+			t.Errorf("visibleID(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// In the table: one line, and the columns sized to what is printed.
+	got := renderUsageTable([]usageRow{{Model: "evil\u202e/x", Launches: 1}}, 80)
+	want := "MODEL         LAUNCHES  REQUESTS  PROMPT  COMPLETION  SPEND\n" +
+		`evil\u202e/x         1         -       -           -      -`
 	if got != want {
 		t.Errorf("table =\n%q\nwant\n%q", got, want)
 	}

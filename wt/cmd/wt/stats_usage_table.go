@@ -28,20 +28,29 @@ func usageCells(r usageRow) [6]string {
 	return c
 }
 
-// visibleID is a model id made safe to print in a table: each control
-// character (a newline, an escape) is spelled as Go would write it in a
-// string literal. Launched ids are wt's own, but a spend-only id is
-// whatever the proxy logged as model_group, and a raw escape sequence there
-// would repaint the terminal and throw off the column widths. --json prints
-// ids through encoding/json, which escapes them itself.
+// visibleID is a model id made safe to print in a table: each character
+// that is not a visible one is spelled as Go would write it in a string
+// literal. That is every control character (a newline, an escape), and
+// every character that takes no space or moves the text around it: the
+// bidi overrides and isolates (U+202E, U+2066), zero-width characters
+// (U+200B, U+FEFF), the line and paragraph separators (U+2028, U+2029), and
+// spaces other than the ASCII one. Launched ids are wt's own, but a
+// spend-only id is whatever the proxy logged as model_group: a raw escape
+// sequence there would repaint the terminal and throw off the column
+// widths, and a bidi override would show the row's numbers in another
+// order than they were printed.
+//
+// A backslash already in an id is left as it is — an id with none of these
+// characters prints unchanged, which is what makes it safe to copy — so the
+// spelling cannot be reversed: it is for reading, not for parsing.
 func visibleID(id string) string {
-	if strings.IndexFunc(id, unicode.IsControl) < 0 {
+	if strings.IndexFunc(id, invisible) < 0 {
 		return id
 	}
 	var b strings.Builder
 	for _, r := range id {
-		if unicode.IsControl(r) {
-			q := strconv.QuoteRune(r) // '\n', '\x1b'
+		if invisible(r) {
+			q := strconv.QuoteRune(r) // '\n', '\x1b', '\u202e'
 			b.WriteString(q[1 : len(q)-1])
 			continue
 		}
@@ -49,6 +58,11 @@ func visibleID(id string) string {
 	}
 	return b.String()
 }
+
+// invisible reports whether r must be escaped by visibleID: anything Go
+// does not count as printable (letters, marks, numbers, punctuation,
+// symbols and the ASCII space are).
+func invisible(r rune) bool { return !unicode.IsPrint(r) }
 
 // formatCount renders n with thousands separators: 1234567 → "1,234,567".
 func formatCount(n int64) string {
@@ -78,8 +92,8 @@ func formatCount(n int64) string {
 // a gap; otherwise it is printed on a line of its own, with its numbers on
 // the next line under their headers — what df does with a long device
 // name. No id is ever truncated: the id is what a reader copies into
-// `wt -M` or `--model`. (visibleID spells out control characters; that is
-// the only change an id undergoes.)
+// `wt -M` or `--model`. (visibleID spells out control and invisible
+// characters; that is the only change an id undergoes.)
 //
 // The five number columns need about 54 columns with seven-digit token
 // counts; on a terminal narrower than those plus "MODEL", the lines are
