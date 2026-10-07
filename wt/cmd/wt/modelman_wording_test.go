@@ -66,6 +66,7 @@ func TestRefusalsKeepTheWordingModelmanMatches(t *testing.T) {
 		t.Setenv("MODELMAN_REGISTRY", registry)
 		t.Setenv("WT_LITELLM_CONFIG", "")
 		t.Setenv("MODELMAN_LITELLM_CONFIG", "")
+		t.Setenv("WT_LITELLM_RESTART_CMD", "true")
 		stubProbeInventory(t, localmodels.Snapshot{})
 		err := runLitellmSync(io.Discard, io.Discard, modelCmdConfig(), true, false)
 		want := "LiteLLM routes not touched: the registry is " + registry +
