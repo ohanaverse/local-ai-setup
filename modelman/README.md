@@ -170,7 +170,7 @@ This file is optional — a fresh install starts with an empty store.
 ### CLI
 
 ```bash
-modelman                        # open the TUI (model list)
+modelman                        # TUI disabled: prints where to go in wt, exits 1
 modelman sync                   # reconcile configured models against providers, then sync LiteLLM routes
 modelman litellm status|on|off|set   # passthroughs to `wt litellm ...`
 modelman start                  # list local models: registered+on-disk, registered-but-missing, discovered (each under its id, running ones marked)
@@ -207,6 +207,11 @@ of them replaces its current model. `modelman provider isolate
 for benchmarking); `restore` brings them all back.
 
 ### TUI
+
+> **Disabled.** Bare `modelman` no longer opens the TUI: it prints where to go
+> in wt and exits 1. wt writes `registry.toml` now; until wt's Models tab ships,
+> a model is added, edited or removed by editing `registry.toml` by hand, then
+> `wt litellm sync`. The rest of this section describes the screen as it was.
 
 The TUI has a single screen:
 

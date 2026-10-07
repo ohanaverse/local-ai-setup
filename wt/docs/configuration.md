@@ -113,7 +113,7 @@ agent-toolkit deploy home --dry-run    # Preview changes
 
 ## wt Agent Launching
 
-`wt` (the worktree/agent launcher, `wt/cmd/wt`) is a separate tool from the Claude Code/Codex configuration this doc otherwise covers, but it reads its own model registry at `~/.config/local-ai/registry.toml`. A missing registry no longer blocks launching an agent: a model-driven agent with no `config.toml` entry (including the case where the registry is entirely absent) launches its installed binary directly, with no model routing. `wt model init` creates the registry and its provider rows; models are added with `modelman` for now. A registry with models in it is what unlocks model routing/rotation. See `wt/CLAUDE.md`'s "Unconfigured-agent passthrough" note and `wt/docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md` for the full behavior.
+`wt` (the worktree/agent launcher, `wt/cmd/wt`) is a separate tool from the Claude Code/Codex configuration this doc otherwise covers, but it reads its own model registry at `~/.config/local-ai/registry.toml`. A missing registry no longer blocks launching an agent: a model-driven agent with no `config.toml` entry (including the case where the registry is entirely absent) launches its installed binary directly, with no model routing. `wt model init` creates the registry and its provider rows; models are added by editing `registry.toml` by hand for now (modelman's TUI is disabled), then `wt litellm sync`. A registry with models in it is what unlocks model routing/rotation. See `wt/CLAUDE.md`'s "Unconfigured-agent passthrough" note and `wt/docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md` for the full behavior.
 
 ## References
 
