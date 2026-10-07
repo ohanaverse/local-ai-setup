@@ -4,6 +4,7 @@ save round trip and the minimal validation that catches a hand-edited file
 missing a field code elsewhere assumes exists (id, provider_id, model_name).
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,48 @@ def test_default_registry_path_modelman_registry_override_wins(monkeypatch):
     monkeypatch.setenv("MODELMAN_REGISTRY", "/custom/registry.toml")
     monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg")
     assert _default_registry_path() == Path("/custom/registry.toml")
+
+
+def test_default_registry_path_precedence(monkeypatch, tmp_path):
+    """WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config: the
+    order wt's config.RegistryPath and llmbench's registry_path use. wt writes
+    the registry, so a modelman that resolved another file under WT_REGISTRY
+    would show (and save over) a registry wt is not editing."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert _default_registry_path() == tmp_path / "home/.config/local-ai/registry.toml"
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg")
+    assert _default_registry_path() == Path("/custom/xdg/local-ai/registry.toml")
+    monkeypatch.setenv("MODELMAN_REGISTRY", "/old/registry.toml")
+    assert _default_registry_path() == Path("/old/registry.toml")
+    monkeypatch.setenv("WT_REGISTRY", "~/new/registry.toml")
+    assert _default_registry_path() == tmp_path / "home/new/registry.toml"
+    # An empty value is "not set", as it is for MODELMAN_REGISTRY.
+    monkeypatch.setenv("WT_REGISTRY", "")
+    assert _default_registry_path() == Path("/old/registry.toml")
+
+
+def test_load_registry_does_not_fall_back_past_wt_registry(tmp_path, monkeypatch):
+    # WT_REGISTRY names the registry outright, exactly as MODELMAN_REGISTRY
+    # does: a missing file there is "not found", never the one in ~/.config.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("WT_REGISTRY", str(tmp_path / "elsewhere" / "registry.toml"))
+    save_registry(
+        Registry(
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+        ),
+        home / ".config" / "local-ai" / "registry.toml",
+    )
+    with pytest.raises(RegistryNotFoundError):
+        load_registry()
+
+
+def test_conftest_clears_both_registry_names():
+    """The autouse fixture must leave neither name set, or a WT_REGISTRY
+    exported in the developer's shell outranks every test's MODELMAN_REGISTRY."""
+    assert "WT_REGISTRY" not in os.environ
+    assert "MODELMAN_REGISTRY" not in os.environ
 
 
 def test_load_registry_missing_file_raises(tmp_path):
