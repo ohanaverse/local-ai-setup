@@ -35,7 +35,8 @@ var registryBeforeRename = func() {}
 // hands it to apply as a RegistryDoc, and writes the result back:
 //
 //  1. It takes a flock on <registry path>.lock — the path as named, not a
-//     symlink's target — so two wt writers never interleave.
+//     symlink's target — so two wt writers never interleave. (A broken link
+//     is refused before the lock as well, so that it is reported as one.)
 //  2. It resolves the path. A symlink that leads nowhere is ErrRegistryLink,
 //     never "missing"; a symlink that resolves is written through, so the
 //     link survives (#248).
@@ -71,6 +72,13 @@ func UpdateRegistry(apply func(*RegistryDoc) error) (changed bool, err error) {
 		if err := registryWriteGuard(path, ""); err != nil {
 			return false, err
 		}
+	}
+	// Also before the lock: under a directory link that leads nowhere the
+	// lock file cannot be created, and that failure names neither the link
+	// nor its target. The locked read below asks again, for a link that
+	// breaks in between.
+	if _, _, err := resolveRegistryFile(path); errors.Is(err, ErrRegistryLink) {
+		return false, err
 	}
 	err = withFileLock(path+".lock", func() error {
 		for range registryWriteAttempts {

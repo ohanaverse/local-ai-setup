@@ -281,6 +281,42 @@ func TestUpdateRegistryRefusesADanglingSymlink(t *testing.T) {
 	}
 }
 
+// TestUpdateRegistryRefusesARegistryUnderABrokenDirectoryLink pins the same
+// rule one level up: when the registry's directory is the link that leads
+// nowhere, the write is ErrRegistryLink naming the link and its target, and
+// nothing is created. Without the check before the lock the user is told only
+// `mkdir ...: file exists`, with no word about the link they have to fix.
+func TestUpdateRegistryRefusesARegistryUnderABrokenDirectoryLink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	link := filepath.Join(home, "local-ai")
+	target := filepath.Join(t.TempDir(), "dotfiles", "local-ai")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	changed, err := UpdateRegistry(func(*RegistryDoc) error { ran = true; return nil })
+	if !errors.Is(err, ErrRegistryLink) || changed {
+		t.Fatalf("UpdateRegistry = (%v, %v), want ErrRegistryLink", changed, err)
+	}
+	for _, want := range []string{link, target} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should name %s", err, want)
+		}
+	}
+	if ran {
+		t.Error("apply ran against a registry that could not be read")
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Errorf("the link's target must not be created; Lstat error = %v", err)
+	}
+	if got := dirNames(t, home); len(got) != 1 {
+		t.Errorf("the config home holds %v, want only the link", got)
+	}
+}
+
 // TestUpdateRegistryRefusesAnUnknownTopLevelKey pins #247 for the writer: a
 // registry with a section wt does not know is not written at all, the error
 // names the key and the file, and apply never runs. Writing it would either
