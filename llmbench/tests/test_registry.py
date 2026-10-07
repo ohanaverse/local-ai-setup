@@ -32,6 +32,7 @@ model_name = "a"
 def home(monkeypatch, tmp_path):
     """A scratch home with no registry override in the environment."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("WT_REGISTRY", raising=False)
     monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return tmp_path / "home"
@@ -44,12 +45,19 @@ def _write(path: Path, text: str = MINIMAL) -> Path:
 
 
 def test_registry_path_precedence(home, monkeypatch, tmp_path):
-    """MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config: the precedence wt and
-    modelman use, so the three tools never read three different files."""
+    """WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config: the
+    precedence wt and modelman use, so the three tools never read three
+    different files. With WT_REGISTRY ignored here, a benchmark run against a
+    scratch registry would isolate and measure the real one's models."""
     assert registry_path() == home / ".config" / "local-ai" / "registry.toml"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert registry_path() == tmp_path / "xdg" / "local-ai" / "registry.toml"
     monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "named.toml"))
+    assert registry_path() == tmp_path / "named.toml"
+    monkeypatch.setenv("WT_REGISTRY", "~/wt-named.toml")
+    assert registry_path() == home / "wt-named.toml"
+    # An empty value is "not set", as it is for MODELMAN_REGISTRY.
+    monkeypatch.setenv("WT_REGISTRY", "")
     assert registry_path() == tmp_path / "named.toml"
 
 
@@ -78,6 +86,15 @@ def test_read_path_does_not_fall_back_past_a_named_registry(home, monkeypatch, t
         registry_read_path()
     with pytest.raises(RegistryError, match="Registry file not found"):
         load_registry(tmp_path / "also-missing.toml")
+
+
+def test_read_path_does_not_fall_back_past_wt_registry(home, monkeypatch, tmp_path):
+    """WT_REGISTRY names the file outright, exactly as MODELMAN_REGISTRY does:
+    a missing one is missing, never "use the one in ~/.config"."""
+    _write(home / ".config" / "local-ai" / "registry.toml")
+    monkeypatch.setenv("WT_REGISTRY", str(tmp_path / "scratch.toml"))
+    with pytest.raises(RegistryError, match="Registry file not found: .*scratch.toml"):
+        registry_read_path()
 
 
 def test_read_path_refuses_a_dangling_symlink(home, monkeypatch, tmp_path):

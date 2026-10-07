@@ -99,7 +99,7 @@ def test_credentials_are_not_read_from_this_machine(monkeypatch):
 def test_default_config_paths_are_under_the_scratch_home(monkeypatch):
     """Even with every override removed, the registry, the pointer file and
     the modelman.toml fallback resolve under the scratch home."""
-    for name in ("MODELMAN_REGISTRY", "LLMBENCH_LATEST", "MODELMAN_STATE"):
+    for name in ("WT_REGISTRY", "MODELMAN_REGISTRY", "LLMBENCH_LATEST", "MODELMAN_STATE"):
         monkeypatch.delenv(name, raising=False)
     assert registry.registry_path().is_relative_to(Path.home())
     assert state.latest_path().is_relative_to(Path.home())

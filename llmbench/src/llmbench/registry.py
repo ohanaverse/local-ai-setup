@@ -94,12 +94,28 @@ def is_model_local(
     return _is_local_location(provider.location)
 
 
+# The variables that name registry.toml outright, in precedence order.
+# WT_REGISTRY is the name wt, modelman and llmbench share; MODELMAN_REGISTRY is
+# the older name, kept as an alias.
+_REGISTRY_ENV_NAMES = ("WT_REGISTRY", "MODELMAN_REGISTRY")
+
+
+def _registry_override() -> str | None:
+    """The registry path the environment names outright, or None."""
+    for name in _REGISTRY_ENV_NAMES:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def registry_path() -> Path:
-    """Where the registry lives: MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config.
+    """Where the registry lives: WT_REGISTRY > MODELMAN_REGISTRY >
+    XDG_CONFIG_HOME > ~/.config.
 
     The same precedence as wt's config.RegistryPath and modelman's
     _default_registry_path."""
-    override = os.environ.get("MODELMAN_REGISTRY")
+    override = _registry_override()
     if override:
         return Path(override).expanduser()
     base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
@@ -125,10 +141,10 @@ def registry_read_path(path: Path | None = None) -> Path:
     _refuse_dangling_symlink(wanted)
     if wanted.exists():
         return wanted
-    # Not past MODELMAN_REGISTRY or an explicit path: those name the file
-    # outright, and a missing one is missing.
+    # Not past WT_REGISTRY, MODELMAN_REGISTRY or an explicit path: those name
+    # the file outright, and a missing one is missing.
     legacy = Path("~/.config/local-ai/registry.toml").expanduser()
-    if path is None and not os.environ.get("MODELMAN_REGISTRY") and wanted != legacy:
+    if path is None and not _registry_override() and wanted != legacy:
         _refuse_dangling_symlink(legacy)
         if legacy.exists():
             return legacy
