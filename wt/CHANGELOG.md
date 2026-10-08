@@ -9,7 +9,10 @@
   status and running state. `d` removes the selected model from the registry
   after a prompt that shows where its weights are; `r` probes again; `/`
   filters. A change is written at once, and the LiteLLM routes are synced
-  once when the editor closes.
+  once when the editor closes. The selected row's detail names a malformed
+  `fetch` or `draft` (`fetch is not a table; read as absent`). Removing an id
+  that more than one registry row carries is refused with `wt model rm`'s
+  message, and nothing is written.
 - `wt model add <provider> <name> --family F`, `wt model edit <id>` and
   `wt model rm <id>...` register, change and remove models in the registry.
   Each makes one locked write and then syncs the LiteLLM routes once. `add`

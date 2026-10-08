@@ -138,7 +138,8 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 // the loader read as absent because it is malformed (config.Model.Malformed),
 // in the registry's own order — the order the user meets them in the file,
 // not the table's. The load tolerates such a value so that a hand edit cannot
-// stop wt, and this listing is the one place that says so: without the line a
+// stop wt, and this listing says so for every row (the Models tab says it for
+// the selected one, from the same phrases): without the line a
 // `fetch = "~/models/x"` meant as a local_path only makes the row read
 // "missing". The id is escaped as the table escapes it.
 func noteMalformed(errOut io.Writer, cfg *config.Config) {

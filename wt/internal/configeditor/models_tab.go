@@ -337,10 +337,22 @@ func (m *model) modelsStatus() string {
 	return wrapText(strings.Join(parts, "\n"), m.width)
 }
 
+// malformedLine says what the loader tolerated in a row's fetch and draft, in
+// config.Model.Malformed's own phrases — "fetch is not a table; read as
+// absent" — or "" for a row with nothing malformed. `wt model list` prints
+// the same phrases on stderr, with the file to fix.
+func malformedLine(r modeladmin.Row) string {
+	if len(r.Malformed) == 0 {
+		return ""
+	}
+	return strings.Join(r.Malformed, ", ") + "; read as absent"
+}
+
 // modelsDetail is the block under the table, in two parts: the selected
 // row's id, whole, with its status and running state (the table may have cut
-// the id, and has no column for the rest) and its tags; and the path of its
-// weights, on lines of its own.
+// the id, and has no column for the rest) and its tags, then a line for a
+// malformed fetch or draft, which is why such a row has no path or reads
+// "missing"; and the path of its weights, on lines of its own.
 func (m *model) modelsDetail() (id, path []string) {
 	r, ok := m.selectedModel()
 	if !ok {
@@ -362,6 +374,10 @@ func (m *model) modelsDetail() (id, path []string) {
 		parts = append(parts, "target "+dash(r.Target), "draft "+dash(r.Draft))
 	}
 	id = flow(parts, " · ", m.width)
+	if line := malformedLine(r); line != "" {
+		// Wrapped between words, like the rest of the block.
+		id = append(id, flow(strings.Fields(line), " ", m.width)...)
+	}
 	if r.Path != "" && !r.Pairing() {
 		path = flow([]string{tildePath(r.Path)}, "", m.width)
 	}
@@ -391,8 +407,10 @@ func fitHints(width int, hints []string) string {
 // The first three are used only where they leave the table modelsTableMin
 // lines: blank lines round the status, and the path, are not worth a table
 // of one row. What a short terminal gives up, in order: the blank lines, the
-// path, table rows down to one, the hints, and last the id line. The tab bar,
-// the status and the table are never given up by choice.
+// path, table rows down to one, the hints, and last the id line with the
+// malformed line under it. The tab bar, the status and the table are never
+// given up by choice; a status too long to leave the table a row is drawn
+// without the table (modelsView).
 func (m *model) modelsFrames() []tuilayout.ListFrame {
 	id, path := m.modelsDetail()
 	status := m.modelsStatus()
@@ -459,7 +477,22 @@ func (m *model) modelsView() string {
 	if !m.models.loaded {
 		return tabBar(m.theme, TabModels) + "\n\n" + "Probing providers..."
 	}
-	return tuilayout.DrawnFrame(&m.models.list, m.height, m.modelsFrames()...)(m.models.list.View())
+	view := tuilayout.DrawnFrame(&m.models.list, m.height, m.modelsFrames()...)(m.models.list.View())
+	status := m.modelsStatus()
+	if status == "" || m.height <= 0 || lipgloss.Height(view) <= m.height {
+		return view
+	}
+	// The status is so long that even the sparest frame is taller than the
+	// terminal (a refusal that ends with the registry's path, at 40x12).
+	// Bubble Tea would drop the view's top lines: the tab bar and the start
+	// of the very status that has to be read. So the status has the screen
+	// to itself, under the tab bar, until the next key takes it down; the
+	// hints join it when there is a line left for them.
+	out := tabBar(m.theme, TabModels) + "\n" + status
+	if lipgloss.Height(out) < m.height {
+		out += "\n" + lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim)).Render(fitHints(m.width, modelsHints))
+	}
+	return lipgloss.NewStyle().MaxHeight(m.height).Render(out)
 }
 
 // applyModels takes a probe's result: the rows replace the table, with the
@@ -470,9 +503,12 @@ func (m *model) applyModels(msg modelsLoadedMsg) {
 	if msg.gen != mt.gen {
 		return // a later probe is on its way
 	}
-	keep := mt.selectID
+	// was is where the cursor stood: two rows can share an id (a registry
+	// Validate refuses, which the tab lists so that it can be repaired), and
+	// then the id alone does not say which of them the cursor was on.
+	keep, was := mt.selectID, -1
 	if r, ok := m.selectedModel(); ok && keep == "" {
-		keep = r.ID
+		keep, was = r.ID, mt.list.Index()
 	}
 	filter := ""
 	if mt.loaded && mt.list.FilterState() == list.FilterApplied {
@@ -487,14 +523,26 @@ func (m *model) applyModels(msg modelsLoadedMsg) {
 	if filter != "" {
 		mt.list.SetFilterText(filter)
 	}
+	sel := -1
 	for i, it := range mt.list.VisibleItems() {
-		if it.(modelRow).row.ID == keep {
-			mt.list.Select(i)
+		// The first row with the id, unless the row where the cursor stood
+		// has it too.
+		if it.(modelRow).row.ID == keep && (sel < 0 || i == was) {
+			sel = i
 		}
+	}
+	if sel >= 0 {
+		mt.list.Select(sel)
 	}
 	mt.loadErr = ""
 	if msg.err != nil {
 		mt.loadErr = "registry: " + msg.err.Error()
+		// The repair, worded by the one function that words it (as on the
+		// Agents tab's status): a file this tab cannot read is not one it
+		// can fix.
+		if hint := config.RegistryFixHint(msg.err); hint != "" {
+			mt.loadErr += " (" + hint + ")"
+		}
 	}
 }
 

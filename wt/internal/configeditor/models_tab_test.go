@@ -89,6 +89,28 @@ const tabLongID = "omlx/Qwen3.8-35B-A3B-Instruct-abliterated-heretic-MLX-dynamic
 // tabLongRegistry is tabRegistry with the missing omlx model under tabLongID.
 var tabLongRegistry = strings.ReplaceAll(tabRegistry, "Gone-4bit", strings.TrimPrefix(tabLongID, "omlx/"))
 
+// tabMalformedRegistry is tabRegistry whose last row, the omlx model that is
+// not on disk, has a fetch that is a string: a local_path written where the
+// table belongs. The loader reads it as absent (config.Model.Malformed).
+// tabMalformedLongRegistry is the worst case for the detail block: the same
+// row under tabLongID, with a draft that is not a table either.
+var (
+	tabMalformedRegistry     = tabRegistry + "fetch = \"~/models/gone\"\n"
+	tabMalformedLongRegistry = strings.ReplaceAll(tabMalformedRegistry, "Gone-4bit", strings.TrimPrefix(tabLongID, "omlx/")) + "draft = 3\n"
+)
+
+// tabDuplicatedRegistry is tabRegistry with a second row under the id
+// omlx/Gone-4bit, an openrouter one: a registry every launch refuses, which
+// the tab still lists so that it can be repaired.
+const tabDuplicatedRegistry = tabRegistry + `
+[[models]]
+id = "omlx/Gone-4bit"
+family = "qwen3.8"
+provider_id = "openrouter"
+model_name = "qwen/gone"
+tags = []
+`
+
 func newTabMachine(t *testing.T, content string) *tabMachine {
 	t.Helper()
 	home := t.TempDir()
@@ -346,6 +368,12 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 		{"local model selected", tabRegistry, func(t *testing.T, m *model) *model {
 			return selectModel(t, m, "omlx/Qwen3.8-27B-Instruct-MLX-6bit")
 		}},
+		{"malformed fetch selected", tabMalformedRegistry, func(t *testing.T, m *model) *model {
+			return selectModel(t, m, "omlx/Gone-4bit")
+		}},
+		{"malformed fetch and draft under a long id", tabMalformedLongRegistry, func(t *testing.T, m *model) *model {
+			return selectModel(t, m, tabLongID)
+		}},
 		{"just after a removal", tabRegistry, func(t *testing.T, m *model) *model {
 			m.models.status, m.registryChanged = removed, true
 			return send(t, m, tea.WindowSizeMsg{Width: m.width, Height: m.height})
@@ -416,6 +444,16 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 						at("%d table rows are on screen, want at least 3", rows)
 					}
 				}
+				// What the loader tolerated in the row is said under its id
+				// at every size: it is why the row reads "missing".
+				for name, want := range map[string]string{
+					"malformed fetch selected":                  "fetch is not a table; read as absent",
+					"malformed fetch and draft under a long id": "fetch is not a table, draft is not a table; read as absent",
+				} {
+					if st.name == name && !strings.Contains(text, flat(want)) {
+						at("the detail block does not say %q", want)
+					}
+				}
 				if st.name == "local model selected" && width >= 80 && !strings.Contains(view, tabWeightsShown) {
 					at("the selected local model's path is not whole on one line")
 				}
@@ -468,6 +506,40 @@ func TestModelsTabKeepsStatusAndRunning(t *testing.T) {
 		if got := middleCut(c.s, c.w); got != c.want {
 			t.Errorf("middleCut(%q, %d) = %q, want %q", c.s, c.w, got, c.want)
 		}
+	}
+}
+
+// TestModelsTabShowsAMalformedFetch verifies the detail block names what the
+// loader tolerated in the selected row's fetch and draft, in config's own
+// phrases, on a line of its own under the id — and says nothing for a row
+// that is well formed. The load reads such a value as absent so that a hand
+// edit cannot stop wt; without the line the tab shows a model as "missing"
+// with no sign that its local_path was never read.
+func TestModelsTabShowsAMalformedFetch(t *testing.T) {
+	// The view's lines without the padding lipgloss gives a block.
+	lines := func(view string) string {
+		ls := strings.Split(view, "\n")
+		for i := range ls {
+			ls[i] = strings.TrimRight(ls[i], " ")
+		}
+		return strings.Join(ls, "\n")
+	}
+	tm := newTabMachine(t, tabMalformedRegistry)
+	m := selectModel(t, modelsEditor(t, tm, 80, 24), "omlx/Qwen3.8-27B-Instruct-MLX-6bit")
+	if view := m.View(); strings.Contains(view, "read as absent") {
+		t.Errorf("a well-formed row is selected; the detail block should not mention a malformed one:\n%s", view)
+	}
+	m = selectModel(t, m, "omlx/Gone-4bit")
+	if view := lines(m.View()); !strings.Contains(view, "omlx/Gone-4bit · missing\nfetch is not a table; read as absent\n") {
+		t.Errorf("the detail block should name the malformed fetch on the line under the id:\n%s", view)
+	}
+
+	// Two problems, at 40 columns: the line wraps between words like the
+	// rest of the block, and stays on screen.
+	m = selectModel(t, modelsEditor(t, newTabMachine(t, tabMalformedLongRegistry), 40, 12), tabLongID)
+	assertFits(t, "malformed fetch and draft", m.View(), 40, 12)
+	if view := lines(m.View()); !strings.Contains(view, "fetch is not a table, draft is not a\ntable; read as absent\n") {
+		t.Errorf("at 40 columns the line should wrap between words:\n%s", view)
 	}
 }
 
@@ -548,6 +620,59 @@ func TestModelsTabRemoveRefusals(t *testing.T) {
 	}
 	if _, ok := findRow(m, "omlx/Other"); !ok {
 		t.Errorf("the row the other program wrote is not listed:\n%s", m.View())
+	}
+}
+
+// TestModelsTabRefusesToRemoveADuplicatedID verifies d then y on a row whose
+// id the registry holds twice removes neither row: the file is left byte for
+// byte as it was, the status carries the writer's refusal as the writer words
+// it (it names both providers and the file to fix), whole even at 40x12, and
+// no route sync is owed. Taking "the first row with the id" would delete a
+// model the user did not point at. The cursor stays on the row it was on —
+// the table is read again after a refusal, and the two rows share the id the
+// cursor is kept by.
+func TestModelsTabRefusesToRemoveADuplicatedID(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {40, 12}} {
+		for _, provider := range []string{"omlx", "openrouter"} {
+			tm := newTabMachine(t, tabDuplicatedRegistry)
+			m := modelsEditor(t, tm, size[0], size[1])
+			for i, it := range m.models.list.VisibleItems() {
+				if r := it.(modelRow).row; r.ID == "omlx/Gone-4bit" && r.ProviderID == provider {
+					m.models.list.Select(i)
+				}
+			}
+			at := func(format string, args ...any) {
+				t.Helper()
+				t.Errorf("the %s row at %dx%d: %s:\n%s", provider, size[0], size[1], fmt.Sprintf(format, args...), m.View())
+			}
+			m = keys(t, m, "d")
+			if m.models.phase != modelsRemove || m.models.remove.ProviderID != provider {
+				t.Fatalf("the %s row at %dx%d: d should open the remove prompt for it:\n%s", provider, size[0], size[1], m.View())
+			}
+			m = keys(t, m, "y")
+			if got := tm.text(t); got != tabDuplicatedRegistry {
+				at("the registry changed:\n%s", got)
+			}
+			view := m.View()
+			assertFits(t, "refused removal of a duplicated id", view, size[0], size[1])
+			refusal := `model "omlx/Gone-4bit" is in the registry twice (providers omlx, openrouter); wt cannot tell which one you mean — fix the entry in ` + tm.registry
+			if !strings.Contains(view, "[Models]") || !strings.Contains(flat(view), flat("not removed: "+refusal)) {
+				at("the status should carry the writer's refusal %q under the tab bar", refusal)
+			}
+			if m.registryChanged || strings.Contains(view, routesPending) || m.models.busy {
+				at("registryChanged = %v, busy = %v; a refused removal owes no route sync", m.registryChanged, m.models.busy)
+			}
+			if sel, _ := m.selectedModel(); sel.ID != "omlx/Gone-4bit" || sel.ProviderID != provider {
+				at("the cursor is on %s (provider %s), want it left where it was", sel.ID, sel.ProviderID)
+			}
+			// The next key takes the refusal down and the table is whole
+			// again.
+			m = keys(t, m, "up")
+			if view := m.View(); strings.Contains(view, "not removed") || !strings.Contains(view, "MODEL") || !strings.Contains(view, "q quit") {
+				at("after a key want the table and the hints back")
+			}
+			assertFits(t, "one key after a refusal", m.View(), size[0], size[1])
+		}
 	}
 }
 
@@ -848,14 +973,21 @@ func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 
 // TestModelsTabShowsARegistryThatDoesNotLoad verifies a registry wt cannot
 // read still opens the tab, with the reason on the status line, instead of a
-// blank screen or a crash.
+// blank screen or a crash — and that the reason ends with the repair
+// config.RegistryFixHint gives every other place that reports this error, so
+// the tab that manages the registry is not the one screen that leaves it out.
+// At 40x12 the reason is longer than the table has room beside, and is still
+// whole under the tab bar.
 func TestModelsTabShowsARegistryThatDoesNotLoad(t *testing.T) {
-	tm := newTabMachine(t, "this is not = = toml\n")
-	m := modelsEditor(t, tm, 80, 24)
-	view := m.View()
-	assertFits(t, "broken registry", view, 80, 24)
-	if !strings.Contains(view, "registry: ") || !strings.Contains(view, "[Models]") {
-		t.Errorf("the tab should say why the registry did not load:\n%s", view)
+	for _, size := range [][2]int{{80, 24}, {40, 12}} {
+		tm := newTabMachine(t, "this is not = = toml\n")
+		m := modelsEditor(t, tm, size[0], size[1])
+		view := m.View()
+		assertFits(t, "broken registry", view, size[0], size[1])
+		want := "registry: parse " + tm.registry + ": toml: line 1: expected '.' or '=', but got 'i' instead (fix that file by hand)"
+		if !strings.Contains(flat(view), flat(want)) || !strings.Contains(view, "[Models]") {
+			t.Errorf("at %dx%d the tab should say %q:\n%s", size[0], size[1], want, view)
+		}
 	}
 }
 

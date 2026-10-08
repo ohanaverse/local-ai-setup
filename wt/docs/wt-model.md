@@ -191,6 +191,11 @@ Under the table is the selected row's detail: its id, whole, then its status,
 and draft); and the path of its weights on a line of its own, written from
 `~`. A short terminal drops the path before it drops table rows.
 
+A row whose `fetch` or `draft` is malformed in `registry.toml` has one more
+line under its id, in the words `wt model list` prints on stderr: `fetch is
+not a table; read as absent`. wt reads such a value as absent, which is why
+the row has no path, or reads `missing` when its weights are there.
+
 | Key | Does |
 |---|---|
 | `↑`/`↓`, `j`/`k` | move |
@@ -208,9 +213,19 @@ A removal is written to `registry.toml` at once. The LiteLLM routes are not
 synced per change: the status says `LiteLLM routes pending (sync on quit)`,
 and that one sync runs when the editor closes, only if the registry changed. A
 quit typed while a change is still being written waits for it, on this tab. A
-removal the registry refuses is reported and the table is read again. If wt is
+removal the registry refuses is reported and the table is read again: nothing
+is written and no sync is owed. An id that more than one row carries is
+refused that way, with the message `wt model rm` gives (`model "<id>" is in
+the registry twice (providers A, B); wt cannot tell which one you mean — fix
+the entry in <registry path>`); both rows are listed, and the cursor stays on
+the one it was on. If wt is
 killed before the sync, the next `wt start`, `wt stop` or launch through
 LiteLLM repairs the routes, and `wt litellm sync` does it at once. A sync that
 leaves `config.yaml` unchanged does not restart the proxy.
 
-What the last action said stays above the table until the next key.
+What the last action said stays above the table until the next key. On a
+terminal too short for both (a refusal that ends with a long path, at 12
+lines) it is shown whole without the table, and the next key brings the table
+back. A registry that does not load is reported the same way, with the repair
+that fits the error (`fix that file by hand`), and stays until `r` reads it
+again.
