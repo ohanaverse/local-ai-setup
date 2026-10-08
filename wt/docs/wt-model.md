@@ -170,10 +170,17 @@ share an id is a hand edit — only there can you see which row is which.
   "…"` (the `bin/mlx-quantize` workflow). wt keeps the key, shows the path, and
   takes the model's presence from a stat of it.
 - `[[families]]` display names. wt reads only each model's `family`.
+- An mlx_lm_server target+draft pairing (`[models.fetch]` and
+  `[models.draft]`): `wt model add` refuses that provider for now and names
+  the file, and the form does not offer it. A pairing that is there can be
+  edited and removed like any model.
 - Two `[[models]]` rows with one id. Every launch refuses such a registry
-  (`duplicate model id`), and `wt model edit` and `wt model rm` refuse the id
-  rather than pick a row; `wt model list` still shows both rows, each with
-  its provider's status.
+  (`duplicate model id`), and `wt model edit`, `wt model rm` and the Models
+  tab refuse the id rather than pick a row; `wt model list` and the tab still
+  show both rows, each with its provider's status.
+- A `fetch` or `draft` that is not a table (or whose `repo` or `local_path`
+  is not a string). wt lists the row, and refuses to write it — `wt model
+  edit` and the form say `fetch must be a table` — until the value is fixed.
 
 Run `wt litellm sync` after a hand edit: no tool saw it.
 
@@ -199,8 +206,10 @@ the row has no path, or reads `missing` when its weights are there.
 | Key | Does |
 |---|---|
 | `↑`/`↓`, `j`/`k` | move |
+| `enter` | edit the selected registry model; on a `new` row, register it (the form, below) |
+| `n` | add a model (the form, below) |
 | `d` | remove the selected registry model, after a `y/N` prompt that shows where its weights are (on a terminal too short for a long id and path the prompt drops its blank lines, then its closing sentence, before any of the path); the path is repeated in the status afterwards |
-| `r` | probe the providers again; the status says `probing providers...` until they answer, and `r` and `d` wait for it |
+| `r` | probe the providers again; the status says `probing providers...` until they answer — also after a save or a removal, which probe again — and `n`, `enter`, `r` and `d` wait for it |
 | `/` | filter by id or family: type, `Enter` to keep the filter, `Esc` to clear it |
 | `Tab` | the Agents tab |
 | `q`, `Ctrl+C` | quit — but on the remove prompt `q` cancels it, as `Esc` and `n` do (`Ctrl+C` also quits while a filter is being typed, where `q` is text) |
@@ -209,10 +218,65 @@ the row has no path, or reads `missing` when its weights are there.
 The providers are probed when the tab is first shown, not on every visit;
 `Tab` and `q` work while that first probe is still out.
 
-A removal is written to `registry.toml` at once. The LiteLLM routes are not
+### The form
+
+`n`, and `enter`, open a form with the fields `wt model add` and `wt model
+edit` take: Provider, Model name, Family, Tags, Location, the three
+per-token prices, and the subscription price and period.
+
+| Key | Does |
+|---|---|
+| `Tab`, `↓`, `Enter` | next field |
+| `Shift+Tab`, `↑` | previous field |
+| `←` / `→` | change Provider, Location or Subscription period |
+| `→` at the end of Family | replace what was typed with the family the registry already has (`Ctrl+N` / `Ctrl+P`: the next and the previous one that matches); with no family matching, nothing changes |
+| `Ctrl+S` | save |
+| `Esc` | cancel |
+
+Provider offers every provider in the registry and the ones wt adds a row
+for by itself (ollama, omlx, mtplx, openrouter), but not mlx_lm_server: its
+model is a target+draft pairing, which `wt model add` refuses too (a hand
+edit, above). When editing, and when registering a `new` row, the provider
+and the model name are fixed, and the title names the id. An edit writes only
+the fields you changed; saving an untouched form writes nothing and says `no
+change`. Adding an ollama model runs the `ollama show` lookup `wt model add`
+runs, after the values have been checked; if it fails the model is added
+without its capabilities and the status says so.
+
+A value that cannot be used keeps the form open, with the reason above the
+key hints and the cursor on that field. Two refusals are about the registry
+row, not about a field, and move nothing; nothing is written and no sync is
+owed:
+
+- an id that more than one row carries — the message `wt model edit` gives
+  (`model "<id>" is in the registry twice (providers A, B); wt cannot tell
+  which one you mean — fix the entry in <registry path>`). The form opens on
+  the row under the cursor, but wt will not choose a row to write;
+- a row whose `fetch` or `draft` is malformed — `invalid registry entry:
+  model "<id>": fetch must be a table (fix the entry in <registry path>)`.
+  wt reads the value as absent but does not write the row back around it.
+  The form adds `(fix the entry in <registry path>)` only for such a row,
+  where no field can repair what is wrong.
+
+Both are repaired in `registry.toml`; `r` on the table reads it again. A
+hand-written row the registry writer refuses for a key the form has a field
+for — a row with no `family` — is shown the writer's message as it is
+(`invalid registry entry: model "<id>": family is required`), with no file to
+fix: filling the field in the same form and saving repairs it.
+
+On a terminal too short for every field the fields scroll, and `↑ N more` /
+`↓ N more` count the ones off the screen. The title wraps; a fixed value too
+long for its row loses its middle to an ellipsis, and a field that is not
+being edited shows the start of its value. A refusal too long to leave the
+fields three rows — the field being edited and the two markers — (a
+duplicated 72-column id, at 40 columns and 12 lines) is shown whole without
+them, and the next key brings the form back and does nothing else.
+
+A saved form and a removal are each written to `registry.toml` at once. The LiteLLM routes are not
 synced per change: the status says `LiteLLM routes pending (sync on quit)`,
 and that one sync runs when the editor closes, only if the registry changed. A
-quit typed while a change is still being written waits for it, on this tab. A
+quit typed while a change is still being written waits for it, on this tab
+(the form's title says `saving, then quitting...`). A
 removal the registry refuses is reported and the table is read again: nothing
 is written and no sync is owed. An id that more than one row carries is
 refused that way, with the message `wt model rm` gives (`model "<id>" is in

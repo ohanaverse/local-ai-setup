@@ -72,6 +72,8 @@ done
 
 echo
 echo "Output written to: $out_dir"
-echo "Next: register it by hand-editing registry.toml — add an [[models]] entry"
+echo "Next: register it. Either hand-edit registry.toml — add an [[models]] entry"
 echo "with provider_id = \"omlx\" and a [models.fetch] local_path = \"$out_dir\""
-echo "(absolute path). See docs/guides/10-mlx-lm-quantization.md."
+echo "(absolute path) — or move it into omlx's model directory and run"
+echo "wt model add omlx <directory name> --family <family>."
+echo "See docs/guides/10-mlx-lm-quantization.md."

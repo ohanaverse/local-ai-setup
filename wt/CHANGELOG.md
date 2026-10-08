@@ -13,6 +13,17 @@
   `fetch` or `draft` (`fetch is not a table; read as absent`). Removing an id
   that more than one registry row carries is refused with `wt model rm`'s
   message, and nothing is written.
+- The Models tab adds and edits models: `n` opens a form for a new model,
+  `Enter` edits the selected one or registers a `new` row under the id it
+  already has. The form has the fields `wt model add` takes (the provider,
+  location and subscription period are choices changed with `←`/`→`), offers
+  the registry's families as suggestions (`→` at the end of the text takes
+  one), and saves with `Ctrl+S` — straight to `registry.toml`, with the
+  routes synced when the editor closes. An edit writes only the fields that
+  changed. A refused save keeps the form open with the cursor on the field
+  at fault; an edit of an id the registry holds twice, or of a row whose
+  `fetch` is malformed, is refused with nothing written. On a short terminal
+  the fields scroll (`↑ N more` / `↓ N more`).
 - `wt model add <provider> <name> --family F`, `wt model edit <id>` and
   `wt model rm <id>...` register, change and remove models in the registry.
   Each makes one locked write and then syncs the LiteLLM routes once. `add`

@@ -4,7 +4,7 @@
 
 Two independent features, both built on the same `mlx_lm.*` tooling bundled inside the omlx Homebrew keg:
 
-- **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; you register the output directory as a `local_path` on the `omlx` provider by hand-editing `registry.toml` (Step 2). modelman deliberately never runs these tools itself — it's register-only.
+- **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; you register the output directory as a `local_path` on the `omlx` provider by hand-editing `registry.toml` (Step 2) — a `local_path` entry is one of the few things wt has no command for — or move it into omlx's model directory and `wt model add omlx <directory name> --family <family>`. modelman deliberately never runs these tools itself — it's register-only.
 - **`mlx_lm_server` speculative decoding** — a target model + a same-tokenizer draft model served together via `mlx_lm.server --draft-model`, isolated and routed through LiteLLM like any other local provider, with **zero `wt` code changes** (`wt`'s Go decoder already ignores fields it doesn't know about).
 
 ## Prerequisites
@@ -19,9 +19,11 @@ Two independent features, both built on the same `mlx_lm.*` tooling bundled insi
 # from: /Users/keith/github/ohanaverse/local-ai-setup
 bin/mlx-quantize convert --model mlx-community/some-model -q --mlx-path /tmp/some-model-4bit
 # → Output written to: /tmp/some-model-4bit
-#   Next: register it by hand-editing registry.toml — add an [[models]] entry
+#   Next: register it. Either hand-edit registry.toml — add an [[models]] entry
 #   with provider_id = "omlx" and a [models.fetch] local_path = "/tmp/some-model-4bit"
-#   (absolute path). See docs/guides/10-mlx-lm-quantization.md.
+#   (absolute path) — or move it into omlx's model directory and run
+#   wt model add omlx <directory name> --family <family>.
+#   See docs/guides/10-mlx-lm-quantization.md.
 
 uv run --directory llmbench llmbench provider isolate mlx_lm_server org/target-repo --draft org/draft-repo --json
 # → {"provider":"mlx_lm_server","model":"org/target-repo (+draft org/draft-repo)",
@@ -46,7 +48,7 @@ bin/mlx-quantize dwq --model <hf-repo-or-local-path> [--mlx-path <out-dir>]
 
 ### 2. Register a local-path model (feature 1)
 
-Register a `local_path`-sourced omlx model by hand-editing `registry.toml` — the way every model is added now that modelman's TUI is disabled ([02-providers-and-models](02-providers-and-models.md) Step 1 has the procedure):
+Register a `local_path`-sourced omlx model by hand-editing `registry.toml`. This is one of the few entries wt has no command for: `wt model add` takes a model by the name its provider lists, and this one is in a directory of your own. (The other way is to move the directory into omlx's model directory, `~/.omlx/models/` by default, and run `wt model add omlx <directory name> --family <family>`; no `local_path` is needed then.) wt keeps the key, shows the path in `wt model list`, and takes the model's presence from a stat of it. The block:
 
 ```toml
 [[models]]
@@ -64,7 +66,7 @@ Then `modelman sync` to pick up the new entry, and `modelman start <id>` to load
 
 ### 3. Register a target+draft pairing (feature 2)
 
-Add the pairing to `registry.toml` by hand ([02-providers-and-models](02-providers-and-models.md) Step 1) — one `[[models]]` block whose `[models.fetch]` names the target and whose `[models.draft]` names the draft, each as a `repo` (HF repo id) or a `local_path` (absolute directory, e.g. Step 1's output):
+Add the pairing to `registry.toml` by hand — `wt model add` refuses the `mlx_lm_server` provider for now, and the Models tab's form does not offer it ([02-providers-and-models](02-providers-and-models.md) Step 1 has the hand-edit procedure) — one `[[models]]` block whose `[models.fetch]` names the target and whose `[models.draft]` names the draft, each as a `repo` (HF repo id) or a `local_path` (absolute directory, e.g. Step 1's output):
 
 ```toml
 [[models]]

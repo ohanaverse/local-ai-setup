@@ -113,6 +113,15 @@ func defaultProviderRow(id string) map[string]any {
 // can route (internal/litellm's policy table).
 var cloudProviderIDs = []string{"openrouter"}
 
+// SeedableProviderIDs is every provider wt can add a default row for by
+// itself — the local ones (defaultProviderIDs) and the cloud ones
+// (cloudProviderIDs). Callers that offer providers for a new model row, like
+// the Models tab's add form, take it so the choice grows with this list
+// instead of copying it.
+func SeedableProviderIDs() []string {
+	return append(slices.Clone(defaultProviderIDs), cloudProviderIDs...)
+}
+
 // OpenRouterKeyEnv is the environment variable the seeded openrouter row
 // names as its key: the name OpenRouter's own tools and this repo's LiteLLM
 // setup use.

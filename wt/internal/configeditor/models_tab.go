@@ -46,6 +46,7 @@ type modelsPhase int
 const (
 	modelsList modelsPhase = iota
 	modelsRemove
+	modelsForm
 )
 
 // modelsTab is the Models tab's state. Its rows come from one probe run in a
@@ -57,8 +58,12 @@ type modelsTab struct {
 	// is the longest id, the MODEL column's width when nothing is cut.
 	cols    *tuilayout.Columns
 	idWidth int
-	// rows are the last probe's rows, what the table was built from.
+	// rows are the last probe's rows, what the table was built from; cfg is
+	// the config that probe read, which the form opens from (the provider
+	// choices, the families to suggest, a row's own keys). Never nil once
+	// loaded.
 	rows []modeladmin.Row
+	cfg  *config.Config
 	// asked is true once the first probe has been dispatched; loaded once
 	// its result is in.
 	asked  bool
@@ -78,14 +83,20 @@ type modelsTab struct {
 	// reads it again.
 	status  string
 	loadErr string
+	// selectID is the id the cursor goes to when the next rows arrive: the
+	// model a form just saved.
+	selectID string
 	// remove is the row the remove prompt is about.
 	remove modeladmin.Row
+	// form is the add / register / edit form while it is open.
+	form *modelForm
 }
 
-// modelsLoadedMsg carries one probe's rows. The config they were built from
-// is not carried: nothing outside the command that read it uses it.
+// modelsLoadedMsg carries one probe's rows and the config they were built
+// from, which is never nil.
 type modelsLoadedMsg struct {
 	gen  int
+	cfg  *config.Config
 	rows []modeladmin.Row
 	err  error
 }
@@ -230,7 +241,7 @@ func (m *model) probeCmd() tea.Cmd {
 		if cfg == nil {
 			cfg = &config.Config{}
 		}
-		return modelsLoadedMsg{gen: gen, err: err, rows: modeladmin.Rows(cfg, deps.Probe(cfg))}
+		return modelsLoadedMsg{gen: gen, cfg: cfg, err: err, rows: modeladmin.Rows(cfg, deps.Probe(cfg))}
 	}
 }
 
@@ -307,9 +318,25 @@ func (m *model) selectedModel() (modeladmin.Row, bool) {
 }
 
 // modelsProbing is the status while a refresh the user asked for is out.
-// The table stays on screen meanwhile, and r and d wait for the answer; this
-// line is the only sign of it. applyModels takes it down.
+// The table stays on screen meanwhile, and n, enter, r and d wait for the
+// answer; this line is the only sign of it. applyModels takes it down.
 const modelsProbing = "probing providers..."
+
+// noteProbeOut says why a key that needs the table did nothing: every save
+// and removal is followed by a probe, so n, enter, d or r typed straight
+// after one arrives while it is out. The line goes under what the status
+// already says ("added ...") and is not added twice; a write in flight has
+// its own line ("removing ...").
+func (m *model) noteProbeOut() {
+	mt := &m.models
+	switch {
+	case mt.writing || strings.HasSuffix(mt.status, modelsProbing):
+	case mt.status == "":
+		mt.status = modelsProbing
+	default:
+		mt.status += "\n" + modelsProbing
+	}
+}
 
 // routesPending is the note the tab shows once it has written the registry.
 const routesPending = "LiteLLM routes pending (sync on quit)"
@@ -383,8 +410,8 @@ func (m *model) modelsDetail() (id, path []string) {
 
 // modelsHints are the tab's key hints, fullest first.
 var modelsHints = []string{
-	"d remove · r refresh · / filter · tab agents · q quit",
-	"d · r · / · tab · q quit",
+	"enter edit · n add · d remove · r refresh · / filter · tab agents · q quit",
+	"enter · n · d · r · / · tab · q quit",
 }
 
 // fitHints is the fullest of hints that fits width; the last one, cut, when
@@ -444,10 +471,11 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 }
 
 // fitModels sizes the table to the room its frame leaves. Update calls it
-// after every message, like fitList for the Agents tab, and it measures
-// nothing while the tab is not the one showing: only modelsView draws this
-// list, and the message that switches to the tab is fitted again on its way
-// out of Update.
+// after every message, like fitList for the Agents tab. It measures the list
+// (up to sixteen probe renders), so it runs only while the table is what is
+// showing — the tab is the one on screen, and neither the form nor the remove
+// prompt is over it: only modelsView's table draws this list, and the message
+// that brings the table back is fitted on its way out of Update.
 //
 // The columns that fit are chosen with MODEL at its full width, the longest
 // id (tuilayout.FitTo). When MODEL, STATUS and RUNNING — the three that are
@@ -457,7 +485,7 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 // STATUS and RUNNING off every row.
 func (m *model) fitModels() {
 	mt := &m.models
-	if m.tab != TabModels || m.width <= 0 || m.height <= 0 || !mt.loaded {
+	if m.tab != TabModels || mt.phase != modelsList || m.width <= 0 || m.height <= 0 || !mt.loaded {
 		return
 	}
 	setModelColumn(mt.cols, mt.idWidth)
@@ -471,8 +499,11 @@ func (m *model) fitModels() {
 
 // modelsView renders the Models tab.
 func (m *model) modelsView() string {
-	if m.models.phase == modelsRemove {
+	switch m.models.phase {
+	case modelsRemove:
 		return m.modelsRemoveView()
+	case modelsForm:
+		return m.modelFormView()
 	}
 	if m.width <= 0 || m.height <= 0 {
 		// No size yet: the first WindowSizeMsg is still on its way, and
@@ -505,9 +536,10 @@ func (m *model) modelsView() string {
 }
 
 // applyModels takes a probe's result: the rows replace the table, with the
-// cursor kept on the row it was on and an applied filter kept. A row the new
-// rows no longer hold leaves the cursor at their top, which is where a table
-// a removal shrank starts.
+// cursor kept on the row it was on — or moved to the model a form just saved
+// (selectID) — and an applied filter kept. A row the new rows no longer hold
+// leaves the cursor at their top, which is where a table a removal shrank
+// starts.
 func (m *model) applyModels(msg modelsLoadedMsg) {
 	mt := &m.models
 	if msg.gen != mt.gen {
@@ -521,14 +553,22 @@ func (m *model) applyModels(msg modelsLoadedMsg) {
 	if r, ok := m.selectedModel(); ok {
 		keep, was = r.ID, mt.list.Index()
 	}
+	if mt.selectID != "" {
+		// A saved add is a row that was not there, so there is no "where the
+		// cursor stood": the first row with the id.
+		keep, was = mt.selectID, -1
+	}
 	filter := ""
 	if mt.loaded && mt.list.FilterState() == list.FilterApplied {
 		filter = mt.list.FilterValue()
 	}
-	mt.rows, mt.loaded, mt.busy = msg.rows, true, false
-	if mt.status == modelsProbing {
-		mt.status = ""
+	mt.cfg, mt.rows, mt.loaded, mt.busy, mt.selectID = msg.cfg, msg.rows, true, false, ""
+	if mt.cfg == nil {
+		mt.cfg = &config.Config{}
 	}
+	// The probe has answered: its line goes, and what a save or a removal
+	// said above it stays.
+	mt.status = strings.TrimSuffix(strings.TrimSuffix(mt.status, modelsProbing), "\n")
 	mt.list, mt.cols, mt.idWidth = buildModelsList(m.theme, msg.rows)
 	mt.built++
 	if filter != "" {
@@ -608,8 +648,11 @@ func (m *model) applyFilterMatches(msg filterMatchesMsg) tea.Cmd {
 // updateModels handles a message while the Models tab is showing.
 func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 	mt := &m.models
-	if mt.phase == modelsRemove {
+	switch mt.phase {
+	case modelsRemove:
 		return m.updateModelsRemove(msg)
+	case modelsForm:
+		return m.updateModelForm(msg)
 	}
 	key, isKey := msg.(tea.KeyMsg)
 	if !isKey {
@@ -651,14 +694,35 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		if mt.busy {
+			m.noteProbeOut()
 			return m, nil
 		}
 		mt.status = modelsProbing
 		return m, m.probeCmd()
+	case "n":
+		// Not over rows that are about to be replaced.
+		if mt.busy {
+			m.noteProbeOut()
+			return m, nil
+		}
+		m.openModelForm(nil)
+		return m, nil
+	case "enter":
+		// Edit a registry row; register a discovered one.
+		if mt.busy {
+			m.noteProbeOut()
+			return m, nil
+		}
+		if r, ok := m.selectedModel(); ok {
+			m.openModelForm(&r)
+		}
+		return m, nil
 	case "d":
 		r, ok := m.selectedModel()
 		switch {
-		case !ok || mt.busy:
+		case mt.busy:
+			m.noteProbeOut()
+		case !ok:
 		case !r.Registered:
 			mt.status = r.ID + " is not in the registry: there is nothing to remove"
 		default:
@@ -744,27 +808,22 @@ func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 	mt.busy, mt.writing = false, false
 	if msg.err != nil {
 		mt.status = "not removed: " + msg.err.Error()
-		if m.quitPending {
-			m.quitPending, m.tab = false, TabModels
-		}
-		if m.discardHeld {
-			// The quit that was to discard the agent edits is off: they are
-			// still there, and still unsaved.
-			m.discardHeld, m.dirty = false, true
-		}
+		m.refuseHeldQuit()
 		return m.probeCmd()
 	}
 	m.registryChanged = true
+	mt.status = "removed " + msg.id
+	if msg.note != "" {
+		// The path again: the prompt that showed it is gone.
+		mt.status += "; " + msg.note
+	}
 	if m.quitPending {
 		m.quitPending, m.discardHeld = false, false
 		if _, cmd := m.quit(); cmd != nil {
 			return cmd
 		}
-	}
-	mt.status = "removed " + msg.id
-	if msg.note != "" {
-		// The path again: the prompt that showed it is gone.
-		mt.status += "; " + msg.note
+		// The unsaved-changes prompt is up; the status written above it is
+		// the one behind it when it is answered.
 	}
 	return m.probeCmd()
 }
