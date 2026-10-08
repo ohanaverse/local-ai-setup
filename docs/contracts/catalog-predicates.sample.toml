@@ -55,6 +55,18 @@ type = "api_key"
 base_url = "https://litellm.corp.example"
 secret_ref = "exec:/usr/local/bin/corp-credential-helper.sh"
 
+# The override in the other direction: a local provider marked
+# openrouter_priced = true (a local proxy serving OpenRouter ids). Both sides
+# must honor true as well as false, or they disagree about this model.
+[[providers]]
+id = "local-gateway"
+name = "Local gateway"
+location = "local"
+openrouter_priced = true
+[providers.auth]
+type = "none"
+base_url = "http://localhost:4100/v1"
+
 # A provider whose location is mistyped (#200): neither "local" nor "cloud",
 # so it is not a location. Its model is out of the catalog, is not routed, and
 # is not OpenRouter-priced (the rule keys on an exact "cloud").
@@ -102,6 +114,15 @@ id = "corp-litellm/claude-3"
 family = "fixture"
 provider_id = "corp-litellm"
 model_name = "claude-3"
+
+# local-gateway has openrouter_priced = true: OpenRouter-priced even though
+# its provider is local. In the catalog as any local model is; not a cloud
+# route.
+[[models]]
+id = "local-gateway/vendor-y"
+family = "fixture"
+provider_id = "local-gateway"
+model_name = "vendor/y"
 
 # Dangling provider_id: no [[providers]] entry named "ghost".
 [[models]]

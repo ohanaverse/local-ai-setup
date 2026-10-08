@@ -1,5 +1,5 @@
 {
-  "in_catalog": ["openrouter/vendor-x", "agy/native", "ollama/glm:cloud", "acme/model-a", "corp-litellm/claude-3", "ollama/local:1"],
-  "openrouter_priced": ["openrouter/vendor-x", "acme/model-a"],
+  "in_catalog": ["openrouter/vendor-x", "agy/native", "ollama/glm:cloud", "acme/model-a", "corp-litellm/claude-3", "local-gateway/vendor-y", "ollama/local:1"],
+  "openrouter_priced": ["openrouter/vendor-x", "acme/model-a", "local-gateway/vendor-y"],
   "routable_cloud": ["openrouter/vendor-x", "ollama/glm:cloud"]
 }
