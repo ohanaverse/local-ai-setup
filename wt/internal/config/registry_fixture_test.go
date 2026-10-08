@@ -68,7 +68,7 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	}
 
 	// The mlx_lm_server pairing model must decode its provider linkage
-	// (fetch/draft are modelman-only and ignored by wt's parser, but the
+	// (its fetch and draft are read by TestModelDecodesFetchAndDraft; the
 	// provider_id must resolve so the model is offered/eligible).
 	pair := models[4]
 	if pair.ID != "mlx_lm_server/contract-fixture:pair" || pair.ProviderID != "mlx_lm_server" {

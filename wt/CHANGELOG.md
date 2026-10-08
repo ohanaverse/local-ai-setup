@@ -4,6 +4,15 @@
 
 ### Added
 
+- `wt model list [--json]` lists every model in the registry and every local
+  model the providers have that the registry does not, with live status
+  (`ok`, `missing`, `unknown`, `new`, `-`) and running state (`run`, `load`,
+  blank, `?`). The text table has no borders and fits the terminal; `--json`
+  adds each model's size and path. A model whose `fetch` or `draft` is
+  malformed in the registry is still listed, with that value read as absent,
+  and is named on stderr (`<id>: fetch is not a table; wt reads it as absent
+  (fix the entry in <registry path>)`) and in the model's `malformed` array in
+  `--json`. Reference: `docs/wt-model.md`.
 - `wt stop --all [--yes]` stops every running local model and then halts the
   omlx service. It asks once when a live wt session is using one of them,
   keeps going when one stop fails (and then exits 1), and takes no argument.

@@ -147,7 +147,8 @@ tags = ["code"]
 # mlx_lm_server pairing: a target+draft speculative-decoding pair. The
 # `fetch` names the target repo and `draft` the draft repo — the shape
 # modelman writes for mlx_lm_server models. wt decodes the provider/model
-# rows (fetch/draft are modelman-only and ignored by wt's parser).
+# rows, and reads `repo` and `local_path` of fetch and of draft to show them
+# and to name the pairing in a hint; it never writes either table.
 [[models]]
 id = "mlx_lm_server/contract-fixture:pair"
 family = "contract-fixture"

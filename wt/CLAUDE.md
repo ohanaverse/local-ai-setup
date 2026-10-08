@@ -74,7 +74,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 - `docs/wt-config.md` — `wt config` subcommands
 - `docs/wt-agents/` — per-agent reference (one file per launcher); `README.md` there covers LiteLLM routes/proxy lifecycle and post-exit order
 - `docs/wt-agents/profiles.md` — local-model launch profiles
-- `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md` — command references
+- `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md`, `docs/wt-model.md` — command references
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — wt design specs and plans (newer cross-package specs live in the monorepo's [../docs/superpowers/](../docs/superpowers/))
 - `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt's `wt model init`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
 
@@ -83,7 +83,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
-- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui` and `internal/config` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config` and `internal/modeladmin` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
@@ -100,7 +100,7 @@ From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint 
 
 ## Go module
 
-Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
 | Path | Purpose |
 |---|---|
@@ -114,13 +114,15 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `launchFiltered` (`launchFilteredImpl`), `launchPassthroughImpl`, `runAgentCmd`; profile apply (`applyProfileForLaunch`, `applyResolvedProfile`) |
 | `cmd/wt/stats.go` | `wt stats` — read-only report: the survey table over `survey.jsonl`, then the usage table |
 | `cmd/wt/stats_usage.go` | `wt stats`' usage half: `collectUsage` (launches from `usage.jsonl` joined with LiteLLM spend), `buildUsageRows`, the `querySpend` and `stdoutWidth` seams |
-| `cmd/wt/stats_usage_table.go` | `renderUsageTable` — the borderless, width-aware usage table (an id is never truncated) |
+| `cmd/wt/stats_usage_table.go` | `renderUsageTable` — the usage table's cells, laid out by `renderPlainTable` |
+| `cmd/wt/plain_table.go` | `renderPlainTable` — the one borderless, width-aware text table (`wt stats`, `wt model list`): the first column is the row's key and is never truncated |
 | `cmd/wt/stats_json.go` | `wt stats --json` — `buildStatsJSON`, one document built from the same rows as the tables |
 | `cmd/wt/model_cmds.go` | `wt start` / `wt stop` |
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |
 | `cmd/wt/profile.go` | `wt profile list/show/status/on/off`; `setEnabledLine`'s surgical `enabled = ...` edit |
 | `cmd/wt/litellm.go` | `wt litellm ...` |
 | `cmd/wt/model.go` | `wt model` group; `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
+| `cmd/wt/model_list.go` | `wt model list [--json]` — `modeladmin.Rows` over one probe; `fitModelList` drops PATH, then SIZE, on a narrow terminal |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/tomlw/` | ordered TOML document (`Decode`, `Table`) and an emitter (`Encode`) that reproduces tomli-w's layout byte for byte — what lets wt write `registry.toml` beside modelman without rewriting it. Imports nothing from wt; never use the stock `toml.Encoder` on the registry (it sorts keys and shifts local dates) |
 | `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
@@ -132,6 +134,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/smoke/` | `wt smoke`'s core: `Eligibility`/`Candidates` (rows per agent from one inventory snapshot — call `Eligibility` directly when you need both the model union and per-model agent lists, to avoid two probe rounds), `RunRow` (PASS/FAIL/SKIP via the `buildAndRun` seam) |
 | `internal/catalog/` | the shared row policy for every model list wt shows or resolves: `Build` (local rows only from the inventory), `Find` (includes discovered rows), `MissingReason` (why a pinned registry id has no row), `Row.Action` (launch/start/block), `Row.BlockReason`, presence status (`ok`/`unknown`; `new` for discovered, including discovered models handed in via `Input.Models`). No rendering, counts or sorting |
 | `internal/localmodels/` | local inventory — see [Local-model resolution](#local-model-resolution) |
+| `internal/modeladmin/` | the core of model management, shared by the `wt model` commands and the Models tab, with no UI import: `Rows` (every registry model and every discovered one, with status, running, path and size — nothing hidden, unlike `catalog.Build`), `WeightsNote`, `FormatSize` |
 | `internal/lifecycle/` | local-model start/stop engine — see [Lifecycle](#lifecycle-internallifecycle) |
 | `internal/litellm/` | the sole implementation of LiteLLM `config.yaml` route management (replaced modelman's Python writer): `configfile.go`, `entry.go`/`policy.go` (entries, provider mappings), `service.go` (`ApplyChange` — the targeted route writer the lifecycle hook uses, its unit `Change` with `RemoveFamilies`; `DiscoveredModel`, `RowFamily`; `Sync`/`PlanSync`), `restart.go` (`RestartContext`, `Listening`, `WaitReady`), `dburl.go` (`DatabaseURL` — the spend database's connection string; reads, never writes) |
 | `internal/spend/` | per-model request, token and cost totals from the proxy's `"LiteLLM_SpendLogs"` table: one aggregated query through `psql` (`Query`) over the window `(start, end]` (`InWindow` — the launch counts' rule, and what a test's spend stub filters with), typed failures (`ErrNoConnectionString` for a blank string and `ErrConnectionString` for one that cannot be handed over, both refused before `psql` is looked for; `ErrNoPsql`, `ErrUnreachable`, `ErrQuery`), no Postgres driver. `conn.go` turns the connection string into libpq's `PG*` environment variables — it is never a `psql` argument (#282), and `psql` inherits no `PG*` variable from wt |
@@ -165,6 +168,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 - **`ResolveLocation` is the one judge of a location**: every consumer keys off its error (`config.ErrLocation`), so catalog, inventory, sync and validation agree.
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
 - **`config.UpdateRegistry` is the only registry write path**: flock, symlink write-through, touched-row validation, no-op skip, re-check before rename. Its `apply` must be pure (it may run up to three times). `RegistryDoc`'s operations are patch-shaped — never round-trip a `config.Model` into the file.
+- **A malformed `fetch` or `draft` reads as absent and never fails the load** (`ModelArtifact.UnmarshalTOML`); `wt model list` alone says so (a stderr line per row and `malformed` in `--json`, from `Model.Malformed()`), and the writer's touched-row check names it. modelman's loader crashes on a `fetch` that is not a table.
 - **Read-side schemas are pinned by contract fixtures** in `../docs/contracts/`, loaded by `internal/config` tests and modelman's `tests/contracts/` — a schema change updates both sides.
 - A missing registry lets an *unconfigured* agent launch as a native passthrough (`agents.BuildPassthroughCmd`); a configured one fails on model resolution.
 
@@ -304,6 +308,7 @@ wt start <id> --plan --json          # dry run: what a start would unload (statu
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)
+wt model list [--json]               # every registry model and every local model found, with live status
 wt profile show -A <agent> -M <id>   # dry-run profile resolution
 wt stats [--window 7d] [--family F] [--json]  # survey table, then launches and LiteLLM spend per model
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]

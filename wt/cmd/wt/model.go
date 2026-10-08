@@ -49,9 +49,10 @@ func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 	return "LiteLLM routes not synced: " + err.Error()
 }
 
-// modelCmd is the `wt model` group: the commands that write registry.toml.
-// This step ships `init`; add, edit, rm, list and the Models tab follow.
-func modelCmd(_ *app) *cobra.Command {
+// modelCmd is the `wt model` group: the commands that list and write
+// registry.toml. `init` and `list` (read-only) are here; add, edit, rm and
+// the Models tab follow.
+func modelCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "model",
 		Short: "Manage the model registry (registry.toml)",
@@ -90,7 +91,7 @@ func modelCmd(_ *app) *cobra.Command {
 		},
 	}
 	initC.Flags().BoolVar(&initJSON, "json", false, "machine-readable output")
-	c.AddCommand(initC)
+	c.AddCommand(initC, modelListCmd(a))
 	return c
 }
 

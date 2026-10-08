@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -50,6 +52,24 @@ const (
 	defaultMtplxDir    = "~/.mtplx/models"
 )
 
+// ModelDir is the expanded model directory the probe scans for a family: the
+// first of the family's provider rows that names a model_dir, else the family
+// default. An omlx-6bit-only registry still resolves (same server). Callers
+// that need to agree with the probe use this rather than re-deriving it.
+func ModelDir(cfg *config.Config, family string) (string, error) {
+	setting := defaultOmlxDir
+	if family == "mtplx" {
+		setting = defaultMtplxDir
+	}
+	for _, id := range familyProviderIDs(family) {
+		if p := cfg.ProviderByID(id); p != nil && p.ModelDir != "" {
+			setting = p.ModelDir
+			break
+		}
+	}
+	return config.ExpandHome(setting)
+}
+
 // Entry is one local model: registered (Registered) or discovered.
 type Entry struct {
 	ProviderID string // registry provider id (omlx-6bit rows keep theirs); for discovered entries the family's registry provider id (familyProviderID), so the id resolves in the registry
@@ -79,6 +99,22 @@ type Entry struct {
 	// isn't there" — a transient probe failure would then hide a model that is
 	// pulled and launchable.
 	ArtifactKnown bool
+	// Path is where the artifact is on disk: the model's directory for omlx
+	// and mtplx. For a registered entry it is that model's OWN directory or
+	// "", for every reader: the match is by leaf name, and a directory
+	// reached only through another organization's copy of the name is
+	// withheld here (ownDirectory, #266), so a caller may print it as "this
+	// model's weights" without a check of its own. A discovered entry keeps
+	// the directory the scan found it in. "" too when the probe does not
+	// learn a path: ollama keeps its models in a blob store with no per-model
+	// path, an mlx_lm_server pairing is never enumerated, a model that is not
+	// on disk has none, and neither has an omlx name found in more than one
+	// directory. An empty Path says nothing about presence — Artifact does.
+	Path string
+	// Size is the artifact's size in bytes when the probe's own answer
+	// carries it: ollama's /api/tags. 0 means not known, never "empty": no
+	// directory is walked to fill it.
+	Size int64
 }
 
 // Snapshot is one inventory round. Providers is keyed by provider family
@@ -173,12 +209,15 @@ func RoutesFollowArtifact(family string) bool { return family == "ollama" }
 type source struct {
 	family     string
 	status     Status
-	artifacts  []string // discovered names, provider spelling (mtplx: repo id form)
-	loaded     []string // names serving right now
-	registered int      // local registry models in this family
-	down       bool     // the server refused the connection (nothing listening)
-	probeErr   error    // the probe failure, for a caller that shows the reason
-	pool       *Pool    // omlx only: the reading loaded came from
+	artifacts  []string          // discovered names, provider spelling (mtplx: repo id form)
+	loaded     []string          // names serving right now
+	dir        string            // the model directory that was scanned (omlx, mtplx)
+	paths      map[string]string // artifact -> its directory (omlx, mtplx)
+	sizes      map[string]int64  // artifact -> bytes (ollama)
+	registered int               // local registry models in this family
+	down       bool              // the server refused the connection (nothing listening)
+	probeErr   error             // the probe failure, for a caller that shows the reason
+	pool       *Pool             // omlx only: the reading loaded came from
 }
 
 func (s *source) matchArtifact(artifact, modelName string) bool {
@@ -189,6 +228,44 @@ func (s *source) matchArtifact(artifact, modelName string) bool {
 		return NameMatches(artifact, modelName)
 	}
 	return false
+}
+
+// ownDirectory reports whether the directory matched to a registered model
+// is that model's own. matchArtifact goes by leaf name, so a model registered
+// as org-a/Name can be matched to org-b/Name; a path wt prints is a path
+// someone may delete, and that one would send the reader of `wt model rm` to
+// another organization's weights (closed issue #266). The check sits here, at
+// the match, so that Entry.Path is safe for every consumer rather than for
+// the ones that remember to ask.
+//
+// The organization the row claims is its fetch.repo's, or its model_name's
+// when that is written org/name; a row that names none (a repo or a name with
+// no "/") has nothing to contradict the match and keeps the path. One that
+// names an organization keeps it only when the directory does not belong to
+// another:
+//
+//   - mtplx keeps every model directly in its model directory, named
+//     <org>--<name>, so the directory's own name has to start with the
+//     organization (one with no "--" in it names none and is kept);
+//   - omlx: the directory sits directly in the scanned model directory, or in
+//     a folder named after the organization.
+func (s *source) ownDirectory(m config.Model, path string) bool {
+	if path == "" {
+		return false
+	}
+	org, _, ok := strings.Cut(m.Fetch.Repo, "/")
+	if m.Fetch.Repo == "" {
+		org, _, ok = strings.Cut(m.ModelName, "/")
+	}
+	if !ok || org == "" {
+		return true
+	}
+	if s.family == "mtplx" {
+		base := filepath.Base(path)
+		return !strings.Contains(base, "--") || strings.HasPrefix(base, org+"--")
+	}
+	parent := filepath.Dir(path)
+	return filepath.Base(parent) == org || filepath.Clean(s.dir) == filepath.Clean(parent)
 }
 
 // knowsArtifacts reports whether this family's probe could enumerate what is
@@ -352,13 +429,17 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 	origin := familyOrigin(cfg, family)
 	switch family {
 	case "ollama":
-		names, err := ollamaModelNames(context.Background(), client, origin+"/api/tags")
+		models, err := ollamaModels(context.Background(), client, origin+"/api/tags")
 		if err != nil {
 			s.status = StatusUnreachable
 			s.down = refused(err)
 			return s
 		}
-		s.artifacts = names
+		s.sizes = map[string]int64{}
+		for _, m := range models {
+			s.artifacts = append(s.artifacts, m.Name)
+			s.sizes[m.Name] = m.Size
+		}
 		// Same endpoint construction as the lifecycle re-probe's OllamaLoaded,
 		// so the two always describe the same server.
 		if loaded, err := OllamaLoaded(context.Background(), client, origin); err == nil {
@@ -396,39 +477,30 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.probeErr = err
 		}
 		s.loaded = loaded
-		def := defaultOmlxDir
-		if family == "mtplx" {
-			def = defaultMtplxDir
-		}
-		// A family with only an omlx-6bit row still scans (same server).
-		dirSetting := def
-		for _, id := range familyProviderIDs(family) {
-			if p := cfg.ProviderByID(id); p != nil && p.ModelDir != "" {
-				dirSetting = p.ModelDir
-				break
-			}
-		}
-		dir, err := config.ExpandHome(dirSetting)
+		dir, err := ModelDir(cfg, family)
 		if err != nil {
 			s.status = StatusUnreachable
 			return s
 		}
 		// omlx discovers models two levels deep; mtplx's directory is flat.
-		scan := scanOmlxModels
+		var names []string
+		var paths map[string]string
 		if family == "mtplx" {
-			scan = scanModelDirs
+			var dirs []string
+			dirs, err = scanModelDirs(dir)
+			paths = map[string]string{}
+			for _, n := range dirs {
+				names = append(names, mtplxRepoID(n))
+				paths[mtplxRepoID(n)] = filepath.Join(dir, n)
+			}
+		} else {
+			names, paths, err = scanOmlxModelPaths(dir)
 		}
-		names, err := scan(dir)
 		if err != nil {
 			s.status = StatusUnreachable
 			return s
 		}
-		if family == "mtplx" {
-			for i, n := range names {
-				names[i] = mtplxRepoID(n)
-			}
-		}
-		s.artifacts = names
+		s.dir, s.artifacts, s.paths = dir, names, paths
 	case "mlx_lm_server":
 		// Running state only: a target+draft pairing cannot be enumerated
 		// (knowsArtifacts stays false), but /v1/models still says whether the
@@ -520,6 +592,10 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				if !consumed[key] && src.matchArtifact(a, m.ModelName) {
 					consumed[key] = true
 					e.Artifact = a
+					e.Size = src.sizes[a]
+					if p := src.paths[a]; src.ownDirectory(m, p) {
+						e.Path = p
+					}
 					break
 				}
 			}
@@ -571,6 +647,8 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				Running:       running,
 				Loading:       running && src.isLoading(a),
 				ArtifactKnown: true,
+				Path:          src.paths[a],
+				Size:          src.sizes[a],
 			})
 		}
 	}
