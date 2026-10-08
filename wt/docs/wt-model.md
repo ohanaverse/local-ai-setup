@@ -35,8 +35,8 @@ After the table, one line per such row on stderr says so, in the registry's
 order:
 
 ```text
-omlx/mine: fetch is not a table; wt reads it as absent (fix the entry in ~/.config/local-ai/registry.toml)
-mlx_lm_server/T+draft-D: fetch.repo is not a string, draft is not a table; wt reads it as absent (fix the entry in ~/.config/local-ai/registry.toml)
+omlx/mine: fetch is not a table; wt reads it as absent (fix the entry in /Users/you/.config/local-ai/registry.toml)
+mlx_lm_server/T+draft-D: fetch.repo is not a string, draft is not a table; wt reads it as absent (fix the entry in /Users/you/.config/local-ai/registry.toml)
 ```
 
 The path is the registry wt read, in full. The table on stdout is the same
