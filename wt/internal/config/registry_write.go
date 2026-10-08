@@ -125,7 +125,7 @@ func updateRegistryOnce(path string, apply func(*RegistryDoc) error) (changed, r
 	}
 	root, err := tomlw.Decode(before)
 	if err != nil {
-		return false, false, fmt.Errorf("parse %s: %w", path, err)
+		return false, false, registryFileError(fmt.Errorf("parse %s: %w", path, err))
 	}
 	doc, err := newRegistryDoc(root)
 	if err != nil {

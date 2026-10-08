@@ -914,18 +914,47 @@ var ErrLocation = errors.New("invalid location")
 
 // RegistryFixHint is the hint for a config error whose repair is in
 // registry.toml — a file `wt config` cannot edit — or "" for
-// any other error (and nil). Today that is a location error (ErrLocation) and
-// a registry path that is a broken symlink (ErrRegistryLink). It is the one
-// source of the wording, so the commands that refuse to run on such an error
-// and the editor that opens on it name the same file the same way (#209).
+// any other error (and nil). That is a location error (ErrLocation), a
+// registry path that is a broken symlink (ErrRegistryLink), and a registry
+// file wt cannot read, parse or accept the top level of (ErrRegistryFile,
+// ErrRegistryTopLevel): those errors name the file, so the hint does not
+// repeat it. It is the one source of the wording, so the commands that refuse
+// to run on such an error and the editor that opens on it name the same file
+// the same way (#209).
+//
+// A missing registry (ErrRegistryMissing) gets "" as well: its error already
+// names the command that creates one. LoadFixHint is the function to ask for
+// the whole hint; this one answers only "is the repair in the registry".
 func RegistryFixHint(err error) string {
 	switch {
 	case errors.Is(err, ErrLocation):
 		return "fix the entry in " + RegistryPath()
 	case errors.Is(err, ErrRegistryLink):
 		return "fix the link or move it aside"
+	case errors.Is(err, ErrRegistryFile), errors.Is(err, ErrRegistryTopLevel):
+		return "fix that file by hand"
 	}
 	return ""
+}
+
+// LoadFixHint is the repair to name after a config load or validation error,
+// or "" when there is nothing to add (nil, and a missing registry, whose
+// error already says to run `wt model init` — a hint would name a second
+// repair beside it). A registry problem gets RegistryFixHint's wording.
+// Everything else is taken to be in wt's own config.toml, the one file
+// `wt config` edits, and only then is `wt config` the repair.
+//
+// Every command that refuses to run on such an error, and every note that
+// quotes one, asks here, so the same error is never given two repairs (#291).
+func LoadFixHint(err error) string {
+	switch {
+	case err == nil, errors.Is(err, ErrRegistryMissing):
+		return ""
+	}
+	if hint := RegistryFixHint(err); hint != "" {
+		return hint
+	}
+	return "run `wt config` to repair"
 }
 
 // Valid reports whether l is one of the two locations the registry defines.

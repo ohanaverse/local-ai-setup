@@ -14,7 +14,20 @@ Key helpers: `Dir()` (config dir), `WriteFileAtomic`, `OllamaBaseURL` (`http://l
 
 Full data model: [docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md](../superpowers/specs/2026-08-14-model-registry-data-model-design.md).
 
-> **Invalid-config repair.** `wt config` launches even when `config.toml` fails validation, so the editor can repair it. Other launch paths exit early on config errors. The editor shows the error as its status line; when the repair is not in `config.toml` at all — a location error is in `registry.toml` — it appends `config.RegistryFixHint(err)`, the same hint `configError` gives the commands that refuse to run (#209: one source for the wording). The status is wrapped to the terminal width (`statusBlock`) and the list is re-fitted after every message (`fitList`), because a terminal cuts a too-wide line at its right edge and the hint is the end of the line.
+> **Invalid-config repair.** `wt config` launches even when `config.toml` fails validation, so the editor can repair it. Other launch paths exit early on config errors. The editor shows the error as its status line; when the repair is not in `config.toml` at all — a location error is in `registry.toml` — it appends `config.RegistryFixHint(err)`, the same hint `configError` gives the commands that refuse to run (#209: one source for the wording).
+>
+> **One function chooses the repair hint.** `config.LoadFixHint(err)` is the hint for any config load or validation error, and `configError` (`cmd/wt/helpers.go`) and `wt stats`' `--family` note (`registryNote`) both ask it — never write a hint out at a call site (#291: `wt litellm` did, and sent every registry problem to `wt config`). `wt config` edits `config.toml` and nothing else, so it is the hint only when nothing marks the error as a registry problem:
+>
+> | Error | Hint |
+> |---|---|
+> | `ErrRegistryMissing` | none — the error itself names `wt model init` |
+> | `ErrRegistryLink` (a link that leads nowhere) | `fix the link or move it aside` |
+> | `ErrRegistryFile` (the file cannot be read or is not TOML; the error names it) | `fix that file by hand` |
+> | `ErrRegistryTopLevel` (a top-level key a write will not accept; only `config.UpdateRegistry` returns it) | `fix that file by hand` |
+> | `ErrLocation` | `fix the entry in <registry path>` |
+> | anything else (a `config.toml` parse or validation error) | ``run `wt config` to repair`` |
+>
+> A new kind of registry error needs a sentinel and a case in `RegistryFixHint`, or it falls through to the `wt config` hint. `TestLoadFixHint` (`internal/config`) pins the table; `TestLitellmLoadErrorNamesTheRepairThatWorks` and `TestStatsFamilyNoteNamesTheRepairThatWorks` (`cmd/wt`) pin it at the commands. The status is wrapped to the terminal width (`statusBlock`) and the list is re-fitted after every message (`fitList`), because a terminal cuts a too-wide line at its right edge and the hint is the end of the line.
 
 `wt config theme [list|show|set|unset]` and `wt config path` — see [docs/wt-config.md](../wt-config.md).
 

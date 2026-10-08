@@ -98,6 +98,23 @@ func ExpandHome(path string) (string, error) { return expandHome(path) }
 // which would shadow the real registry when its target comes back (#248).
 var ErrRegistryLink = errors.New("registry link is broken")
 
+// ErrRegistryFile marks an error about the registry file's own bytes: it is
+// there, and wt cannot read it or it is not TOML. The repair is a hand edit
+// of that file — `wt config` edits config.toml and cannot help — and
+// RegistryFixHint says so. The marked error's text is unchanged; it names
+// the file.
+var ErrRegistryFile = errors.New("registry.toml cannot be read")
+
+type registryFileErr struct{ err error }
+
+func (e registryFileErr) Error() string        { return e.err.Error() }
+func (e registryFileErr) Unwrap() error        { return e.err }
+func (e registryFileErr) Is(target error) bool { return target == ErrRegistryFile }
+
+// registryFileError marks err as ErrRegistryFile, keeping its text and
+// whatever it wraps.
+func registryFileError(err error) error { return registryFileErr{err: err} }
+
 // brokenLinkAbove returns ErrRegistryLink when path does not exist because a
 // directory above it is a symlink that cannot be followed, and nil when the
 // path is simply absent. It asks the nearest ancestor that is there: every
@@ -191,14 +208,14 @@ func loadRegistry() ([]Provider, []Model, error) {
 		return nil, nil, missing
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, registryFileError(err)
 	}
 	var reg struct {
 		Providers []Provider `toml:"providers"`
 		Models    []Model    `toml:"models"`
 	}
 	if _, err := toml.Decode(string(data), &reg); err != nil {
-		return nil, nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, nil, registryFileError(fmt.Errorf("parse %s: %w", path, err))
 	}
 	return reg.Providers, reg.Models, nil
 }

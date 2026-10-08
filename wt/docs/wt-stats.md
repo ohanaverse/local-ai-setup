@@ -227,7 +227,7 @@ wt: spend unavailable: psql not found on PATH
 | `spend unavailable: LiteLLM config is invalid: …` | `config.yaml` exists and cannot be parsed |
 | `spend unavailable: open …/config.yaml: …` | `config.yaml` exists and cannot be read at all; the system's reason follows (`permission denied`, `is a directory`) |
 | `--agent narrows launches only; …` | `--agent` was given |
-| `wt's configuration did not load (…) …` | `--family` was given and wt could not load its configuration — `config.toml` or `registry.toml`; the parentheses quote what failed — so there are no registry families and only provider prefixes (`ollama`, `openrouter`) match |
+| `wt's configuration did not load (…) …` | `--family` was given and wt could not load its configuration — `config.toml` or `registry.toml`; the parentheses quote what failed and, after a `;`, name the repair (``run `wt config` to repair`` for `config.toml`; `fix the link or move it aside` or `fix that file by hand` for the registry; nothing more for a missing registry, whose error already says `wt model init`) — so there are no registry families and only provider prefixes (`ollama`, `openrouter`) match |
 
 A `-` means "not read". A `0` means the proxy logged nothing for that model.
 
