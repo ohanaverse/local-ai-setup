@@ -484,7 +484,32 @@ type Model struct {
 	// LiteLLM rows merge it over the derived pricing keys, so hand-written
 	// keys (context windows, capability flags) reach the proxy.
 	ModelInfo map[string]any `toml:"model_info,omitempty"`
-	Native    bool           `toml:"-"` // derived: provider auth.type == "native"; not persisted
+	// Fetch and Draft say where a local model's weights come from: the
+	// registry's [models.fetch] table, and [models.draft] for the draft half
+	// of an mlx_lm_server pairing. wt only reads them — to show a local_path
+	// and to name the pairing in a hint; llmbench acts on them. Nothing
+	// encodes a Model back into the registry (RegistryDoc is patch-shaped),
+	// so decoding two more keys cannot change what a write touches.
+	Fetch  ModelArtifact `toml:"fetch,omitempty"`
+	Draft  ModelArtifact `toml:"draft,omitempty"`
+	Native bool          `toml:"-"` // derived: provider auth.type == "native"; not persisted
+}
+
+// ModelArtifact is one side of a model's weights: a Hugging Face repo, or a
+// directory the user produced (bin/mlx-quantize). The other keys a fetch
+// table can hold (files, quantizations) are not decoded.
+type ModelArtifact struct {
+	Repo      string `toml:"repo,omitempty"`
+	LocalPath string `toml:"local_path,omitempty"`
+}
+
+// Target is the artifact as a user names it on a command line: the local
+// path when there is one, else the repo. "" when the table is empty.
+func (a ModelArtifact) Target() string {
+	if a.LocalPath != "" {
+		return a.LocalPath
+	}
+	return a.Repo
 }
 
 // ── Agent ─────────────────────────────────────────────────
