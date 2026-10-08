@@ -562,7 +562,7 @@ type SyncPlan struct {
 	// fills it: the real sync reports each repair as an Outcome.
 	Repair []string
 	// Warnings holds what the plan leaves for the user to repair: first the
-	// registry ids that more than one desired row carries, whose route the
+	// registry ids that more than one row may be routed for, whose route the
 	// plan does not touch (planSync fills these, and Sync copies them into
 	// Result.Warnings), then the rows the write leaves in a state LiteLLM
 	// starts its own `ollama serve` for (File.ollamaServeWarnings — only
@@ -584,8 +584,9 @@ type SyncPlan struct {
 // has a hand-written row is left to it (no add, no adoption). Untouched ids,
 // and every row whose RowFamily is in UntouchedFamilies, are neither added,
 // rewritten nor removed; Recheck (see Options) re-verifies local ids. A
-// registry id that more than one desired row carries is treated the same way
-// and named in plan.Warnings (two rows with one id: see the ambiguous map).
+// registry id that more than one desired row carries — or one desired row
+// beside a frozen local row — is treated the same way and named in
+// plan.Warnings (two rows with one id: see the ambiguous map).
 // Built rows for plan.Add are returned alongside the plan: Sync's write path
 // reuses them instead of preparing every changed row a second time.
 //
@@ -646,9 +647,16 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 		wantLocal[keyOf(m)] = true
 	}
 	// Registry local models keep registry order; discovered ones follow in
-	// the caller's order.
+	// the caller's order. A frozen one is neither desired nor not: nothing
+	// vouches for whether its server is serving the id (undecided, read by the
+	// ambiguity check below).
+	undecided := map[string]bool{}
 	for _, m := range localModels {
-		if wantLocal[keyOf(m)] && !frozen(m.ID) {
+		if frozen(m.ID) {
+			undecided[m.ID] = true
+			continue
+		}
+		if wantLocal[keyOf(m)] {
 			desired = append(desired, m)
 			local[m.ID] = true
 		}
@@ -659,7 +667,13 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 	// removal loop below) and say so once. Only registry rows can collide
 	// here — the discovered models are added after this, each under an id no
 	// registry row has. One row desired of several is not ambiguous: it is
-	// routed, from its own row.
+	// routed, from its own row — unless another row of the id is an undecided
+	// local one. That row may be the one being served, so the desired row (a
+	// cloud row: frozen answers by id, so every local row of the id is held
+	// back with it) is not known to be the only one, and routing it would
+	// rewrite a route the frozen family was promised would stay. In a valid
+	// registry a frozen local id has no other row, so this decides nothing
+	// there.
 	var plan SyncPlan
 	ambiguous := map[string]bool{}
 	perID := map[string]int{}
@@ -667,7 +681,7 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 		perID[m.ID]++
 	}
 	for _, m := range desired {
-		if perID[m.ID] < 2 || ambiguous[m.ID] {
+		if (perID[m.ID] < 2 && !undecided[m.ID]) || ambiguous[m.ID] {
 			continue
 		}
 		ambiguous[m.ID] = true

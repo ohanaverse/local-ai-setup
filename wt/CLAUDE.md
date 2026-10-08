@@ -252,7 +252,7 @@ Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row dire
 
 - **wt owns only its own rows**: each carries `model_info.wt_managed: true`. A hand-written row keeps everything except an empty ollama `api_base`, which every write fills (#202).
 - **`sync` trusts only `ok` families**: a family whose probe is untrustworthy is frozen with a warning; one that refuses the connection has its local routes removed.
-- **`sync` runs on a registry with a duplicated model id, so it never takes "the first row with the id"**: an inventory entry is paired with the row of its own provider (`registryRowOf`), and an id with more than one row to route is left as it is, with a warning (`planSync`'s `ambiguous`).
+- **`sync` runs on a registry with a duplicated model id, so it never takes "the first row with the id"**: an inventory entry is paired with the row of its own provider (`registryRowOf`), and an id with more than one row to route — or one row to route beside a local row a failed probe froze — is left as it is, with a warning (`planSync`'s `ambiguous`).
 - **An `os.environ/VAR` api_base stays as written**; "set for the proxy" comes from `litellm.ProxyEnv` (the LaunchAgent plist), which `os.Getenv` cannot answer.
 - `status` shows the api key only as `api_key_set` / last 4 chars.
 - Path `WT_LITELLM_CONFIG`, default `~/.config/litellm/config.yaml`; restart `WT_LITELLM_RESTART_CMD`, else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. A redirected registry without `WT_LITELLM_CONFIG` is refused (`litellm.ErrRegistryRedirected`).

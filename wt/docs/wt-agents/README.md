@@ -55,7 +55,8 @@ then runs one `wt litellm sync`, which is what makes a start/stop/registry
 change show up in `config.yaml` (no wait).
 A model id that two registry rows carry has one route at most: sync builds it
 from the row of the provider that is serving the model, and when more than
-one of the rows is to be routed it leaves the id's route as it is and warns
+one of the rows is to be routed — or a cloud row shares the id with a local
+row whose provider's probe did not succeed — it leaves the id's route as it is and warns
 (`model "<id>" is in the registry twice (providers A, B); its route is left
 as it is — fix the entry in <registry path>`).
 If a model was added by hand or the restart failed, restart the proxy

@@ -213,7 +213,8 @@ func missingProviderWarnings(cfg *config.Config, said []string) []string {
 // A family whose server REFUSED the connection gets no untouched entries
 // (nothing is listening, so nothing is running and its local routes are
 // stale). It gets a warning only when that matters: a local route of the
-// family is in config.yaml (routed holds its ids) and is about to go, or the
+// family is in config.yaml (routed holds its ids; an id on more than one
+// registry row is not counted, see below) and is about to go, or the
 // family serves registry cloud models, which sync still routes though they
 // dial the same refused daemon — a failure that must be reported, not
 // swallowed. A stopped provider with neither is the everyday case and stays
@@ -319,8 +320,24 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 	inFamily := func(f string, ms []config.Model, keep func(config.Model) bool) bool {
 		return slices.ContainsFunc(ms, func(m config.Model) bool { return localmodels.Family(m.ProviderID) == f && keep(m) })
 	}
+	// The `local` half is decided by id — a routed id that a local row of the
+	// family holds, or a marked row litellm.RowFamily places in it (by the
+	// id's first row) — so an id on more than one registry row decides
+	// nothing: its route may be another row's (a cloud row's, which sync goes
+	// on routing) or left alone as ambiguous, and "treated as stale" would
+	// then follow a sync that removed nothing. The cost is the other way
+	// round: when every row of a duplicated id is stopped, its route is
+	// removed (the outcome line says so) without this sentence.
+	rowsPerID := map[string]int{}
+	for _, m := range cfg.Models {
+		rowsPerID[m.ID]++
+	}
+	oneRow := func(id string) bool { return rowsPerID[id] < 2 }
 	for _, f := range downs {
-		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok }) || managedRow(f)
+		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok && oneRow(m.ID) })
+		for id, managed := range routed {
+			local = local || (managed && oneRow(id) && litellm.RowFamily(cfg, id) == f)
+		}
 		cloud := inFamily(f, litellm.CloudModels(cfg), func(config.Model) bool { return true })
 		if !local && !cloud {
 			continue

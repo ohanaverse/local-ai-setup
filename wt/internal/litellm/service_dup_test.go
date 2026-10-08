@@ -120,7 +120,13 @@ func TestSyncRoutesADuplicatedIDFromTheRowHandedIn(t *testing.T) {
 // run alike. One id can have one route, and with two servers behind it no
 // route is right; before this the last row won without a word. The cases are
 // the three ways two rows can both be desired: both local and running, both
-// cloud (always desired), and a cloud row beside a running local one.
+// cloud (always desired), and a cloud row beside a running local one — and the
+// one way a row can be undecided: a cloud row beside a local row sync holds
+// back because its provider's probe did not succeed (Options.Untouched, in
+// either row order). That local server may be serving the id, so the cloud
+// row is not "the one row to route": routing it rewrote the route the frozen
+// family was promised would stay, while the command said that provider's
+// routes "were left unchanged".
 func TestSyncFreezesAnIDWithTwoDesiredRows(t *testing.T) {
 	cloudPair := testConfig()
 	cloudPair.Models = append(cloudPair.Models,
@@ -133,6 +139,17 @@ func TestSyncFreezesAnIDWithTwoDesiredRows(t *testing.T) {
 		config.Model{ID: "dup/q", ProviderID: "ollama", ModelName: "q:1b", Location: config.LocationLocal},
 		config.Model{ID: "dup/q", ProviderID: "mtplx", ModelName: "org/Q", Location: config.LocationLocal},
 	)
+	// mtplx's probe did not succeed: what runLitellmSync passes for it.
+	cloudFirst := testConfig()
+	cloudFirst.Models = append(cloudFirst.Models,
+		config.Model{ID: "dup/q", ProviderID: "openrouter", ModelName: "a/q", Location: config.LocationCloud},
+		config.Model{ID: "dup/q", ProviderID: "mtplx", ModelName: "org/Q", Location: config.LocationLocal},
+	)
+	localFirst := testConfig()
+	localFirst.Models = append(localFirst.Models,
+		config.Model{ID: "dup/q", ProviderID: "mtplx", ModelName: "org/Q", Location: config.LocationLocal},
+		config.Model{ID: "dup/q", ProviderID: "openrouter", ModelName: "a/q", Location: config.LocationCloud},
+	)
 	local := dupLocalConfig()
 	const existing = `model_list:
   - model_name: dup/q
@@ -143,11 +160,16 @@ func TestSyncFreezesAnIDWithTwoDesiredRows(t *testing.T) {
 		name    string
 		cfg     *config.Config
 		localIn []config.Model
+		// frozen: the id is in Options.Untouched and mtplx in
+		// Options.UntouchedFamilies.
+		frozen  bool
 		warning string
 	}{
-		{"two local rows, both running", local, dupModels(local), dupWarning("twice", "ollama, mtplx")},
-		{"two cloud rows", cloudPair, nil, dupWarning("twice", "openrouter, openrouter")},
-		{"a cloud row and a running local row of three", mixed, dupModels(mixed)[1:2], dupWarning("3 times", "openrouter, ollama, mtplx")},
+		{"two local rows, both running", local, dupModels(local), false, dupWarning("twice", "ollama, mtplx")},
+		{"two cloud rows", cloudPair, nil, false, dupWarning("twice", "openrouter, openrouter")},
+		{"a cloud row and a running local row of three", mixed, dupModels(mixed)[1:2], false, dupWarning("3 times", "openrouter, ollama, mtplx")},
+		{"a cloud row ahead of a local row whose probe failed", cloudFirst, nil, true, dupWarning("twice", "openrouter, mtplx")},
+		{"a cloud row behind a local row whose probe failed", localFirst, nil, true, dupWarning("twice", "mtplx, openrouter")},
 	} {
 		for _, body := range []string{existing, "model_list: []\n"} {
 			name := tc.name + "/no route yet"
@@ -156,6 +178,10 @@ func TestSyncFreezesAnIDWithTwoDesiredRows(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				o, _, p := opts(t, body)
+				if tc.frozen {
+					o.Untouched = []string{"dup/q"}
+					o.UntouchedFamilies = []string{"mtplx"}
+				}
 				plan, err := PlanSync(tc.cfg, tc.localIn, o)
 				if err != nil {
 					t.Fatal(err)

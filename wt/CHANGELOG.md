@@ -100,10 +100,14 @@
   provider that is serving it. It used to take the first row with the id for
   its checks and the last one for the route, so the route could name a server
   that was not serving the model. When more than one of the rows is to be
-  routed — both providers serve it, or a cloud model shares the id — sync
-  leaves the id's route as it is and warns once: `model "<id>" is in the
+  routed — both providers serve it, or a cloud model shares the id — or a
+  cloud model shares the id with a local model whose provider's probe did not
+  succeed, sync leaves the id's route as it is and warns once: `model "<id>" is in the
   registry twice (providers A, B); its route is left as it is — fix the entry
-  in <registry path>`. The sync after a `wt model` write does the same.
+  in <registry path>`. The sync after a `wt model` write does the same. Such
+  an id no longer brings on the `refused the probe connection ... its local
+  routes are treated as stale` warning for a stopped provider that holds one
+  of its rows: the route was not that provider's to lose.
 - Ctrl+C during `wt stop omlx` is reported as `cancelled`, with an error that
   says the service was not stopped. It printed `failed` and `context canceled`,
   as if the provider were broken.

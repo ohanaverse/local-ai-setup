@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -241,5 +242,60 @@ func TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone(t *testing.T) {
 	}
 	if got := mustRead(t, yaml); !strings.Contains(got, dupOmlxRoute) || strings.Contains(got, dupOllamaRoute) {
 		t.Errorf("the route did not follow the provider that serves the id:\n%s", got)
+	}
+}
+
+// TestSyncDownWarningIgnoresADuplicatedID verifies that the "refused the
+// probe connection ..., so its local routes are treated as stale" warning is
+// not raised on the word of an id that more than one registry row carries.
+// The warning is decided by id — a routed id that a local row of the stopped
+// family holds — and with a second row under the id the route may be another
+// row's: a cloud row's, which sync goes on routing, or nobody's, when sync
+// leaves the id alone as ambiguous. Sync then removed nothing and still said
+// the family's routes were stale, straight after "its route is left as it
+// is". A family with a route of its own beside the duplicated id keeps the
+// warning.
+func TestSyncDownWarningIgnoresADuplicatedID(t *testing.T) {
+	const stale = `provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`
+	cloud := func(name string) config.Model {
+		return config.Model{ID: "local/qwen", ProviderID: "openrouter", ModelName: name, Location: config.LocationCloud}
+	}
+	local := config.Model{ID: "local/qwen", ProviderID: "ollama", ModelName: "qwen:1b", Location: config.LocationLocal}
+	other := config.Model{ID: "ollama/other", ProviderID: "ollama", ModelName: "other:1b", Location: config.LocationLocal}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusUnreachable},
+		Down:      map[string]bool{"ollama": true},
+	}
+	for _, tc := range []struct {
+		name   string
+		models []config.Model
+		routed map[string]bool
+		want   []string
+	}{
+		{"the id's only row", []config.Model{local}, map[string]bool{"local/qwen": true}, []string{stale}},
+		{"a cloud row ahead of the local row", []config.Model{cloud("a/q"), local}, map[string]bool{"local/qwen": true}, nil},
+		// The local row first: litellm.RowFamily answers by the first row, so
+		// the marked route reads as an ollama row too.
+		{"a cloud row behind the local row", []config.Model{local, cloud("a/q")}, map[string]bool{"local/qwen": true}, nil},
+		{"the local row between two cloud rows", []config.Model{cloud("a/q"), local, cloud("b/q")}, map[string]bool{"local/qwen": true}, nil},
+		{"an unmarked route", []config.Model{local, cloud("a/q")}, map[string]bool{"local/qwen": false}, nil},
+		{"a duplicated id beside a route of the family's own", []config.Model{local, cloud("a/q"), other}, map[string]bool{"local/qwen": true, "ollama/other": true}, []string{stale}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Providers: []config.Provider{
+					{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://127.0.0.1:9"}},
+					{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key", SecretRef: "sk-test", BaseURL: "https://openrouter.ai/api/v1"}},
+				},
+				Models: tc.models,
+			}
+			untouched, warns := syncUntouchedAndWarnings(cfg, snap, tc.routed)
+			if len(untouched) != 0 {
+				t.Errorf("untouched = %v, want none: a refused family freezes nothing", untouched)
+			}
+			if !slices.Equal(warns, tc.want) {
+				t.Errorf("warnings:\n got %q\nwant %q", warns, tc.want)
+			}
+		})
 	}
 }
