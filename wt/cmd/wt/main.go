@@ -99,8 +99,9 @@ func main() {
 	lifecycle.WaitPendingRoutes()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wt:", err)
-		// 1 for every command but one: `wt cloud-sync` says with 2 to 5 why
-		// its catalog flow changed nothing (exitCodeError).
+		// 1 unless the error carries another status (exitCodeError). None
+		// does yet: `wt cloud-sync` will say with 2 to 5 why its catalog
+		// flow changed nothing, once that flow lands.
 		os.Exit(exitCodeOf(err))
 	}
 }

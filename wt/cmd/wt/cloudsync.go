@@ -25,9 +25,9 @@ import (
 var (
 	// cloudFetch GETs one public page: OpenRouter's model list.
 	cloudFetch = realCloudFetch
-	// confirmCloudSync asks the one question that covers both printed plans.
+	// confirmCloudSync asks the one question about the printed plan.
 	confirmCloudSync = promptCloudSync
-	// cloudSyncNow is the clock the stamps and the saved-page name read.
+	// cloudSyncNow is the clock the stamps read.
 	cloudSyncNow = time.Now
 )
 
@@ -79,12 +79,16 @@ type cloudSyncOpts struct {
 	dryRun, yes bool
 }
 
-// selectFlows reads --only: a comma list of flow names, every flow when it
-// is empty.
-func selectFlows(only string, o *cloudSyncOpts) error {
-	if strings.TrimSpace(only) == "" {
+// selectFlows reads --only: a comma list of flow names, and every flow when
+// the flag was not given. Given with nothing in it (`--only "$FLOWS"` with
+// the variable unset) it is an error, never "every flow".
+func selectFlows(only string, given bool, o *cloudSyncOpts) error {
+	if !given {
 		o.prices = true
 		return nil
+	}
+	if strings.TrimSpace(only) == "" {
+		return fmt.Errorf("--only: no flow named (valid: %s)", strings.Join(cloudSyncFlows, ", "))
 	}
 	for _, name := range strings.Split(only, ",") {
 		switch name = strings.TrimSpace(name); name {
@@ -121,7 +125,7 @@ func cloudSyncCmd(a *app) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := selectFlows(only, &o); err != nil {
+			if err := selectFlows(only, cmd.Flags().Changed("only"), &o); err != nil {
 				return err
 			}
 			// Only a config that could not be loaded stops this: a.cfg is
@@ -173,8 +177,10 @@ type pricesRun struct {
 
 // planPricesFlow fetches OpenRouter's list and prints the price plan. It
 // returns nil when there is nothing to apply: no OpenRouter-priced model (no
-// fetch is made), or a fetch that failed (reported, and res.failed set).
-func planPricesFlow(ctx context.Context, out, errOut io.Writer, entries []cloudsync.Entry, providers []cloudsync.Provider, res *cloudSyncOutcome) *pricesRun {
+// fetch is made), a fetch that failed, or a plan the write would refuse (both
+// reported, and res.failed set).
+func planPricesFlow(ctx context.Context, out, errOut io.Writer, doc *config.RegistryDoc, res *cloudSyncOutcome) *pricesRun {
+	entries, providers := cloudsync.Entries(doc.Models()), cloudsync.Providers(doc.Providers())
 	if !slices.ContainsFunc(entries, func(e cloudsync.Entry) bool { return cloudsync.OpenRouterPriced(e, providers) }) {
 		fmt.Fprintln(out, "prices: no OpenRouter-priced model in the registry; nothing to refresh")
 		return nil
@@ -190,17 +196,41 @@ func planPricesFlow(ctx context.Context, out, errOut io.Writer, entries []clouds
 		return nil
 	}
 	run := &pricesRun{api: api, plan: cloudsync.PlanPrices(entries, providers, api)}
+	// The write finds a row by its id and refuses an id that is there more
+	// than once, so a plan with such a model can never be applied. Say so
+	// now, in the dry run too, instead of printing changes that cannot be
+	// made.
+	for _, change := range run.plan.Matched {
+		if _, err := doc.Model(change.ModelID); err != nil {
+			fmt.Fprintf(errOut, "prices: error: no price was changed: %v\n", err)
+			res.failed = true
+			return nil
+		}
+	}
 	run.printed = run.plan.Format()
 	prefixLines(out, "prices", run.printed)
+	if run.plan.Candidates > 0 && len(run.plan.Matched) == 0 {
+		// Not part of run.printed: it is advice, not the plan. With nothing
+		// matched nothing is stamped, so the stale-pricing notice (which
+		// names this command) is not cleared by running it again.
+		fmt.Fprintln(out, "prices: no model could be refreshed, so nothing is stamped and wt's stale-pricing notice is not cleared; "+
+			"set openrouter_priced = false on a provider whose model names are not OpenRouter ids")
+	}
 	return run
 }
 
 // cloudSyncApplied is what the one registry write did. The apply function
 // assigns it afresh on every run.
 type cloudSyncApplied struct {
-	prices      cloudsync.PricesApplied
-	pricesStale bool
+	prices cloudsync.PricesApplied
 }
+
+// errPlanChanged is what the apply function returns when the plan made under
+// the registry lock is not the one that was printed. It is an error, and not
+// a write of nothing, so that config.UpdateRegistry stops there: an apply
+// that succeeds creates a registry that is missing, and a refused plan must
+// leave a registry removed since the plan as absent as it found it.
+var errPlanChanged = errors.New("the registry changed after the plan was printed")
 
 // runCloudSync is `wt cloud-sync`: plan with no lock held, print the plan,
 // confirm, apply in one registry write, sync the routes once.
@@ -209,12 +239,11 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, _ *config.Config, 
 	if err != nil {
 		return withRegistryHint(err)
 	}
-	entries, providers := cloudsync.Entries(doc.Models()), cloudsync.Providers(doc.Providers())
 
 	var res cloudSyncOutcome
 	var prices *pricesRun
 	if o.prices {
-		prices = planPricesFlow(ctx, out, errOut, entries, providers, &res)
+		prices = planPricesFlow(ctx, out, errOut, doc, &res)
 	}
 	if o.dryRun {
 		return res.err()
@@ -256,27 +285,28 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, _ *config.Config, 
 		applied = cloudSyncApplied{}
 		entries, providers := cloudsync.Entries(d.Models()), cloudsync.Providers(d.Providers())
 		fresh := cloudsync.PlanPrices(entries, providers, prices.api)
-		if applied.pricesStale = fresh.Format() != prices.printed; !applied.pricesStale {
-			done, err := fresh.Apply(d, now)
-			if err != nil {
-				return err
-			}
-			applied.prices = done
+		if fresh.Format() != prices.printed {
+			return errPlanChanged
 		}
+		done, err := fresh.Apply(d, now)
+		if err != nil {
+			return err
+		}
+		applied.prices = done
 		return nil
 	})
+	if errors.Is(err, errPlanChanged) {
+		fmt.Fprintln(errOut, "prices: error: the registry changed after the plan was printed; no price was changed — run it again")
+		res.failed = true
+		return res.err()
+	}
 	if err != nil {
 		notApplied(errOut, "error: registry.toml was not changed: %v", withRegistryHint(err))
 		res.failed = true
 		return res.err()
 	}
 
-	if applied.pricesStale {
-		fmt.Fprintln(errOut, "prices: error: the registry changed after the plan was printed; no price was changed — run it again")
-		res.failed = true
-	} else {
-		fmt.Fprintf(out, "prices: refreshed %d model(s); %d price(s) changed\n", applied.prices.Stamped, applied.prices.Changed)
-	}
+	fmt.Fprintf(out, "prices: refreshed %d model(s); %d price(s) changed\n", applied.prices.Stamped, applied.prices.Changed)
 
 	// A run that only stamped models changed no route: skip the sync, which
 	// could restart the proxy for nothing.

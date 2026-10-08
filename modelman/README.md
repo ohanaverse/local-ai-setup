@@ -43,7 +43,7 @@ on/off state are owned by `wt` (see below):
 | File / setting | Purpose | Env override |
 |----------------|---------|------------|
 | `registry.toml` | Canonical model/provider definitions (shared; `wt model init` also writes it) | `WT_REGISTRY` (legacy alias `MODELMAN_REGISTRY`) |
-| `modelman.toml` | Per-machine mutable state: download markers and the `running` hint (`wt` reads none of the per-model state, and not `price_refresh_last_run` — only the legacy `[litellm]` table, read-only) | `MODELMAN_STATE` |
+| `modelman.toml` | Per-machine mutable state: download markers and the `running` hint (`wt` reads none of the per-model state — only `price_refresh_last_run` and the legacy `[litellm]` table, read-only) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 | LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`, and skips its route sync when the file is missing. Both resolve it the same way: `WT_LITELLM_CONFIG`, then legacy `MODELMAN_LITELLM_CONFIG`, then the default | `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`) |
 | LiteLLM proxy restart | Done by wt after a route change: `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | (wt-owned) |
