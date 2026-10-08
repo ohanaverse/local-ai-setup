@@ -88,16 +88,22 @@ func realStatLocalPath(path string) bool {
 // user repairs or removes them. Registry rows come first, by family and id;
 // discovered rows follow, by id.
 func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
-	// A queue per id, not one entry: this list runs on a registry Validate
-	// rejects, and a duplicated id is one of the gaps it shows. The inventory
-	// has one entry per local registry model, in the registry's order for
-	// one id, and only the first of two rows that name the same weights is
-	// matched to them; one entry for both would give both the last one's
-	// status, and an on-disk model would read "missing" twice.
+	// A queue per provider and id, not one entry: this list runs on a
+	// registry Validate rejects, and a duplicated id is one of the gaps it
+	// shows. The inventory has one entry per local registry model, and only
+	// the first of two rows that name the same weights is matched to them;
+	// one entry for both would give both the last one's status, and an
+	// on-disk model would read "missing" twice. The provider is in the key
+	// because the inventory sorts its entries by provider id (a stable sort):
+	// entries of one provider and id keep the registry's order, entries of
+	// one id under two providers do not, and a queue by id alone would hand
+	// each of those rows the other's entry.
+	entryKey := func(providerID, id string) string { return providerID + "\x00" + id }
 	entries := map[string][]localmodels.Entry{}
 	for _, e := range snap.Entries {
 		if e.Registered {
-			entries[e.ModelID] = append(entries[e.ModelID], e)
+			k := entryKey(e.ProviderID, e.ModelID)
+			entries[k] = append(entries[k], e)
 		}
 	}
 	var rows []Row
@@ -115,9 +121,10 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 		default:
 			r.Location = string(loc)
 			var e localmodels.Entry
-			probed := len(entries[m.ID]) > 0
+			k := entryKey(m.ProviderID, m.ID)
+			probed := len(entries[k]) > 0
 			if probed {
-				e, entries[m.ID] = entries[m.ID][0], entries[m.ID][1:]
+				e, entries[k] = entries[k][0], entries[k][1:]
 			}
 			r.Running = running(snap, e, probed)
 			switch {

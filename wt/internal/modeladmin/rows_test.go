@@ -297,6 +297,47 @@ func TestRowsGiveADuplicatedIDItsOwnEntries(t *testing.T) {
 	}
 }
 
+// TestRowsPairADuplicatedIDByProvider verifies two registry rows that share
+// an id under different providers each take the entry of their own provider,
+// whatever order the inventory lists them in. The inventory sorts its entries
+// by provider id, so omlx comes before omlx-6bit there even when the registry
+// has them the other way round; queued by id alone, each row took the other's
+// entry, and a row for org-a's model printed the directory of a different
+// model in org-b as its own weights (the #266 symptom).
+func TestRowsPairADuplicatedIDByProvider(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{local("omlx"), local("omlx-6bit")},
+		Models: []config.Model{
+			{ID: "dup/x", Family: "q", ProviderID: "omlx-6bit", ModelName: "DupA", Fetch: config.ModelArtifact{Repo: "org-a/DupA"}},
+			{ID: "dup/x", Family: "q", ProviderID: "omlx", ModelName: "DupB", Fetch: config.ModelArtifact{Repo: "org-b/DupB"}},
+		},
+	}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
+		// As localmodels.Inventory returns them: sorted by provider id, and
+		// DupA's path withheld (its directory is org-b's copy of the name).
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "dup/x", ModelName: "DupB", Artifact: "DupB", Registered: true, ArtifactKnown: true, Running: true, Path: "/omlx/org-b/DupB"},
+			{ProviderID: "omlx-6bit", ModelID: "dup/x", ModelName: "DupA", Artifact: "DupA", Registered: true, ArtifactKnown: true},
+		},
+	}
+	rows := Rows(cfg, snap)
+	if len(rows) != 2 {
+		t.Fatalf("%d rows, want both registry rows: %+v", len(rows), rows)
+	}
+	a, b := rows[0], rows[1]
+	if a.ModelName != "DupA" || b.ModelName != "DupB" {
+		t.Fatalf("rows = %q, %q, want DupA then DupB (the registry's order)", a.ModelName, b.ModelName)
+	}
+	if a.Path != "" || a.Running != RunningNo {
+		t.Errorf("DupA row: path %q running %q, want neither: those are DupB's", a.Path, a.Running)
+	}
+	if b.Path != "/omlx/org-b/DupB" || b.Running != RunningRun {
+		t.Errorf("DupB row: path %q running %q, want its own directory and run", b.Path, b.Running)
+	}
+}
+
 // TestRowsNeverListTwoRowsWithOneID verifies a discovered artifact whose id
 // a registry row already holds is left out: a row omlx/Foo whose model_name
 // matches nothing on disk, beside an on-disk Foo, would otherwise be listed
