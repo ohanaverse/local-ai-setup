@@ -12,6 +12,7 @@ wt stop ollama/qwen3.8:27b-mlx   # stop one model
 wt stop ollama                   # stop every running model of a provider
 wt stop omlx                     # halt the omlx service and every model in it
 wt stop <target> --yes           # skip the in-use confirmation
+wt stop --all                    # stop every running local model, then the omlx service
 ```
 
 ## `wt start [model]`
@@ -46,13 +47,15 @@ wt stop <target> --yes           # skip the in-use confirmation
 - Not on disk (a registry entry whose artifact is missing): not listed;
   `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
   first`.
-- No lifecycle backend (mlx_lm_server): exits 1 with the `modelman start`
-  hint. A stopped mlx_lm_server pairing is not listed in the picker, so
-  that message is reached only by naming the model.
+- No lifecycle backend (mlx_lm_server): exits 1 with
+  ``local model "<id>" is not running, and wt cannot start an mlx_lm_server pairing — start it with `llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>` ``,
+  the target and draft being the row's own. A stopped mlx_lm_server pairing
+  is not listed in the picker, so that message is reached only by naming
+  the model.
 - A provider wt cannot probe (retired llamacpp): a registry model of it is
   still listed, as a row that cannot be selected, since wt can neither
   see whether it is on disk nor start it. `wt start <id>` exits 1 with
-  `local model "<id>" is not running — start it with \`modelman start <id>\``.
+  `local model "<id>" is not running, and wt cannot start provider "<provider>" — start it with that provider's own tool`.
 - A started model is routed under its registry id, or its discovered id
   (`<family>/<artifact>`) when it has no registry entry; starting or stopping an mtplx model clears that provider family's routes —
   the family's registry-model rows and its wt-marked discovered rows —
@@ -78,6 +81,17 @@ wt stop <target> --yes           # skip the in-use confirmation
   running models; nothing running exits 0 with a note. For omlx it halts the
   service itself. Other names are an
   error.
+- `--all` stops every running local model wt can stop, on every provider,
+  and then halts the omlx service as `wt stop omlx` does — also when omlx has
+  nothing loaded, since that is what frees its memory. omlx's models are not
+  unloaded one by one first. It asks once when any of the models is in use by
+  a live wt session (`--yes` skips the question). Every stop is attempted: if
+  one fails the others still run, and the exit code is 1. Ctrl+C is not a
+  failure to step over: it cancels the stop in flight and ends the command
+  there, so a `--all` interrupted while it stops the models leaves the omlx
+  service up, and the error names it. It takes no argument. A running
+  mlx_lm_server pairing is not stopped, because wt has no engine for one;
+  `llmbench provider stop mlx_lm_server` stops it.
 - No argument: the stop picker (needs a TTY). Unlike the exit-flow pickers
   it also lists models in use by other wt sessions, marked with their
   session count. Type the numbers to stop, separated by spaces (`1 3`), or

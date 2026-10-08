@@ -491,6 +491,10 @@ func TestUpdateRegistryWritesARedirectedRegistry(t *testing.T) {
 		t.Fatal("fixture error: the registry should read as redirected")
 	}
 	changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+		// A model row is written only beside the provider row it names.
+		if err := d.AddProvider(map[string]any{"id": "ollama", "location": "local", "auth": map[string]any{"type": "none"}}); err != nil {
+			return err
+		}
 		return d.AddModel(map[string]any{"id": "ollama/a", "family": "f", "provider_id": "ollama", "model_name": "a"})
 	})
 	if err != nil || !changed {

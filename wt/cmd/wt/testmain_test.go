@@ -77,6 +77,12 @@ func TestMain(m *testing.M) {
 	// what to seed, and none may go on from a registry write to the real
 	// route sync (which probes providers and can restart the proxy). Tests of
 	// `wt model init` call stubSeedEnv, and realRouteSync for the sync itself.
+	// `wt model add` seams: no test may run the developer's ollama or wait on
+	// their terminal. Tests call stubOllamaCaps and stubConfirmRemove.
+	ollamaCaps = func(*config.Config, string) (map[string]any, error) {
+		return nil, errors.New("ollamaCaps not stubbed in this test")
+	}
+	confirmRemove = func(string) (bool, error) { return false, errors.New("confirmRemove not stubbed in this test") }
 	seedEnv = func() config.SeedEnv { return config.SeedEnv{} }
 	syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
 		return "syncRoutesAfterWrite not stubbed in this test"

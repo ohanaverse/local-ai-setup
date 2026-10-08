@@ -94,8 +94,9 @@ quantizations = ["Q4_K_M"]
 ```
 
 `model_info` is freeform and copied into LiteLLM's `model_list` entry when
-`wt` routes the model. The disabled TUI's add dialog used to fill it for
-Ollama models from `ollama show <name>`; by hand, read the capabilities
+`wt` routes the model. `wt model add` and the Models tab's form fill it for
+Ollama models from `ollama show <name>`, as the disabled TUI's add dialog
+did; in a hand edit, read the capabilities
 `ollama show <name>` lists and set the matching keys yourself (e.g.
 `tools` → `supports_function_calling = true`, `vision` →
 `supports_vision = true`).
@@ -217,12 +218,13 @@ for benchmarking); `restore` brings them all back.
 
 > **Disabled.** Bare `modelman` no longer opens the TUI: it prints where to go
 > in wt and exits 1. wt writes `registry.toml` now. What replaces the screen
-> until wt's Models tab ships:
+> is wt:
 >
 > - **create the registry and its provider rows** — `wt model init`
-> - **add, edit or remove a model** — edit `registry.toml` by hand, then
->   `wt litellm sync` (the procedure and a `[[models]]` block per provider
->   kind: `../docs/guides/02-providers-and-models.md` Steps 1–4)
+> - **add, edit or remove a model** — `wt model` (the Models tab of
+>   `wt config`), or `wt model add`, `wt model edit`, `wt model rm`; the
+>   routes are synced for you (`../docs/guides/02-providers-and-models.md`
+>   Step 1)
 > - **download a model** — the provider's own tool, since wt downloads
 >   nothing: `ollama pull <name:tag>`;
 >   `hf download <org>/<repo> --local-dir ~/.omlx/models/<repo>` for oMLX;

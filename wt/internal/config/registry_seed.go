@@ -113,6 +113,15 @@ func defaultProviderRow(id string) map[string]any {
 // can route (internal/litellm's policy table).
 var cloudProviderIDs = []string{"openrouter"}
 
+// SeedableProviderIDs is every provider wt can add a default row for by
+// itself — the local ones (defaultProviderIDs) and the cloud ones
+// (cloudProviderIDs). Callers that offer providers for a new model row, like
+// the Models tab's add form, take it so the choice grows with this list
+// instead of copying it.
+func SeedableProviderIDs() []string {
+	return append(slices.Clone(defaultProviderIDs), cloudProviderIDs...)
+}
+
 // OpenRouterKeyEnv is the environment variable the seeded openrouter row
 // names as its key: the name OpenRouter's own tools and this repo's LiteLLM
 // setup use.
@@ -149,8 +158,9 @@ func cloudProviderRow(id string) map[string]any {
 //     for the three that have a command — when that command is on PATH. An
 //     installed omlx gets no row when an `omlx-6bit` row exists: the two are
 //     one server, and a second row would change which one discovery uses.
-//   - A cloud provider with a default row (openrouter) gets it when an agent
-//     lists it. The row holds no key, only the name of the environment
+//   - A cloud provider with a default row (openrouter) gets it when a model
+//     references it or an agent lists it — never from PATH: it has no
+//     command. The row holds no key, only the name of the environment
 //     variable the key is read from (OpenRouterKeyEnv).
 //   - Every agent in env.Agents gets a native cloud provider row under its
 //     own name — unless that name is one of the providers above, which then
@@ -223,7 +233,7 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string
 		}
 	}
 	for _, id := range cloudProviderIDs {
-		if existing[id] || !listed[id] {
+		if existing[id] || !(wanted[id] || listed[id]) {
 			continue
 		}
 		if err := add(cloudProviderRow(id)); err != nil {

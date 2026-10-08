@@ -669,8 +669,11 @@ func TestStopEntriesSettlesAfterFailureAndCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := &stopHarness{cancelOn: "a", cancel: cancel}
-	if err := stopEntries(ctx, io.Discard, &config.Config{}, cancelled.deps(), entries); err == nil {
-		t.Fatal("want a cancelled error")
+	// The error is ErrStopCancelled itself: `wt stop --all` tells a Ctrl+C
+	// from a failed stop by it, and halts the omlx service after the second
+	// only.
+	if err := stopEntries(ctx, io.Discard, &config.Config{}, cancelled.deps(), entries); !errors.Is(err, ErrStopCancelled) {
+		t.Fatalf("err = %v, want ErrStopCancelled", err)
 	}
 	if len(cancelled.stops) != 1 || cancelled.settles != 1 {
 		t.Errorf("after Ctrl+C: stops = %v, settles = %d, want 1 stop and 1 settle", cancelled.stops, cancelled.settles)

@@ -13,10 +13,17 @@ import (
 	"strings"
 )
 
-// ollamaModelNames returns the names in an ollama {"models":[...]} response
-// (/api/tags: pulled models; /api/ps: loaded models). Entries with a non-empty
-// remote_host are ollama.com cloud models, not local ones, and are skipped.
-func ollamaModelNames(ctx context.Context, client *http.Client, url string) ([]string, error) {
+// ollamaModel is one entry of an ollama {"models":[...]} response.
+type ollamaModel struct {
+	Name string
+	Size int64 // bytes on disk, as /api/tags reports it; 0 when absent
+}
+
+// ollamaModels returns the local models in an ollama {"models":[...]}
+// response (/api/tags: pulled models; /api/ps: loaded models). Entries with a
+// non-empty remote_host are ollama.com cloud models, not local ones, and are
+// skipped.
+func ollamaModels(ctx context.Context, client *http.Client, url string) ([]ollamaModel, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -33,16 +40,30 @@ func ollamaModelNames(ctx context.Context, client *http.Client, url string) ([]s
 		Models []struct {
 			Name       string `json:"name"`
 			RemoteHost string `json:"remote_host"`
+			Size       int64  `json:"size"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", url, err)
 	}
-	names := make([]string, 0, len(body.Models))
+	models := make([]ollamaModel, 0, len(body.Models))
 	for _, m := range body.Models {
 		if m.Name != "" && m.RemoteHost == "" {
-			names = append(names, m.Name)
+			models = append(models, ollamaModel{Name: m.Name, Size: m.Size})
 		}
+	}
+	return models, nil
+}
+
+// ollamaModelNames is ollamaModels' names alone.
+func ollamaModelNames(ctx context.Context, client *http.Client, url string) ([]string, error) {
+	models, err := ollamaModels(ctx, client, url)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(models))
+	for i, m := range models {
+		names[i] = m.Name
 	}
 	return names, nil
 }
@@ -115,17 +136,29 @@ func scanModelDirs(dir string) ([]string, error) {
 // since Pool.Find, matchArtifact and the load and unload requests match on
 // them.
 func scanOmlxModels(dir string) ([]string, error) {
+	names, _, err := scanOmlxModelPaths(dir)
+	return names, err
+}
+
+// scanOmlxModelPaths is scanOmlxModels plus where each model is: paths maps
+// a listed name to its directory. A name found in more than one directory is
+// listed once and has no path: the leaf name does not say which directory is
+// this model's, and a guess could name another organization's weights.
+func scanOmlxModelPaths(dir string) (names []string, paths map[string]string, err error) {
 	tops, err := scanModelDirs(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	paths = map[string]string{}
 	seen := map[string]bool{}
-	var names []string
-	add := func(name string) {
-		if !seen[name] {
-			seen[name] = true
-			names = append(names, name)
+	add := func(name, path string) {
+		if seen[name] {
+			delete(paths, name)
+			return
 		}
+		seen[name] = true
+		paths[name] = path
+		names = append(names, name)
 	}
 	// isModel reports whether p is a model directory; adapter is true for a
 	// LoRA adapter, which is not one whatever else it holds.
@@ -142,7 +175,7 @@ func scanOmlxModels(dir string) ([]string, error) {
 		switch {
 		case adapter:
 		case model:
-			add(top)
+			add(top, p)
 		case isHFCacheEntry(p):
 			sawHFCache = true
 		default:
@@ -154,7 +187,7 @@ func scanOmlxModels(dir string) ([]string, error) {
 			}
 			for _, child := range children {
 				if model, _ := isModel(filepath.Join(p, child)); model {
-					add(child)
+					add(child, filepath.Join(p, child))
 				}
 			}
 		}
@@ -164,11 +197,11 @@ func scanOmlxModels(dir string) ([]string, error) {
 	// listing nothing is the safe answer.
 	if len(names) == 0 && !sawHFCache {
 		if model, _ := isModel(dir); model {
-			return []string{filepath.Base(dir)}, nil
+			return []string{filepath.Base(dir)}, map[string]string{filepath.Base(dir): dir}, nil
 		}
 	}
 	sort.Strings(names)
-	return names, nil
+	return names, paths, nil
 }
 
 func fileExists(p string) bool {

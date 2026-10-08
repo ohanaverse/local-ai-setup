@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/spf13/cobra"
 )
@@ -49,14 +50,25 @@ func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 	return "LiteLLM routes not synced: " + err.Error()
 }
 
-// modelCmd is the `wt model` group: the commands that write registry.toml.
-// This step ships `init`; add, edit, rm, list and the Models tab follow.
-func modelCmd(_ *app) *cobra.Command {
+// modelCmd is the `wt model` group: bare, it opens `wt config` on the Models
+// tab; list (model_list.go), add, edit and rm (model_write.go) and init, which
+// creates the registry and seeds its provider rows, work without a terminal.
+func modelCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "model",
 		Short: "Manage the model registry (registry.toml)",
-		Args:  cobra.NoArgs,
-		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		Long: "Manage the models in the registry.\n\n" +
+			"With no subcommand, opens `wt config` on its Models tab (needs a terminal).\n" +
+			"The subcommands do the same work without one.",
+		Args: cobra.NoArgs,
+		// A missing terminal is not a usage mistake.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !stdinTTY() {
+				return errors.New("wt model needs a terminal to open the Models tab; without one use `wt model list`, `wt model add`, `wt model edit` or `wt model rm`")
+			}
+			return runConfigEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), a, configeditor.TabModels)
+		},
 	}
 	var initJSON bool
 	initC := &cobra.Command{
@@ -67,10 +79,11 @@ func modelCmd(_ *app) *cobra.Command {
 			"  - ollama, omlx, mtplx: when the command is installed, or a model or a\n" +
 			"                         configured agent uses it\n" +
 			"  - mlx_lm_server:       when a model or a configured agent uses it\n" +
-			"  - openrouter:          when a configured agent uses it; the row holds no key,\n" +
-			"                         only auth.secret_ref = \"OPENROUTER_API_KEY\", the\n" +
-			"                         environment variable wt reads the key from (edit\n" +
-			"                         it in registry.toml if you keep the key elsewhere)\n" +
+			"  - openrouter:          when a model or a configured agent uses it; the row\n" +
+			"                         holds no key, only auth.secret_ref =\n" +
+			"                         \"OPENROUTER_API_KEY\", the environment variable wt\n" +
+			"                         reads the key from (edit it in registry.toml if\n" +
+			"                         you keep the key elsewhere)\n" +
 			"  - each configured agent: a native provider row under the agent's name\n\n" +
 			"A provider an agent lists that wt has no default row for is named in the\n" +
 			"output and left for you to add to registry.toml.\n\n" +
@@ -90,7 +103,7 @@ func modelCmd(_ *app) *cobra.Command {
 		},
 	}
 	initC.Flags().BoolVar(&initJSON, "json", false, "machine-readable output")
-	c.AddCommand(initC)
+	c.AddCommand(initC, modelListCmd(a), modelAddCmd(a), modelEditCmd(a), modelRmCmd(a))
 	return c
 }
 

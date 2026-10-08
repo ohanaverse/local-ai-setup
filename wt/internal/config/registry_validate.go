@@ -33,6 +33,43 @@ func (d *RegistryDoc) validateTouched() error {
 		if err := validateModelRow(row); err != nil {
 			return fmt.Errorf("%w: model %q: %w", ErrRegistryInvalid, rowID(row), err)
 		}
+		// Its message names the model itself, as Config.Validate's does.
+		if err := d.validateModelRefs(row); err != nil {
+			return fmt.Errorf("%w: %w", ErrRegistryInvalid, err)
+		}
+	}
+	return nil
+}
+
+// ErrNoProviderRow marks a model whose provider_id names no provider row, so a
+// caller can choose its advice without matching on the message.
+var ErrNoProviderRow = errors.New("names no provider row")
+
+// validateModelRefs checks the two rules of Config.Validate that need other
+// rows: the model's provider_id names a provider row, and its location — its
+// own, or the one it inherits from that provider — resolves to "local" or
+// "cloud". Without them `wt model edit --location mars` would be written, and
+// every wt command would then refuse to run until the file was fixed by hand.
+// ResolveLocation is the judge, as everywhere else; it is asked over the
+// document's provider rows as they are after apply, so a provider row seeded
+// in the same write counts. Errors are marked ErrRegistryEntry like
+// Config.Validate's, so the repair hint names registry.toml.
+func (d *RegistryDoc) validateModelRefs(row *tomlw.Table) error {
+	str := func(t *tomlw.Table, key string) string {
+		v, _ := t.Get(key)
+		s, _ := v.(string)
+		return s
+	}
+	cfg := &Config{}
+	for _, p := range d.rows("providers") {
+		cfg.Providers = append(cfg.Providers, Provider{ID: rowID(p), Location: Location(str(p, "location"))})
+	}
+	m := Model{ID: rowID(row), ProviderID: str(row, "provider_id"), Location: Location(str(row, "location"))}
+	if cfg.ProviderByID(m.ProviderID) == nil {
+		return registryEntryError(fmt.Errorf("model %q: provider_id %q %w", m.ID, m.ProviderID, ErrNoProviderRow))
+	}
+	if _, err := cfg.ResolveLocation(m); err != nil {
+		return registryEntryError(err)
 	}
 	return nil
 }
@@ -71,19 +108,39 @@ func validateModelRow(row *tomlw.Table) error {
 			return fmt.Errorf("cost: %w", err)
 		}
 	}
-	// modelman reads these two with dict methods, so anything but a table
-	// makes its load crash rather than report; wt's Model has no field for
-	// either, so the typed decode below would not notice.
+	// wt's reader takes a malformed fetch or draft for an absent one
+	// (ModelArtifact.UnmarshalTOML), so the typed decode below does not
+	// notice it; this is where it is named.
 	for _, k := range []string{"fetch", "draft"} {
 		if v, ok := row.Get(k); ok {
-			if _, isTable := v.(*tomlw.Table); !isTable {
-				return fmt.Errorf("%s must be a table", k)
+			if err := validateArtifact(k, v); err != nil {
+				return err
 			}
 		}
 	}
 	return typedDecode("models", row, &struct {
 		Models []Model `toml:"models"`
 	}{})
+}
+
+// validateArtifact checks a fetch or draft value against the shape wt reads
+// (artifactFields): a table whose repo and local_path, when present, are
+// strings. modelman reads the two with dict methods, so anything but a table
+// crashes its load rather than reports. An empty table and keys wt does not
+// model pass, as they load.
+func validateArtifact(key string, v any) error {
+	table, isTable := v.(*tomlw.Table)
+	if !isTable {
+		return fmt.Errorf("%s must be a table", key)
+	}
+	for _, f := range artifactFields {
+		if fv, ok := table.Get(f.key); ok {
+			if _, isString := fv.(string); !isString {
+				return fmt.Errorf("%s.%s must be a string", key, f.key)
+			}
+		}
+	}
+	return nil
 }
 
 // requireStrings checks that each key is a non-empty string. modelman only

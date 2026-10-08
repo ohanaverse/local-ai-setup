@@ -52,7 +52,13 @@ def test_no_args_does_not_open_the_tui_and_says_where_to_go():
         run_tui.assert_not_called()
     assert "TUI is disabled" in result.output
     assert "wt model init" in result.output
-    assert "wt litellm sync" in result.output
+    # What replaced the TUI: wt's Models tab, and the commands behind it.
+    assert "`wt model` (the Models tab of `wt config`)" in result.output
+    for command in ("wt model add", "wt model edit", "wt model rm", "wt model list"):
+        assert command in result.output
+    # No model is added by editing the file any more.
+    assert "by hand" not in result.output
+    assert "wt litellm sync" not in result.output
     assert "modelman --help" in result.output
     # wt downloads nothing, so the notice names each provider's own tool.
     assert "ollama pull" in result.output

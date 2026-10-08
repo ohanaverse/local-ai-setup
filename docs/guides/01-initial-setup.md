@@ -69,7 +69,7 @@ ollama pull qwen3.8:27b-mlx
 wt model init
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
-# (bare `uv run modelman` used to open a TUI; it is disabled — models are added by hand in registry.toml, guide 02)
+# (bare `uv run modelman` used to open a TUI; it is disabled — models are added with `wt model add` or the Models tab of `wt config`, guide 02)
 uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its name or its `ollama/<name:tag>` id). No routing step: every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH); a pulled ollama model stays routed after a stop
 
 # 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the sync — this is only needed if that restart was skipped or failed)

@@ -260,10 +260,16 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	return true
 }
 
+// ErrStopCancelled is what a stop loop returns when Ctrl+C or SIGTERM ended it
+// early. It is a value, not only a message, so a caller with more to stop
+// after the loop (`wt stop --all`, which halts the omlx service next) can tell
+// "the user asked to stop" from "a stop failed" and leave the rest alone.
+var ErrStopCancelled = errors.New("cancelled")
+
 // stopEntries is the picker's stop loop: sequential stops with progress lines,
 // one failure never blocks the rest, Ctrl+C (ctx) cancels the stop in flight
-// and skips the remainder. Returns nil, a "N of M stops failed" error, or a
-// "cancelled" error.
+// and skips the remainder. Returns nil, a "N of M stops failed" error, or
+// ErrStopCancelled.
 //
 // The stops only write their route removals; one settle from the deferred tail
 // of the loop restarts the LiteLLM proxy once for the whole batch (issue #142).
@@ -285,7 +291,7 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 			// Ctrl+C landed while a stop was in flight (or before the first
 			// one): complete the current line and stop offering the rest.
 			fmt.Fprintln(w, "cancelled")
-			return errors.New("cancelled")
+			return ErrStopCancelled
 		}
 		fmt.Fprintf(w, "Stopping %s... ", e.ModelID)
 		fam := localmodels.Family(e.ProviderID)
@@ -304,7 +310,7 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 			if ctx.Err() != nil {
 				// Cancelled mid-stop: the provider CLI was killed, not broken.
 				fmt.Fprintln(w, "cancelled")
-				return errors.New("cancelled")
+				return ErrStopCancelled
 			}
 			fmt.Fprintf(w, "failed: %v\n", err)
 			failed++

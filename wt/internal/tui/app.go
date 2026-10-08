@@ -853,7 +853,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 			// the eligible list (unsupported provider, filtered by -T/-F)
 			// would be told to pull, then refused as ineligible after.
 			if config.IndexModelByID(models, m.pinnedModel) >= 0 {
-				if reason := catalog.MissingReason(snap, m.pinnedModel); reason != "" {
+				if reason := catalog.MissingReason(m.cfg, snap, m.pinnedModel); reason != "" {
 					return routeBack(reason)
 				}
 			}

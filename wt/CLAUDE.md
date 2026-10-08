@@ -74,16 +74,16 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 - `docs/wt-config.md` — `wt config` subcommands
 - `docs/wt-agents/` — per-agent reference (one file per launcher); `README.md` there covers LiteLLM routes/proxy lifecycle and post-exit order
 - `docs/wt-agents/profiles.md` — local-model launch profiles
-- `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md` — command references
+- `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md`, `docs/wt-model.md` — command references
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — wt design specs and plans (newer cross-package specs live in the monorepo's [../docs/superpowers/](../docs/superpowers/))
-- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt's `wt model init`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
+- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt — the `wt model` commands and the Models tab of `wt config`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
 
 ## Go tests
 
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
-- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui` and `internal/config` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config`, `internal/modeladmin`, `internal/configeditor` and `internal/cloudsync` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
@@ -100,29 +100,33 @@ From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint 
 
 ## Go module
 
-Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,configeditor,ollamacheck,catalog,localmodels,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
 | Path | Purpose |
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra), exit-code handling |
 | `cmd/wt/app.go` | shared dependency struct (loads/validates config and profiles.toml once) |
 | `cmd/wt/commands.go` | `rotate` subcommand (debug helper) |
-| `cmd/wt/commands_config.go` | `wt config` subcommand family |
+| `cmd/wt/commands_config.go` | `wt config` subcommand family; `runConfigEditor` opens the editor on a tab (bare `wt config`: Agents; bare `wt model`: Models) and runs the one route sync the Models tab owes |
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch from live `catalog` rows; a `-M` pin on a start row starts it |
 | `cmd/wt/start.go` | `startForLaunch` — non-TUI start driver: stderr progress, Ctrl+C cancel, replace confirmation, `allowReplace` |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers; TTY seams and picker-TTY errors |
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `launchFiltered` (`launchFilteredImpl`), `launchPassthroughImpl`, `runAgentCmd`; profile apply (`applyProfileForLaunch`, `applyResolvedProfile`) |
 | `cmd/wt/stats.go` | `wt stats` — read-only report: the survey table over `survey.jsonl`, then the usage table |
 | `cmd/wt/stats_usage.go` | `wt stats`' usage half: `collectUsage` (launches from `usage.jsonl` joined with LiteLLM spend), `buildUsageRows`, the `querySpend` and `stdoutWidth` seams |
-| `cmd/wt/stats_usage_table.go` | `renderUsageTable` — the borderless, width-aware usage table (an id is never truncated) |
+| `cmd/wt/stats_usage_table.go` | `renderUsageTable` — the usage table's cells, laid out by `renderPlainTable` |
+| `cmd/wt/plain_table.go` | `renderPlainTable` — the one borderless, width-aware text table (`wt stats`, `wt model list`): the first column is the row's key and is never truncated |
 | `cmd/wt/stats_json.go` | `wt stats --json` — `buildStatsJSON`, one document built from the same rows as the tables |
 | `cmd/wt/model_cmds.go` | `wt start` / `wt stop` |
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |
 | `cmd/wt/profile.go` | `wt profile list/show/status/on/off`; `setEnabledLine`'s surgical `enabled = ...` edit |
 | `cmd/wt/litellm.go` | `wt litellm ...` |
-| `cmd/wt/model.go` | `wt model` group; `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
+| `cmd/wt/model.go` | `wt model` group — bare, it opens the Models tab of `wt config` (needs a terminal); `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
+| `cmd/wt/model_write.go` | `wt model add`, `edit`, `rm` — each one `modeladmin` write, then one route sync (`syncAndWarn`); the `ollamaCaps` seam, and `confirmRemove`, which is `wt stop`'s `promptStop` (it opens the terminal through `openTTY`) |
+| `cmd/wt/model_list.go` | `wt model list [--json]` — `modeladmin.Rows` over one probe; `fitModelList` drops PATH, then SIZE, on a narrow terminal |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/tomlw/` | ordered TOML document (`Decode`, `Table`) and an emitter (`Encode`) that reproduces tomli-w's layout byte for byte — what lets wt write `registry.toml` beside modelman without rewriting it. Imports nothing from wt; never use the stock `toml.Encoder` on the registry (it sorts keys and shifts local dates) |
+| `internal/cloudsync/` | the pure core of `wt cloud-sync`: `ParsePricing` (the only code that knows ollama.com/pricing's HTML; `golang.org/x/net/html` tokenizer, fail-loud `*ParseError`), `ResolveCloudTags`/`VerifiedTags`, `PlanCatalog` (+ `MassRemoval`, `RemovalDigest`, `Format`), `ParseOpenRouter`/`PlanPrices`, and the two `Apply` methods that change a `config.RegistryDoc`. No I/O, no clock: see [Cloud sync](#cloud-sync-wt-cloud-sync) |
 | `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
 | `internal/usage/` | append-only JSONL launch history (1d/7d/30d); `RecordFor` tags the agent; `CountsForAgent` per agent×model, legacy agent-less lines count toward `Counts` only; `(*StoreImpl).AllCounts(agent, asOf)` enumerates every model in the file, bucketed against the caller's instant (for `wt stats`; not on the `Store` interface) |
 | `internal/refcount/` | live-session "in use" counts: JSONL keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point |
@@ -132,6 +136,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/smoke/` | `wt smoke`'s core: `Eligibility`/`Candidates` (rows per agent from one inventory snapshot — call `Eligibility` directly when you need both the model union and per-model agent lists, to avoid two probe rounds), `RunRow` (PASS/FAIL/SKIP via the `buildAndRun` seam) |
 | `internal/catalog/` | the shared row policy for every model list wt shows or resolves: `Build` (local rows only from the inventory), `Find` (includes discovered rows), `MissingReason` (why a pinned registry id has no row), `Row.Action` (launch/start/block), `Row.BlockReason`, presence status (`ok`/`unknown`; `new` for discovered, including discovered models handed in via `Input.Models`). No rendering, counts or sorting |
 | `internal/localmodels/` | local inventory — see [Local-model resolution](#local-model-resolution) |
+| `internal/modeladmin/` | the core of model management, shared by the `wt model` commands and the Models tab, with no UI import: `Rows` (every registry model and every discovered one, with status, running, path and size — nothing hidden, unlike `catalog.Build`), `WeightsNote`, `FormatSize`; `Add`, `Edit`, `Remove` (each one `config.UpdateRegistry`, no route sync), `CheckAdd` (what an add refuses without the registry, for a caller with a slow lookup to run first), `Fields` and `FieldError` (the editable fields as typed, and which one is wrong), `DeriveID`, `OllamaCapabilities` |
 | `internal/lifecycle/` | local-model start/stop engine — see [Lifecycle](#lifecycle-internallifecycle) |
 | `internal/litellm/` | the sole implementation of LiteLLM `config.yaml` route management (replaced modelman's Python writer): `configfile.go`, `entry.go`/`policy.go` (entries, provider mappings), `service.go` (`ApplyChange` — the targeted route writer the lifecycle hook uses, its unit `Change` with `RemoveFamilies`; `DiscoveredModel`, `RowFamily`; `Sync`/`PlanSync`), `restart.go` (`RestartContext`, `Listening`, `WaitReady`), `dburl.go` (`DatabaseURL` — the spend database's connection string; reads, never writes) |
 | `internal/spend/` | per-model request, token and cost totals from the proxy's `"LiteLLM_SpendLogs"` table: one aggregated query through `psql` (`Query`) over the window `(start, end]` (`InWindow` — the launch counts' rule, and what a test's spend stub filters with), typed failures (`ErrNoConnectionString` for a blank string and `ErrConnectionString` for one that cannot be handed over, both refused before `psql` is looked for; `ErrNoPsql`, `ErrUnreachable`, `ErrQuery`), no Postgres driver. `conn.go` turns the connection string into libpq's `PG*` environment variables — it is never a `psql` argument (#282), and `psql` inherits no `PG*` variable from wt |
@@ -139,9 +144,10 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/worktree/` | repo detection, enumeration, creation |
 | `internal/initseed/` | `--init` seeding |
 | `internal/ollamacheck/` | pre-launch `ollama list` availability check |
-| `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor |
+| `internal/configeditor/` | the TUI behind `wt config`: the Agents tab (`config.toml`; edits buffered, saved with ctrl+s) and the Models tab (`registry.toml` through `internal/modeladmin`: a table of `modeladmin.Rows`, `d` to remove, and the add / register / edit form of `models_form.go` on `n` and `enter`, hand-built on `bubbles/textinput` like the agent form; each change written at once from a `tea.Cmd`, the probe and the form's ollama lookup in a `tea.Cmd` too). A refused save stays on the form — the cursor on the field a `modeladmin.FieldError` names, any other refusal (`config.ErrModelAmbiguous`, a row the writer will not write back) shown as the save's error with nothing written. `Run` reports `Result.RegistryChanged`, and `cmd/wt`'s `runConfigEditor` then runs the one route sync the tab owes; a quit asked for while a write is in flight waits for it (`leave`, `quitPending`), so the result is never "unchanged" for a registry that changed, and is then an ordinary quit: agent edits made while it waited get the unsaved-changes prompt |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell, pickers, launch, start-on-select flow (`start_flow.go`); `modelrows.go` (rows + sort), `modeltable.go` (`buildTable`, `renderTable`); `PickStartModel` — standalone picker without launch-route gating, used by `wt start` and `wt smoke` (`PickModel`, the route-gated variant, currently has no production caller) |
+| `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal), `WrapText`/`Flow` (free text wrapped between words, for a status that must be read whole) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`; `StyleTableTitle` is the one title-bar reset its `TitleRoom` counts on, called by every table-backed list) |
 
 ## Config (Go)
 
@@ -159,11 +165,13 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 
 ## Registry (shared with modelman until it is retired)
 
-`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it via `config.Load`, fail-closed, and joins it in memory with `config.toml`. `config.Load` never writes it; wt's one writer today is `wt model init` (`config.SeedRegistryDefaults` inside `config.UpdateRegistry`), and modelman still writes it too. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
+`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it via `config.Load`, fail-closed, and joins it in memory with `config.toml`. `config.Load` never writes it; wt writes it through `config.UpdateRegistry` alone: `wt model init` (provider rows, `config.SeedRegistryDefaults`), and `wt model add|edit|rm` and the Models tab of `wt config` (model rows, both through `internal/modeladmin`); modelman still writes it too. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
 
 - **`ResolveLocation` is the one judge of a location**: every consumer keys off its error (`config.ErrLocation`), so catalog, inventory, sync and validation agree.
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
 - **`config.UpdateRegistry` is the only registry write path**: flock, symlink write-through, touched-row validation, no-op skip, re-check before rename. Its `apply` must be pure (it may run up to three times). `RegistryDoc`'s operations are patch-shaped — never round-trip a `config.Model` into the file.
+- **An id on more than one model row is refused, never resolved to the first row** (`config.ErrModelAmbiguous`, from `RegistryDoc.modelRow`): `wt model edit` and `wt model rm` run on a registry that fails validation, and a duplicated id is one such registry. Find a row for a write through `RegistryDoc.Model`/`PatchModel`/`RemoveModel`, not a loop of your own.
+- **A malformed `fetch` or `draft` reads as absent and never fails the load** (`ModelArtifact.UnmarshalTOML`); `wt model list` says so (a stderr line per row and `malformed` in `--json`, from `Model.Malformed()`), the Models tab says so for the selected row (`Row.Malformed`), and the writer's touched-row check names it. modelman's loader crashes on a `fetch` that is not a table.
 - **Read-side schemas are pinned by contract fixtures** in `../docs/contracts/`, loaded by `internal/config` tests and modelman's `tests/contracts/` — a schema change updates both sides.
 - A missing registry lets an *unconfigured* agent launch as a native passthrough (`agents.BuildPassthroughCmd`); a configured one fails on model resolution.
 
@@ -239,12 +247,24 @@ Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row dire
 
 `cmd/wt/model_cmds.go`; user-facing behavior in [docs/wt-start-stop.md](docs/wt-start-stop.md); code notes in [docs/internals/local-models.md](docs/internals/local-models.md#startstop-wt-start-wt-stop).
 
+## Cloud sync (`wt cloud-sync`)
+
+`internal/cloudsync` is the Go port of modelman's `pricing.py` and `ollama_catalog.py`: everything that decides what a sync changes, with no I/O. Its caller owns the fetches, the ollama CLI, the confirmation and the exit codes.
+
+- **`ParsePricing` is the only code that knows the pricing page's HTML.** Every way the page can stop looking like a price table is a `*ParseError`, never a short catalog: a catalog that lost its rows would plan the removal of every ollama cloud entry. When ollama changes the page, fix it there and replace `internal/cloudsync/testdata/ollama_pricing.html`.
+- **The plan's text is the plan.** `CatalogPlan.Format` and `PricePlan.Format` are what the user approves and what the command compares with the re-plan made under the registry lock; both planners are deterministic. A change to either `Format` changes what counts as "the same plan".
+- **`RemovalDigest` is byte-identical to modelman's** for the same removals and stray tags (`TestRemovalDigestMatchesModelman`), so a digest from either tool's dry run approves the other's apply until modelman is deleted.
+- **The `Apply` methods are pure** (they change the `RegistryDoc` they are given and nothing else), because `config.UpdateRegistry` may run them up to three times.
+- **An `Apply` writes a diff, not the cost table.** `costPatch` sets or deletes only the cost keys whose value the plan changed, so a key the planners' read of the row leaves out (`Cost` holds the keys they know) is still there afterwards, and nothing is written that the printed plan does not show (`TestApplyWritesOnlyWhatThePlanShows`).
+- **Only the row labelled `off-peak` in `cost.time_prices` is the catalog's.** Every other row, the subscription, and any key wt does not model are kept. Nothing applies time prices at launch; they are stored.
+
 ## LiteLLM routes (`wt litellm`)
 
 `cmd/wt/litellm.go` + `internal/litellm`, the sole implementation of `config.yaml` route management. Subcommands `sync|list|providers|status|on|off|set`; `sync` is the only CLI route write. Operator doc: [docs/wt-agents/README.md](docs/wt-agents/README.md#litellm-routes-are-wt-owned). JSON shapes are pinned by [../docs/contracts/litellm-cli.sample.json](../docs/contracts/litellm-cli.sample.json) (modelman parses them).
 
 - **wt owns only its own rows**: each carries `model_info.wt_managed: true`. A hand-written row keeps everything except an empty ollama `api_base`, which every write fills (#202).
 - **`sync` trusts only `ok` families**: a family whose probe is untrustworthy is frozen with a warning; one that refuses the connection has its local routes removed.
+- **`sync` runs on a registry with a duplicated model id, so it never takes "the first row with the id"**: an inventory entry is paired with the row of its own provider (`registryRowOf`), and an id with more than one row to route — or one row to route beside a local row a failed probe froze — is left as it is, with a warning (`planSync`'s `ambiguous`).
 - **An `os.environ/VAR` api_base stays as written**; "set for the proxy" comes from `litellm.ProxyEnv` (the LaunchAgent plist), which `os.Getenv` cannot answer.
 - `status` shows the api key only as `api_key_set` / last 4 chars.
 - Path `WT_LITELLM_CONFIG`, default `~/.config/litellm/config.yaml`; restart `WT_LITELLM_RESTART_CMD`, else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. A redirected registry without `WT_LITELLM_CONFIG` is refused (`litellm.ErrRegistryRedirected`).
@@ -268,9 +288,9 @@ wt launches a fresh agent every time and leaves session handling to the agent (#
 
 `internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → launch, plus starting, routing, replace-confirm and ollama-warning screens. A picker is skipped when its selection is already resolved. Every picker uses `ThemedListDelegate`.
 
-- **A view fits the terminal** (`layout.go`): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update`. Add a new line to the frame, and size lists through `fitTo`. Pinned by `TestEveryListPhaseFitsTheTerminal`.
+- **A view fits the terminal** (`internal/tuilayout`, shared with `wt config`; `layout.go` holds the launcher's frames): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update`. Add a new line to the frame, and size lists through `fitTo`. Pinned by `TestEveryListPhaseFitsTheTerminal`. A status that ends in what to do is wrapped, not clipped (the agent picker's, `agentFrames`): a clip cuts it before the command.
 - **The update goroutine never waits**: the launch-time route check uses the non-blocking `tryEnsureModelRoute`; waits happen in a command behind `phaseRouting`.
-- **The model table drops whole columns on a narrow terminal** (`tableColumns`, `fitTableColumns`), keeping MODEL, STATUS and RUNNING.
+- **The model table drops whole columns on a narrow terminal** (`tuilayout.Columns`, fitted by `tuilayout.FitTo`), keeping MODEL, STATUS and RUNNING.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`, `wt rotate`) skip the TUI. `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted.
@@ -297,12 +317,18 @@ wt -W my-feature -A claude           # named worktree + launch
 wt --cwd -A codex                    # current directory
 claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files
-wt start [<id>] / wt stop [<id>|<provider>]   # local-model lifecycle (routes follow automatically)
+wt start [<id>] / wt stop [<id>|<provider>|--all]   # local-model lifecycle (routes follow automatically)
 wt served <provider> [--json]        # ids an omlx/mtplx/mlx_lm_server server is serving now
 wt start <id> --plan --json          # dry run: what a start would unload (status running|fits|would_unload|unknown); changes nothing
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)
+wt model                             # `wt config` on its Models tab (needs TTY): n add, enter edit/register, d remove
+wt model list [--json]               # every registry model and every local model found, with live status
+wt model add <provider> <name> --family F   # register a model (seeds a missing default provider row; one route sync)
+wt model add mlx_lm_server <target> --draft <draft> --family F   # register a target+draft pairing; wt cannot start one and prints the llmbench command that does
+wt model edit <id> --tags code       # change family, tags, location or prices; nothing else in the row moves
+wt model rm <id> [--yes]             # registry only; prints where the weights are
 wt profile show -A <agent> -M <id>   # dry-run profile resolution
 wt stats [--window 7d] [--family F] [--json]  # survey table, then launches and LiteLLM spend per model
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]

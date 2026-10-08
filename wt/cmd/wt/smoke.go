@@ -348,7 +348,7 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 			if row.Action() == catalog.ActionBlock {
 				return smokeTarget{}, errors.New(row.BlockReason())
 			}
-		} else if reason := catalog.MissingReason(&snap, modelID); reason != "" {
+		} else if reason := catalog.MissingReason(cfg, &snap, modelID); reason != "" {
 			return smokeTarget{}, errors.New(reason)
 		}
 		if config.IndexModelByID(cfg.Models, modelID) >= 0 {

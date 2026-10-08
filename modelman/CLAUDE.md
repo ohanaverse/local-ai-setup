@@ -25,7 +25,7 @@ Sub-Typer apps mounted in `main.py`: `usage`, `litellm`, and from llmbench `benc
 
 ## Monorepo context
 
-- `wt/` (Go sibling) reads `registry.toml` and `modelman.toml` read-only. The cross-language schema is pinned by the `docs/contracts/` fixtures, loaded by `tests/contracts/` here and `wt/internal/config` there — change a fixture without updating both sides and both CI jobs fail.
+- `wt/` (Go sibling) reads `modelman.toml` read-only and both reads and writes `registry.toml` (`wt model init`, `wt model add|edit|rm` and the Models tab of `wt config` — models are managed there now). The cross-language schema is pinned by the `docs/contracts/` fixtures, loaded by `tests/contracts/` here and `wt/internal/config` there — change a fixture without updating both sides and both CI jobs fail.
 - **`../llmbench/` owns the benchmarks and the provider lifecycle** (carved out 2026-10; modelman has an editable path dependency on it, `[tool.uv.sources]` in `pyproject.toml`). `local_control.py` calls `llmbench.benchmark.isolation` and `llmbench.providers.lifecycle` in-process (issue #79); `local_process.ProcessResult` and `wt_bridge`'s `WtBridgeError`/`WtNotFoundError`/`WtBridgeTimeoutError` are re-exports of llmbench's classes; `tests/test_registry_path_parity.py` keeps the two registry readers on one file. Change that code in `../llmbench/` (see `../llmbench/CLAUDE.md`), then run both suites. Nothing in modelman shells out to `bin/`.
 
 ## Common development commands

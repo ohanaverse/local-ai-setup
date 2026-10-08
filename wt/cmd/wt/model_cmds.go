@@ -40,10 +40,12 @@ var (
 	stopProvider = lifecycle.Stop
 )
 
-// promptStop is promptReplace's twin for stopping an in-use model: y/N on the
-// controlling terminal, default No, so piped input can never authorise it.
+// promptStop is promptReplace's twin for stopping an in-use model, and what
+// `wt model rm` asks with too: y/N on the controlling terminal, default No,
+// so piped input can never authorise it. The terminal is opened through the
+// openTTY seam, so a test can take it away.
 func promptStop(question string) (bool, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	f, err := openTTY()
 	if err != nil {
 		return false, fmt.Errorf("%s — rerun with --yes to confirm", question)
 	}
@@ -57,15 +59,19 @@ func promptStop(question string) (bool, error) {
 func stopCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop [model|provider]",
-		Short: "Stop a running local model, or every model of a provider",
+		Short: "Stop a running local model, every model of a provider, or all of them",
 		Long: "Stop a running local model (<provider>/<name>) or every running model of a\n" +
 			"provider (ollama, omlx, omlx-6bit, mtplx). With no argument, shows the\n" +
 			"stop picker (requires a TTY), which also lists models other wt sessions\n" +
 			"are using, marked with their session count.\n\n" +
 			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
 			"models up; \"wt stop omlx\" stops the service.\n\n" +
+			"--all stops every running local model and then the omlx service, on every\n" +
+			"provider at once. It takes no argument. A running mlx_lm_server pairing is\n" +
+			"not stopped (wt has no engine for one); \"llmbench provider stop mlx_lm_server\"\n" +
+			"stops it.\n\n" +
 			"Stopping a model a live wt session uses asks for confirmation; --yes skips it.",
-		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop",
+		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
@@ -76,11 +82,143 @@ func stopCmd(a *app) *cobra.Command {
 				arg = args[0]
 			}
 			yes, _ := cmd.Flags().GetBool("yes")
+			if all, _ := cmd.Flags().GetBool("all"); all {
+				if arg != "" {
+					return fmt.Errorf("wt stop --all takes no model or provider (got %q)", arg)
+				}
+				// Past the argument check nothing --all returns is a usage
+				// mistake: a failed stop, a declined question or Ctrl+C would
+				// otherwise bury its progress lines under the whole usage text.
+				cmd.SilenceUsage = true
+				return runStopAll(cmd.OutOrStdout(), a.cfg, yes)
+			}
 			return runStop(cmd.OutOrStdout(), a.cfg, arg, yes)
 		},
 	}
 	cmd.Flags().Bool("yes", false, "Skip the confirmation when a target is in use by a live wt session")
+	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service")
 	return cmd
+}
+
+// poolProviders lists one configured provider id per pool server (omlx):
+// "omlx" and "omlx-6bit" are one service, and it is halted once.
+func poolProviders(cfg *config.Config) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, id := range stoppableProviders(cfg) {
+		fam := localmodels.Family(id)
+		if lifecycle.TenancyOf(id) != lifecycle.Pool || seen[fam] {
+			continue
+		}
+		seen[fam] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// runStopAll implements `wt stop --all`: every running local model wt can
+// stop, then each pool service as a whole. A pool's models go down with their
+// service, so they are not unloaded one by one first. Like `wt stop omlx`, it
+// halts a configured pool service even when no model is loaded: that is what
+// frees the server's memory. Every stop is attempted; a failure does not
+// leave the rest running, and the command then exits non-zero.
+//
+// Ctrl+C is not a failure to step over: it ends the command where it is. A
+// model loop that was cancelled leaves the pool services alone, and a
+// cancelled halt is not followed by another.
+func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
+	cands := stopCandidates(cfg)
+	if inUse, users := stopImpact(cands); inUse > 0 && !yes {
+		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s); stop them all?", inUse, strings.Join(users, ", ")))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("cancelled — nothing was stopped")
+		}
+	}
+	var entries []localmodels.Entry
+	for _, c := range cands {
+		if lifecycle.TenancyOf(c.Entry.ProviderID) != lifecycle.Pool {
+			entries = append(entries, c.Entry)
+		}
+	}
+	pools := poolProviders(cfg)
+	if len(entries) == 0 && len(pools) == 0 {
+		fmt.Fprintln(out, "wt: no running local models")
+		return nil
+	}
+	// One signal context for the whole command, installed before the model
+	// loop. The loop runs under a context of its own (survey.StopEntries) and
+	// releases its handler when it returns, so with none installed here a
+	// Ctrl+C that lands as the last model stop completes is seen by nobody —
+	// the loop returns nil and the command goes on to halt the pool — and one
+	// during the wait below would kill wt outright, mid proxy restart. A
+	// signal reaches both contexts; this one is read by the first pass of the
+	// halt loop and reported.
+	ctx, cancel := startSignalCtx()
+	defer cancel()
+	var failures []error
+	if len(entries) > 0 {
+		if err := stopEntries(out, cfg, entries); err != nil {
+			if errors.Is(err, survey.ErrStopCancelled) {
+				return notHalted(pools)
+			}
+			failures = append(failures, err)
+		}
+		if len(pools) > 0 {
+			// The model loop may have started a LiteLLM proxy restart (a
+			// stopped mtplx model's route), and halting a pool starts its
+			// own. They run asynchronously and nothing else orders them, so
+			// the first is finished here: two at once restart the proxy
+			// under each other.
+			waitPendingRoutes()
+		}
+	}
+	for i, id := range pools {
+		if ctx.Err() != nil {
+			failures = append(failures, notHalted(pools[i:]))
+			break
+		}
+		cancelled, err := haltProvider(ctx, out, cfg, id)
+		if cancelled {
+			failures = append(failures, notHalted(pools[i:]))
+			break
+		}
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", id, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// haltProvider stops one provider's server as a whole (`wt stop omlx`, and
+// each pool of `wt stop --all`) and reports it on out. cancelled means Ctrl+C
+// ended it: the provider's stop was killed, not broken, so it is printed as
+// "cancelled" and the caller reports it as one, not as a failed stop.
+func haltProvider(ctx context.Context, out io.Writer, cfg *config.Config, id string) (cancelled bool, err error) {
+	fmt.Fprintf(out, "Stopping %s... ", id)
+	err = stopProvider(ctx, cfg, id)
+	switch {
+	case err == nil:
+		fmt.Fprintln(out, "done")
+	case ctx.Err() != nil:
+		fmt.Fprintln(out, "cancelled")
+		return true, err
+	default:
+		fmt.Fprintln(out, "failed")
+	}
+	return false, err
+}
+
+// notHalted is the error of a stop cut short by Ctrl+C: it names the pool
+// services the command did not halt, so "cancelled" alone cannot be read as
+// "everything else is down".
+func notHalted(pools []string) error {
+	if len(pools) == 0 {
+		return survey.ErrStopCancelled
+	}
+	return fmt.Errorf("%w — %s was not stopped", survey.ErrStopCancelled, strings.Join(pools, ", "))
 }
 
 // stoppableProviders lists, sorted, the configured provider ids wt can stop.
@@ -168,13 +306,11 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		// service, which is the one way to free the server itself.
 		ctx, cancel := startSignalCtx()
 		defer cancel()
-		fmt.Fprintf(out, "Stopping %s... ", arg)
-		if err := stopProvider(ctx, cfg, arg); err != nil {
-			fmt.Fprintln(out, "failed")
-			return err
+		cancelled, err := haltProvider(ctx, out, cfg, arg)
+		if cancelled {
+			return notHalted([]string{arg})
 		}
-		fmt.Fprintln(out, "done")
-		return nil
+		return err
 	}
 	return stopEntries(out, cfg, entries)
 }
@@ -414,7 +550,7 @@ func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, 
 	}
 	row, ok := catalog.Find(rows, id)
 	if !ok {
-		if reason := catalog.MissingReason(&snap, id); reason != "" {
+		if reason := catalog.MissingReason(cfg, &snap, id); reason != "" {
 			return errors.New(reason)
 		}
 		if config.IndexModelByID(cfg.Models, id) >= 0 {

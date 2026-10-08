@@ -132,8 +132,9 @@ model_name = "org/target"
 // server, but a model that references `omlx`, or an agent that lists it,
 // still gets its row. A provider an agent lists gets its default row whether
 // or not it is installed, because wt refuses a config whose agent lists a
-// provider with no row; openrouter comes from an agent only, never from a
-// model or from PATH.
+// provider with no row; openrouter comes from a model that references it or
+// an agent that lists it, never from PATH — `wt model add openrouter …` on a
+// registry with no openrouter row must not be refused for a row wt can write.
 func TestSeedAddsOnlyWhatTheMachineNeeds(t *testing.T) {
 	const sixBit = `[[providers]]
 id = "omlx-6bit"
@@ -175,7 +176,8 @@ model_name = "org/m"
 		{"an agent lists omlx beside an omlx-6bit row", sixBit, SeedEnv{AgentProviders: []string{"omlx"}}, []string{"omlx"}},
 		{"an agent lists openrouter", "", SeedEnv{AgentProviders: []string{"openrouter"}}, []string{"openrouter"}},
 		{"an agent lists a provider that has its row", sixBit, SeedEnv{AgentProviders: []string{"omlx-6bit"}}, nil},
-		{"openrouter is not seeded for a model or from PATH", openrouterModel, SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx"}},
+		{"openrouter is not seeded from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx"}},
+		{"a model that references openrouter gets the row", openrouterModel, SeedEnv{}, []string{"openrouter"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
