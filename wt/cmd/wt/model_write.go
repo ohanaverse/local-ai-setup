@@ -159,6 +159,8 @@ func modelEditCmd(_ *app) *cobra.Command {
 			"The id, the provider and the model name cannot be edited: usage history,\n" +
 			"rotation and launch profiles key on the id. Remove the model and add it\n" +
 			"again to change one.\n\n" +
+			"An id that more than one registry row carries is refused: wt cannot tell\n" +
+			"which row is meant, and the message names the file to repair.\n\n" +
 			"The LiteLLM routes are synced once when something changed.",
 		Example:      "  wt model edit ollama/qwen3:8b --tags code,design\n  wt model edit openrouter/qwen--qwen3.8-27b --output-price 2.5",
 		Args:         cobra.ExactArgs(1),
@@ -190,7 +192,9 @@ func runModelEdit(out, errOut io.Writer, id string, f modeladmin.Fields) error {
 	return syncAndWarn(out, errOut, nil)
 }
 
-// unknownModelHint says where the ids are when one was not found.
+// unknownModelHint says where the ids are when one was not found. Any other
+// refusal is returned as it is: an id the registry holds more than once
+// (config.ErrModelAmbiguous) already names the file to repair.
 func unknownModelHint(err error) error {
 	if errors.Is(err, config.ErrModelNotFound) {
 		return fmt.Errorf("%w in the registry (`wt model list` shows every id)", err)
@@ -208,7 +212,8 @@ func modelRmCmd(a *app) *cobra.Command {
 			"can delete them yourself. A local model that is still on disk shows up\n" +
 			"again in `wt model list` as STATUS new.\n\n" +
 			"It asks for confirmation on the terminal; --yes skips it. When one id is\n" +
-			"not in the registry, nothing is removed.\n\n" +
+			"not in the registry, or is the id of more than one row, nothing is\n" +
+			"removed.\n\n" +
 			"The LiteLLM routes are synced once afterwards.",
 		Example:      "  wt model rm ollama/qwen3:8b\n  wt model rm openrouter/a--b openrouter/c--d --yes",
 		Args:         cobra.MinimumNArgs(1),
@@ -235,11 +240,13 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 	notes := map[string]string{}
 	if cfg != nil {
 		// An id that is not there is refused before the question, not after
-		// the user has answered it. Without a loaded config the write is
-		// what finds out, as it does for a row that went since the load.
+		// the user has answered it — and so is an id more than one row
+		// carries (config.ErrModelAmbiguous), which the write refuses too.
+		// Without a loaded config the write is what finds out, as it does
+		// for a row that went since the load.
 		for _, id := range ids {
-			if !slices.ContainsFunc(cfg.Models, func(m config.Model) bool { return m.ID == id }) {
-				return unknownModelHint(fmt.Errorf("%w: %q", config.ErrModelNotFound, id))
+			if err := cfg.CheckModelRow(id); err != nil {
+				return unknownModelHint(err)
 			}
 		}
 		local := slices.ContainsFunc(cfg.Models, func(m config.Model) bool {

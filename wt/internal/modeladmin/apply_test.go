@@ -540,3 +540,86 @@ tags = []
 		t.Errorf("removing the bad row: %v", err)
 	}
 }
+
+// dupRegistry is baseRegistry with a second row under the id
+// "ollama/gemma4:9b", held by openrouter: a registry wt's validation refuses
+// ("duplicate model id") and `wt model edit` / `wt model rm` still open.
+const dupRegistry = baseRegistry + `
+[[models]]
+id = "ollama/gemma4:9b"
+family = "gemma4"
+provider_id = "openrouter"
+model_name = "google/gemma-4-9b"
+tags = []
+
+[models.cost]
+subscription_price = 20
+subscription_period = "month"
+
+[[models]]
+id = "openrouter/a--b"
+family = "f"
+provider_id = "openrouter"
+model_name = "a/b"
+tags = []
+`
+
+// TestEditAndRemoveRefuseAnIDTheRegistryHoldsTwice verifies an edit and a
+// removal of an id two rows carry are refused with the registry untouched,
+// and that the refusal reaches the caller in the writer's own words — no
+// advice appended, no "not found". Before this an edit patched the first row
+// while judging the cost rules by the last one, and a removal took the first
+// row: on a registry with a duplicated id, the user could neither choose the
+// row nor tell which one had been changed. The Models tab acts on a row by
+// its id through these same two functions.
+func TestEditAndRemoveRefuseAnIDTheRegistryHoldsTwice(t *testing.T) {
+	path := scratchRegistry(t, dupRegistry)
+	want := `model "ollama/gemma4:9b" is in the registry twice (providers ollama, openrouter); wt cannot tell which one you mean — fix the entry in ` + path
+	check := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, config.ErrModelAmbiguous) || errors.Is(err, config.ErrModelNotFound) {
+			t.Errorf("%s: err = %v, want config.ErrModelAmbiguous", what, err)
+		}
+		if err == nil || err.Error() != want {
+			t.Errorf("%s:\n got %v\nwant %s", what, err, want)
+		}
+		if got := read(t, path); got != dupRegistry {
+			t.Errorf("%s changed the registry:\n%s", what, got)
+		}
+	}
+	changed, err := Edit("ollama/gemma4:9b", Fields{Family: ptr("gemma")})
+	if changed {
+		t.Error("a refused edit reported a change")
+	}
+	check("edit", err)
+	// The duplicate is refused before the rules over the row's cost table:
+	// clearing the period would be "a subscription price needs a period"
+	// about the second row and nothing at all about the first.
+	_, err = Edit("ollama/gemma4:9b", Fields{SubscriptionPeriod: ptr("")})
+	check("edit of a cost field", err)
+	check("remove", Remove([]string{"ollama/gemma4:9b"}))
+	// All or nothing, as for an id that is not there: the good id named
+	// beside the duplicated one stays too.
+	check("remove beside a good id", Remove([]string{"openrouter/a--b", "ollama/gemma4:9b"}))
+}
+
+// TestADuplicatedIDDoesNotBlockTheOtherRows verifies the rows that are not
+// duplicated are still edited and removed on such a registry, and that an
+// add of the duplicated id is still "already exists": the refusal is about
+// one id, and the repair commands must keep working beside it.
+func TestADuplicatedIDDoesNotBlockTheOtherRows(t *testing.T) {
+	path := scratchRegistry(t, dupRegistry)
+	if changed, err := Edit("openrouter/a--b", Fields{Family: ptr("g")}); err != nil || !changed {
+		t.Errorf("edit of a row with its own id: changed = %v, err = %v", changed, err)
+	}
+	_, err := Add(AddRequest{ProviderID: "openrouter", ModelName: "x/y", ID: "ollama/gemma4:9b", Fields: Fields{Family: ptr("f")}}, config.SeedEnv{})
+	if !errors.Is(err, config.ErrModelExists) || errors.Is(err, config.ErrModelAmbiguous) {
+		t.Errorf("add of the duplicated id: err = %v, want config.ErrModelExists", err)
+	}
+	if err := Remove([]string{"openrouter/a--b"}); err != nil {
+		t.Errorf("removing a row with its own id: %v", err)
+	}
+	if got := read(t, path); strings.Contains(got, "a--b") || strings.Count(got, `id = "ollama/gemma4:9b"`) != 2 {
+		t.Errorf("only openrouter/a--b should be gone:\n%s", got)
+	}
+}

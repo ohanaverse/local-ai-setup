@@ -209,7 +209,9 @@ func tableString(t *tomlw.Table, key string) string {
 // provider with no row, for an add and for an edit of a row that has the gap
 // (the edit cannot repair it: provider_id is not editable). Seeding added none: a model's reference seeds only
 // the providers wt has a default row for, and wt has no command that writes
-// any other provider row.
+// any other provider row. Every other refusal is passed through as it is —
+// an id the registry holds twice (config.ErrModelAmbiguous) already says
+// what to repair and where.
 func describe(err error, providerID string) error {
 	if errors.Is(err, config.ErrNoProviderRow) {
 		return fmt.Errorf("%w: add a [[providers]] block for %q to %s and run this again (wt adds a default row by itself only for ollama, omlx, mtplx, mlx_lm_server and openrouter)",
@@ -222,7 +224,9 @@ func describe(err error, providerID string) error {
 // reports whether the file changed. The id, the provider and the model name
 // are not editable: usage history, rotation and launch profiles key on the
 // id, and the inventory matches a row to its weights by provider and name.
-// It does not stamp pricing_updated_at; `wt cloud-sync` owns that date.
+// It does not stamp pricing_updated_at; `wt cloud-sync` owns that date. An
+// id that more than one row carries is refused with the registry's own
+// message (config.ErrModelAmbiguous): there is no flag to choose a row.
 //
 // Two things about the row's cost table follow from an edit of a price or of
 // a subscription field, and only from one: a table still in modelman's old
@@ -239,22 +243,19 @@ func Edit(id string, f Fields) (changed bool, err error) {
 		// Copies: apply may run again, and each run starts from what the
 		// user gave.
 		set, unset := maps.Clone(given), slices.Clone(givenUnset)
-		cost := tomlw.NewTable()
-		found := false
-		for _, m := range d.Models() {
-			if tableString(m, "id") == id {
-				found = true
-				providerID = tableString(m, "provider_id")
-				if t, ok := mustGet(m, "cost").(*tomlw.Table); ok {
-					cost = t
-				}
-			}
-		}
 		// Before the rules over the row's cost table: an id that is not there
 		// has no row to judge, and "a subscription price needs a period" is
-		// the wrong thing to say about a mistyped id.
-		if !found {
-			return fmt.Errorf("%w: %q", config.ErrModelNotFound, id)
+		// the wrong thing to say about a mistyped id. An id two rows carry is
+		// refused here for the same reason (config.ErrModelAmbiguous): the
+		// rules would be judged by one row and the patch applied to another.
+		m, err := d.Model(id)
+		if err != nil {
+			return err
+		}
+		providerID = tableString(m, "provider_id")
+		cost := tomlw.NewTable()
+		if t, ok := mustGet(m, "cost").(*tomlw.Table); ok {
+			cost = t
 		}
 		costKey := func(k string) bool { return strings.HasPrefix(k, "cost.") }
 		setsCost := func() bool { return slices.ContainsFunc(slices.Collect(maps.Keys(set)), costKey) }
@@ -323,7 +324,8 @@ func legacyCost(cost *tomlw.Table, set map[string]any, unset []string) []string 
 }
 
 // Remove deletes the model rows ids from the registry in one locked write:
-// all of them, or — when one is not there — none. It touches nothing else:
+// all of them, or — when one is not there, or is the id of more than one row
+// (config.ErrModelAmbiguous) — none. It touches nothing else:
 // no weights, no [[families]] entry, no route (the caller syncs).
 func Remove(ids []string) error {
 	_, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {

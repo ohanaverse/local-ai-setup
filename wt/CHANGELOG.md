@@ -13,7 +13,10 @@
   references it — and for an ollama model records what `ollama show` says it
   supports. `edit` changes only the named fields; an edit of a price also
   moves a row out of modelman's old cost layout. `rm` removes registry rows
-  only and prints where the weights are. Reference: `docs/wt-model.md`.
+  only and prints where the weights are. An id that more than one registry
+  row carries is refused by `edit` and `rm`, with nothing written: `model
+  "<id>" is in the registry twice (providers A, B); wt cannot tell which one
+  you mean — fix the entry in <registry path>`. Reference: `docs/wt-model.md`.
 - `wt litellm sync` warns when a registry model names a provider that has no
   `[[providers]]` row; it used to leave such a model unrouted without a word.
 - `wt model list [--json]` lists every model in the registry and every local

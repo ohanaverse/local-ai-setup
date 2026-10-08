@@ -510,3 +510,125 @@ func TestModelRmCommandRunsWhenTheConfigDidNotLoad(t *testing.T) {
 		t.Error("the row is still in the registry")
 	}
 }
+
+// dupWriteRegistry is writeRegistry with a second row under the id
+// "ollama/gemma4:9b", held by openrouter: wt's validation refuses it
+// ("duplicate model id"), and `wt model edit` and `wt model rm` are the
+// commands still let in to repair it.
+const dupWriteRegistry = writeRegistry + `
+[[models]]
+id = "ollama/gemma4:9b"
+family = "gemma4"
+provider_id = "openrouter"
+model_name = "google/gemma-4-9b"
+tags = []
+`
+
+// dupIDRefusal is what every command says about that id.
+func dupIDRefusal(registry string) string {
+	return `model "ollama/gemma4:9b" is in the registry twice (providers ollama, openrouter); wt cannot tell which one you mean — fix the entry in ` + registry
+}
+
+// TestModelEditRefusesAnIDTheRegistryHoldsTwice runs `wt model edit` on an
+// id two registry rows carry: it fails (exit 1) naming both providers and
+// the file to repair, leaves the registry byte for byte as it was, and runs
+// no route sync. Before this the edit silently changed the first row — the
+// user could not choose the row, and was told "updated model" about an id
+// that names two.
+func TestModelEditRefusesAnIDTheRegistryHoldsTwice(t *testing.T) {
+	registry := modelHome(t, dupWriteRegistry)
+	syncs := stubRouteSync(t, "")
+	out, err := runWT(t, "model", "edit", "ollama/gemma4:9b", "--tags", "code")
+	if want := dupIDRefusal(registry); err == nil || err.Error() != want {
+		t.Fatalf("err:\n got %v\nwant %s", err, want)
+	}
+	if !errors.Is(err, config.ErrModelAmbiguous) {
+		t.Errorf("err = %v does not match config.ErrModelAmbiguous", err)
+	}
+	if strings.Contains(out, "updated model") || strings.Contains(out, "Usage:") {
+		t.Errorf("output = %q, want neither a success line nor the usage text", out)
+	}
+	if got := mustRead(t, registry); got != dupWriteRegistry {
+		t.Errorf("a refused edit changed the registry:\n%s", got)
+	}
+	if *syncs != 0 {
+		t.Errorf("a refused edit ran %d route sync(s)", *syncs)
+	}
+	// The row beside the duplicate is still editable: the repair commands
+	// must keep working on the rows that are not the problem.
+	if _, err := runWT(t, "model", "edit", "openrouter/a--b", "--tags", "code"); err != nil {
+		t.Errorf("edit of a row with its own id: %v", err)
+	}
+	if *syncs != 1 {
+		t.Errorf("the edit that went through ran %d route sync(s), want 1", *syncs)
+	}
+}
+
+// TestModelRmRefusesAnIDTheRegistryHoldsTwice runs `wt model rm` with an id
+// two registry rows carry, alone and beside a good id: it is refused before
+// the confirmation question — as an id that is not there is — with nothing
+// removed, the registry byte for byte as it was, and no route sync. Before
+// this the first row was removed, whichever provider's it was, and the
+// command reported the id as gone while the other row still held it.
+func TestModelRmRefusesAnIDTheRegistryHoldsTwice(t *testing.T) {
+	registry := modelHome(t, dupWriteRegistry)
+	syncs := stubRouteSync(t, "")
+	asked := stubConfirmRemove(t, true)
+	for _, args := range [][]string{
+		{"model", "rm", "ollama/gemma4:9b"},
+		{"model", "rm", "ollama/gemma4:9b", "--yes"},
+		{"model", "rm", "openrouter/a--b", "ollama/gemma4:9b", "--yes"},
+	} {
+		out, err := runWT(t, args...)
+		if want := dupIDRefusal(registry); err == nil || err.Error() != want {
+			t.Fatalf("%v: err:\n got %v\nwant %s", args, err, want)
+		}
+		if strings.Contains(out, "removed model") {
+			t.Errorf("%v: output = %q, want no removal line", args, out)
+		}
+		if *asked != "" {
+			t.Errorf("%v: the question was asked before the refusal: %q", args, *asked)
+		}
+		if got := mustRead(t, registry); got != dupWriteRegistry {
+			t.Fatalf("%v: a refused removal changed the registry:\n%s", args, got)
+		}
+	}
+	if *syncs != 0 {
+		t.Errorf("the refused removals ran %d route sync(s)", *syncs)
+	}
+}
+
+// TestModelRmRefusesADuplicatedIDWhenTheConfigDidNotLoad verifies the same
+// refusal when wt could not load its config, where the command has no model
+// list to check the ids against and the registry write is what finds out:
+// the question is answered, nothing is removed, and the message is the same
+// one. The removal path that runs on a config that does not load is the one
+// a user repairing a registry is most likely to be on.
+func TestModelRmRefusesADuplicatedIDWhenTheConfigDidNotLoad(t *testing.T) {
+	registry := modelHome(t, dupWriteRegistry)
+	syncs := stubRouteSync(t, "")
+	var out, errOut bytes.Buffer
+	err := runModelRm(&out, &errOut, nil, []string{"openrouter/a--b", "ollama/gemma4:9b"}, true)
+	if want := dupIDRefusal(registry); err == nil || err.Error() != want {
+		t.Fatalf("err:\n got %v\nwant %s", err, want)
+	}
+	if got := mustRead(t, registry); got != dupWriteRegistry || *syncs != 0 || out.Len() != 0 {
+		t.Errorf("a refused removal must change nothing: syncs = %d, stdout = %q", *syncs, out.String())
+	}
+}
+
+// TestModelAddOfADuplicatedIDStillSaysItExists verifies `wt model add` of an
+// id the registry already holds twice answers "already exists", as for an id
+// it holds once: the add is not looking for a row, so "wt cannot tell which
+// one you mean" would be the wrong thing to say.
+func TestModelAddOfADuplicatedIDStillSaysItExists(t *testing.T) {
+	registry := modelHome(t, dupWriteRegistry)
+	syncs := stubRouteSync(t, "")
+	_, err := runWT(t, "model", "add", "openrouter", "x/y", "--family", "f", "--id", "ollama/gemma4:9b")
+	if !errors.Is(err, config.ErrModelExists) || errors.Is(err, config.ErrModelAmbiguous) {
+		t.Fatalf("err = %v, want config.ErrModelExists", err)
+	}
+	if got := mustRead(t, registry); got != dupWriteRegistry || *syncs != 0 {
+		t.Errorf("a refused add must change nothing: syncs = %d", *syncs)
+	}
+}

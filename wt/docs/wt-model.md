@@ -15,8 +15,9 @@ wt model rm <id>... [--yes]
 Each of the three writing commands makes one locked write of the registry and
 then syncs the LiteLLM routes once. The exit code is 0 when the write
 succeeded, even if the sync could only warn; it is 1 for a value that cannot
-be used, an unknown or duplicate id, a registry that cannot be read, or a
-removal that was declined.
+be used, an unknown or duplicate id, an id that more than one registry row
+carries (`edit` and `rm`), a registry that cannot be read, or a removal that
+was declined.
 
 ## `wt model list [--json]`
 
@@ -135,6 +136,18 @@ table with it. And a row still in modelman's old cost layout (`kind =
 write: modelman reads such a table by its old keys alone, so a new key
 beside them would be a price it ignores.
 
+An id that more than one registry row carries is refused, with nothing
+written and no sync: wt cannot tell which row you mean, and there is no flag
+to choose one. The message names each row's provider, in the file's order,
+and the file to repair:
+
+```text
+wt: model "ollama/qwen3:8b" is in the registry twice (providers ollama, openrouter); wt cannot tell which one you mean — fix the entry in /Users/you/.config/local-ai/registry.toml
+```
+
+Give one of the rows another id, or delete it, by hand. The rows beside it,
+each with an id of its own, are edited as usual.
+
 ## `wt model rm <id>... [--yes]`
 
 Removes the rows from the registry, and nothing else: it prints where each
@@ -142,6 +155,11 @@ removed model's weights are, because wt deletes none. A local model that is
 still on disk shows up again in `wt model list` as `STATUS new`. It asks on
 the terminal first (`--yes` skips; with no terminal and no `--yes` it refuses).
 When one id is not in the registry, none is removed.
+
+An id that more than one registry row carries is refused in the same way,
+before the question and with the message `wt model edit` gives: none of the
+ids named is removed, whichever of them it is. Removing one of two rows that
+share an id is a hand edit — only there can you see which row is which.
 
 ## What stays a hand edit of `registry.toml`
 
@@ -151,5 +169,9 @@ When one id is not in the registry, none is removed.
   "…"` (the `bin/mlx-quantize` workflow). wt keeps the key, shows the path, and
   takes the model's presence from a stat of it.
 - `[[families]]` display names. wt reads only each model's `family`.
+- Two `[[models]]` rows with one id. Every launch refuses such a registry
+  (`duplicate model id`), and `wt model edit` and `wt model rm` refuse the id
+  rather than pick a row; `wt model list` still shows both rows, each with
+  its provider's status.
 
 Run `wt litellm sync` after a hand edit: no tool saw it.
