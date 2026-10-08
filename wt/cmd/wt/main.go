@@ -99,7 +99,9 @@ func main() {
 	lifecycle.WaitPendingRoutes()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wt:", err)
-		os.Exit(1)
+		// 1 for every command but one: `wt cloud-sync` says with 2 to 5 why
+		// its catalog flow changed nothing (exitCodeError).
+		os.Exit(exitCodeOf(err))
 	}
 }
 
