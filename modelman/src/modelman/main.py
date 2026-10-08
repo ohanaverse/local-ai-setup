@@ -434,11 +434,28 @@ def _file_digest(path: Path) -> bytes | None:
         return None
 
 
+TUI_DISABLED_MESSAGE = (
+    "modelman's TUI is disabled: wt writes registry.toml now, and modelman is being retired.\n"
+    "  - create the registry and its provider rows: wt model init\n"
+    "  - add, edit or remove a model: edit registry.toml by hand, then run `wt litellm sync`\n"
+    "    (wt's Models tab in `wt config` replaces this TUI when it ships)\n"
+    "  - download a model (wt does not): `ollama pull <name:tag>` for ollama,\n"
+    "    `hf download <org>/<repo> --local-dir ~/.omlx/models/<repo>` for omlx,\n"
+    "    `mtplx pull <org>/<name>` for mtplx\n"
+    "  - start or stop a local model: wt start / wt stop\n"
+    "    (an mlx_lm_server pairing: modelman start / modelman stop)\n"
+    "  - modelman's subcommands still work: modelman --help"
+)
+
+
 @app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context) -> None:
-    """Run `modelman` with no args to open the TUI."""
+    """Bare `modelman` used to open the TUI. It is disabled: say where to go
+    instead and exit non-zero. `run_tui` stays for the tests that pin the
+    queued-apply path; nothing calls it from the command line."""
     if ctx.invoked_subcommand is None:
-        run_tui()
+        typer.echo(TUI_DISABLED_MESSAGE, err=True)
+        raise typer.Exit(1)
 
 
 def _merge_imported(registry: Registry, imported: Registry) -> tuple[int, int]:

@@ -159,7 +159,9 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
   `local_path` support):** a directory produced by `bin/mlx-quantize` or
   hand-run `mlx_lm.convert`/`dwq` is user-produced, not something modelman
   downloaded. `OMLXProvider`/`MLXLMServerProvider` never `rmtree` a
-  `local_path`-sourced entry's artifact on delete or ready-off — registry/
+  `local_path`-sourced entry's artifact when asked to delete it — registry/
   state bookkeeping still runs, only the filesystem removal is skipped.
+  (The TUI that issued those deletes is disabled; removing a model is now a
+  hand edit of `registry.toml`, which touches no file on disk.)
   Cleanup of an abandoned experiment is a manual `rm -rf`.
 - Guide: [10-mlx-lm-quantization.md](../guides/10-mlx-lm-quantization.md).

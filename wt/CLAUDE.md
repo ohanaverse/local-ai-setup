@@ -76,7 +76,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 - `docs/wt-agents/profiles.md` — local-model launch profiles
 - `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md` — command references
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — wt design specs and plans (newer cross-package specs live in the monorepo's [../docs/superpowers/](../docs/superpowers/))
-- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (modelman owns `registry.toml`/`modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
+- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt's `wt model init`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
 
 ## Go tests
 
@@ -120,6 +120,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |
 | `cmd/wt/profile.go` | `wt profile list/show/status/on/off`; `setEnabledLine`'s surgical `enabled = ...` edit |
 | `cmd/wt/litellm.go` | `wt litellm ...` |
+| `cmd/wt/model.go` | `wt model` group; `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/tomlw/` | ordered TOML document (`Decode`, `Table`) and an emitter (`Encode`) that reproduces tomli-w's layout byte for byte — what lets wt write `registry.toml` beside modelman without rewriting it. Imports nothing from wt; never use the stock `toml.Encoder` on the registry (it sorts keys and shifts local dates) |
 | `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
@@ -144,7 +145,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` is wt-owned and holds **only Agents, DefaultTag, and the `[litellm]` routing table**. Providers/Models live in the registry; wt never writes them.
+`~/.config/agent-wt/config.toml` is wt-owned and holds **only Agents, DefaultTag, and the `[litellm]` routing table**. Providers/Models live in the registry; nothing in this file's write path touches them.
 
 - **Writers go through `(*Config).PatchSave` or `lockedApply`** (flock, re-read fresh, mutate only their own fields). `Save(cfg)` is for a `Config` known to be fresh (tests, one-shot tools).
 - `migrateConfigSchema` runs self-extinguishing fixups on every `Load`.
@@ -156,9 +157,9 @@ Read [docs/internals/config-and-registry.md](docs/internals/config-and-registry.
 
 The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides whether non-native models route through the proxy (`Config.IsLitellm()`) or dial providers directly (`Config.IsDirect()`). `modelman.toml`'s `[litellm]` is a legacy read-only fallback, copied in once. Toggling is routing policy only — it never touches the proxy, which reads `config.yaml` only at startup ([docs/wt-agents/README.md#litellm-proxy-lifecycle](docs/wt-agents/README.md#litellm-proxy-lifecycle)). Details: [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#litellm-routing-state-wt-owned).
 
-## Registry (modelman-owned)
+## Registry (shared with modelman until it is retired)
 
-`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it read-only via `config.Load`, fail-closed, and joins it in memory with `config.toml`. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
+`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it via `config.Load`, fail-closed, and joins it in memory with `config.toml`. `config.Load` never writes it; wt's one writer today is `wt model init` (`config.SeedRegistryDefaults` inside `config.UpdateRegistry`), and modelman still writes it too. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
 
 - **`ResolveLocation` is the one judge of a location**: every consumer keys off its error (`config.ErrLocation`), so catalog, inventory, sync and validation agree.
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
@@ -166,11 +167,11 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 - **Read-side schemas are pinned by contract fixtures** in `../docs/contracts/`, loaded by `internal/config` tests and modelman's `tests/contracts/` — a schema change updates both sides.
 - A missing registry lets an *unconfigured* agent launch as a native passthrough (`agents.BuildPassthroughCmd`); a configured one fails on model resolution.
 
-> **`unknown provider "X"` errors are usually a registry data gap, not a wt bug** — e.g. models referencing `provider_id`s with `providers = []`. Fix with `modelman sync`/`modelman migrate` on that machine (`sync` recreates default provider entries), not a code change here.
+> **`unknown provider "X"` errors are usually a registry data gap, not a wt bug** — e.g. models referencing `provider_id`s with `providers = []`. Fix with `wt model init` on that machine (it adds a default row for each provider that is installed, used by a model or listed by a configured agent, and a native row per configured agent; a provider it has no default row for is named in its output and is a hand edit of `registry.toml`), not a code change here.
 
 > **Fixture gotcha.** `config.toml` lives in `$XDG_CONFIG_HOME/agent-wt/` and `registry.toml` in `$XDG_CONFIG_HOME/local-ai/` — fixtures populate both. LiteLLM's `config.yaml` follows neither variable, so a fixture that redirects the registry also names config.yaml (`WT_LITELLM_CONFIG` or `litellm.Options.Path`), or route writes refuse with `litellm.ErrRegistryRedirected`. `migrateConfigSchema` always ensures an `agy` agent, so a registry fixture with agents needs an `agy` provider or `Load`/`Validate` fails with `unknown provider "agy"`.
 
-Full rules (catalog membership, passthrough, decoded fields): [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry-modelman-owned).
+Full rules (catalog membership, passthrough, decoded fields): [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry-shared-with-modelman-until-it-is-retired).
 
 ## Local-model resolution
 
@@ -301,6 +302,7 @@ wt served <provider> [--json]        # ids an omlx/mtplx/mlx_lm_server server is
 wt start <id> --plan --json          # dry run: what a start would unload (status running|fits|would_unload|unknown); changes nothing
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
+wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)
 wt profile show -A <agent> -M <id>   # dry-run profile resolution
 wt stats [--window 7d] [--family F] [--json]  # survey table, then launches and LiteLLM spend per model
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]

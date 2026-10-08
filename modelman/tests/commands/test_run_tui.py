@@ -42,15 +42,33 @@ def _seed(tmp_path, monkeypatch, *, models=(), providers=("ollama",)):
     return reg_path, state_path
 
 
-def test_no_args_invokes_run_tui():
-    # `modelman` with no subcommand is the TUI entry point; run_tui takes
-    # no arguments now that the `download <family>` scroll-to-startup
-    # shortcut is gone.
+def test_no_args_does_not_open_the_tui_and_says_where_to_go():
+    # The TUI is disabled now that wt writes registry.toml: bare `modelman`
+    # opens nothing, names wt, and exits non-zero.
     with patch("modelman.main.run_tui") as run_tui:
         runner = CliRunner()
         result = runner.invoke(app, [])
-        assert result.exit_code == 0
-        run_tui.assert_called_once_with()
+        assert result.exit_code == 1
+        run_tui.assert_not_called()
+    assert "TUI is disabled" in result.output
+    assert "wt model init" in result.output
+    assert "wt litellm sync" in result.output
+    assert "modelman --help" in result.output
+    # wt downloads nothing, so the notice names each provider's own tool.
+    assert "ollama pull" in result.output
+    assert "hf download" in result.output
+    assert "mtplx pull" in result.output
+    assert "wt start" in result.output
+    # wt has no backend for an mlx_lm_server pairing; modelman still starts it.
+    assert "modelman start" in result.output
+
+
+def test_a_subcommand_still_runs_with_the_tui_disabled():
+    # Only the bare invocation is refused; the callback lets subcommands through.
+    runner = CliRunner()
+    result = runner.invoke(app, ["litellm", "--help"])
+    assert result.exit_code == 0
+    assert "TUI is disabled" not in result.output
 
 
 def test_download_command_is_gone():

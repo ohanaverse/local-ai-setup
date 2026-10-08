@@ -117,8 +117,9 @@ func TestLoad_JoinsRegistry(t *testing.T) {
 
 // TestLoad_FailsClosedWithoutRegistry asserts Load() errors when
 // registry.toml is absent — wrapping ErrRegistryMissing and pointing at
-// `modelman migrate` — so wt never silently runs with zero providers/models
-// before modelman has imported anything.
+// `wt model init`, the command that creates one — so wt never silently runs
+// with zero providers/models, and never sends the user to a tool that is
+// being retired.
 func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	_, err := Load()
@@ -128,8 +129,11 @@ func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
 	if !errors.Is(err, ErrRegistryMissing) {
 		t.Errorf("error should wrap ErrRegistryMissing, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "modelman migrate") {
-		t.Errorf("error should point at `modelman migrate`, got: %v", err)
+	if !strings.Contains(err.Error(), "seed it with `wt model init`") {
+		t.Errorf("error should point at `wt model init`, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "modelman") {
+		t.Errorf("error still names modelman: %v", err)
 	}
 }
 

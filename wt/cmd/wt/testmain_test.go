@@ -73,6 +73,14 @@ func TestMain(m *testing.M) {
 		return spend.Result{}, errors.New("querySpend not stubbed in this test")
 	}
 	stdoutWidth = func() int { return 0 }
+	// Registry-write seams: no test may read the developer's PATH to decide
+	// what to seed, and none may go on from a registry write to the real
+	// route sync (which probes providers and can restart the proxy). Tests of
+	// `wt model init` call stubSeedEnv, and realRouteSync for the sync itself.
+	seedEnv = func() config.SeedEnv { return config.SeedEnv{} }
+	syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
+		return "syncRoutesAfterWrite not stubbed in this test"
+	}
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)
