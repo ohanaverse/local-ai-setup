@@ -234,9 +234,10 @@ func TestResolveModelPinOnAbsentLocalReportsReason(t *testing.T) {
 }
 
 // TestResolveModelPinOnNoEngineProviderReportsReason verifies pinning a local
-// model whose provider wt cannot start (mlx_lm_server) reports the
-// `modelman start` hint instead of silently doing nothing — the user needs to
-// know which tool owns that provider's lifecycle.
+// model whose provider wt cannot start (mlx_lm_server) reports the llmbench
+// command that starts the pairing, with the target and the draft the registry
+// row records, instead of silently doing nothing — the user needs to know
+// which tool owns that provider's lifecycle.
 func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusOK},
@@ -246,13 +247,14 @@ func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
 	})
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
-		Models:    []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Tags: []string{"code"}}},
-		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mlx_lm_server"}}},
+		Models: []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Tags: []string{"code"},
+			Fetch: config.ModelArtifact{Repo: "org/target"}, Draft: config.ModelArtifact{Repo: "org/draft"}}},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"mlx_lm_server"}}},
 	}
 
 	_, _, err := resolveModel("pi", cfg, "", "", "mlx_lm_server/p")
-	if err == nil || !strings.Contains(err.Error(), "modelman start mlx_lm_server/p") {
-		t.Errorf("err = %v, want the modelman start hint", err)
+	if err == nil || !strings.Contains(err.Error(), "`llmbench provider isolate --solo mlx_lm_server org/target --draft org/draft`") || strings.Contains(err.Error(), "modelman") {
+		t.Errorf("err = %v, want the llmbench command for this pairing", err)
 	}
 }
 

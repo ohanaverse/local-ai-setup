@@ -95,8 +95,8 @@ func TestRenderTableSurveySegmentTrailing(t *testing.T) {
 }
 
 // TestRenderTableBlockedAndMarkers verifies a non-running omlx row is a
-// start row, a provider wt cannot start is blocked with the modelman start
-// reason, only the last-launched row is marked, and the in-use ref count is
+// start row, a provider wt cannot start is blocked with the command that
+// starts it, only the last-launched row is marked, and the in-use ref count is
 // picked up.
 func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	tbl := renderTable(tableTestRows(), nil, "", map[string]int{"openrouter/cheap": 2}, "omlx/Qwen3.8-27B-4bit")
@@ -109,8 +109,8 @@ func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	if tbl.items[3].blocked == "" || tbl.items[3].start {
 		t.Errorf("mlx_lm_server row: start = %v blocked = %q, want blocked and not startable", tbl.items[3].start, tbl.items[3].blocked)
 	}
-	if !strings.Contains(tbl.items[3].blocked, "modelman start mlx_lm_server/pair") {
-		t.Errorf("mlx_lm_server row blocked = %q, want the modelman start reason", tbl.items[3].blocked)
+	if !strings.Contains(tbl.items[3].blocked, "llmbench provider isolate --solo mlx_lm_server") {
+		t.Errorf("mlx_lm_server row blocked = %q, want the llmbench command", tbl.items[3].blocked)
 	}
 	if !tbl.items[1].marked || tbl.items[0].marked {
 		t.Error("only the last-launched row is marked")

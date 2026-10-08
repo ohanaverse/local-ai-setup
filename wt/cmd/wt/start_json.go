@@ -54,7 +54,7 @@ func runStartJSON(out io.Writer, cfg *config.Config, id string, plan, replace bo
 	rows, snap := localRowsSnap(cfg)
 	row, ok := catalog.Find(rows, id)
 	if !ok {
-		if reason := catalog.MissingReason(&snap, id); reason != "" {
+		if reason := catalog.MissingReason(cfg, &snap, id); reason != "" {
 			return errors.New(reason)
 		}
 		return fmt.Errorf("unknown model %q", id)

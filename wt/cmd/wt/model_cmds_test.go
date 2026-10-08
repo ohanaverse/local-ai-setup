@@ -251,7 +251,7 @@ func TestStartIdleModelStartsIt(t *testing.T) {
 // local models with no row exit with an error naming the problem and never
 // start anything. The two hidden models (omlx/c not on disk, a stopped
 // mlx_lm_server pairing) get their reason only through catalog.MissingReason
-// — the "modelman start" hint for the pairing, since wt cannot start it.
+// — the llmbench command for the pairing, since wt cannot start it.
 func TestStartInvalidArgErrors(t *testing.T) {
 	cfg, req := startFixture(t)
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}})
@@ -261,7 +261,7 @@ func TestStartInvalidArgErrors(t *testing.T) {
 	)
 	cases := map[string]string{
 		"ollama/nope:9": "unknown model", "openrouter/x": "not a local model", "omlx/c": "not on disk",
-		"mlx_lm_server/p": "modelman start mlx_lm_server/p",
+		"mlx_lm_server/p": "llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>",
 	}
 	for arg, want := range cases {
 		err := runStart(io.Discard, cfg, themes.Theme{}, arg, false)

@@ -128,7 +128,7 @@ func TestBuildHiddenRegistryIDShadowsDiscovered(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatalf("rows = %v, want none (the hidden registry id shadows the same-id discovered artifact)", rowIDs(rows))
 	}
-	if got := MissingReason(inv, "ollama/foo"); !strings.Contains(got, "is not on disk") {
+	if got := MissingReason(nil, inv, "ollama/foo"); !strings.Contains(got, "is not on disk") {
 		t.Errorf("MissingReason = %q, want the not-on-disk reason for the pin", got)
 	}
 }
@@ -275,18 +275,42 @@ func TestRowActionRules(t *testing.T) {
 }
 
 // TestBlockReasonNamesTheFix verifies the status text for a blocked row names
-// what to do — `modelman start <id>` for a provider wt cannot start — and is
-// "" for rows that are not blocked.
+// what to do: for an mlx_lm_server pairing, the llmbench command that starts
+// it beside the other models, with the row's own target and draft; for any
+// other provider wt has no engine for, that provider's own tool. No reason
+// names modelman, which is being retired. It is "" for rows that are not
+// blocked.
 func TestBlockReasonNamesTheFix(t *testing.T) {
-	mlx := Row{Location: config.LocationLocal, Status: StatusOK, Model: config.Model{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server"}}
-	if h := mlx.BlockReason(); !strings.Contains(h, "modelman start mlx_lm_server/p") {
-		t.Errorf("mlx_lm_server reason = %q", h)
+	mlx := Row{Location: config.LocationLocal, Status: StatusOK, Model: config.Model{
+		ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server",
+		Fetch: config.ModelArtifact{Repo: "org/target"}, Draft: config.ModelArtifact{LocalPath: "/models/draft"},
+	}}
+	want := "local model \"mlx_lm_server/p\" is not running, and wt cannot start an mlx_lm_server pairing — start it with `llmbench provider isolate --solo mlx_lm_server org/target --draft /models/draft`"
+	if h := mlx.BlockReason(); h != want {
+		t.Errorf("mlx_lm_server reason = %q\nwant %q", h, want)
+	}
+	other := Row{Location: config.LocationLocal, Status: StatusOK, Model: config.Model{ID: "llamacpp/old", ProviderID: "llamacpp"}}
+	if h := other.BlockReason(); h != `local model "llamacpp/old" is not running, and wt cannot start provider "llamacpp" — start it with that provider's own tool` {
+		t.Errorf("reason for a provider with no engine = %q", h)
 	}
 	if h := (Row{Location: config.LocationCloud}).BlockReason(); h != "" {
 		t.Errorf("cloud reason = %q, want empty", h)
 	}
 	if h := (Row{Location: config.LocationLocal, Status: StatusOK, Model: config.Model{ProviderID: "omlx"}}).BlockReason(); h != "" {
 		t.Errorf("startable row reason = %q, want empty", h)
+	}
+}
+
+// TestPairingStartCommand pins the command the hints print: --solo, so the
+// other local providers keep running (llmbench stops them without it), the
+// target as the positional and the draft behind --draft, and a placeholder
+// for a side the registry row does not record.
+func TestPairingStartCommand(t *testing.T) {
+	if got, want := PairingStartCommand("org/t", "org/d"), "llmbench provider isolate --solo mlx_lm_server org/t --draft org/d"; got != want {
+		t.Errorf("PairingStartCommand = %q, want %q", got, want)
+	}
+	if got, want := PairingStartCommand("", ""), "llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>"; got != want {
+		t.Errorf("with nothing recorded = %q, want %q", got, want)
 	}
 }
 
@@ -400,7 +424,8 @@ func TestBuildMarksUnmappedCloudRows(t *testing.T) {
 
 // TestMissingReason verifies the message a pin of a hidden registry model
 // gets (#179 Phase B): an overlay the probe confirmed is not on disk says so,
-// a non-running mlx_lm_server pairing names `modelman start`, and everything
+// a non-running mlx_lm_server pairing names the llmbench command that starts
+// it (with its target and draft, read from the registry row), and everything
 // that has a row — or that the probe could not vouch for — gets "" so the
 // caller falls back to its generic wording. Without it, `wt -M <absent-id>`
 // would say "not in the eligible list" and send the user hunting for a
@@ -416,19 +441,27 @@ func TestMissingReason(t *testing.T) {
 	}}
 	cases := map[string]string{
 		"omlx/gone":         "omlx/gone is not on disk — pull or download it first",
-		"mlx_lm_server/p":   "local model \"mlx_lm_server/p\" is not running — start it with `modelman start mlx_lm_server/p`",
+		"mlx_lm_server/p":   "local model \"mlx_lm_server/p\" is not running, and wt cannot start an mlx_lm_server pairing — start it with `llmbench provider isolate --solo mlx_lm_server org/target --draft org/draft`",
 		"omlx/here":         "",
 		"mlx_lm_server/run": "",
 		"ollama/unknown":    "",
 		"omlx/disc":         "",
 		"nope/x":            "",
 	}
+	cfg := &config.Config{Models: []config.Model{{
+		ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "target+draft-draft",
+		Fetch: config.ModelArtifact{Repo: "org/target"}, Draft: config.ModelArtifact{Repo: "org/draft"},
+	}}}
 	for id, want := range cases {
-		if got := MissingReason(snap, id); got != want {
+		if got := MissingReason(cfg, snap, id); got != want {
 			t.Errorf("MissingReason(%s) = %q, want %q", id, got, want)
 		}
 	}
-	if got := MissingReason(nil, "omlx/gone"); got != "" {
+	// With no config to read the pairing from, the command keeps its shape.
+	if got := MissingReason(nil, snap, "mlx_lm_server/p"); !strings.HasSuffix(got, "`llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>`") {
+		t.Errorf("MissingReason without a config = %q, want the command with placeholders", got)
+	}
+	if got := MissingReason(cfg, nil, "omlx/gone"); got != "" {
 		t.Errorf("MissingReason(nil snapshot) = %q, want empty (no probe ran)", got)
 	}
 }
