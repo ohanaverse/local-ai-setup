@@ -148,6 +148,11 @@ row of `wt model list` and of the Models tab with `STATUS -`, since no probe
 can enumerate it; its family, tags and prices are edited like any model's,
 and the tab's form does not create one.
 
+With two or more pairings registered, a pairing row's `RUNNING` is a guess:
+the server lists the Hugging Face repo it serves, never a pairing's name, so
+wt cannot tell which registered pairing that is
+([#299](https://github.com/ohanaverse/local-ai-setup/issues/299)).
+
 ## `wt model edit <id> [flags]`
 
 Changes the fields named by the flags, and nothing else in the row: every

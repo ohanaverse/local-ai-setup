@@ -47,13 +47,15 @@ wt stop --all                    # stop every running local model, then the omlx
 - Not on disk (a registry entry whose artifact is missing): not listed;
   `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
   first`.
-- No lifecycle backend (mlx_lm_server): exits 1 with the `modelman start`
-  hint. A stopped mlx_lm_server pairing is not listed in the picker, so
-  that message is reached only by naming the model.
+- No lifecycle backend (mlx_lm_server): exits 1 with
+  ``local model "<id>" is not running, and wt cannot start an mlx_lm_server pairing — start it with `llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>` ``,
+  the target and draft being the row's own. A stopped mlx_lm_server pairing
+  is not listed in the picker, so that message is reached only by naming
+  the model.
 - A provider wt cannot probe (retired llamacpp): a registry model of it is
   still listed, as a row that cannot be selected, since wt can neither
   see whether it is on disk nor start it. `wt start <id>` exits 1 with
-  `local model "<id>" is not running — start it with \`modelman start <id>\``.
+  `local model "<id>" is not running, and wt cannot start provider "<provider>" — start it with that provider's own tool`.
 - A started model is routed under its registry id, or its discovered id
   (`<family>/<artifact>`) when it has no registry entry; starting or stopping an mtplx model clears that provider family's routes —
   the family's registry-model rows and its wt-marked discovered rows —
