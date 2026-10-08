@@ -76,7 +76,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 - `docs/wt-agents/profiles.md` — local-model launch profiles
 - `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md`, `docs/wt-model.md` — command references
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — wt design specs and plans (newer cross-package specs live in the monorepo's [../docs/superpowers/](../docs/superpowers/))
-- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt's `wt model` commands; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
+- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt — the `wt model` commands and the Models tab of `wt config`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
 
 ## Go tests
 
@@ -143,7 +143,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/worktree/` | repo detection, enumeration, creation |
 | `internal/initseed/` | `--init` seeding |
 | `internal/ollamacheck/` | pre-launch `ollama list` availability check |
-| `internal/configeditor/` | the TUI behind `wt config`: the Agents tab (`config.toml`; edits buffered, saved with ctrl+s) and the Models tab (`registry.toml` through `internal/modeladmin`; each change written at once from a `tea.Cmd`, the probe in a `tea.Cmd` too). `Run` reports `Result.RegistryChanged`, and `cmd/wt`'s `runConfigEditor` then runs the one route sync the tab owes; a quit asked for while a write is in flight waits for it (`leave`, `quitPending`), so the result is never "unchanged" for a registry that changed, and is then an ordinary quit: agent edits made while it waited get the unsaved-changes prompt |
+| `internal/configeditor/` | the TUI behind `wt config`: the Agents tab (`config.toml`; edits buffered, saved with ctrl+s) and the Models tab (`registry.toml` through `internal/modeladmin`: a table of `modeladmin.Rows`, `d` to remove, and the add / register / edit form of `models_form.go` on `n` and `enter`, hand-built on `bubbles/textinput` like the agent form; each change written at once from a `tea.Cmd`, the probe and the form's ollama lookup in a `tea.Cmd` too). A refused save stays on the form — the cursor on the field a `modeladmin.FieldError` names, any other refusal (`config.ErrModelAmbiguous`, a row the writer will not write back) shown as the save's error with nothing written. `Run` reports `Result.RegistryChanged`, and `cmd/wt`'s `runConfigEditor` then runs the one route sync the tab owes; a quit asked for while a write is in flight waits for it (`leave`, `quitPending`), so the result is never "unchanged" for a registry that changed, and is then an ordinary quit: agent edits made while it waited get the unsaved-changes prompt |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell, pickers, launch, start-on-select flow (`start_flow.go`); `modelrows.go` (rows + sort), `modeltable.go` (`buildTable`, `renderTable`); `PickStartModel` — standalone picker without launch-route gating, used by `wt start` and `wt smoke` (`PickModel`, the route-gated variant, currently has no production caller) |
 | `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`; `StyleTableTitle` is the one title-bar reset its `TitleRoom` counts on, called by every table-backed list) |
@@ -164,7 +164,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 
 ## Registry (shared with modelman until it is retired)
 
-`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it via `config.Load`, fail-closed, and joins it in memory with `config.toml`. `config.Load` never writes it; wt writes it through `config.UpdateRegistry` alone: `wt model init` (provider rows, `config.SeedRegistryDefaults`) and `wt model add|edit|rm` (model rows, `internal/modeladmin`); modelman still writes it too. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
+`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it via `config.Load`, fail-closed, and joins it in memory with `config.toml`. `config.Load` never writes it; wt writes it through `config.UpdateRegistry` alone: `wt model init` (provider rows, `config.SeedRegistryDefaults`), and `wt model add|edit|rm` and the Models tab of `wt config` (model rows, both through `internal/modeladmin`); modelman still writes it too. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
 
 - **`ResolveLocation` is the one judge of a location**: every consumer keys off its error (`config.ErrLocation`), so catalog, inventory, sync and validation agree.
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
@@ -311,7 +311,7 @@ wt start <id> --plan --json          # dry run: what a start would unload (statu
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)
-wt model                             # `wt config` on its Models tab (needs TTY)
+wt model                             # `wt config` on its Models tab (needs TTY): n add, enter edit/register, d remove
 wt model list [--json]               # every registry model and every local model found, with live status
 wt model add <provider> <name> --family F   # register a model (seeds a missing default provider row; one route sync)
 wt model edit <id> --tags code       # change family, tags, location or prices; nothing else in the row moves

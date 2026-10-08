@@ -1,6 +1,6 @@
 # Providers and models — modelman, registry.toml, and LiteLLM routing
 
-> Use this to: register cloud providers and local models in the shared `registry.toml` — by hand, until wt's model editor ships — and download them with each provider's own tool. modelman's TUI, which used to do both, is disabled. Routing through the LiteLLM proxy on :4000 follows on its own: **add a cloud model and it is routed**, and a local model is routed while it runs (an ollama model while it is pulled) — with or without a registry entry.
+> Use this to: register cloud providers and local models in the shared `registry.toml` — with `wt model add`, `edit` and `rm`, or the Models tab of `wt config` — and download them with each provider's own tool. modelman's TUI, which used to do both, is disabled. Routing through the LiteLLM proxy on :4000 follows on its own: **add a cloud model and it is routed**, and a local model is routed while it runs (an ollama model while it is pulled) — with or without a registry entry.
 >
 > Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29
 
@@ -36,13 +36,15 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`WT_LITELLM
 
 ## TL;DR
 
-<!-- UNVERIFIED — not run as one block. The `sync` line and the command list were verified live; the `start`/`stop` lines were not driven from this session (they load real models — see Steps §6–7 and Verification for how to confirm), and neither was the editor line. -->
+<!-- UNVERIFIED — not run as one block. The `sync` line and the command list were verified live; the `start`/`stop` lines were not driven from this session (they load real models — see Steps §6–7 and Verification for how to confirm). The `wt model` lines were run against a scratch registry, the tab from a pty. -->
 
 ```bash
 wt model init                                  # create registry.toml if it is missing, add the default provider rows (never changes a row that exists)
-"${EDITOR:-vi}" ~/.config/local-ai/registry.toml   # add, change or delete a [[models]] block by hand (Steps 1–4)
+wt model                                       # the Models tab of `wt config`: n add, enter edit, d remove (Step 1)
+wt model add openrouter <model> --family <f>   # the same without a terminal; also `wt model edit <id> …`, `wt model rm <id>`
+wt model list                                  # every registry model, and every local model found that has no entry
 wt litellm sync --dry-run                      # read-only: what wt would route/unroute for the registry as edited
-wt litellm sync                                # apply it — run after every hand edit
+wt litellm sync                                # apply it — `wt model …` and the tab do this themselves; run it after a hand edit
 wt litellm list                                # what is routed right now — the authoritative answer
 ollama pull <name:tag>                         # download: the provider's own tool (Step 5 has omlx, mtplx, mlx_lm_server)
 # ollama/gpt-oss:20b below is an example id — substitute any id from your registry.toml, or a discovered id (Step 7)
@@ -52,35 +54,38 @@ wt stop ollama/gpt-oss:20b                     # unload it (a pulled ollama mode
 uv run modelman sync                           # reconcile ready/disk_path/size_bytes in modelman.toml against providers; never adds models, then syncs the LiteLLM routes
 ```
 
-Who does what now (verified via `uv run modelman --help` and `wt --help`): **by hand** = adding, editing and removing models and providers in `registry.toml`, family display names, tags. **wt** = `wt model init` (the file and its provider rows), `wt litellm …` (routes), `wt start`/`wt stop` (local models), `wt served <provider>` (what a server is serving). **The provider's own tool** = downloads (Step 5). **modelman subcommands** = `sync`, `start`/`stop`, `refresh-prices`, `ollama-catalog sync`, `migrate`, `usage` — all still work; bare `modelman` (the TUI) does not. **llmbench** = benchmarks. There is no per-model routing command: `wt` routes the cloud models `registry.toml` configures plus the local models it finds running (Step 7).
+Who does what now (verified via `uv run modelman --help` and `wt --help`): **wt** = `wt model` (the Models tab of `wt config`) and `wt model add|edit|rm|list` (models: add, edit, remove, list), `wt model init` (the file and its provider rows), `wt litellm …` (routes), `wt start`/`wt stop` (local models), `wt served <provider>` (what a server is serving). **The provider's own tool** = downloads (Step 5). **modelman subcommands** = `sync`, `start`/`stop`, `refresh-prices`, `ollama-catalog sync`, `migrate`, `usage` — all still work; bare `modelman` (the TUI) does not. **llmbench** = benchmarks. **By hand** = a provider row wt has no default for, a `local_path` entry and an `mlx_lm_server` pairing ([10-mlx-lm-quantization](10-mlx-lm-quantization.md)), `[[families]]` display names, and the repair of a row wt refuses to write (Step 1). There is no per-model routing command: `wt` routes the cloud models `registry.toml` configures plus the local models it finds running (Step 7).
 
 ## Steps
 
-### 1. Edit `registry.toml` by hand
+### 1. Add, edit and remove models with `wt model`
 
-modelman's TUI used to add, edit and delete models. It is disabled: bare `modelman` prints where to go and exits 1. wt writes `registry.toml` now, and a TUI holding its own copy of the file would be refused every save after a wt write. wt's own editor (`wt model add` and a Models tab in `wt config`) has not shipped yet, so until it does the file is edited by hand:
+modelman's TUI used to add, edit and delete models. It is disabled: bare `modelman` prints where to go and exits 1. wt does it now, two ways that write the same rows:
 
 ```bash
-wt model init                                      # 1. the file and its provider rows
-"${EDITOR:-vi}" ~/.config/local-ai/registry.toml   # 2. add, change or delete a block
-wt litellm sync --dry-run                          # 3. read-only check: `config error: parse …` if the file is not valid TOML, else the route changes
-wt litellm sync                                    # 4. the routes follow the edit
+wt model init                    # 1. the file and its provider rows (once)
+wt model                         # 2a. the Models tab of `wt config`: n add, enter edit, d remove
+wt model add ollama qwen3:8b --family qwen3 --tags code      # 2b. the same from the command line
+wt model edit ollama/qwen3:8b --tags code,design
+wt model rm ollama/qwen3:8b
+wt model list                    # 3. what the registry has, and what is on disk without an entry (STATUS new)
 ```
 
-1. **`wt model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`, a provider a model or a configured agent names, a native row per configured agent — `wt model init --help` has the full list). It never changes a row that exists, so running it again is safe.
-2. **Edit the file.** A model is one `[[models]]` block — `id`, `family`, `provider_id`, `model_name`, `tags`, optionally `location`, `model_info`, `[models.cost]` and `[models.fetch]`. Steps 2–4 show a minimal block per provider kind; every field name there is one the shared fixture `docs/contracts/registry.sample.toml` pins for both wt and modelman. To change a model, edit its block; to remove one, delete the block (the artifact on disk is not touched — Step 5).
-3. **Check, then sync.** No tool saw the edit, so nothing has re-routed: `wt litellm sync` is what makes the proxy follow it (Step 7).
+1. **`wt model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`, a provider a model or a configured agent names, a native row per configured agent — `wt model init --help` has the full list). It never changes a row that exists, so running it again is safe. `wt model add` adds a missing default row too, in the same write as the model.
+2. **Add, edit, remove.** `wt model add <provider> <name> --family <family>` registers a model under a derived id — the id wt already shows an unregistered local model under, or `<provider>/<name>` with `/` written `--` for a cloud model — and `--id` overrides it. `wt model edit <id>` changes family, tags, location and prices, and nothing else in the row; the id, the provider and the name are fixed. `wt model rm <id>` removes the row and prints where the weights are: wt never deletes them (Step 5). The Models tab does the same from a form. Every flag and key: `wt/docs/wt-model.md`.
+3. **Routes follow by themselves.** Each command syncs the LiteLLM routes once after its write, and the tab once when you quit (Step 7). A sync that could not run is a warning; the registry change stands.
 
-What to keep in mind while editing:
+What to keep in mind:
 
-- **A model's `provider_id` must name a `[[providers]]` row.** Otherwise `wt`, `wt start` and `wt stop` stop with `config error: model "<id>": unknown provider "<provider>"` until the row exists — one such model stops every launch — while `wt litellm sync` says nothing and leaves the model unrouted. For ollama, omlx, mtplx and mlx_lm_server, `wt model init` adds the missing default row once a model references it; a cloud provider's row is yours to write (Step 2).
-- **Comments do not survive.** The first tool that changes the file — `wt model init`, or a modelman subcommand that writes it (`migrate`, `ollama-catalog sync`, `refresh-prices`, `sync` when it repairs a provider row) — lays the whole file out again without them. Keys neither tool knows are kept.
+- **A model's provider must have a `[[providers]]` row.** `wt model add` refuses a provider that has none and that it has no default row for, and names the file to add it to. A registry that already holds such a model makes `wt`, `wt start` and `wt stop` stop with `config error: model "<id>": unknown provider "<provider>"`, and `wt litellm sync` warns that it cannot route the model; `wt model list`, `wt model edit` and `wt model rm` still work, so the row can be repaired or removed.
+- **A few things stay a hand edit of `registry.toml`:** a `[[providers]]` row for a provider wt has no default for (Step 2), a model served from a directory of your own (`[models.fetch] local_path`, guide 10), an `mlx_lm_server` target+draft pairing (Step 4 — `wt model add` refuses that provider and the tab's form does not offer it), `[[families]]` display names (guide 03), and the repair of a row wt will not write: two `[[models]]` rows that share an id (`wt model edit`, `wt model rm` and the tab refuse the id rather than pick a row, and name both rows' providers), or a `fetch` that is not a table (`fetch must be a table`). `wt model list` shows such rows, so you can see what to fix. The procedure for one: edit the file; run `wt litellm sync --dry-run`, a read-only check that prints `config error: parse …` when the file is no longer valid TOML and otherwise the route changes a sync would make; then `wt litellm sync`, because no tool saw the edit. Steps 2–4 show a block per provider kind; every field name there is one the shared fixture `docs/contracts/registry.sample.toml` pins for both wt and modelman.
+- **Comments do not survive.** The first tool that changes the file — a `wt model` command, or a modelman subcommand that writes it (`migrate`, `ollama-catalog sync`, `refresh-prices`, `sync` when it repairs a provider row) — lays the whole file out again without them. Keys neither tool knows are kept.
 - **Do not edit while a modelman subcommand is running.** It saves the copy it loaded; when the file changed underneath it, it refuses (`registry.toml changed on disk; reload`) — run that command again.
 - **What else the TUI did:** downloads are the provider's own tool now (Step 5), starting and stopping is `wt start`/`wt stop` (Step 7), and its ready toggle has no replacement because none is needed — wt probes the providers for what is on disk.
 
 ### 2. Add a cloud provider (OpenRouter)
 
-`registry.toml` is canonical — add the provider block to `~/.config/local-ai/registry.toml` by hand (Step 1). If `wt model init` already added an `openrouter` row (it does when a configured agent lists openrouter), do not add a second one: that row has `secret_ref = "OPENROUTER_API_KEY"`, the name of the environment variable wt reads the key from — export the variable, or change `secret_ref` on the row that is there to where you keep the key. Documented TOML shape, copied from the modelman README:
+`registry.toml` is canonical. For OpenRouter the provider block is written for you: `wt model init` adds it when a model or a configured agent names openrouter, and the first `wt model add openrouter …` adds it in the same write as the model. The block of any other cloud provider is a hand edit — a provider row is one of the things wt has no command for (Step 1). Do not add a second `openrouter` row: the one wt writes has `secret_ref = "OPENROUTER_API_KEY"`, the name of the environment variable wt reads the key from — export the variable, or change `secret_ref` on the row that is there to where you keep the key. Documented TOML shape, copied from the modelman README:
 
 ```toml
 [[providers]]
@@ -107,7 +112,7 @@ base_url = "http://localhost:8000"
 secret_ref = "OMLX_API_KEY"   # env-var name, os.environ/NAME, an exec: helper, or the literal key
 ```
 
-The key is the `auth.api_key` value in `~/.omlx/settings.json`. This is a hand edit like any other (Step 1); a modelman subcommand that rewrites the file keeps the line. Nothing needs setting while omlx has no models loaded, or all of them loaded with `/v1/models` still listing the whole pool: its `/health` answers those without a key. A hidden model is counted in the pool but not listed, so "everything loaded" with one hidden is provable by the status endpoint alone — that case wants the key.
+The key is the `auth.api_key` value in `~/.omlx/settings.json`. This is a hand edit of the provider row — wt has no command for one (Step 1); a modelman subcommand that rewrites the file keeps the line. Nothing needs setting while omlx has no models loaded, or all of them loaded with `/v1/models` still listing the whole pool: its `/health` answers those without a key. A hidden model is counted in the pool but not listed, so "everything loaded" with one hidden is provable by the status endpoint alone — that case wants the key.
 
 Providers also declare a `protocols` field — the list of wire protocols the provider serves (`"anthropic"`, `"openai-chat"`, `"openai-responses"`; default `["openai-chat"]`). Ollama's discovered entry serves `["anthropic","openai-chat"]`. wt compares an agent's protocols against the provider's to pick direct-vs-LiteLLM routing ([06-wt-agents-and-models](06-wt-agents-and-models.md) §4).
 
@@ -141,11 +146,11 @@ tags = []                      # e.g. ["code"] — rotation groups, guide 03
 supports_function_calling = true
 ```
 
-That is all a cloud model needs: there is no download and no ready gate, and the next `wt litellm sync` routes it (Step 7). Prices go in a `[models.cost]` table (`input_price_per_million`, `cache_price_per_million`, `output_price_per_million`, and `subscription_price` + `subscription_period`); for OpenRouter models leave it out and run `uv run modelman refresh-prices`, which fetches the per-token prices and writes them. Ollama's `:cloud` models and their prices are added and removed by `uv run modelman ollama-catalog sync` (the `ollama-catalog` skill) — no hand edit.
+The command for it is `wt model add openrouter <org>/<model> --family <family>` (Step 1), which adds the `openrouter` provider row when it is missing, writes a block like this one and syncs the route. The id it derives spells the `/` of the name as `--` (`openrouter/<org>--<model>`); `--id openrouter/<org>/<model>` gives the spelling above. That is all a cloud model needs: there is no download and no ready gate (Step 7). Prices go in a `[models.cost]` table (`input_price_per_million`, `cache_price_per_million`, `output_price_per_million`, and `subscription_price` + `subscription_period`); for OpenRouter models leave it out and run `uv run modelman refresh-prices`, which fetches the per-token prices and writes them. Ollama's `:cloud` models and their prices are added and removed by `uv run modelman ollama-catalog sync` (the `ollama-catalog` skill) — no hand edit.
 
 ### 3. Add a local model (Ollama)
 
-Pull the model first (Step 5), then add its block by hand (Step 1) — or leave it out: an entry for a local model is optional (see *A local registry entry is an optional overlay* below). The TUI's add dialog used to fill `model_info` from `ollama show <name>`; by hand, read the capabilities `ollama show <name>` lists and set the matching keys yourself: `tools` → `supports_function_calling = true`, `vision` → `supports_vision = true`. A local model needs no `[models.cost]`.
+Pull the model first (Step 5), then register it with `wt model add ollama <name:tag> --family <family>` (Step 1) — or leave it out: an entry for a local model is optional (see *A local registry entry is an optional overlay* below). `wt model add` fills `model_info` from `ollama show <name>` as the TUI's add dialog did: `tools` → `supports_function_calling = true`, `vision` → `supports_vision = true`. If that lookup fails it says so and adds the model without them; set the keys in the block yourself then. A local model needs no `[models.cost]`.
 
 Resulting `registry.toml` entry shape. Example (illustrative — your ids will differ):
 
@@ -175,7 +180,7 @@ Removing only the entry — deleting its block; the artifact stays on disk until
 
 ### 4. Add a model from Hugging Face (oMLX, MTPLX, mlx_lm_server; llama.cpp retired — see [provider-artifacts.md](../reference/provider-artifacts.md))
 
-Download the artifact first (Step 5); the block is the optional overlay of Step 3, except for an `mlx_lm_server` pairing, which must have one. `model_name` is spelled the way the provider lists the artifact, and `id` is `<provider family>/<model_name>`.
+Download the artifact first (Step 5); the block is the optional overlay of Step 3, except for an `mlx_lm_server` pairing, which must have one. For oMLX and MTPLX, `wt model add omlx <model directory name> --family <family>` and `wt model add mtplx <org>/<name> --family <family>` (or `enter` on the model's `new` row in the Models tab) write the block shown; the pairing's block is a hand edit (Step 1). `model_name` is spelled the way the provider lists the artifact, and `id` is `<provider family>/<model_name>`.
 
 **oMLX** — the artifact is a directory under omlx's model directory, and its name is the model's name:
 
@@ -275,7 +280,7 @@ Nothing in this guide's steps asks you to "turn routing on" for a model, because
 - **A local model** is routed while it runs; **an ollama model while it is pulled** (ollama loads it on the first request, so stopping it only unloads it and the route stays). That holds with or without a registry entry: a model with none is routed under its discovered id, `<family>/<artifact>` (Step 3).
 - **A native model** (`claude/native`, `copilot/native`) never needs a route.
 
-The writer is `wt litellm sync`. `wt start`, `wt stop` and `wt model init` update the routes themselves, and modelman runs one sync after each subcommand that can change routing — `sync`, `migrate`, `refresh-prices`, `ollama-catalog sync`, every `start`/`stop`. A **hand edit** of `registry.toml` is the case no tool sees, and it is now how models change (Step 1), so run it yourself after every edit:
+The writer is `wt litellm sync`. `wt start`, `wt stop` and `wt model init` update the routes themselves, and modelman runs one sync after each subcommand that can change routing — `sync`, `migrate`, `refresh-prices`, `ollama-catalog sync`, every `start`/`stop`. `wt model add`, `edit` and `rm` sync once after their write, and the Models tab once when you quit (Step 1). A **hand edit** of `registry.toml` is the case no tool sees, so run it yourself after one:
 
 ```bash
 wt litellm sync --dry-run   # preview: "<id>: would route" / "would unroute" lines, plus probe warnings; writes nothing
@@ -303,11 +308,11 @@ Started ollama/gpt-oss:20b.
 wt litellm list    # the routes config.yaml now holds — the authoritative answer
 ```
 
-`modelman start <name>` also takes an on-disk model that has **no registry entry** — by its native name, or by its discovered id `<family>/<artifact>` (`ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` — mtplx keeps the `/`). It starts the model without registering it, the closing sync routes it under that id, and `modelman stop <that id>` stops it. `modelman start` with no argument prints the live inventory — registered and on disk, registered but not downloaded, and a `Discovered` section listing each unregistered artifact under its discovered id, with `(running)` beside one modelman started and a probe confirms. `wt start` takes the same ids, and `wt served <provider>` prints what an omlx, mtplx or mlx_lm_server server is serving now. To give such a model a family and tags, add a `[[models]]` block for it by hand under its discovered id (`<family>/<artifact>` — the convention of Step 3): registering a running model that way keeps its route and its usage history. On a registry whose only omlx-family row is `omlx-6bit`, such a model is still listed and started as `omlx/<directory name>`, through that row.
+`modelman start <name>` also takes an on-disk model that has **no registry entry** — by its native name, or by its discovered id `<family>/<artifact>` (`ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` — mtplx keeps the `/`). It starts the model without registering it, the closing sync routes it under that id, and `modelman stop <that id>` stops it. `modelman start` with no argument prints the live inventory — registered and on disk, registered but not downloaded, and a `Discovered` section listing each unregistered artifact under its discovered id, with `(running)` beside one modelman started and a probe confirms. `wt start` takes the same ids, and `wt served <provider>` prints what an omlx, mtplx or mlx_lm_server server is serving now. To give such a model a family and tags, register it with `wt model add <provider> <name> --family <family>` (or `enter` on its row in the Models tab), which keeps its discovered id (`<family>/<artifact>` — the convention of Step 3): registering a running model that way keeps its route and its usage history. On a registry whose only omlx-family row is `omlx-6bit`, such a model is still listed and started as `omlx/<directory name>`, through that row.
 
 `modelman start` refuses up front when the ollama daemon isn't answering: the sync that follows would otherwise read the refused probe as "nothing is pulled" and prune every ollama route.
 
-**Taking a model off the proxy**: a cloud model — delete its `[[models]]` block from `registry.toml` (Step 1) and run `wt litellm sync`, which drops its row. A local model — stop it: `wt stop <omlx model>` unloads just that model (the service and its other loaded models stay up) and removes only its route, `wt stop omlx` halts the service and clears the family's routes, and stopping an mtplx model clears that provider family's wt-written routes; `modelman stop <omlx model>` does what `wt stop <omlx model>` does (and `modelman start <omlx model>` what `wt start` does: it loads the model beside the ones already loaded, and unloads others only when omlx needs the memory, printing which), while `modelman stop --all` halts the omlx service. When wt cannot tell which omlx model is loaded — the server wants its API key and the registry names no `auth.secret_ref` (Step 2) — `modelman stop` says so and changes nothing; set `auth.secret_ref` (or run `modelman stop --all`); an `mlx_lm_server` pairing has no wt stop hook, so `modelman` stops it and the sync that follows drops its route once a probe no longer finds it running; a pulled ollama model keeps its route until the model is removed from ollama and a sync runs. Deleting a local registry entry alone does not unroute a model that is still on disk and running (Step 3). A row you wrote by hand in `config.yaml` is never removed or rewritten, even when its name equals a discovered model's id — wt then leaves that name to your row, so delete the row yourself if you want wt's.
+**Taking a model off the proxy**: a cloud model — `wt model rm <id>` (Step 1), whose sync drops its row. A local model — stop it: `wt stop <omlx model>` unloads just that model (the service and its other loaded models stay up) and removes only its route, `wt stop omlx` halts the service and clears the family's routes, and stopping an mtplx model clears that provider family's wt-written routes; `modelman stop <omlx model>` does what `wt stop <omlx model>` does (and `modelman start <omlx model>` what `wt start` does: it loads the model beside the ones already loaded, and unloads others only when omlx needs the memory, printing which), while `modelman stop --all` halts the omlx service. When wt cannot tell which omlx model is loaded — the server wants its API key and the registry names no `auth.secret_ref` (Step 2) — `modelman stop` says so and changes nothing; set `auth.secret_ref` (or run `modelman stop --all`); an `mlx_lm_server` pairing has no wt stop hook, so `modelman` stops it and the sync that follows drops its route once a probe no longer finds it running; a pulled ollama model keeps its route until the model is removed from ollama and a sync runs. Deleting a local registry entry alone does not unroute a model that is still on disk and running (Step 3). A row you wrote by hand in `config.yaml` is never removed or rewritten, even when its name equals a discovered model's id — wt then leaves that name to your row, so delete the row yourself if you want wt's.
 
 **`wt` must be on PATH** (`make install` from the repo root). It writes the `model_list` entry into `~/.config/litellm/config.yaml`, stamping it `model_info.wt_managed: true` and touching only rows it owns plus a few launcher-required `litellm_settings` — hand-written rows, `general_settings`, other sections and comments survive — and restarts LiteLLM itself, but *only when the file actually changed* (`WT_LITELLM_RESTART_CMD`, legacy `MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). How sync decides — the ownership marker, adoption of unmarked rows, what a rebuild keeps from a hand-edited row, `--dry-run` — is in [04-litellm-config](04-litellm-config.md) §2.
 
@@ -345,7 +350,7 @@ running = false
 
 A block like this with no line in the first grep means the model has no route. For a non-ollama local model that means it is downloaded but not running — or it was started outside wt and modelman and no sync has run since (`wt litellm sync` writes the row, and so does launching it through wt or `wt start <id>`). For ollama it means the model is not *pulled* (a pulled one is routed whether or not it is loaded) or no sync has run since the pull — `wt litellm sync --dry-run` tells the two apart. `uv run modelman start ollama/gpt-oss:20b` fixes either — the start's own `wt litellm sync` writes the row. (A `ready = false` block means modelman does not have the artifact; on an ollama `:cloud` stub or a cloud provider, `ready` is permanently false by design.)
 
-Registry-side probe for a newly added model (after a hand edit — `modelman sync` never adds model ids); expected output mirrors the Step-3 entry shape (the `id` line plus the 3 lines after it). Example (illustrative — your ids will differ):
+Registry-side probe for a newly added model (after `wt model add` — `modelman sync` never adds model ids); expected output mirrors the Step-3 entry shape (the `id` line plus the 3 lines after it). Example (illustrative — your ids will differ):
 
 ```bash
 grep -A3 'id = "<new-model>"' ~/.config/local-ai/registry.toml
@@ -362,11 +367,11 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 
 ## Gotchas
 
-- **`registry.toml` is canonical.** Which cloud models agents see, and the family, tags and cost of every model, change HERE — edit `~/.config/local-ai/registry.toml` by hand (Step 1), not wt's config. Which *local* models agents see is what wt's probes find on disk or running (Step 3), with or without an entry. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `running`; a legacy `[families]` table — display names live in `registry.toml`'s `[[families]]` now); never treat it as the model catalog. It carries **no routing field** — a legacy `exposed` key from before #179 is ignored by both modelman and wt, and modelman drops it on its next write.
+- **`registry.toml` is canonical.** Which cloud models agents see, and the family, tags and cost of every model, change HERE — with `wt model add|edit|rm` or the Models tab of `wt config` (Step 1), which write `~/.config/local-ai/registry.toml`; wt's own `config.toml` holds no model. Which *local* models agents see is what wt's probes find on disk or running (Step 3), with or without an entry. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `running`; a legacy `[families]` table — display names live in `registry.toml`'s `[[families]]` now); never treat it as the model catalog. It carries **no routing field** — a legacy `exposed` key from before #179 is ignored by both modelman and wt, and modelman drops it on its next write.
 - **Run modelman from the `modelman/` directory.** modelman is not installed as a global `uv tool`. Always run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman <subcommand> …`; bare `uv run modelman` (the TUI) is disabled.
 - **`sync` semantics:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), unconfigured models ignored, no models added, then one `wt litellm sync` so the routes follow whatever it changed; ollama `:cloud` stubs are managed by `modelman ollama-catalog sync`, not `sync`. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
 - **A provider row for every model.** A `[[models]]` block whose `provider_id` names no `[[providers]]` row stops every wt launch with `config error: … unknown provider`, and `wt litellm sync` silently leaves the model unrouted; `wt model init` adds the default row for a local provider a model references (Step 1).
-- **A hand edit is not routed until you sync.** Nothing watches `registry.toml`: run `wt litellm sync` after every edit (Step 7). The same goes for a download — nothing records it; wt finds the artifact the next time it probes.
+- **A hand edit is not routed until you sync.** Nothing watches `registry.toml`: `wt model …` and the Models tab sync for themselves, but after an edit of the file run `wt litellm sync` (Step 7). The same goes for a download — nothing records it; wt finds the artifact the next time it probes.
 - **Secrets:** wt resolves `secret_ref` (Step 2) and writes the resulting key into the LiteLLM entry's `api_key` — whatever form the ref takes, the live `config.yaml` holds the literal key (e.g. `sk-or-v1-…`) — check and redact before pasting config anywhere.
 
 ## Going deeper

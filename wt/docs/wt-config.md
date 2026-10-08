@@ -15,9 +15,11 @@ tabs, named on its first line; `Tab` switches between them.
 - **Agents** — the agents in `config.toml`. Edits are held in memory and
   saved with `Ctrl+S`, from this tab. The sections below describe it.
 - **Models** — the models in `registry.toml`: every registry model and every
-  local model found on this machine. Each change is written at once, and the
-  LiteLLM routes are synced once when you quit. `wt model` opens the editor
-  on this tab; its keys and columns are in [`wt-model.md`](wt-model.md).
+  local model found on this machine. `n` adds a model, `Enter` edits the
+  selected one (or registers a `new` row) in a form, and `d` removes it.
+  Each change is written at once, and the LiteLLM routes are synced once
+  when you quit. `wt model` opens the editor on this tab; its keys, columns
+  and form are in [`wt-model.md`](wt-model.md).
 
 ### Agent list
 
