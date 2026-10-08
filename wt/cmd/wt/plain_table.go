@@ -25,10 +25,16 @@ const plainGap = "  "
 // the least key width it will accept, with the terminal's width.
 func plainTableWidth(cols []plainColumn, rows [][]string) (key, rest int) {
 	widths := plainWidths(cols, rows)
+	return widths[0], plainRest(widths)
+}
+
+// plainRest is the width of every column after the first, each with the gap
+// before it.
+func plainRest(widths []int) (rest int) {
 	for _, w := range widths[1:] {
 		rest += len(plainGap) + w
 	}
-	return widths[0], rest
+	return rest
 }
 
 func plainWidths(cols []plainColumn, rows [][]string) []int {
@@ -60,10 +66,7 @@ func plainWidths(cols []plainColumn, rows [][]string) []int {
 // does so first (plainTableWidth). No line ends in a space.
 func renderPlainTable(cols []plainColumn, rows [][]string, width int) string {
 	widths := plainWidths(cols, rows)
-	rest := 0
-	for _, w := range widths[1:] {
-		rest += len(plainGap) + w
-	}
+	rest := plainRest(widths)
 	if width > 0 && widths[0]+rest > width {
 		widths[0] = max(width-rest, lipgloss.Width(cols[0].head))
 	}

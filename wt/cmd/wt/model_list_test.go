@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 )
 
 // modelListConfig is a registry with the row shapes a real one has: a long
@@ -219,6 +220,31 @@ func TestModelListWithNothingToList(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.String(), "no models: ") || strings.Contains(out.String(), "MODEL") {
 		t.Errorf("out = %q, want a one-line note and no table", out.String())
+	}
+	// No provider was probed, so nothing was looked for: the line must point
+	// at `wt model init`, not claim the machine has no local model.
+	if !strings.Contains(out.String(), "wt model init") || strings.Contains(out.String(), "was found") {
+		t.Errorf("out = %q, want the no-provider-row line", out.String())
+	}
+	out.Reset()
+	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	if err := runModelList(&out, &errOut, &config.Config{}, false, 80); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "no local model was found on this machine") {
+		t.Errorf("out = %q, want the none-found line once a provider was probed", out.String())
+	}
+}
+
+// TestModelListSpellsOutControlCharacters verifies the FAMILY and PATH cells
+// are escaped like the id. A discovered model's path is a directory name off
+// the disk and the family is registry text; an escape sequence in either
+// would repaint the terminal and throw the columns off.
+func TestModelListSpellsOutControlCharacters(t *testing.T) {
+	rows := []modeladmin.Row{{ID: "omlx/x", Family: "f\x1b[2J", Location: "local", Status: modeladmin.StatusNew, Path: "/m/a\nb"}}
+	_, cells, _ := fitModelList(rows, 0)
+	if cells[0][1] != `f\x1b[2J` || cells[0][6] != `/m/a\nb` {
+		t.Errorf("cells = %q, want the control characters spelled out", cells[0])
 	}
 }
 

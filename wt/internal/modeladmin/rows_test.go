@@ -46,6 +46,9 @@ func rowsSnapshot() localmodels.Snapshot {
 			{ProviderID: "omlx", ModelID: "omlx/mine", ModelName: "mine-4bit", Registered: true, ArtifactKnown: true, Running: true, Loading: true},
 			{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", ModelName: "gemma4:9b", Artifact: "gemma4:9b", Registered: true, ArtifactKnown: true, Size: 5_000_000_000},
 			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/T+draft-D", ModelName: "T+draft-D", Registered: true},
+			// The inventory lists every local registry model, a provider it
+			// has no probe for included: an entry with nothing known.
+			{ProviderID: "llamacpp", ModelID: "llamacpp/old", ModelName: "old.gguf", Registered: true},
 			{ProviderID: "ollama", ModelID: "ollama/found:1b", ModelName: "found:1b", Artifact: "found:1b", ArtifactKnown: true, Size: 7},
 			{ProviderID: "omlx", ModelID: "omlx/Found-8bit", ModelName: "Found-8bit", Artifact: "Found-8bit", ArtifactKnown: true, Path: "/omlx/Found-8bit"},
 		},
@@ -179,13 +182,23 @@ func TestWeightsNote(t *testing.T) {
 			t.Errorf("WeightsNote(%s) = %q, want %q", id, got, note)
 		}
 	}
+	// An ollama that could not be asked: nothing saw the model pulled, so
+	// the note must not say it is.
+	unasked := Row{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: "local", Registered: true, Status: StatusUnknown}
+	if got := WeightsNote(unasked); got != "wt could not tell where its weights are" {
+		t.Errorf("WeightsNote for an unreachable ollama = %q, want the could-not-tell line", got)
+	}
 }
 
 // TestFormatSize pins the sizes the listing and the Models tab print:
 // decimal units as `ollama list` shows them, and "-" for a size wt does not
 // know, never "0 B".
 func TestFormatSize(t *testing.T) {
-	for n, want := range map[int64]string{0: "-", -1: "-", 7: "7 B", 4_200: "4 kB", 734_000_000: "734 MB", 5_225_388_164: "5.2 GB", 27_000_000_000: "27.0 GB"} {
+	for n, want := range map[int64]string{
+		0: "-", -1: "-", 7: "7 B", 4_200: "4 kB", 734_000_000: "734 MB", 5_225_388_164: "5.2 GB", 27_000_000_000: "27.0 GB",
+		// Just under a unit: the next unit, never "1000" of this one.
+		999_700: "1 MB", 999_700_000: "1.0 GB",
+	} {
 		if got := FormatSize(n); got != want {
 			t.Errorf("FormatSize(%d) = %q, want %q", n, got, want)
 		}
@@ -329,6 +342,35 @@ func TestRowsTakeTheOrganizationFromAnOmlxModelName(t *testing.T) {
 	}
 	if got := rowByID(t, rows, "omlx/ours").Path; got != dir+"/org-a/Mine" {
 		t.Errorf("a model_name of org-a in org-a's folder: Path = %q", got)
+	}
+}
+
+// TestRowsGiveADuplicatedIDItsOwnEntries verifies two registry rows with one
+// id each take their own inventory entry, in the registry's order. The list
+// runs on a registry that does not validate, and a copied row is one of the
+// gaps it is there to show; matched by id alone, both rows took the second
+// entry, the one the inventory left without the artifact, and weights that
+// are on disk read "missing" on both lines.
+func TestRowsGiveADuplicatedIDItsOwnEntries(t *testing.T) {
+	dup := config.Model{ID: "omlx/Flat", Family: "q", ProviderID: "omlx", ModelName: "Flat"}
+	cfg := &config.Config{Providers: []config.Provider{local("omlx")}, Models: []config.Model{dup, dup}}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/Flat", ModelName: "Flat", Artifact: "Flat", Registered: true, ArtifactKnown: true, Path: "/omlx/Flat"},
+			{ProviderID: "omlx", ModelID: "omlx/Flat", ModelName: "Flat", Registered: true, ArtifactKnown: true},
+		},
+	}
+	rows := Rows(cfg, snap)
+	if len(rows) != 2 {
+		t.Fatalf("%d rows, want both registry rows: %+v", len(rows), rows)
+	}
+	if rows[0].Status != StatusOK || rows[0].Path != "/omlx/Flat" {
+		t.Errorf("first row = %q at %q, want ok with the directory the scan matched to it", rows[0].Status, rows[0].Path)
+	}
+	if rows[1].Status != StatusMissing || rows[1].Path != "" {
+		t.Errorf("second row = %q at %q, want missing: the first row holds the artifact", rows[1].Status, rows[1].Path)
 	}
 }
 

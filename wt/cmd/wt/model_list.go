@@ -104,6 +104,12 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 		return enc.Encode(doc)
 	}
 	if len(rows) == 0 {
+		// Only a provider the registry calls local is probed: with none,
+		// nothing was looked for, and "none found" would say otherwise.
+		if len(snap.Providers) == 0 {
+			fmt.Fprintln(out, "no models: the registry has none, and no local provider row to look for models with (`wt model init` adds them)")
+			return nil
+		}
 		fmt.Fprintln(out, "no models: the registry has none, and no local model was found on this machine")
 		return nil
 	}
@@ -129,9 +135,11 @@ const modelListMinKey = 20
 func fitModelList(rows []modeladmin.Row, width int) (cols []plainColumn, cells [][]string, dropped string) {
 	full := make([][]string, len(rows))
 	for i, r := range rows {
+		// The family is the registry's text and the path a directory's name:
+		// like the id, neither may carry a control sequence to the terminal.
 		full[i] = []string{
-			visibleID(r.ID), dash(r.Family), dash(r.Location), string(r.Status), r.Running,
-			modeladmin.FormatSize(r.Size), dash(r.Path),
+			visibleID(r.ID), dash(visibleID(r.Family)), dash(r.Location), string(r.Status), r.Running,
+			modeladmin.FormatSize(r.Size), dash(visibleID(r.Path)),
 		}
 	}
 	take := func(keep int) {

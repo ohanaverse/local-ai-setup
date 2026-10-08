@@ -74,7 +74,9 @@ func (r Row) Pairing() bool { return localmodels.RunningOnly(r.ProviderID) }
 
 // statLocalPath reports whether a fetch.local_path is there. A seam: the
 // answer is the file system's, and tests describe one.
-var statLocalPath = func(path string) bool {
+var statLocalPath = realStatLocalPath
+
+func realStatLocalPath(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
@@ -86,10 +88,16 @@ var statLocalPath = func(path string) bool {
 // user repairs or removes them. Registry rows come first, by family and id;
 // discovered rows follow, by id.
 func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
-	entries := map[string]localmodels.Entry{}
+	// A queue per id, not one entry: this list runs on a registry Validate
+	// rejects, and a duplicated id is one of the gaps it shows. The inventory
+	// has one entry per local registry model, in the registry's order for
+	// one id, and only the first of two rows that name the same weights is
+	// matched to them; one entry for both would give both the last one's
+	// status, and an on-disk model would read "missing" twice.
+	entries := map[string][]localmodels.Entry{}
 	for _, e := range snap.Entries {
 		if e.Registered {
-			entries[e.ModelID] = e
+			entries[e.ModelID] = append(entries[e.ModelID], e)
 		}
 	}
 	var rows []Row
@@ -106,7 +114,11 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 			r.Location, r.Status = string(loc), StatusOK
 		default:
 			r.Location = string(loc)
-			e, probed := entries[m.ID]
+			var e localmodels.Entry
+			probed := len(entries[m.ID]) > 0
+			if probed {
+				e, entries[m.ID] = entries[m.ID][0], entries[m.ID][1:]
+			}
 			r.Running = running(snap, e, probed)
 			switch {
 			case r.Pairing():
@@ -207,12 +219,15 @@ func ownDirectory(cfg *config.Config, m config.Model, path string) bool {
 // running is a local row's RUNNING cell. A family whose probe did not fully
 // succeed reports Running flags nobody confirmed, so the cell is "?" rather
 // than a blank that reads as "stopped" — except a server that refused the
-// connection, where nothing is listening and "not running" is a fact.
+// connection, where nothing is listening and "not running" is a fact. A
+// provider wt has no probe for is "?" too: the inventory still lists its
+// models, with a Running flag nothing ever set, and lifecycle.ProbeTrusted
+// takes a family that was never probed for a trusted one.
 func running(snap localmodels.Snapshot, e localmodels.Entry, probed bool) string {
-	if !probed {
+	fam := localmodels.Family(e.ProviderID)
+	if !probed || fam == "" {
 		return RunningUnknown
 	}
-	fam := localmodels.Family(e.ProviderID)
 	switch {
 	case e.Running && e.Loading:
 		return RunningLoad
@@ -237,7 +252,9 @@ func WeightsNote(r Row) string {
 		return "nothing was found at " + r.Path
 	case r.Path != "":
 		return "weights are still at " + r.Path
-	case localmodels.Family(r.ProviderID) == "ollama" && r.Status != StatusMissing:
+	case localmodels.Family(r.ProviderID) == "ollama" && (r.Status == StatusOK || r.Status == StatusNew):
+		// Only when the probe saw it pulled: an ollama that could not be
+		// asked (unknown) falls through to the could-not-tell line.
 		return "still pulled in ollama (`ollama rm " + r.ModelName + "` deletes it)"
 	case r.Status == StatusMissing:
 		return "no weights were found on disk"
@@ -246,14 +263,15 @@ func WeightsNote(r Row) string {
 }
 
 // FormatSize renders a byte count the way `ollama list` does: decimal units,
-// one decimal place from a gigabyte up. 0 (not known) is "-".
+// one decimal place from a gigabyte up. 0 (not known) is "-". A unit starts
+// where the one below it would round to 1000, so no size prints as "1000 MB".
 func FormatSize(n int64) string {
 	switch {
 	case n <= 0:
 		return "-"
-	case n >= 1_000_000_000:
+	case n >= 999_500_000:
 		return fmt.Sprintf("%.1f GB", float64(n)/1e9)
-	case n >= 1_000_000:
+	case n >= 999_500:
 		return fmt.Sprintf("%.0f MB", float64(n)/1e6)
 	case n >= 1_000:
 		return fmt.Sprintf("%.0f kB", float64(n)/1e3)
