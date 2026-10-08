@@ -78,8 +78,32 @@ func realLookPath(name string) (string, error) { return exec.LookPath(name) }
 // what psql would be given — its arguments and its whole environment.
 var runPsql = realRunPsql
 
-// timestampLayout is a Postgres timestamp literal with no zone.
+// timestampLayout is a Postgres timestamp literal with no zone, to the
+// microsecond — the resolution of a Postgres timestamp. Go's Format drops
+// whatever is below the last digit rather than rounding it, so a bound with
+// nanoseconds is written as the microsecond at or before it. That moves
+// neither edge of the window: for a stored instant t, which is always a
+// whole microsecond, t > bound and t <= bound hold exactly when they hold
+// against the truncated bound. (A rounded-up literal would not have that
+// property, and nor would ">=" or "<".)
 const timestampLayout = "2006-01-02 15:04:05.000000"
+
+// InWindow reports whether a request logged at t is in the window Query
+// sums for start and end: after start, and no later than end — (start, end].
+//
+// It is the rule usage.AllCounts buckets launches by, measured from the same
+// end: a launch exactly one window old is outside the bucket and one dated
+// exactly at the instant is inside it. `wt stats` puts the two counts on one
+// row, so they must cut the window at the same instants (#298); the launch
+// side owns the rule, because the picker's 1d/7d/30d columns share it.
+//
+// Query itself does not call InWindow — Postgres applies the window. The
+// function is the rule in Go, for whatever stands in for the database (the
+// spend stub in cmd/wt's tests), and TestQuerySQLWindowIsInWindow holds
+// querySQL's two comparisons to it.
+func InWindow(t, start, end time.Time) bool {
+	return t.After(start) && !t.After(end)
+}
 
 // querySQL is the one statement Query runs. It returns a single JSON
 // document — an array with one object per model group — so the caller
@@ -90,6 +114,9 @@ const timestampLayout = "2006-01-02 15:04:05.000000"
 // from a time.Time, so nothing a user typed reaches the SQL. They are
 // written in UTC with no zone because "startTime" is a zone-less timestamp
 // column that LiteLLM fills with UTC.
+//
+// The window is (start, end]: see InWindow, which the comparisons below
+// must keep matching.
 func querySQL(start, end time.Time) string {
 	return `SELECT coalesce(json_agg(t), '[]'::json) FROM (` +
 		`SELECT coalesce(model_group, '') AS model, ` +
@@ -98,13 +125,14 @@ func querySQL(start, end time.Time) string {
 		`coalesce(sum(completion_tokens), 0) AS completion_tokens, ` +
 		`coalesce(sum(spend), 0) AS spend ` +
 		`FROM "LiteLLM_SpendLogs" ` +
-		`WHERE "startTime" >= timestamp '` + start.UTC().Format(timestampLayout) + `' ` +
+		`WHERE "startTime" > timestamp '` + start.UTC().Format(timestampLayout) + `' ` +
 		`AND "startTime" <= timestamp '` + end.UTC().Format(timestampLayout) + `' ` +
 		`GROUP BY 1 ORDER BY 1) t`
 }
 
-// Query returns per-model totals for requests the proxy logged between
-// start and end, both inclusive. dsn is a libpq connection string or URI.
+// Query returns per-model totals for requests the proxy logged after start
+// and no later than end: the window (start, end], exclusive at its start and
+// inclusive at its end (InWindow). dsn is a libpq connection string or URI.
 // psql receives it as environment variables and never as an argument, and
 // inherits no PG* variable from wt's own environment (see conn.go).
 //

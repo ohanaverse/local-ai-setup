@@ -147,18 +147,23 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 }
 
 // TestStatsLaunchesAndSpendShareOneInstant verifies the report's one
-// instant decides both halves of the usage table (#287). statsNow is pinned
-// far from the real clock, usage.jsonl holds launches at absolute times
-// around both ends of the 1d window, and the spend stub answers from
-// requests at those same times, filtered by the start and end it is asked
-// for. Every model then has a launch exactly when it has a request: one
-// just inside the old edge, one a second past it, ones either side of the
-// UTC midnight the window spans, one at the instant itself, and one a
-// moment after it (a launch recorded between the report reading its instant
-// and reading the file, which is after the spend window's end). When
-// launches were bucketed against a clock read of their own, a model at an
-// edge showed requests and no launch, the row the usage guide tells the
-// user to read as "requests wt did not send".
+// instant decides both halves of the usage table (#287), and that both
+// halves cut the window at the same places: (as_of - window, as_of] (#298).
+// statsNow is pinned far from the real clock, usage.jsonl holds launches at
+// absolute times around both ends of the 1d window, and the spend stub
+// answers from requests at those same times, kept by spend.InWindow for the
+// start and end it is asked for — the rule spend's own tests hold the SQL to
+// (TestQuerySQLWindowIsInWindow), so the stub cannot be more generous than
+// the database. Every model then has a launch exactly when it has a
+// request: one exactly on the old edge (in neither half), one a microsecond
+// inside it, one a second inside and one a second past it, ones either side
+// of the UTC midnight the window spans, one at the instant itself (in both
+// halves), and one a moment after it (a launch recorded between the report
+// reading its instant and reading the file, which is after the spend
+// window's end). When launches were bucketed against a clock read of their
+// own, or the spend window was closed at its start while the launch window
+// was open there, a model at an edge showed requests and no launch, the row
+// the usage guide tells the user to read as "requests wt did not send".
 func TestStatsLaunchesAndSpendShareOneInstant(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -185,6 +190,8 @@ func TestStatsLaunchesAndSpendShareOneInstant(t *testing.T) {
 				{"m/before-midnight", asOf.Truncate(day).Add(-time.Second), true},
 				{"m/after-midnight", asOf.Truncate(day).Add(time.Second), asOf.Truncate(day).Add(time.Second).Before(asOf)},
 				{"m/inside-the-old-edge", asOf.Add(-day + time.Second), true},
+				{"m/a-microsecond-inside-the-old-edge", asOf.Add(-day + time.Microsecond), true},
+				{"m/on-the-old-edge", asOf.Add(-day), false},
 				{"m/past-the-old-edge", asOf.Add(-day - time.Second), false},
 				{"m/at-the-instant", asOf, true},
 				{"m/after-the-instant", asOf.Add(time.Millisecond), false},
@@ -197,13 +204,13 @@ func TestStatsLaunchesAndSpendShareOneInstant(t *testing.T) {
 			seedLaunchesAt(t, tmp, launches...)
 
 			// The spend side: one request per event, kept when it is inside
-			// the window the report asks for (spend.Query's own bounds are
-			// inclusive at both ends).
+			// the window the report asks for, by the rule spend.Query's SQL
+			// follows: after start, up to and including end.
 			old := querySpend
 			querySpend = func(_ context.Context, start, end time.Time) (spend.Result, error) {
 				var res spend.Result
 				for _, e := range events {
-					if !e.at.Before(start) && !e.at.After(end) {
+					if spend.InWindow(e.at, start, end) {
 						res.Rows = append(res.Rows, spend.Row{Model: e.model, Requests: 1})
 					}
 				}

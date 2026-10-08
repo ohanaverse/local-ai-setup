@@ -22,6 +22,10 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>
   one instant read once when the command starts (`as_of` in `--json`). A
   launch or a survey answer recorded after that instant — or dated after it
   by a clock that was wrong — is not counted, as a request after it is not.
+  All three cut the window at the same two instants: it starts just after
+  `as_of - window` and runs up to and including `as_of`. A launch, an answer
+  or a request dated exactly `as_of - window` is not counted, and one dated
+  exactly `as_of` is.
 - `--model` — narrow both tables to one model id (exact match).
 - `--agent` — narrow the survey table and the launch counts to one agent.
   The spend log does not record which agent sent a request, so spend is not
@@ -161,7 +165,10 @@ set `WT_LITELLM_DATABASE_URL` or `WT_LITELLM_CONFIG` for a scratch setup.
 
 The query waits at most 3 seconds for a connection and 10 seconds in all,
 and never prompts for a password. The window is `--window` ending at the
-report's instant (the one the launch counts are measured from), in UTC. wt only reads; it writes nothing to the database.
+report's instant (the one the launch counts are measured from), in UTC:
+`"startTime"` after `as_of - window` and no later than `as_of`, the same
+edges the launch counts use, so a request and the launch that sent it are
+counted or left out together. wt only reads; it writes nothing to the database.
 
 The connection string is never on `psql`'s command line, where `ps` would
 show it to every user of the machine. wt reads the string and gives `psql`
@@ -252,7 +259,8 @@ Example (illustrative values, wrapped here for reading):
 
 - `window` is the `--window` value; `as_of` is the end of the window, UTC —
   the one instant the survey rows, the launch counts and the spend query
-  were all measured from.
+  were all measured from. The window is everything after `as_of - window`
+  up to and including `as_of`.
 - `survey` holds the survey table's rows. `agent` is `null` for a model's
   all-agents aggregate (`(all)` in the table). `worked_pct`, `quality_avg`
   and `speed_avg` are unrounded, and `null` where the table shows `-`.

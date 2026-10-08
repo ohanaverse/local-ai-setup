@@ -196,7 +196,9 @@ func parseStatsWindow(s string) (time.Duration, error) {
 // answer dated after it is left out, as AllCounts leaves out a launch dated
 // after it, and one dated exactly asOf is counted. The bound is applied here
 // and not in survey's inWindow, which the picker and the after-session
-// summary share and which keeps counting such an answer for them.
+// summary share and which keeps counting such an answer for them. The start
+// is inWindow's own: an answer exactly one window before asOf is left out.
+// Together that is (asOf-window, asOf], the usage table's window (#298).
 func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, f statsFilter) []statsRow {
 	upTo := make([]survey.Event, 0, len(events))
 	for _, ev := range events {

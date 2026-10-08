@@ -471,6 +471,48 @@ func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
 	}
 }
 
+// TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd pins each bucket as
+// (asOf - window, asOf] to the nanosecond: a launch dated exactly one window
+// before the instant is outside that bucket, one a nanosecond younger is
+// inside it, and one dated exactly at the instant is inside every bucket.
+// This is the rule `wt stats`' spend query follows (spend.InWindow, #298);
+// if the two disagree at an edge, a model shows a request with no launch
+// there, which the usage guide tells the reader is traffic wt did not send.
+func TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+
+	writeEvents(t, store, []event{
+		{ModelID: "day/on-the-edge", Timestamp: asOf.Add(-day)},
+		{ModelID: "day/inside", Timestamp: asOf.Add(-day + time.Nanosecond)},
+		{ModelID: "week/on-the-edge", Timestamp: asOf.Add(-7 * day)},
+		{ModelID: "week/inside", Timestamp: asOf.Add(-7*day + time.Nanosecond)},
+		{ModelID: "month/on-the-edge", Timestamp: asOf.Add(-30 * day)},
+		{ModelID: "month/inside", Timestamp: asOf.Add(-30*day + time.Nanosecond)},
+		{ModelID: "at-the-instant", Timestamp: asOf},
+		{ModelID: "after-the-instant", Timestamp: asOf.Add(time.Nanosecond)},
+	})
+	got := store.AllCounts("", asOf)
+	want := map[string]UsageCounts{
+		"day/on-the-edge":  {SevenDay: 1, ThirtyDay: 1},
+		"day/inside":       {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"week/on-the-edge": {ThirtyDay: 1},
+		"week/inside":      {SevenDay: 1, ThirtyDay: 1},
+		// month/on-the-edge is in no bucket, so it has no entry at all.
+		"month/inside":   {ThirtyDay: 1},
+		"at-the-instant": {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("AllCounts(\"\")[%q] = %+v, want %+v", id, got[id], w)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("AllCounts(\"\") = %+v, want exactly the %d models above (none 30 days old or dated after the instant)", got, len(want))
+	}
+}
+
 // TestAllCountsSkipsALineWithNoModelID verifies a parseable line with a
 // recent timestamp and no model id (or an empty one) is not counted under
 // the key "". wt never writes such a line, but usage.jsonl is a plain file

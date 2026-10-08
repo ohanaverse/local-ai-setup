@@ -37,7 +37,10 @@
   the logged id is not itself a registry or launched id. `--family` narrows
   the new table; `--agent` narrows its launch counts and leaves spend out;
   launches and spend are counted over one window ending at one instant, so a
-  launch dated after it is not counted.
+  launch dated after it is not counted. The window starts just after
+  `as_of - window` and includes `as_of`, for launches, requests and survey
+  answers alike (#298): a request logged exactly at the start is left out
+  with its launch, where it used to show as a request with 0 launches.
   `--family` is `stats`' own flag and takes one exact family: the root
   command's `-F` shorthand, which `wt stats` used to accept and ignore, is
   now an error there. This replaces `modelman usage report`, which still works until modelman

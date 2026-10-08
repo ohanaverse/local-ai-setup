@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -341,5 +342,34 @@ func TestStatsRowsLeaveOutSurveyAnswersDatedAfterTheInstant(t *testing.T) {
 	}
 	if len(rows) != 4 {
 		t.Errorf("buildStatsRows returned %d rows, want 4: %+v", len(rows), rows)
+	}
+}
+
+// TestStatsRowsSurveyWindowIsOpenAtItsStartAndClosedAtItsEnd pins the survey
+// half of `wt stats` to the window the usage half uses, (as_of - window,
+// as_of] (#298): an answer dated exactly one window before the instant is
+// left out, one a nanosecond younger is counted, and one dated exactly at the
+// instant is counted. The three tables of one report are read side by side
+// against one as_of; a survey row for a model whose launch that same instant
+// is not counted would look like an answer about a session that never ran.
+func TestStatsRowsSurveyWindowIsOpenAtItsStartAndClosedAtItsEnd(t *testing.T) {
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	for _, window := range []time.Duration{survey.Window1d, survey.Window7d, survey.Window30d} {
+		rows := buildStatsRows([]survey.Event{
+			{Agent: "claude", ModelID: "m/on-the-edge", Timestamp: asOf.Add(-window), Worked: boolPtr(true)},
+			{Agent: "claude", ModelID: "m/inside", Timestamp: asOf.Add(-window + time.Nanosecond), Worked: boolPtr(true)},
+			{Agent: "claude", ModelID: "m/at", Timestamp: asOf, Worked: boolPtr(true)},
+			{Agent: "claude", ModelID: "m/after", Timestamp: asOf.Add(time.Nanosecond), Worked: boolPtr(true)},
+		}, window, asOf, statsFilter{})
+
+		var got []string
+		for _, r := range rows {
+			if r.Aggregate {
+				got = append(got, r.ModelID)
+			}
+		}
+		if want := []string{"m/at", "m/inside"}; !slices.Equal(got, want) {
+			t.Errorf("window %s: models with a survey row = %v, want %v", window, got, want)
+		}
 	}
 }
