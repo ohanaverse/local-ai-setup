@@ -297,7 +297,7 @@ wt -W my-feature -A claude           # named worktree + launch
 wt --cwd -A codex                    # current directory
 claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files
-wt start [<id>] / wt stop [<id>|<provider>]   # local-model lifecycle (routes follow automatically)
+wt start [<id>] / wt stop [<id>|<provider>|--all]   # local-model lifecycle (routes follow automatically)
 wt served <provider> [--json]        # ids an omlx/mtplx/mlx_lm_server server is serving now
 wt start <id> --plan --json          # dry run: what a start would unload (status running|fits|would_unload|unknown); changes nothing
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)

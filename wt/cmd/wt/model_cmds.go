@@ -57,15 +57,19 @@ func promptStop(question string) (bool, error) {
 func stopCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop [model|provider]",
-		Short: "Stop a running local model, or every model of a provider",
+		Short: "Stop a running local model, every model of a provider, or all of them",
 		Long: "Stop a running local model (<provider>/<name>) or every running model of a\n" +
 			"provider (ollama, omlx, omlx-6bit, mtplx). With no argument, shows the\n" +
 			"stop picker (requires a TTY), which also lists models other wt sessions\n" +
 			"are using, marked with their session count.\n\n" +
 			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
 			"models up; \"wt stop omlx\" stops the service.\n\n" +
+			"--all stops every running local model and then the omlx service, on every\n" +
+			"provider at once. It takes no argument. A running mlx_lm_server pairing is\n" +
+			"not stopped (wt has no engine for one); \"llmbench provider stop mlx_lm_server\"\n" +
+			"stops it.\n\n" +
 			"Stopping a model a live wt session uses asks for confirmation; --yes skips it.",
-		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop",
+		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
@@ -76,11 +80,83 @@ func stopCmd(a *app) *cobra.Command {
 				arg = args[0]
 			}
 			yes, _ := cmd.Flags().GetBool("yes")
+			if all, _ := cmd.Flags().GetBool("all"); all {
+				if arg != "" {
+					return fmt.Errorf("wt stop --all takes no model or provider (got %q)", arg)
+				}
+				return runStopAll(cmd.OutOrStdout(), a.cfg, yes)
+			}
 			return runStop(cmd.OutOrStdout(), a.cfg, arg, yes)
 		},
 	}
 	cmd.Flags().Bool("yes", false, "Skip the confirmation when a target is in use by a live wt session")
+	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service")
 	return cmd
+}
+
+// poolProviders lists one configured provider id per pool server (omlx):
+// "omlx" and "omlx-6bit" are one service, and it is halted once.
+func poolProviders(cfg *config.Config) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, id := range stoppableProviders(cfg) {
+		fam := localmodels.Family(id)
+		if lifecycle.TenancyOf(id) != lifecycle.Pool || seen[fam] {
+			continue
+		}
+		seen[fam] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// runStopAll implements `wt stop --all`: every running local model wt can
+// stop, then each pool service as a whole. A pool's models go down with their
+// service, so they are not unloaded one by one first. Like `wt stop omlx`, it
+// halts a configured pool service even when no model is loaded: that is what
+// frees the server's memory. Every stop is attempted; a failure does not
+// leave the rest running, and the command then exits non-zero.
+func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
+	cands := stopCandidates(cfg)
+	if inUse, users := stopImpact(cands); inUse > 0 && !yes {
+		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s); stop them all?", inUse, strings.Join(users, ", ")))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("cancelled — nothing was stopped")
+		}
+	}
+	var entries []localmodels.Entry
+	for _, c := range cands {
+		if lifecycle.TenancyOf(c.Entry.ProviderID) != lifecycle.Pool {
+			entries = append(entries, c.Entry)
+		}
+	}
+	pools := poolProviders(cfg)
+	if len(entries) == 0 && len(pools) == 0 {
+		fmt.Fprintln(out, "wt: no running local models")
+		return nil
+	}
+	var failures []error
+	if len(entries) > 0 {
+		if err := stopEntries(out, cfg, entries); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	for _, id := range pools {
+		ctx, cancel := startSignalCtx()
+		fmt.Fprintf(out, "Stopping %s... ", id)
+		err := stopProvider(ctx, cfg, id)
+		cancel()
+		if err != nil {
+			fmt.Fprintln(out, "failed")
+			failures = append(failures, fmt.Errorf("%s: %w", id, err))
+			continue
+		}
+		fmt.Fprintln(out, "done")
+	}
+	return errors.Join(failures...)
 }
 
 // stoppableProviders lists, sorted, the configured provider ids wt can stop.

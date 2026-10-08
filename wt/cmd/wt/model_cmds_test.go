@@ -614,3 +614,148 @@ func TestStopBareOmlxHaltsTheService(t *testing.T) {
 		t.Errorf("halted = %v, per-model stops = %v; want [omlx] and none", halted, *stopped)
 	}
 }
+
+// stubHalt records every provider `wt stop` halts as a whole, and fails the
+// ones named in fail.
+func stubHalt(t *testing.T, fail ...string) *[]string {
+	t.Helper()
+	var halted []string
+	old := stopProvider
+	stopProvider = func(_ context.Context, _ *config.Config, id string) error {
+		halted = append(halted, id)
+		if slices.Contains(fail, id) {
+			return errors.New("still listening")
+		}
+		return nil
+	}
+	t.Cleanup(func() { stopProvider = old })
+	return &halted
+}
+
+// TestStopAllStopsEveryModelThenHaltsThePool verifies `wt stop --all` stops
+// each running model of a non-pool provider through the stop loop and halts
+// the omlx service once, without first unloading its models one by one. A
+// user frees the machine with one command; unloading omlx's models would
+// leave the server and its memory in place.
+func TestStopAllStopsEveryModelThenHaltsThePool(t *testing.T) {
+	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0), cand("omlx", "omlx/c", "c", 0)})
+	halted := stubHalt(t)
+	var out bytes.Buffer
+	if err := runStopAll(&out, modelCmdConfig(), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*stopped) != 1 || (*stopped)[0].ModelID != "ollama/a:1" {
+		t.Errorf("per-model stops = %v, want only ollama/a:1 (the omlx model goes down with its service)", *stopped)
+	}
+	if !slices.Equal(*halted, []string{"omlx"}) {
+		t.Errorf("halted = %v, want [omlx]", *halted)
+	}
+	if !strings.Contains(out.String(), "Stopping omlx... done") {
+		t.Errorf("out = %q, want the halt reported", out.String())
+	}
+}
+
+// TestStopAllHaltsOneServicePerPool verifies a registry with both an omlx
+// and an omlx-6bit row halts the one omlx service once. Two halts would run
+// `omlx stop` twice and print a second "Stopping omlx... done" for one
+// service.
+func TestStopAllHaltsOneServicePerPool(t *testing.T) {
+	stubStop(t, nil)
+	halted := stubHalt(t)
+	cfg := &config.Config{Providers: []config.Provider{
+		{ID: "omlx", Location: config.LocationLocal}, {ID: "omlx-6bit", Location: config.LocationLocal},
+	}}
+	if err := runStopAll(io.Discard, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*halted, []string{"omlx"}) {
+		t.Errorf("halted = %v, want [omlx] once", *halted)
+	}
+}
+
+// TestStopAllWithNothingToStop verifies `wt stop --all` on a machine with no
+// running model and no pool provider says so and exits 0, so a cleanup script
+// can call it unconditionally.
+func TestStopAllWithNothingToStop(t *testing.T) {
+	stopped := stubStop(t, nil)
+	halted := stubHalt(t)
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	var out bytes.Buffer
+	if err := runStopAll(&out, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*stopped) != 0 || len(*halted) != 0 || !strings.Contains(out.String(), "no running local models") {
+		t.Errorf("stopped = %v halted = %v out = %q; want nothing stopped and a note", *stopped, *halted, out.String())
+	}
+}
+
+// TestStopAllInUseConfirms verifies `wt stop --all` asks once, with the total
+// session count, before stopping models other wt sessions are using; declining
+// stops nothing at all, and --yes skips the question. Without the question a
+// cleanup in one terminal kills the agent running in another.
+func TestStopAllInUseConfirms(t *testing.T) {
+	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2), cand("omlx", "omlx/c", "c", 1)})
+	halted := stubHalt(t)
+	old := confirmStop
+	t.Cleanup(func() { confirmStop = old })
+
+	var asked string
+	confirmStop = func(q string) (bool, error) { asked = q; return false, nil }
+	err := runStopAll(io.Discard, modelCmdConfig(), false)
+	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") {
+		t.Fatalf("declined: err = %v, want a cancellation", err)
+	}
+	if !strings.Contains(asked, "3 live wt session(s)") || !strings.Contains(asked, "ollama/a:1, omlx/c") {
+		t.Errorf("asked = %q, want the total and both models", asked)
+	}
+	if len(*stopped) != 0 || len(*halted) != 0 {
+		t.Fatalf("declined: stopped = %v halted = %v, want nothing", *stopped, *halted)
+	}
+
+	confirmStop = func(string) (bool, error) { t.Fatal("--yes must not prompt"); return false, nil }
+	if err := runStopAll(io.Discard, modelCmdConfig(), true); err != nil {
+		t.Fatal(err)
+	}
+	if len(*stopped) != 1 || !slices.Equal(*halted, []string{"omlx"}) {
+		t.Errorf("--yes: stopped = %v halted = %v, want the ollama model and the omlx halt", *stopped, *halted)
+	}
+}
+
+// TestStopAllKeepsGoingAfterAFailure verifies a failed model stop does not
+// stop `wt stop --all` from halting the pool service, and that the command
+// still exits non-zero naming what failed. "Stop everything" that gives up at
+// the first failure leaves the largest server running.
+func TestStopAllKeepsGoingAfterAFailure(t *testing.T) {
+	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	old := stopEntries
+	t.Cleanup(func() { stopEntries = old })
+	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error { return errors.New("1 of 1 stops failed") }
+	halted := stubHalt(t, "omlx")
+	var out bytes.Buffer
+	err := runStopAll(&out, modelCmdConfig(), false)
+	if err == nil || !strings.Contains(err.Error(), "1 of 1 stops failed") || !strings.Contains(err.Error(), "omlx: still listening") {
+		t.Fatalf("err = %v, want both failures", err)
+	}
+	if !slices.Equal(*halted, []string{"omlx"}) || !strings.Contains(out.String(), "Stopping omlx... failed") {
+		t.Errorf("halted = %v out = %q, want the halt attempted and reported", *halted, out.String())
+	}
+}
+
+// TestStopAllTakesNoArgument verifies `wt stop --all <something>` is refused
+// before anything is probed or stopped: a user who meant one provider must
+// not have every model stopped instead.
+func TestStopAllTakesNoArgument(t *testing.T) {
+	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	halted := stubHalt(t)
+	cmd := stopCmd(&app{cfg: modelCmdConfig()})
+	cmd.SetArgs([]string{"--all", "ollama"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "takes no model or provider") {
+		t.Fatalf("err = %v, want the --all usage error", err)
+	}
+	if len(*stopped) != 0 || len(*halted) != 0 {
+		t.Errorf("stopped = %v halted = %v, want nothing", *stopped, *halted)
+	}
+}
