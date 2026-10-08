@@ -41,9 +41,9 @@ func runConfigEditor(out, errOut io.Writer, a *app, start configeditor.Tab) erro
 		Models:   configeditor.ModelsDeps{Probe: probeInventory, SeedEnv: seedEnv, Capabilities: ollamaCaps},
 	})
 	if res.RegistryChanged {
-		if w := syncRoutesAfterWrite(out, errOut); w != "" {
-			fmt.Fprintf(errOut, "warning: %s\n", w)
-		}
+		// What `wt model add|edit|rm` run after their write: the sync's own
+		// lines, then its warning on stderr. It never fails.
+		_ = syncAndWarn(out, errOut, nil)
 	}
 	return err
 }
