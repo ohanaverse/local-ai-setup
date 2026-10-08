@@ -94,17 +94,18 @@ func foldTarget(s string, known func(string) bool) (string, bool) {
 // can fold into are the keys of families (every registry id, whatever its
 // family) and of counts (every id launched in the last 30 days, not only in
 // this window). A model gets a row when it has a launch in the window or a
-// spend row; sp is nil when there is no spend data. Both filters are exact
-// matches, apply to every observed id, registered or not, and apply after
-// folding: a folded spelling has no row of its own to match. Rows are
-// sorted by model id.
+// spend row; sp is nil when there is no spend data. f.model and f.family are
+// exact matches, apply to every observed id, registered or not, and apply
+// after folding: a folded spelling has no row of its own to match. f.agent
+// is not read here: the launch counts arrive already narrowed to it, and a
+// spend row has no agent. Rows are sorted by model id.
 //
 // An empty id never gets a row, from either side: it would print as a line
 // with a blank MODEL cell that no --model value can name. usage.AllCounts
 // and spend.Query both leave such entries out already (spend counts them as
 // Unattributed); this is the join's own guarantee, for whatever else fills
 // the two inputs.
-func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, sp *spend.Result, families map[string]string, modelFilter, familyFilter string) []usageRow {
+func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, sp *spend.Result, families map[string]string, f statsFilter) []usageRow {
 	byModel := map[string]*usageRow{}
 	row := func(id string) *usageRow {
 		r, ok := byModel[id]
@@ -155,10 +156,10 @@ func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, s
 
 	rows := make([]usageRow, 0, len(byModel))
 	for _, r := range byModel {
-		if modelFilter != "" && r.Model != modelFilter {
+		if f.model != "" && r.Model != f.model {
 			continue
 		}
-		if familyFilter != "" && r.Family != familyFilter {
+		if f.family != "" && r.Family != f.family {
 			continue
 		}
 		rows = append(rows, *r)
@@ -191,22 +192,21 @@ type usageReport struct {
 // migration) as often as about registry.toml, so the note quotes it rather
 // than name a file itself. The error names files and keys, never a secret;
 // it is folded onto one line because a TOML parse error can span several.
-// The repair hint mirrors configError's (helpers.go): `wt config` cannot
-// repair a registry problem (a link to fix, a location to move, a missing
-// registry to seed), so those name the working repair.
+// The repair hint is config.LoadFixHint's, the one configError (helpers.go)
+// appends to the same error: `wt config` cannot repair a registry problem
+// (a link to fix, a file to edit by hand), so those name the working repair,
+// and a missing registry gets no hint because its error already says to run
+// `wt model init`.
 func registryNote(loadErr error) string {
-	hint := "run `wt config` to repair"
-	if errors.Is(loadErr, config.ErrRegistryMissing) {
-		hint = "seed the registry with `modelman migrate`"
-	} else if h := config.RegistryFixHint(loadErr); h != "" {
-		hint = h
+	what := strings.Join(strings.Fields(loadErr.Error()), " ")
+	if hint := config.LoadFixHint(loadErr); hint != "" {
+		what += "; " + hint
 	}
-	return fmt.Sprintf("wt's configuration did not load (%s; %s), so --family matched each id's provider prefix",
-		strings.Join(strings.Fields(loadErr.Error()), " "), hint)
+	return fmt.Sprintf("wt's configuration did not load (%s), so --family matched each id's provider prefix", what)
 }
 
-// querySpend asks the LiteLLM database for per-model totals between start
-// and end. A seam: cmd/wt's TestMain replaces it, so no test resolves a
+// querySpend asks the LiteLLM database for per-model totals after start and
+// up to and including end (spend.InWindow). A seam: cmd/wt's TestMain replaces it, so no test resolves a
 // connection string or runs psql.
 var querySpend = realQuerySpend
 
@@ -231,13 +231,17 @@ func realStdoutWidth() int {
 	return w
 }
 
-// collectUsage builds the usage report for one window ending at asOf.
-// It never fails: every way of having no spend data is a status and a
-// reason, and the launch counts are reported regardless.
-func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, modelFilter, familyFilter, agentFilter string) usageReport {
-	rep := usageReport{SpendStatus: spendOK, Narrowed: modelFilter != "" || familyFilter != ""}
+// collectUsage builds the usage report for one window ending at asOf,
+// (asOf-window, asOf]: the spend query covers it, and the launches are the
+// ones usage.jsonl dates inside that same window. Both halves leave out an
+// event dated exactly asOf-window and count one dated exactly asOf (#298); a
+// launch after asOf is in neither half. It never fails: every way of having
+// no spend data is a status and a reason, and the launch counts are reported
+// regardless.
+func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, f statsFilter) usageReport {
+	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}
 	var sp *spend.Result
-	if agentFilter != "" {
+	if f.agent != "" {
 		rep.SpendStatus = spendSkipped
 		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
 	} else if res, err := querySpend(ctx, asOf.Add(-window), asOf); err != nil {
@@ -253,7 +257,9 @@ func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration,
 		sp = &res
 		rep.Unattributed = res.Unattributed
 	}
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(agentFilter), window, sp, registryFamilies(cfg), modelFilter, familyFilter)
+	// The same asOf the spend query ends at: launches are bucketed against
+	// the report's instant, never against a second read of the clock.
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, registryFamilies(cfg), f)
 	return rep
 }
 

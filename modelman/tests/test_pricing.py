@@ -191,6 +191,61 @@ def test_refresh_prices_skips_native_providers():
     assert registry.model("claude/opus").cost.input_price_per_million == 1.0
 
 
+def test_refresh_prices_honors_a_provider_openrouter_priced_override():
+    """A provider's explicit openrouter_priced wins over the inferred rule in
+    both directions: false keeps a cloud gateway's models out of the refresh
+    (no daily 'No OpenRouter match' warning, no price overwritten by a
+    colliding id), true brings a local provider's models in."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="corp",
+                name="Corp",
+                location="cloud",
+                auth=AuthConfig(type="api_key"),
+                openrouter_priced=False,
+            ),
+            ProviderEntry(
+                id="gateway",
+                name="Gateway",
+                location="local",
+                auth=AuthConfig(type="none"),
+                openrouter_priced=True,
+            ),
+        ],
+        models=[
+            ModelEntry(
+                id="corp/opus",
+                family="x",
+                provider_id="corp",
+                model_name="anthropic/claude-opus",
+                cost=Cost(input_price_per_million=1.0),
+            ),
+            ModelEntry(
+                id="gateway/opus",
+                family="x",
+                provider_id="gateway",
+                model_name="anthropic/claude-opus",
+            ),
+        ],
+    )
+    payload = {
+        "data": [
+            {
+                "id": "anthropic/claude-opus",
+                "pricing": {"prompt": "0.000015", "completion": "0.000075"},
+            }
+        ]
+    }
+    result = refresh_prices(registry, runner=_runner(payload))
+
+    assert result.error is None
+    assert result.warnings == []
+    assert result.updated == 1
+    assert registry.model("corp/opus").cost.input_price_per_million == 1.0
+    assert registry.model("gateway/opus").cost.input_price_per_million == pytest.approx(15.0)
+
+
 def test_refresh_prices_missing_cache_price_becomes_none():
     registry = _make_registry(
         ModelEntry(

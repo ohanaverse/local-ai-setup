@@ -254,6 +254,14 @@ type Provider struct {
 	// ModelDir is the registry's model_dir (e.g. "~/.omlx/models"): where a
 	// filesystem-backed provider keeps its models. Read-only; not expanded.
 	ModelDir string `toml:"model_dir,omitempty"`
+	// OpenRouterPriced, when set, overrides the inferred value for the
+	// OpenRouterPriced model predicate. nil = infer from location/auth (the
+	// default). false = this provider's models are not OpenRouter-priced even
+	// though they appear on a non-native cloud provider (e.g. a corporate
+	// LiteLLM gateway). true = they are, even though the provider is not a
+	// cloud one. A native provider is never OpenRouter-priced, whatever this
+	// says. Mirrors modelman's ProviderEntry.openrouter_priced.
+	OpenRouterPriced *bool `toml:"openrouter_priced,omitempty"`
 }
 
 // EffectiveProtocols returns the provider's declared protocols, defaulting
@@ -694,14 +702,17 @@ func (c *Config) validate() []error {
 	// config load like any malformed config.toml; a missing or empty URL/key
 	// only surfaces when ResolveRoute actually needs it at launch time.
 
-	// Providers
+	// Providers and models are registry.toml's rows, so every error in these
+	// two loops is marked ErrRegistryEntry (or is an ErrLocation): `wt config`
+	// cannot repair one, and RegistryFixHint names the file instead (#291).
+	// An agent error below is config.toml's and stays unmarked.
 	provIDs := map[string]bool{}
 	for _, p := range c.Providers {
 		if p.ID == "" {
-			errs = append(errs, fmt.Errorf("provider entry with empty id"))
+			errs = append(errs, registryEntryError(fmt.Errorf("provider entry with empty id")))
 		}
 		if provIDs[p.ID] {
-			errs = append(errs, fmt.Errorf("duplicate provider id %q", p.ID))
+			errs = append(errs, registryEntryError(fmt.Errorf("duplicate provider id %q", p.ID)))
 		}
 		provIDs[p.ID] = true
 		// A provider entry may leave its location out (its models then need
@@ -717,23 +728,25 @@ func (c *Config) validate() []error {
 	modelIDs := map[string]bool{}
 	for _, m := range c.Models {
 		if m.ID == "" {
-			errs = append(errs, fmt.Errorf("model entry with empty id"))
+			errs = append(errs, registryEntryError(fmt.Errorf("model entry with empty id")))
 		}
 		if modelIDs[m.ID] {
-			errs = append(errs, fmt.Errorf("duplicate model id %q", m.ID))
+			errs = append(errs, registryEntryError(fmt.Errorf("duplicate model id %q", m.ID)))
 		}
 		modelIDs[m.ID] = true
 		if m.ModelName == "" {
 			// The lifecycle engine matches a start target against a provider's
 			// reported names by this field; an empty one matches nothing, so the
 			// model would look permanently stopped and warm the empty name.
-			errs = append(errs, fmt.Errorf("model %q: model_name is required (add model_name to this registry.toml entry)", m.ID))
+			// The text does not say where the entry is: RegistryFixHint does.
+			errs = append(errs, registryEntryError(fmt.Errorf("model %q: model_name is required", m.ID)))
 		}
 		if !provIDs[m.ProviderID] {
-			errs = append(errs, fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID))
+			errs = append(errs, registryEntryError(fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID)))
 		} else if _, err := c.ResolveLocation(m); err != nil {
-			// Location must be resolvable
-			errs = append(errs, err)
+			// Location must be resolvable. A mistyped one is ErrLocation
+			// already; no location at all is marked here.
+			errs = append(errs, registryEntryError(err))
 		}
 	}
 
@@ -857,6 +870,13 @@ func (c *Config) InCatalog(m Model) bool {
 // model's, so ollama cloud models don't count. Mirrors modelman's
 // pricing._is_openrouter_priced; both are pinned by
 // docs/contracts/catalog-predicates.sample.toml.
+//
+// A provider's explicit openrouter_priced in the registry overrides the
+// inferred result in both directions, after the native check: false is for a
+// non-native cloud provider that routes through a corporate LiteLLM gateway
+// rather than OpenRouter, true puts a provider's models in. modelman honors
+// both values, so honoring only false here would have the two disagree about
+// a provider marked true.
 func (c *Config) OpenRouterPriced(m Model) bool {
 	if m.Native {
 		return false
@@ -864,6 +884,9 @@ func (c *Config) OpenRouterPriced(m Model) bool {
 	p := c.ProviderByID(m.ProviderID)
 	if p != nil && p.Auth.Type == "native" {
 		return false
+	}
+	if p != nil && p.OpenRouterPriced != nil {
+		return *p.OpenRouterPriced
 	}
 	if m.ProviderID == "openrouter" {
 		return true
@@ -912,20 +935,94 @@ func (c *Config) AgentByName(name string) (*Agent, error) {
 // reads but `wt config` does not edit.
 var ErrLocation = errors.New("invalid location")
 
+// ErrRegistryEntry marks a validation error about a provider or model row of
+// registry.toml that is not about its location: an empty or repeated id, a
+// model with no model_name, a model whose provider has no row, a model with
+// no location on itself or its provider. Like ErrLocation it is in a file
+// `wt config` does not edit, and RegistryFixHint names that file. The marked
+// error's text is unchanged.
+var ErrRegistryEntry = errors.New("invalid registry entry")
+
+type registryEntryErr struct{ err error }
+
+func (e registryEntryErr) Error() string        { return e.err.Error() }
+func (e registryEntryErr) Unwrap() error        { return e.err }
+func (e registryEntryErr) Is(target error) bool { return target == ErrRegistryEntry }
+
+// registryEntryError marks err as ErrRegistryEntry, keeping its text and
+// whatever it wraps (a location error stays an ErrLocation).
+func registryEntryError(err error) error { return registryEntryErr{err: err} }
+
 // RegistryFixHint is the hint for a config error whose repair is in
 // registry.toml — a file `wt config` cannot edit — or "" for
-// any other error (and nil). Today that is a location error (ErrLocation) and
-// a registry path that is a broken symlink (ErrRegistryLink). It is the one
-// source of the wording, so the commands that refuse to run on such an error
-// and the editor that opens on it name the same file the same way (#209).
+// any other error (and nil). That is a provider or model row that fails
+// validation (ErrLocation, ErrRegistryEntry), a registry path that is a
+// broken symlink (ErrRegistryLink), and a registry file wt cannot stat, read,
+// parse or accept the top level of (ErrRegistryFile, ErrRegistryTopLevel):
+// those last errors name the file, so the hint does not repeat it. It is the one source of the wording, so the commands that refuse
+// to run on such an error and the editor that opens on it name the same file
+// the same way (#209).
+//
+// A missing registry (ErrRegistryMissing) gets "" as well: its error already
+// names the command that creates one. LoadFixHint is the function to ask for
+// the whole hint; this one answers only "is the repair in the registry".
 func RegistryFixHint(err error) string {
 	switch {
-	case errors.Is(err, ErrLocation):
+	case errors.Is(err, ErrLocation), errors.Is(err, ErrRegistryEntry):
 		return "fix the entry in " + RegistryPath()
 	case errors.Is(err, ErrRegistryLink):
 		return "fix the link or move it aside"
+	case errors.Is(err, ErrRegistryFile), errors.Is(err, ErrRegistryTopLevel):
+		return "fix that file by hand"
 	}
 	return ""
+}
+
+// RegistryFixHintFromAny checks every error in a joined error (from
+// ValidateAll) for a registry problem and returns the first hint found.
+// This ensures the correct repair location is shown even when a config.toml
+// error appears first in the join (e.g., empty default_tag + missing
+// model_name both present).
+func RegistryFixHintFromAny(err error) string {
+	if err == nil {
+		return ""
+	}
+	// errors.Join returns an error that implements Unwrap() []error
+	type unwrapper interface{ Unwrap() []error }
+	if u, ok := err.(unwrapper); ok {
+		for _, e := range u.Unwrap() {
+			if hint := RegistryFixHint(e); hint != "" {
+				return hint
+			}
+		}
+	}
+	// Also check the error itself in case it's not a joined error
+	if hint := RegistryFixHint(err); hint != "" {
+		return hint
+	}
+	return ""
+}
+
+// LoadFixHint is the repair to name after a config load or validation error,
+// or "" when there is nothing to add (nil, and a missing registry, whose
+// error already says to run `wt model init` — a hint would name a second
+// repair beside it). A registry problem — the file, the link to it, or a
+// provider or model row in it — gets RegistryFixHint's wording. Everything
+// else (a config.toml that does not parse, default_tag, an agent entry) is
+// taken to be in wt's own config.toml, the one file `wt config` edits, and
+// only then is `wt config` the repair.
+//
+// Every command that refuses to run on such an error, and every note that
+// quotes one, asks here, so the same error is never given two repairs (#291).
+func LoadFixHint(err error) string {
+	switch {
+	case err == nil, errors.Is(err, ErrRegistryMissing):
+		return ""
+	}
+	if hint := RegistryFixHint(err); hint != "" {
+		return hint
+	}
+	return "run `wt config` to repair"
 }
 
 // Valid reports whether l is one of the two locations the registry defines.

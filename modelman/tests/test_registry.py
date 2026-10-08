@@ -720,6 +720,55 @@ def test_save_then_load_preserves_unknown_keys(tmp_path):
     assert loaded.model("ollama/x").extra == {"model_extra": "keep-too"}
 
 
+@pytest.mark.parametrize("value", [False, True])
+def test_provider_openrouter_priced_survives_a_save(tmp_path, value):
+    # A typed field is no longer carried in `extra`, so the writer has to emit
+    # it itself: the first save (a TUI add/edit, `modelman sync`) would
+    # otherwise delete the override and bring back the notice it suppresses.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        "[[providers]]\n"
+        'id = "corp"\n'
+        'location = "cloud"\n'
+        f"openrouter_priced = {str(value).lower()}\n"
+        "[providers.auth]\n"
+        'type = "api_key"\n'
+    )
+    registry = load_registry(path)
+    assert registry.provider("corp").openrouter_priced is value
+    assert registry.provider("corp").extra == {}
+    save_registry(registry, path)
+    assert load_registry(path).provider("corp").openrouter_priced is value
+
+
+def test_provider_without_openrouter_priced_saves_without_the_key(tmp_path):
+    # Unset means "infer": the writer must not materialize a value for it.
+    path = tmp_path / "registry.toml"
+    save_registry(
+        Registry(providers=[ProviderEntry(id="corp", name="Corp", auth=AuthConfig(type="none"))]),
+        path,
+    )
+    assert "openrouter_priced" not in path.read_text()
+    assert load_registry(path).provider("corp").openrouter_priced is None
+
+
+@pytest.mark.parametrize("literal", ['"false"', "0", "[false]"])
+def test_load_registry_rejects_a_non_boolean_openrouter_priced(tmp_path, literal):
+    # wt decodes the key into a bool and refuses the whole registry otherwise,
+    # and a quoted "false" is truthy in Python: it would switch the override
+    # on. modelman owns the file, so it refuses the value instead.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        "[[providers]]\n"
+        'id = "corp"\n'
+        f"openrouter_priced = {literal}\n"
+        "[providers.auth]\n"
+        'type = "api_key"\n'
+    )
+    with pytest.raises(RegistryError, match="openrouter_priced"):
+        load_registry(path)
+
+
 def test_sync_agent_providers_adds_missing_agents(tmp_path, monkeypatch):
     wt_config = tmp_path / "config.toml"
     wt_config.write_text(

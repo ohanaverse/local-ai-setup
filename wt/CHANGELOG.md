@@ -30,10 +30,18 @@
   configured URL, the launch counts still print, the spend cells show `-`,
   one note on stderr says why (an unreachable database is named by host and
   port, and by nothing else from the connection string), and the exit code
-  stays 0. Requests the proxy logged under the other spelling of a wt id —
+  stays 0. The connection string reaches `psql` in its environment, never
+  on its command line where `ps` would show the password to other users
+  (#282). Requests the proxy logged under the other spelling of a wt id —
   `mtplx/Org/Name` for `mtplx/Org--Name` — are added to that id's row, when
   the logged id is not itself a registry or launched id. `--family` narrows
-  the new table; `--agent` narrows its launch counts and leaves spend out.
+  the new table; `--agent` narrows its launch counts and leaves spend out;
+  launches and spend are counted over one window ending at one instant, so a
+  launch dated after it is not counted. The window starts just after
+  `as_of - window` and includes `as_of`, for launches, requests and survey
+  answers alike (#298): a request logged exactly at the start is left out,
+  as a launch at that instant is, where it used to be counted while the
+  launch was not.
   `--family` is `stats`' own flag and takes one exact family: the root
   command's `-F` shorthand, which `wt stats` used to accept and ignore, is
   now an error there. This replaces `modelman usage report`, which still works until modelman
@@ -58,6 +66,25 @@
 
 ### Fixed
 
+- `wt litellm sync`, `status`, `on`, `off` and `set` name the repair that
+  works when wt's configuration does not load (#291). Each ended its refusal
+  with "run `wt config` to repair" whatever had failed, so a missing registry
+  was given two repairs (`wt model init`, then `wt config`) and a registry
+  link that leads nowhere was sent to an editor that cannot touch it. They now
+  say what `wt start` and `wt stop` say: nothing more for a missing registry,
+  `fix the link or move it aside` for a broken link, and `wt config` only for
+  a problem in `config.toml`. Every command also stops sending a registry.toml
+  that does not parse, cannot be read, or sits at a path wt cannot examine (a
+  file where its directory should be) to `wt config`: the hint is `fix that
+  file by hand`, which `wt model init` now adds too, for a registry it cannot
+  parse or read and for a top-level key it will not write. A provider or
+  model row that fails validation (an empty or repeated id, no `model_name`,
+  a model whose provider has no row, no location) gets `fix the entry in
+  <registry path>`, as a mistyped location already did, from `wt`, `wt
+  start`, `wt stop`, `wt smoke` and the `wt config` editor; the `model_name`
+  error no longer carries its own `(add model_name to this registry.toml
+  entry)` beside it. The `--family` note of `wt stats` follows the same rule
+  and no longer names `modelman migrate`.
 - A registry path that is a symlink to a file that is not there is reported
   as a broken link, naming the link and its target, instead of `model
   registry not found` (#248). An unconfigured agent no longer launches with no

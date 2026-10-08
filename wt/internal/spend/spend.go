@@ -3,6 +3,10 @@
 // aggregated query through psql. wt links no Postgres driver: psql is on
 // every machine that runs the proxy's database, and its absence is one of
 // the cases Query reports rather than a build dependency.
+//
+// The connection string never reaches psql's command line, where `ps`
+// would show the database password to every user of the machine: conn.go
+// turns it into libpq's environment variables, and says why that way.
 package spend
 
 import (
@@ -56,6 +60,7 @@ type Result struct {
 
 // connectTimeout is PGCONNECT_TIMEOUT, in seconds: how long psql waits for
 // a host that does not answer at all. A refused connection fails at once.
+// A connect_timeout in the connection string takes its place.
 const connectTimeout = "3"
 
 // deadline bounds the whole psql run. A var so a test can shorten it.
@@ -67,12 +72,38 @@ var lookPath = realLookPath
 // realLookPath is the production lookPath.
 func realLookPath(name string) (string, error) { return exec.LookPath(name) }
 
-// runPsql runs the psql binary and returns what it printed and its exit
-// status. A seam: no test may run the real psql against a real database.
+// runPsql runs the psql binary with the given arguments and environment and
+// returns what it printed and its exit status. A seam: no test may run the
+// real psql against a real database, and a test sees through it exactly
+// what psql would be given — its arguments and its whole environment.
 var runPsql = realRunPsql
 
-// timestampLayout is a Postgres timestamp literal with no zone.
+// timestampLayout is a Postgres timestamp literal with no zone, to the
+// microsecond — the resolution of a Postgres timestamp. Go's Format drops
+// whatever is below the last digit rather than rounding it, so a bound with
+// nanoseconds is written as the microsecond at or before it. That moves
+// neither edge of the window: for a stored instant t, which is always a
+// whole microsecond, t > bound and t <= bound hold exactly when they hold
+// against the truncated bound. (A rounded-up literal would not have that
+// property, and nor would ">=" or "<".)
 const timestampLayout = "2006-01-02 15:04:05.000000"
+
+// InWindow reports whether a request logged at t is in the window Query
+// sums for start and end: after start, and no later than end — (start, end].
+//
+// It is the rule usage.AllCounts buckets launches by, measured from the same
+// end: a launch exactly one window old is outside the bucket and one dated
+// exactly at the instant is inside it. `wt stats` puts the two counts on one
+// row, so they must cut the window at the same instants (#298); the launch
+// side owns the rule, because the picker's 1d/7d/30d columns share it.
+//
+// Query itself does not call InWindow — Postgres applies the window. The
+// function is the rule in Go, for whatever stands in for the database (the
+// spend stub in cmd/wt's tests), and TestQuerySQLWindowIsInWindow holds
+// querySQL's two comparisons to it.
+func InWindow(t, start, end time.Time) bool {
+	return t.After(start) && !t.After(end)
+}
 
 // querySQL is the one statement Query runs. It returns a single JSON
 // document — an array with one object per model group — so the caller
@@ -83,6 +114,9 @@ const timestampLayout = "2006-01-02 15:04:05.000000"
 // from a time.Time, so nothing a user typed reaches the SQL. They are
 // written in UTC with no zone because "startTime" is a zone-less timestamp
 // column that LiteLLM fills with UTC.
+//
+// The window is (start, end]: see InWindow, which the comparisons below
+// must keep matching.
 func querySQL(start, end time.Time) string {
 	return `SELECT coalesce(json_agg(t), '[]'::json) FROM (` +
 		`SELECT coalesce(model_group, '') AS model, ` +
@@ -91,16 +125,21 @@ func querySQL(start, end time.Time) string {
 		`coalesce(sum(completion_tokens), 0) AS completion_tokens, ` +
 		`coalesce(sum(spend), 0) AS spend ` +
 		`FROM "LiteLLM_SpendLogs" ` +
-		`WHERE "startTime" >= timestamp '` + start.UTC().Format(timestampLayout) + `' ` +
+		`WHERE "startTime" > timestamp '` + start.UTC().Format(timestampLayout) + `' ` +
 		`AND "startTime" <= timestamp '` + end.UTC().Format(timestampLayout) + `' ` +
 		`GROUP BY 1 ORDER BY 1) t`
 }
 
-// Query returns per-model totals for requests the proxy logged between
-// start and end, both inclusive. dsn is a libpq connection string or URI.
+// Query returns per-model totals for requests the proxy logged after start
+// and no later than end: the window (start, end], exclusive at its start and
+// inclusive at its end (InWindow). dsn is a libpq connection string or URI.
+// psql receives it as environment variables and never as an argument, and
+// inherits no PG* variable from wt's own environment (see conn.go).
 //
 // A blank dsn is refused with ErrNoConnectionString before anything else is
 // looked at, so no caller can have psql connect to libpq's default server.
+// A dsn that cannot be carried over to the environment faithfully is
+// refused with ErrConnectionString, also before psql is looked for.
 // Every other failure is one of ErrNoPsql, ErrUnreachable or ErrQuery,
 // wrapped with a one-line reason. An ErrUnreachable names the host and port
 // psql tried (or the socket), so a wrong address can be seen; no other part
@@ -111,6 +150,10 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	if strings.TrimSpace(dsn) == "" {
 		return Result{}, ErrNoConnectionString
 	}
+	conn, err := connEnv(dsn)
+	if err != nil {
+		return Result{}, err
+	}
 	bin, err := lookPath("psql")
 	if err != nil {
 		return Result{}, ErrNoPsql
@@ -119,13 +162,9 @@ func Query(ctx context.Context, dsn string, start, end time.Time) (Result, error
 	ctx, cancel := context.WithTimeout(parent, deadline)
 	defer cancel()
 
-	args := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", dsn, "-c", querySQL(start, end)}
-	// LC_MESSAGES=C: unreachable reads libpq's English connect-failure line,
-	// and under a translated one it can only withhold the address and the
-	// reason. (An LC_ALL in the user's environment still wins; the note is
-	// then the withheld one, never a leak.)
-	env := append(os.Environ(), "PGCONNECT_TIMEOUT="+connectTimeout, "PGTZ=UTC", "LC_MESSAGES=C")
-	stdout, stderr, exit, err := runPsql(ctx, bin, args, env)
+	// No -d: an argument is readable by every user of the machine.
+	args := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-c", querySQL(start, end)}
+	stdout, stderr, exit, err := runPsql(ctx, bin, args, psqlEnv(os.Environ(), conn))
 	switch {
 	case err == nil && exit == 0:
 		// psql answered: its output is parsed below, even when the deadline
@@ -227,6 +266,11 @@ var knownReason = regexp.MustCompile(`^(?:` + strings.Join([]string{
 	`No such file or directory`,
 	`Permission denied`,
 	`server closed the connection unexpectedly`,
+	// The server wants a password and the string leads to none. psql is run
+	// with -w and without wt's own PGPASSWORD or PGPASSFILE (psqlEnv), so
+	// this is what a password kept only in the shell's environment looks
+	// like; unnamed, it would read as a database that cannot be reached.
+	`fe_sendauth: no password supplied`,
 
 	`password authentication failed for user "\.\.\."`,
 	`(?:Peer|Ident) authentication failed for user "\.\.\."`,
@@ -336,19 +380,15 @@ func address(host, port, socket string) string {
 // URI with more than one "@" in its authority is refused too.
 //
 // In a keyword string, a value with an unquoted space ends early, and what
-// follows it can be read as a host or a port. Any value can be a secret —
-// password, sslpassword, passfile, a service name — so the address counts
-// only when host, hostaddr and port are written before every other
-// keyword, and no field is anything but a plain key=value.
+// follows it can be read as a host or a port. Any value can be a secret — a
+// password, the path of a passfile or a key — so the address counts only
+// when host, hostaddr and port are written before every other keyword, and
+// no field is anything but a plain key=value.
 //
 // For any other string the address is left out of the error; the reason
 // alone is still shown.
 func plainAddress(dsn string) bool {
-	rest, isURI := strings.CutPrefix(dsn, "postgresql://")
-	if !isURI {
-		rest, isURI = strings.CutPrefix(dsn, "postgres://")
-	}
-	if isURI {
+	if rest, isURI := cutURIScheme(dsn); isURI {
 		i := strings.IndexAny(rest, "/?#")
 		authority := rest
 		if i >= 0 {

@@ -18,7 +18,14 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>
 ```
 
 - `--window` — defaults to `30d`. One window for both tables: survey
-  answers, launches and spend all cover the same period.
+  answers, launches and spend all cover the same period, measured back from
+  one instant read once when the command starts (`as_of` in `--json`). A
+  launch or a survey answer recorded after that instant — or dated after it
+  by a clock that was wrong — is not counted, as a request after it is not.
+  All three cut the window at the same two instants: it starts just after
+  `as_of - window` and runs up to and including `as_of`. A launch, an answer
+  or a request dated exactly `as_of - window` is not counted, and one dated
+  exactly `as_of` is.
 - `--model` — narrow both tables to one model id (exact match).
 - `--agent` — narrow the survey table and the launch counts to one agent.
   The spend log does not record which agent sent a request, so spend is not
@@ -37,10 +44,11 @@ Only an invalid flag is an error.
 
 One row per model's `(all)`-agents aggregate, plus one row per observed
 (agent, model) combo — sorted by agent name with `(all)` first, then by
-model id. A combo with no real data (zero answered surveys, and no
-calculated averages) is omitted — this includes rows where all surveys
-were skipped. An empty store (or a filter matching nothing) prints
-`no survey data`.
+model id. A row with no data at all (nothing answered and nothing skipped
+in the window) is omitted. A row whose every survey was skipped is kept,
+with `-` in the three averaged columns: the combo was tried and never got a
+verdict. `--json` holds exactly the rows the table prints. An empty store
+(or a filter matching nothing) prints `no survey data`.
 
 ```
 $ wt stats
@@ -75,7 +83,7 @@ openrouter/qwen/qwen3.8-27b         0         5        517       3,135  $0.0085
 
 | Column | Source |
 |---|---|
-| `LAUNCHES` | wt launches of the model in the window, from `usage.jsonl` (the same counts the picker's 1d/7d/30d columns show) |
+| `LAUNCHES` | wt launches of the model in the window, from `usage.jsonl` (the picker's 1d/7d/30d counts, except that a line dated after the report's instant is left out here) |
 | `REQUESTS` | rows the LiteLLM proxy logged for the model in the window |
 | `PROMPT`, `COMPLETION` | summed prompt and completion tokens of those rows |
 | `SPEND` | summed cost of those rows, in dollars |
@@ -87,8 +95,10 @@ How to read a row:
 - **Launches, zero requests** — wt launched it and the proxy logged nothing:
   a native or direct launch (ollama, omlx, a subscription agent), which
   never reaches LiteLLM.
-- **Zero launches, requests** — something used the proxy without a wt
-  launch: `curl`, a script, another client.
+- **Zero launches, requests** — usually something used the proxy without a
+  wt launch: `curl`, a script, another client. A session launched just before
+  the window starts shows the same row: its launch is outside the window and
+  its requests are inside it.
 
 A model that has left `registry.toml` keeps its row; the registry is read
 only for `--family`. A model's family is the registry's, else the id's
@@ -156,13 +166,45 @@ naming another place) and nothing names `config.yaml`:
 set `WT_LITELLM_DATABASE_URL` or `WT_LITELLM_CONFIG` for a scratch setup.
 
 The query waits at most 3 seconds for a connection and 10 seconds in all,
-and never prompts for a password. The window is `--window` ending now, in
-UTC. wt only reads; it writes nothing to the database.
+and never prompts for a password. The window is `--window` ending at the
+report's instant (the one the launch counts are measured from), in UTC:
+`"startTime"` after `as_of - window` and no later than `as_of`, the same
+edges the launch counts use, so a launch and a request dated the same
+instant are counted or left out together. A request is logged after its
+launch, so a session launched just before the window starts can still show
+requests with no launch in the window. wt only reads; it writes nothing to
+the database.
 
-The connection string is passed to `psql` as an argument, so for the second
-or so the query runs it is visible to other users of the machine in `ps`.
-Keep the password out of it (a `~/.pgpass` entry or `PGPASSWORD` works with
-`psql` as usual) on a shared machine.
+The connection string is never on `psql`'s command line, where `ps` would
+show it to every user of the machine. wt reads the string and gives `psql`
+each part in libpq's environment variable for it (`PGHOST`, `PGPORT`,
+`PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE`, …), and passes no `-d`.
+While the query runs, the password is therefore readable in `psql`'s
+environment by processes of your own user and by root (`ps -E` on macOS,
+`/proc/<pid>/environ` on Linux), and by no other user.
+
+Two things follow from that:
+
+- **Only the connection string describes the connection.** `psql` gets none
+  of the `PG*` variables set in your shell — a stray `PGHOST`, `PGSERVICE`
+  or `PGSSLMODE` cannot redirect or weaken the query, and a `PGPASSWORD` or
+  `PGPASSFILE` there is not used either. Put the password in the string, in
+  the string's `passfile`, or in `~/.pgpass`; a password the string does
+  not lead to shows up as `fe_sendauth: no password supplied`.
+- **A string wt cannot hand over exactly is refused**, and `psql` is not
+  run: see `the LiteLLM database connection string cannot be handed to
+  psql` under "When spend is missing".
+
+Both forms work, a URI (`postgresql://user:password@host:port/dbname?sslmode=require`,
+several hosts included) and a keyword string (`host=… port=… dbname=…`,
+with libpq's quoting). The options passed on are `host`, `hostaddr`,
+`port`, `dbname`, `user`, `password`, `passfile`, `connect_timeout`,
+`client_encoding`, `options`, `application_name`, `channel_binding`,
+`sslmode`, `sslcompression`, `sslcert`, `sslkey`, `sslrootcert`, `sslcrl`,
+`sslcrldir`, `sslsni`, `ssl_min_protocol_version`,
+`ssl_max_protocol_version`, `requirepeer`, `gssencmode`, `krbsrvname`,
+`gsslib` and `target_session_attrs`, plus the URI's `ssl=true`. A
+`connect_timeout` in the string replaces the 3 seconds above.
 
 When the database cannot be reached, the note names the host and port wt
 tried — `cannot reach the LiteLLM database at 127.0.0.1:5432: Connection
@@ -190,13 +232,14 @@ wt: spend unavailable: psql not found on PATH
 | Note | Meaning |
 |---|---|
 | `spend unavailable: psql not found on PATH` | Install a Postgres client that puts `psql` on `PATH` |
-| `spend unavailable: cannot reach the LiteLLM database at <host>:<port>: …` | `psql` could not connect to that address (`at socket <path>` for a socket), or got no answer in 10 seconds (no address is shown for that). The reason follows: `Connection refused`, `password authentication failed for user "..."` (names are blanked), `the database host name did not resolve`. A reason wt does not recognise — a server that answers in another language, a connection pooler's own wording — is replaced by `the reason psql gave is not shown because it can quote the connection string`, with the address kept. When `psql` tried several addresses for one host, the last attempt is the one reported. If the address is not the one you expect, "Where spend comes from" lists where it can come from. When `psql`'s message could quote the connection string — it does for one it cannot parse — wt says so instead of printing it, and shows no address; run `psql` yourself to see it |
+| `spend unavailable: cannot reach the LiteLLM database at <host>:<port>: …` | `psql` could not connect to that address (`at socket <path>` for a socket), or got no answer in 10 seconds (no address is shown for that). The reason follows: `Connection refused`, `password authentication failed for user "..."` (names are blanked), `fe_sendauth: no password supplied` (the server wants a password and the string, its `passfile` and `~/.pgpass` give none; a `PGPASSWORD` in your shell is not passed on), `the database host name did not resolve`. A reason wt does not recognise — a server that answers in another language, a connection pooler's own wording — is replaced by `the reason psql gave is not shown because it can quote the connection string`, with the address kept. When `psql` tried several addresses for one host, the last attempt is the one reported. If the address is not the one you expect, "Where spend comes from" lists where it can come from. When `psql`'s message could quote the connection string — it does for one it cannot parse — wt says so instead of printing it, and shows no address; run `psql` yourself to see it |
+| `spend unavailable: the LiteLLM database connection string cannot be handed to psql: …` | wt gives `psql` the connection in environment variables, and this string cannot be given that way without changing what it means. `psql` was not run, and nothing from the string is quoted. `it sets an option wt cannot pass in psql's environment`: the string has an option outside the list in "Where spend comes from" — one with no environment variable (`keepalives`, `sslpassword`), `service`, one only recent libpq releases know (`require_auth`), or one that is not libpq's at all (Prisma's `schema`, which `psql` refuses too). `it is not written in a form wt can read the way psql would`: a URI with a space, a control character, a bad percent-escape or `%00` anywhere in it (write a space as `%20`), or a keyword string with an unclosed quote, a value cut by a space, or, in a value that is not in single quotes, one of the letters outside ASCII that `psql` can take for a space (`à` is one; write `password='…'`) |
 | `spend unavailable: no LiteLLM database configured: …` | Nothing names a database; the rest says where wt looked — `config.yaml`, the variable it names, wt's environment and the proxy's plist — and which variable to set. It never quotes a value |
 | `spend unavailable: the spend query failed: …` | Connected, but the query failed. The server's `ERROR:` line follows (for example the table does not exist: spend logging is not set up), or `psql`'s exit status |
 | `spend unavailable: LiteLLM config is invalid: …` | `config.yaml` exists and cannot be parsed |
 | `spend unavailable: open …/config.yaml: …` | `config.yaml` exists and cannot be read at all; the system's reason follows (`permission denied`, `is a directory`) |
 | `--agent narrows launches only; …` | `--agent` was given |
-| `wt's configuration did not load (…) …` | `--family` was given and wt could not load its configuration — `config.toml` or `registry.toml`; the parentheses quote what failed — so there are no registry families and only provider prefixes (`ollama`, `openrouter`) match |
+| `wt's configuration did not load (…) …` | `--family` was given and wt could not load its configuration — `config.toml` or `registry.toml`; the parentheses quote what failed and, after a `;`, name the repair (``run `wt config` to repair`` for `config.toml`; `fix the link or move it aside` or `fix that file by hand` for the registry; nothing more for a missing registry, whose error already says `wt model init`) — so there are no registry families and only provider prefixes (`ollama`, `openrouter`) match |
 
 A `-` means "not read". A `0` means the proxy logged nothing for that model.
 
@@ -219,7 +262,10 @@ Example (illustrative values, wrapped here for reading):
     "requests":4,"prompt_tokens":152,"completion_tokens":630,"spend":0,"also_logged_as":[]}]}}
 ```
 
-- `window` is the `--window` value; `as_of` is the end of the window, UTC.
+- `window` is the `--window` value; `as_of` is the end of the window, UTC —
+  the one instant the survey rows, the launch counts and the spend query
+  were all measured from. The window is everything after `as_of - window`
+  up to and including `as_of`.
 - `survey` holds the survey table's rows. `agent` is `null` for a model's
   all-agents aggregate (`(all)` in the table). `worked_pct`, `quality_avg`
   and `speed_avg` are unrounded, and `null` where the table shows `-`.

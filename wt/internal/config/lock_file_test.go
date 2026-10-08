@@ -10,11 +10,11 @@ import (
 )
 
 // TestWithFileLockSerializesCallersOnOneLockFile pins the helper WithLock is
-// now built on, with a lock path of the caller's choosing: the registry
-// writer will take it on registry.toml.lock. Two holders at once would let
+// built on, at a lock path of the caller's choosing (WithLock passes
+// config.toml.lock). Two holders at once would let
 // two wt processes interleave a read-modify-write and lose an edit.
 func TestWithFileLockSerializesCallersOnOneLockFile(t *testing.T) {
-	lock := filepath.Join(t.TempDir(), "nested", "registry.toml.lock")
+	lock := filepath.Join(t.TempDir(), "nested", "config.toml.lock")
 	var mu sync.Mutex
 	active, maxActive := 0, 0
 	var wg sync.WaitGroup

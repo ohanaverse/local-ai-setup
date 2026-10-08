@@ -33,6 +33,20 @@ type statsRow struct {
 	Aggregate bool
 }
 
+// statsFilter is what --model, --family and --agent asked for; "" means
+// the flag was not given, and each match is exact. The three travel as one
+// value with named fields, never as adjacent strings: handed on positionally,
+// a model id in the family's place is legal Go that selects no row and still
+// exits 0 (#288). The blank first field makes the compiler hold a literal to
+// that: statsFilter{"a", "b", "c"} does not compile, and go vet would not
+// have flagged it (its composites check covers imported types only).
+type statsFilter struct {
+	_      struct{}
+	model  string // --model: both tables
+	family string // --family: the usage table only
+	agent  string // --agent: the survey table and the launch counts
+}
+
 // statsCmd returns the `wt stats` command. It is a report, never a gate:
 // an empty store, a missing psql and an unreachable database all exit 0.
 // Only a malformed --window value is an error.
@@ -59,12 +73,14 @@ func statsCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			modelFilter := mustGetString(cmd, "model")
-			agentFilter := mustGetString(cmd, "agent")
-			familyFilter := mustGetString(cmd, "family")
+			f := statsFilter{
+				model:  mustGetString(cmd, "model"),
+				family: mustGetString(cmd, "family"),
+				agent:  mustGetString(cmd, "agent"),
+			}
 
 			asOf := statsNow()
-			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, modelFilter, agentFilter)
+			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, f)
 
 			out := cmd.OutOrStdout()
 			asJSON, _ := cmd.Flags().GetBool("json")
@@ -76,7 +92,7 @@ func statsCmd(a *app) *cobra.Command {
 				// One JSON document: writeStatsJSON writes nothing until it is
 				// complete, so there is no first table to show before the spend
 				// query: query, then write.
-				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, f)
 				if err := writeStatsJSON(out, buildStatsJSON(windowName, asOf, rows, rep)); err != nil {
 					return err
 				}
@@ -93,7 +109,7 @@ func statsCmd(a *app) *cobra.Command {
 				// the survey table does not need it — printing first keeps the
 				// first table off that critical path. (--json waits anyway: one
 				// document prints only when complete.)
-				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, modelFilter, familyFilter, agentFilter)
+				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, f)
 				if len(rep.Rows) == 0 {
 					fmt.Fprintln(out, "no usage data")
 				} else {
@@ -101,7 +117,7 @@ func statsCmd(a *app) *cobra.Command {
 				}
 			}
 			notes := rep.notes()
-			if familyFilter != "" && a.loadErr != nil {
+			if f.family != "" && a.loadErr != nil {
 				notes = append(notes, registryNote(a.loadErr))
 			}
 			for _, note := range notes {
@@ -120,35 +136,24 @@ func statsCmd(a *app) *cobra.Command {
 	return cmd
 }
 
-// statsNow is the report's "as of" instant, the end of the window the
-// spend query covers and the as_of a --json document carries. A seam so a
-// test can pin it.
+// statsNow is the report's "as of" instant. It is read once per run, and
+// every window in the report is measured back from that one value: the
+// survey rows, the launch counts (usage's AllCounts takes it), the spend
+// query, and the as_of a --json document carries. A seam so a test can pin
+// the whole report.
 var statsNow = func() time.Time { return time.Now().UTC() }
 
 var surveyHeaders = []string{"MODEL", "AGENT", "WORKED%", "QUALITY", "SPEED", "N", "SKIPPED"}
 
-// surveyEmptyStats reports a Stats with no answered and no skipped events:
-// the model (or the agent×model pair) produced no survey data in the window.
-// Row selection (buildStatsRows) and both renderers (surveyTableRows,
-// buildStatsJSON) drop such rows — one rule, so the rows a --json document
-// holds are the same rows the text tables show. Rows with answered == 0 but
-// skipped > 0 ("all skipped") are kept: they show the combo was tried but
-// never produced data.
-func surveyEmptyStats(s survey.Stats) bool { return s.Answered == 0 && s.Skipped == 0 }
-
-// surveyTableRows renders the survey rows as table cells.
+// surveyTableRows renders the survey rows as table cells: every row it is
+// given, one for one. Which rows exist is buildStatsRows' decision, shared
+// with buildStatsJSON; a rule about that here would let the table and the
+// document disagree.
 func surveyTableRows(rows []statsRow) [][]string {
 	tableRows := make([][]string, 0, len(rows))
 	for _, r := range rows {
 		quality, qok := r.Stats.QualityAvg()
 		speed, sok := r.Stats.SpeedAvg()
-
-		// buildStatsRows already applied this rule; repeated here so a row
-		// reaching the renderer from anywhere else is dropped the same way.
-		if surveyEmptyStats(r.Stats) {
-			continue
-		}
-
 		tableRows = append(tableRows, []string{
 			r.ModelID,
 			r.Agent,
@@ -177,45 +182,64 @@ func parseStatsWindow(s string) (time.Duration, error) {
 
 // buildStatsRows merges the per-model "(all)" aggregate with every
 // per-(agent,model) combo into one row list, applies the --model/--agent
-// filters, drops rows with zero answered and zero skipped in the window,
-// and sorts by agent name (the "(all)" aggregate rows first, then model
-// id). The aggregate-first placement is enforced explicitly rather than
-// by lexicographic luck: agent names are user-configured and may sort
-// before "(" (digits, "-", non-ASCII).
-func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, modelFilter, agentFilter string) []statsRow {
+// filters (f.family is not read: a survey row carries no family), drops the
+// rows with no data, and sorts by agent name (the "(all)" aggregate rows
+// first, then model id). The aggregate-first placement is enforced
+// explicitly rather than by lexicographic luck: agent names are
+// user-configured and may sort before "(" (digits, "-", non-ASCII).
+//
+// This is the one place that decides which survey rows exist: the table
+// (surveyTableRows) and the document (buildStatsJSON) both render exactly
+// the rows returned here.
+//
+// asOf is the end of the window as well as where it is measured from: an
+// answer dated after it is left out, as AllCounts leaves out a launch dated
+// after it, and one dated exactly asOf is counted. The bound is applied here
+// and not in survey's inWindow, which the picker and the after-session
+// summary share and which keeps counting such an answer for them. The start
+// is inWindow's own: an answer exactly one window before asOf is left out.
+// Together that is (asOf-window, asOf], the usage table's window (#298).
+func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, f statsFilter) []statsRow {
+	upTo := make([]survey.Event, 0, len(events))
+	for _, ev := range events {
+		if !ev.Timestamp.After(asOf) {
+			upTo = append(upTo, ev)
+		}
+	}
+	events = upTo
+
 	modelStats := survey.ModelStats(events, window, asOf)
 	combos := survey.AllAgentModelStats(events, window, asOf)
 
-	modelIDs := make(map[string]bool, len(modelStats))
-	for id := range modelStats {
-		modelIDs[id] = true
+	var candidates []statsRow
+	if f.agent == "" {
+		for id, s := range modelStats {
+			candidates = append(candidates, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
+		}
 	}
 	for _, c := range combos {
-		modelIDs[c.ModelID] = true
+		if f.agent != "" && c.Agent != f.agent {
+			continue
+		}
+		candidates = append(candidates, statsRow{ModelID: c.ModelID, Agent: c.Agent, Stats: c.Stats})
 	}
 
 	var rows []statsRow
-	for id := range modelIDs {
-		if modelFilter != "" && id != modelFilter {
+	for _, r := range candidates {
+		if f.model != "" && r.ModelID != f.model {
 			continue
 		}
-		if agentFilter == "" {
-			if s := modelStats[id]; !surveyEmptyStats(s) {
-				rows = append(rows, statsRow{ModelID: id, Agent: statsAllAgents, Aggregate: true, Stats: s})
-			}
-		}
-	}
-	for _, c := range combos {
-		if modelFilter != "" && c.ModelID != modelFilter {
+		// A row with no data is left out: nothing answered and nothing
+		// skipped is no survey information at all (an event that recorded
+		// neither still creates its model and its combo). A row with
+		// nothing answered but something skipped ("all skipped") is kept: it
+		// shows the agent×model combo was tried and never produced a
+		// verdict. The rule is stated here and nowhere else, for the
+		// aggregate rows and the combo rows alike.
+		if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
 			continue
 		}
-		if agentFilter != "" && c.Agent != agentFilter {
-			continue
-		}
-		if surveyEmptyStats(c.Stats) {
-			continue
-		}
-		rows = append(rows, statsRow{ModelID: c.ModelID, Agent: c.Agent, Stats: c.Stats})
+		rows = append(rows, r)
 	}
 
 	sort.Slice(rows, func(i, j int) bool {

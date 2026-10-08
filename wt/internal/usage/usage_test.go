@@ -359,17 +359,6 @@ func TestStoreInterfaceIncludesCountsForAgent(t *testing.T) {
 	}
 }
 
-// TestStoreInterfaceIncludesAllCounts is a compile-time guard that the Store
-// interface exposes the id-less counts, so `wt stats` can take a Store (and
-// tests a mock) instead of the concrete StoreImpl — the same seam
-// CountsForAgent has above.
-func TestStoreInterfaceIncludesAllCounts(t *testing.T) {
-	var s Store = NewStoreAt(t.TempDir())
-	if got := s.AllCounts(""); got == nil || len(got) != 0 {
-		t.Errorf("AllCounts(\"\") = %#v, want an empty non-nil map", got)
-	}
-}
-
 // writeEvents replaces the store's usage.jsonl with the given events, plus
 // any raw lines appended verbatim (for malformed-line cases).
 func writeEvents(t *testing.T, store *StoreImpl, events []event, raw ...string) {
@@ -398,8 +387,6 @@ func writeEvents(t *testing.T, store *StoreImpl, events []event, raw ...string) 
 func TestAllCountsEnumeratesEveryModelInTheFile(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
 	writeEvents(t, store, []event{
 		{ModelID: "ollama/a:1", Agent: "claude", Timestamp: fixed.Add(-30 * time.Minute)},
@@ -409,7 +396,7 @@ func TestAllCountsEnumeratesEveryModelInTheFile(t *testing.T) {
 		{ModelID: "ollama/stale", Agent: "claude", Timestamp: fixed.Add(-40 * 24 * time.Hour)},
 	}, "not json", `{"model_id":"ollama/a:1","timestamp":"garbage"}`)
 
-	got := store.AllCounts("")
+	got := store.AllCounts("", fixed)
 	want := map[string]UsageCounts{
 		"ollama/a:1":            {OneDay: 1, SevenDay: 2, ThirtyDay: 3},
 		"removed/from-registry": {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
@@ -432,8 +419,6 @@ func TestAllCountsEnumeratesEveryModelInTheFile(t *testing.T) {
 func TestAllCountsScopesToOneAgent(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
 	writeEvents(t, store, []event{
 		{ModelID: "ollama/a:1", Agent: "claude", Timestamp: fixed.Add(-1 * time.Hour)},
@@ -442,49 +427,69 @@ func TestAllCountsScopesToOneAgent(t *testing.T) {
 		{ModelID: "ollama/b:1", Agent: "claude", Timestamp: fixed.Add(-4 * time.Hour)},
 	})
 
-	got := store.AllCounts("codex")
+	got := store.AllCounts("codex", fixed)
 	if len(got) != 1 || got["ollama/a:1"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
 		t.Fatalf("AllCounts(\"codex\") = %+v, want only ollama/a:1 with one launch", got)
 	}
-	if got := store.AllCounts("nobody"); len(got) != 0 {
+	if got := store.AllCounts("nobody", fixed); len(got) != 0 {
 		t.Errorf("AllCounts(\"nobody\") = %+v, want an empty map", got)
 	}
 }
 
-// TestAllCountsWindowEdgesAndMissingFile verifies the bucket edges are the
-// ones Counts uses (an event exactly 24h, 7d or 30d old is outside that
-// window) and that a missing usage.jsonl reads as an empty, non-nil map.
-// `wt stats` on a fresh install must print "no usage data", not crash, and
-// its launch column must agree with the picker's 1d/7d/30d columns.
-func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
+// TestAllCountsMissingFileIsAnEmptyMap verifies that a missing usage.jsonl
+// reads as an empty, non-nil map: `wt stats` on a fresh install must print
+// "no usage data", not crash. The bucket edges themselves — each bucket
+// (asOf - window, asOf], which is also what the picker's 1d/7d/30d columns
+// and the spend query use — are pinned by
+// TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd.
+func TestAllCountsMissingFileIsAnEmptyMap(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
-	if got := store.AllCounts(""); got == nil || len(got) != 0 {
+	if got := store.AllCounts("", fixed); got == nil || len(got) != 0 {
 		t.Fatalf("AllCounts on a missing file = %#v, want an empty non-nil map", got)
 	}
+}
+
+// TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd pins each bucket as
+// (asOf - window, asOf] to the nanosecond: a launch dated exactly one window
+// before the instant is outside that bucket, one a nanosecond younger is
+// inside it, and one dated exactly at the instant is inside every bucket.
+// This is the rule `wt stats`' spend query follows (spend.InWindow, #298);
+// if the two disagree at an edge, a model shows a request with no launch
+// there, which the usage guide tells the reader is traffic wt did not send.
+func TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
 
 	writeEvents(t, store, []event{
-		{ModelID: "day", Timestamp: fixed.Add(-24 * time.Hour)},
-		{ModelID: "week", Timestamp: fixed.Add(-7 * 24 * time.Hour)},
-		{ModelID: "month", Timestamp: fixed.Add(-30 * 24 * time.Hour)},
-		{ModelID: "month", Timestamp: fixed.Add(-30*24*time.Hour + time.Second)},
+		{ModelID: "day/on-the-edge", Timestamp: asOf.Add(-day)},
+		{ModelID: "day/inside", Timestamp: asOf.Add(-day + time.Nanosecond)},
+		{ModelID: "week/on-the-edge", Timestamp: asOf.Add(-7 * day)},
+		{ModelID: "week/inside", Timestamp: asOf.Add(-7*day + time.Nanosecond)},
+		{ModelID: "month/on-the-edge", Timestamp: asOf.Add(-30 * day)},
+		{ModelID: "month/inside", Timestamp: asOf.Add(-30*day + time.Nanosecond)},
+		{ModelID: "at-the-instant", Timestamp: asOf},
+		{ModelID: "after-the-instant", Timestamp: asOf.Add(time.Nanosecond)},
 	})
-	got := store.AllCounts("")
+	got := store.AllCounts("", asOf)
 	want := map[string]UsageCounts{
-		"day":   {SevenDay: 1, ThirtyDay: 1},
-		"week":  {ThirtyDay: 1},
-		"month": {ThirtyDay: 1},
+		"day/on-the-edge":  {SevenDay: 1, ThirtyDay: 1},
+		"day/inside":       {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"week/on-the-edge": {ThirtyDay: 1},
+		"week/inside":      {SevenDay: 1, ThirtyDay: 1},
+		// month/on-the-edge is in no bucket, so it has no entry at all.
+		"month/inside":   {ThirtyDay: 1},
+		"at-the-instant": {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
 	}
 	for id, w := range want {
 		if got[id] != w {
 			t.Errorf("AllCounts(\"\")[%q] = %+v, want %+v", id, got[id], w)
 		}
 	}
-	if ids := []string{"day", "week", "month"}; len(got) != len(ids) {
-		t.Errorf("AllCounts(\"\") = %+v, want exactly %v", got, ids)
+	if len(got) != len(want) {
+		t.Errorf("AllCounts(\"\") = %+v, want exactly the %d models above (none 30 days old or dated after the instant)", got, len(want))
 	}
 }
 
@@ -496,8 +501,6 @@ func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
 func TestAllCountsSkipsALineWithNoModelID(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
 
 	writeEvents(t, store, []event{
 		{ModelID: "", Agent: "claude", Timestamp: fixed.Add(-time.Hour)},
@@ -505,21 +508,23 @@ func TestAllCountsSkipsALineWithNoModelID(t *testing.T) {
 	}, `{"agent":"claude","timestamp":"2026-10-07T11:00:00Z"}`)
 
 	for _, agent := range []string{"", "claude"} {
-		got := store.AllCounts(agent)
+		got := store.AllCounts(agent, fixed)
 		if _, nameless := got[""]; nameless || len(got) != 1 || got["ollama/a:1"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
 			t.Errorf("AllCounts(%q) = %+v, want only ollama/a:1 with one launch and no \"\" key", agent, got)
 		}
 	}
 }
 
-// TestAllCountsAgentFilterAndOddTimestamps pins two corners the other
+// TestAllCountsAgentFilterAndFutureDatedLines pins two corners the other
 // AllCounts tests leave open. Under a named agent, a legacy agent-less line
 // and that agent's own out-of-window launch are both left out in the same
-// file, so the model does not appear at all. And an event dated in the
-// future (a clock that was wrong when it was written) counts in all three
-// buckets, the rule Counts has always applied, so `wt stats` and the
-// picker's 1d/7d/30d columns agree on such a line.
-func TestAllCountsAgentFilterAndOddTimestamps(t *testing.T) {
+// file, so the model does not appear at all. And an event dated after the
+// instant the caller passes (a clock that was wrong when the line was
+// written, or a launch recorded after the report's instant was read) is not
+// counted: `wt stats` reports a window that ends at that instant, and its
+// spend half cannot see past it either. Counts, the picker's rule, has no
+// such end and still counts the line in all three buckets.
+func TestAllCountsAgentFilterAndFutureDatedLines(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	now = func() time.Time { return fixed }
@@ -529,17 +534,57 @@ func TestAllCountsAgentFilterAndOddTimestamps(t *testing.T) {
 		{ModelID: "ollama/a:1", Timestamp: fixed.Add(-time.Hour)},                           // legacy, no agent
 		{ModelID: "ollama/a:1", Agent: "codex", Timestamp: fixed.Add(-31 * 24 * time.Hour)}, // codex, too old
 		{ModelID: "ollama/future", Agent: "codex", Timestamp: fixed.Add(2 * time.Hour)},     // clock skew
+		{ModelID: "ollama/at", Agent: "codex", Timestamp: fixed},                            // the instant itself
 	})
 
-	got := store.AllCounts("codex")
+	got := store.AllCounts("codex", fixed)
 	if _, listed := got["ollama/a:1"]; listed {
 		t.Errorf("AllCounts(\"codex\") = %+v, want no ollama/a:1 (one line has no agent, the other is too old)", got)
 	}
+	if _, listed := got["ollama/future"]; listed {
+		t.Errorf("AllCounts(\"codex\") = %+v, want no ollama/future (dated after the instant asked about)", got)
+	}
 	want := UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}
-	if got["ollama/future"] != want {
-		t.Errorf("AllCounts(\"codex\")[ollama/future] = %+v, want %+v", got["ollama/future"], want)
+	if got["ollama/at"] != want {
+		t.Errorf("AllCounts(\"codex\")[ollama/at] = %+v, want %+v (the window includes its end)", got["ollama/at"], want)
 	}
 	if c := store.Counts([]string{"ollama/future"})["ollama/future"]; c != want {
-		t.Errorf("Counts()[ollama/future] = %+v, want %+v (the same rule)", c, want)
+		t.Errorf("Counts()[ollama/future] = %+v, want %+v (the picker's rule is unchanged)", c, want)
+	}
+}
+
+// TestAllCountsMeasuresAgainstTheInstantItIsGiven verifies the buckets are
+// measured from the caller's instant and from nothing else: with the
+// package clock set years away in either direction, the same file and the
+// same instant give the same counts, and moving the instant moves the
+// buckets. `wt stats` passes the instant its spend query ends at; if
+// AllCounts consulted its own clock, the launch column would cover a
+// different window from the spend columns beside it (#287).
+func TestAllCountsMeasuresAgainstTheInstantItIsGiven(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	asOf := time.Date(2026, 10, 7, 0, 0, 5, 0, time.UTC)
+	defer func() { now = time.Now }()
+
+	writeEvents(t, store, []event{
+		{ModelID: "m", Timestamp: asOf.Add(-time.Hour)},                  // 1d, 7d, 30d
+		{ModelID: "m", Timestamp: asOf.Add(-24*time.Hour + time.Second)}, // 1d, by a second
+		{ModelID: "m", Timestamp: asOf.Add(-24*time.Hour - time.Second)}, // 7d, 30d
+		{ModelID: "m", Timestamp: asOf.Add(time.Second)},                 // after asOf: none
+	})
+	want := UsageCounts{OneDay: 2, SevenDay: 3, ThirtyDay: 3}
+	for _, clock := range []time.Time{
+		time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC),
+		asOf.Add(3 * time.Second),
+		time.Date(2040, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		now = func() time.Time { return clock }
+		if got := store.AllCounts("", asOf)["m"]; got != want {
+			t.Errorf("package clock at %s: AllCounts(\"\", %s)[m] = %+v, want %+v", clock.Format(time.RFC3339), asOf.Format(time.RFC3339), got, want)
+		}
+	}
+	// Two seconds later the same file reads differently: the instant decides.
+	later := asOf.Add(2 * time.Second)
+	if got, want := store.AllCounts("", later)["m"], (UsageCounts{OneDay: 2, SevenDay: 4, ThirtyDay: 4}); got != want {
+		t.Errorf("AllCounts(\"\", %s)[m] = %+v, want %+v", later.Format(time.RFC3339), got, want)
 	}
 }

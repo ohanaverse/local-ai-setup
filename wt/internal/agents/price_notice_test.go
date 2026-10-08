@@ -61,13 +61,22 @@ func TestPriceNoticeMalformedDateFallsBackToNever(t *testing.T) {
 // model or a model of a non-native cloud provider. Ollama cloud models
 // (location "cloud" on the local ollama provider, priced by ollama.com) and
 // native agent models never count, or users with no OpenRouter models are
-// nagged after every session about a refresh that has nothing to do.
+// nagged after every session about a refresh that has nothing to do. A
+// provider's explicit openrouter_priced overrides the inference in both
+// directions (a corporate gateway opts out, a local proxy opts in) but never
+// makes a native provider count — modelman applies the same order, and a
+// one-sided override would have wt nag about, or stay silent on, a refresh
+// modelman sees differently.
 func TestHasOpenRouterPricedModel(t *testing.T) {
+	no, yes := false, true
 	providers := []config.Provider{
 		{ID: "ollama", Location: config.LocationLocal},
 		{ID: "openrouter", Location: config.LocationCloud},
 		{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
 		{ID: "acme", Location: config.LocationCloud},
+		{ID: "corp", Location: config.LocationCloud, OpenRouterPriced: &no},
+		{ID: "gateway", Location: config.LocationLocal, OpenRouterPriced: &yes},
+		{ID: "agent", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}, OpenRouterPriced: &yes},
 	}
 	ollamaCloud := config.Model{ID: "ollama/glm:cloud", ProviderID: "ollama", Location: config.LocationCloud}
 	native := config.Model{ID: "claude/native", ProviderID: "claude", Native: true}
@@ -81,6 +90,9 @@ func TestHasOpenRouterPricedModel(t *testing.T) {
 		{"ollama cloud and native only", &config.Config{}, []config.Model{ollamaCloud, native}, false},
 		{"openrouter model", &config.Config{}, []config.Model{ollamaCloud, {ID: "openrouter/x", ProviderID: "openrouter"}}, true},
 		{"non-native cloud provider", &config.Config{}, []config.Model{{ID: "acme/x", ProviderID: "acme"}}, true},
+		{"cloud provider marked openrouter_priced = false", &config.Config{}, []config.Model{{ID: "corp/x", ProviderID: "corp"}}, false},
+		{"local provider marked openrouter_priced = true", &config.Config{}, []config.Model{{ID: "gateway/x", ProviderID: "gateway"}}, true},
+		{"native provider marked openrouter_priced = true", &config.Config{}, []config.Model{{ID: "agent/x", ProviderID: "agent"}}, false},
 	}
 	for _, tc := range cases {
 		if tc.cfg != nil {

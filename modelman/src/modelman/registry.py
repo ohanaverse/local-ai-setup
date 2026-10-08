@@ -159,6 +159,13 @@ class ProviderEntry:
     model_dir: str | None = None
     protocols: list[str] = field(default_factory=lambda: ["openai-chat"])
     auth: AuthConfig = field(default_factory=lambda: AuthConfig(type="none"))
+    # openrouter_priced overrides the inferred _is_openrouter_priced result.
+    # None = infer from location/auth (the default). False = not OpenRouter-priced
+    # even though the provider is a non-native cloud provider (e.g. a corporate
+    # LiteLLM gateway). True = OpenRouter-priced even though the provider is
+    # not a cloud one. A native provider is never OpenRouter-priced, whatever
+    # this says. Mirrors wt's Provider.OpenRouterPriced.
+    openrouter_priced: bool | None = None
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -712,6 +719,10 @@ def _provider_to_dict(p: ProviderEntry) -> dict[str, Any]:
         "location": p.location,
         "model_dir": p.model_dir,
         "protocols": list(p.protocols) if p.protocols and p.protocols != ["openai-chat"] else None,
+        # An explicit False must be written back: it is a typed field, so it
+        # is no longer carried in `extra`, and dropping it on save would
+        # silently restore the inferred value. drop_none omits only None.
+        "openrouter_priced": p.openrouter_priced,
         "auth": _auth_to_dict(p.auth),
     }
     return drop_none({**p.extra, **d})
@@ -999,6 +1010,15 @@ def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
     auth_raw = raw.get("auth", {})
     if "type" not in auth_raw:
         raise RegistryError(f"Provider `{raw['id']}` auth missing required `type` field")
+    # wt decodes this key into a *bool and refuses the whole registry on any
+    # other type; a quoted "false" would also read as truthy here and turn the
+    # override on its head. Refuse it where the file is owned.
+    openrouter_priced = raw.get("openrouter_priced")
+    if openrouter_priced is not None and not isinstance(openrouter_priced, bool):
+        raise RegistryError(
+            f"Provider `{raw['id']}` has a non-boolean `openrouter_priced` "
+            f"({openrouter_priced!r}): use true or false, unquoted"
+        )
     return ProviderEntry(
         id=raw["id"],
         name=raw.get("name", raw["id"]),
@@ -1016,7 +1036,10 @@ def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
             base_url=auth_raw.get("base_url"),
             extra=unknown_keys(auth_raw, {"type", "secret_ref", "base_url"}),
         ),
-        extra=unknown_keys(raw, {"id", "name", "location", "model_dir", "auth", "protocols"}),
+        openrouter_priced=openrouter_priced,
+        extra=unknown_keys(
+            raw, {"id", "name", "location", "model_dir", "auth", "protocols", "openrouter_priced"}
+        ),
     )
 
 

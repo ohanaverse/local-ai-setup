@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +34,19 @@ func stubPsql(t *testing.T, stdout, stderr string, exit int) *psqlCall {
 	}
 	t.Cleanup(func() { lookPath, runPsql = oldLook, oldRun })
 	return call
+}
+
+// libpqVars are the PG* entries of a child environment, sorted: everything
+// libpq reads from it.
+func libpqVars(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PG") {
+			out = append(out, kv)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // fakePsqlBinary writes an executable shell script and points lookPath at
@@ -108,27 +122,29 @@ func TestQueryEmptyWindow(t *testing.T) {
 	}
 }
 
-// TestQueryInvocation pins how psql is run, which is the spec's wording:
-// `psql -X -w -q -At -v ON_ERROR_STOP=1`, the connection string after -d
-// (libpq does not expand a URI given in PGDATABASE), the statement after
-// -c, and PGCONNECT_TIMEOUT=3 in the environment. -X keeps a ~/.psqlrc
-// from changing the output format; -w keeps psql from ever stopping at a
-// password prompt inside `wt stats`. LC_MESSAGES=C asks libpq for the
-// English connect-failure line the error mapping reads, so a translated
-// locale does not cost the note its address and reason.
+// TestQueryInvocation pins how psql is run: `psql -X -w -q -At -v
+// ON_ERROR_STOP=1`, the statement after -c, and no -d — the connection is
+// in the environment (PGHOST, PGDATABASE, …), with PGCONNECT_TIMEOUT=3.
+// -X keeps a ~/.psqlrc from changing the output format; -w keeps psql from
+// ever stopping at a password prompt inside `wt stats`. LC_MESSAGES=C asks
+// libpq for the English connect-failure line the error mapping reads, so a
+// translated locale does not cost the note its address and reason. A -d
+// here would put the database password back where `ps` shows it to every
+// user of the machine (#282).
 func TestQueryInvocation(t *testing.T) {
 	call := stubPsql(t, "[]", "", 0)
 	if _, err := Query(context.Background(), "postgresql://h/db", winStart, winEnd); err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", "postgresql://h/db", "-c", querySQL(winStart, winEnd)}
+	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-c", querySQL(winStart, winEnd)}
 	if call.bin != "/fake/psql" || !slices.Equal(call.args, want) {
 		t.Errorf("ran %s %q\nwant /fake/psql %q", call.bin, call.args, want)
 	}
-	for _, kv := range []string{"PGCONNECT_TIMEOUT=3", "PGTZ=UTC", "LC_MESSAGES=C"} {
-		if !slices.Contains(call.env, kv) {
-			t.Errorf("env lacks %s", kv)
-		}
+	if got, want := libpqVars(call.env), []string{"PGCONNECT_TIMEOUT=3", "PGDATABASE=db", "PGHOST=h", "PGTZ=UTC"}; !slices.Equal(got, want) {
+		t.Errorf("libpq variables = %q\nwant %q", got, want)
+	}
+	if !slices.Contains(call.env, "LC_MESSAGES=C") {
+		t.Error("env lacks LC_MESSAGES=C")
 	}
 	if call.n != 1 {
 		t.Errorf("psql ran %d times, want 1 (one aggregated query)", call.n)
@@ -138,9 +154,12 @@ func TestQueryInvocation(t *testing.T) {
 // TestQuerySQL pins the statement itself: one aggregate over
 // "LiteLLM_SpendLogs" grouped by model_group, the columns modelman's report
 // summed, and a window written as zone-less UTC literals whatever zone the
-// caller's times are in. The window is the port of modelman's
-// `"startTime" >= start AND "startTime" <= end`. A times-in-local-zone
-// literal here would shift the window by the machine's UTC offset.
+// caller's times are in. The window is (start, end]: exclusive at its start
+// and inclusive at its end, the rule usage.AllCounts buckets launches by
+// (#298). modelman's `"startTime" >= start` counted a request logged exactly
+// at the start, where the launch that sent it is not counted, and `wt stats`
+// then showed requests with 0 launches. A times-in-local-zone literal here
+// would shift the window by the machine's UTC offset.
 func TestQuerySQL(t *testing.T) {
 	// A fixed zone needs no tzdata, so this never skips.
 	est := time.FixedZone("EST", -5*3600)
@@ -151,11 +170,109 @@ func TestQuerySQL(t *testing.T) {
 		`coalesce(sum(completion_tokens), 0) AS completion_tokens, ` +
 		`coalesce(sum(spend), 0) AS spend ` +
 		`FROM "LiteLLM_SpendLogs" ` +
-		`WHERE "startTime" >= timestamp '2026-09-07 12:00:00.000000' ` +
+		`WHERE "startTime" > timestamp '2026-09-07 12:00:00.000000' ` +
 		`AND "startTime" <= timestamp '2026-10-07 12:00:00.000000' ` +
 		`GROUP BY 1 ORDER BY 1) t`
 	if got != want {
 		t.Errorf("querySQL =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// sqlWindowBound matches one bound of the statement's window: the operator
+// "startTime" is compared with, and the timestamp literal.
+var sqlWindowBound = regexp.MustCompile(`"startTime" (\S+) timestamp '([^']*)'`)
+
+// sqlCompare is what each comparison operator Postgres could be given means
+// for two instants.
+var sqlCompare = map[string]func(t, bound time.Time) bool{
+	">":  func(t, b time.Time) bool { return t.After(b) },
+	">=": func(t, b time.Time) bool { return !t.Before(b) },
+	"<":  func(t, b time.Time) bool { return t.Before(b) },
+	"<=": func(t, b time.Time) bool { return !t.After(b) },
+}
+
+// TestQuerySQLWindowIsInWindow verifies the statement and InWindow state one
+// rule. It reads the two comparisons back out of the SQL querySQL built — the
+// operators and the literals as Postgres will see them — and checks that they
+// keep exactly the instants InWindow keeps, at both edges and a microsecond
+// either side of each. InWindow is what `wt stats`' tests stand in for the
+// database with, so this is the link that stops the two drifting apart: an
+// operator changed in the SQL alone fails here, and without it the edge tests
+// in cmd/wt would go on passing against a rule the database no longer applies.
+//
+// The second case gives the window ends that are not whole microseconds, as
+// time.Now() does. The literal drops the fraction below a microsecond, and
+// the case shows that moves neither edge for the microsecond-grained instants
+// a Postgres timestamp can hold: a row the literal keeps is one the full-
+// precision instants keep.
+func TestQuerySQLWindowIsInWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		start, end time.Time
+	}{
+		{"whole microseconds", winStart, winEnd},
+		{"nanosecond ends", winStart.Add(1234567 * time.Nanosecond), winEnd.Add(7654321 * time.Nanosecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bounds := sqlWindowBound.FindAllStringSubmatch(querySQL(tc.start, tc.end), -1)
+			if len(bounds) != 2 {
+				t.Fatalf("the statement has %d \"startTime\" comparisons, want 2: %q", len(bounds), bounds)
+			}
+			type bound struct {
+				keeps func(t, b time.Time) bool
+				at    time.Time
+			}
+			var sql []bound
+			for _, m := range bounds {
+				keeps, ok := sqlCompare[m[1]]
+				if !ok {
+					t.Fatalf("unknown operator %q in %q", m[1], m[0])
+				}
+				at, err := time.Parse(timestampLayout, m[2])
+				if err != nil {
+					t.Fatalf("literal %q: %v", m[2], err)
+				}
+				sql = append(sql, bound{keeps, at})
+			}
+
+			us := time.Microsecond
+			for _, edge := range []time.Time{tc.start, tc.end} {
+				floor := edge.Truncate(us)
+				for _, at := range []time.Time{floor.Add(-us), floor, floor.Add(us), floor.Add(2 * us)} {
+					bySQL := sql[0].keeps(at, sql[0].at) && sql[1].keeps(at, sql[1].at)
+					if want := InWindow(at, tc.start, tc.end); bySQL != want {
+						t.Errorf("a request at %s: the SQL keeps it = %v, InWindow = %v (window %s .. %s)",
+							at.Format(time.RFC3339Nano), bySQL, want,
+							tc.start.Format(time.RFC3339Nano), tc.end.Format(time.RFC3339Nano))
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestInWindowEdges pins the rule in words: the window is (start, end]. A
+// request exactly at start is out, the next microsecond is in, one exactly at
+// end is in and the next microsecond is out. It is the rule
+// usage.AllCounts applies to launches, and the two must agree for a `wt
+// stats` row's LAUNCHES and REQUESTS to describe the same span of time.
+func TestInWindowEdges(t *testing.T) {
+	us := time.Microsecond
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		want bool
+	}{
+		{"before the start", winStart.Add(-us), false},
+		{"exactly at the start", winStart, false},
+		{"a microsecond after the start", winStart.Add(us), true},
+		{"a microsecond before the end", winEnd.Add(-us), true},
+		{"exactly at the end", winEnd, true},
+		{"a microsecond after the end", winEnd.Add(us), false},
+	} {
+		if got := InWindow(tc.at, winStart, winEnd); got != tc.want {
+			t.Errorf("InWindow(%s) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -179,6 +296,11 @@ func TestQueryErrorMapping(t *testing.T) {
 	// libpq's shape when the server answered and said no.
 	const badLogin = "psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: " +
 		"FATAL:  password authentication failed for user \"litellm\"\n"
+	// The server asked for a password and the connection string led to none:
+	// what a password kept only in PGPASSWORD looks like, now that psql
+	// inherits no PG* variable.
+	const noPassword = "psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: " +
+		"fe_sendauth: no password supplied\n"
 	const noSuchDB = "psql: error: connection to server on socket \"/tmp/.s.PGSQL.5432\" failed: " +
 		"FATAL:  database \"litellm\" does not exist\n"
 	const noSuchHost = "psql: error: could not translate host name \"db.example\" to address: " +
@@ -215,6 +337,8 @@ func TestQueryErrorMapping(t *testing.T) {
 			"cannot reach the LiteLLM database at 127.0.0.1:1: Connection refused"},
 		{"login refused", "", badLogin, 2, ErrUnreachable,
 			`cannot reach the LiteLLM database at db.example:5432: password authentication failed for user "..."`},
+		{"no password to give", "", noPassword, 2, ErrUnreachable,
+			"cannot reach the LiteLLM database at db.example:5432: fe_sendauth: no password supplied"},
 		{"no such database, over a socket", "", noSuchDB, 2, ErrUnreachable,
 			`cannot reach the LiteLLM database at socket /tmp/.s.PGSQL.5432: database "..." does not exist`},
 		{"no such host", "", noSuchHost, 2, ErrUnreachable,
@@ -363,6 +487,11 @@ func TestQueryKeepsARunThatAnswersAtTheDeadline(t *testing.T) {
 // line per address for a string with several. A reason is shown only when
 // it is one the package lists; the address still is, since it is checked
 // separately.
+//
+// Two of the mis-split strings are ones libpq cannot read at all (a bad
+// percent escape, a keyword value cut by a space). wt refuses those before
+// psql is run, with a fixed message. In every case psql's arguments are
+// checked too: no piece of the string is among them.
 // `wt stats` prints the error on the terminal, which ends up in scrollback,
 // history files and bug reports.
 func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
@@ -371,6 +500,8 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 	const failedAtDB = "psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: "
 	const reasonWithheld = "cannot reach the LiteLLM database at db.example:5432: the reason psql gave is not shown because it can quote the connection string"
 	const goodURI = "postgresql://FAKEuser:FAKEpw@db.example:5432/FAKEdb"
+	// A string libpq itself cannot read never reaches psql.
+	const refused = "the LiteLLM database connection string cannot be handed to psql: it is not written in a form wt can read the way psql would"
 	cases := []struct {
 		name, dsn, stderr string
 		exit              int
@@ -402,7 +533,7 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 			"psql: error: connection to server at \"FAKEuser\" (10.0.0.7), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a bad percent escape in the password", "postgresql://FAKEuser:FAKEpa%zzword@db.example:5432/FAKEdb",
-			"psql: error: invalid percent-encoded token: \"FAKEpa%zzword\"\n", 2, withheld},
+			"psql: error: invalid percent-encoded token: \"FAKEpa%zzword\"\n", 2, refused},
 		{"an @ in the password, read as the host", "postgresql://FAKEuser:FAKEp@ss@db.example:5432/FAKEdb",
 			"psql: error: could not translate host name \"ss@db.example\" to address: nodename nor servname provided, or not known\n", 2,
 			"cannot reach the LiteLLM database: the database host name did not resolve"},
@@ -416,14 +547,14 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 			"psql: error: connection to server at \"ss.example\" (10.0.0.7), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a keyword string with a space in the password", "host=db.example port=5432 user=FAKEuser password=FAKEabc FAKEdef",
-			"psql: error: missing \"=\" after \"FAKEdef\" in connection info string\n", 2, withheld},
+			"psql: error: missing \"=\" after \"FAKEdef\" in connection info string\n", 2, refused},
 		{"a keyword string with a quoted password", "host=db.example port=5432 user=FAKEuser password='FAKE a'",
 			refusedAtDB, 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a keyword string whose password has a space before port=", "host=db.example user=FAKEuser password=FAKEab port=54321",
 			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
-		{"a keyword string whose sslpassword has a space before port=", "host=db.example sslpassword=FAKEab port=54321",
+		{"a keyword string whose passfile has a space before port=", "host=db.example passfile=FAKEab port=54321",
 			"psql: error: connection to server at \"db.example\" (10.0.0.5), port 54321 failed: Connection refused\n", 2,
 			"cannot reach the LiteLLM database: Connection refused"},
 		{"a keyword string that names the host after the database", "dbname=FAKEdb host=ss.example port=54321",
@@ -453,13 +584,19 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			stubPsql(t, "", c.stderr, c.exit)
+			call := stubPsql(t, "", c.stderr, c.exit)
 			_, err := Query(context.Background(), c.dsn, winStart, winEnd)
 			if err == nil {
 				t.Fatal("err = nil, want an error")
 			}
 			if err.Error() != c.want {
 				t.Errorf("err = %q\nwant  %q", err, c.want)
+			}
+			if (call.n == 0) != errors.Is(err, ErrConnectionString) {
+				t.Errorf("psql ran %d times for a string whose error is %q", call.n, err)
+			}
+			if joined := strings.Join(call.args, "\n"); strings.Contains(joined, "FAKE") || strings.Contains(joined, "db.example") {
+				t.Errorf("psql's arguments hold part of the connection string: %q", call.args)
 			}
 			for _, piece := range []string{"FAKE", "zzword", "ss@", "ss:", "at ss", "ss.example", "54321", "10.0.0", "%", "postgresql://", "»", "'"} {
 				if strings.Contains(err.Error(), piece) {
@@ -471,14 +608,14 @@ func TestQueryNeverLeaksTheConnectionString(t *testing.T) {
 }
 
 // TestQueryRunsARealProcess runs Query end to end against a shell script
-// standing in for psql: the arguments and the two environment variables
-// reach a real child process, and its stdout comes back parsed. The stubbed
+// standing in for psql: the arguments and the environment variables reach
+// a real child process, and its stdout comes back parsed. The stubbed
 // tests cannot catch a mistake in the exec plumbing itself (a dropped
 // environment, stdout and stderr swapped).
 func TestQueryRunsARealProcess(t *testing.T) {
 	rec := filepath.Join(t.TempDir(), "argv")
 	fakePsqlBinary(t, `printf '%s\n' "$@" > "`+rec+`"
-printf 'timeout=%s tz=%s\n' "$PGCONNECT_TIMEOUT" "$PGTZ" >> "`+rec+`"
+printf 'timeout=%s tz=%s host=%s db=%s\n' "$PGCONNECT_TIMEOUT" "$PGTZ" "$PGHOST" "$PGDATABASE" >> "`+rec+`"
 echo 'noise on stderr' >&2
 echo '[{"model":"m","requests":2,"prompt_tokens":10,"completion_tokens":20,"spend":0.5}]'
 `)
@@ -494,7 +631,7 @@ echo '[{"model":"m","requests":2,"prompt_tokens":10,"completion_tokens":20,"spen
 		t.Fatalf("the script did not record its arguments: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-d", "postgresql://h/db", "-c", querySQL(winStart, winEnd), "timeout=3 tz=UTC"}
+	want := []string{"-X", "-w", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-c", querySQL(winStart, winEnd), "timeout=3 tz=UTC host=h db=db"}
 	if !slices.Equal(lines, want) {
 		t.Errorf("the child saw\n%q\nwant\n%q", lines, want)
 	}

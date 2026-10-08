@@ -561,7 +561,7 @@ func litellmCmd(a *app) *cobra.Command {
 		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.loadErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
+				return configError(a.loadErr)
 			}
 			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON, syncDryRun)
 		},
@@ -585,7 +585,7 @@ func litellmCmd(a *app) *cobra.Command {
 			// user out. A genuine load failure leaves a default cfg that Save
 			// would write over config.toml.
 			if a.loadErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
+				return configError(a.loadErr)
 			}
 			return run(cmd)
 		}
