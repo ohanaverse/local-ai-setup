@@ -496,6 +496,13 @@ func TestBareModelOpensTheModelsTab(t *testing.T) {
 	t.Cleanup(func() { stdinTTY = oldTTY })
 	call := stubConfigEditor(t, configeditor.Result{}, nil)
 	syncs := stubRouteSync(t, "")
+	// Each seam is given an answer no real function would give, and the
+	// functions the tab was handed are then asked: non-nil alone would pass
+	// localmodels.Inventory handed over directly, and the tab would probe
+	// the developer's providers under this package's tests.
+	stubProbeInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{{ModelID: "marker/probe"}}})
+	stubSeedEnv(t, config.SeedEnv{OnPath: onPath("marker-seed")})
+	stubOllamaCaps(t, map[string]any{"marker_caps": true}, nil)
 	if _, err := runWT(t, "model"); err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +511,16 @@ func TestBareModelOpensTheModelsTab(t *testing.T) {
 	}
 	d := call.opts.Models
 	if d.Probe == nil || d.SeedEnv == nil || d.Capabilities == nil {
-		t.Errorf("the tab was not given cmd/wt's seams: %+v", d)
+		t.Fatalf("the tab was not given cmd/wt's seams: %+v", d)
+	}
+	if snap := d.Probe(&config.Config{}); len(snap.Entries) != 1 || snap.Entries[0].ModelID != "marker/probe" {
+		t.Errorf("the tab's probe is not cmd/wt's probeInventory seam: %+v", snap)
+	}
+	if env := d.SeedEnv(); env.OnPath == nil || !env.OnPath("marker-seed") {
+		t.Error("the tab's seeding environment is not cmd/wt's seedEnv seam")
+	}
+	if info, err := d.Capabilities(nil, "x"); err != nil || info["marker_caps"] != true {
+		t.Errorf("the tab's ollama lookup is not cmd/wt's ollamaCaps seam: %v, %v", info, err)
 	}
 	if *syncs != 0 {
 		t.Errorf("syncs = %d with nothing changed, want 0", *syncs)

@@ -83,7 +83,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
-- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config` and `internal/modeladmin` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config`, `internal/modeladmin` and `internal/configeditor` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
@@ -107,7 +107,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/main.go` | CLI entry point (cobra), exit-code handling |
 | `cmd/wt/app.go` | shared dependency struct (loads/validates config and profiles.toml once) |
 | `cmd/wt/commands.go` | `rotate` subcommand (debug helper) |
-| `cmd/wt/commands_config.go` | `wt config` subcommand family |
+| `cmd/wt/commands_config.go` | `wt config` subcommand family; `runConfigEditor` opens the editor on a tab (bare `wt config`: Agents; bare `wt model`: Models) and runs the one route sync the Models tab owes |
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch from live `catalog` rows; a `-M` pin on a start row starts it |
 | `cmd/wt/start.go` | `startForLaunch` — non-TUI start driver: stderr progress, Ctrl+C cancel, replace confirmation, `allowReplace` |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers; TTY seams and picker-TTY errors |
@@ -121,7 +121,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |
 | `cmd/wt/profile.go` | `wt profile list/show/status/on/off`; `setEnabledLine`'s surgical `enabled = ...` edit |
 | `cmd/wt/litellm.go` | `wt litellm ...` |
-| `cmd/wt/model.go` | `wt model` group; `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
+| `cmd/wt/model.go` | `wt model` group — bare, it opens the Models tab of `wt config` (needs a terminal); `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
 | `cmd/wt/model_write.go` | `wt model add`, `edit`, `rm` — each one `modeladmin` write, then one route sync (`syncAndWarn`); the `ollamaCaps` seam, and `confirmRemove`, which is `wt stop`'s `promptStop` (it opens the terminal through `openTTY`) |
 | `cmd/wt/model_list.go` | `wt model list [--json]` — `modeladmin.Rows` over one probe; `fitModelList` drops PATH, then SIZE, on a narrow terminal |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |

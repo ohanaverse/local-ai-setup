@@ -166,12 +166,22 @@ func flow(units []string, sep string, width int) []string {
 
 // wrapText wraps free text to width at its spaces, keeping the line breaks
 // it has. A path on a line of its own is therefore cut only at the
-// terminal's edge and can be copied as one token.
+// terminal's edge and can be copied as one token. A line that fits is kept
+// as it was written, its spacing included, and so is every line when the
+// width is not known yet (0, before the first WindowSizeMsg), as in fitHints:
+// flow would otherwise put one rune on a line.
 func wrapText(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
 	var lines []string
 	for _, line := range strings.Split(s, "\n") {
 		if strings.TrimSpace(line) == "" {
 			lines = append(lines, "")
+			continue
+		}
+		if utf8.RuneCountInString(line) <= width {
+			lines = append(lines, line)
 			continue
 		}
 		lines = append(lines, flow(strings.Fields(line), " ", width)...)
@@ -300,6 +310,11 @@ func (m *model) selectedModel() (modeladmin.Row, bool) {
 	return it.row, ok
 }
 
+// modelsProbing is the status while a refresh the user asked for is out.
+// The table stays on screen meanwhile, and r and d wait for the answer; this
+// line is the only sign of it. applyModels takes it down.
+const modelsProbing = "probing providers..."
+
 // routesPending is the note the tab shows once it has written the registry.
 const routesPending = "LiteLLM routes pending (sync on quit)"
 
@@ -405,7 +420,7 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 	}
 	whole := slices.Concat(id, path)
 	var frames []tuilayout.ListFrame
-	for _, f := range []tuilayout.ListFrame{build(true, whole, true), build(false, whole, true), build(false, id, true)} {
+	for _, f := range []tuilayout.ListFrame{build(true, whole, true), build(false, whole, true)} {
 		// An empty list view still occupies one line, hence the -1.
 		if m.height <= 0 || m.height-(lipgloss.Height(f(""))-1) >= modelsTableMin {
 			frames = append(frames, f)
@@ -465,6 +480,9 @@ func (m *model) applyModels(msg modelsLoadedMsg) {
 		filter = mt.list.FilterValue()
 	}
 	mt.cfg, mt.rows, mt.loaded, mt.busy, mt.selectID = msg.cfg, msg.rows, true, false, ""
+	if mt.status == modelsProbing {
+		mt.status = ""
+	}
 	mt.list, mt.cols, mt.idWidth = buildModelsList(m.theme, msg.rows)
 	mt.built++
 	if filter != "" {
@@ -548,13 +566,22 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if mt.list.FilterState() == list.Filtering {
+		// Every key is text for the filter, q included, but ctrl+c: the list
+		// has its own quit keys turned off (buildModelsList), its force-quit
+		// with them, and ctrl+c leaves the editor from every screen.
+		if key.String() == "ctrl+c" {
+			return m.quit()
+		}
 		var cmd tea.Cmd
 		mt.list, cmd = mt.list.Update(msg)
 		return m, tagFilter(cmd, TabModels, mt.built)
 	}
 	// What the last action said has been read: the next key clears it, and
-	// gives its lines back to the table.
-	mt.status = ""
+	// gives its lines back to the table. Not while a probe or a write is
+	// out: "removing ..." and "probing ..." are why r and d do nothing yet.
+	if !mt.busy {
+		mt.status = ""
+	}
 	switch key.String() {
 	case "q", "ctrl+c":
 		return m.quit()
@@ -565,6 +592,7 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if mt.busy {
 			return m, nil
 		}
+		mt.status = modelsProbing
 		return m, m.probeCmd()
 	case "d":
 		r, ok := m.selectedModel()
@@ -621,14 +649,19 @@ func (m *model) modelsRemoveView() string {
 // applyModelRemoved takes a removal's outcome and re-probes: the rows are
 // rebuilt from the registry as it now is. A quit that was waiting for the
 // write happens now, with the change recorded for the caller; after a
-// refusal it does not, because the refusal has to be read.
+// refusal it does not, because the refusal has to be read — on this tab,
+// which is where it is drawn, so a quit typed from the Agents tab comes back
+// here. A refusal re-probes too: the usual reason is that another program
+// took the row first, and the table would go on showing it.
 func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 	mt := &m.models
 	mt.busy, mt.writing = false, false
 	if msg.err != nil {
 		mt.status = "not removed: " + msg.err.Error()
-		m.quitPending = false
-		return nil
+		if m.quitPending {
+			m.quitPending, m.tab = false, TabModels
+		}
+		return m.probeCmd()
 	}
 	m.registryChanged = true
 	if m.quitPending {

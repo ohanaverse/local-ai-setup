@@ -5,7 +5,7 @@ add, edit and remove them. wt never downloads a model and never deletes
 weights; it registers what a provider already has, or will have.
 
 ```bash
-wt model                    # the Models tab of `wt config` (needs a terminal)
+wt model                   # the Models tab of `wt config` (needs a terminal)
 wt model list [--json]     # every registry model, and every local model found on this machine
 wt model init [--json]     # create the registry if it is missing; add the default provider rows
 wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
@@ -195,10 +195,10 @@ and draft); and the path of its weights on a line of its own, written from
 |---|---|
 | `↑`/`↓`, `j`/`k` | move |
 | `d` | remove the selected registry model, after a `y/N` prompt that shows where its weights are; the path is repeated in the status afterwards |
-| `r` | probe the providers again |
+| `r` | probe the providers again; the status says `probing providers...` until they answer, and `r` and `d` wait for it |
 | `/` | filter by id or family: type, `Enter` to keep the filter, `Esc` to clear it |
 | `Tab` | the Agents tab |
-| `q`, `Ctrl+C` | quit |
+| `q`, `Ctrl+C` | quit (`Ctrl+C` also while a filter is being typed, where `q` is text) |
 
 `Esc` does not quit, and `Ctrl+S` does nothing here: there is nothing to save.
 The providers are probed when the tab is first shown, not on every visit;
@@ -207,7 +207,8 @@ The providers are probed when the tab is first shown, not on every visit;
 A removal is written to `registry.toml` at once. The LiteLLM routes are not
 synced per change: the status says `LiteLLM routes pending (sync on quit)`,
 and that one sync runs when the editor closes, only if the registry changed. A
-quit typed while a change is still being written waits for it. If wt is
+quit typed while a change is still being written waits for it, on this tab. A
+removal the registry refuses is reported and the table is read again. If wt is
 killed before the sync, the next `wt start`, `wt stop` or launch through
 LiteLLM repairs the routes, and `wt litellm sync` does it at once. A sync that
 leaves `config.yaml` unchanged does not restart the proxy.

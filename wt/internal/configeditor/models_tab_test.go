@@ -522,7 +522,8 @@ func findRow(m *model, id string) (modelRow, bool) {
 
 // TestModelsTabRemoveRefusals verifies d on a discovered row (nothing to
 // remove) only says so, and that a removal the registry refuses is reported
-// on the status line with the routes not marked pending.
+// on the status line with the routes not marked pending and the table read
+// again.
 func TestModelsTabRemoveRefusals(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
 	m := keys(t, selectModel(t, modelsEditor(t, tm, 80, 24), "ollama/qwen3:8b"), "d")
@@ -535,9 +536,18 @@ func TestModelsTabRemoveRefusals(t *testing.T) {
 	if err := os.WriteFile(tm.registry, []byte(strings.Replace(tabRegistry, `id = "omlx/Gone-4bit"`, `id = "omlx/Other"`, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	probes := tm.probes
 	m = keys(t, m, "y")
 	if m.registryChanged || !strings.Contains(m.View(), `not removed: model not found: "omlx/Gone-4bit"`) {
 		t.Errorf("a refused removal should be reported and leave the routes alone:\n%s", m.View())
+	}
+	// The table is read again, so the row the other program took is not
+	// left on screen under a message that says it does not exist.
+	if _, still := findRow(m, "omlx/Gone-4bit"); still || tm.probes != probes+1 || m.models.busy {
+		t.Errorf("after a refusal: the stale row is listed = %v, probes = %d (was %d); want one re-probe and the row gone:\n%s", still, tm.probes, probes, m.View())
+	}
+	if _, ok := findRow(m, "omlx/Other"); !ok {
+		t.Errorf("the row the other program wrote is not listed:\n%s", m.View())
 	}
 }
 
@@ -573,7 +583,10 @@ func TestModelsTabKeepsTheCursorAcrossARefresh(t *testing.T) {
 
 // TestModelsTabFilterTakesTheTabsKeys verifies that while the filter is being
 // typed, d, r, n and q are text, not commands: typing "qwen" must not quit,
-// and "d" must not open the remove prompt.
+// and "d" must not open the remove prompt. ctrl+c is the exception, on both
+// tabs: it leaves the editor from every screen (by way of the unsaved-changes
+// prompt), and the lists' own force-quit is off, so a filter that swallowed
+// it left a user who reached for ctrl+c with nothing happening.
 func TestModelsTabFilterTakesTheTabsKeys(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
 	m := stillCursors(modelsEditor(t, tm, 80, 24))
@@ -581,6 +594,29 @@ func TestModelsTabFilterTakesTheTabsKeys(t *testing.T) {
 	m = keys(t, m, "/", "q", "d", "r")
 	if m.models.phase != modelsList || tm.probes != probes || m.models.list.FilterValue() != "qdr" {
 		t.Errorf("phase = %d, probes = %d (was %d), filter = %q; want the keys typed into the filter", m.models.phase, tm.probes, probes, m.models.list.FilterValue())
+	}
+	isQuit := func(cmd tea.Cmd) bool {
+		if cmd == nil {
+			return false
+		}
+		_, ok := cmd().(tea.QuitMsg)
+		return ok
+	}
+	if _, cmd := m.Update(keyMsg("ctrl+c")); !isQuit(cmd) {
+		t.Error("ctrl+c while a Models filter is being typed should quit")
+	}
+	agents := stillCursors(modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24))
+	agents = keys(t, keys(t, agents, "tab"), "/", "q")
+	if agents.tab != TabAgents || agents.list.FilterState() != list.Filtering {
+		t.Fatalf("tab = %d, filter state = %v; want the Agents filter being typed", agents.tab, agents.list.FilterState())
+	}
+	if _, cmd := agents.Update(keyMsg("ctrl+c")); !isQuit(cmd) {
+		t.Error("ctrl+c while an Agents filter is being typed should quit")
+	}
+	agents.dirty = true
+	next, cmd := agents.Update(keyMsg("ctrl+c"))
+	if cmd != nil || next.(*model).phase != phaseQuit {
+		t.Error("ctrl+c in a filter with unsaved agent edits should ask about them first")
 	}
 }
 
@@ -792,7 +828,8 @@ func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 		next, _ := m.Update(keyMsg("q"))
 		next, cmd := next.(*model).Update(write())
 		m = next.(*model)
-		if cmd != nil || m.quitPending || m.registryChanged || !strings.Contains(m.View(), "not removed: ") {
+		// The command is the re-probe a refusal asks for, not the quit.
+		if isQuit(cmd) || m.quitPending || m.registryChanged || !strings.Contains(m.View(), "not removed: ") {
 			t.Errorf("a refusal has to be read: want no quit and the reason on screen:\n%s", m.View())
 		}
 	})
@@ -819,5 +856,101 @@ func TestModelsTabShowsARegistryThatDoesNotLoad(t *testing.T) {
 	assertFits(t, "broken registry", view, 80, 24)
 	if !strings.Contains(view, "registry: ") || !strings.Contains(view, "[Models]") {
 		t.Errorf("the tab should say why the registry did not load:\n%s", view)
+	}
+}
+
+// TestModelsTabSaysAProbeIsOut verifies r puts "probing providers..." on the
+// status line until the probe answers, and that a key pressed meanwhile does
+// not take it down. The table stays on screen during a refresh and r and d
+// are ignored until it lands; without the line a slow provider looks like a
+// tab that has stopped taking keys.
+func TestModelsTabSaysAProbeIsOut(t *testing.T) {
+	tm := newTabMachine(t, tabRegistry)
+	m := modelsEditor(t, tm, 80, 24)
+	next, probe := m.Update(keyMsg("r"))
+	m = next.(*model)
+	if probe == nil || !strings.Contains(m.View(), modelsProbing) {
+		t.Fatalf("r should start a probe and say so:\n%s", m.View())
+	}
+	next, cmd := m.Update(keyMsg("d"))
+	m = next.(*model)
+	if cmd != nil || m.models.phase != modelsList || !strings.Contains(m.View(), modelsProbing) {
+		t.Errorf("d while the probe is out should do nothing and leave the reason on screen:\n%s", m.View())
+	}
+	assertFits(t, "probing", m.View(), 80, 24)
+	m = send(t, m, probe())
+	if strings.Contains(m.View(), modelsProbing) || m.models.busy {
+		t.Errorf("the probe has answered; the line should be gone:\n%s", m.View())
+	}
+}
+
+// TestAHeldQuitIsShownOnTheModelsTab verifies a quit typed on the Agents
+// tab while a removal is being written brings the Models tab forward: the
+// line that says the editor is waiting for the write, and a refusal's
+// reason, are drawn only there. Left on the Agents tab the user sees an
+// editor that ignored q.
+func TestAHeldQuitIsShownOnTheModelsTab(t *testing.T) {
+	tm := newTabMachine(t, tabRegistry)
+	m := keys(t, selectModel(t, modelsEditor(t, tm, 80, 24), "omlx/Gone-4bit"), "d")
+	if err := os.WriteFile(tm.registry, []byte(strings.Replace(tabRegistry, `id = "omlx/Gone-4bit"`, `id = "omlx/Other"`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next, write := m.Update(keyMsg("y"))
+	m = keys(t, next.(*model), "tab")
+	if m.tab != TabAgents {
+		t.Fatalf("tab = %d, want Agents while the write is out", m.tab)
+	}
+	next, cmd := m.Update(keyMsg("q"))
+	m = next.(*model)
+	if cmd != nil || m.tab != TabModels || !strings.Contains(m.View(), "quitting when the registry write is done") {
+		t.Fatalf("q from the Agents tab with a write in flight: tab = %d\n%s\nwant the Models tab saying it waits", m.tab, m.View())
+	}
+	m = keys(t, m, "tab")
+	m = send(t, m, write())
+	if m.tab != TabModels || !strings.Contains(m.View(), "not removed: ") {
+		t.Errorf("the refusal that called the quit off: tab = %d\n%s\nwant it shown on the Models tab", m.tab, m.View())
+	}
+}
+
+// TestQuitPromptFitsANarrowTerminal verifies the unsaved-changes prompt is
+// wrapped to the terminal: its two lines are 54 and 51 columns, and at 40
+// the choices past the edge ([c] cancel among them) were cut off with no
+// sign of it. At 80 it reads as it always did.
+func TestQuitPromptFitsANarrowTerminal(t *testing.T) {
+	for _, size := range [][2]int{{40, 12}, {40, 24}, {80, 24}, {120, 50}} {
+		tm := newTabMachine(t, tabRegistry)
+		m := modelsEditor(t, tm, size[0], size[1])
+		m.dirty = true
+		m = keys(t, m, "q")
+		if m.phase != phaseQuit {
+			t.Fatalf("phase = %d, want the quit prompt", m.phase)
+		}
+		view := m.View()
+		assertFits(t, "quit prompt", view, size[0], size[1])
+		for _, want := range []string{"unsaved agent changes", "[y] save and quit", "[n] discard and quit", "[c] cancel"} {
+			if !strings.Contains(view, want) {
+				t.Errorf("at %dx%d the prompt lost %q:\n%s", size[0], size[1], want, view)
+			}
+		}
+		if size[0] >= 80 && view != "You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel\n" {
+			t.Errorf("at %d columns the prompt changed:\n%q", size[0], view)
+		}
+	}
+}
+
+// TestWrapTextWithoutAWidth verifies text is left as written when the width
+// is not known yet (a view drawn before the first WindowSizeMsg), and that a
+// line that fits keeps its own spacing. Wrapping to a width of 0 put one
+// rune on each line.
+func TestWrapTextWithoutAWidth(t *testing.T) {
+	text := "one two  three\n\n/a/path with spaces"
+	if got := wrapText(text, 0); got != text {
+		t.Errorf("wrapText at width 0 = %q, want the text unchanged", got)
+	}
+	if got := wrapText(text, 80); got != text {
+		t.Errorf("wrapText at 80 = %q, want the text unchanged", got)
+	}
+	if got := wrapText("one two  three", 7); got != "one two\nthree" {
+		t.Errorf("wrapText at 7 = %q", got)
 	}
 }

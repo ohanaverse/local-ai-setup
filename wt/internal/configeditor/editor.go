@@ -247,6 +247,11 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Delegate to the list while it is filtering so single-key global
 		// shortcuts (n, d, q) don't intercept filter input.
 		if m.ready && m.list.FilterState() == list.Filtering {
+			// ctrl+c is the one key that is not filter text: the list's own
+			// quit keys are off, its force-quit with them.
+			if msg.String() == "ctrl+c" {
+				return m.quit()
+			}
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
 			return m, tagFilter(cmd, TabAgents, 0)
@@ -320,12 +325,13 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 // one, has reported. The write runs in a command; a program that ended before
 // its message was handled would return Result{RegistryChanged: false} for a
 // registry that did change, and the caller would skip the route sync it owes.
-// So the quit is recorded, and applyModelRemoved issues it. A probe in flight
-// holds nothing up.
+// So the quit is recorded, and applyModelRemoved issues it. The Models tab
+// is shown meanwhile: it is the one that says the quit is waiting. A probe in
+// flight holds nothing up.
 func (m *model) leave() (tea.Model, tea.Cmd) {
 	if m.models.writing {
 		m.quitPending = true
-		m.phase = phaseList
+		m.phase, m.tab = phaseList, TabModels
 		return m, nil
 	}
 	return m, tea.Quit
@@ -359,7 +365,8 @@ func (m *model) View() string {
 	case phaseDelete:
 		return m.deleteView()
 	case phaseQuit:
-		return "You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel\n"
+		// Wrapped: at 40 columns both lines are wider than the terminal.
+		return wrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
 	default:
 		if m.tab == TabModels {
 			return m.modelsView()

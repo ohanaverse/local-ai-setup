@@ -1,7 +1,8 @@
-// wt config command — user-level preferences. The first shipped subcommand
-// is `wt config theme` for managing the active color theme. Future
-// subcommands (wt config ollama sync, wt config registry edit) slot in
-// here without breaking changes.
+// wt config command — user-level preferences. Bare, it opens the config
+// editor (internal/configeditor): the Agents tab, and the Models tab that
+// bare `wt model` opens it on (runConfigEditor, which also runs the one route
+// sync the Models tab owes). `wt config theme` manages the active color
+// theme.
 //
 // The theme subcommand family uses the active theme (loaded by newApp)
 // for its own output where appropriate (table borders, list names in their
