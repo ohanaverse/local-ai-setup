@@ -203,7 +203,7 @@ the row has no path, or reads `missing` when its weights are there.
 | `r` | probe the providers again; the status says `probing providers...` until they answer, and `r` and `d` wait for it |
 | `/` | filter by id or family: type, `Enter` to keep the filter, `Esc` to clear it |
 | `Tab` | the Agents tab |
-| `q`, `Ctrl+C` | quit (`Ctrl+C` also while a filter is being typed, where `q` is text) |
+| `q`, `Ctrl+C` | quit — but on the remove prompt `q` cancels it, as `Esc` and `n` do (`Ctrl+C` also quits while a filter is being typed, where `q` is text) |
 
 `Esc` does not quit, and `Ctrl+S` does nothing here: there is nothing to save.
 The providers are probed when the tab is first shown, not on every visit;

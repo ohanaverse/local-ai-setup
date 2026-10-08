@@ -57,8 +57,7 @@ type modelsTab struct {
 	// is the longest id, the MODEL column's width when nothing is cut.
 	cols    *tuilayout.Columns
 	idWidth int
-	// cfg is the config the rows were built from, re-read on every probe.
-	cfg  *config.Config
+	// rows are the last probe's rows, what the table was built from.
 	rows []modeladmin.Row
 	// asked is true once the first probe has been dispatched; loaded once
 	// its result is in.
@@ -79,16 +78,14 @@ type modelsTab struct {
 	// reads it again.
 	status  string
 	loadErr string
-	// selectID is the row the cursor goes to when the next rows arrive.
-	selectID string
 	// remove is the row the remove prompt is about.
 	remove modeladmin.Row
 }
 
-// modelsLoadedMsg carries one probe's rows.
+// modelsLoadedMsg carries one probe's rows. The config they were built from
+// is not carried: nothing outside the command that read it uses it.
 type modelsLoadedMsg struct {
 	gen  int
-	cfg  *config.Config
 	rows []modeladmin.Row
 	err  error
 }
@@ -233,7 +230,7 @@ func (m *model) probeCmd() tea.Cmd {
 		if cfg == nil {
 			cfg = &config.Config{}
 		}
-		return modelsLoadedMsg{gen: gen, cfg: cfg, err: err, rows: modeladmin.Rows(cfg, deps.Probe(cfg))}
+		return modelsLoadedMsg{gen: gen, err: err, rows: modeladmin.Rows(cfg, deps.Probe(cfg))}
 	}
 }
 
@@ -447,7 +444,10 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 }
 
 // fitModels sizes the table to the room its frame leaves. Update calls it
-// after every message, like fitList for the Agents tab.
+// after every message, like fitList for the Agents tab, and it measures
+// nothing while the tab is not the one showing: only modelsView draws this
+// list, and the message that switches to the tab is fitted again on its way
+// out of Update.
 //
 // The columns that fit are chosen with MODEL at its full width, the longest
 // id (tuilayout.FitTo). When MODEL, STATUS and RUNNING — the three that are
@@ -457,7 +457,7 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 // STATUS and RUNNING off every row.
 func (m *model) fitModels() {
 	mt := &m.models
-	if m.width <= 0 || m.height <= 0 || !mt.loaded {
+	if m.tab != TabModels || m.width <= 0 || m.height <= 0 || !mt.loaded {
 		return
 	}
 	setModelColumn(mt.cols, mt.idWidth)
@@ -473,6 +473,15 @@ func (m *model) fitModels() {
 func (m *model) modelsView() string {
 	if m.models.phase == modelsRemove {
 		return m.modelsRemoveView()
+	}
+	if m.width <= 0 || m.height <= 0 {
+		// No size yet: the first WindowSizeMsg is still on its way, and
+		// fitModels has sized nothing. A frame measured against no width
+		// draws the selected row's detail one rune to a line (flow), and
+		// nothing is measured until there is a terminal to measure — which,
+		// for a stdout that is not one, is never. Bubble Tea draws again
+		// when a size arrives.
+		return tabBar(m.theme, TabModels)
 	}
 	if !m.models.loaded {
 		return tabBar(m.theme, TabModels) + "\n\n" + "Probing providers..."
@@ -496,25 +505,27 @@ func (m *model) modelsView() string {
 }
 
 // applyModels takes a probe's result: the rows replace the table, with the
-// cursor kept on the row it was on (or moved to selectID after a write) and
-// an applied filter kept.
+// cursor kept on the row it was on and an applied filter kept. A row the new
+// rows no longer hold leaves the cursor at their top, which is where a table
+// a removal shrank starts.
 func (m *model) applyModels(msg modelsLoadedMsg) {
 	mt := &m.models
 	if msg.gen != mt.gen {
 		return // a later probe is on its way
 	}
-	// was is where the cursor stood: two rows can share an id (a registry
-	// Validate refuses, which the tab lists so that it can be repaired), and
-	// then the id alone does not say which of them the cursor was on.
-	keep, was := mt.selectID, -1
-	if r, ok := m.selectedModel(); ok && keep == "" {
+	// keep is the id the cursor was on, and was where it stood: two rows can
+	// share an id (a registry Validate refuses, which the tab lists so that
+	// it can be repaired), and then the id alone does not say which of them
+	// the cursor was on.
+	keep, was := "", -1
+	if r, ok := m.selectedModel(); ok {
 		keep, was = r.ID, mt.list.Index()
 	}
 	filter := ""
 	if mt.loaded && mt.list.FilterState() == list.FilterApplied {
 		filter = mt.list.FilterValue()
 	}
-	mt.cfg, mt.rows, mt.loaded, mt.busy, mt.selectID = msg.cfg, msg.rows, true, false, ""
+	mt.rows, mt.loaded, mt.busy = msg.rows, true, false
 	if mt.status == modelsProbing {
 		mt.status = ""
 	}
