@@ -127,15 +127,21 @@ An mlx_lm_server model is a target and a draft served together by
 <draft> --family <family>` registers one: each side is a Hugging Face repo
 (`org/name`) or a local path (starting `/`, `~`, `./` or `../`), written to the
 row's `[models.fetch]` and `[models.draft]`. Anything else is taken for a
-repo, a bare relative directory such as `out/Big-4bit` included, and a `./` or
-`../` path is stored as typed and so means a different directory from
-another working directory: give an absolute path or one under `~`. The id is
+repo, a bare relative directory such as `out/Big-4bit` included — when a
+directory of that name is in the working directory, a `note:` on stderr says
+what it was registered as and how to register the directory instead
+(`./out/Big-4bit`). A `./` or `../` path is stored as the absolute path it
+names from the directory the command ran in, so the row means the same
+directory to llmbench, which runs from `llmbench/`. A `~` path is stored as
+typed. The id is
 `mlx_lm_server/<target>+draft-<draft>`, from the last segment of each; when
 that would not be a usable id (a directory name with a space in it), the add
 is refused and `--id mlx_lm_server/<name>` names it.
 
 A pairing is its two sides, not their names. The same target and draft
-again are refused, whatever `--id` says. A different pairing whose sides end
+again are refused, whatever `--id` says and however a local path is spelled
+(`~/quant/Big-4bit`, the absolute path of the same directory, a trailing
+slash). A different pairing whose sides end
 in the same two names — a target you quantized into `/quant/Big-4bit` beside
 `mlx-community/Big-4bit`, with one draft — would get the id that is taken:
 the add says so, and `--id mlx_lm_server/<name>` registers it.
@@ -291,7 +297,9 @@ Provider offers every provider in the registry and the ones wt adds a row
 for by itself (ollama, omlx, mtplx, openrouter), but not mlx_lm_server: its
 model is a target+draft pairing, which takes two artifacts and is added on
 the command line (`wt model add mlx_lm_server <target> --draft <draft>`,
-above). `enter` on a pairing row opens the form like any other, to edit its
+above). While the add form's cursor is on Provider, a dim line above the key
+hints names that command (a shorter spelling at 40 columns; on a terminal too
+short to spare the row it is left out). `enter` on a pairing row opens the form like any other, to edit its
 family, tags, location and prices; its target and draft are not fields, and a
 save leaves `[models.fetch]` and `[models.draft]` as they are. When editing, and when registering a `new` row, the provider
 and the model name are fixed, and the title names the id. An edit writes only

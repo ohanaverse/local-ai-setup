@@ -148,7 +148,9 @@ tags = ["code"]
 # `fetch` names the target repo and `draft` the draft repo — the shape
 # modelman writes for mlx_lm_server models. wt decodes the provider/model
 # rows, and reads `repo` and `local_path` of fetch and of draft to show them
-# and to name the pairing in a hint; it never writes either table.
+# and to name the pairing in a hint; it writes the two tables only when
+# `wt model add mlx_lm_server <target> --draft <draft>` registers a pairing,
+# and never changes them afterwards.
 [[models]]
 id = "mlx_lm_server/contract-fixture:pair"
 family = "contract-fixture"

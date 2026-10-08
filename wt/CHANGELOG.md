@@ -6,13 +6,20 @@
 
 - `wt model add mlx_lm_server <target> --draft <draft> --family F` registers a
   target+draft pairing, each side a Hugging Face repo or a local path, and
-  prints the command that starts it. Two pairings are the same when their
-  sides are, not their names. wt cannot start a pairing: where it
+  prints the command that starts it. A side is a local path when it starts
+  with `/`, `~`, `./` or `../`; a `./` or `../` path is stored as the
+  absolute path it names, and a side registered as a repo that is also a
+  directory in the working directory gets a `note:` saying so. Two pairings
+  are the same when their sides are, not their names — `~/x` and the
+  absolute path of the same directory are one side. wt cannot start a pairing: where it
   used to say `modelman start <id>`, it now names `llmbench provider isolate
   --solo mlx_lm_server <target> --draft <draft>` with the pairing's own
-  target and draft. The Models tab lists a pairing (`STATUS -`), shows its
-  target and draft under the table and edits its family, tags and prices; it
-  does not create one. Whether a pairing row reads as running is still
+  target and draft. In the launcher that message is the agent picker's
+  status, which is now wrapped to the terminal's width instead of cut at its
+  edge, so the command is on screen. The Models tab lists a pairing
+  (`STATUS -`), shows its target and draft under the table and edits its
+  family, tags and prices; it does not create one, and its add form names
+  the command that does while the cursor is on Provider. Whether a pairing row reads as running is still
   decided as before, and can name the wrong pairing
   ([#299](https://github.com/ohanaverse/local-ai-setup/issues/299)).
 - `wt config` has a second tab, Models (`Tab` switches; `wt model` opens the
