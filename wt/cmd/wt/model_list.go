@@ -119,10 +119,10 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 		// Only a provider the registry calls local is probed: with none,
 		// nothing was looked for, and "none found" would say otherwise.
 		if len(snap.Providers) == 0 {
-			fmt.Fprintln(out, "no models: the registry has none, and no local provider row to look for models with (`wt model init` adds them)")
+			fmt.Fprintln(out, "no models: the registry has none, and no local provider row to look for models with (`wt model init` adds them; `wt model add` registers a model)")
 			return nil
 		}
-		fmt.Fprintln(out, "no models: the registry has none, and no local model was found on this machine")
+		fmt.Fprintln(out, "no models: the registry has none, and no local model was found on this machine (add one with `wt model add`)")
 		return nil
 	}
 	cols, cells, dropped := fitModelList(rows, width)

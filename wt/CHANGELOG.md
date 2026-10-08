@@ -4,6 +4,21 @@
 
 ### Added
 
+- `wt model add <provider> <name> --family F`, `wt model edit <id>` and
+  `wt model rm <id>...` register, change and remove models in the registry.
+  Each makes one locked write and then syncs the LiteLLM routes once. `add`
+  derives the id (the discovered id for a local model, `/` as `--` for a
+  cloud one; `--id` overrides), seeds a missing default provider row —
+  openrouter's too, which `wt model init` now also adds for a model that
+  references it — and for an ollama model records what `ollama show` says it
+  supports. `edit` changes only the named fields; an edit of a price also
+  moves a row out of modelman's old cost layout. `rm` removes registry rows
+  only and prints where the weights are. An id that more than one registry
+  row carries is refused by `edit` and `rm`, with nothing written: `model
+  "<id>" is in the registry twice (providers A, B); wt cannot tell which one
+  you mean — fix the entry in <registry path>`. Reference: `docs/wt-model.md`.
+- `wt litellm sync` warns when a registry model names a provider that has no
+  `[[providers]]` row; it used to leave such a model unrouted without a word.
 - `wt model list [--json]` lists every model in the registry and every local
   model the providers have that the registry does not, with live status
   (`ok`, `missing`, `unknown`, `new`, `-`) and running state (`run`, `load`,
@@ -23,7 +38,7 @@
 - `wt model init [--json]` creates the model registry when it is missing and
   adds the provider rows it lacks: ollama, omlx and mtplx when installed, used
   by a model or listed by a configured agent; mlx_lm_server when used by a
-  model or listed by an agent; openrouter when an agent lists it, with
+  model or listed by an agent; openrouter when used by a model or listed by an agent, with
   `auth.secret_ref = "OPENROUTER_API_KEY"` (the variable's name, never a key,
   so a missing key is an error instead of an empty `api_key` in the route);
   and a native row for each configured agent. It never changes a row that
@@ -80,6 +95,19 @@
 
 ### Fixed
 
+- `wt litellm sync` on a registry with one model id on two rows (which every
+  launch refuses, and sync does not) routes the id from the row of the
+  provider that is serving it. It used to take the first row with the id for
+  its checks and the last one for the route, so the route could name a server
+  that was not serving the model. When more than one of the rows is to be
+  routed — both providers serve it, or a cloud model shares the id — or a
+  cloud model shares the id with a local model whose provider's probe did not
+  succeed, sync leaves the id's route as it is and warns once: `model "<id>" is in the
+  registry twice (providers A, B); its route is left as it is — fix the entry
+  in <registry path>`. The sync after a `wt model` write does the same. Such
+  an id no longer brings on the `refused the probe connection ... its local
+  routes are treated as stale` warning for a stopped provider that holds one
+  of its rows: the route was not that provider's to lose.
 - Ctrl+C during `wt stop omlx` is reported as `cancelled`, with an error that
   says the service was not stopped. It printed `failed` and `context canceled`,
   as if the provider were broken.

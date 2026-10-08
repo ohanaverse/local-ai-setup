@@ -40,10 +40,12 @@ var (
 	stopProvider = lifecycle.Stop
 )
 
-// promptStop is promptReplace's twin for stopping an in-use model: y/N on the
-// controlling terminal, default No, so piped input can never authorise it.
+// promptStop is promptReplace's twin for stopping an in-use model, and what
+// `wt model rm` asks with too: y/N on the controlling terminal, default No,
+// so piped input can never authorise it. The terminal is opened through the
+// openTTY seam, so a test can take it away.
 func promptStop(question string) (bool, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	f, err := openTTY()
 	if err != nil {
 		return false, fmt.Errorf("%s — rerun with --yes to confirm", question)
 	}

@@ -7,7 +7,17 @@ weights; it registers what a provider already has, or will have.
 ```bash
 wt model list [--json]     # every registry model, and every local model found on this machine
 wt model init [--json]     # create the registry if it is missing; add the default provider rows
+wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
+wt model edit <id> [--family F] [--tags a,b] [--location local|cloud] [price flags]
+wt model rm <id>... [--yes]
 ```
+
+Each of the three writing commands makes one locked write of the registry and
+then syncs the LiteLLM routes once. The exit code is 0 when the write
+succeeded, even if the sync could only warn; it is 1 for a value that cannot
+be used, an unknown or duplicate id, an id that more than one registry row
+carries (`edit` and `rm`), a registry that cannot be read, or a removal that
+was declined.
 
 ## `wt model list [--json]`
 
@@ -67,3 +77,101 @@ cannot be read at all stops it.
 Creates the registry when it is missing and adds the provider rows wt needs
 and the registry lacks. It never changes a row that exists. `wt model init
 --help` lists which rows, and why.
+
+## `wt model add <provider> <name> --family <family>`
+
+`<name>` is the model as its provider lists it: an ollama tag (`qwen3:8b`), the
+name of an omlx model directory, an mtplx `org/name`, or a cloud provider's
+model id. Pull or download a local model with its provider's own tool, before
+or after adding it; `wt model list` shows what is on disk and unregistered as
+`STATUS new`.
+
+| Flag | Meaning |
+|---|---|
+| `--family` | required; what `-F` filters on |
+| `--tags a,b` | what `-T` filters on |
+| `--location local\|cloud` | only when the model differs from its provider's location |
+| `--input-price`, `--cache-price`, `--output-price` | $ per million tokens |
+| `--subscription-price`, `--subscription-period month\|year` | a subscription price needs a period |
+| `--id` | the id, instead of the derived one: `<provider>/<name>`, with no spaces |
+
+The id is derived: for a local provider it is the id wt already lists the
+model under when it finds it unregistered (`ollama/qwen3:8b`,
+`omlx/<directory>`, `mtplx/<org>/<name>`; an `omlx-6bit` model is `omlx/…`), so
+registering a model does not rename it. For any other provider it is
+`<provider>/<name>` with each `/` in the name written `--`
+(`openrouter/qwen--qwen3.8-27b`). The id, the provider and the name cannot be
+changed afterwards: usage history, rotation and launch profiles key on the id.
+
+In the same write wt adds the default provider row the model needs when it is
+missing — for ollama, omlx, mtplx and openrouter (openrouter's holds no key,
+only `auth.secret_ref = "OPENROUTER_API_KEY"`, the environment variable wt
+reads the key from) — and any other row `wt model init` would add. A provider
+wt has no default row for is refused: add its `[[providers]]` block to
+`registry.toml` first. A second entry for an artifact that is already
+registered is refused too. A value that cannot be used is refused before
+anything else happens.
+
+For an ollama model wt runs `ollama show <name>` once, against the address of
+the registry's ollama provider, and records `model_info.supports_function_calling`
+and `model_info.supports_vision` when ollama lists the capability; wt copies
+`model_info` into the model's LiteLLM route. If the lookup fails the model is
+added without them and a warning says so.
+
+## `wt model edit <id> [flags]`
+
+Changes the fields named by the flags, and nothing else in the row: every
+other key (off-peak prices, `model_info`, `fetch`, keys wt does not know) is
+kept as it is. A flag left out leaves its field alone; an empty value clears
+it (`--tags ""`, `--input-price ""`), and an empty `--location` makes the
+model inherit its provider's. No flag at all is a usage error. It does not
+change `pricing_updated_at`. When nothing changes it says `no change` and
+syncs nothing.
+
+Two things follow from an edit of a price or of a subscription field, and
+only from one. Clearing a model's last price removes its `[models.cost]`
+table with it. And a row still in modelman's old cost layout (`kind =
+"per_token"` with `price_per_million_tokens`, or `kind = "subscription"` with
+`price_per_period` and `period`) is moved to the current keys in the same
+write: modelman reads such a table by its old keys alone, so a new key
+beside them would be a price it ignores.
+
+An id that more than one registry row carries is refused, with nothing
+written and no sync: wt cannot tell which row you mean, and there is no flag
+to choose one. The message names each row's provider, in the file's order,
+and the file to repair:
+
+```text
+wt: model "ollama/qwen3:8b" is in the registry twice (providers ollama, openrouter); wt cannot tell which one you mean — fix the entry in /Users/you/.config/local-ai/registry.toml
+```
+
+Give one of the rows another id, or delete it, by hand. The rows beside it,
+each with an id of its own, are edited as usual.
+
+## `wt model rm <id>... [--yes]`
+
+Removes the rows from the registry, and nothing else: it prints where each
+removed model's weights are, because wt deletes none. A local model that is
+still on disk shows up again in `wt model list` as `STATUS new`. It asks on
+the terminal first (`--yes` skips; with no terminal and no `--yes` it refuses).
+When one id is not in the registry, none is removed.
+
+An id that more than one registry row carries is refused in the same way,
+before the question and with the message `wt model edit` gives: none of the
+ids named is removed, whichever of them it is. Removing one of two rows that
+share an id is a hand edit — only there can you see which row is which.
+
+## What stays a hand edit of `registry.toml`
+
+- A `[[providers]]` row wt has no default for (a cloud provider other than
+  openrouter, a gateway of your own).
+- A model served from a directory of your own, `[models.fetch] local_path =
+  "…"` (the `bin/mlx-quantize` workflow). wt keeps the key, shows the path, and
+  takes the model's presence from a stat of it.
+- `[[families]]` display names. wt reads only each model's `family`.
+- Two `[[models]]` rows with one id. Every launch refuses such a registry
+  (`duplicate model id`), and `wt model edit` and `wt model rm` refuse the id
+  rather than pick a row; `wt model list` still shows both rows, each with
+  its provider's status.
+
+Run `wt litellm sync` after a hand edit: no tool saw it.

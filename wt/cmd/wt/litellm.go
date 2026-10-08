@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
@@ -138,6 +139,7 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 	// provider stopped outside wt leaves behind).
 	desired := desiredLocalModels(cfg, snap)
 	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap, routedIDSet())
+	probeWarns = append(probeWarns, missingProviderWarnings(cfg, probeWarns)...)
 	o := litellm.Options{
 		Untouched:         untouched,
 		UntouchedFamilies: untrustedFamilies(cfg, snap),
@@ -163,6 +165,44 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 	return reportLitellm(out, errOut, res, asJSON)
 }
 
+// missingProviderWarnings names every provider id a registry model references
+// that has no [[providers]] row, with the models that reference it. Such a
+// noProviderEntryReason is gapReason's sentence for a family whose models
+// name a provider with no row. missingProviderWarnings looks for it in the
+// probe warnings to leave out a line that would say the same gap twice, so
+// the two must be one text: this constant is the only copy.
+const noProviderEntryReason = "the registry has models for it but no provider entry"
+
+// model is a registry gap (litellm.RegistryGap): sync neither routes it nor
+// removes a route it already has, and before this warning it could do so
+// without a word — the user saw a model in the registry, no route for it,
+// and no reason. One line per provider, in registry order. A provider whose
+// family already has the "no provider entry" probe warning in said is left
+// out: that line names the same gap.
+func missingProviderWarnings(cfg *config.Config, said []string) []string {
+	models := map[string][]string{}
+	var order []string
+	for _, m := range cfg.Models {
+		if m.Native || cfg.ProviderByID(m.ProviderID) != nil {
+			continue
+		}
+		if _, seen := models[m.ProviderID]; !seen {
+			order = append(order, m.ProviderID)
+		}
+		models[m.ProviderID] = append(models[m.ProviderID], m.ID)
+	}
+	var warnings []string
+	for _, id := range order {
+		covered := fmt.Sprintf("provider %q could not be probed (%s)", localmodels.Family(id), noProviderEntryReason)
+		if slices.ContainsFunc(said, func(w string) bool { return strings.HasPrefix(w, covered) }) {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("provider %q has no [[providers]] row in %s, so wt cannot route %s; add the row (`wt model init` adds the default ones) or fix the provider_id",
+			id, config.RegistryPath(), strings.Join(models[id], ", ")))
+	}
+	return warnings
+}
+
 // syncUntouchedAndWarnings derives both sync modes' view of the provider
 // probes: the ids whose routes must not move (families the probe could not
 // vouch for), and the warnings the run reports. One helper for the real sync
@@ -173,7 +213,8 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 // A family whose server REFUSED the connection gets no untouched entries
 // (nothing is listening, so nothing is running and its local routes are
 // stale). It gets a warning only when that matters: a local route of the
-// family is in config.yaml (routed holds its ids) and is about to go, or the
+// family is in config.yaml (routed holds its ids; an id on more than one
+// registry row is not counted, see below) and is about to go, or the
 // family serves registry cloud models, which sync still routes though they
 // dial the same refused daemon — a failure that must be reported, not
 // swallowed. A stopped provider with neither is the everyday case and stays
@@ -279,8 +320,24 @@ func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, rou
 	inFamily := func(f string, ms []config.Model, keep func(config.Model) bool) bool {
 		return slices.ContainsFunc(ms, func(m config.Model) bool { return localmodels.Family(m.ProviderID) == f && keep(m) })
 	}
+	// The `local` half is decided by id — a routed id that a local row of the
+	// family holds, or a marked row litellm.RowFamily places in it (by the
+	// id's first row) — so an id on more than one registry row decides
+	// nothing: its route may be another row's (a cloud row's, which sync goes
+	// on routing) or left alone as ambiguous, and "treated as stale" would
+	// then follow a sync that removed nothing. The cost is the other way
+	// round: when every row of a duplicated id is stopped, its route is
+	// removed (the outcome line says so) without this sentence.
+	rowsPerID := map[string]int{}
+	for _, m := range cfg.Models {
+		rowsPerID[m.ID]++
+	}
+	oneRow := func(id string) bool { return rowsPerID[id] < 2 }
 	for _, f := range downs {
-		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok }) || managedRow(f)
+		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok && oneRow(m.ID) })
+		for id, managed := range routed {
+			local = local || (managed && oneRow(id) && litellm.RowFamily(cfg, id) == f)
+		}
 		cloud := inFamily(f, litellm.CloudModels(cfg), func(config.Model) bool { return true })
 		if !local && !cloud {
 			continue
@@ -359,13 +416,45 @@ func desiredLocalEntries(cfg *config.Config, snap localmodels.Snapshot) []localm
 func desiredLocalModels(cfg *config.Config, snap localmodels.Snapshot) []config.Model {
 	var out []config.Model
 	for _, e := range desiredLocalEntries(cfg, snap) {
-		if i := config.IndexModelByID(cfg.Models, e.ModelID); e.Registered && i >= 0 {
-			out = append(out, cfg.Models[i])
+		if m, ok := registryRowOf(cfg, e); ok {
+			out = append(out, m)
 			continue
 		}
 		out = append(out, litellm.DiscoveredModel(e.ProviderID, e.Artifact))
 	}
 	return out
+}
+
+// registryRowOf is the registry row a registered inventory entry stands for:
+// the row with the entry's model id under the entry's own provider. The
+// provider is part of the lookup because sync runs on a registry that fails
+// validation, and two rows under one id is such a registry: by id alone
+// (config.IndexModelByID, the first row) a model running under the second
+// provider was routed with the first provider's row, and the id's route could
+// name a server that was not serving it. Of two rows with one id AND one
+// provider, the one with the entry's model_name is taken, else the first.
+// When both rows of an id are handed to Sync it routes neither and warns
+// (litellm.SyncPlan.Warnings).
+func registryRowOf(cfg *config.Config, e localmodels.Entry) (config.Model, bool) {
+	if !e.Registered {
+		return config.Model{}, false
+	}
+	found := -1
+	for i, m := range cfg.Models {
+		if m.ID != e.ModelID || m.ProviderID != e.ProviderID {
+			continue
+		}
+		if m.ModelName == e.ModelName {
+			return m, true
+		}
+		if found < 0 {
+			found = i
+		}
+	}
+	if found < 0 {
+		return config.Model{}, false
+	}
+	return cfg.Models[found], true
 }
 
 // untrustedFamilies lists the local provider families whose routes sync must
@@ -432,7 +521,7 @@ func gapReason(cfg *config.Config, f string) string {
 			continue
 		}
 		if cfg.ProviderByID(m.ProviderID) == nil {
-			return "the registry has models for it but no provider entry"
+			return noProviderEntryReason
 		}
 		// The model's provider entry is of this family, so the loop above
 		// found its location to be "local" or "cloud": what is left is the

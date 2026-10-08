@@ -17,6 +17,11 @@ var (
 	ErrModelNotFound = errors.New("model not found")
 	// ErrModelExists: a model row already has the id.
 	ErrModelExists = errors.New("model already exists")
+	// ErrModelAmbiguous: more than one model row has the id, so an operation
+	// that addresses a row by its id cannot tell which one is meant. The
+	// error that matches it carries its own text (ambiguousModelErr): the id,
+	// each row's provider, and where to repair it.
+	ErrModelAmbiguous = errors.New("model id is in the registry more than once")
 	// ErrProviderExists: a provider row already has the id.
 	ErrProviderExists = errors.New("provider already exists")
 	// ErrRegistryTopLevel: registry.toml holds a top-level key that is not
@@ -138,6 +143,107 @@ func findRow(rows []*tomlw.Table, id string) int {
 	return slices.IndexFunc(rows, func(r *tomlw.Table) bool { return rowID(r) == id })
 }
 
+// ambiguousModelErr is the refusal of an id more than one model row carries.
+// It matches ErrModelAmbiguous and nothing else: it is not a "not found", and
+// it carries the registry hint itself, so no caller appends a second one.
+type ambiguousModelErr struct {
+	id        string
+	providers []string
+}
+
+func (e ambiguousModelErr) Error() string {
+	return fmt.Sprintf("%s; wt cannot tell which one you mean — %s",
+		DuplicatedModelText(e.id, e.providers), RegistryFixHint(ErrRegistryEntry))
+}
+
+func (e ambiguousModelErr) Is(target error) bool { return target == ErrModelAmbiguous }
+
+// DuplicatedModelText says that id is on more than one model row, naming
+// each row's provider_id in file order: `model "x" is in the registry twice
+// (providers ollama, omlx)`. A row with no provider_id is "(none)". It is the
+// one wording for a duplicated id, shared by the writer's refusal
+// (ErrModelAmbiguous) and `wt litellm sync`'s warning, which each add what
+// they do about it.
+func DuplicatedModelText(id string, providers []string) string {
+	named := make([]string, len(providers))
+	for i, p := range providers {
+		if named[i] = p; p == "" {
+			named[i] = "(none)"
+		}
+	}
+	times := "twice"
+	if len(named) != 2 {
+		times = fmt.Sprintf("%d times", len(named))
+	}
+	return fmt.Sprintf("model %q is in the registry %s (providers %s)", id, times, strings.Join(named, ", "))
+}
+
+// oneModelError is the answer to "which row is id" from the provider_id of
+// every row that carries it, in file order: nil for exactly one row,
+// ErrModelNotFound for none, ErrModelAmbiguous for more.
+func oneModelError(id string, providers []string) error {
+	switch len(providers) {
+	case 0:
+		return fmt.Errorf("%w: %q", ErrModelNotFound, id)
+	case 1:
+		return nil
+	}
+	return ambiguousModelErr{id: id, providers: providers}
+}
+
+// CheckModelRow reports whether id names exactly one model of the loaded
+// registry, with the errors the writer gives (RegistryDoc.Model). It is for
+// a command that asks the user something before it writes: the write would
+// refuse the id anyway, and this refuses it before the question.
+func (c *Config) CheckModelRow(id string) error {
+	var providers []string
+	for _, m := range c.Models {
+		if m.ID == id {
+			providers = append(providers, m.ProviderID)
+		}
+	}
+	return oneModelError(id, providers)
+}
+
+// modelRow finds the one model row with the id, for an operation that reads
+// or changes it. Two rows under one id are a registry Config.Validate
+// refuses, yet the commands that repair a registry (`wt model edit`, `wt
+// model rm`) are let into it on purpose — so the row is never "the first
+// one": which of them the user means cannot be told from the id, and the
+// refusal says so (ErrModelAmbiguous). No row is ErrModelNotFound.
+func (d *RegistryDoc) modelRow(id string) (rows []*tomlw.Table, i int, err error) {
+	rows = d.rows("models")
+	i = -1
+	var providers []string
+	for n, r := range rows {
+		if rowID(r) != id {
+			continue
+		}
+		if i < 0 {
+			i = n
+		}
+		p, _ := r.Get("provider_id")
+		name, _ := p.(string)
+		providers = append(providers, name)
+	}
+	if err := oneModelError(id, providers); err != nil {
+		return nil, -1, err
+	}
+	return rows, i, nil
+}
+
+// Model returns a copy of the model row id, with the errors every operation
+// that addresses a row by its id gives: ErrModelNotFound when no row has
+// it, ErrModelAmbiguous when more than one has. For a caller that reads the
+// row to decide what to patch.
+func (d *RegistryDoc) Model(id string) (*tomlw.Table, error) {
+	rows, i, err := d.modelRow(id)
+	if err != nil {
+		return nil, err
+	}
+	return rows[i].Clone(), nil
+}
+
 func (d *RegistryDoc) touchModel(row *tomlw.Table) {
 	if !slices.Contains(d.touchedModels, row) {
 		d.touchedModels = append(d.touchedModels, row)
@@ -163,12 +269,13 @@ func cloneRows(rows []*tomlw.Table) []*tomlw.Table {
 // key stays as it is. A key whose value is already the one asked for is not
 // rewritten — an integer price asked to be the same number as a float stays
 // an integer. A new key goes at its schema position. The id itself cannot be
-// patched: a row under a new id is CloneModel's job.
+// patched: a row under a new id is CloneModel's job. An id more than one row
+// has is refused (ErrModelAmbiguous), like every operation that finds a row
+// by its id.
 func (d *RegistryDoc) PatchModel(id string, set map[string]any, unset []string) error {
-	rows := d.rows("models")
-	i := findRow(rows, id)
-	if i < 0 {
-		return fmt.Errorf("%w: %q", ErrModelNotFound, id)
+	rows, i, err := d.modelRow(id)
+	if err != nil {
+		return err
 	}
 	for key := range set {
 		if key == "id" {
@@ -194,7 +301,7 @@ func (d *RegistryDoc) PatchModel(id string, set map[string]any, unset []string) 
 }
 
 // AddModel appends a model row. The table needs a non-empty string id that
-// no row has yet.
+// no row has yet; an id one row or several already have is ErrModelExists.
 func (d *RegistryDoc) AddModel(table map[string]any) error {
 	id, _ := table["id"].(string)
 	if id == "" {
@@ -215,12 +322,13 @@ func (d *RegistryDoc) AddModel(table map[string]any) error {
 
 // CloneModel appends a copy of the model row fromID with overrides set on it
 // (dotted keys, as PatchModel's set). overrides must give the copy an id no
-// row has; everything else, unknown keys included, is carried over.
+// row has; everything else, unknown keys included, is carried over. A fromID
+// more than one row has is ErrModelAmbiguous: there is no telling which row
+// to copy.
 func (d *RegistryDoc) CloneModel(fromID string, overrides map[string]any) error {
-	rows := d.rows("models")
-	i := findRow(rows, fromID)
-	if i < 0 {
-		return fmt.Errorf("%w: %q", ErrModelNotFound, fromID)
+	rows, i, err := d.modelRow(fromID)
+	if err != nil {
+		return err
 	}
 	row := rows[i].Clone()
 	if _, err := patchRow(row, modelSchemas, overrides, nil); err != nil {
@@ -239,12 +347,13 @@ func (d *RegistryDoc) CloneModel(fromID string, overrides map[string]any) error 
 }
 
 // RemoveModel deletes the model row id and returns it, so the caller can
-// still read what it held (where its weights are, say).
+// still read what it held (where its weights are, say). An id more than one
+// row has is ErrModelAmbiguous and removes none of them: that is a registry
+// to repair by hand, where the user can see which row is which.
 func (d *RegistryDoc) RemoveModel(id string) (*tomlw.Table, error) {
-	rows := d.rows("models")
-	i := findRow(rows, id)
-	if i < 0 {
-		return nil, fmt.Errorf("%w: %q", ErrModelNotFound, id)
+	rows, i, err := d.modelRow(id)
+	if err != nil {
+		return nil, err
 	}
 	row := rows[i]
 	d.setRows("models", slices.Delete(slices.Clone(rows), i, i+1))
@@ -254,6 +363,7 @@ func (d *RegistryDoc) RemoveModel(id string) (*tomlw.Table, error) {
 
 // SetTimePrices replaces the model's cost.time_prices with rows; no rows
 // deletes the key. Rows equal to the ones already there are not rewritten.
+// It is a PatchModel, and refuses what that refuses.
 func (d *RegistryDoc) SetTimePrices(id string, rows []map[string]any) error {
 	if len(rows) == 0 {
 		return d.PatchModel(id, nil, []string{"cost.time_prices"})
