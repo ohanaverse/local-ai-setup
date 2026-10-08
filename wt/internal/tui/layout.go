@@ -56,7 +56,8 @@ const pickerPadX = 2
 // list's full help (`?`) is open on a short terminal — the expanded help
 // needs about twelve lines by itself and shows the keys anyway — or on a
 // terminal of fewer than nine lines. The table and the status line are never
-// given up by choice; see fitList for what happens when even that is too much.
+// given up by choice; see tuilayout.FitList for what happens when even that is
+// too much.
 func (m *model) modelFrames() []listFrame {
 	// The columns left between the picker's side padding: its own text is
 	// clipped to them, and the table is sized to them (frameSides measures

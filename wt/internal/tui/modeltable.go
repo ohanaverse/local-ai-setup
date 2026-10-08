@@ -35,7 +35,6 @@ const (
 	col7D
 	col30D
 	colSurvey
-	numCols
 )
 
 // colDropOrder is the order in which columns are given up when the table is

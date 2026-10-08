@@ -140,25 +140,69 @@ func TestColumnsLineMatchesTheHeader(t *testing.T) {
 	}
 }
 
+// TestColumnsSurviveAShortRowAndNoColumns verifies a row with fewer cells
+// than the table has columns is drawn with the missing ones empty, and that a
+// table left with no column reports the width of what is still drawn. Columns
+// holds slices where the launcher's table held fixed arrays, so the compiler
+// rules out neither any more: a short row was a panic inside View, which
+// takes the whole screen down, and no column at all made Width two columns
+// less than the prefix and the note a row still prints.
+func TestColumnsSurviveAShortRowAndNoColumns(t *testing.T) {
+	cols := testColumns(0)
+	short := []string{PadRunes("alpha", 12), PadRunes("local", 5)}
+	if got, want := cols.Line(short), "alpha         local"; got != want {
+		t.Errorf("a short row = %q, want %q", got, want)
+	}
+	if got := cols.Line(nil); got != "" {
+		t.Errorf("a row with no cells = %q, want it empty", got)
+	}
+
+	none := NewColumns([]string{"ONLY"}, []int{4}, 2, []int{0})
+	none.Tail = 5
+	none.Fit(1)
+	if none.Shown(0) {
+		t.Fatal("the one column, which is in DropOrder, was not dropped at width 1")
+	}
+	if got := none.Width(); got != 2+5 {
+		t.Errorf("Width with no column = %d, want 7 (the prefix and the note)", got)
+	}
+	if got := (&Columns{}).Width(); got != 0 {
+		t.Errorf("Width of an empty table = %d, want 0", got)
+	}
+}
+
 // TestFitToFitsATableInsideItsFrame verifies FitTo, given a list of table
 // rows inside a frame, sets the list's title to the header of the columns
 // that fit and leaves the whole view inside the terminal at every size wt
-// supports — the header and a row still on screen. This is the path both
-// programs' tables take; the launcher's own fit tests cover its screens, and
-// this covers the shared rule without them.
+// supports — the header still on screen and a row drawn whole, no cell cut
+// at the list's edge. This is the path both programs' tables take; the
+// launcher's own fit tests cover its screens, and this covers the shared rule
+// without them.
 func TestFitToFitsATableInsideItsFrame(t *testing.T) {
-	for _, width := range []int{40, 80, 120} {
+	// 48 is one column more than the whole table: the width at which a row
+	// that Columns.Width undercounts is the first thing cut.
+	for _, width := range []int{40, 48, 80, 120} {
 		for _, height := range []int{12, 24, 50} {
 			cols := testColumns(0)
 			var items []list.Item
 			for i := 0; i < 30; i++ {
+				// Every cell fills its column, the last one included, so a
+				// row is as wide as Columns.Width says a row can be.
 				items = append(items, testRow{cols: cols, cells: []string{
-					PadRunes("model-"+strings.Repeat("x", i%6), 12), PadRunes("local", 5), PadRunes("ok", 7), PadRunes("1.0 GB", 6), "note",
+					PadRunes("model-"+strings.Repeat("x", i%6), 12), PadRunes("local", 5), PadRunes("ok", 7), PadRunes("1.0 GB", 6), "full note",
 				}})
 			}
+			// A table's rows are drawn whole only by a delegate whose title
+			// styles have no padding (TitleRoom), as tui.ThemedListDelegate's
+			// have none. Bubbles' default pads a row by two columns, which
+			// Columns does not count, and would cut the last cell of a table
+			// that fits exactly.
 			delegate := list.NewDefaultDelegate()
 			delegate.ShowDescription = false
 			delegate.SetSpacing(0)
+			delegate.Styles.NormalTitle = lipgloss.NewStyle()
+			delegate.Styles.SelectedTitle = lipgloss.NewStyle()
+			delegate.Styles.DimmedTitle = lipgloss.NewStyle()
 			l := list.New(items, delegate, width, height)
 			l.SetShowStatusBar(false)
 			l.Styles.Title = lipgloss.NewStyle()
@@ -176,6 +220,9 @@ func TestFitToFitsATableInsideItsFrame(t *testing.T) {
 			}
 			if !strings.Contains(view, "NAME") || !strings.Contains(view, "STATE") || !strings.Contains(view, "model-") {
 				t.Errorf("%dx%d: the header or the rows are not on screen:\n%s", width, height, view)
+			}
+			if first := cols.Line(items[0].(testRow).cells); !strings.Contains(view, first) {
+				t.Errorf("%dx%d: the first row is not drawn whole (want %q):\n%s", width, height, first, view)
 			}
 			if width == 40 && strings.Contains(view, "SIZE") {
 				t.Errorf("%dx%d: SIZE should have been dropped at this width:\n%s", width, height, view)

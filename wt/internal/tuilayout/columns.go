@@ -46,41 +46,20 @@ type Columns struct {
 	// go first. A column that is not in it is never dropped.
 	DropOrder []int
 
-	// shown is which columns are drawn, one entry per heading. Read it
-	// through visible, never directly: a Columns built as a literal has none.
-	shown []bool
+	// hidden marks the columns the last Fit gave up, one entry per heading.
+	// Its zero value hides none, so a Columns written as a literal — the
+	// fields are exported — shows every column until it is fitted, exactly
+	// as one from NewColumns does.
+	hidden []bool
 }
 
 // NewColumns returns a layout with every column shown.
 func NewColumns(heads []string, widths []int, prefix int, dropOrder []int) *Columns {
-	c := &Columns{Heads: heads, Widths: widths, Prefix: prefix, DropOrder: dropOrder}
-	c.showAll()
-	return c
-}
-
-// showAll shows every column again, one entry per heading.
-func (c *Columns) showAll() {
-	if len(c.shown) != len(c.Heads) {
-		c.shown = make([]bool, len(c.Heads))
-	}
-	for i := range c.shown {
-		c.shown[i] = true
-	}
-}
-
-// visible is shown, with every column shown when nothing has fitted the
-// layout yet. The fields are exported, so a Columns can be written as a
-// literal instead of through NewColumns; without this it would draw an empty
-// header and empty rows, and say nothing.
-func (c *Columns) visible() []bool {
-	if len(c.shown) != len(c.Heads) {
-		c.showAll()
-	}
-	return c.shown
+	return &Columns{Heads: heads, Widths: widths, Prefix: prefix, DropOrder: dropOrder}
 }
 
 // Shown reports whether column i is drawn at the width last fitted.
-func (c *Columns) Shown(i int) bool { return c.visible()[i] }
+func (c *Columns) Shown(i int) bool { return i >= len(c.hidden) || !c.hidden[i] }
 
 // Fit chooses the columns to show in a list of the given width. It starts
 // from the whole table and gives up columns in DropOrder until what is left
@@ -91,35 +70,41 @@ func (c *Columns) Shown(i int) bool { return c.visible()[i] }
 // right edge, the header up to three columns before the rows: that is the
 // one case in which content is cut, and no cell is abbreviated to avoid it.
 func (c *Columns) Fit(width int) {
-	c.showAll()
+	if len(c.hidden) != len(c.Heads) {
+		c.hidden = make([]bool, len(c.Heads))
+	}
+	clear(c.hidden)
 	for _, drop := range c.DropOrder {
 		if c.Width() <= width && utf8.RuneCountInString(c.Header())+TitleRoom <= width {
 			return
 		}
-		c.shown[drop] = false
+		c.hidden[drop] = true
 	}
 }
 
 // Width is the widest a row can be with the columns now shown: the prefix,
-// the columns at their full width, and the longest note after them.
+// the columns at their full width with a separator between each two, and the
+// longest note after them.
 func (c *Columns) Width() int {
 	w, n := c.Prefix+c.Tail, 0
-	for i, shown := range c.visible() {
-		if shown {
+	for i := range c.Heads {
+		if c.Shown(i) {
 			w += c.Widths[i]
 			n++
 		}
 	}
-	return w + len(ColSep)*(n-1)
+	// No separator with one column, and none with no column at all (a table
+	// whose DropOrder names every column).
+	return w + len(ColSep)*max(0, n-1)
 }
 
 // Header is the header line for the columns now shown, indented by Prefix,
 // with the last heading's padding trimmed.
 func (c *Columns) Header() string {
 	var cells []string
-	for i, shown := range c.visible() {
-		if shown {
-			cells = append(cells, c.Heads[i])
+	for i, head := range c.Heads {
+		if c.Shown(i) {
+			cells = append(cells, head)
 		}
 	}
 	return strings.Repeat(" ", c.Prefix) + strings.TrimRight(strings.Join(cells, ColSep), " ")
@@ -127,11 +112,13 @@ func (c *Columns) Header() string {
 
 // Line is one row's cells for the columns now shown, without the prefix. The
 // row's trailing spaces are trimmed: the padding of its last cell, and the
-// separator before a last cell that is empty.
+// separator before a last cell that is empty. A row with fewer cells than the
+// table has columns is drawn as if the missing ones were empty; Line runs
+// inside View, where a panic takes the whole screen down.
 func (c *Columns) Line(cells []string) string {
 	var out []string
-	for i, shown := range c.visible() {
-		if shown {
+	for i := range c.Heads {
+		if c.Shown(i) && i < len(cells) {
 			out = append(out, cells[i])
 		}
 	}
