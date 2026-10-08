@@ -98,6 +98,35 @@ func UpdateRegistry(apply func(*RegistryDoc) error) (changed bool, err error) {
 	return changed, nil
 }
 
+// ReadRegistryDoc reads registry.toml into a RegistryDoc without the lock and
+// without writing: the document a planner looks at before anything is
+// decided. It refuses what UpdateRegistry refuses (a broken link, a file that
+// is not TOML, an unknown top-level key), so a dry run reports the problem a
+// write would hit. A missing registry is ErrRegistryMissing: unlike a write,
+// a read has nothing to create.
+//
+// The document is detached. Changing it changes nothing on disk; a write
+// goes through UpdateRegistry, which reads the file again under the lock.
+func ReadRegistryDoc() (*RegistryDoc, error) {
+	path := RegistryPath()
+	_, data, exists, err := readRegistryFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w at %s — seed it with `wt model init`", ErrRegistryMissing, path)
+	}
+	root, err := tomlw.Decode(data)
+	if err != nil {
+		return nil, registryFileError(fmt.Errorf("parse %s: %w", path, err))
+	}
+	doc, err := newRegistryDoc(root)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return doc, nil
+}
+
 // readRegistryFile resolves and reads the registry: the file to write, its
 // bytes, and whether it exists. A missing file reads as no bytes. A file that
 // is there and cannot be read is ErrRegistryFile, as it is for loadRegistry.
