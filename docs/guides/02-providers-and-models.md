@@ -111,6 +111,8 @@ The key is the `auth.api_key` value in `~/.omlx/settings.json`. This is a hand e
 
 Providers also declare a `protocols` field — the list of wire protocols the provider serves (`"anthropic"`, `"openai-chat"`, `"openai-responses"`; default `["openai-chat"]`). Ollama's discovered entry serves `["anthropic","openai-chat"]`. wt compares an agent's protocols against the provider's to pick direct-vs-LiteLLM routing ([06-wt-agents-and-models](06-wt-agents-and-models.md) §4).
 
+A provider may also set `openrouter_priced` (`true` or `false`, unquoted). Left out, modelman and wt infer it: an `openrouter` model, or a model of a non-native cloud provider, takes its price from OpenRouter — `modelman refresh-prices` refreshes it, and wt reminds you when that refresh is stale. Set `openrouter_priced = false` on a cloud provider whose model names are not OpenRouter ids (a corporate LiteLLM gateway, say) to take its models out of the refresh and stop the reminder; `true` opts a provider in. This is a hand edit that modelman keeps when it rewrites the file.
+
 Validate the file after editing (read-only registry load):
 
 ```bash

@@ -90,6 +90,13 @@ def _is_openrouter_priced(registry: Registry, model: ModelEntry) -> bool:
     even though their provider location says "cloud", or a daily refresh
     would warn "No OpenRouter match" for every agent and could overwrite an
     agent's native cost if its name collided with a real model id.
+
+    A provider's explicit ``openrouter_priced`` overrides the inference in
+    both directions, after the native check: ``false`` takes a cloud provider
+    whose model names are not OpenRouter ids (a corporate LiteLLM gateway)
+    out of the refresh, ``true`` puts a provider in. wt's
+    ``config.OpenRouterPriced`` applies the same override; both are pinned by
+    ``docs/contracts/catalog-predicates.sample.toml``.
     """
     try:
         provider = registry.provider(model.provider_id)
@@ -97,6 +104,11 @@ def _is_openrouter_priced(registry: Registry, model: ModelEntry) -> bool:
         provider = None
     if provider is not None and is_native_provider(provider):
         return False
+    # Explicit override: the provider's models are (or are not) refresh
+    # candidates whatever its location says — which is also what decides
+    # whether wt prints its stale-pricing notice.
+    if provider is not None and provider.openrouter_priced is not None:
+        return provider.openrouter_priced
     if model.provider_id == "openrouter":
         return True
     return provider is not None and provider.location == "cloud"

@@ -90,7 +90,7 @@ Nothing runs while the TUI is open: actions fill `ModelScreen`'s queued dicts, a
 - `litellm.py` writes nothing; `sync_routes()` is modelman's one route-write path and calls `wt_bridge.sync()`.
 - `wt_bridge.py` — subprocess wrapper for `wt litellm ...`; **error messages leave argv out** (it may carry `--api-key`).
 - `_toml_io.py` — atomic writes; registry/state saves preserve unknown keys on round-trip.
-- `pricing.py::_is_openrouter_priced` and wt's `agents.HasOpenRouterPricedModel` mirror each other — change both together.
+- `pricing.py::_is_openrouter_priced` and wt's `agents.HasOpenRouterPricedModel` mirror each other — change both together. A provider's `openrouter_priced` key overrides both, in both directions.
 - `manifest.py` and `config.py` are migrate-only; new config goes in `registry.toml`.
 
 Read `docs/internals/registry-and-state.md` before changing any of these, `sync.py`, `migrate.py`, `settings.py`, `time_pricing.py`, or `ollama_catalog.py`.
