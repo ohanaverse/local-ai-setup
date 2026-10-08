@@ -206,8 +206,8 @@ func registryNote(loadErr error) string {
 		strings.Join(strings.Fields(loadErr.Error()), " "), hint)
 }
 
-// querySpend asks the LiteLLM database for per-model totals between start
-// and end. A seam: cmd/wt's TestMain replaces it, so no test resolves a
+// querySpend asks the LiteLLM database for per-model totals after start and
+// up to and including end (spend.InWindow). A seam: cmd/wt's TestMain replaces it, so no test resolves a
 // connection string or runs psql.
 var querySpend = realQuerySpend
 
@@ -232,11 +232,13 @@ func realStdoutWidth() int {
 	return w
 }
 
-// collectUsage builds the usage report for one window ending at asOf: the
-// spend query covers asOf-window..asOf, and the launches are the ones
-// usage.jsonl dates inside that same window (a launch after asOf is in
-// neither half). It never fails: every way of having no spend data is a status and a
-// reason, and the launch counts are reported regardless.
+// collectUsage builds the usage report for one window ending at asOf,
+// (asOf-window, asOf]: the spend query covers it, and the launches are the
+// ones usage.jsonl dates inside that same window. Both halves leave out an
+// event dated exactly asOf-window and count one dated exactly asOf (#298); a
+// launch after asOf is in neither half. It never fails: every way of having
+// no spend data is a status and a reason, and the launch counts are reported
+// regardless.
 func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, f statsFilter) usageReport {
 	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}
 	var sp *spend.Result

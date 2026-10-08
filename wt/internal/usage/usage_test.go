@@ -436,38 +436,60 @@ func TestAllCountsScopesToOneAgent(t *testing.T) {
 	}
 }
 
-// TestAllCountsWindowEdgesAndMissingFile verifies the bucket edges are the
-// ones Counts uses (an event exactly 24h, 7d or 30d old is outside that
-// window) and that a missing usage.jsonl reads as an empty, non-nil map.
-// `wt stats` on a fresh install must print "no usage data", not crash, and
-// its launch column must agree with the picker's 1d/7d/30d columns.
-func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
+// TestAllCountsMissingFileIsAnEmptyMap verifies that a missing usage.jsonl
+// reads as an empty, non-nil map: `wt stats` on a fresh install must print
+// "no usage data", not crash. The bucket edges themselves — each bucket
+// (asOf - window, asOf], which is also what the picker's 1d/7d/30d columns
+// and the spend query use — are pinned by
+// TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd.
+func TestAllCountsMissingFileIsAnEmptyMap(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
 	if got := store.AllCounts("", fixed); got == nil || len(got) != 0 {
 		t.Fatalf("AllCounts on a missing file = %#v, want an empty non-nil map", got)
 	}
+}
+
+// TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd pins each bucket as
+// (asOf - window, asOf] to the nanosecond: a launch dated exactly one window
+// before the instant is outside that bucket, one a nanosecond younger is
+// inside it, and one dated exactly at the instant is inside every bucket.
+// This is the rule `wt stats`' spend query follows (spend.InWindow, #298);
+// if the two disagree at an edge, a model shows a request with no launch
+// there, which the usage guide tells the reader is traffic wt did not send.
+func TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
 
 	writeEvents(t, store, []event{
-		{ModelID: "day", Timestamp: fixed.Add(-24 * time.Hour)},
-		{ModelID: "week", Timestamp: fixed.Add(-7 * 24 * time.Hour)},
-		{ModelID: "month", Timestamp: fixed.Add(-30 * 24 * time.Hour)},
-		{ModelID: "month", Timestamp: fixed.Add(-30*24*time.Hour + time.Second)},
+		{ModelID: "day/on-the-edge", Timestamp: asOf.Add(-day)},
+		{ModelID: "day/inside", Timestamp: asOf.Add(-day + time.Nanosecond)},
+		{ModelID: "week/on-the-edge", Timestamp: asOf.Add(-7 * day)},
+		{ModelID: "week/inside", Timestamp: asOf.Add(-7*day + time.Nanosecond)},
+		{ModelID: "month/on-the-edge", Timestamp: asOf.Add(-30 * day)},
+		{ModelID: "month/inside", Timestamp: asOf.Add(-30*day + time.Nanosecond)},
+		{ModelID: "at-the-instant", Timestamp: asOf},
+		{ModelID: "after-the-instant", Timestamp: asOf.Add(time.Nanosecond)},
 	})
-	got := store.AllCounts("", fixed)
+	got := store.AllCounts("", asOf)
 	want := map[string]UsageCounts{
-		"day":   {SevenDay: 1, ThirtyDay: 1},
-		"week":  {ThirtyDay: 1},
-		"month": {ThirtyDay: 1},
+		"day/on-the-edge":  {SevenDay: 1, ThirtyDay: 1},
+		"day/inside":       {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"week/on-the-edge": {ThirtyDay: 1},
+		"week/inside":      {SevenDay: 1, ThirtyDay: 1},
+		// month/on-the-edge is in no bucket, so it has no entry at all.
+		"month/inside":   {ThirtyDay: 1},
+		"at-the-instant": {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
 	}
 	for id, w := range want {
 		if got[id] != w {
 			t.Errorf("AllCounts(\"\")[%q] = %+v, want %+v", id, got[id], w)
 		}
 	}
-	if ids := []string{"day", "week", "month"}; len(got) != len(ids) {
-		t.Errorf("AllCounts(\"\") = %+v, want exactly %v", got, ids)
+	if len(got) != len(want) {
+		t.Errorf("AllCounts(\"\") = %+v, want exactly the %d models above (none 30 days old or dated after the instant)", got, len(want))
 	}
 }
 
