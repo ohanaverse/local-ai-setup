@@ -311,7 +311,7 @@ No `modelman` shim. `modelman` is reachable only through `uv run --directory mod
 1. **Docs and skills.** Guides 00 to 11, root `README.md` and `CLAUDE.md`, `litellm-session-logs/CLAUDE.md`; `adding-a-provider` rewritten for wt and moved to `wt/.claude/skills/`; `adding-a-tui-screen` deleted; `mlx-lm-quantization` updated (hand-edit `local_path`, or place the output in the provider's model directory and `wt model add` it by name).
 2. **wt strings sweep.** Comments and stragglers only; each user-facing hint already flipped in the step that shipped its replacement. Ends with a one-time grep for `modelman` in non-test Go.
 3. **The deletion.** `git rm -r modelman/`; `git mv modelman/docs/superpowers` to `docs/superpowers/modelman/`; remove `modelman-ci`; root `Makefile` `install` and `test-all`; llmbench drops its registry-path parity with modelman, the retired llamacpp backend entry and `LLM_ISOLATE_LLAMACPP_MODEL`; delete the wording-pin test from Step 0.
-4. **Remove `wt start --json` and `--plan`,** `start_json.go`, its test and `docs/contracts/wt-start-cli.sample.json`.
+4. **Remove `wt start --json` and `--plan`,** `start_json.go`, its test and `docs/contracts/wt-start-cli.sample.json`. Their sections in `wt/docs/wt-start-stop.md` and `wt/docs/internals/local-models.md` go in the same change.
 5. **wt stops reading `modelman.toml`.** Delete `internal/config/modelman.go`, the legacy `[litellm]` fallback, and `docs/contracts/modelman.sample.toml`.
 6. **Optional, mechanical.** Move Go tests from `MODELMAN_REGISTRY` to `WT_REGISTRY`, leaving one alias-precedence test.
 
