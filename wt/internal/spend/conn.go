@@ -112,6 +112,12 @@ var envFor = map[string]string{
 // entries are sorted by name. A string that cannot be carried over
 // faithfully is refused with ErrConnectionString.
 func connEnv(dsn string) ([]string, error) {
+	// A raw NUL ends the string for libpq, and an environment entry cannot
+	// hold one. (A URI's %00 is refused where it is decoded.) Checked first,
+	// so the reason given does not depend on which option is looked at first.
+	if strings.IndexByte(dsn, 0) >= 0 {
+		return nil, errUnreadable
+	}
 	opts, err := connOptions(dsn)
 	if err != nil {
 		return nil, err
@@ -121,11 +127,6 @@ func connEnv(dsn string) ([]string, error) {
 		name, ok := envFor[k]
 		if !ok {
 			return nil, errUnsupported
-		}
-		// An environment entry cannot hold a NUL. (A URI's %00 is refused
-		// where it is decoded; this is a raw one in a keyword string.)
-		if strings.ContainsRune(v, 0) {
-			return nil, errUnreadable
 		}
 		env = append(env, name+"="+v)
 	}
@@ -138,15 +139,22 @@ func connEnv(dsn string) ([]string, error) {
 // has an "=", else the name of a database. Where an option is given twice
 // the later one counts.
 func connOptions(dsn string) (map[string]string, error) {
-	for _, prefix := range []string{"postgresql://", "postgres://"} {
-		if rest, ok := strings.CutPrefix(dsn, prefix); ok {
-			return uriOptions(rest)
-		}
+	if rest, ok := cutURIScheme(dsn); ok {
+		return uriOptions(rest)
 	}
 	if !strings.Contains(dsn, "=") {
 		return map[string]string{"dbname": dsn}, nil
 	}
 	return keywordOptions(dsn)
+}
+
+// cutURIScheme returns what follows the scheme of a connection URI, and
+// whether dsn is one. libpq knows these two spellings, in this case only.
+func cutURIScheme(dsn string) (rest string, ok bool) {
+	if rest, ok = strings.CutPrefix(dsn, "postgresql://"); ok {
+		return rest, true
+	}
+	return strings.CutPrefix(dsn, "postgres://")
 }
 
 // cutAny splits s before the first byte that is in stops; without one, it

@@ -194,6 +194,11 @@ func TestQueryErrorMapping(t *testing.T) {
 	// libpq's shape when the server answered and said no.
 	const badLogin = "psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: " +
 		"FATAL:  password authentication failed for user \"litellm\"\n"
+	// The server asked for a password and the connection string led to none:
+	// what a password kept only in PGPASSWORD looks like, now that psql
+	// inherits no PG* variable.
+	const noPassword = "psql: error: connection to server at \"db.example\" (10.0.0.5), port 5432 failed: " +
+		"fe_sendauth: no password supplied\n"
 	const noSuchDB = "psql: error: connection to server on socket \"/tmp/.s.PGSQL.5432\" failed: " +
 		"FATAL:  database \"litellm\" does not exist\n"
 	const noSuchHost = "psql: error: could not translate host name \"db.example\" to address: " +
@@ -230,6 +235,8 @@ func TestQueryErrorMapping(t *testing.T) {
 			"cannot reach the LiteLLM database at 127.0.0.1:1: Connection refused"},
 		{"login refused", "", badLogin, 2, ErrUnreachable,
 			`cannot reach the LiteLLM database at db.example:5432: password authentication failed for user "..."`},
+		{"no password to give", "", noPassword, 2, ErrUnreachable,
+			"cannot reach the LiteLLM database at db.example:5432: fe_sendauth: no password supplied"},
 		{"no such database, over a socket", "", noSuchDB, 2, ErrUnreachable,
 			`cannot reach the LiteLLM database at socket /tmp/.s.PGSQL.5432: database "..." does not exist`},
 		{"no such host", "", noSuchHost, 2, ErrUnreachable,

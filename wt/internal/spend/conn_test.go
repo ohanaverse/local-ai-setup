@@ -165,6 +165,11 @@ func TestQueryRefusesWhatItCannotCarryOver(t *testing.T) {
 		{"an unquoted à, which ends in the byte macOS calls a space", "host=db.example password=FAKEàpass", unreadable},
 		{"an unquoted no-break space", "host=db.example password=FAKE pass", unreadable},
 		{"an unquoted byte 0x85", "host=db.example password=FAKE\u0085pass", unreadable},
+		// libpq's string ends at a NUL, and an environment entry cannot hold
+		// one. The reason is the same whatever else the string sets.
+		{"a raw NUL in a keyword value", "host=db.example password=FAKE\x00pass", unreadable},
+		{"a raw NUL beside an option with no variable", "keepalives=1 password=FAKE\x00pass", unreadable},
+		{"a raw NUL in a database name", "FAKE\x00db", unreadable},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

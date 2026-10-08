@@ -238,6 +238,11 @@ var knownReason = regexp.MustCompile(`^(?:` + strings.Join([]string{
 	`No such file or directory`,
 	`Permission denied`,
 	`server closed the connection unexpectedly`,
+	// The server wants a password and the string leads to none. psql is run
+	// with -w and without wt's own PGPASSWORD or PGPASSFILE (psqlEnv), so
+	// this is what a password kept only in the shell's environment looks
+	// like; unnamed, it would read as a database that cannot be reached.
+	`fe_sendauth: no password supplied`,
 
 	`password authentication failed for user "\.\.\."`,
 	`(?:Peer|Ident) authentication failed for user "\.\.\."`,
@@ -347,19 +352,15 @@ func address(host, port, socket string) string {
 // URI with more than one "@" in its authority is refused too.
 //
 // In a keyword string, a value with an unquoted space ends early, and what
-// follows it can be read as a host or a port. Any value can be a secret —
-// password, sslpassword, passfile, a service name — so the address counts
-// only when host, hostaddr and port are written before every other
-// keyword, and no field is anything but a plain key=value.
+// follows it can be read as a host or a port. Any value can be a secret — a
+// password, the path of a passfile or a key — so the address counts only
+// when host, hostaddr and port are written before every other keyword, and
+// no field is anything but a plain key=value.
 //
 // For any other string the address is left out of the error; the reason
 // alone is still shown.
 func plainAddress(dsn string) bool {
-	rest, isURI := strings.CutPrefix(dsn, "postgresql://")
-	if !isURI {
-		rest, isURI = strings.CutPrefix(dsn, "postgres://")
-	}
-	if isURI {
+	if rest, isURI := cutURIScheme(dsn); isURI {
 		i := strings.IndexAny(rest, "/?#")
 		authority := rest
 		if i >= 0 {
