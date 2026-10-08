@@ -49,9 +49,9 @@ func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 	return "LiteLLM routes not synced: " + err.Error()
 }
 
-// modelCmd is the `wt model` group: the commands that list and write
-// registry.toml. `init` and `list` (read-only) are here; add, edit, rm and
-// the Models tab follow.
+// modelCmd is the `wt model` group: list (model_list.go), add, edit and rm
+// (model_write.go), and init, which creates the registry and seeds its
+// provider rows.
 func modelCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "model",
@@ -68,10 +68,11 @@ func modelCmd(a *app) *cobra.Command {
 			"  - ollama, omlx, mtplx: when the command is installed, or a model or a\n" +
 			"                         configured agent uses it\n" +
 			"  - mlx_lm_server:       when a model or a configured agent uses it\n" +
-			"  - openrouter:          when a configured agent uses it; the row holds no key,\n" +
-			"                         only auth.secret_ref = \"OPENROUTER_API_KEY\", the\n" +
-			"                         environment variable wt reads the key from (edit\n" +
-			"                         it in registry.toml if you keep the key elsewhere)\n" +
+			"  - openrouter:          when a model or a configured agent uses it; the row\n" +
+			"                         holds no key, only auth.secret_ref =\n" +
+			"                         \"OPENROUTER_API_KEY\", the environment variable wt\n" +
+			"                         reads the key from (edit it in registry.toml if\n" +
+			"                         you keep the key elsewhere)\n" +
 			"  - each configured agent: a native provider row under the agent's name\n\n" +
 			"A provider an agent lists that wt has no default row for is named in the\n" +
 			"output and left for you to add to registry.toml.\n\n" +
@@ -91,7 +92,7 @@ func modelCmd(a *app) *cobra.Command {
 		},
 	}
 	initC.Flags().BoolVar(&initJSON, "json", false, "machine-readable output")
-	c.AddCommand(initC, modelListCmd(a))
+	c.AddCommand(initC, modelListCmd(a), modelAddCmd(a), modelEditCmd(a), modelRmCmd(a))
 	return c
 }
 

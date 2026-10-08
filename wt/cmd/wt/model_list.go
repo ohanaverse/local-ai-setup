@@ -122,7 +122,7 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 			fmt.Fprintln(out, "no models: the registry has none, and no local provider row to look for models with (`wt model init` adds them)")
 			return nil
 		}
-		fmt.Fprintln(out, "no models: the registry has none, and no local model was found on this machine")
+		fmt.Fprintln(out, "no models: the registry has none, and no local model was found on this machine (add one with `wt model add`)")
 		return nil
 	}
 	cols, cells, dropped := fitModelList(rows, width)

@@ -213,15 +213,16 @@ func TestModelListJSON(t *testing.T) {
 }
 
 // TestModelListWithNothingToList verifies an empty registry on a machine
-// with no local model prints one line that says so, not a lone header row.
+// with no local model prints one line that says so and names the command
+// that adds one, not a lone header row.
 func TestModelListWithNothingToList(t *testing.T) {
 	stubProbeInventory(t, localmodels.Snapshot{})
 	var out, errOut bytes.Buffer
 	if err := runModelList(&out, &errOut, &config.Config{}, false, 80); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(out.String(), "no models: ") || strings.Contains(out.String(), "MODEL") {
-		t.Errorf("out = %q, want a one-line note and no table", out.String())
+	if !strings.HasPrefix(out.String(), "no models: ") || !strings.Contains(out.String(), "`wt model add`") || strings.Contains(out.String(), "MODEL") {
+		t.Errorf("out = %q, want a one-line note naming `wt model add`, and no table", out.String())
 	}
 	// No provider was probed, so nothing was looked for: the line must point
 	// at `wt model init`, not claim the machine has no local model.
