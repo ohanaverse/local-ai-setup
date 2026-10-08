@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -32,12 +33,39 @@ func moveTo(t *testing.T, m *model, field int) *model {
 	return m
 }
 
+// formMarker is a "↑ N more" or "↓ N more" row of the form.
+var formMarker = regexp.MustCompile(`[↑↓] \d+ more`)
+
+// assertCutFieldsAreCounted fails when the form draws only some of its fields
+// and no marker row says so. A form squeezed to one or two fields with nothing
+// beside them reads as the whole form: the user does not know the other
+// fields are there. A view in which the error has the screen to itself draws
+// no fields and is not measured.
+func assertCutFieldsAreCounted(t *testing.T, name string, m *model, view string) {
+	t.Helper()
+	if m.modelFormLayout().errorAlone {
+		return
+	}
+	drawn := 0
+	for _, label := range modelFormLabels {
+		if strings.Contains(view, " "+label+": ") {
+			drawn++
+		}
+	}
+	if drawn < mfCount && !formMarker.MatchString(view) {
+		t.Errorf("%s at %dx%d: %d of the %d fields are drawn and no marker counts the rest:\n%s", name, m.width, m.height, drawn, mfCount, view)
+	}
+}
+
 // TestModelFormFitsTheTerminal measures the form at every size wt supports,
 // in each of its three modes, with the cursor on every field it can reach
 // and with an error showing. The view must stay inside the terminal with the
 // tab bar and the focused field on screen: on a 12-line terminal the ten
 // fields do not all fit, and a form that let Bubble Tea cut its top would
-// hide the field being typed into.
+// hide the field being typed into. Fields that are off the screen are counted
+// by a marker row. The edit form of a 72-column id is measured too while its
+// save is out, with and without a quit held for it: those titles are the
+// longest the form has, four lines of a 40-column terminal.
 func TestModelFormFitsTheTerminal(t *testing.T) {
 	modes := []struct {
 		name string
@@ -71,6 +99,7 @@ func TestModelFormFitsTheTerminal(t *testing.T) {
 						name := mode.name + " form on " + modelFormLabels[field]
 						view := m.View()
 						assertFits(t, name, view, width, height)
+						assertCutFieldsAreCounted(t, name, m, view)
 						if !strings.Contains(view, "[Models]") {
 							t.Errorf("%s at %dx%d: the tab bar is not on screen:\n%s", name, width, height, view)
 						}
@@ -82,6 +111,34 @@ func TestModelFormFitsTheTerminal(t *testing.T) {
 						}
 					}
 				}
+			}
+			tm := newTabMachine(t, tabLongRegistry)
+			m := keys(t, selectModel(t, modelsEditor(t, tm, width, height), tabLongID), "enter")
+			if m.models.phase != modelsForm {
+				t.Fatal("the edit form of the long id did not open")
+			}
+			for field := 0; field < mfCount; field++ {
+				if !m.models.form.editable(field) {
+					continue
+				}
+				m = moveTo(t, m, field)
+				for _, c := range []struct {
+					title string
+					quit  bool
+				}{{"(saving...)", false}, {"(saving, then quitting...)", true}} {
+					m.models.form.saving, m.quitPending = true, c.quit
+					name := "edit form of the long id " + c.title + " on " + modelFormLabels[field]
+					view := m.View()
+					assertFits(t, name, view, width, height)
+					assertCutFieldsAreCounted(t, name, m, view)
+					if !strings.Contains(view, "[Models]") || !strings.Contains(flat(view), flat("Edit "+tabLongID+"  "+c.title)) {
+						t.Errorf("%s at %dx%d: the tab bar and the whole title should be on screen:\n%s", name, width, height, view)
+					}
+					if !strings.Contains(view, "> "+modelFormLabels[field]+":") {
+						t.Errorf("%s at %dx%d: the focused field is not on screen:\n%s", name, width, height, view)
+					}
+				}
+				m.models.form.saving, m.quitPending = false, false
 			}
 		}
 	}
@@ -475,6 +532,54 @@ func TestModelFormPrefilledFamilyDoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestModelFormPrevSuggestionWithNoMatchDoesNotPanic is the regression test
+// for a second bubbles v1.0.0 fault: ctrl+p with no family matching sets the
+// suggestion index to -1, and asking for the current suggestion then indexes
+// the empty match list with it. Ctrl+P in an empty Family field followed by
+// right — both keys the form documents — killed the editor, and with it any
+// unsaved agent edits. The index stays -1 while nothing matches, so a family
+// typed after the ctrl+p must survive right too.
+func TestModelFormPrevSuggestionWithNoMatchDoesNotPanic(t *testing.T) {
+	prev := tea.KeyMsg{Type: tea.KeyCtrlP}
+	tm := newTabMachine(t, tabRegistry)
+	m := moveTo(t, keys(t, modelsEditor(t, tm, 80, 24), "n"), mfFamily)
+	m = keys(t, sendKey(t, m, prev), "right")
+	if got := m.models.form.value(mfFamily); got != "" {
+		t.Errorf("ctrl+p then right in an empty Family field should leave it empty; got %q", got)
+	}
+	m = keys(t, typeText(t, m, "brand-new"), "right")
+	if got := m.models.form.value(mfFamily); got != "brand-new" {
+		t.Errorf("a family that matches nothing should be kept as typed; got %q", got)
+	}
+	// With text that matches nothing when ctrl+p is pressed.
+	m = keys(t, sendKey(t, m, prev), "right")
+	if got := m.models.form.value(mfFamily); got != "brand-new" {
+		t.Errorf("ctrl+p then right with no match should change nothing; got %q", got)
+	}
+
+	// The edit form, its prefilled family cleared.
+	m = keys(t, selectModel(t, modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24), "omlx/Gone-4bit"), "enter")
+	for range len("qwen3.8") {
+		m = keys(t, m, "backspace")
+	}
+	m = keys(t, sendKey(t, m, prev), "right")
+	if got := m.models.form.value(mfFamily); got != "" {
+		t.Errorf("edit form: ctrl+p then right in a cleared Family field should leave it empty; got %q", got)
+	}
+	m = keys(t, typeText(t, m, "brand-new"), "right")
+	if got := m.models.form.value(mfFamily); got != "brand-new" {
+		t.Errorf("edit form: a family that matches nothing should be kept as typed; got %q", got)
+	}
+	// A match is still accepted afterwards.
+	for range len("brand-new") {
+		m = keys(t, m, "backspace")
+	}
+	m = keys(t, typeText(t, m, "so"), "right")
+	if got := m.models.form.value(mfFamily); got != "sonnet" {
+		t.Errorf("edit form: a suggestion should still be accepted after the ctrl+p; got %q", got)
+	}
+}
+
 // TestModelFormKeysAreTextNotCommands verifies that inside the form q, d, n
 // and r are characters, esc closes the form without writing, and tab moves
 // between fields instead of switching tabs. A form that quit on q could not
@@ -630,6 +735,7 @@ func TestModelFormRefusesAnEditOfADuplicatedID(t *testing.T) {
 			}
 			view := m.View()
 			assertFits(t, "refused edit of a duplicated id", view, size[0], size[1])
+			assertCutFieldsAreCounted(t, "refused edit of a duplicated id", m, view)
 			if !strings.Contains(view, "[Models]") || !strings.Contains(flat(view), flat(refusal)) {
 				at("the refusal should be whole on screen under the tab bar")
 			}
@@ -651,6 +757,7 @@ func TestModelFormRefusesAnEditOfADuplicatedID(t *testing.T) {
 					at("a key should bring the form back and do nothing else; tags = %q", f.value(mfTags))
 				}
 				assertFits(t, "the form after the refusal", m.View(), size[0], size[1])
+				assertCutFieldsAreCounted(t, "the form after the refusal", m, m.View())
 			} else if !strings.Contains(view, "> Tags:") {
 				at("the field being edited should still be on screen beside the refusal")
 			}
@@ -691,23 +798,55 @@ func TestModelFormRefusesAnEditOfARowWithAMalformedFetch(t *testing.T) {
 		if f.err != want {
 			at("the form's error = %q, want the writer's refusal, which names the row and the key, and the file to fix: %q", f.err, want)
 		}
-		if m.modelFormLayout().errorAlone {
-			// Too long to share a short terminal with the fields: it has the
-			// screen, and a key brings the form back.
-			if !strings.Contains(flat(view), flat(want)) {
-				at("the refusal is not whole on screen")
-			}
-			view = keys(t, m, "x").View()
-		} else if !strings.Contains(flat(view), flat(want)) {
+		assertFits(t, "refused edit of a malformed row", view, size[0], size[1])
+		assertCutFieldsAreCounted(t, "refused edit of a malformed row", m, view)
+		if !strings.Contains(flat(view), flat(want)) {
 			at("the refusal is not whole on screen")
 		}
-		assertFits(t, "refused edit of a malformed row", view, size[0], size[1])
+		if m.modelFormLayout().errorAlone {
+			// Too long to share a short terminal with at least three rows of
+			// the form: it has the screen, and a key brings the form back.
+			m = keys(t, m, "x")
+			view = m.View()
+		}
+		assertFits(t, "the form of a malformed row", view, size[0], size[1])
+		assertCutFieldsAreCounted(t, "the form of a malformed row", m, view)
 		if f.cursor != mfTags || f.value(mfTags) != "code" || !strings.Contains(view, "> Tags:") {
 			at("cursor = %d (%s), tags = %q; a refusal that names no form field moves nothing", f.cursor, modelFormLabels[f.cursor], f.value(mfTags))
 		}
 		if tm.text(t) != tabMalformedRegistry || m.registryChanged || strings.Contains(view, routesPending) {
 			at("registryChanged = %v; a refused edit writes nothing and owes no sync", m.registryChanged)
 		}
+	}
+}
+
+// TestModelFormRefusalTheFormCanRepairNamesNoFile verifies a registry
+// refusal the form itself can repair is shown as it is, without "(fix the
+// entry in <registry>)": a row written by hand with no family is refused when
+// its tags are edited, and typing a family in the same form saves it. The
+// hint would send the user to a hand edit of the file for something the field
+// two rows up fixes.
+func TestModelFormRefusalTheFormCanRepairNamesNoFile(t *testing.T) {
+	registry := strings.Replace(tabRegistry, "id = \"omlx/Gone-4bit\"\nfamily = \"qwen3.8\"\n", "id = \"omlx/Gone-4bit\"\n", 1)
+	if registry == tabRegistry {
+		t.Fatal("fixture: the family key was not removed")
+	}
+	tm := newTabMachine(t, registry)
+	m := keys(t, selectModel(t, modelsEditor(t, tm, 80, 24), "omlx/Gone-4bit"), "enter")
+	m = keys(t, typeText(t, moveTo(t, m, mfTags), "code"), "ctrl+s")
+	f := m.models.form
+	if m.models.phase != modelsForm || f == nil {
+		t.Fatalf("a refused save should leave the form open:\n%s", m.View())
+	}
+	if want := `invalid registry entry: model "omlx/Gone-4bit": family is required`; f.err != want {
+		t.Errorf("the form's error = %q, want the refusal with no file to fix: %q", f.err, want)
+	}
+	if tm.text(t) != registry || m.registryChanged {
+		t.Error("a refused save must write nothing")
+	}
+	m = keys(t, typeText(t, moveTo(t, m, mfFamily), "qwen3.8"), "ctrl+s")
+	if m.models.phase != modelsList || !strings.Contains(tm.text(t), "id = \"omlx/Gone-4bit\"\nfamily = \"qwen3.8\"\n") || !strings.Contains(m.View(), "saved omlx/Gone-4bit") {
+		t.Errorf("a family typed in the same form should save the row:\n%s\n%s", tm.text(t), m.View())
 	}
 }
 

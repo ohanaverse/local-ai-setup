@@ -77,9 +77,13 @@ type modelForm struct {
 	// only the fields whose value differs, so an untouched field is never
 	// rewritten.
 	initial [mfCount]string
-	cursor  int
-	err     string
-	saving  bool
+	// malformed is true for an edit of a row whose fetch or draft the loader
+	// read as absent (config.Model.Malformed): the registry writer refuses
+	// to write such a row back, and no field of the form can repair it.
+	malformed bool
+	cursor    int
+	err       string
+	saving    bool
 }
 
 // modelSavedMsg reports a save of the form.
@@ -190,7 +194,7 @@ func (m *model) openModelForm(row *modeladmin.Row) {
 		values[mfName] = row.ModelName
 		f.providers, f.choice[mfProvider] = []string{row.ProviderID}, 0
 	default:
-		f.mode, f.id = modelFormEdit, row.ID
+		f.mode, f.id, f.malformed = modelFormEdit, row.ID, len(row.Malformed) > 0
 		f.providers, f.choice[mfProvider] = []string{row.ProviderID}, 0
 		values[mfName], values[mfFamily], values[mfTags] = row.ModelName, row.Family, strings.Join(row.Tags, ",")
 		if mdl, ok := formModel(cfg, *row); ok {
@@ -215,7 +219,11 @@ func (m *model) openModelForm(row *modeladmin.Row) {
 	// The form accepts a suggestion itself (updateModelForm: right, with the
 	// cursor at the end of the text). bubbles' own accept key is off: it is
 	// tab, which is "next field" here, it fires wherever the cursor is, and
-	// it completes what was typed without correcting its case.
+	// it completes what was typed without correcting its case. Its "previous
+	// suggestion" key (ctrl+p) is a second v1.0.0 fault: with no suggestion
+	// matching it sets the index to -1, which CurrentSuggestion does not
+	// guard, so updateModelForm checks the match list and the index before
+	// it asks.
 	fam.KeyMap.AcceptSuggestion = key.NewBinding(key.WithDisabled())
 	fam.SetSuggestions(formFamilies(cfg))
 	for field := 0; field < mfCount; field++ {
@@ -331,9 +339,14 @@ func (m *model) updateModelForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Right at the end of the text accepts the suggestion; anywhere else
 		// it only moves the cursor. The field takes the suggestion whole:
 		// "QW" completed to "QWen3.8" would be a new family beside qwen3.8.
-		if s := in.CurrentSuggestion(); s != "" {
-			in.SetValue(s)
-			in.CursorEnd()
+		// bubbles is asked only when it has a suggestion to give: ctrl+p with
+		// nothing matching leaves its index at -1, and CurrentSuggestion then
+		// indexes the empty match list with it (openModelForm).
+		if len(in.MatchedSuggestions()) > 0 && in.CurrentSuggestionIndex() >= 0 {
+			if s := in.CurrentSuggestion(); s != "" {
+				in.SetValue(s)
+				in.CursorEnd()
+			}
 		}
 		return m, nil
 	}
@@ -399,15 +412,18 @@ func (m *model) saveModelFormCmd() tea.Cmd {
 }
 
 // saveErrorText is a refused save as the form words it: the error, and for a
-// row the registry writer will not write back as it stands in the file (a
-// fetch that is not a table) the file to repair, in config.RegistryFixHint's
-// words — nothing in the form can fix it. Every other refusal is passed
-// through unchanged: a duplicated id (config.ErrModelAmbiguous) and a
-// provider with no row already name the file, and a location that does not
-// resolve is the form's own Location field to set.
-func saveErrorText(err error) string {
+// row the form opened knowing its fetch or draft is malformed (malformed),
+// which the registry writer will not write back as it stands in the file,
+// the file to repair, in config.RegistryFixHint's words — nothing in the form
+// can fix it. Every other refusal is passed through unchanged: a duplicated
+// id (config.ErrModelAmbiguous) and a provider with no row already name the
+// file, and a row the writer refuses for a key the form owns — a hand-written
+// row with no family, a location that does not resolve — is repaired in the
+// form, where a hint to edit the file would send the user away from the
+// field that fixes it.
+func saveErrorText(err error, malformed bool) string {
 	text := err.Error()
-	if errors.Is(err, config.ErrRegistryInvalid) && !errors.Is(err, config.ErrNoProviderRow) && !errors.Is(err, config.ErrLocation) {
+	if malformed && errors.Is(err, config.ErrRegistryInvalid) {
 		text += " (" + config.RegistryFixHint(config.ErrRegistryEntry) + ")"
 	}
 	return text
@@ -441,7 +457,7 @@ func (m *model) applyModelSaved(msg modelSavedMsg) tea.Cmd {
 		if m.discardHeld {
 			m.discardHeld, m.dirty = false, true
 		}
-		f.err = saveErrorText(msg.err)
+		f.err = saveErrorText(msg.err, f.malformed)
 		var fe *modeladmin.FieldError
 		if errors.As(msg.err, &fe) {
 			if i := slices.Index(modelFormFields[:], fe.Field); i >= 0 && f.editable(i) {
@@ -488,12 +504,15 @@ var modelFormHints = []string{
 // of them fit and there are rows to spare for it, the first and the last row
 // go to a marker saying how many fields are above and below (above, below),
 // so that a field off the screen is never a field the user does not know of.
+// Fewer than three rows have none to spare; modelFormLayout keeps the form
+// from being drawn in so few when it is an error that took the others.
 func formWindow(cursor, n, room int) (first, count int, above, below bool) {
 	if room >= n {
 		return 0, n, false, false
 	}
 	if room < 3 {
-		// No row to spare for a marker: the fields alone.
+		// No row to spare for a marker: the fields alone. Only a terminal
+		// shorter than wt supports gets here.
 		return max(0, cursor-room+1), room, false, false
 	}
 	for first = 0; first < n; first++ {
@@ -530,7 +549,9 @@ type modelFormLayout struct {
 	// room is how many rows the fields have between the two.
 	room int
 	// errorAlone is true when the error is so long that head and foot leave
-	// the fields no row at all: it is then drawn by itself.
+	// the fields fewer than three rows — too few for the focused field and
+	// the markers that count the fields off the screen (formWindow): the
+	// error is then drawn by itself.
 	errorAlone bool
 }
 
@@ -575,8 +596,13 @@ func (m *model) modelFormLayout() modelFormLayout {
 		l.head, l.foot, used = l.head+"\n", "\n"+l.foot, used+2
 	}
 	l.room = min(mfCount, m.height-used)
+	if l.room < 3 && f.err != "" {
+		// One or two fields with no marker would read as the whole form, and
+		// the error stays until the next save.
+		l.errorAlone = true
+	}
 	if l.room < 1 {
-		l.room, l.errorAlone = 1, f.err != ""
+		l.room = 1
 	}
 	return l
 }
@@ -595,9 +621,10 @@ const modelFormErrorHint = "press a key to go back to the form"
 //
 // A refusal can be longer than a short terminal has lines beside the form —
 // an id the registry holds twice is named with both providers and the file to
-// fix, nine lines at 40 columns. It then has the screen to itself, under the
-// tab bar, and the next key brings the fields back (updateModelForm): a form
-// squeezed to nothing round it would show neither.
+// fix, nine lines at 40 columns. When it leaves the fields fewer than three
+// rows it has the screen to itself, under the tab bar, and the next key
+// brings the fields back (updateModelForm): a form squeezed to a field or two
+// round it, with no row for a marker, would hide the others unannounced.
 func (m *model) modelFormView() string {
 	f := m.models.form
 	width := max(m.width, 1)

@@ -229,7 +229,7 @@ per-token prices, and the subscription price and period.
 | `Tab`, `↓`, `Enter` | next field |
 | `Shift+Tab`, `↑` | previous field |
 | `←` / `→` | change Provider, Location or Subscription period |
-| `→` at the end of Family | replace what was typed with the family the registry already has (`Ctrl+N` / `Ctrl+P`: the next and the previous one that matches) |
+| `→` at the end of Family | replace what was typed with the family the registry already has (`Ctrl+N` / `Ctrl+P`: the next and the previous one that matches); with no family matching, nothing changes |
 | `Ctrl+S` | save |
 | `Esc` | cancel |
 
@@ -255,14 +255,21 @@ owed:
 - a row whose `fetch` or `draft` is malformed — `invalid registry entry:
   model "<id>": fetch must be a table (fix the entry in <registry path>)`.
   wt reads the value as absent but does not write the row back around it.
+  The form adds `(fix the entry in <registry path>)` only for such a row,
+  where no field can repair what is wrong.
 
-Both are repaired in `registry.toml`; `r` on the table reads it again.
+Both are repaired in `registry.toml`; `r` on the table reads it again. A
+hand-written row the registry writer refuses for a key the form has a field
+for — a row with no `family` — is shown the writer's message as it is
+(`invalid registry entry: model "<id>": family is required`), with no file to
+fix: filling the field in the same form and saving repairs it.
 
 On a terminal too short for every field the fields scroll, and `↑ N more` /
 `↓ N more` count the ones off the screen. The title wraps; a fixed value too
 long for its row loses its middle to an ellipsis, and a field that is not
 being edited shows the start of its value. A refusal too long to leave the
-fields a row (a duplicated 72-column id, at 12 lines) is shown whole without
+fields three rows — the field being edited and the two markers — (a
+duplicated 72-column id, at 40 columns and 12 lines) is shown whole without
 them, and the next key brings the form back and does nothing else.
 
 A saved form and a removal are each written to `registry.toml` at once. The LiteLLM routes are not
