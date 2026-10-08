@@ -437,8 +437,8 @@ def _file_digest(path: Path) -> bytes | None:
 TUI_DISABLED_MESSAGE = (
     "modelman's TUI is disabled: wt writes registry.toml now, and modelman is being retired.\n"
     "  - create the registry and its provider rows: wt model init\n"
-    "  - add, edit or remove a model: edit registry.toml by hand, then run `wt litellm sync`\n"
-    "    (wt's Models tab in `wt config` replaces this TUI when it ships)\n"
+    "  - add, edit or remove a model: `wt model` (the Models tab of `wt config`), or without\n"
+    "    a terminal `wt model add`, `wt model edit`, `wt model rm`; `wt model list` shows them\n"
     "  - download a model (wt does not): `ollama pull <name:tag>` for ollama,\n"
     "    `hf download <org>/<repo> --local-dir ~/.omlx/models/<repo>` for omlx,\n"
     "    `mtplx pull <org>/<name>` for mtplx\n"
