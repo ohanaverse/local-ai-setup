@@ -217,7 +217,7 @@ func send(t *testing.T, m *model, msg tea.Msg) *model {
 func keys(t *testing.T, m *model, ks ...string) *model {
 	t.Helper()
 	for _, k := range ks {
-		m = send(t, m, keyMsg(k))
+		m = sendKey(t, m, keyMsg(k))
 	}
 	return m
 }
@@ -247,6 +247,18 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+}
+
+// sendKey delivers one key. Inside the model form only ctrl+s starts a
+// command worth running: the others a text input returns are cursor blinks,
+// each of which sleeps for half a second.
+func sendKey(t *testing.T, m *model, msg tea.KeyMsg) *model {
+	t.Helper()
+	if m.models.phase == modelsForm && msg.Type != tea.KeyCtrlS {
+		next, _ := m.Update(msg)
+		return next.(*model)
+	}
+	return send(t, m, msg)
 }
 
 // modelsEditor is the editor in a terminal of the given size, opened on the
@@ -383,7 +395,13 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 // remove prompt (for a short id, for a 72-column one, and for that one with a
 // path of five lines), a filter being typed, applied and matching nothing,
 // and each status the tab puts over the table: a probe that is out, a row
-// that is not the registry's to remove, a quit waiting for a write. The view
+// that is not the registry's to remove, a quit waiting for a write; and the
+// form in each of its phases — the add form empty, filled with values longer
+// than their rows, with a family suggestion offered and accepted, with a
+// price refused, on its last field; the edit form of a 72-column id; the
+// register form; an edit refused because the registry holds the id twice
+// (a refusal of several lines, which at 40x12 takes the screen from the
+// fields); and the table a save comes back to, with the routes pending. The view
 // must stay inside the terminal with the tab bar and the table's header row
 // on screen; STATUS and RUNNING are on every row from 80 columns up however
 // long an id is; the selected row's id is on screen whole, with its status,
@@ -401,6 +419,25 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 		}
 	}
 	longPrompt := func(t *testing.T, m *model) *model { return keys(t, selectModel(t, m, tabLongID), "d") }
+	// filled opens the add form and types values longer than a 40-column
+	// row; then moves to field and types more there.
+	filled := func(field int, more string) func(t *testing.T, m *model) *model {
+		return func(t *testing.T, m *model) *model {
+			m = typeText(t, moveTo(t, keys(t, m, "n"), mfName), "Qwen3.8-35B-A3B-Instruct-abliterated-heretic-MLX-dynamic-quant-6bit")
+			m = typeText(t, moveTo(t, m, mfTags), "code,design,reasoning,vision,long-context,cheap")
+			return typeText(t, moveTo(t, m, field), more)
+		}
+	}
+	// editDuplicated opens the edit form on the second row of a duplicated
+	// id, changes its tags and saves: the writer refuses.
+	editDuplicated := func(t *testing.T, m *model) *model {
+		for i, it := range m.models.list.VisibleItems() {
+			if r := it.(modelRow).row; strings.HasPrefix(r.ID, "omlx/") && r.ProviderID == "openrouter" {
+				m.models.list.Select(i)
+			}
+		}
+		return keys(t, typeText(t, moveTo(t, keys(t, m, "enter"), mfTags), "code"), "ctrl+s")
+	}
 	states := []struct {
 		name     string
 		registry string
@@ -457,6 +494,43 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 		{name: "nothing to remove", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
 			return keys(t, selectModel(t, m, "ollama/qwen3:8b"), "d")
 		}, want: []string{"ollama/qwen3:8b is not in the registry: there is nothing to remove"}},
+		{name: "add form", registry: tabRegistry, bare: true, set: func(t *testing.T, m *model) *model { return keys(t, m, "n") },
+			want: []string{"Add a model", "> Provider: < ollama >"}},
+		{name: "add form with long values", registry: tabRegistry, bare: true, set: filled(mfTags, ""),
+			want: []string{"Add a model", "> Tags:"}},
+		{name: "family suggestion offered", registry: tabRegistry, bare: true, set: filled(mfFamily, "qw"),
+			want: []string{"> Family: qwen3.8"}},
+		{name: "family suggestion accepted", registry: tabRegistry, bare: true, set: func(t *testing.T, m *model) *model {
+			return keys(t, filled(mfFamily, "QW")(t, m), "right")
+		}, want: []string{"> Family: qwen3.8"}},
+		{name: "price refused", registry: tabRegistry, bare: true, set: func(t *testing.T, m *model) *model {
+			return keys(t, typeText(t, filled(mfFamily, "qwen3.8")(t, m), ""), "down", "down", "down", "c", "h", "e", "a", "p", "ctrl+s")
+		}, want: []string{`input-price must be a number, got "cheap"`, "> Input $/M: cheap"}},
+		{name: "add form on its last field", registry: tabRegistry, bare: true, set: filled(mfSubPeriod, ""),
+			want: []string{"> Subscription period: < (none) >"}},
+		{name: "edit form of a long id", registry: tabLongRegistry, bare: true, set: func(t *testing.T, m *model) *model {
+			return keys(t, selectModel(t, m, tabLongID), "enter")
+		}, want: []string{"Edit " + tabLongID, "> Family: qwen3.8"}},
+		{name: "register form", registry: tabRegistry, bare: true, set: func(t *testing.T, m *model) *model {
+			return keys(t, selectModel(t, m, "ollama/qwen3:8b"), "enter")
+		}, want: []string{"Register ollama/qwen3:8b", "Model name: qwen3:8b", "> Family:"}},
+		{name: "edit of a duplicated id refused", registry: tabDuplicatedRegistry, bare: true, set: editDuplicated,
+			want: []string{`model "omlx/Gone-4bit" is in the registry twice (providers omlx, openrouter); wt cannot tell which one you mean`, "registry.toml"}},
+		// The same refusal for a 72-column id: fourteen lines at 40 columns.
+		// Whatever is given up, it is not the tab bar or the refusal's start.
+		{name: "edit of a duplicated long id refused", registry: strings.ReplaceAll(tabDuplicatedRegistry, "Gone-4bit", strings.TrimPrefix(tabLongID, "omlx/")),
+			bare: true, set: editDuplicated, want: []string{`model "` + tabLongID + `" is in the registry twice`}},
+		{name: "just after a save", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
+			m = keys(t, m, "n", "right", "right") // ollama -> omlx -> openrouter
+			m = typeText(t, moveTo(t, m, mfName), "qwen/qwen3.8-27b")
+			return keys(t, typeText(t, moveTo(t, m, mfFamily), "qwen3.8"), "ctrl+s")
+		}, want: []string{"added openrouter/qwen--qwen3.8-27b", routesPending}},
+		// Four lines of status and the note: at 40x12 they leave the table no
+		// row, and have the screen (modelsView).
+		{name: "just after a save with notes", registry: tabRegistry, bare: true, set: func(t *testing.T, m *model) *model {
+			m = typeText(t, moveTo(t, keys(t, m, "n"), mfName), "tiny:1b")
+			return keys(t, typeText(t, moveTo(t, m, mfFamily), "tiny"), "ctrl+s")
+		}, want: []string{"added ollama/tiny:1b", "added without tool/vision capabilities: not stubbed", "added provider ollama", routesPending}},
 		{name: "quit waiting for a write", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
 			m.models.status, m.models.busy, m.models.writing, m.quitPending = "removing omlx/Gone-4bit...", true, true, true
 			return send(t, m, tea.WindowSizeMsg{Width: m.width, Height: m.height})
@@ -493,6 +567,14 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 					if !strings.Contains(view, head) && (head == "MODEL" || width >= 80) {
 						at("header %s is not on screen", head)
 					}
+				}
+				if st.name == "just after a save" {
+					// As after a removal: the status has the room, and the
+					// cursor is on the model just added.
+					if sel, _ := m.selectedModel(); sel.ID != "openrouter/qwen--qwen3.8-27b" {
+						at("the cursor is on %q, want the model just saved", sel.ID)
+					}
+					continue
 				}
 				if st.name == "just after a removal" {
 					// The status has the room: the path it ends with matters

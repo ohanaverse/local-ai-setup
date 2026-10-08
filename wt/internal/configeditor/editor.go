@@ -190,6 +190,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseForm {
 			m.resizeFormInputs()
 		}
+		m.resizeModelForm()
 	case loadedMsg:
 		m.ready = true
 		if msg.cfg == nil {
@@ -217,6 +218,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case modelRemovedMsg:
 		return m, m.applyModelRemoved(msg)
+	case modelSavedMsg:
+		return m, m.applyModelSaved(msg)
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
 	case saveMsg:
@@ -332,9 +335,10 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 // one, has reported. The write runs in a command; a program that ended before
 // its message was handled would return Result{RegistryChanged: false} for a
 // registry that did change, and the caller would skip the route sync it owes.
-// So the quit is recorded, and applyModelRemoved issues it. The Models tab
-// is shown meanwhile: it is the one that says the quit is waiting. A probe in
-// flight holds nothing up.
+// So the quit is recorded, and applyModelRemoved or applyModelSaved, whichever
+// the write reports to, issues it. The Models tab is shown meanwhile: it is
+// the one that says the quit is waiting (the table's status, or the form's
+// title when the write is a form's save). A probe in flight holds nothing up.
 func (m *model) leave() (tea.Model, tea.Cmd) {
 	if m.models.writing {
 		m.quitPending = true
