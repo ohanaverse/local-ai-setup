@@ -42,6 +42,14 @@ func (m *model) handleSave() (tea.Model, tea.Cmd) {
 	}
 	if err := m.cfg.ValidateAll(); err != nil {
 		m.status = "validation: " + err.Error()
+		// A provider or model row is registry.toml's, which this editor does
+		// not write: say where the repair is, as the load status does.
+		// ValidateAll joins all errors; check every error in the join for a
+		// registry problem so the hint is correct even when a config.toml error
+		// appears first in the join (e.g., empty default_tag + missing model_name).
+		if hint := config.RegistryFixHintFromAny(err); hint != "" {
+			m.status += " (" + hint + ")"
+		}
 		return m, nil
 	}
 	m.saving = true

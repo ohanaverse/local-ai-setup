@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -97,23 +96,22 @@ func isStdinTTY() bool {
 var stdinTTY = isStdinTTY
 
 // configError words a config load or validation error for the user, with a
-// hint that names where to fix it. Most problems are in wt's own config.toml,
-// which `wt config` edits. Two are not, and config.RegistryFixHint words
-// them: a mistyped location is in registry.toml, which `wt config` cannot
-// edit, so the hint names the file; a registry path that is a broken symlink
-// has no file to name, so the hint says to fix the link or move it aside.
-// ErrRegistryMissing is a special case: the registry is missing entirely, so
-// there's nothing to edit, and the error itself already names the command
-// that creates one (`wt model init`). No hint is added: it would say the
-// same thing a second time.
+// hint that names where to fix it. config.LoadFixHint chooses the hint, for
+// this and for every other place that quotes such an error: `wt config` for
+// a problem in wt's own config.toml, the file it edits; the registry's own
+// repair for a problem there (a mistyped location, a link that leads
+// nowhere, a file that does not parse), which `wt config` cannot touch; and
+// nothing for a missing registry, whose error already names the command that
+// creates one (`wt model init`) — a hint would name a second repair.
+//
+// Every command that refuses to run on a.cfgErr or a.loadErr returns this.
+// Do not write the hint out at a call site: that is how `wt litellm` came to
+// send every registry problem to `wt config` (#291).
 func configError(err error) error {
-	if errors.Is(err, config.ErrRegistryMissing) {
-		return fmt.Errorf("config error: %w", err)
-	}
-	if hint := config.RegistryFixHint(err); hint != "" {
+	if hint := config.LoadFixHint(err); hint != "" {
 		return fmt.Errorf("config error: %w (%s)", err, hint)
 	}
-	return fmt.Errorf("config error: %w (run `wt config` to repair)", err)
+	return fmt.Errorf("config error: %w", err)
 }
 
 // errPickerNeedsTTY is returned by the rootCmd RunE when an unpinned launch

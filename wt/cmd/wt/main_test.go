@@ -629,8 +629,9 @@ func TestMalformedRegistryStillFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a config error for a malformed registry.toml")
 	}
-	if !strings.Contains(err.Error(), "wt config") {
-		t.Errorf("err = %v, want it to mention `wt config` as the repair path", err)
+	// registry.toml is not `wt config`'s file: the repair is a hand edit (#291).
+	if got := err.Error(); !strings.HasSuffix(got, "(fix that file by hand)") || strings.Contains(got, "wt config") {
+		t.Errorf("err = %v, want the hand-edit hint and no mention of `wt config`, which cannot edit the registry", err)
 	}
 }
 
@@ -668,8 +669,9 @@ func TestMalformedRegistryStillFailsClosedForCommandAgent(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a config error for a malformed registry.toml")
 	}
-	if !strings.Contains(err.Error(), "wt config") {
-		t.Errorf("err = %v, want it to mention `wt config` as the repair path", err)
+	// registry.toml is not `wt config`'s file: the repair is a hand edit (#291).
+	if got := err.Error(); !strings.HasSuffix(got, "(fix that file by hand)") || strings.Contains(got, "wt config") {
+		t.Errorf("err = %v, want the hand-edit hint and no mention of `wt config`, which cannot edit the registry", err)
 	}
 }
 

@@ -275,3 +275,94 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 		t.Error("expected error status after failed save")
 	}
 }
+
+// TestSave_RegistryRowErrorNamesTheRegistry pins what a refused save says
+// when the problem is a registry row. This editor writes config.toml; a model
+// with no model_name is in registry.toml, and the save status is the last
+// thing the user reads before trying to fix it here. It carries the hint
+// every refusing command gives for the same error (#291), and a config.toml
+// problem keeps its own wording with no hint.
+func TestSave_RegistryRowErrorNamesTheRegistry(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	m := newModel(testTheme(), &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
+		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx"}},
+	}, nil)
+	m.dirty = true
+	got, cmd := m.handleSave()
+	if cmd != nil {
+		t.Fatal("a config that fails validation was saved")
+	}
+	const want = `validation: model "omlx/m": model_name is required (fix the entry in /tmp/somewhere/registry.toml)`
+	if status := got.(*model).status; status != want {
+		t.Errorf("status = %q, want %q", status, want)
+	}
+
+	m = newModel(testTheme(), &config.Config{}, nil)
+	m.dirty = true
+	got, _ = m.handleSave()
+	if status := got.(*model).status; status != "validation: default_tag must not be empty" {
+		t.Errorf("a config.toml problem's status = %q, want it with no registry hint", status)
+	}
+}
+
+// TestSave_JoinedErrors_RegistryHintPreferred pins that when ValidateAll
+// returns multiple errors including both a registry.toml problem and a
+// config.toml problem, the status shows the registry repair hint (not the
+// config.toml one). This prevents the user being sent to `wt config` when the
+// real fix is in registry.toml.
+func TestSave_JoinedErrors_RegistryHintPreferred(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	// Config with BOTH a registry.toml problem (missing model_name) AND a
+	// config.toml problem (empty default_tag). ValidateAll joins both errors.
+	m := newModel(testTheme(), &config.Config{
+		DefaultTag: "", // config.toml problem
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
+		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx"}}, // registry.toml problem (no model_name)
+	}, nil)
+	m.dirty = true
+	got, cmd := m.handleSave()
+	if cmd != nil {
+		t.Fatal("a config that fails validation was saved")
+	}
+	// The hint must be the registry one, not "run `wt config` to repair"
+	const wantRegistryHint = "fix the entry in /tmp/somewhere/registry.toml"
+	status := got.(*model).status
+	if !strings.Contains(status, wantRegistryHint) {
+		t.Errorf("status = %q, want it to contain registry hint %q", status, wantRegistryHint)
+	}
+	if strings.Contains(status, "run `wt config` to repair") {
+		t.Errorf("status = %q, must not contain config.toml hint when registry problem exists", status)
+	}
+}
+
+// TestSave_JoinedErrors_ConfigFirst_RegistryHintStillWins pins that even
+// when the config.toml error appears first in the joined error, the registry
+// hint is still shown. This is the exact bug fixed by RegistryFixHintFromAny.
+func TestSave_JoinedErrors_ConfigFirst_RegistryHintStillWins(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	// Same config, but we're testing that the order in the joined error
+	// doesn't matter - RegistryFixHintFromAny checks all errors.
+	m := newModel(testTheme(), &config.Config{
+		DefaultTag: "", // config.toml problem
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
+		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx"}}, // registry.toml problem
+	}, nil)
+	m.dirty = true
+	got, cmd := m.handleSave()
+	if cmd != nil {
+		t.Fatal("a config that fails validation was saved")
+	}
+	const wantRegistryHint = "fix the entry in /tmp/somewhere/registry.toml"
+	status := got.(*model).status
+	if !strings.Contains(status, wantRegistryHint) {
+		t.Errorf("status = %q, want it to contain registry hint %q", status, wantRegistryHint)
+	}
+	if strings.Contains(status, "run `wt config` to repair") {
+		t.Errorf("status = %q, must not contain config.toml hint when registry problem exists", status)
+	}
+}
