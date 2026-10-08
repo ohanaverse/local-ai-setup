@@ -385,16 +385,20 @@ func TestModelWritesUnderARedirectedRegistry(t *testing.T) {
 		run  func(out, errOut *bytes.Buffer) error
 		in   string // what the registry holds afterwards
 		out  string // and what it no longer does
+		// routes are the model_names the synced config.yaml must hold, and
+		// noRoute one it must not: the registry as the verb left it.
+		routes  []string
+		noRoute string
 	}{
 		{"add", func(out, errOut *bytes.Buffer) error {
 			return runModelAdd(out, errOut, nil, modeladmin.AddRequest{ProviderID: "openrouter", ModelName: "c/d", Fields: modeladmin.Fields{Family: sp("f")}})
-		}, `id = "openrouter/c--d"`, ""},
+		}, `id = "openrouter/c--d"`, "", []string{"openrouter/a--b", "openrouter/c--d"}, ""},
 		{"edit", func(out, errOut *bytes.Buffer) error {
 			return runModelEdit(out, errOut, "openrouter/a--b", modeladmin.Fields{Family: sp("renamed")})
-		}, `family = "renamed"`, ""},
+		}, `family = "renamed"`, "", []string{"openrouter/a--b"}, "openrouter/c--d"},
 		{"rm", func(out, errOut *bytes.Buffer) error {
 			return runModelRm(out, errOut, nil, []string{"openrouter/a--b"}, true)
-		}, `id = "ollama/gemma4:9b"`, `id = "openrouter/a--b"`},
+		}, `id = "ollama/gemma4:9b"`, `id = "openrouter/a--b"`, nil, "openrouter/a--b"},
 	}
 	for _, v := range verbs {
 		t.Run(v.name+": config.yaml not named", func(t *testing.T) {
@@ -434,12 +438,75 @@ func TestModelWritesUnderARedirectedRegistry(t *testing.T) {
 			if got := mustRead(t, registry); !strings.Contains(got, v.in) {
 				t.Errorf("the redirected registry was not written:\n%s", got)
 			}
-			if got := mustRead(t, named); got == "model_list: []\n" {
-				t.Error("the named config.yaml was not synced")
+			// The file wt wrote, holding the routes of the registry as the
+			// verb left it: "it changed" alone would pass a sync that wrote
+			// no route, or one that kept a removed model's.
+			synced := mustRead(t, named)
+			if !strings.Contains(synced, "litellm_settings:") {
+				t.Errorf("the named config.yaml was not synced:\n%s", synced)
+			}
+			for _, r := range v.routes {
+				if !strings.Contains(synced, "{model_name: "+r+",") {
+					t.Errorf("the named config.yaml has no route for %s:\n%s", r, synced)
+				}
+			}
+			if strings.Contains(synced, "{model_name: "+v.noRoute+",") {
+				t.Errorf("the named config.yaml still routes %s:\n%s", v.noRoute, synced)
 			}
 			if got := mustRead(t, defaultYAML); got != "model_list: []\n" {
 				t.Errorf("the default config.yaml was touched:\n%s", got)
 			}
 		})
+	}
+}
+
+// TestModelRmRefusesAnUnknownIdBeforeItAsks verifies an id that is not in
+// the registry is refused before the confirmation question: a user who has
+// just answered "yes, remove these" must not then be told one of them was
+// never there. Nothing is removed, and no sync runs.
+func TestModelRmRefusesAnUnknownIdBeforeItAsks(t *testing.T) {
+	registry := modelHome(t, writeRegistry)
+	syncs := stubRouteSync(t, "")
+	asked := stubConfirmRemove(t, true)
+	_, err := runWT(t, "model", "rm", "openrouter/a--b", "openrouter/nope")
+	if want := "model not found: \"openrouter/nope\" in the registry (`wt model list` shows every id)"; err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if *asked != "" {
+		t.Errorf("the question was asked before the refusal: %q", *asked)
+	}
+	if got := mustRead(t, registry); got != writeRegistry || *syncs != 0 {
+		t.Errorf("a refused removal must change nothing: syncs = %d", *syncs)
+	}
+}
+
+// TestModelRmCommandRunsWhenTheConfigDidNotLoad runs `wt model rm` through
+// its command with a config load error on the app, as newApp leaves it (an
+// empty Config standing in for the one that could not be read). The command
+// must go to the registry itself and not judge the ids by that empty Config:
+// removing a row is one way to repair a registry wt cannot load, and without
+// the command's own nil-the-config step every id would be "not found".
+func TestModelRmCommandRunsWhenTheConfigDidNotLoad(t *testing.T) {
+	registry := modelHome(t, writeRegistry)
+	stubRouteSync(t, "")
+	old := probeInventory
+	probeInventory = func(*config.Config) localmodels.Snapshot {
+		t.Error("the providers were probed over a config that did not load")
+		return localmodels.Snapshot{}
+	}
+	t.Cleanup(func() { probeInventory = old })
+	c := modelRmCmd(&app{cfg: &config.Config{DefaultTag: "code"}, loadErr: errors.New("config.toml: not valid TOML")})
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"ollama/gemma4:9b", "--yes"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("rm on a config that did not load: %v", err)
+	}
+	if out.String() != "removed model: ollama/gemma4:9b\n" {
+		t.Errorf("output = %q, want the removal and no weights line", out.String())
+	}
+	if strings.Contains(mustRead(t, registry), "gemma4") {
+		t.Error("the row is still in the registry")
 	}
 }

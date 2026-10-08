@@ -206,7 +206,8 @@ func tableString(t *tomlw.Table, key string) string {
 }
 
 // describe adds what a user can do about a registry refusal that names a
-// provider with no row. Seeding added none: a model's reference seeds only
+// provider with no row, for an add and for an edit of a row that has the gap
+// (the edit cannot repair it: provider_id is not editable). Seeding added none: a model's reference seeds only
 // the providers wt has a default row for, and wt has no command that writes
 // any other provider row.
 func describe(err error, providerID string) error {
@@ -233,17 +234,27 @@ func Edit(id string, f Fields) (changed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	return config.UpdateRegistry(func(d *config.RegistryDoc) error {
+	providerID := ""
+	changed, err = config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		// Copies: apply may run again, and each run starts from what the
 		// user gave.
 		set, unset := maps.Clone(given), slices.Clone(givenUnset)
 		cost := tomlw.NewTable()
+		found := false
 		for _, m := range d.Models() {
 			if tableString(m, "id") == id {
+				found = true
+				providerID = tableString(m, "provider_id")
 				if t, ok := mustGet(m, "cost").(*tomlw.Table); ok {
 					cost = t
 				}
 			}
+		}
+		// Before the rules over the row's cost table: an id that is not there
+		// has no row to judge, and "a subscription price needs a period" is
+		// the wrong thing to say about a mistyped id.
+		if !found {
+			return fmt.Errorf("%w: %q", config.ErrModelNotFound, id)
 		}
 		costKey := func(k string) bool { return strings.HasPrefix(k, "cost.") }
 		setsCost := func() bool { return slices.ContainsFunc(slices.Collect(maps.Keys(set)), costKey) }
@@ -270,6 +281,10 @@ func Edit(id string, f Fields) (changed bool, err error) {
 		}
 		return d.PatchModel(id, set, unset)
 	})
+	if err != nil {
+		return false, describe(err, providerID)
+	}
+	return changed, nil
 }
 
 // legacyCost moves a cost table in modelman's old layout (cost.kind, with

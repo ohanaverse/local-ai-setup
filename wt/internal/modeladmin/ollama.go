@@ -2,6 +2,7 @@ package modeladmin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,7 +24,23 @@ var runOllamaShow = func(ctx context.Context, host, name string) (string, error)
 	// the default port, which need not be the daemon the registry names.
 	cmd.Env = append(os.Environ(), "OLLAMA_HOST="+host)
 	out, err := cmd.Output()
-	return string(out), err
+	return string(out), showError(err)
+}
+
+// showError adds what ollama itself said to a failed `ollama show`. Output
+// keeps the command's stderr in the ExitError and the error's own text is
+// only "exit status 1", which does not tell a model that is not pulled from
+// a daemon that is not running. The first line is enough: ollama prints one.
+func showError(err error) error {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return err
+	}
+	said, _, _ := strings.Cut(strings.TrimSpace(string(exit.Stderr)), "\n")
+	if said = strings.TrimSpace(said); said == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, said)
 }
 
 // ollamaCapabilityKeys maps a capability `ollama show` lists to the

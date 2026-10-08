@@ -288,6 +288,12 @@ type = "none"
 		if errors.Is(err, ErrNoProviderRow) {
 			t.Fatalf("err = %v, a missing location is not a missing provider row", err)
 		}
+		// The other refusal is a registry entry's fault too: the repair hint
+		// is chosen by this mark, and without it a location gap would send
+		// the user to wt's own config.toml.
+		if !errors.Is(err, ErrRegistryEntry) {
+			t.Fatalf("err = %v, want ErrRegistryEntry for a location that does not resolve", err)
+		}
 	})
 	t.Run("the model's own location stands in for the provider's", func(t *testing.T) {
 		scratchRegistry(t, gaps)

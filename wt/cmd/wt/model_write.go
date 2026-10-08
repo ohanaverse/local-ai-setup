@@ -98,8 +98,9 @@ func modelAddCmd(a *app) *cobra.Command {
 	return c
 }
 
-// runModelAdd implements `wt model add`. cfg is the config as loaded, or nil
-// when there is no registry yet; it is read only for the ollama address.
+// runModelAdd implements `wt model add`. cfg is the config as loaded (an
+// empty one when there is no registry yet; a test may pass nil); it is read
+// only for the ollama address.
 func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRequest) error {
 	// What can be refused without the registry is refused first: a mistyped
 	// price must not wait on `ollama show`, up to its timeout when the
@@ -233,6 +234,14 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 	// are gone, and a local model's path comes from the probe.
 	notes := map[string]string{}
 	if cfg != nil {
+		// An id that is not there is refused before the question, not after
+		// the user has answered it. Without a loaded config the write is
+		// what finds out, as it does for a row that went since the load.
+		for _, id := range ids {
+			if !slices.ContainsFunc(cfg.Models, func(m config.Model) bool { return m.ID == id }) {
+				return unknownModelHint(fmt.Errorf("%w: %q", config.ErrModelNotFound, id))
+			}
+		}
 		local := slices.ContainsFunc(cfg.Models, func(m config.Model) bool {
 			loc, err := cfg.ResolveLocation(m)
 			return slices.Contains(ids, m.ID) && err == nil && loc == config.LocationLocal

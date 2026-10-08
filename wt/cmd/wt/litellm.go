@@ -167,6 +167,12 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 
 // missingProviderWarnings names every provider id a registry model references
 // that has no [[providers]] row, with the models that reference it. Such a
+// noProviderEntryReason is gapReason's sentence for a family whose models
+// name a provider with no row. missingProviderWarnings looks for it in the
+// probe warnings to leave out a line that would say the same gap twice, so
+// the two must be one text: this constant is the only copy.
+const noProviderEntryReason = "the registry has models for it but no provider entry"
+
 // model is a registry gap (litellm.RegistryGap): sync neither routes it nor
 // removes a route it already has, and before this warning it could do so
 // without a word — the user saw a model in the registry, no route for it,
@@ -187,7 +193,7 @@ func missingProviderWarnings(cfg *config.Config, said []string) []string {
 	}
 	var warnings []string
 	for _, id := range order {
-		covered := fmt.Sprintf("provider %q could not be probed (the registry has models for it but no provider entry)", localmodels.Family(id))
+		covered := fmt.Sprintf("provider %q could not be probed (%s)", localmodels.Family(id), noProviderEntryReason)
 		if slices.ContainsFunc(said, func(w string) bool { return strings.HasPrefix(w, covered) }) {
 			continue
 		}
@@ -466,7 +472,7 @@ func gapReason(cfg *config.Config, f string) string {
 			continue
 		}
 		if cfg.ProviderByID(m.ProviderID) == nil {
-			return "the registry has models for it but no provider entry"
+			return noProviderEntryReason
 		}
 		// The model's provider entry is of this family, so the loop above
 		// found its location to be "local" or "cloud": what is left is the

@@ -16,7 +16,6 @@
   only and prints where the weights are. Reference: `docs/wt-model.md`.
 - `wt litellm sync` warns when a registry model names a provider that has no
   `[[providers]]` row; it used to leave such a model unrouted without a word.
-
 - `wt model list [--json]` lists every model in the registry and every local
   model the providers have that the registry does not, with live status
   (`ok`, `missing`, `unknown`, `new`, `-`) and running state (`run`, `load`,

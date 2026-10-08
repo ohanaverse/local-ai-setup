@@ -455,6 +455,11 @@ func TestEditRefusals(t *testing.T) {
 		t.Errorf("unknown id: err = %v, want config.ErrModelNotFound", err)
 	}
 	var fe *FieldError
+	// An unknown id is "not found" whatever else the edit carries: the
+	// subscription rule is about a row, and there is none.
+	if _, err := Edit("ollama/nope", Fields{SubscriptionPrice: ptr("5")}); !errors.Is(err, config.ErrModelNotFound) {
+		t.Errorf("unknown id with a period-less subscription price: err = %v, want config.ErrModelNotFound", err)
+	}
 	if _, err := Edit("ollama/gemma4:9b", Fields{Family: ptr("")}); !errors.As(err, &fe) || fe.Field != FieldFamily {
 		t.Errorf("empty family: err = %v, want a FieldError on family", err)
 	}
@@ -506,8 +511,10 @@ tags = []
 
 // TestARowWithAGapCanBeRepairedOrRemoved verifies that a registry holding a
 // model whose provider has no row — which makes every other wt command report
-// a config error — can still be fixed with an edit of another row, an edit
-// that repairs the bad row, or its removal. The commands that repair a
+// a config error — still takes an edit of another row and the removal of the
+// bad one, and that an edit of the bad row which leaves it bad (provider_id
+// is not editable, so no edit repairs it) is refused with the advice an add
+// gets: where the file is and what to put in it. The commands that repair a
 // registry must not be blocked by the damage they are there to repair.
 func TestARowWithAGapCanBeRepairedOrRemoved(t *testing.T) {
 	gap := baseRegistry + `
@@ -522,8 +529,12 @@ tags = []
 	if _, err := Edit("ollama/gemma4:9b", Fields{Family: ptr("gemma")}); err != nil {
 		t.Errorf("an edit of a good row beside the bad one: %v", err)
 	}
-	if _, err := Edit("ghost/old", Fields{Family: ptr("g")}); !errors.Is(err, config.ErrRegistryInvalid) {
+	_, err := Edit("ghost/old", Fields{Family: ptr("g")})
+	if !errors.Is(err, config.ErrRegistryInvalid) {
 		t.Errorf("an edit that leaves the bad row bad: err = %v, want config.ErrRegistryInvalid", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), `add a [[providers]] block for "ghost" to `+config.RegistryPath()) {
+		t.Errorf("the refused edit = %v, want the advice naming the provider and the registry file", err)
 	}
 	if err := Remove([]string{"ghost/old"}); err != nil {
 		t.Errorf("removing the bad row: %v", err)

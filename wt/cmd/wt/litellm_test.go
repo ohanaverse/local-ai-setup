@@ -1946,3 +1946,35 @@ func TestLitellmSyncWarnsAboutAProviderWithNoRow(t *testing.T) {
 		t.Errorf("no gap: err = %v, stderr = %q; want silence", err, errOut.String())
 	}
 }
+
+// TestMissingProviderWarningsOrderAndTheLineAlreadySaid verifies two
+// providers with no row are named in registry order, one line each, and that
+// a family the probe warnings already report with gapReason's sentence is
+// left out. The match is on that sentence, so it is built here from the same
+// constant gapReason returns: with two hand-typed copies, a rewording of one
+// would print the same gap twice.
+func TestMissingProviderWarningsOrderAndTheLineAlreadySaid(t *testing.T) {
+	cfg := &config.Config{Models: []config.Model{
+		{ID: "zeta/a", ProviderID: "zeta", ModelName: "a"},
+		{ID: "corp/b", ProviderID: "corp", ModelName: "b"},
+		{ID: "zeta/c", ProviderID: "zeta", ModelName: "c"},
+		{ID: "omlx/d", ProviderID: "omlx", ModelName: "d"},
+	}}
+	line := func(id, models string) string {
+		return "provider \"" + id + "\" has no [[providers]] row in " + config.RegistryPath() + ", so wt cannot route " + models +
+			"; add the row (`wt model init` adds the default ones) or fix the provider_id"
+	}
+	got := missingProviderWarnings(cfg, nil)
+	want := []string{line("zeta", "zeta/a, zeta/c"), line("corp", "corp/b"), line("omlx", "omlx/d")}
+	if !slices.Equal(got, want) {
+		t.Errorf("warnings = %q\nwant %q", got, want)
+	}
+	if reason := gapReason(cfg, "omlx"); reason != noProviderEntryReason {
+		t.Fatalf("gapReason = %q, want the shared sentence %q", reason, noProviderEntryReason)
+	}
+	said := []string{"provider \"omlx\" could not be probed (" + gapReason(cfg, "omlx") + "); its routes are left unchanged"}
+	got = missingProviderWarnings(cfg, said)
+	if want := want[:2]; !slices.Equal(got, want) {
+		t.Errorf("with omlx's gap already said: warnings = %q\nwant %q", got, want)
+	}
+}

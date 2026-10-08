@@ -3,6 +3,7 @@ package modeladmin
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -99,5 +100,43 @@ func TestUsesOllama(t *testing.T) {
 		if got := UsesOllama(id); got != want {
 			t.Errorf("UsesOllama(%q) = %v, want %v", id, got, want)
 		}
+	}
+}
+
+// TestShowErrorCarriesWhatOllamaSaid verifies a failed `ollama show` reports
+// ollama's own first line of stderr beside the exit status. The lookup's
+// warning is all the user gets when a model is added without its
+// capabilities, and "exit status 1" alone does not tell a model that is not
+// pulled from a daemon that is not running. An error that is not an exit
+// status (ollama not installed, the timeout) is passed through as it is.
+func TestShowErrorCarriesWhatOllamaSaid(t *testing.T) {
+	exit := func(stderr string) error {
+		// A real ExitError, from a child that is this shell's `false`: the
+		// ProcessState is not something a test can build by hand.
+		err := exec.Command("false").Run()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("`false` did not give an ExitError: %v", err)
+		}
+		ee.Stderr = []byte(stderr)
+		return ee
+	}
+	got := showError(exit("Error: model 'nope:1b' not found\nmore\n"))
+	if got == nil || got.Error() != "exit status 1: Error: model 'nope:1b' not found" {
+		t.Errorf("with stderr: %v, want the exit status and ollama's first line", got)
+	}
+	var ee *exec.ExitError
+	if !errors.As(got, &ee) {
+		t.Error("the ExitError is no longer in the chain")
+	}
+	if got := showError(exit("  \n")); got == nil || got.Error() != "exit status 1" {
+		t.Errorf("with a blank stderr: %v, want the exit status alone", got)
+	}
+	plain := errors.New("exec: \"ollama\": executable file not found in $PATH")
+	if got := showError(plain); got != plain {
+		t.Errorf("an error that is no exit status = %v, want it unchanged", got)
+	}
+	if showError(nil) != nil {
+		t.Error("no error must stay no error")
 	}
 }
