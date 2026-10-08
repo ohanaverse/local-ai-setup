@@ -416,8 +416,13 @@ func TestModelFormShowsWhatDoesNotFit(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
 	m := keys(t, modelsEditor(t, tm, 40, 12), "n")
 	view := m.View()
-	if !strings.Contains(view, "> Provider: < ollama >") || !strings.Contains(view, "  ↓ 2 more") || strings.Contains(view, "Subscription") {
-		t.Errorf("at the top of the add form the two fields below should be counted:\n%s", view)
+	// Three, not two: while the cursor is on Provider the line that says
+	// where a pairing is added has one of the rows.
+	if !strings.Contains(view, "> Provider: < ollama >") || !strings.Contains(view, "  ↓ 3 more") || strings.Contains(view, "Subscription") {
+		t.Errorf("at the top of the add form the three fields below should be counted:\n%s", view)
+	}
+	if below := keys(t, m, "down").View(); !strings.Contains(below, "  ↓ 2 more") {
+		t.Errorf("off Provider the pairing line gives its row back to the fields:\n%s", below)
 	}
 	if !strings.Contains(view, "^s save · esc · ↑/↓ · ←/→ change") {
 		t.Errorf("the short key hints should be whole at 40 columns:\n%s", view)

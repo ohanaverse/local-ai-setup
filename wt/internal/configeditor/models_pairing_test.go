@@ -3,6 +3,8 @@ package configeditor
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // pairingRegistry is tabRegistry plus an mlx_lm_server provider and one
@@ -70,6 +72,46 @@ func TestModelsTabShowsAndEditsAPairing(t *testing.T) {
 	m = keys(t, m, "n")
 	if got := strings.Join(m.models.form.providers, ","); strings.Contains(got, "mlx_lm_server") {
 		t.Errorf("the add form offers %s; mlx_lm_server must not be among them", got)
+	}
+	// The form says where the missing provider is added, while the Provider
+	// choice is the field in hand, and stops saying it on the next field.
+	const hint = "a pairing: wt model add mlx_lm_server <target> --draft <draft>"
+	if view := m.View(); m.models.form.cursor != mfProvider || !strings.Contains(view, hint) {
+		t.Errorf("the add form opens on Provider and should name the command that adds a pairing:\n%s", view)
+	}
+	if view := keys(t, m, "down").View(); strings.Contains(view, hint) {
+		t.Errorf("the pairing line should go when the cursor leaves Provider:\n%s", view)
+	}
+}
+
+// TestAddFormPairingLineFitsTheTerminal verifies the line that names `wt
+// model add mlx_lm_server` costs the add form nothing it needs: at every
+// layout size the form is inside the terminal with the line on it — the
+// short spelling at 40 columns — and on a terminal so short that the line
+// would leave the fields fewer than three rows it is the line that goes, not
+// the fields or the markers that count the ones off screen.
+func TestAddFormPairingLineFitsTheTerminal(t *testing.T) {
+	tm := newTabMachine(t, pairingRegistry)
+	for _, width := range []int{40, 80, 120} {
+		for _, height := range []int{12, 24, 50} {
+			m := keys(t, modelsEditor(t, tm, width, height), "n")
+			view := m.View()
+			if lipgloss.Height(view) > height || lipgloss.Width(view) > width {
+				t.Errorf("%dx%d: the add form is %dx%d", width, height, lipgloss.Width(view), lipgloss.Height(view))
+			}
+			want := modelFormPairingHints[0]
+			if width == 40 {
+				want = modelFormPairingHints[1]
+			}
+			if !strings.Contains(view, want) || !strings.Contains(view, "Provider") {
+				t.Errorf("%dx%d: want %q under the Provider field:\n%s", width, height, want, view)
+			}
+		}
+	}
+	m := keys(t, modelsEditor(t, tm, 80, 6), "n")
+	view := m.View()
+	if strings.Contains(view, "wt model add mlx_lm_server") || !strings.Contains(view, "Provider") || !strings.Contains(view, "more") || lipgloss.Height(view) > 6 {
+		t.Errorf("80x6: want the fields and their marker, without the pairing line:\n%s", view)
 	}
 }
 
