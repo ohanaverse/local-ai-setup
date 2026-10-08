@@ -886,3 +886,96 @@ func TestStopAllTakesNoArgument(t *testing.T) {
 		t.Errorf("stopped = %v halted = %v, want nothing", *stopped, *halted)
 	}
 }
+
+// TestStopAllCtrlCAsTheLastModelStopCompletesLeavesThePoolUp verifies a
+// Ctrl+C the model loop did not report — it landed as the last model's stop
+// completed, so the loop returned nil — still ends `wt stop --all` before the
+// omlx halt. The loop's own signal context is gone once it returns; without
+// one spanning the whole command that Ctrl+C is lost and the command goes on
+// to halt the service the user had just asked it to leave alone.
+func TestStopAllCtrlCAsTheLastModelStopCompletesLeavesThePoolUp(t *testing.T) {
+	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	oldCtx, oldEntries := startSignalCtx, stopEntries
+	t.Cleanup(func() { startSignalCtx, stopEntries = oldCtx, oldEntries })
+	// A signal reaches the contexts installed when it arrives and no later
+	// one, as with signal.NotifyContext: each call gets a context of its own,
+	// and the "Ctrl+C" below cancels only those that exist by then.
+	var installed []context.CancelFunc
+	startSignalCtx = func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		installed = append(installed, cancel)
+		return ctx, cancel
+	}
+	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
+		for _, cancel := range installed {
+			cancel()
+		}
+		return nil
+	}
+	halted := stubHalt(t)
+	var out bytes.Buffer
+	err := runStopAll(&out, modelCmdConfig(), false)
+	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
+	}
+	if len(*halted) != 0 || strings.Contains(out.String(), "Stopping omlx") {
+		t.Errorf("halted = %v out = %q, want no halt after the Ctrl+C", *halted, out.String())
+	}
+}
+
+// TestStopBareOmlxCancelledReportsCancelled verifies Ctrl+C during `wt stop
+// omlx` prints "cancelled", not "failed", and the error says the service was
+// not stopped — the same report `wt stop --all` gives for the same halt. A
+// killed `omlx stop` reported as a failure tells the user their provider is
+// broken when they interrupted it.
+func TestStopBareOmlxCancelledReportsCancelled(t *testing.T) {
+	stubStop(t, nil)
+	oldCtx, oldStop := startSignalCtx, stopProvider
+	t.Cleanup(func() { startSignalCtx, stopProvider = oldCtx, oldStop })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+	stopProvider = func(c context.Context, _ *config.Config, _ string) error {
+		cancel()
+		return c.Err()
+	}
+	var out bytes.Buffer
+	err := runStop(&out, modelCmdConfig(), "omlx", true)
+	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
+	}
+	if got := out.String(); !strings.Contains(got, "Stopping omlx... cancelled") || strings.Contains(got, "failed") {
+		t.Errorf("out = %q, want the halt reported as cancelled, not failed", got)
+	}
+}
+
+// TestStopAllFailurePrintsNoUsage verifies a `wt stop --all` that fails while
+// stopping does not print the command's usage text, and one given an argument
+// still does. A failed halt is not a usage mistake: the usage block would
+// push the progress lines that say what was and was not stopped off screen.
+func TestStopAllFailurePrintsNoUsage(t *testing.T) {
+	stubStop(t, nil)
+	stubHalt(t, "omlx")
+	run := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		cmd := stopCmd(&app{cfg: modelCmdConfig()})
+		cmd.SetArgs(args)
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	got, err := run("--all")
+	if err == nil || !strings.Contains(err.Error(), "omlx: still listening") {
+		t.Fatalf("err = %v, want the failed halt", err)
+	}
+	if strings.Contains(got, "Usage:") || !strings.Contains(got, "Stopping omlx... failed") {
+		t.Errorf("out = %q, want the progress line and no usage text", got)
+	}
+
+	got, err = run("--all", "ollama")
+	if err == nil || !strings.Contains(got, "Usage:") {
+		t.Errorf("err = %v out = %q, want the usage text for an argument mistake", err, got)
+	}
+}

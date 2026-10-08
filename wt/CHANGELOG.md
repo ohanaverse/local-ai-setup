@@ -71,6 +71,9 @@
 
 ### Fixed
 
+- Ctrl+C during `wt stop omlx` is reported as `cancelled`, with an error that
+  says the service was not stopped. It printed `failed` and `context canceled`,
+  as if the provider were broken.
 - `wt litellm sync`, `status`, `on`, `off` and `set` name the repair that
   works when wt's configuration does not load (#291). Each ended its refusal
   with "run `wt config` to repair" whatever had failed, so a missing registry

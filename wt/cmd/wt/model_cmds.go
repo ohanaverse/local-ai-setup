@@ -84,6 +84,10 @@ func stopCmd(a *app) *cobra.Command {
 				if arg != "" {
 					return fmt.Errorf("wt stop --all takes no model or provider (got %q)", arg)
 				}
+				// Past the argument check nothing --all returns is a usage
+				// mistake: a failed stop, a declined question or Ctrl+C would
+				// otherwise bury its progress lines under the whole usage text.
+				cmd.SilenceUsage = true
 				return runStopAll(cmd.OutOrStdout(), a.cfg, yes)
 			}
 			return runStop(cmd.OutOrStdout(), a.cfg, arg, yes)
@@ -142,6 +146,16 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 		fmt.Fprintln(out, "wt: no running local models")
 		return nil
 	}
+	// One signal context for the whole command, installed before the model
+	// loop. The loop runs under a context of its own (survey.StopEntries) and
+	// releases its handler when it returns, so with none installed here a
+	// Ctrl+C that lands as the last model stop completes is seen by nobody —
+	// the loop returns nil and the command goes on to halt the pool — and one
+	// during the wait below would kill wt outright, mid proxy restart. A
+	// signal reaches both contexts; this one is read by the first pass of the
+	// halt loop and reported.
+	ctx, cancel := startSignalCtx()
+	defer cancel()
 	var failures []error
 	if len(entries) > 0 {
 		if err := stopEntries(out, cfg, entries); err != nil {
@@ -150,45 +164,54 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			}
 			failures = append(failures, err)
 		}
-	}
-	// The signal context comes before the wait below, not after it: the model
-	// loop released its own handler when it returned, and with none installed
-	// a Ctrl+C during the wait would kill wt outright, mid proxy restart. Caught
-	// here, it is seen by the first pass of the halt loop and reported.
-	ctx, cancel := startSignalCtx()
-	defer cancel()
-	if len(entries) > 0 && len(pools) > 0 {
-		// The model loop may have started a LiteLLM proxy restart (a stopped
-		// mtplx model's route), and halting a pool starts its own. They run
-		// asynchronously and nothing else orders them, so the first is
-		// finished here: two at once restart the proxy under each other.
-		waitPendingRoutes()
+		if len(pools) > 0 {
+			// The model loop may have started a LiteLLM proxy restart (a
+			// stopped mtplx model's route), and halting a pool starts its
+			// own. They run asynchronously and nothing else orders them, so
+			// the first is finished here: two at once restart the proxy
+			// under each other.
+			waitPendingRoutes()
+		}
 	}
 	for i, id := range pools {
 		if ctx.Err() != nil {
 			failures = append(failures, notHalted(pools[i:]))
 			break
 		}
-		fmt.Fprintf(out, "Stopping %s... ", id)
-		if err := stopProvider(ctx, cfg, id); err != nil {
-			if ctx.Err() != nil {
-				// Cancelled mid-halt: the provider's stop was killed, not broken.
-				fmt.Fprintln(out, "cancelled")
-				failures = append(failures, notHalted(pools[i:]))
-				break
-			}
-			fmt.Fprintln(out, "failed")
-			failures = append(failures, fmt.Errorf("%s: %w", id, err))
-			continue
+		cancelled, err := haltProvider(ctx, out, cfg, id)
+		if cancelled {
+			failures = append(failures, notHalted(pools[i:]))
+			break
 		}
-		fmt.Fprintln(out, "done")
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", id, err))
+		}
 	}
 	return errors.Join(failures...)
 }
 
-// notHalted is the error of a `wt stop --all` cut short by Ctrl+C: it names
-// the pool services the command did not halt, so "cancelled" alone cannot be
-// read as "everything else is down".
+// haltProvider stops one provider's server as a whole (`wt stop omlx`, and
+// each pool of `wt stop --all`) and reports it on out. cancelled means Ctrl+C
+// ended it: the provider's stop was killed, not broken, so it is printed as
+// "cancelled" and the caller reports it as one, not as a failed stop.
+func haltProvider(ctx context.Context, out io.Writer, cfg *config.Config, id string) (cancelled bool, err error) {
+	fmt.Fprintf(out, "Stopping %s... ", id)
+	err = stopProvider(ctx, cfg, id)
+	switch {
+	case err == nil:
+		fmt.Fprintln(out, "done")
+	case ctx.Err() != nil:
+		fmt.Fprintln(out, "cancelled")
+		return true, err
+	default:
+		fmt.Fprintln(out, "failed")
+	}
+	return false, err
+}
+
+// notHalted is the error of a stop cut short by Ctrl+C: it names the pool
+// services the command did not halt, so "cancelled" alone cannot be read as
+// "everything else is down".
 func notHalted(pools []string) error {
 	if len(pools) == 0 {
 		return survey.ErrStopCancelled
@@ -281,13 +304,11 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		// service, which is the one way to free the server itself.
 		ctx, cancel := startSignalCtx()
 		defer cancel()
-		fmt.Fprintf(out, "Stopping %s... ", arg)
-		if err := stopProvider(ctx, cfg, arg); err != nil {
-			fmt.Fprintln(out, "failed")
-			return err
+		cancelled, err := haltProvider(ctx, out, cfg, arg)
+		if cancelled {
+			return notHalted([]string{arg})
 		}
-		fmt.Fprintln(out, "done")
-		return nil
+		return err
 	}
 	return stopEntries(out, cfg, entries)
 }
