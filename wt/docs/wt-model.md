@@ -5,6 +5,7 @@ add, edit and remove them. wt never downloads a model and never deletes
 weights; it registers what a provider already has, or will have.
 
 ```bash
+wt model                    # the Models tab of `wt config` (needs a terminal)
 wt model list [--json]     # every registry model, and every local model found on this machine
 wt model init [--json]     # create the registry if it is missing; add the default provider rows
 wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
@@ -175,3 +176,40 @@ share an id is a hand edit — only there can you see which row is which.
   its provider's status.
 
 Run `wt litellm sync` after a hand edit: no tool saw it.
+
+## The Models tab (`wt model`, or `Tab` in `wt config`)
+
+The same rows as `wt model list`, as a table: FAMILY, MODEL, LOC, STATUS,
+RUNNING, SIZE. On a narrow terminal it gives up SIZE, then LOC, then FAMILY —
+never MODEL, STATUS or RUNNING. When an id is still too long for the MODEL
+column it loses its middle to an ellipsis
+(`omlx/Qwen3.8-35B-A3B-Instruct-abliterat…-dynamic-quant-6bit`): the start
+says which provider, the end which variant.
+
+Under the table is the selected row's detail: its id, whole, then its status,
+`running` / `loading` / `running?`, and its tags (for a pairing, its target
+and draft); and the path of its weights on a line of its own, written from
+`~`. A short terminal drops the path before it drops table rows.
+
+| Key | Does |
+|---|---|
+| `↑`/`↓`, `j`/`k` | move |
+| `d` | remove the selected registry model, after a `y/N` prompt that shows where its weights are; the path is repeated in the status afterwards |
+| `r` | probe the providers again |
+| `/` | filter by id or family: type, `Enter` to keep the filter, `Esc` to clear it |
+| `Tab` | the Agents tab |
+| `q`, `Ctrl+C` | quit |
+
+`Esc` does not quit, and `Ctrl+S` does nothing here: there is nothing to save.
+The providers are probed when the tab is first shown, not on every visit;
+`Tab` and `q` work while that first probe is still out.
+
+A removal is written to `registry.toml` at once. The LiteLLM routes are not
+synced per change: the status says `LiteLLM routes pending (sync on quit)`,
+and that one sync runs when the editor closes, only if the registry changed. A
+quit typed while a change is still being written waits for it. If wt is
+killed before the sync, the next `wt start`, `wt stop` or launch through
+LiteLLM repairs the routes, and `wt litellm sync` does it at once. A sync that
+leaves `config.yaml` unchanged does not restart the proxy.
+
+What the last action said stays above the table until the next key.

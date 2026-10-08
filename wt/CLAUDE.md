@@ -143,7 +143,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/worktree/` | repo detection, enumeration, creation |
 | `internal/initseed/` | `--init` seeding |
 | `internal/ollamacheck/` | pre-launch `ollama list` availability check |
-| `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor |
+| `internal/configeditor/` | the TUI behind `wt config`: the Agents tab (`config.toml`; edits buffered, saved with ctrl+s) and the Models tab (`registry.toml` through `internal/modeladmin`; each change written at once from a `tea.Cmd`, the probe in a `tea.Cmd` too). `Run` reports `Result.RegistryChanged`, and `cmd/wt`'s `runConfigEditor` then runs the one route sync the tab owes; a quit asked for while a write is in flight waits for it (`leave`, `quitPending`), so the result is never "unchanged" for a registry that changed |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell, pickers, launch, start-on-select flow (`start_flow.go`); `modelrows.go` (rows + sort), `modeltable.go` (`buildTable`, `renderTable`); `PickStartModel` — standalone picker without launch-route gating, used by `wt start` and `wt smoke` (`PickModel`, the route-gated variant, currently has no production caller) |
 | `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`) |
@@ -311,6 +311,7 @@ wt start <id> --plan --json          # dry run: what a start would unload (statu
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)
+wt model                             # `wt config` on its Models tab (needs TTY)
 wt model list [--json]               # every registry model and every local model found, with live status
 wt model add <provider> <name> --family F   # register a model (seeds a missing default provider row; one route sync)
 wt model edit <id> --tags code       # change family, tags, location or prices; nothing else in the row moves
