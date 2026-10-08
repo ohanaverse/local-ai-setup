@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // ColSep separates two columns of a table.
@@ -148,6 +149,18 @@ func fitColumns(l *list.Model, width int) {
 			}
 		}
 	}
+}
+
+// StyleTableTitle styles a list whose Title is a table's header (Header) so
+// that the header sits flush with the rows' text, in the colour dim. Bubbles
+// pads a list's title and its title bar by default; both are cleared, keeping
+// the one blank line under the header, or the headings stand two columns
+// right of their cells. TitleRoom and Fit count on exactly this title bar, so
+// every table-backed list is styled here and nowhere else: the launcher's
+// pickers and the Models tab of `wt config` cannot drift apart.
+func StyleTableTitle(l *list.Model, dim lipgloss.TerminalColor) {
+	l.Styles.Title = lipgloss.NewStyle().Foreground(dim)
+	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
 }
 
 // PadRunes pads s with spaces to w runes; a longer s is returned as it is.

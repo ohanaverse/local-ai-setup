@@ -233,3 +233,35 @@ func TestFitToFitsATableInsideItsFrame(t *testing.T) {
 		}
 	}
 }
+
+// TestStyleTableTitleDrawsTheHeaderFlush verifies the one title-bar reset
+// every table shares: the header starts in the same column as the rows' cells
+// and is whole in a list just TitleRoom wider than it. Bubbles pads a list's
+// title and its title bar by default; a table that keeps either draws its
+// headings two columns right of its cells, and Fit and TitleRoom, which count
+// on a title bar with no padding, then let the last heading be cut.
+func TestStyleTableTitleDrawsTheHeaderFlush(t *testing.T) {
+	cols := testColumns(0)
+	row := testRow{cells: []string{PadRunes("alpha", 12), PadRunes("local", 5), PadRunes("ok", 7), PadRunes("1 GB", 6), "note"}, cols: cols}
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = false
+	delegate.SetSpacing(0)
+	delegate.Styles.NormalTitle, delegate.Styles.SelectedTitle = lipgloss.NewStyle(), lipgloss.NewStyle()
+	header := cols.Header()
+	l := list.New([]list.Item{row}, delegate, len(header)+TitleRoom, 10)
+	l.Title = header
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
+	StyleTableTitle(&l, lipgloss.Color("8"))
+
+	lines := strings.Split(l.View(), "\n")
+	if got := strings.TrimRight(lines[0], " "); got != header {
+		t.Errorf("the header line = %q, want %q: flush left and whole", got, header)
+	}
+	if strings.TrimSpace(lines[1]) != "" {
+		t.Errorf("the line under the header = %q, want the blank line the title bar keeps", lines[1])
+	}
+	if got := strings.TrimRight(lines[2], " "); got != cols.Line(row.cells) {
+		t.Errorf("the first row = %q, want %q: in the header's columns", got, cols.Line(row.cells))
+	}
+}

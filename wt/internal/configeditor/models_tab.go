@@ -275,8 +275,7 @@ func buildModelsList(theme themes.Theme, rows []modeladmin.Row) (list.Model, *tu
 	delegate.Styles.FilterMatch = lipgloss.NewStyle()
 	l := list.New(items, delegate, 0, 0)
 	l.Title = cols.Header()
-	l.Styles.Title = lipgloss.NewStyle().Foreground(theme.Token(themes.TokenDim))
-	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
+	tuilayout.StyleTableTitle(&l, theme.Token(themes.TokenDim))
 	l.SetShowStatusBar(false)
 	// The tab prints its own key hints: the list's help line does not know
 	// the tab's keys and costs a row.
