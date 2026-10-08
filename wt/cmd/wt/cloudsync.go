@@ -134,6 +134,9 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			if a.loadErr != nil {
 				return configError(a.loadErr)
 			}
+			if a.cfg == nil {
+				return errors.New("config not loaded")
+			}
 			ctx := cmd.Context()
 			if ctx == nil {
 				ctx = context.Background()
@@ -177,13 +180,26 @@ type pricesRun struct {
 
 // planPricesFlow fetches OpenRouter's list and prints the price plan. It
 // returns nil when there is nothing to apply: no OpenRouter-priced model (no
-// fetch is made), a fetch that failed, or a plan the write would refuse (both
-// reported, and res.failed set).
+// fetch is made, res.failed stays false), a fetch that failed, or a plan the
+// write would refuse (both reported, and res.failed set).
 func planPricesFlow(ctx context.Context, out, errOut io.Writer, doc *config.RegistryDoc, res *cloudSyncOutcome) *pricesRun {
 	entries, providers := cloudsync.Entries(doc.Models()), cloudsync.Providers(doc.Providers())
 	if !slices.ContainsFunc(entries, func(e cloudsync.Entry) bool { return cloudsync.OpenRouterPriced(e, providers) }) {
 		fmt.Fprintln(out, "prices: no OpenRouter-priced model in the registry; nothing to refresh")
 		return nil
+	}
+	// Check for duplicate model IDs before fetching: the write refuses an id
+	// that appears more than once, so a plan with such a model can never be
+	// applied. Fail fast to avoid a wasted network request.
+	for _, e := range entries {
+		if !cloudsync.OpenRouterPriced(e, providers) {
+			continue
+		}
+		if _, err := doc.Model(e.ID); err != nil {
+			fmt.Fprintf(errOut, "prices: error: no price was changed: %v\n", err)
+			res.failed = true
+			return nil
+		}
 	}
 	body, err := cloudFetch(ctx, cloudsync.OpenRouterModelsURL)
 	var api map[string]cloudsync.APIPrice
@@ -196,17 +212,6 @@ func planPricesFlow(ctx context.Context, out, errOut io.Writer, doc *config.Regi
 		return nil
 	}
 	run := &pricesRun{api: api, plan: cloudsync.PlanPrices(entries, providers, api)}
-	// The write finds a row by its id and refuses an id that is there more
-	// than once, so a plan with such a model can never be applied. Say so
-	// now, in the dry run too, instead of printing changes that cannot be
-	// made.
-	for _, change := range run.plan.Matched {
-		if _, err := doc.Model(change.ModelID); err != nil {
-			fmt.Fprintf(errOut, "prices: error: no price was changed: %v\n", err)
-			res.failed = true
-			return nil
-		}
-	}
 	run.printed = run.plan.Format()
 	prefixLines(out, "prices", run.printed)
 	if run.plan.Candidates > 0 && len(run.plan.Matched) == 0 {
