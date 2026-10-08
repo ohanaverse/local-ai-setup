@@ -675,3 +675,40 @@ func TestModelAddAPairing(t *testing.T) {
 		t.Error("a refused add changed the registry")
 	}
 }
+
+// TestModelEditAndRmOfAPairing verifies a pairing `wt model add` wrote is
+// edited and removed like any model: `edit` changes the metadata it is given
+// and leaves [models.fetch] and [models.draft] byte for byte (llmbench starts
+// the server from those two tables), and `rm` names both sides as untouched,
+// since wt deletes no weights and a local directory the user quantized for
+// hours is one of them.
+func TestModelEditAndRmOfAPairing(t *testing.T) {
+	registry := modelHome(t, writeRegistry)
+	stubSeedEnv(t, config.SeedEnv{})
+	stubRouteSync(t, "")
+	const id = "mlx_lm_server/T-4bit+draft-D-4bit"
+	if _, err := runWT(t, "model", "add", "mlx_lm_server", "/quant/T-4bit", "--draft", "~/models/D-4bit", "--family", "qwen3.8"); err != nil {
+		t.Fatal(err)
+	}
+	const sides = "[models.fetch]\nlocal_path = \"/quant/T-4bit\"\n\n[models.draft]\nlocal_path = \"~/models/D-4bit\"\n"
+	added := mustRead(t, registry)
+	if !strings.Contains(added, sides) {
+		t.Fatalf("the pairing's two sides are not in the registry:\n%s", added)
+	}
+	out, err := runWT(t, "model", "edit", id, "--tags", "code", "--family", "qwen")
+	if err != nil || out != "updated model: "+id+"\n" {
+		t.Fatalf("edit = %q, %v", out, err)
+	}
+	want := strings.Replace(added, "family = \"qwen3.8\"\nprovider_id = \"mlx_lm_server\"\nmodel_name = \"T-4bit+draft-D-4bit\"\ntags = []\n",
+		"family = \"qwen\"\nprovider_id = \"mlx_lm_server\"\nmodel_name = \"T-4bit+draft-D-4bit\"\ntags = [\n    \"code\",\n]\n", 1)
+	if got := mustRead(t, registry); got != want || !strings.Contains(got, sides) {
+		t.Errorf("registry after the edit =\n%s\nwant only family and tags changed:\n%s", got, want)
+	}
+	out, err = runWT(t, "model", "rm", id, "--yes")
+	if want := "removed model: " + id + "\n  target /quant/T-4bit and draft ~/models/D-4bit are untouched\n"; err != nil || out != want {
+		t.Errorf("rm = %q, %v\nwant %q", out, err, want)
+	}
+	if strings.Contains(mustRead(t, registry), id) {
+		t.Error("the pairing is still in the registry")
+	}
+}

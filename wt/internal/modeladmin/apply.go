@@ -67,7 +67,7 @@ func planAdd(req AddRequest) (addPlan, error) {
 	case pairing && req.Draft == "":
 		return addPlan{}, fieldErr(FieldDraft, "an mlx_lm_server model is a target+draft pairing: name the target and pass --draft <draft>")
 	case !pairing && req.Draft != "":
-		return addPlan{}, fieldErr(FieldDraft, "--draft is for an mlx_lm_server pairing; %s serves one model at a time", req.ProviderID)
+		return addPlan{}, fieldErr(FieldDraft, "--draft is for an mlx_lm_server pairing; a model of provider %s has no draft", req.ProviderID)
 	}
 	if err := checkID(req.ID); err != nil {
 		return addPlan{}, err

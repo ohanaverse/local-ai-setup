@@ -250,7 +250,7 @@ func TestAddRefusals(t *testing.T) {
 		{"a subscription with no period", func(r *AddRequest) { r.SubscriptionPrice = ptr("20") }, FieldSubscriptionPeriod, "a subscription price needs a subscription period (month or year)"},
 		{"a period that is not one", func(r *AddRequest) { r.SubscriptionPeriod = ptr("week") }, FieldSubscriptionPeriod, `subscription period must be month or year, got "week"`},
 		{"a pairing with no draft", func(r *AddRequest) { r.ProviderID = "mlx_lm_server" }, FieldDraft, "pass --draft <draft>"},
-		{"a draft on a provider that serves one model", func(r *AddRequest) { r.Draft = "org/d" }, FieldDraft, "--draft is for an mlx_lm_server pairing; openrouter serves one model at a time"},
+		{"a draft on a provider whose models have none", func(r *AddRequest) { r.Draft = "org/d" }, FieldDraft, "--draft is for an mlx_lm_server pairing; a model of provider openrouter has no draft"},
 		{"an id with no slash", func(r *AddRequest) { r.ID = "noslash" }, FieldID, `an id is <provider>/<name> with no spaces, got "noslash"`},
 		{"an id with a space", func(r *AddRequest) { r.ID = "openrouter/has space" }, FieldID, `an id is <provider>/<name> with no spaces, got "openrouter/has space"`},
 		{"an id with nothing after the slash", func(r *AddRequest) { r.ID = "openrouter/" }, FieldID, "an id is <provider>/<name>"},
@@ -761,5 +761,99 @@ func TestLastSegment(t *testing.T) {
 		if got := lastSegment(in); got != want {
 			t.Errorf("lastSegment(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// malformedPairingRegistry holds a pairing a hand edit broke — its draft is
+// a number, which wt reads as absent — and an omlx model that names, as its
+// own fetch.repo, the repo the tests below use as a target.
+const malformedPairingRegistry = `[[providers]]
+id = "mlx_lm_server"
+name = "mlx-lm server (target+draft)"
+location = "local"
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8001/v1"
+
+[[providers]]
+id = "omlx"
+name = "oMLX"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "mlx_lm_server/T+draft-D"
+family = "f"
+provider_id = "mlx_lm_server"
+model_name = "T+draft-D"
+tags = []
+draft = 7
+
+[models.fetch]
+repo = "org/T"
+
+[[models]]
+id = "omlx/T"
+family = "f"
+provider_id = "omlx"
+model_name = "T"
+tags = []
+
+[models.fetch]
+repo = "org/T"
+
+[models.draft]
+repo = "org/D"
+`
+
+// TestAddAPairingBesideAMalformedOne verifies how an add judges "the same
+// pairing" on a registry whose rows are not all well formed. A pairing whose
+// draft is malformed has no draft wt can compare, so it is not the pairing
+// being added, whatever its target; an omlx row is never a pairing, even
+// with the same two tables. The derived id is still the malformed row's, so
+// the add says to pass --id, and with one it is written beside that row,
+// which is left byte for byte as it was. Before this was pinned, an
+// unreadable side could have compared equal to another unreadable side, and
+// the user told a pairing was registered that is not.
+func TestAddAPairingBesideAMalformedOne(t *testing.T) {
+	path := scratchRegistry(t, malformedPairingRegistry)
+	req := AddRequest{ProviderID: "mlx_lm_server", ModelName: "org/T", Draft: "org/D", Fields: Fields{Family: ptr("f")}}
+	_, err := Add(req, config.SeedEnv{})
+	var fe *FieldError
+	if errors.As(err, &fe) || !errors.Is(err, config.ErrModelExists) || !strings.Contains(err.Error(), "pass --id mlx_lm_server/<name>") {
+		t.Fatalf("err = %v, want the taken id and the way round it, not \"already registers this pairing\"", err)
+	}
+	if got := read(t, path); got != malformedPairingRegistry {
+		t.Errorf("a refused add changed the registry:\n%s", got)
+	}
+	req.ID = "mlx_lm_server/second"
+	res, err := Add(req, config.SeedEnv{})
+	if err != nil || res.ID != "mlx_lm_server/second" {
+		t.Fatalf("with --id: %+v, %v; want it added", res, err)
+	}
+	want := malformedPairingRegistry + `
+[[models]]
+id = "mlx_lm_server/second"
+family = "f"
+provider_id = "mlx_lm_server"
+model_name = "T+draft-D"
+tags = []
+
+[models.fetch]
+repo = "org/T"
+
+[models.draft]
+repo = "org/D"
+`
+	if got := read(t, path); got != want {
+		t.Errorf("registry =\n%s\nwant the new row after the others, and they untouched:\n%s", got, want)
+	}
+	// Now it is registered, and a third add of the same two sides says so.
+	req.ID = ""
+	if _, err := Add(req, config.SeedEnv{}); !errors.As(err, &fe) || !strings.Contains(fe.Msg, `model "mlx_lm_server/second" already registers this pairing`) {
+		t.Errorf("a second add of the pairing: err = %v, want it refused as registered", err)
 	}
 }

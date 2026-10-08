@@ -125,7 +125,8 @@ func (f *modelForm) editable(field int) bool {
 // formProviders are the providers an add can choose: every registry provider
 // and the ones wt can seed a row for when a model names them (openrouter
 // among them), without mlx_lm_server — its model is a target+draft pairing,
-// which modeladmin.Add refuses and the form has no fields for.
+// which takes two artifacts: `wt model add mlx_lm_server <target> --draft
+// <draft>` adds one, and the form has no field for a draft.
 func formProviders(cfg *config.Config) []string {
 	ids := []string{}
 	for _, p := range cfg.Providers {
