@@ -8,9 +8,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
-// emitPriceNotice is a seam for tests: production prints modelman's
-// stale-pricing notice (issue #69) after the summary; tests swap it to
-// observe ordering without touching the real modelman.toml.
+// emitPriceNotice is a seam for tests: production prints the stale-pricing
+// notice (issue #69, agents.PrintPriceNotice) after the summary; tests swap
+// it to observe ordering.
 var emitPriceNotice = realEmitPriceNotice
 
 func realEmitPriceNotice(cfg *config.Config) {

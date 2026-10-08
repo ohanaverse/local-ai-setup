@@ -493,9 +493,36 @@ type Model struct {
 	// so decoding two more keys cannot change what a write touches.
 	// Neither can fail a load: a malformed one reads as absent
 	// (ModelArtifact.UnmarshalTOML).
-	Fetch  ModelArtifact `toml:"fetch,omitempty"`
-	Draft  ModelArtifact `toml:"draft,omitempty"`
-	Native bool          `toml:"-"` // derived: provider auth.type == "native"; not persisted
+	Fetch ModelArtifact `toml:"fetch,omitempty"`
+	Draft ModelArtifact `toml:"draft,omitempty"`
+	// PricingUpdatedAt is the registry's pricing_updated_at, as written:
+	// the string `wt cloud-sync` and modelman stamp, or a TOML date-time a
+	// hand edit left. It is `any` so that neither spelling can fail the
+	// load; read it through PricingUpdated.
+	PricingUpdatedAt any  `toml:"pricing_updated_at,omitempty"`
+	Native           bool `toml:"-"` // derived: provider auth.type == "native"; not persisted
+}
+
+// pricingStampLayouts are the spellings of pricing_updated_at wt reads: the
+// stamp both tools write, then what a hand edit plausibly leaves (a
+// date-time with no offset, a bare date; both taken as UTC).
+var pricingStampLayouts = []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"}
+
+// PricingUpdated is when the model's token prices were last refreshed, and
+// whether the registry says. A value that is not a time (a typo, a number)
+// counts as not said.
+func (m Model) PricingUpdated() (time.Time, bool) {
+	switch v := m.PricingUpdatedAt.(type) {
+	case time.Time:
+		return v, true
+	case string:
+		for _, layout := range pricingStampLayouts {
+			if t, err := time.Parse(layout, v); err == nil {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 // ModelArtifact is one side of a model's weights: a Hugging Face repo, or a
@@ -970,7 +997,7 @@ func (c *Config) InCatalog(m Model) bool {
 }
 
 // OpenRouterPriced reports whether m's price comes from OpenRouter — what
-// `modelman refresh-prices` refreshes: an openrouter model, or a model of a
+// `wt cloud-sync`'s prices flow refreshes: an openrouter model, or a model of a
 // non-native cloud provider. Keyed on the provider's location, not the
 // model's, so ollama cloud models don't count. Mirrors modelman's
 // pricing._is_openrouter_priced; both are pinned by

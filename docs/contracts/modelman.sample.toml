@@ -1,8 +1,9 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only. Since #179 Phase B wt reads only two things here: the global
-# `price_refresh_last_run` date and the `[litellm]` table below (a legacy
-# fallback — the routing table is wt-owned in wt's config.toml). wt reads
+# read-only. wt reads only one thing here: the `[litellm]` table below (a
+# legacy fallback — the routing table is wt-owned in wt's config.toml). It
+# no longer reads `price_refresh_last_run`: its stale-pricing notice takes
+# its date from the `pricing_updated_at` stamps in registry.toml. wt reads
 # NO per-model [model_state] key: `ready`/`downloaded` (download state),
 # `running` and the retired `exposed` flags are modelman's alone; wt takes
 # local presence and running state from its live probes of the providers.
@@ -30,9 +31,8 @@
 
 # Global "token pricing last refreshed" date (YYYY-MM-DD), written by
 # `modelman refresh-prices` (set_price_refresh_last_run in state.py).
-# wt reads it after each launch to print a stale-pricing notice
-# (see wt/internal/agents/price_notice.go). A missing key means
-# pricing has never been refreshed.
+# modelman's own; wt no longer reads it (the Go test only checks that a
+# file carrying it still loads).
 price_refresh_last_run = "2026-09-14"
 
 [litellm]

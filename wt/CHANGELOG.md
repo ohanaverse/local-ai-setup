@@ -4,6 +4,20 @@
 
 ### Added
 
+- `wt cloud-sync [--only prices] [--dry-run] [--yes]` refreshes the per-token
+  prices of the registry's OpenRouter-priced models from OpenRouter's public
+  model list, replacing `modelman refresh-prices` (which still works). It
+  prints its plan as `id: old -> new` first; `--dry-run` stops there, and
+  otherwise it asks once on the terminal unless `--yes` is given. Input and
+  output prices take OpenRouter's value; a cache price is replaced only when
+  OpenRouter reports one, and a subscription or time-windowed price is never
+  touched. Every matched model is stamped, changed or not, which is what the
+  stale-pricing notice reads. The LiteLLM routes are synced once when a
+  price changed, and not at all when none did. With no OpenRouter-priced
+  model in the registry it says so and exits 0 without fetching, asking or
+  writing anything. `--only` given with an empty value is a usage error, not
+  "every flow", and a model id that is in the registry twice is refused
+  before the plan, in a dry run too. Nothing refreshes prices automatically.
 - `wt model add mlx_lm_server <target> --draft <draft> --family F` registers a
   target+draft pairing, each side a Hugging Face repo or a local path, and
   prints the command that starts it. A side is a local path when it starts
@@ -120,6 +134,16 @@
 
 ### Changed
 
+- The stale-pricing notice wt prints after a launch takes its date from
+  `registry.toml`: the newest `pricing_updated_at` among the models priced by
+  OpenRouter. It now speaks when that is more than 7 days old, or when no
+  such model was ever refreshed, and it names `wt cloud-sync`; it used to
+  speak whenever `modelman.toml`'s `price_refresh_last_run` was not today,
+  and name `modelman refresh-prices`. wt no longer reads that key. Either
+  tool's refresh still clears the notice for a registry in which it matches
+  at least one model, since both stamp the models they match; when a refresh
+  matches none, `wt cloud-sync` says that the notice stays and how to stop it
+  (`openrouter_priced = false`).
 - omlx is handled as the multi-model pool it is (#213). `wt start` loads an
   omlx model beside the ones already loaded instead of stopping the service
   first, and asks only when the model does not fit, naming what omlx is

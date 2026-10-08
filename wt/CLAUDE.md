@@ -76,7 +76,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 - `docs/wt-agents/profiles.md` — local-model launch profiles
 - `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md`, `docs/wt-model.md` — command references
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — wt design specs and plans (newer cross-package specs live in the monorepo's [../docs/superpowers/](../docs/superpowers/))
-- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt — the `wt model` commands and the Models tab of `wt config`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
+- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (`registry.toml` has two writers until modelman is retired: modelman, and wt — the `wt model` commands, the Models tab of `wt config` and `wt cloud-sync`; modelman owns `modelman.toml`; wt owns `~/.config/agent-wt/config.toml`)
 
 ## Go tests
 
@@ -124,6 +124,8 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/model.go` | `wt model` group — bare, it opens the Models tab of `wt config` (needs a terminal); `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
 | `cmd/wt/model_write.go` | `wt model add`, `edit`, `rm` — each one `modeladmin` write, then one route sync (`syncAndWarn`); the `ollamaCaps` seam, and `confirmRemove`, which is `wt stop`'s `promptStop` (it opens the terminal through `openTTY`) |
 | `cmd/wt/model_list.go` | `wt model list [--json]` — `modeladmin.Rows` over one probe; `fitModelList` drops PATH, then SIZE, on a narrow terminal |
+| `cmd/wt/cloudsync.go` | `wt cloud-sync` — the command, the prices flow's fetch, the confirmation, the one `config.UpdateRegistry` (the catalog flow will share it when it lands; re-plan under the lock, and a plan that changed is refused by an error from `apply`, so nothing is written and a missing registry is not created), the route sync, the exit code; seams `cloudFetch`, `confirmCloudSync`, `cloudSyncNow` (the prompt opens the terminal through `openTTY`) |
+| `cmd/wt/exitcode.go` | `exitCodeError` / `exitCodeOf` — how one command exits with a status other than 1 |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/tomlw/` | ordered TOML document (`Decode`, `Table`) and an emitter (`Encode`) that reproduces tomli-w's layout byte for byte — what lets wt write `registry.toml` beside modelman without rewriting it. Imports nothing from wt; never use the stock `toml.Encoder` on the registry (it sorts keys and shifts local dates) |
 | `internal/cloudsync/` | the pure core of `wt cloud-sync`: `ParsePricing` (the only code that knows ollama.com/pricing's HTML; `golang.org/x/net/html` tokenizer, fail-loud `*ParseError`), `ResolveCloudTags`/`VerifiedTags`, `PlanCatalog` (+ `MassRemoval`, `RemovalDigest`, `Format`), `ParseOpenRouter`/`PlanPrices`, and the two `Apply` methods that change a `config.RegistryDoc`. No I/O, no clock: see [Cloud sync](#cloud-sync-wt-cloud-sync) |
@@ -165,7 +167,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 
 ## Registry (shared with modelman until it is retired)
 
-`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it via `config.Load`, fail-closed, and joins it in memory with `config.toml`. `config.Load` never writes it; wt writes it through `config.UpdateRegistry` alone: `wt model init` (provider rows, `config.SeedRegistryDefaults`), and `wt model add|edit|rm` and the Models tab of `wt config` (model rows, both through `internal/modeladmin`); modelman still writes it too. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
+`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. wt loads it via `config.Load`, fail-closed, and joins it in memory with `config.toml`. `config.Load` never writes it; wt writes it through `config.UpdateRegistry` alone: `wt model init` (provider rows, `config.SeedRegistryDefaults`), `wt model add|edit|rm` and the Models tab of `wt config` (model rows, both through `internal/modeladmin`), and `wt cloud-sync` (cloud prices and their `pricing_updated_at` stamps, `internal/cloudsync`'s `Apply` methods); modelman still writes it too. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (the older name, kept as an alias) > `XDG_CONFIG_HOME` > `~/.config`. modelman's `_default_registry_path` and llmbench's `registry_path` use the same order — keep the three in sync; each has a precedence test.
 
 - **`ResolveLocation` is the one judge of a location**: every consumer keys off its error (`config.ErrLocation`), so catalog, inventory, sync and validation agree.
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
@@ -249,7 +251,7 @@ Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row dire
 
 ## Cloud sync (`wt cloud-sync`)
 
-`internal/cloudsync` is the Go port of modelman's `pricing.py` and `ollama_catalog.py`: everything that decides what a sync changes, with no I/O. Its caller owns the fetches, the ollama CLI, the confirmation and the exit codes.
+`internal/cloudsync` is the Go port of modelman's `pricing.py` and `ollama_catalog.py`: everything that decides what a sync changes, with no I/O. The command (`cmd/wt/cloudsync*.go`) owns the fetches, the ollama CLI, the confirmation and the exit codes. Only the prices flow is wired to the command so far; a registry with no OpenRouter-priced model (`cloudsync.OpenRouterPriced`, the same rule as `config.Config.OpenRouterPriced`) skips it: one line, no fetch, exit 0.
 
 - **`ParsePricing` is the only code that knows the pricing page's HTML.** Every way the page can stop looking like a price table is a `*ParseError`, never a short catalog: a catalog that lost its rows would plan the removal of every ollama cloud entry. When ollama changes the page, fix it there and replace `internal/cloudsync/testdata/ollama_pricing.html`.
 - **The plan's text is the plan.** `CatalogPlan.Format` and `PricePlan.Format` are what the user approves and what the command compares with the re-plan made under the registry lock; both planners are deterministic. A change to either `Format` changes what counts as "the same plan".
