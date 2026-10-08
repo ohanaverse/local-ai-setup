@@ -83,7 +83,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
-- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config`, `internal/modeladmin` and `internal/configeditor` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config`, `internal/modeladmin`, `internal/configeditor` and `internal/cloudsync` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
@@ -100,7 +100,7 @@ From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint 
 
 ## Go module
 
-Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
 | Path | Purpose |
 |---|---|
@@ -126,6 +126,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/model_list.go` | `wt model list [--json]` — `modeladmin.Rows` over one probe; `fitModelList` drops PATH, then SIZE, on a narrow terminal |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/tomlw/` | ordered TOML document (`Decode`, `Table`) and an emitter (`Encode`) that reproduces tomli-w's layout byte for byte — what lets wt write `registry.toml` beside modelman without rewriting it. Imports nothing from wt; never use the stock `toml.Encoder` on the registry (it sorts keys and shifts local dates) |
+| `internal/cloudsync/` | the pure core of `wt cloud-sync`: `ParsePricing` (the only code that knows ollama.com/pricing's HTML; `golang.org/x/net/html` tokenizer, fail-loud `*ParseError`), `ResolveCloudTags`/`VerifiedTags`, `PlanCatalog` (+ `MassRemoval`, `RemovalDigest`, `Format`), `ParseOpenRouter`/`PlanPrices`, and the two `Apply` methods that change a `config.RegistryDoc`. No I/O, no clock: see [Cloud sync](#cloud-sync-wt-cloud-sync) |
 | `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
 | `internal/usage/` | append-only JSONL launch history (1d/7d/30d); `RecordFor` tags the agent; `CountsForAgent` per agent×model, legacy agent-less lines count toward `Counts` only; `(*StoreImpl).AllCounts(agent, asOf)` enumerates every model in the file, bucketed against the caller's instant (for `wt stats`; not on the `Store` interface) |
 | `internal/refcount/` | live-session "in use" counts: JSONL keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point |
@@ -245,6 +246,17 @@ Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row dire
 ## Start/stop (`wt start`, `wt stop`)
 
 `cmd/wt/model_cmds.go`; user-facing behavior in [docs/wt-start-stop.md](docs/wt-start-stop.md); code notes in [docs/internals/local-models.md](docs/internals/local-models.md#startstop-wt-start-wt-stop).
+
+## Cloud sync (`wt cloud-sync`)
+
+`internal/cloudsync` is the Go port of modelman's `pricing.py` and `ollama_catalog.py`: everything that decides what a sync changes, with no I/O. Its caller owns the fetches, the ollama CLI, the confirmation and the exit codes.
+
+- **`ParsePricing` is the only code that knows the pricing page's HTML.** Every way the page can stop looking like a price table is a `*ParseError`, never a short catalog: a catalog that lost its rows would plan the removal of every ollama cloud entry. When ollama changes the page, fix it there and replace `internal/cloudsync/testdata/ollama_pricing.html`.
+- **The plan's text is the plan.** `CatalogPlan.Format` and `PricePlan.Format` are what the user approves and what the command compares with the re-plan made under the registry lock; both planners are deterministic. A change to either `Format` changes what counts as "the same plan".
+- **`RemovalDigest` is byte-identical to modelman's** for the same removals and stray tags (`TestRemovalDigestMatchesModelman`), so a digest from either tool's dry run approves the other's apply until modelman is deleted.
+- **The `Apply` methods are pure** (they change the `RegistryDoc` they are given and nothing else), because `config.UpdateRegistry` may run them up to three times.
+- **An `Apply` writes a diff, not the cost table.** `costPatch` sets or deletes only the cost keys whose value the plan changed, so a key the planners' read of the row leaves out (`Cost` holds the keys they know) is still there afterwards, and nothing is written that the printed plan does not show (`TestApplyWritesOnlyWhatThePlanShows`).
+- **Only the row labelled `off-peak` in `cost.time_prices` is the catalog's.** Every other row, the subscription, and any key wt does not model are kept. Nothing applies time prices at launch; they are stored.
 
 ## LiteLLM routes (`wt litellm`)
 
