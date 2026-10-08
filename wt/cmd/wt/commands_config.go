@@ -24,7 +24,11 @@ import (
 // configeditorRun is the entry point for the config viewer TUI. It is a
 // package-level var so tests can verify it is called without needing a TTY.
 var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
-	return configeditor.Run(theme, cfg, cfgErr)
+	// The editor's options and its result are not used yet: `wt config`
+	// opens on the Agents tab, and the route sync a change on the Models tab
+	// is owed waits for the next `wt start`, `wt stop` or `wt litellm sync`.
+	_, err := configeditor.Run(theme, cfg, cfgErr, configeditor.Options{})
+	return err
 }
 
 // configCmd returns the `wt config` command. With no subcommand, launches
