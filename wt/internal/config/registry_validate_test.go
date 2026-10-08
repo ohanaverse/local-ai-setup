@@ -145,6 +145,8 @@ repo = 7
 		{"a window on an unknown day", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"funday"}, "start": "00:00", "end": "01:00"}}}}}, nil, "days must be drawn from"},
 		{"a window that ends before it starts", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "12:00", "end": "09:00"}}}}}, nil, "start must be before end"},
 		{"a window time that is not HH:MM", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "9am", "end": "12:00"}}}}}, nil, "start must be HH:MM"},
+		{"a location that is neither local nor cloud", map[string]any{"location": "mars"}, nil, `has location "mars"; expected "local" or "cloud"`},
+		{"a provider with no row", map[string]any{"provider_id": "nope"}, nil, `provider_id "nope" names no provider row`},
 		{"a window past midnight", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "24:30"}}}}}, nil, "end must be HH:MM between 00:00 and 24:00"},
 	}
 	for _, c := range invalid {
@@ -183,6 +185,7 @@ repo = 7
 		{"the legacy free kind", map[string]any{"cost.kind": "free"}, `kind = "free"`},
 		{"a legacy per-token price", map[string]any{"cost.kind": "per_token", "cost.price_per_million_tokens": 2.5}, "price_per_million_tokens = 2.5"},
 		{"a legacy subscription", map[string]any{"cost.kind": "subscription", "cost.price_per_period": 20, "cost.period": "year"}, `period = "year"`},
+		{"a location of its own", map[string]any{"location": "cloud"}, `location = "cloud"`},
 		{"fetch and draft tables", map[string]any{"fetch.repo": "org/beta", "draft": map[string]any{"repo": "org/draft"}}, "[models.draft]"},
 		{"an empty fetch table", map[string]any{"fetch": map[string]any{}}, "[models.fetch]"},
 		{"fetch keys wt does not model", map[string]any{"fetch": map[string]any{"repo": "org/beta", "files": []string{"a"}, "x_note": 3}}, "x_note = 3"},
@@ -219,6 +222,101 @@ repo = 7
 			if got := readFile(t, path); got != docRegistry {
 				t.Errorf("a refused provider row %q changed the file", c.row["id"])
 			}
+		}
+	})
+}
+
+// TestUpdateRegistryValidatesAModelAgainstItsProviderRow covers the two rules
+// that need another row, which ResolveLocation judges everywhere else in wt:
+// a model with no location of its own inherits its provider's, so a provider
+// with none (or a mistyped one) makes the model unusable. A write that leaves
+// a touched model in that state is refused; a provider row added in the same
+// write counts, which is what lets `wt model add` seed and add at once.
+func TestUpdateRegistryValidatesAModelAgainstItsProviderRow(t *testing.T) {
+	const gaps = docRegistry + `
+[[providers]]
+id = "bare"
+
+[providers.auth]
+type = "none"
+
+[[providers]]
+id = "typo"
+location = "Local"
+
+[providers.auth]
+type = "none"
+`
+	add := func(provider string, extra map[string]any) func(*RegistryDoc) error {
+		return func(d *RegistryDoc) error {
+			row := map[string]any{"id": provider + "/m", "family": "f", "provider_id": provider, "model_name": "m"}
+			for k, v := range extra {
+				row[k] = v
+			}
+			return d.AddModel(row)
+		}
+	}
+	refused := []struct {
+		name, provider, want string
+	}{
+		{"a provider row with no location", "bare", `model "bare/m": no location on model or provider "bare"`},
+		{"a provider row with a mistyped location", "typo", `provider "typo" has location "Local"`},
+		{"no provider row at all", "ghost", `model "ghost/m": provider_id "ghost" names no provider row`},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			path := scratchRegistry(t, gaps)
+			changed, err := UpdateRegistry(add(c.provider, nil))
+			if !errors.Is(err, ErrRegistryInvalid) || changed || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("UpdateRegistry = (%v, %v), want ErrRegistryInvalid mentioning %q", changed, err, c.want)
+			}
+			if strings.Count(err.Error(), `model "`+c.provider+`/m"`) != 1 {
+				t.Errorf("error %q should name the model once", err)
+			}
+			if got := readFile(t, path); got != gaps {
+				t.Error("a refused write changed the file")
+			}
+		})
+	}
+	t.Run("a missing provider row is ErrNoProviderRow and ErrRegistryEntry", func(t *testing.T) {
+		scratchRegistry(t, gaps)
+		_, err := UpdateRegistry(add("ghost", nil))
+		if !errors.Is(err, ErrNoProviderRow) || !errors.Is(err, ErrRegistryEntry) {
+			t.Fatalf("err = %v, want ErrNoProviderRow and ErrRegistryEntry", err)
+		}
+		_, err = UpdateRegistry(add("bare", nil))
+		if errors.Is(err, ErrNoProviderRow) {
+			t.Fatalf("err = %v, a missing location is not a missing provider row", err)
+		}
+	})
+	t.Run("the model's own location stands in for the provider's", func(t *testing.T) {
+		scratchRegistry(t, gaps)
+		if changed, err := UpdateRegistry(add("bare", map[string]any{"location": "local"})); err != nil || !changed {
+			t.Fatalf("UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+		}
+	})
+	t.Run("a provider row added in the same write counts", func(t *testing.T) {
+		scratchRegistry(t, gaps)
+		changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+			if err := add("fresh", nil)(d); err != nil {
+				return err
+			}
+			return d.AddProvider(map[string]any{"id": "fresh", "location": "cloud", "auth": map[string]any{"type": "none"}})
+		})
+		if err != nil || !changed {
+			t.Fatalf("UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+		}
+	})
+	t.Run("an untouched model with a gap does not block the write", func(t *testing.T) {
+		scratchRegistry(t, gaps+`
+[[models]]
+id = "ghost/old"
+family = "f"
+provider_id = "ghost"
+model_name = "old"
+`)
+		if changed, err := UpdateRegistry(setFamily("ollama/beta", "fine")); err != nil || !changed {
+			t.Fatalf("UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
 		}
 	})
 }

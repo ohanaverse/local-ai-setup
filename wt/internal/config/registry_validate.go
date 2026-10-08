@@ -33,6 +33,43 @@ func (d *RegistryDoc) validateTouched() error {
 		if err := validateModelRow(row); err != nil {
 			return fmt.Errorf("%w: model %q: %w", ErrRegistryInvalid, rowID(row), err)
 		}
+		// Its message names the model itself, as Config.Validate's does.
+		if err := d.validateModelRefs(row); err != nil {
+			return fmt.Errorf("%w: %w", ErrRegistryInvalid, err)
+		}
+	}
+	return nil
+}
+
+// ErrNoProviderRow marks a model whose provider_id names no provider row, so a
+// caller can choose its advice without matching on the message.
+var ErrNoProviderRow = errors.New("names no provider row")
+
+// validateModelRefs checks the two rules of Config.Validate that need other
+// rows: the model's provider_id names a provider row, and its location — its
+// own, or the one it inherits from that provider — resolves to "local" or
+// "cloud". Without them `wt model edit --location mars` would be written, and
+// every wt command would then refuse to run until the file was fixed by hand.
+// ResolveLocation is the judge, as everywhere else; it is asked over the
+// document's provider rows as they are after apply, so a provider row seeded
+// in the same write counts. Errors are marked ErrRegistryEntry like
+// Config.Validate's, so the repair hint names registry.toml.
+func (d *RegistryDoc) validateModelRefs(row *tomlw.Table) error {
+	str := func(t *tomlw.Table, key string) string {
+		v, _ := t.Get(key)
+		s, _ := v.(string)
+		return s
+	}
+	cfg := &Config{}
+	for _, p := range d.rows("providers") {
+		cfg.Providers = append(cfg.Providers, Provider{ID: rowID(p), Location: Location(str(p, "location"))})
+	}
+	m := Model{ID: rowID(row), ProviderID: str(row, "provider_id"), Location: Location(str(row, "location"))}
+	if cfg.ProviderByID(m.ProviderID) == nil {
+		return registryEntryError(fmt.Errorf("model %q: provider_id %q %w", m.ID, m.ProviderID, ErrNoProviderRow))
+	}
+	if _, err := cfg.ResolveLocation(m); err != nil {
+		return registryEntryError(err)
 	}
 	return nil
 }
