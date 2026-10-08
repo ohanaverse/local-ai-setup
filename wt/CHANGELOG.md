@@ -4,6 +4,19 @@
 
 ### Added
 
+- `wt model add <provider> <name> --family F`, `wt model edit <id>` and
+  `wt model rm <id>...` register, change and remove models in the registry.
+  Each makes one locked write and then syncs the LiteLLM routes once. `add`
+  derives the id (the discovered id for a local model, `/` as `--` for a
+  cloud one; `--id` overrides), seeds a missing default provider row —
+  openrouter's too, which `wt model init` now also adds for a model that
+  references it — and for an ollama model records what `ollama show` says it
+  supports. `edit` changes only the named fields; an edit of a price also
+  moves a row out of modelman's old cost layout. `rm` removes registry rows
+  only and prints where the weights are. Reference: `docs/wt-model.md`.
+- `wt litellm sync` warns when a registry model names a provider that has no
+  `[[providers]]` row; it used to leave such a model unrouted without a word.
+
 - `wt model list [--json]` lists every model in the registry and every local
   model the providers have that the registry does not, with live status
   (`ok`, `missing`, `unknown`, `new`, `-`) and running state (`run`, `load`,
@@ -23,7 +36,7 @@
 - `wt model init [--json]` creates the model registry when it is missing and
   adds the provider rows it lacks: ollama, omlx and mtplx when installed, used
   by a model or listed by a configured agent; mlx_lm_server when used by a
-  model or listed by an agent; openrouter when an agent lists it, with
+  model or listed by an agent; openrouter when used by a model or listed by an agent, with
   `auth.secret_ref = "OPENROUTER_API_KEY"` (the variable's name, never a key,
   so a missing key is an error instead of an empty `api_key` in the route);
   and a native row for each configured agent. It never changes a row that

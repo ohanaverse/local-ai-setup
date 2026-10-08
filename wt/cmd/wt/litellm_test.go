@@ -1450,14 +1450,18 @@ litellm_settings:
 		name string
 		cfg  *config.Config
 		want string
+		// also is a further warning the case earns: with no provider rows at
+		// all, ollama's model has no row either, and no probe line says so.
+		also []string
 	}{
-		{"provider row without a location", noLocation, `provider "omlx" could not be probed (its registry entry has no location)` + tail},
-		{"providers empty", noProviders, `provider "omlx" could not be probed (the registry has models for it but no provider entry)` + tail},
-		{"provider row with a mistyped location", badLocation, `provider "omlx" could not be probed (its registry entry has location "Local"; expected "local" or "cloud")` + tail},
-		{"model with a mistyped location of its own", badModelLocation, `provider "omlx" could not be probed (model "omlx/reg" has location "Local"; expected "local" or "cloud")` + tail},
+		{"provider row without a location", noLocation, `provider "omlx" could not be probed (its registry entry has no location)` + tail, nil},
+		{"providers empty", noProviders, `provider "omlx" could not be probed (the registry has models for it but no provider entry)` + tail,
+			[]string{`provider "ollama" has no [[providers]] row in ` + config.RegistryPath() + ", so wt cannot route ollama/gemma:9b; add the row (`wt model init` adds the default ones) or fix the provider_id"}},
+		{"provider row with a mistyped location", badLocation, `provider "omlx" could not be probed (its registry entry has location "Local"; expected "local" or "cloud")` + tail, nil},
+		{"model with a mistyped location of its own", badModelLocation, `provider "omlx" could not be probed (model "omlx/reg" has location "Local"; expected "local" or "cloud")` + tail, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			want := tc.want
+			want := append([]string{tc.want}, tc.also...)
 			p := litellmEnv(t, body)
 			restarts := filepath.Join(t.TempDir(), "restarts")
 			t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
@@ -1470,7 +1474,7 @@ litellm_settings:
 			if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
 				t.Fatalf("dry run: not JSON: %q", out.String())
 			}
-			if len(dry.Plan.Add)+len(dry.Plan.Remove) != 0 || !slices.Equal(dry.Warnings, []string{want}) {
+			if len(dry.Plan.Add)+len(dry.Plan.Remove) != 0 || !slices.Equal(dry.Warnings, want) {
 				t.Errorf("dry run: add %v remove %v warnings %q; want no change and only %q", dry.Plan.Add, dry.Plan.Remove, dry.Warnings, want)
 			}
 			out.Reset()
@@ -1906,5 +1910,39 @@ func TestLitellmSyncWarnsAboutAnOllamaServeRow(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(p); !strings.Contains(string(after), "model: openai/ollama-proxy\n") || strings.Contains(string(after), "hand/proxy\n    litellm_params:\n      model: openai/ollama-proxy\n      api_base") {
 		t.Errorf("sync changed the row it only warns about:\n%s", after)
+	}
+}
+
+// TestLitellmSyncWarnsAboutAProviderWithNoRow verifies sync names a provider
+// id that models reference and no [[providers]] row defines, once, with the
+// models, in the real run and the dry run alike. The model is neither routed
+// nor (if it had a route) unrouted, and without this line the user sees a
+// registry model with no route and no explanation.
+func TestLitellmSyncWarnsAboutAProviderWithNoRow(t *testing.T) {
+	cfg := litellmTestConfig()
+	cfg.Models = append(cfg.Models,
+		config.Model{ID: "corp/a", ProviderID: "corp", ModelName: "a", Location: config.LocationCloud},
+		config.Model{ID: "corp/b", ProviderID: "corp", ModelName: "b"},
+	)
+	want := `provider "corp" has no [[providers]] row in ` + config.RegistryPath() + ", so wt cannot route corp/a, corp/b; add the row (`wt model init` adds the default ones) or fix the provider_id"
+	for _, dryRun := range []bool{true, false} {
+		litellmEnv(t, "model_list: []\n")
+		stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+		var out, errOut bytes.Buffer
+		if err := runLitellmSync(&out, &errOut, cfg, false, dryRun); err != nil {
+			t.Fatalf("dry run %v: %v", dryRun, err)
+		}
+		if got := errOut.String(); got != "warning: "+want+"\n" {
+			t.Errorf("dry run %v: stderr = %q\nwant the one warning %q", dryRun, got, want)
+		}
+		if strings.Contains(out.String(), "corp/") {
+			t.Errorf("dry run %v: a model with no provider row was routed:\n%s", dryRun, out.String())
+		}
+	}
+	// A registry with no gap says nothing.
+	litellmEnv(t, "model_list: []\n")
+	var out, errOut bytes.Buffer
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false, false); err != nil || errOut.Len() != 0 {
+		t.Errorf("no gap: err = %v, stderr = %q; want silence", err, errOut.String())
 	}
 }

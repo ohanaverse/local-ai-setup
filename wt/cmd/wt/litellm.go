@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
@@ -138,6 +139,7 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 	// provider stopped outside wt leaves behind).
 	desired := desiredLocalModels(cfg, snap)
 	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap, routedIDSet())
+	probeWarns = append(probeWarns, missingProviderWarnings(cfg, probeWarns)...)
 	o := litellm.Options{
 		Untouched:         untouched,
 		UntouchedFamilies: untrustedFamilies(cfg, snap),
@@ -161,6 +163,38 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 	}
 	res.Warnings = append(res.Warnings, probeWarns...)
 	return reportLitellm(out, errOut, res, asJSON)
+}
+
+// missingProviderWarnings names every provider id a registry model references
+// that has no [[providers]] row, with the models that reference it. Such a
+// model is a registry gap (litellm.RegistryGap): sync neither routes it nor
+// removes a route it already has, and before this warning it could do so
+// without a word — the user saw a model in the registry, no route for it,
+// and no reason. One line per provider, in registry order. A provider whose
+// family already has the "no provider entry" probe warning in said is left
+// out: that line names the same gap.
+func missingProviderWarnings(cfg *config.Config, said []string) []string {
+	models := map[string][]string{}
+	var order []string
+	for _, m := range cfg.Models {
+		if m.Native || cfg.ProviderByID(m.ProviderID) != nil {
+			continue
+		}
+		if _, seen := models[m.ProviderID]; !seen {
+			order = append(order, m.ProviderID)
+		}
+		models[m.ProviderID] = append(models[m.ProviderID], m.ID)
+	}
+	var warnings []string
+	for _, id := range order {
+		covered := fmt.Sprintf("provider %q could not be probed (the registry has models for it but no provider entry)", localmodels.Family(id))
+		if slices.ContainsFunc(said, func(w string) bool { return strings.HasPrefix(w, covered) }) {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("provider %q has no [[providers]] row in %s, so wt cannot route %s; add the row (`wt model init` adds the default ones) or fix the provider_id",
+			id, config.RegistryPath(), strings.Join(models[id], ", ")))
+	}
+	return warnings
 }
 
 // syncUntouchedAndWarnings derives both sync modes' view of the provider
