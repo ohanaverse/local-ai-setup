@@ -46,6 +46,12 @@ type model struct {
 	// quitPending is true when the user asked to leave while a registry
 	// write was in flight: the editor quits when the write's result is in.
 	quitPending bool
+	// discardHeld is true when that held quit came from "discard and quit"
+	// on the unsaved-changes prompt: the edits the answer was about are no
+	// longer counted as unsaved (dirty is cleared), so the quit asks again
+	// only about edits made while it waited. A refused write calls the quit
+	// off and puts dirty back.
+	discardHeld bool
 	theme       themes.Theme
 	cfg         *config.Config
 	dirty       bool
@@ -59,9 +65,10 @@ type model struct {
 	// cachedStatusBlock caches the rendered status block to avoid double rendering
 	// and re-creating lipgloss.Style on every call.
 	cachedStatusBlock string
-	// cachedStatusWidth is the width at which cachedStatusBlock was rendered;
-	// it is invalidated when m.width changes.
+	// cachedStatusWidth and cachedStatusText are the width and the status
+	// cachedStatusBlock was rendered for; a change of either invalidates it.
 	cachedStatusWidth int
+	cachedStatusText  string
 
 	list list.Model
 
@@ -130,19 +137,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // The rendered block is cached and only re-rendered when width or status changes.
 func (m *model) statusBlock() string {
 	if m.status == "" {
-		m.cachedStatusBlock = ""
-		m.cachedStatusWidth = m.width
+		m.cachedStatusBlock, m.cachedStatusWidth, m.cachedStatusText = "", m.width, ""
 		return ""
 	}
 	if m.width <= 0 {
-		m.cachedStatusBlock = m.status
-		m.cachedStatusWidth = m.width
+		m.cachedStatusBlock, m.cachedStatusWidth, m.cachedStatusText = m.status, m.width, m.status
 		return m.status
 	}
-	// Re-render only if width or status changed
-	if m.cachedStatusWidth != m.width {
+	// Re-render only if the width or the status changed. Both: a cache keyed
+	// by the width alone went on drawing the status of the first render — at
+	// a width that never changed, "save failed: ..." was never shown.
+	if m.cachedStatusWidth != m.width || m.cachedStatusText != m.status {
 		m.cachedStatusBlock = lipgloss.NewStyle().Width(m.width).Render(m.status)
-		m.cachedStatusWidth = m.width
+		m.cachedStatusWidth, m.cachedStatusText = m.width, m.status
 	}
 	return m.cachedStatusBlock
 }
@@ -216,8 +223,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.saving = false
 		if msg.err != nil {
 			m.status = "save failed: " + msg.err.Error()
+			m.showQuitSaveFailure()
 			m.fitList()
-			m.quitting = false
 			return m, nil
 		}
 		m.dirty = false
@@ -337,6 +344,18 @@ func (m *model) leave() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
+// showQuitSaveFailure calls off a quit whose save-before-quit failed, and
+// brings forward the one place that says why: m.status is the Agents tab's
+// status line, and neither the unsaved-changes prompt nor the Models tab
+// draws it. It does nothing for a save that was not a quit's.
+func (m *model) showQuitSaveFailure() {
+	if !m.quitting {
+		return
+	}
+	m.quitting = false
+	m.phase, m.tab = phaseList, TabAgents
+}
+
 // handleQuitUpdate processes keys in the unsaved-changes quit prompt.
 func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
@@ -345,6 +364,10 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m.handleSave()
 		case "n", "N":
+			if m.models.writing {
+				// The quit will wait (leave). The answer is kept with it.
+				m.discardHeld, m.dirty = true, false
+			}
 			return m.leave()
 		case "c", "C", "esc":
 			m.phase = phaseList

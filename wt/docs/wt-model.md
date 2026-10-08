@@ -199,7 +199,7 @@ the row has no path, or reads `missing` when its weights are there.
 | Key | Does |
 |---|---|
 | `↑`/`↓`, `j`/`k` | move |
-| `d` | remove the selected registry model, after a `y/N` prompt that shows where its weights are; the path is repeated in the status afterwards |
+| `d` | remove the selected registry model, after a `y/N` prompt that shows where its weights are (on a terminal too short for a long id and path the prompt drops its blank lines, then its closing sentence, before any of the path); the path is repeated in the status afterwards |
 | `r` | probe the providers again; the status says `probing providers...` until they answer, and `r` and `d` wait for it |
 | `/` | filter by id or family: type, `Enter` to keep the filter, `Esc` to clear it |
 | `Tab` | the Agents tab |

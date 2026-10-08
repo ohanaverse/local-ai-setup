@@ -536,7 +536,10 @@ func (m *model) applyModels(msg modelsLoadedMsg) {
 	}
 	mt.loadErr = ""
 	if msg.err != nil {
-		mt.loadErr = "registry: " + msg.err.Error()
+		// Not "registry: ": the probe loads the whole config, and a
+		// config.toml that does not parse fails it too. The error names what
+		// failed, and the hint is there only when the repair is the registry's.
+		mt.loadErr = "config load error: " + msg.err.Error()
 		// The repair, worded by the one function that words it (as on the
 		// Agents tab's status): a file this tab cannot read is not one it
 		// can fix.
@@ -683,23 +686,48 @@ func (m *model) updateModelsRemove(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // modelsRemoveView is the remove prompt. It says where the weights are before
 // the row is gone, because wt deletes none.
+//
+// A long id and a long path wrap to more lines than a short terminal has (a
+// 72-column id and its omlx directory are 13 lines at 40 columns). What the
+// prompt gives up, in order: its two blank lines, then the closing sentence —
+// the question and the path are what y is answered on. Only a prompt still
+// too tall after that is cut at the bottom.
 func (m *model) modelsRemoveView() string {
 	r := m.models.remove
-	text := "Remove " + r.ID + " from the registry? [y/N]\n\n"
-	if lines := weightsLines(r); lines != nil {
-		text += strings.Join(lines, "\n") + "\n"
+	question := "Remove " + r.ID + " from the registry? [y/N]"
+	weights := strings.Join(weightsLines(r), "\n")
+	build := func(gap string, closing bool) string {
+		parts := []string{question}
+		if weights != "" {
+			parts = append(parts, weights)
+		}
+		text := strings.Join(parts, gap)
+		if closing {
+			text += "\nwt removes the registry entry only; it never deletes weights."
+		}
+		return tabBar(m.theme, TabModels) + gap + wrapText(text, m.width)
 	}
-	text += "wt removes the registry entry only; it never deletes weights."
-	return lipgloss.NewStyle().MaxHeight(max(m.height, 1)).Render(tabBar(m.theme, TabModels) + "\n\n" + wrapText(text, m.width))
+	view := build("\n\n", true)
+	for _, spare := range []string{build("\n", true), build("\n", false)} {
+		if m.height <= 0 || lipgloss.Height(view) <= m.height {
+			break
+		}
+		view = spare
+	}
+	return lipgloss.NewStyle().MaxHeight(max(m.height, 1)).Render(view)
 }
 
 // applyModelRemoved takes a removal's outcome and re-probes: the rows are
 // rebuilt from the registry as it now is. A quit that was waiting for the
-// write happens now, with the change recorded for the caller; after a
-// refusal it does not, because the refusal has to be read — on this tab,
-// which is where it is drawn, so a quit typed from the Agents tab comes back
-// here. A refusal re-probes too: the usual reason is that another program
-// took the row first, and the table would go on showing it.
+// write happens now, with the change recorded for the caller — through quit,
+// like any other: the tabs took keys while it waited, and an agent edit made
+// meanwhile gets the unsaved-changes prompt (the table is then read again
+// under it, for a user who cancels). Edits the user already chose to discard
+// are not asked about twice (discardHeld). After a refusal the quit does not
+// happen, because the refusal has to be read — on this tab, which is where
+// it is drawn, so a quit typed from the Agents tab comes back here. A refusal
+// re-probes too: the usual reason is that another program took the row
+// first, and the table would go on showing it.
 func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 	mt := &m.models
 	mt.busy, mt.writing = false, false
@@ -708,11 +736,19 @@ func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 		if m.quitPending {
 			m.quitPending, m.tab = false, TabModels
 		}
+		if m.discardHeld {
+			// The quit that was to discard the agent edits is off: they are
+			// still there, and still unsaved.
+			m.discardHeld, m.dirty = false, true
+		}
 		return m.probeCmd()
 	}
 	m.registryChanged = true
 	if m.quitPending {
-		return tea.Quit
+		m.quitPending, m.discardHeld = false, false
+		if _, cmd := m.quit(); cmd != nil {
+			return cmd
+		}
 	}
 	mt.status = "removed " + msg.id
 	if msg.note != "" {

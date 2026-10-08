@@ -73,6 +73,9 @@ tags = []
 type tabMachine struct {
 	registry string
 	probes   int
+	// longPath, when set, is where the probe finds tabLongID's weights; the
+	// probe reports that model missing otherwise.
+	longPath string
 }
 
 // tabWeights is where the probe finds the omlx model; tabWeightsShown is how
@@ -88,6 +91,14 @@ const tabLongID = "omlx/Qwen3.8-35B-A3B-Instruct-abliterated-heretic-MLX-dynamic
 
 // tabLongRegistry is tabRegistry with the missing omlx model under tabLongID.
 var tabLongRegistry = strings.ReplaceAll(tabRegistry, "Gone-4bit", strings.TrimPrefix(tabLongID, "omlx/"))
+
+// tabLongWeights is where omlx keeps tabLongID's weights, an 82-column path
+// as the tab writes it; tabLongerWeights is the same directory somewhere
+// deeper, 183 columns as written: five lines of a 40-column terminal.
+var (
+	tabLongWeights   = "/Users/dev/.omlx/models/" + strings.TrimPrefix(tabLongID, "omlx/")
+	tabLongerWeights = "/Users/dev/quantized/" + strings.Repeat("dynamic-quant-experiments/", 4) + strings.TrimPrefix(tabLongID, "omlx/")
+)
 
 // tabMalformedRegistry is tabRegistry whose last row, the omlx model that is
 // not on disk, has a fetch that is a string: a local_path written where the
@@ -159,7 +170,14 @@ func (tm *tabMachine) deps() ModelsDeps {
 				case "omlx/Qwen3.8-27B-Instruct-MLX-6bit":
 					snap.Entries = append(snap.Entries, localmodels.Entry{ProviderID: "omlx", ModelID: m.ID, ModelName: m.ModelName, Artifact: m.ModelName,
 						Registered: true, ArtifactKnown: true, Running: true, Path: tabWeights})
-				case "omlx/Gone-4bit", tabLongID:
+				case tabLongID:
+					if tm.longPath != "" {
+						snap.Entries = append(snap.Entries, localmodels.Entry{ProviderID: "omlx", ModelID: m.ID, ModelName: m.ModelName, Artifact: m.ModelName,
+							Registered: true, ArtifactKnown: true, Path: tm.longPath})
+						continue
+					}
+					fallthrough
+				case "omlx/Gone-4bit":
 					snap.Entries = append(snap.Entries, localmodels.Entry{ProviderID: "omlx", ModelID: m.ID, ModelName: m.ModelName, Registered: true, ArtifactKnown: true})
 				}
 			}
@@ -258,6 +276,17 @@ func selectModel(t *testing.T, m *model, id string) *model {
 	return m
 }
 
+// tabSizes are the terminal sizes wt supports, widths 40/80/120 by heights
+// 12/24/50, for a test that measures one screen at each.
+var tabSizes = func() (sizes [][2]int) {
+	for _, w := range []int{40, 80, 120} {
+		for _, h := range []int{12, 24, 50} {
+			sizes = append(sizes, [2]int{w, h})
+		}
+	}
+	return sizes
+}()
+
 // assertFits fails when view is taller or wider than the terminal. Bubble Tea
 // drops a too-tall view's top lines (the tab bar and the status) and cuts a
 // too-wide line at the edge.
@@ -350,46 +379,94 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 // TestModelsTabFitsTheTerminal measures the Models tab at every size wt
 // supports, in each state that changes its height or its width: plain, with a
 // 72-column id in the table, with that row selected, right after a removal
-// (a status that wraps, and the routes-pending note), one key later, and the
-// remove prompt. The view must stay inside the terminal with the tab bar and
-// the table's header row on screen; STATUS and RUNNING are on every row from
-// 80 columns up however long an id is; and the selected row's id is on screen
-// whole, with its status, even where the table had to cut it.
+// (a status that wraps, and the routes-pending note), one key later, the
+// remove prompt (for a short id, for a 72-column one, and for that one with a
+// path of five lines), a filter being typed, applied and matching nothing,
+// and each status the tab puts over the table: a probe that is out, a row
+// that is not the registry's to remove, a quit waiting for a write. The view
+// must stay inside the terminal with the tab bar and the table's header row
+// on screen; STATUS and RUNNING are on every row from 80 columns up however
+// long an id is; the selected row's id is on screen whole, with its status,
+// even where the table had to cut it; and what a state is there to say (its
+// want) is on screen whole. A phase that is not measured here is one a later
+// change can push off a 40x12 terminal unseen.
 func TestModelsTabFitsTheTerminal(t *testing.T) {
 	const removed = "removed omlx/Qwen3.8-27B-Instruct-MLX-6bit; weights are still at\n" + tabWeightsShown
+	const closing = "wt removes the registry entry only; it never deletes weights."
+	same := func(t *testing.T, m *model) *model { return m }
+	// typing opens the filter and types into it.
+	typing := func(text ...string) func(t *testing.T, m *model) *model {
+		return func(t *testing.T, m *model) *model {
+			return keys(t, stillCursors(m), append([]string{"/"}, text...)...)
+		}
+	}
+	longPrompt := func(t *testing.T, m *model) *model { return keys(t, selectModel(t, m, tabLongID), "d") }
 	states := []struct {
 		name     string
 		registry string
 		set      func(t *testing.T, m *model) *model
+		// want is text the state must show whole. The tab wraps it at the
+		// terminal's width, so it is looked for with the line breaks and the
+		// padding taken out (flat).
+		want []string
+		// bare is a state with no table header and no detail block to look
+		// for: a prompt, or a list bubbles draws its filter input over.
+		bare bool
+		// longPath is where the probe finds tabLongID's weights.
+		longPath string
 	}{
-		{"list", tabRegistry, func(t *testing.T, m *model) *model { return m }},
-		{"list with a long id", tabLongRegistry, func(t *testing.T, m *model) *model { return m }},
-		{"long id selected", tabLongRegistry, func(t *testing.T, m *model) *model { return selectModel(t, m, tabLongID) }},
-		{"local model selected", tabRegistry, func(t *testing.T, m *model) *model {
+		{name: "list", registry: tabRegistry, set: same},
+		{name: "list with a long id", registry: tabLongRegistry, set: same},
+		{name: "long id selected", registry: tabLongRegistry, set: func(t *testing.T, m *model) *model { return selectModel(t, m, tabLongID) }},
+		{name: "local model selected", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
 			return selectModel(t, m, "omlx/Qwen3.8-27B-Instruct-MLX-6bit")
 		}},
-		{"malformed fetch selected", tabMalformedRegistry, func(t *testing.T, m *model) *model {
+		{name: "malformed fetch selected", registry: tabMalformedRegistry, set: func(t *testing.T, m *model) *model {
 			return selectModel(t, m, "omlx/Gone-4bit")
 		}},
-		{"malformed fetch and draft under a long id", tabMalformedLongRegistry, func(t *testing.T, m *model) *model {
+		{name: "malformed fetch and draft under a long id", registry: tabMalformedLongRegistry, set: func(t *testing.T, m *model) *model {
 			return selectModel(t, m, tabLongID)
 		}},
-		{"just after a removal", tabRegistry, func(t *testing.T, m *model) *model {
+		{name: "just after a removal", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
 			m.models.status, m.registryChanged = removed, true
 			return send(t, m, tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		}},
-		{"one key after a removal", tabRegistry, func(t *testing.T, m *model) *model {
+		{name: "one key after a removal", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
 			m.models.status, m.registryChanged = removed, true
 			return keys(t, m, "down")
 		}},
-		{"remove prompt", tabRegistry, func(t *testing.T, m *model) *model {
+		{name: "remove prompt", registry: tabRegistry, bare: true, set: func(t *testing.T, m *model) *model {
 			return keys(t, selectModel(t, m, "omlx/Qwen3.8-27B-Instruct-MLX-6bit"), "d")
-		}},
+		}, want: []string{"Remove omlx/Qwen3.8-27B-Instruct-MLX-6bit from the registry? [y/N]", "weights are still at", tabWeightsShown, closing}},
+		// 13 lines at 40 columns as the prompt is written; the blank lines
+		// are what a 12-line terminal gives up.
+		{name: "remove prompt for a long id", registry: tabLongRegistry, bare: true, longPath: tabLongWeights, set: longPrompt,
+			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", tildePath(tabLongWeights), closing}},
+		// Two lines more: at 40x12 the closing sentence goes too, never a
+		// line of the path (TestRemovePromptGivesUpLinesBeforeThePath).
+		{name: "remove prompt for a long id and a long path", registry: tabLongRegistry, bare: true, longPath: tabLongerWeights, set: longPrompt,
+			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", tildePath(tabLongerWeights)}},
+		// bubbles draws the filter's input where the table's header was.
+		{name: "filter being typed", registry: tabRegistry, bare: true, set: typing("q", "w"), want: []string{"qw"}},
+		{name: "filter applied", registry: tabRegistry, set: typing("q", "w", "enter")},
+		{name: "filter with no match", registry: tabRegistry, bare: true, set: typing("z", "z", "z"), want: []string{"zzz"}},
+		{name: "probing", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
+			m.models.status, m.models.busy = modelsProbing, true
+			return send(t, m, tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		}, want: []string{modelsProbing}},
+		{name: "nothing to remove", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
+			return keys(t, selectModel(t, m, "ollama/qwen3:8b"), "d")
+		}, want: []string{"ollama/qwen3:8b is not in the registry: there is nothing to remove"}},
+		{name: "quit waiting for a write", registry: tabRegistry, set: func(t *testing.T, m *model) *model {
+			m.models.status, m.models.busy, m.models.writing, m.quitPending = "removing omlx/Gone-4bit...", true, true, true
+			return send(t, m, tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		}, want: []string{"removing omlx/Gone-4bit...", "quitting when the registry write is done..."}},
 	}
 	for _, width := range []int{40, 80, 120} {
 		for _, height := range []int{12, 24, 50} {
 			for _, st := range states {
 				tm := newTabMachine(t, st.registry)
+				tm.longPath = st.longPath
 				m := st.set(t, modelsEditor(t, tm, width, height))
 				view := m.View()
 				assertFits(t, st.name, view, width, height)
@@ -400,12 +477,12 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 				if !strings.Contains(view, "[Models]") {
 					at("the tab bar is not on screen")
 				}
-				if st.name == "remove prompt" {
-					// The prompt wraps at the terminal's width: compare with
-					// the line breaks and the padding taken out.
-					if !strings.Contains(flat(view), "Removeomlx/Qwen3.8-27B-Instruct-MLX-6bitfromtheregistry?[y/N]") || !strings.Contains(flat(view), tabWeightsShown) {
-						at("the prompt or the weights path is not on screen")
+				for _, want := range st.want {
+					if !strings.Contains(flat(view), flat(want)) {
+						at("%q is not whole on screen", want)
 					}
+				}
+				if st.bare {
 					continue
 				}
 				// The header row is the table's first line: it is what a
@@ -460,6 +537,61 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestRemovePromptGivesUpLinesBeforeThePath verifies what the remove prompt
+// loses on a terminal too short for it, and in which order: its blank lines,
+// then the closing sentence, and only then — cut at the bottom — the path. A
+// 72-column id with a path of five lines is 15 lines at 40 columns; clipped as
+// written, the 12-line screen asked y/N with the end of the path, the model's
+// own directory name, off its bottom edge. With room, the prompt is as it was.
+func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
+	const closing = "wt removes the registry entry only; it never deletes weights."
+	prompt := func(t *testing.T, path string, width, height int) string {
+		tm := newTabMachine(t, tabLongRegistry)
+		tm.longPath = path
+		view := keys(t, selectModel(t, modelsEditor(t, tm, width, height), tabLongID), "d").View()
+		assertFits(t, "remove prompt", view, width, height)
+		return view
+	}
+	question := flat("Remove " + tabLongID + " from the registry? [y/N]")
+
+	// The blank lines go first: everything else is still said.
+	view := prompt(t, tabLongWeights, 40, 12)
+	for _, want := range []string{question, flat(tildePath(tabLongWeights)), flat(closing)} {
+		if !strings.Contains(flat(view), want) {
+			t.Errorf("at 40x12 the prompt lost %q:\n%s", want, view)
+		}
+	}
+	if n := blankLines(view); n != 0 {
+		t.Errorf("at 40x12 the prompt kept %d blank lines it has no room for:\n%s", n, view)
+	}
+
+	// Then the closing sentence, with the path still whole.
+	view = prompt(t, tabLongerWeights, 40, 12)
+	if !strings.Contains(flat(view), question) || !strings.Contains(flat(view), flat(tildePath(tabLongerWeights))) {
+		t.Errorf("at 40x12 the question and the whole path must be on screen:\n%s", view)
+	}
+	if strings.Contains(flat(view), flat(closing)) {
+		t.Errorf("at 40x12 this prompt has no room for the closing sentence, yet it fits?\n%s", view)
+	}
+
+	// With the room, nothing is given up.
+	view = prompt(t, tabLongerWeights, 40, 24)
+	if blankLines(view) != 2 || !strings.HasSuffix(flat(view), flat(closing)) {
+		t.Errorf("at 40x24 the prompt should be whole, its two blank lines and the closing sentence included:\n%s", view)
+	}
+}
+
+// blankLines counts the lines of a view with nothing on them (lipgloss pads
+// a line to the view's width, so a blank one is not empty).
+func blankLines(view string) (n int) {
+	for _, line := range strings.Split(strings.TrimRight(view, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			n++
+		}
+	}
+	return n
 }
 
 // TestModelsTabKeepsStatusAndRunning verifies what a narrow terminal loses,
@@ -626,13 +758,14 @@ func TestModelsTabRemoveRefusals(t *testing.T) {
 // TestModelsTabRefusesToRemoveADuplicatedID verifies d then y on a row whose
 // id the registry holds twice removes neither row: the file is left byte for
 // byte as it was, the status carries the writer's refusal as the writer words
-// it (it names both providers and the file to fix), whole even at 40x12, and
+// it (it names both providers and the file to fix), whole at every size wt
+// supports (at 40x12 it has the screen to itself, under the tab bar), and
 // no route sync is owed. Taking "the first row with the id" would delete a
 // model the user did not point at. The cursor stays on the row it was on —
 // the table is read again after a refusal, and the two rows share the id the
 // cursor is kept by.
 func TestModelsTabRefusesToRemoveADuplicatedID(t *testing.T) {
-	for _, size := range [][2]int{{80, 24}, {40, 12}} {
+	for _, size := range tabSizes {
 		for _, provider := range []string{"omlx", "openrouter"} {
 			tm := newTabMachine(t, tabDuplicatedRegistry)
 			m := modelsEditor(t, tm, size[0], size[1])
@@ -866,7 +999,7 @@ func TestModelsTabStatusClearsOnTheNextKey(t *testing.T) {
 
 	broken := modelsEditor(t, newTabMachine(t, "this is not = = toml\n"), 80, 24)
 	broken = keys(t, broken, "down")
-	if !strings.Contains(broken.View(), "registry: ") {
+	if !strings.Contains(broken.View(), "config load error: ") {
 		t.Errorf("why the registry did not load must outlast a key:\n%s", broken.View())
 	}
 }
@@ -893,7 +1026,9 @@ func TestQuitOnTheModelsTab(t *testing.T) {
 // write's result and only then ends the program, with the change recorded.
 // The write runs in a command; a program that ended before its message was
 // handled reported "nothing changed" for a registry that did change, and wt
-// then skipped the route sync: the removed model kept its LiteLLM route.
+// then skipped the route sync: the removed model kept its LiteLLM route. The
+// held quit is a quit like any other when its turn comes: agent edits made
+// while it waited get the unsaved-changes prompt, not thrown away unasked.
 func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 	isQuit := func(cmd tea.Cmd) bool {
 		if cmd == nil {
@@ -941,7 +1076,50 @@ func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 			t.Fatal("n on the prompt with the write in flight should hold the quit back too")
 		}
 		if _, cmd = m.Update(write()); !isQuit(cmd) {
-			t.Error("the held quit should happen when the write is in")
+			t.Error("the held quit should happen when the write is in: the edits were already given up, and are not asked about twice")
+		}
+	})
+	t.Run("a refused write keeps the edits a held quit was to discard", func(t *testing.T) {
+		tm, m, write := removing(t, true)
+		if err := os.WriteFile(tm.registry, []byte(strings.Replace(tabRegistry, `id = "omlx/Gone-4bit"`, `id = "omlx/Other"`, 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m = keys(t, m, "q", "n")
+		if !m.quitPending {
+			t.Fatal("n on the prompt with the write in flight should hold the quit back")
+		}
+		next, cmd := m.Update(write())
+		m = next.(*model)
+		if isQuit(cmd) || m.quitPending || !m.dirty {
+			t.Fatalf("quit = %v, quitPending = %v, dirty = %v; the quit is off, so the edits it was to discard are unsaved again", isQuit(cmd), m.quitPending, m.dirty)
+		}
+		// And the next quit asks about them.
+		if m = keys(t, m, "q"); m.phase != phaseQuit {
+			t.Errorf("phase = %d, want the unsaved-changes prompt", m.phase)
+		}
+	})
+	t.Run("agent edits made while the quit waited are asked about", func(t *testing.T) {
+		tm, m, write := removing(t, false)
+		next, _ := m.Update(keyMsg("q"))
+		// The tab still takes keys while the quit waits: tab goes to Agents,
+		// where a form can be opened and submitted.
+		m = keys(t, next.(*model), "tab")
+		if m.tab != TabAgents || !m.quitPending {
+			t.Fatalf("tab = %d, quitPending = %v; want the Agents tab with the quit still held", m.tab, m.quitPending)
+		}
+		m.dirty = true
+		next, cmd := m.Update(write())
+		m = next.(*model)
+		if isQuit(cmd) || m.phase != phaseQuit || m.quitPending || !m.registryChanged {
+			t.Fatalf("the held quit with unsaved agent edits: quit = %v, phase = %d, quitPending = %v, registryChanged = %v; want the unsaved-changes prompt and the change recorded", isQuit(cmd), m.phase, m.quitPending, m.registryChanged)
+		}
+		if !strings.Contains(m.View(), "unsaved agent changes") {
+			t.Errorf("the prompt should be on screen:\n%s", m.View())
+		}
+		// Cancelled, the editor goes on, with a table that was read again.
+		m = keys(t, send(t, m, cmd()), "c")
+		if _, still := findRow(m, "omlx/Gone-4bit"); still || m.phase != phaseList || m.models.busy || strings.Contains(tm.text(t), "Gone-4bit") {
+			t.Errorf("after c: the removed row is listed = %v, phase = %d, busy = %v; want the editor back with the table re-read", still, m.phase, m.models.busy)
 		}
 	})
 	t.Run("a refused write calls the quit off", func(t *testing.T) {
@@ -976,18 +1154,41 @@ func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 // blank screen or a crash — and that the reason ends with the repair
 // config.RegistryFixHint gives every other place that reports this error, so
 // the tab that manages the registry is not the one screen that leaves it out.
-// At 40x12 the reason is longer than the table has room beside, and is still
-// whole under the tab bar.
+// At every size wt supports the reason is whole under the tab bar; at 40x12
+// it is longer than the table has room beside.
 func TestModelsTabShowsARegistryThatDoesNotLoad(t *testing.T) {
-	for _, size := range [][2]int{{80, 24}, {40, 12}} {
+	for _, size := range tabSizes {
 		tm := newTabMachine(t, "this is not = = toml\n")
 		m := modelsEditor(t, tm, size[0], size[1])
 		view := m.View()
 		assertFits(t, "broken registry", view, size[0], size[1])
-		want := "registry: parse " + tm.registry + ": toml: line 1: expected '.' or '=', but got 'i' instead (fix that file by hand)"
+		want := "config load error: parse " + tm.registry + ": toml: line 1: expected '.' or '=', but got 'i' instead (fix that file by hand)"
 		if !strings.Contains(flat(view), flat(want)) || !strings.Contains(view, "[Models]") {
 			t.Errorf("at %dx%d the tab should say %q:\n%s", size[0], size[1], want, view)
 		}
+	}
+}
+
+// TestModelsTabDoesNotBlameTheRegistryForConfigToml verifies a config.toml
+// that does not parse is reported on the Models tab as a config load error,
+// in config.Load's words, not as a registry problem. The tab re-reads the whole config on every
+// probe, and labelled each failure "registry: ": the user was sent to repair
+// a registry.toml that was fine.
+func TestModelsTabDoesNotBlameTheRegistryForConfigToml(t *testing.T) {
+	tm := newTabMachine(t, tabRegistry)
+	path := config.Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("this is not = = toml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := modelsEditor(t, tm, 120, 24)
+	if !strings.Contains(m.View(), "config load error: parse config: ") {
+		t.Errorf("the tab should report the load error as config.Load words it:\n%s", m.View())
+	}
+	if strings.Contains(m.models.loadErr, "registry: ") || strings.Contains(m.models.loadErr, "fix that file by hand") {
+		t.Errorf("a config.toml error is not the registry's, and has no registry repair: %q", m.models.loadErr)
 	}
 }
 
@@ -1085,4 +1286,84 @@ func TestWrapTextWithoutAWidth(t *testing.T) {
 	if got := wrapText("one two  three", 7); got != "one two\nthree" {
 		t.Errorf("wrapText at 7 = %q", got)
 	}
+}
+
+// TestAFailedQuitSaveIsShownOnTheAgentsTab verifies a save-before-quit that
+// fails takes the unsaved-changes prompt down and brings the Agents tab
+// forward, whichever tab q was typed on: the reason is that tab's status
+// line and is drawn nowhere else. Left where it was, the user saw a prompt
+// that ignored y and, after c on the Models tab, a table with no sign that
+// the edits are still unsaved. Both failures are covered: the write's, and
+// the validation that runs before it.
+func TestAFailedQuitSaveIsShownOnTheAgentsTab(t *testing.T) {
+	old := saveCmd
+	saveCmd = func(*config.Config) tea.Cmd {
+		return func() tea.Msg { return saveMsg{err: errors.New("disk full")} }
+	}
+	t.Cleanup(func() { saveCmd = old })
+
+	t.Run("the write fails", func(t *testing.T) {
+		m := modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24)
+		m.dirty = true
+		m = keys(t, m, "q", "y")
+		if m.tab != TabAgents || m.phase != phaseList || m.quitting || !m.dirty {
+			t.Fatalf("tab = %d, phase = %d, quitting = %v, dirty = %v; want the Agents tab's list, the quit called off and the edits still unsaved", m.tab, m.phase, m.quitting, m.dirty)
+		}
+		if view := m.View(); !strings.Contains(view, "[Agents]") || !strings.Contains(view, "save failed: disk full") {
+			t.Errorf("the failure should be on screen, on the Agents tab:\n%s", view)
+		}
+		assertFits(t, "failed quit save", m.View(), 80, 24)
+	})
+	t.Run("validation fails", func(t *testing.T) {
+		m := modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24)
+		bad := *m.cfg
+		bad.DefaultTag = ""
+		m.cfg, m.dirty = &bad, true
+		if err := m.cfg.ValidateAll(); err == nil {
+			t.Fatal("the fixture should not validate")
+		}
+		m = keys(t, m, "q", "y")
+		if m.tab != TabAgents || m.phase != phaseList || m.quitting || !m.dirty {
+			t.Fatalf("tab = %d, phase = %d, quitting = %v, dirty = %v; want the Agents tab's list, the quit called off and the edits still unsaved", m.tab, m.phase, m.quitting, m.dirty)
+		}
+		if view := m.View(); !strings.Contains(view, "[Agents]") || !strings.Contains(view, "validation: ") {
+			t.Errorf("the failure should be on screen, on the Agents tab:\n%s", view)
+		}
+	})
+}
+
+// TestAgentsStatusFollowsTheLastSave verifies the Agents tab draws the status
+// of the latest save, not the one it first rendered: a failed ctrl+s says
+// "save failed: ...", and the save that then succeeds replaces it with
+// "saved". The rendered status was cached by the terminal's width alone, so
+// at a width that never changed the screen went on showing the first status
+// drawn — usually none, and a failed save looked like a save.
+func TestAgentsStatusFollowsTheLastSave(t *testing.T) {
+	fail := true
+	old := saveCmd
+	saveCmd = func(*config.Config) tea.Cmd {
+		return func() tea.Msg {
+			if fail {
+				return saveMsg{err: errors.New("disk full")}
+			}
+			return saveMsg{}
+		}
+	}
+	t.Cleanup(func() { saveCmd = old })
+
+	m := keys(t, modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24), "tab")
+	if view := m.View(); m.tab != TabAgents || strings.Contains(view, "save") {
+		t.Fatalf("want the Agents tab with no status yet:\n%s", view)
+	}
+	m.dirty = true
+	m = keys(t, m, "ctrl+s")
+	if view := m.View(); !strings.Contains(view, "save failed: disk full") {
+		t.Fatalf("a failed save should say so:\n%s", view)
+	}
+	fail = false
+	m = keys(t, m, "ctrl+s")
+	if view := m.View(); strings.Contains(view, "save failed") || !strings.Contains(view, "saved") {
+		t.Errorf("the save that worked should replace the failure:\n%s", view)
+	}
+	assertFits(t, "agents tab with a status", m.View(), 80, 24)
 }

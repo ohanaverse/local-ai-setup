@@ -77,6 +77,10 @@ are unsaved changes, a prompt appears:
 - `n` — discard changes and quit
 - `c` or `Esc` — return to the list
 
+If that save fails (validation, or the write itself), the editor does not
+quit: the prompt goes and the Agents tab is shown, with the reason on its
+status line, whichever tab `q` was typed on.
+
 The prompt is about agent edits only: a change made on the Models tab is
 already in `registry.toml` when it is made.
 
