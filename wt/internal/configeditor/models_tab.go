@@ -808,27 +808,22 @@ func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 	mt.busy, mt.writing = false, false
 	if msg.err != nil {
 		mt.status = "not removed: " + msg.err.Error()
-		if m.quitPending {
-			m.quitPending, m.tab = false, TabModels
-		}
-		if m.discardHeld {
-			// The quit that was to discard the agent edits is off: they are
-			// still there, and still unsaved.
-			m.discardHeld, m.dirty = false, true
-		}
+		m.refuseHeldQuit()
 		return m.probeCmd()
 	}
 	m.registryChanged = true
+	mt.status = "removed " + msg.id
+	if msg.note != "" {
+		// The path again: the prompt that showed it is gone.
+		mt.status += "; " + msg.note
+	}
 	if m.quitPending {
 		m.quitPending, m.discardHeld = false, false
 		if _, cmd := m.quit(); cmd != nil {
 			return cmd
 		}
-	}
-	mt.status = "removed " + msg.id
-	if msg.note != "" {
-		// The path again: the prompt that showed it is gone.
-		mt.status += "; " + msg.note
+		// The unsaved-changes prompt is up; the status written above it is
+		// the one behind it when it is answered.
 	}
 	return m.probeCmd()
 }

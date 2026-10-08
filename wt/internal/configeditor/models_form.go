@@ -131,7 +131,7 @@ func formProviders(cfg *config.Config) []string {
 	for _, p := range cfg.Providers {
 		ids = append(ids, p.ID)
 	}
-	for _, id := range []string{"ollama", "omlx", "mtplx", "openrouter"} {
+	for _, id := range config.SeedableProviderIDs() {
 		if !slices.Contains(ids, id) {
 			ids = append(ids, id)
 		}
@@ -252,9 +252,10 @@ func (m *model) focusModelField() {
 }
 
 // modelFieldRoom is how many columns field's value has beside its label:
-// renderFormFields draws "> Label: " in front of it.
+// renderFormFields draws "> Label: " in front of it, which is four columns
+// past the label's runes.
 func (m *model) modelFieldRoom(field int) int {
-	return max(m.width-utf8.RuneCountInString(modelFormLabels[field])-len(">  : ")+1, 4)
+	return max(m.width-utf8.RuneCountInString(modelFormLabels[field])-4, 4)
 }
 
 // resizeModelForm fits each input to the columns left beside its own label —
@@ -451,12 +452,7 @@ func (m *model) applyModelSaved(msg modelSavedMsg) tea.Cmd {
 	}
 	f.saving = false
 	if msg.err != nil {
-		if m.quitPending {
-			m.quitPending, m.tab = false, TabModels
-		}
-		if m.discardHeld {
-			m.discardHeld, m.dirty = false, true
-		}
+		m.refuseHeldQuit()
 		f.err = saveErrorText(msg.err, f.malformed)
 		var fe *modeladmin.FieldError
 		if errors.As(msg.err, &fe) {

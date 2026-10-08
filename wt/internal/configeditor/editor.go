@@ -382,6 +382,20 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// refuseHeldQuit calls a quit held for a write off: the write was refused,
+// and the refusal has to be read — on the tab it happened on, which
+// quitPending's tab restore makes current. The agent edits the held quit was
+// going to discard are still there and still unsaved, and go back to being
+// asked about.
+func (m *model) refuseHeldQuit() {
+	if m.quitPending {
+		m.quitPending, m.tab = false, TabModels
+	}
+	if m.discardHeld {
+		m.discardHeld, m.dirty = false, true
+	}
+}
+
 func (m *model) View() string {
 	if !m.ready {
 		return "Loading config..."
