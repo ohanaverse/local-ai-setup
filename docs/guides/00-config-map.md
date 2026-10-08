@@ -13,7 +13,7 @@ None — this is a reference doc, not a procedure.
 | File | Owner (writes) | Consumers | Purpose |
 |---|---|---|---|
 | `~/.config/local-ai/registry.toml` | `wt` (`wt model add\|edit\|rm` and the Models tab of `wt config`: models; `wt model init`: creates it, adds provider rows), `modelman` (non-interactive commands only — its TUI is disabled), and you by hand for the few things wt has no command for | `wt` (source of the LiteLLM routes), `modelman`, `llmbench` (read-only) | Canonical providers + models |
-| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only: the `price_refresh_last_run` date, and `[litellm]` only as a legacy fallback — no per-model key) | Per-machine state: downloads, running hints, family display names (its `[litellm]` table is a legacy read-only fallback) |
+| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only: `[litellm]` only, as a legacy fallback — no per-model key, and not `price_refresh_last_run`) | Per-machine state: downloads, running hints, family display names (its `[litellm]` table is a legacy read-only fallback) |
 | `~/.config/local-ai/benchmarks/latest.toml` | `llmbench` | `llmbench` | Latest-run pointers behind `--latest`; the run directories sit beside it |
 | `~/.config/local-ai/settings.yaml` | `modelman` | `modelman` | Preferences (theme) of modelman's TUI, which is disabled |
 | `~/.config/local-ai/config.yaml` | you by hand (pre-modelman) | `modelman migrate` (read-only input) | Legacy provider types — superseded by `registry.toml` |
@@ -58,7 +58,7 @@ tags = []
 ### `~/.config/local-ai/modelman.toml`
 
 - **Owner:** `modelman` (written by `modelman sync` and by the local-model lifecycle, `modelman start`/`stop`; the `[litellm]` table is no longer written — `modelman litellm ...` passes through to wt).
-- **Consumers:** `modelman`, plus `wt` (read-only — it reads the global `price_refresh_last_run` date, and the legacy `[litellm]` table as a fallback for routing state wt has not migrated; it reads **no** `[model_state]` key, not even `ready`: what is on disk and what is running come from wt's own live probes (#179 Phase B). That read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
+- **Consumers:** `modelman`, plus `wt` (read-only — it reads the legacy `[litellm]` table as a fallback for routing state wt has not migrated, and nothing else: not `price_refresh_last_run` (wt's stale-pricing notice takes its date from the `pricing_updated_at` stamps in `registry.toml`), and **no** `[model_state]` key, not even `ready`: what is on disk and what is running come from wt's own live probes (#179 Phase B). That read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, the `running` hint (modelman's start/stop intent, confirmed by a live probe whenever `wt` or modelman needs the truth), a legacy `[litellm]` routing table (modelman round-trips it verbatim; wt owns the live copy), and family display names.
 - **Env override:** `MODELMAN_STATE`.
 - **Benchmark pointers moved out.** The `[benchmarks]` table (`last_run`, `last_run_dir`, `agent_last_run`, `eval_last_run`) is no longer written. `llmbench` keeps those four keys in `~/.config/local-ai/benchmarks/latest.toml` (override: `LLMBENCH_LATEST`) and reads the old table only while that file does not exist yet.

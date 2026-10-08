@@ -186,12 +186,13 @@ type PricesApplied struct {
 
 // Apply writes the plan's prices to doc and stamps every matched model with
 // now, changed or not, as modelman's refresh does: pricing_updated_at records
-// when each row's prices were last checked, the date modelman's model form
-// shows. (wt's stale-price notice reads modelman.toml's
-// price_refresh_last_run, which this flow does not touch.) A price that did
-// not change is not rewritten (config.RegistryDoc.PatchModel skips a value
-// that is already there), so an integer stays an integer. Like
-// CatalogPlan.Apply it is safe inside config.UpdateRegistry.
+// when each row's prices were last checked, and wt's stale-price notice reads
+// the newest stamp among the OpenRouter-priced models
+// (agents.LastPriceRefresh), so a refresh that found every price current must
+// still leave its mark. A price that did not change is not rewritten
+// (config.RegistryDoc.PatchModel skips a value that is already there), so an
+// integer stays an integer. Like CatalogPlan.Apply it is safe inside
+// config.UpdateRegistry.
 func (p *PricePlan) Apply(doc *config.RegistryDoc, now time.Time) (PricesApplied, error) {
 	var done PricesApplied
 	stamp := Stamp(now)

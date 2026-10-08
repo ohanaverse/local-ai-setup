@@ -17,18 +17,16 @@ type LitellmState struct {
 	APIKey  string `toml:"api_key"`
 }
 
-// modelmanState mirrors the subset of ~/.config/local-ai/modelman.toml that
-// wt needs read-only access to. The full file is owned by modelman.
+// modelmanState mirrors the one table of ~/.config/local-ai/modelman.toml
+// that wt still reads. The file is modelman's.
 //
 // wt reads no per-model state at all (#179 Phase B): what is on disk and
 // what is running come from its live inventory, never from modelman's
-// `ready`/`downloaded`, `running` or retired `exposed` flags.
+// `ready`/`downloaded`, `running` or retired `exposed` flags. Nor does it
+// read price_refresh_last_run any more: the stale-price notice takes its
+// date from the registry's pricing_updated_at stamps (agents.LastPriceRefresh).
 type modelmanState struct {
-	// price_refresh_last_run is modelman's global "token pricing last
-	// refreshed" date (YYYY-MM-DD), written by `modelman refresh-prices`.
-	// wt reads it post-launch to print a stale-pricing notice.
-	PriceRefreshLastRun string        `toml:"price_refresh_last_run"`
-	Litellm             *LitellmState `toml:"litellm"`
+	Litellm *LitellmState `toml:"litellm"`
 }
 
 // loadModelmanState reads modelman.toml and returns its legacy [litellm]
@@ -47,26 +45,4 @@ func loadModelmanState() (*LitellmState, error) {
 		return nil, fmt.Errorf("parse modelman.toml: %w", err)
 	}
 	return s.Litellm, nil
-}
-
-// PriceRefreshLastRun returns modelman's global token-pricing refresh
-// date (price_refresh_last_run in ~/.config/local-ai/modelman.toml) as
-// (value, present). present is false when the file or key is missing or
-// the file cannot be read/parsed — the notice must stay silent on errors,
-// matching how loadModelmanState tolerates a missing file. wt is a
-// read-only consumer; modelman owns the key.
-func PriceRefreshLastRun() (string, bool) {
-	path := ModelmanPath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	var s modelmanState
-	if err := toml.Unmarshal(data, &s); err != nil {
-		return "", false
-	}
-	if s.PriceRefreshLastRun == "" {
-		return "", false
-	}
-	return s.PriceRefreshLastRun, true
 }

@@ -120,6 +120,13 @@
 
 ### Changed
 
+- The stale-pricing notice wt prints after a launch takes its date from
+  `registry.toml`: the newest `pricing_updated_at` among the models priced by
+  OpenRouter. It now speaks when that is more than 7 days old, or when no
+  such model was ever refreshed, and it names `wt cloud-sync`; it used to
+  speak whenever `modelman.toml`'s `price_refresh_last_run` was not today,
+  and name `modelman refresh-prices`. wt no longer reads that key. Either
+  tool's refresh still clears the notice, since both stamp the models.
 - omlx is handled as the multi-model pool it is (#213). `wt start` loads an
   omlx model beside the ones already loaded instead of stopping the service
   first, and asks only when the model does not fit, naming what omlx is

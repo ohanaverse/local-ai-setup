@@ -6,20 +6,14 @@ import (
 	"testing"
 )
 
-// fixturePriceRefreshDate is the value of price_refresh_last_run in the
-// shared modelman.toml contract fixture. Centralizing it makes the
-// relationship between the fixture and the accessor tests explicit and
-// avoids updating multiple literals when the fixture date changes.
-const fixturePriceRefreshDate = "2026-09-14"
-
 // TestLoadModelmanStateMatchesSharedFixture pins wt's read of the shared
 // docs/contracts/modelman.sample.toml fixture. wt reads far less of it than
-// modelman's Python test does: only the legacy [litellm] table and the
-// top-level price_refresh_last_run are pinned here, by the same field names
-// and values, and the [model_state] rows the Python side asserts on are
-// merely tolerated (the file must load with them present). A drift in those
-// two shared pieces would otherwise ship silently since each side's CI only
-// runs its own language's tests.
+// modelman's Python test does: only the legacy [litellm] table is pinned
+// here, by the same field names and values. The [model_state] rows and the
+// top-level price_refresh_last_run the Python side asserts on are merely
+// tolerated (the file must load with them present). A drift in the shared
+// table would otherwise ship silently since each side's CI only runs its own
+// language's tests.
 func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -50,9 +44,9 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	// The fixture's [model_state] rows (ready/downloaded, running, the
 	// legacy exposed keys) are deliberately NOT read: since #179 Phase B wt
 	// takes local presence and running state from its live inventory, and
-	// reads only the legacy [litellm] table and price_refresh_last_run
-	// (pinned by TestModelmanStateReadsNoPerModelState). The file must still
-	// load with them present.
+	// reads only the legacy [litellm] table (pinned by
+	// TestModelmanStateReadsNoPerModelState). The file must still load with
+	// them, and price_refresh_last_run, present.
 
 	if litellm == nil {
 		t.Fatal("fixture [litellm] table not decoded")
@@ -62,11 +56,5 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	}
 	if litellm.APIKey != "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY" {
 		t.Errorf("got api key %q", litellm.APIKey)
-	}
-
-	// Global price-refresh date (issue #69): wt's stale-pricing notice
-	// reads this top-level key; a decode regression fails both CI jobs.
-	if v, ok := PriceRefreshLastRun(); !ok || v != fixturePriceRefreshDate {
-		t.Errorf("PriceRefreshLastRun() = (%q, %v), want (%q, true)", v, ok, fixturePriceRefreshDate)
 	}
 }

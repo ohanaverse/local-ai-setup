@@ -997,7 +997,7 @@ func (c *Config) InCatalog(m Model) bool {
 }
 
 // OpenRouterPriced reports whether m's price comes from OpenRouter — what
-// `modelman refresh-prices` refreshes: an openrouter model, or a model of a
+// `wt cloud-sync`'s prices flow refreshes: an openrouter model, or a model of a
 // non-native cloud provider. Keyed on the provider's location, not the
 // model's, so ollama cloud models don't count. Mirrors modelman's
 // pricing._is_openrouter_priced; both are pinned by

@@ -81,23 +81,25 @@ func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 }
 
 // TestModelmanStateReadsNoPerModelState pins #179 Phase B's boundary: wt
-// reads only modelman.toml's legacy [litellm] table and the global
-// price_refresh_last_run — no [model_state] field at all, so neither
-// `ready`/`downloaded`, `running` nor the retired `exposed` flags can creep
-// back into a routing or picker decision. Local presence and running state
-// come from wt's live inventory. A file carrying every per-model key still
-// loads.
+// reads only modelman.toml's legacy [litellm] table — no [model_state] field
+// at all, so neither `ready`/`downloaded`, `running` nor the retired
+// `exposed` flags can creep back into a routing or picker decision, and not
+// price_refresh_last_run either (the stale-price notice reads the registry).
+// Local presence and running state come from wt's live inventory. A file
+// carrying every per-model key still loads.
 func TestModelmanStateReadsNoPerModelState(t *testing.T) {
 	typ := reflect.TypeOf(modelmanState{})
 	var fields []string
 	for i := 0; i < typ.NumField(); i++ {
 		fields = append(fields, typ.Field(i).Name)
 	}
-	if want := []string{"PriceRefreshLastRun", "Litellm"}; !reflect.DeepEqual(fields, want) {
+	if want := []string{"Litellm"}; !reflect.DeepEqual(fields, want) {
 		t.Fatalf("modelmanState fields = %v, want exactly %v", fields, want)
 	}
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `
+price_refresh_last_run = "2026-09-14"
+
 [model_state."omlx/qwen3.8"]
 ready = true
 downloaded = true
@@ -203,77 +205,6 @@ ready = false
 	if !cfg.InCatalog(byID["ollama/unexposed"]) {
 		t.Errorf("ollama/unexposed (local model, exposed=false) must still be in the catalog (configured means exposed, #179 — visibility is governed by the live model inventory (internal/localmodels), not this predicate)")
 	}
-}
-
-// TestPriceRefreshLastRun guards wt's read of modelman.toml's global
-// price_refresh_last_run key (issue #69). wt prints a stale-pricing
-// notice after each launch, so a silent decode regression would either
-// nag every run or never warn at all. Parse errors must suppress the
-// notice (present=false) to match the exposure flags' tolerance.
-func TestPriceRefreshLastRun(t *testing.T) {
-	t.Run("missing file", func(t *testing.T) {
-		dir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", dir)
-		t.Setenv("MODELMAN_REGISTRY", "")
-		v, ok := PriceRefreshLastRun()
-		if ok || v != "" {
-			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (``, false)", v, ok)
-		}
-	})
-
-	t.Run("key present", func(t *testing.T) {
-		dir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", dir)
-		t.Setenv("MODELMAN_REGISTRY", "")
-		stateDir := filepath.Join(dir, "local-ai")
-		if err := os.MkdirAll(stateDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(stateDir, "modelman.toml"),
-			[]byte("price_refresh_last_run = \""+fixturePriceRefreshDate+"\"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		v, ok := PriceRefreshLastRun()
-		if !ok || v != fixturePriceRefreshDate {
-			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (\""+fixturePriceRefreshDate+"\", true)", v, ok)
-		}
-	})
-
-	t.Run("file without key", func(t *testing.T) {
-		dir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", dir)
-		t.Setenv("MODELMAN_REGISTRY", "")
-		stateDir := filepath.Join(dir, "local-ai")
-		if err := os.MkdirAll(stateDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(stateDir, "modelman.toml"),
-			[]byte("[families.x]\ndisplay_name = \"X\"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		v, ok := PriceRefreshLastRun()
-		if ok || v != "" {
-			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (``, false)", v, ok)
-		}
-	})
-
-	t.Run("malformed toml is silent", func(t *testing.T) {
-		dir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", dir)
-		t.Setenv("MODELMAN_REGISTRY", "")
-		stateDir := filepath.Join(dir, "local-ai")
-		if err := os.MkdirAll(stateDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(stateDir, "modelman.toml"),
-			[]byte("not [ valid toml"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		v, ok := PriceRefreshLastRun()
-		if ok || v != "" {
-			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (``, false)", v, ok)
-		}
-	})
 }
 
 // TestModelmanPathHonorsXDG asserts that ModelmanPath() uses the same
