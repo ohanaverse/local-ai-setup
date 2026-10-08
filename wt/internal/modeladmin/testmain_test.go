@@ -1,6 +1,8 @@
 package modeladmin
 
 import (
+	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -13,6 +15,10 @@ import (
 // the registry would edit the real one.
 func TestMain(m *testing.M) {
 	_, cleanup := config.IsolateConfigHomeForTest()
+	// No test may run the developer's ollama; stubOllamaShow supplies output.
+	runOllamaShow = func(context.Context, string, string) (string, error) {
+		return "", errors.New("runOllamaShow not stubbed in this test")
+	}
 	code := m.Run()
 	cleanup()
 	os.Exit(code)
