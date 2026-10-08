@@ -43,6 +43,18 @@ type = "api_key"
 base_url = "https://acme.example/v1"
 secret_ref = "ACME_API_KEY"
 
+# A non-native cloud provider explicitly marked openrouter_priced = false:
+# a corporate LiteLLM gateway whose model names are not OpenRouter ids.
+[[providers]]
+id = "corp-litellm"
+name = "Corp LiteLLM"
+location = "cloud"
+openrouter_priced = false
+[providers.auth]
+type = "api_key"
+base_url = "https://litellm.corp.example"
+secret_ref = "exec:/usr/local/bin/corp-credential-helper.sh"
+
 # A provider whose location is mistyped (#200): neither "local" nor "cloud",
 # so it is not a location. Its model is out of the catalog, is not routed, and
 # is not OpenRouter-priced (the rule keys on an exact "cloud").
@@ -82,6 +94,14 @@ id = "acme/model-a"
 family = "fixture"
 provider_id = "acme"
 model_name = "vendor/model-a"
+
+# corp-litellm has openrouter_priced = false: not OpenRouter-priced even
+# though it is a non-native cloud provider.
+[[models]]
+id = "corp-litellm/claude-3"
+family = "fixture"
+provider_id = "corp-litellm"
+model_name = "claude-3"
 
 # Dangling provider_id: no [[providers]] entry named "ghost".
 [[models]]

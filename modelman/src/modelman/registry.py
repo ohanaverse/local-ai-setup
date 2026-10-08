@@ -159,6 +159,11 @@ class ProviderEntry:
     model_dir: str | None = None
     protocols: list[str] = field(default_factory=lambda: ["openai-chat"])
     auth: AuthConfig = field(default_factory=lambda: AuthConfig(type="none"))
+    # openrouter_priced overrides the inferred _is_openrouter_priced result.
+    # None = infer from location/auth (the default). False = not OpenRouter-priced
+    # even though the provider is a non-native cloud provider (e.g. a corporate
+    # LiteLLM gateway). Mirrors wt's Provider.OpenRouterPriced.
+    openrouter_priced: bool | None = None
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -1016,7 +1021,8 @@ def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
             base_url=auth_raw.get("base_url"),
             extra=unknown_keys(auth_raw, {"type", "secret_ref", "base_url"}),
         ),
-        extra=unknown_keys(raw, {"id", "name", "location", "model_dir", "auth", "protocols"}),
+        openrouter_priced=raw.get("openrouter_priced"),
+        extra=unknown_keys(raw, {"id", "name", "location", "model_dir", "auth", "protocols", "openrouter_priced"}),
     )
 
 

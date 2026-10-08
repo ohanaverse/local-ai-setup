@@ -254,6 +254,12 @@ type Provider struct {
 	// ModelDir is the registry's model_dir (e.g. "~/.omlx/models"): where a
 	// filesystem-backed provider keeps its models. Read-only; not expanded.
 	ModelDir string `toml:"model_dir,omitempty"`
+	// OpenRouterPriced, when set, overrides the inferred value for the
+	// OpenRouterPriced model predicate. nil = infer from location/auth (the
+	// default). false = this provider's models are not OpenRouter-priced even
+	// though they appear on a non-native cloud provider (e.g. a corporate
+	// LiteLLM gateway). Mirrors modelman's ProviderEntry.openrouter_priced.
+	OpenRouterPriced *bool `toml:"openrouter_priced,omitempty"`
 }
 
 // EffectiveProtocols returns the provider's declared protocols, defaulting
@@ -862,12 +868,21 @@ func (c *Config) InCatalog(m Model) bool {
 // model's, so ollama cloud models don't count. Mirrors modelman's
 // pricing._is_openrouter_priced; both are pinned by
 // docs/contracts/catalog-predicates.sample.toml.
+//
+// A provider with openrouter_priced = false in the registry overrides the
+// inferred result — use this for non-native cloud providers that route
+// through a corporate LiteLLM gateway rather than OpenRouter.
 func (c *Config) OpenRouterPriced(m Model) bool {
 	if m.Native {
 		return false
 	}
 	p := c.ProviderByID(m.ProviderID)
 	if p != nil && p.Auth.Type == "native" {
+		return false
+	}
+	// Explicit override: registry openrouter_priced = false suppresses the
+	// stale-pricing notice for providers that are not OpenRouter-backed.
+	if p != nil && p.OpenRouterPriced != nil && !*p.OpenRouterPriced {
 		return false
 	}
 	if m.ProviderID == "openrouter" {

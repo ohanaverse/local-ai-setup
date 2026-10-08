@@ -97,6 +97,10 @@ def _is_openrouter_priced(registry: Registry, model: ModelEntry) -> bool:
         provider = None
     if provider is not None and is_native_provider(provider):
         return False
+    # Explicit override: openrouter_priced = false on a provider suppresses
+    # the stale-pricing notice for non-OpenRouter-backed corporate gateways.
+    if provider is not None and provider.openrouter_priced is not None:
+        return provider.openrouter_priced
     if model.provider_id == "openrouter":
         return True
     return provider is not None and provider.location == "cloud"
