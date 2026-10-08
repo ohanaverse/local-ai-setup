@@ -100,7 +100,7 @@ From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint 
 
 ## Go module
 
-Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,configeditor,ollamacheck,catalog,localmodels,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,lifecycle,litellm,spend,smoke}`.
 
 | Path | Purpose |
 |---|---|
@@ -142,6 +142,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell, pickers, launch, start-on-select flow (`start_flow.go`); `modelrows.go` (rows + sort), `modeltable.go` (`buildTable`, `renderTable`); `PickStartModel` — standalone picker without launch-route gating, used by `wt start` and `wt smoke` (`PickModel`, the route-gated variant, currently has no production caller) |
+| `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`) |
 
 ## Config (Go)
 
@@ -268,9 +269,9 @@ wt launches a fresh agent every time and leaves session handling to the agent (#
 
 `internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → launch, plus starting, routing, replace-confirm and ollama-warning screens. A picker is skipped when its selection is already resolved. Every picker uses `ThemedListDelegate`.
 
-- **A view fits the terminal** (`layout.go`): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update`. Add a new line to the frame, and size lists through `fitTo`. Pinned by `TestEveryListPhaseFitsTheTerminal`.
+- **A view fits the terminal** (`internal/tuilayout`, shared with `wt config`; `layout.go` holds the launcher's frames): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update`. Add a new line to the frame, and size lists through `fitTo`. Pinned by `TestEveryListPhaseFitsTheTerminal`.
 - **The update goroutine never waits**: the launch-time route check uses the non-blocking `tryEnsureModelRoute`; waits happen in a command behind `phaseRouting`.
-- **The model table drops whole columns on a narrow terminal** (`tableColumns`, `fitTableColumns`), keeping MODEL, STATUS and RUNNING.
+- **The model table drops whole columns on a narrow terminal** (`tuilayout.Columns`, fitted by `tuilayout.FitTo`), keeping MODEL, STATUS and RUNNING.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`, `wt rotate`) skip the TUI. `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted.

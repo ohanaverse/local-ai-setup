@@ -9,6 +9,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -58,8 +59,8 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 type modelItem struct {
 	model     config.Model
 	line      string
-	cells     [numCols]string
-	cols      *tableColumns
+	cells     []string
+	cols      *tuilayout.Columns
 	marked    bool
 	ref       int
 	exception string
@@ -110,7 +111,7 @@ func (m modelItem) Title() string {
 	prefix := refColumn(m.ref)
 	line := m.line
 	if m.cols != nil {
-		line = m.cols.line(m.cells)
+		line = m.cols.Line(m.cells)
 	}
 	if m.exception != "" {
 		line += " " + m.exception
@@ -161,33 +162,12 @@ func styleTableTitle(l *list.Model, theme themes.Theme) {
 	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
 }
 
-// tableTitleRoom is how much wider than the table's header its list must be
-// for bubbles to draw that header whole. The list's title bar appends two
-// spaces to the title (the gap before a status message, there even when the
-// message is empty) and cuts the result, with an ellipsis, to the list's width
-// less the one column it reserves for its spinner. A header closer to the edge
-// than this loses the end of its last heading, or keeps it and gains a stray
-// "…" where the two spaces were cut.
-//
-// The rows need no such room. The delegate would keep a row clear of its
-// title styles' padding, but ThemedListDelegate's title styles have none, so a
-// row is drawn whole up to the list's full width.
-const tableTitleRoom = 3
-
-// fitTableColumns narrows or widens the table in l to a list of the given
-// width: it picks the columns that fit (tableColumns.fit) and sets the header
-// to match. The rows redraw from the shared layout by themselves, so nothing
-// is rebuilt: the inventory is not probed again and the cursor, the marked
-// row and any filter are untouched. A list with no rows has nothing to fit.
-func fitTableColumns(l *list.Model, width int) {
-	for _, it := range l.Items() {
-		if mi, ok := it.(*modelItem); ok && mi.cols != nil {
-			mi.cols.fit(width)
-			l.Title = mi.cols.header()
-			return
-		}
-	}
-}
+// TableColumns is the layout this row's table shares, which is how
+// tuilayout.FitTo finds the table in a list and shows the columns that fit
+// its width: nothing is rebuilt on a resize, so the inventory is not probed
+// again and the cursor, the marked row and any filter are untouched. nil for
+// an item built by hand.
+func (m modelItem) TableColumns() *tuilayout.Columns { return m.cols }
 
 // clampModelSelection guards against bubbles v1.0.0 leaving
 // m.Index() outside [0, len(VisibleItems())) after a filter
