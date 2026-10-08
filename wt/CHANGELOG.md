@@ -4,6 +4,14 @@
 
 ### Added
 
+- `wt model add mlx_lm_server <target> --draft <draft> --family F` registers a
+  target+draft pairing, each side a Hugging Face repo or a local path, and
+  prints the command that starts it. Two pairings are the same when their
+  sides are, not their names. wt cannot start a pairing: where it
+  used to say `modelman start <id>`, it now names `llmbench provider isolate
+  --solo mlx_lm_server <target> --draft <draft>` with the pairing's own
+  target and draft.
+
 - `wt config` has a second tab, Models (`Tab` switches; `wt model` opens the
   editor on it): every registry model and every local model found, with
   status and running state. `d` removes the selected model from the registry

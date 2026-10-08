@@ -11,6 +11,7 @@ wt model init [--json]     # create the registry if it is missing; add the defau
 wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
 wt model edit <id> [--family F] [--tags a,b] [--location local|cloud] [price flags]
 wt model rm <id>... [--yes]
+wt model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing
 ```
 
 Each of the three writing commands makes one locked write of the registry and
@@ -118,6 +119,34 @@ the registry's ollama provider, and records `model_info.supports_function_callin
 and `model_info.supports_vision` when ollama lists the capability; wt copies
 `model_info` into the model's LiteLLM route. If the lookup fails the model is
 added without them and a warning says so.
+
+### An mlx_lm_server pairing
+
+An mlx_lm_server model is a target and a draft served together by
+`mlx_lm.server --draft-model`. `wt model add mlx_lm_server <target> --draft
+<draft> --family <family>` registers one: each side is a Hugging Face repo
+(`org/name`) or a local path (starting `/`, `~`, `./` or `../`), written to the
+row's `[models.fetch]` and `[models.draft]`. The id is
+`mlx_lm_server/<target>+draft-<draft>`, from the last segment of each.
+
+A pairing is its two sides, not their names. The same target and draft
+again are refused, whatever `--id` says. A different pairing whose sides end
+in the same two names — a target you quantized into `/quant/Big-4bit` beside
+`mlx-community/Big-4bit`, with one draft — would get the id that is taken:
+the add says so, and `--id mlx_lm_server/<name>` registers it.
+
+wt registers a pairing and cannot start one. `add` prints the command that
+does, and so does a launch or `wt start` of a pairing that is not running:
+
+```bash
+llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>
+```
+
+(from the repository: `uv run --directory llmbench llmbench provider isolate
+--solo …`; `--solo` leaves the other local providers running). A pairing is a
+row of `wt model list` and of the Models tab with `STATUS -`, since no probe
+can enumerate it; its family, tags and prices are edited like any model's,
+and the tab's form does not create one.
 
 ## `wt model edit <id> [flags]`
 

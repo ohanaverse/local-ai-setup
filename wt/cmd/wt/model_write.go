@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/spf13/cobra"
@@ -60,7 +61,7 @@ func modelFieldFlags(c *cobra.Command) func() modeladmin.Fields {
 }
 
 func modelAddCmd(a *app) *cobra.Command {
-	var id string
+	var id, draft string
 	c := &cobra.Command{
 		Use:   "add <provider> <name> --family <family>",
 		Short: "Add a model to the registry",
@@ -81,18 +82,25 @@ func modelAddCmd(a *app) *cobra.Command {
 			"`ollama show` once and records whether the model supports tools and\n" +
 			"vision; if that fails the model is added without them and a warning says\n" +
 			"so.\n\n" +
+			"An mlx_lm_server model is a target+draft pairing: <name> is the target and\n" +
+			"--draft the draft, each a Hugging Face repo or a local path. wt registers a\n" +
+			"pairing and cannot start one; it prints the llmbench command that does. Two\n" +
+			"pairings whose target and draft end in the same names need --id for the\n" +
+			"second.\n\n" +
 			"The LiteLLM routes are synced once afterwards; a sync that cannot run is a\n" +
 			"warning, and the exit status is still 0.",
 		Example: "  wt model add ollama qwen3:8b --family qwen3 --tags code\n" +
-			"  wt model add openrouter qwen/qwen3.8-27b --family qwen3.8 --input-price 0.5 --output-price 2",
+			"  wt model add openrouter qwen/qwen3.8-27b --family qwen3.8 --input-price 0.5 --output-price 2\n" +
+			"  wt model add mlx_lm_server mlx-community/Qwen3.8-27B-4bit --draft mlx-community/Qwen3.8-4B-4bit --family qwen3.8",
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 	}
 	fields := modelFieldFlags(c)
 	c.Flags().StringVar(&id, "id", "", "the model's id, instead of the derived one")
+	c.Flags().StringVar(&draft, modeladmin.FieldDraft, "", "mlx_lm_server only: the pairing's draft model (a repo or a local path)")
 	_ = c.MarkFlagRequired(modeladmin.FieldFamily)
 	c.RunE = func(cmd *cobra.Command, args []string) error {
-		req := modeladmin.AddRequest{ProviderID: args[0], ModelName: args[1], ID: id, Fields: fields()}
+		req := modeladmin.AddRequest{ProviderID: args[0], ModelName: args[1], ID: id, Draft: draft, Fields: fields()}
 		return runModelAdd(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, req)
 	}
 	return c
@@ -123,6 +131,10 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 		return err
 	}
 	fmt.Fprintf(out, "added model: %s\n", res.ID)
+	if req.Draft != "" {
+		// wt registers a pairing and has no engine to start one.
+		fmt.Fprintf(out, "start it with: %s\n", catalog.PairingStartCommand(req.ModelName, req.Draft))
+	}
 	for _, p := range res.ProvidersAdded {
 		fmt.Fprintf(out, "added provider: %s\n", p)
 	}

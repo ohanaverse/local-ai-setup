@@ -632,3 +632,37 @@ func TestModelAddOfADuplicatedIDStillSaysItExists(t *testing.T) {
 		t.Errorf("a refused add must change nothing: syncs = %d", *syncs)
 	}
 }
+
+// TestModelAddAPairing verifies `wt model add mlx_lm_server <target> --draft
+// <draft>` registers the pairing and prints the llmbench command that starts
+// it, since wt has no engine for one, and that --draft on any other provider
+// is refused. Without the command the user has a registry row and no way to
+// find out how to run it.
+func TestModelAddAPairing(t *testing.T) {
+	registry := modelHome(t, writeRegistry)
+	stubSeedEnv(t, config.SeedEnv{})
+	stubRouteSync(t, "")
+	out, err := runWT(t, "model", "add", "mlx_lm_server", "mlx-community/Qwen3.8-27B-4bit", "--draft", "mlx-community/Qwen3.8-4B-4bit", "--family", "qwen3.8")
+	want := "added model: mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit\n" +
+		"start it with: llmbench provider isolate --solo mlx_lm_server mlx-community/Qwen3.8-27B-4bit --draft mlx-community/Qwen3.8-4B-4bit\n" +
+		"added provider: mlx_lm_server\n"
+	if err != nil || out != want {
+		t.Fatalf("add = %q, %v\nwant %q", out, err, want)
+	}
+	got := mustRead(t, registry)
+	if !strings.Contains(got, "[models.fetch]\nrepo = \"mlx-community/Qwen3.8-27B-4bit\"\n\n[models.draft]\nrepo = \"mlx-community/Qwen3.8-4B-4bit\"\n") {
+		t.Errorf("the pairing's two sides are not in the registry:\n%s", got)
+	}
+	before := got
+	for _, args := range [][]string{
+		{"model", "add", "mlx_lm_server", "org/target", "--family", "f"},
+		{"model", "add", "ollama", "qwen3:8b", "--family", "f", "--draft", "org/d"},
+	} {
+		if _, err := runWT(t, args...); err == nil || !strings.Contains(err.Error(), "--draft") {
+			t.Errorf("wt %s: err = %v, want a refusal about --draft", strings.Join(args, " "), err)
+		}
+	}
+	if mustRead(t, registry) != before {
+		t.Error("a refused add changed the registry")
+	}
+}

@@ -66,7 +66,7 @@ Then `modelman sync` to pick up the new entry, and `modelman start <id>` to load
 
 ### 3. Register a target+draft pairing (feature 2)
 
-Add the pairing to `registry.toml` by hand — `wt model add` refuses the `mlx_lm_server` provider for now, and the Models tab's form does not offer it ([02-providers-and-models](02-providers-and-models.md) Step 1 has the hand-edit procedure) — one `[[models]]` block whose `[models.fetch]` names the target and whose `[models.draft]` names the draft, each as a `repo` (HF repo id) or a `local_path` (absolute directory, e.g. Step 1's output):
+Add the pairing with `wt model add mlx_lm_server <target> --draft <draft> --family <family>`, where each of `<target>` and `<draft>` is an HF repo id or a local path (e.g. Step 1's output). It writes one `[[models]]` block whose `[models.fetch]` names the target and whose `[models.draft]` names the draft, each as a `repo` or a `local_path`, and prints the command that starts the pairing. The block it writes:
 
 ```toml
 [[models]]

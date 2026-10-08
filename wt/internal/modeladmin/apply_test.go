@@ -249,7 +249,8 @@ func TestAddRefusals(t *testing.T) {
 		{"NaN", func(r *AddRequest) { r.SubscriptionPrice = ptr("nan") }, FieldSubscriptionPrice, "subscription-price must be finite"},
 		{"a subscription with no period", func(r *AddRequest) { r.SubscriptionPrice = ptr("20") }, FieldSubscriptionPeriod, "a subscription price needs a subscription period (month or year)"},
 		{"a period that is not one", func(r *AddRequest) { r.SubscriptionPeriod = ptr("week") }, FieldSubscriptionPeriod, `subscription period must be month or year, got "week"`},
-		{"a pairing", func(r *AddRequest) { r.ProviderID = "mlx_lm_server" }, FieldProvider, "target+draft pairing"},
+		{"a pairing with no draft", func(r *AddRequest) { r.ProviderID = "mlx_lm_server" }, FieldDraft, "pass --draft <draft>"},
+		{"a draft on a provider that serves one model", func(r *AddRequest) { r.Draft = "org/d" }, FieldDraft, "--draft is for an mlx_lm_server pairing; openrouter serves one model at a time"},
 		{"an id with no slash", func(r *AddRequest) { r.ID = "noslash" }, FieldID, `an id is <provider>/<name> with no spaces, got "noslash"`},
 		{"an id with a space", func(r *AddRequest) { r.ID = "openrouter/has space" }, FieldID, `an id is <provider>/<name> with no spaces, got "openrouter/has space"`},
 		{"an id with nothing after the slash", func(r *AddRequest) { r.ID = "openrouter/" }, FieldID, "an id is <provider>/<name>"},
@@ -621,5 +622,96 @@ func TestADuplicatedIDDoesNotBlockTheOtherRows(t *testing.T) {
 	}
 	if got := read(t, path); strings.Contains(got, "a--b") || strings.Count(got, `id = "ollama/gemma4:9b"`) != 2 {
 		t.Errorf("only openrouter/a--b should be gone:\n%s", got)
+	}
+}
+
+// TestAddAPairing verifies `wt model add mlx_lm_server <target> --draft
+// <draft>` writes the row modelman's form wrote: an id and a model_name that
+// spell the pairing, the target under fetch and the draft under draft — each
+// a repo, or a local_path when it is spelled like a path — and the
+// mlx_lm_server provider row seeded beside it. llmbench reads fetch and draft
+// to start the server; a row without them is a pairing nothing can start.
+func TestAddAPairing(t *testing.T) {
+	path := scratchRegistry(t, "")
+	res, err := Add(AddRequest{
+		ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit", Draft: "~/models/Qwen3.8-4B-4bit/",
+		Fields: Fields{Family: ptr("qwen3.8"), Tags: ptr("code")},
+	}, config.SeedEnv{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ID != "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit" || strings.Join(res.ProvidersAdded, ",") != "mlx_lm_server" {
+		t.Errorf("result = %+v", res)
+	}
+	want := `[[providers]]
+id = "mlx_lm_server"
+name = "mlx-lm server (target+draft)"
+location = "local"
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8001/v1"
+
+[[models]]
+id = "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit"
+family = "qwen3.8"
+provider_id = "mlx_lm_server"
+model_name = "Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit"
+tags = [
+    "code",
+]
+
+[models.fetch]
+repo = "mlx-community/Qwen3.8-27B-4bit"
+
+[models.draft]
+local_path = "~/models/Qwen3.8-4B-4bit/"
+`
+	if got := read(t, path); got != want {
+		t.Errorf("registry =\n%s\nwant\n%s", got, want)
+	}
+	// The same pairing again — the same two sides, however the path is
+	// spelled and whatever id is asked for — is refused, not duplicated.
+	_, err = Add(AddRequest{ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit", Draft: "~/models/Qwen3.8-4B-4bit", ID: "mlx_lm_server/again",
+		Fields: Fields{Family: ptr("qwen3.8")}}, config.SeedEnv{})
+	var fe *FieldError
+	if !errors.As(err, &fe) || !strings.Contains(fe.Msg, `model "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit" already registers this pairing (target mlx-community/Qwen3.8-27B-4bit, draft ~/models/Qwen3.8-4B-4bit)`) {
+		t.Errorf("a second add of the pairing: err = %v, want it refused", err)
+	}
+
+	// A different pairing whose two sides end in the same names — here the
+	// target quantized locally instead of the one on Hugging Face — is not
+	// that pairing. The names make the id that is taken, so the add says to
+	// pass --id, and with one it goes in beside the first.
+	local := AddRequest{ProviderID: "mlx_lm_server", ModelName: "/quant/dwq/Qwen3.8-27B-4bit", Draft: "~/models/Qwen3.8-4B-4bit", Fields: Fields{Family: ptr("qwen3.8")}}
+	before := read(t, path)
+	if _, err = Add(local, config.SeedEnv{}); !errors.Is(err, config.ErrModelExists) || !strings.Contains(err.Error(), "pass --id mlx_lm_server/<name>") {
+		t.Errorf("a different pairing with the same names: err = %v, want the taken id and the way round it", err)
+	}
+	if read(t, path) != before {
+		t.Error("a refused add changed the registry")
+	}
+	local.ID = "mlx_lm_server/qwen-dwq"
+	res, err = Add(local, config.SeedEnv{})
+	if err != nil || res.ID != "mlx_lm_server/qwen-dwq" {
+		t.Fatalf("with --id: %+v, %v; want it added", res, err)
+	}
+	if got := read(t, path); !strings.Contains(got, "id = \"mlx_lm_server/qwen-dwq\"\nfamily = \"qwen3.8\"\nprovider_id = \"mlx_lm_server\"\nmodel_name = \"Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit\"\ntags = []\n\n[models.fetch]\nlocal_path = \"/quant/dwq/Qwen3.8-27B-4bit\"\n") {
+		t.Errorf("the second pairing's row:\n%s", got)
+	}
+}
+
+// TestPairingName pins how a pairing is named from its two sides: the last
+// segment of each, whether it is a repo id or a path with a trailing slash.
+func TestPairingName(t *testing.T) {
+	cases := []struct{ target, draft, want string }{
+		{"org/T", "org/D", "T+draft-D"},
+		{"/models/target/", "~/d", "target+draft-d"},
+		{"plain", "./rel/draft", "plain+draft-draft"},
+	}
+	for _, c := range cases {
+		if got := PairingName(c.target, c.draft); got != c.want {
+			t.Errorf("PairingName(%q, %q) = %q, want %q", c.target, c.draft, got, c.want)
+		}
 	}
 }

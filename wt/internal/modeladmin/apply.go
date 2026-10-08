@@ -21,6 +21,9 @@ type AddRequest struct {
 	ModelName string
 	// ID overrides the derived id (DeriveID) when not empty.
 	ID string
+	// Draft makes the model an mlx_lm_server pairing: ModelName is then the
+	// target and Draft the draft, each a Hugging Face repo or a local path.
+	Draft string
 	Fields
 	// ModelInfo is written as the row's model_info table when not empty: the
 	// capabilities looked up before the write (OllamaCapabilities).
@@ -40,16 +43,20 @@ type AddResult struct {
 
 // addPlan is an add that passed every check that needs no registry: the
 // request with its text trimmed, the id the row gets, and the row's keys.
+// For a pairing, req.ModelName is the pairing's name (PairingName) and
+// target and draft are its two sides as their tables.
 type addPlan struct {
-	req AddRequest
-	id  string
-	set map[string]any
+	req           AddRequest
+	id            string
+	set           map[string]any
+	target, draft map[string]any
 }
 
 // planAdd checks a request by itself — what is required, each field's value,
 // the subscription rule, the shape of a given id — and works out the row.
 func planAdd(req AddRequest) (addPlan, error) {
-	req.ProviderID, req.ModelName, req.ID = strings.TrimSpace(req.ProviderID), strings.TrimSpace(req.ModelName), strings.TrimSpace(req.ID)
+	req.ProviderID, req.ModelName, req.ID, req.Draft = strings.TrimSpace(req.ProviderID), strings.TrimSpace(req.ModelName), strings.TrimSpace(req.ID), strings.TrimSpace(req.Draft)
+	pairing := localmodels.RunningOnly(req.ProviderID)
 	switch {
 	case req.ProviderID == "":
 		return addPlan{}, fieldErr(FieldProvider, "a provider is required")
@@ -57,8 +64,10 @@ func planAdd(req AddRequest) (addPlan, error) {
 		return addPlan{}, fieldErr(FieldName, "a model name is required")
 	case req.Family == nil:
 		return addPlan{}, fieldErr(FieldFamily, "family is required")
-	case localmodels.RunningOnly(req.ProviderID):
-		return addPlan{}, fieldErr(FieldProvider, "an mlx_lm_server model is a target+draft pairing, which this command cannot add yet: add it to %s by hand", config.RegistryPath())
+	case pairing && req.Draft == "":
+		return addPlan{}, fieldErr(FieldDraft, "an mlx_lm_server model is a target+draft pairing: name the target and pass --draft <draft>")
+	case !pairing && req.Draft != "":
+		return addPlan{}, fieldErr(FieldDraft, "--draft is for an mlx_lm_server pairing; %s serves one model at a time", req.ProviderID)
 	}
 	if err := checkID(req.ID); err != nil {
 		return addPlan{}, err
@@ -66,6 +75,14 @@ func planAdd(req AddRequest) (addPlan, error) {
 	set, _, err := req.Fields.patch()
 	if err != nil {
 		return addPlan{}, err
+	}
+	plan := addPlan{}
+	if pairing {
+		// The registry row names the pairing, and records each side where
+		// llmbench reads it to start the server.
+		plan.target, plan.draft = artifactTable(req.ModelName), artifactTable(req.Draft)
+		req.ModelName = PairingName(req.ModelName, req.Draft)
+		set["fetch"], set["draft"] = plan.target, plan.draft
 	}
 	_, hasPrice := set["cost.subscription_price"]
 	period, _ := set["cost.subscription_period"].(string)
@@ -82,7 +99,8 @@ func planAdd(req AddRequest) (addPlan, error) {
 	if id == "" {
 		id = DeriveID(req.ProviderID, req.ModelName)
 	}
-	return addPlan{req: req, id: id, set: set}, nil
+	plan.req, plan.id, plan.set = req, id, set
+	return plan, nil
 }
 
 // checkID refuses a given id that is not <provider>/<name>: a part on each
@@ -127,6 +145,9 @@ func Add(req AddRequest, env config.SeedEnv) (AddResult, error) {
 	_, err = config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		// Everything assigned here is assigned afresh: apply may run again.
 		res = AddResult{ID: id}
+		if other := samePairing(d.Models(), plan.target, plan.draft); other != "" {
+			return fieldErr(FieldName, "model %q already registers this pairing (target %s, draft %s); edit that one (wt model edit %s)", other, sideText(plan.target), sideText(plan.draft), other)
+		}
 		if other := sameArtifact(d.Models(), req.ProviderID, req.ModelName); other != "" {
 			return fieldErr(FieldName, "model %q already registers %s on %s; edit that one (wt model edit %s)", other, req.ModelName, req.ProviderID, other)
 		}
@@ -155,19 +176,102 @@ func Add(req AddRequest, env config.SeedEnv) (AddResult, error) {
 		return nil
 	})
 	if err != nil {
+		if plan.target != nil && req.ID == "" && errors.Is(err, config.ErrModelExists) {
+			// Not the same pairing (samePairing would have said so): another
+			// one whose target and draft end in the same two names.
+			return AddResult{}, fmt.Errorf("%w: a different pairing already has the id these names make; pass --id mlx_lm_server/<name> to register this one under an id of its own", err)
+		}
 		return AddResult{}, describe(err, req.ProviderID)
 	}
 	return res, nil
+}
+
+// PairingName is the model_name of an mlx_lm_server pairing, and with the
+// provider in front its id: the last path segment of the target and of the
+// draft, as modelman's form named one (Qwen3.8-27B+draft-Qwen3.8-4B). It
+// says what the pairing is wherever a model id is shown.
+func PairingName(target, draft string) string {
+	return lastSegment(target) + "+draft-" + lastSegment(draft)
+}
+
+func lastSegment(repoOrPath string) string {
+	trimmed := strings.TrimRight(repoOrPath, "/")
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 && trimmed[i+1:] != "" {
+		return trimmed[i+1:]
+	}
+	if trimmed == "" {
+		return repoOrPath
+	}
+	return trimmed
+}
+
+// artifactTable is one side of a pairing as a fetch or draft table: a
+// local_path for something that is spelled like a path (absolute, ~ or
+// dot-relative), a repo for anything else. A Hugging Face repo id is
+// org/name and never starts with one of those.
+func artifactTable(repoOrPath string) map[string]any {
+	for _, prefix := range []string{"/", "~", "./", "../"} {
+		if strings.HasPrefix(repoOrPath, prefix) {
+			return map[string]any{"local_path": repoOrPath}
+		}
+	}
+	return map[string]any{"repo": repoOrPath}
+}
+
+// samePairing returns the id of an mlx_lm_server row whose target and draft
+// are the ones given: the same repo or the same local path on each side. A
+// pairing is what its two sides are, not what they are called — a model
+// quantized locally to /quant/Big-4bit and mlx-community/Big-4bit make the
+// same pairing name with one draft, and are two pairings. "" when target is
+// nil (not a pairing) or no row matches.
+func samePairing(models []*tomlw.Table, target, draft map[string]any) string {
+	if target == nil {
+		return ""
+	}
+	side := func(row *tomlw.Table, key string) string {
+		t, _ := mustGet(row, key).(*tomlw.Table)
+		if t == nil {
+			return ""
+		}
+		return sideKey(map[string]any{"repo": mustGet(t, "repo"), "local_path": mustGet(t, "local_path")})
+	}
+	for _, m := range models {
+		if localmodels.RunningOnly(tableString(m, "provider_id")) && side(m, "fetch") == sideKey(target) && side(m, "draft") == sideKey(draft) {
+			return tableString(m, "id")
+		}
+	}
+	return ""
+}
+
+// sideKey is one side of a pairing in a form two spellings of it share: what
+// kind it is, and its text without a trailing slash.
+func sideKey(side map[string]any) string {
+	if p, _ := side["local_path"].(string); p != "" {
+		return "path:" + strings.TrimRight(p, "/")
+	}
+	repo, _ := side["repo"].(string)
+	return "repo:" + strings.TrimRight(repo, "/")
+}
+
+// sideText is one side of a pairing as the user gave it.
+func sideText(side map[string]any) string {
+	if p, _ := side["local_path"].(string); p != "" {
+		return p
+	}
+	repo, _ := side["repo"].(string)
+	return repo
 }
 
 // sameArtifact returns the id of a model row that already stands for the
 // same local artifact: the same provider family and model_name. The
 // inventory gives an artifact to the first row that matches it, so a second
 // row would read as "missing" for ever. "" for a provider with no probe (a
-// cloud provider may list one model under two ids, at two prices).
+// cloud provider may list one model under two ids, at two prices) and for an
+// mlx_lm_server pairing, which no inventory lists and whose model_name is
+// only the last segment of each side (samePairing judges those).
 func sameArtifact(models []*tomlw.Table, providerID, modelName string) string {
 	family := localmodels.Family(providerID)
-	if family == "" {
+	if family == "" || localmodels.RunningOnly(providerID) {
 		return ""
 	}
 	for _, m := range models {
