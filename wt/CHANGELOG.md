@@ -10,8 +10,11 @@
   sides are, not their names. wt cannot start a pairing: where it
   used to say `modelman start <id>`, it now names `llmbench provider isolate
   --solo mlx_lm_server <target> --draft <draft>` with the pairing's own
-  target and draft.
-
+  target and draft. The Models tab lists a pairing (`STATUS -`), shows its
+  target and draft under the table and edits its family, tags and prices; it
+  does not create one. Whether a pairing row reads as running is still
+  decided as before, and can name the wrong pairing
+  ([#299](https://github.com/ohanaverse/local-ai-setup/issues/299)).
 - `wt config` has a second tab, Models (`Tab` switches; `wt model` opens the
   editor on it): every registry model and every local model found, with
   status and running state. `d` removes the selected model from the registry

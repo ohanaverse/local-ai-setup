@@ -314,6 +314,7 @@ wt model init [--json]               # create registry.toml if missing; add defa
 wt model                             # `wt config` on its Models tab (needs TTY): n add, enter edit/register, d remove
 wt model list [--json]               # every registry model and every local model found, with live status
 wt model add <provider> <name> --family F   # register a model (seeds a missing default provider row; one route sync)
+wt model add mlx_lm_server <target> --draft <draft> --family F   # register a target+draft pairing; wt cannot start one and prints the llmbench command that does
 wt model edit <id> --tags code       # change family, tags, location or prices; nothing else in the row moves
 wt model rm <id> [--yes]             # registry only; prints where the weights are
 wt profile show -A <agent> -M <id>   # dry-run profile resolution

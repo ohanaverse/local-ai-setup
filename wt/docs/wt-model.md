@@ -154,10 +154,23 @@ row of `wt model list` and of the Models tab with `STATUS -`, since no probe
 can enumerate it; its family, tags and prices are edited like any model's,
 and the tab's form does not create one.
 
-With two or more pairings registered, a pairing row's `RUNNING` is a guess:
-the server lists the Hugging Face repo it serves, never a pairing's name, so
-wt cannot tell which registered pairing that is
-([#299](https://github.com/ohanaverse/local-ai-setup/issues/299)).
+A pairing row's `RUNNING` is not proof that this pairing is the one being
+served ([#299](https://github.com/ohanaverse/local-ai-setup/issues/299), open).
+The server lists the Hugging Face repo or path it serves, never a pairing's
+name, and nothing records which target and draft a running `mlx_lm.server`
+was started with:
+
+- With exactly one pairing registered, anything served on the mlx_lm_server
+  port marks that pairing `run` — a different, unregistered pairing started
+  with `llmbench provider isolate` included. `wt model add mlx_lm_server`
+  makes this case easy to reach: one add, and the registry has exactly one.
+- A pairing whose name is the end of a served repo id reads `run` as well.
+- With two or more registered and no name matching, `RUNNING` is `?`.
+
+wt shows the state and syncs the pairing's LiteLLM route by it, as it did
+before this command existed; `wt model add`, `edit` and `rm` decide nothing by
+it. When it matters which pairing is up, check
+`/tmp/local-ai-setup-mlx-lm-server.log` or the server's `/v1/models`.
 
 ## `wt model edit <id> [flags]`
 
@@ -210,10 +223,10 @@ share an id is a hand edit — only there can you see which row is which.
   "…"` (the `bin/mlx-quantize` workflow). wt keeps the key, shows the path, and
   takes the model's presence from a stat of it.
 - `[[families]]` display names. wt reads only each model's `family`.
-- An mlx_lm_server target+draft pairing (`[models.fetch]` and
-  `[models.draft]`): `wt model add` refuses that provider for now and names
-  the file, and the form does not offer it. A pairing that is there can be
-  edited and removed like any model.
+- The two sides of an mlx_lm_server pairing that is already registered: no
+  command changes a row's `[models.fetch]` or `[models.draft]`. (`wt model
+  add mlx_lm_server … --draft …` writes them once; to change a side, remove
+  the pairing and add it again, or edit the two tables.)
 - Two `[[models]]` rows with one id. Every launch refuses such a registry
   (`duplicate model id`), and `wt model edit`, `wt model rm` and the Models
   tab refuse the id rather than pick a row; `wt model list` and the tab still
@@ -236,7 +249,8 @@ says which provider, the end which variant.
 Under the table is the selected row's detail: its id, whole, then its status,
 `running` / `loading` / `running?`, and its tags (for a pairing, its target
 and draft); and the path of its weights on a line of its own, written from
-`~`. A short terminal drops the path before it drops table rows.
+`~`. A short terminal drops the path before it drops table rows, and a
+pairing's target and draft before its key hints and the id.
 
 A row whose `fetch` or `draft` is malformed in `registry.toml` has one more
 line under its id, in the words `wt model list` prints on stderr: `fetch is
@@ -275,8 +289,11 @@ per-token prices, and the subscription price and period.
 
 Provider offers every provider in the registry and the ones wt adds a row
 for by itself (ollama, omlx, mtplx, openrouter), but not mlx_lm_server: its
-model is a target+draft pairing, which `wt model add` refuses too (a hand
-edit, above). When editing, and when registering a `new` row, the provider
+model is a target+draft pairing, which takes two artifacts and is added on
+the command line (`wt model add mlx_lm_server <target> --draft <draft>`,
+above). `enter` on a pairing row opens the form like any other, to edit its
+family, tags, location and prices; its target and draft are not fields, and a
+save leaves `[models.fetch]` and `[models.draft]` as they are. When editing, and when registering a `new` row, the provider
 and the model name are fixed, and the title names the id. An edit writes only
 the fields you changed; saving an untouched form writes nothing and says `no
 change`. Adding an ollama model runs the `ollama show` lookup `wt model add`
