@@ -39,10 +39,10 @@ const (
 )
 
 // colDropOrder is the order in which columns are given up when the table is
-// wider than its list (tuilayout.Columns.DropOrder): the survey segment first, then usage from the longest
-// window to the shortest, cost, location and family. MODEL, STATUS and RUNNING
-// are not in it: they say what a row is and whether Enter launches or starts
-// it, so they are never dropped.
+// wider than its list (tuilayout.Columns.DropOrder): the survey segment
+// first, then usage from the longest window to the shortest, cost, location
+// and family. MODEL, STATUS and RUNNING are not in it: they say what a row is
+// and whether Enter launches or starts it, so they are never dropped.
 var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colLoc, colFamily}
 
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()

@@ -76,6 +76,37 @@ func TestColumnsDropInTheTablesOwnOrder(t *testing.T) {
 	}
 }
 
+// TestColumnsBuiltAsALiteralShowEveryColumn verifies a Columns written as a
+// struct literal, without NewColumns, draws every column until it is fitted
+// and then drops them in its own order like any other. Its fields are
+// exported, so the literal compiles; before, it showed no column at all — an
+// empty header and empty rows, with no error to say why.
+func TestColumnsBuiltAsALiteralShowEveryColumn(t *testing.T) {
+	built := testColumns(2)
+	literal := &Columns{Heads: built.Heads, Widths: built.Widths, Prefix: built.Prefix, DropOrder: built.DropOrder}
+	row := []string{PadRunes("alpha", 12), PadRunes("local", 5), PadRunes("ok", 7), PadRunes("5.2 GB", 6), "a note"}
+	if got, want := literal.Header(), built.Header(); got != want {
+		t.Errorf("header = %q, want %q", got, want)
+	}
+	if got, want := literal.Line(row), built.Line(row); got != want {
+		t.Errorf("line = %q, want %q", got, want)
+	}
+	if got, want := literal.Width(), built.Width(); got != want {
+		t.Errorf("Width = %d, want %d", got, want)
+	}
+	if !(&Columns{Heads: built.Heads, Widths: built.Widths}).Shown(tNote) {
+		t.Error("Shown reports a column of an unfitted literal as dropped")
+	}
+	literal.Fit(30)
+	built.Fit(30)
+	if got, want := literal.Header(), built.Header(); got != want {
+		t.Errorf("narrow header = %q, want %q", got, want)
+	}
+	if literal.Shown(tSize) || !literal.Shown(tName) {
+		t.Error("a fitted literal did not drop SIZE and keep NAME")
+	}
+}
+
 // TestColumnsLineMatchesTheHeader verifies a row shows exactly the header's
 // columns at every width, that a row's trailing padding is trimmed (an empty
 // last cell included), and that the header is indented by the rows' prefix.

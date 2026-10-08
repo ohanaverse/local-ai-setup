@@ -15,12 +15,13 @@ import (
 // This file is the one place a list-backed screen's height is worked out.
 //
 // Bubble Tea draws a view that is taller than the terminal by dropping lines
-// from its TOP. Every screen here puts its header and its status line at the
+// from its TOP. Every screen sized here puts its header and its status line at the
 // top and sizes a bubbles list underneath, so a list sized without counting
 // the lines around it does not produce a scrolled or clipped list: it silently
-// removes the header and the status. The model picker did exactly that — its
-// list was the window minus two, under six to eight lines of its own — so its
-// agent/tag header and every status it ever set were never on screen.
+// removes the header and the status. The launcher's model picker did exactly
+// that — its list was the window minus two, under six to eight lines of its
+// own — so its agent/tag header and every status it ever set were never on
+// screen.
 //
 // The rule that prevents it: a screen describes the lines around its list as
 // a ListFrame, the same function its View renders with, and FitList measures
@@ -32,11 +33,11 @@ import (
 // loses its last columns past the edge instead of truncating them with an
 // ellipsis inside it. FrameSides measures those columns from the frame, too.
 //
-// The measuring is done once, by fitLists, in the Update that changed
-// something; View does none of it. View asks DrawnFrame for the fullest frame
-// that leaves the list the height it already has, which is the frame fitLists
-// sized it for as long as both read the same model state. So after changing
-// state by hand (a test setting m.status, say), go through Update before
+// The measuring is done once, by FitTo, in the Update that changed something;
+// View does none of it. View asks DrawnFrame for the fullest frame that
+// leaves the list the height it already has, which is the frame FitTo sized
+// it for as long as both read the same model state. So after changing state
+// by hand (a test setting a status line, say), go through Update before
 // measuring View(): until then the list is still sized for the old state.
 
 // ListFrame renders a screen around its list's view: everything the screen
@@ -68,9 +69,9 @@ func Clip(s string, width int) string {
 //     width is found by trying: avail first, then one column less at a time.
 //   - floor, the least height at which l draws itself within the height it is
 //     given. Asked for less, it still draws its title bar, one item, its
-//     pagination line and its help: seven lines for the model table, nine for
-//     a prompt of title+description choices, about twelve with the full help
-//     (`?`) open.
+//     pagination line and its help: in the launcher, seven lines for the
+//     model table, nine for a prompt of title+description choices, about
+//     twelve with the full help (`?`) open.
 //
 // Both are measured, by rendering a copy of the list squeezed to one line,
 // rather than kept as constants, because they follow the list's own state and
@@ -104,15 +105,15 @@ const listWidthSlack = 16
 // FitList chooses how a screen is laid out in a terminal of the given height
 // and how tall its list may be. frames are the screen's layouts in order of
 // preference, fullest first; the first one that leaves the list at least
-// minList lines (its floor, from ListExtent) is used, and the list gets every line that
-// frame does not.
+// minList lines (its floor, from ListExtent) is used, and the list gets every
+// line that frame does not.
 //
 // When even the sparest frame leaves less than minList, the list is given
 // minList anyway — bubbles would draw that many lines whatever it was told —
 // and the view is taller than the terminal. Bubble Tea then drops lines from
 // the top of the view: first whatever the sparest frame prints above the list
 // (a status line), and once that is gone the list's own top lines, starting
-// with its title — for the model table, the column header. The rows nearest
+// with its title — for a table, the column header. The rows nearest
 // the bottom and the key hints under the list are what remain.
 //
 // Before the terminal has reported a size (height <= 0) the fullest frame is
