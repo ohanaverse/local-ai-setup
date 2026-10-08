@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -236,5 +237,85 @@ func TestPlainTableAlignsBothKindsOfColumn(t *testing.T) {
 	}
 	if key, rest := plainTableWidth(cols, [][]string{{"a", "long text", "7", "x"}}); key != 3 || rest != 2+9+2+3+2+4 {
 		t.Errorf("plainTableWidth = %d, %d; want 3 and 22", key, rest)
+	}
+}
+
+// TestModelListKeepsSizeWhenEveryIdIsShort verifies SIZE is dropped only
+// when the table really does not fit: with ids all shorter than the 20
+// columns MODEL is otherwise guaranteed, the six columns fit a terminal
+// narrower than 20 plus the rest, and dropping SIZE there (with a note that
+// it is not shown) would take a column off a table that had room for it.
+func TestModelListKeepsSizeWhenEveryIdIsShort(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models: []config.Model{
+			{ID: "ollama/gemma4:9b", Family: "gemma4", ProviderID: "ollama", ModelName: "gemma4:9b"},
+		},
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", ModelName: "gemma4:9b", Artifact: "gemma4:9b", Registered: true, ArtifactKnown: true, Size: 5_800_000_000},
+		},
+	})
+	var wide bytes.Buffer
+	if err := runModelList(&wide, &bytes.Buffer{}, cfg, false, 0); err != nil {
+		t.Fatal(err)
+	}
+	// The six columns without PATH: the full line less its last cell.
+	header := strings.Split(wide.String(), "\n")[0]
+	need := lipgloss.Width(strings.TrimRight(strings.TrimSuffix(header, "PATH"), " "))
+	if !strings.HasSuffix(header, "SIZE  PATH") || need < 40 {
+		t.Fatalf("fixture: unexpected full header %q", header)
+	}
+	var out, errOut bytes.Buffer
+	if err := runModelList(&out, &errOut, cfg, false, need); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "SIZE") || !strings.Contains(out.String(), "5.8 GB") {
+		t.Errorf("at %d columns, exactly what six columns need:\n%s\nwant SIZE kept", need, out.String())
+	}
+	if got := errOut.String(); got != "(PATH not shown at this width; `wt model list --json` has every column)\n" {
+		t.Errorf("stderr = %q, want only PATH named as dropped", got)
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if w := lipgloss.Width(line); w > need {
+			t.Errorf("line is %d columns wide, want at most %d: %q", w, need, line)
+		}
+	}
+	out.Reset()
+	errOut.Reset()
+	if err := runModelList(&out, &errOut, cfg, false, need-1); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "SIZE") || !strings.Contains(errOut.String(), "SIZE and PATH not shown") {
+		t.Errorf("one column narrower:\n%s\nstderr %q; want SIZE dropped and named", out.String(), errOut.String())
+	}
+}
+
+// TestModelListCommandGate runs `wt model list` through cobra to pin which
+// error stops it. A registry with a gap in it (the config loads, Validate
+// fails) is what the list exists to show, so it must still print; only a
+// registry that could not be loaded at all refuses. Swapping the gate to the
+// validation error would take away the one command for diagnosing that gap.
+func TestModelListCommandGate(t *testing.T) {
+	stubProbeInventory(t, modelListSnapshot())
+	run := func(a *app) (string, error) {
+		c := modelListCmd(a)
+		var out bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs(nil)
+		err := c.Execute()
+		return out.String(), err
+	}
+	out, err := run(&app{cfg: modelListConfig(), cfgErr: errors.New(`model "corp/x": provider_id "corp" names no provider row`)})
+	if err != nil || !strings.Contains(out, "ollama/gemma4:9b") {
+		t.Errorf("a config that loads but does not validate: err = %v, out =\n%s\nwant the listing", err, out)
+	}
+	loadErr := errors.New("registry.toml: toml: line 3: expected a value")
+	out, err = run(&app{cfg: &config.Config{}, cfgErr: loadErr, loadErr: loadErr})
+	if err == nil || !strings.Contains(err.Error(), "expected a value") || out != "" {
+		t.Errorf("a config that did not load: err = %v, out = %q; want the load error and no listing", err, out)
 	}
 }

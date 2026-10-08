@@ -12,14 +12,16 @@ import (
 
 // TestInventoryEntriesCarryTheModelDirectory verifies an omlx model (flat, and
 // inside an organization folder) and an mtplx model each report the directory
-// the scan found them in, for a registered row and a discovered one alike.
-// `wt model rm` prints that path as "the weights are still here"; a wrong or
-// empty one sends the user to delete the wrong directory, or none.
+// the scan found them in, for a registered row and a discovered one alike,
+// and that an omlx name found under two organizations is one entry with no
+// directory at all. `wt model rm` prints that path as "the weights are still
+// here"; a wrong or empty one sends the user to delete the wrong directory,
+// or none, and a guess between two organizations is the #266 case.
 func TestInventoryEntriesCarryTheModelDirectory(t *testing.T) {
 	omlxDir, mtplxDir := t.TempDir(), t.TempDir()
-	mkOmlxModels(t, omlxDir, "Flat-4bit", "mlx-community/Nested-6bit")
+	mkOmlxModels(t, omlxDir, "Flat-4bit", "mlx-community/Nested-6bit", "orgA/Same-4bit", "orgB/Same-4bit")
 	mkdirs(t, mtplxDir, "Org--Model")
-	omlx := &fakeOmlx{listed: []string{"Flat-4bit", "Nested-6bit"}, pool: map[string]bool{"Flat-4bit": false, "Nested-6bit": false}}
+	omlx := &fakeOmlx{listed: []string{"Flat-4bit", "Nested-6bit", "Same-4bit"}, pool: map[string]bool{"Flat-4bit": false, "Nested-6bit": false, "Same-4bit": false}}
 	mtplx := modelsServer(t)
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -33,6 +35,7 @@ func TestInventoryEntriesCarryTheModelDirectory(t *testing.T) {
 		"omlx/flat":        filepath.Join(omlxDir, "Flat-4bit"),
 		"omlx/Nested-6bit": filepath.Join(omlxDir, "mlx-community", "Nested-6bit"),
 		"mtplx/Org/Model":  filepath.Join(mtplxDir, "Org--Model"),
+		"omlx/Same-4bit":   "",
 	}
 	for id, path := range want {
 		e, ok := byModelID(snap, id)
@@ -64,6 +67,24 @@ func TestScanOmlxModelPathsDropsAmbiguousPath(t *testing.T) {
 	}
 	if paths["Solo-4bit"] != filepath.Join(dir, "Solo-4bit") {
 		t.Errorf("Solo path = %q", paths["Solo-4bit"])
+	}
+}
+
+// TestScanOmlxModelPathsWhenTheDirectoryIsItselfAModel verifies omlx's
+// fallback: a model directory that holds no model but is one is listed under
+// its own name, with itself as the path. That path is what `wt model list`
+// and `wt model rm` print for the one model of such a setup; without it the
+// row would say wt cannot tell where the weights are while the scan knows.
+func TestScanOmlxModelPathsWhenTheDirectoryIsItselfAModel(t *testing.T) {
+	root := t.TempDir()
+	mkOmlxModels(t, root, "Only-4bit")
+	dir := filepath.Join(root, "Only-4bit")
+	names, paths, err := scanOmlxModelPaths(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "Only-4bit" || len(paths) != 1 || paths["Only-4bit"] != dir {
+		t.Errorf("names = %v, paths = %v; want Only-4bit at %s", names, paths, dir)
 	}
 }
 

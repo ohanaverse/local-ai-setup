@@ -19,11 +19,11 @@ registry does not (`STATUS new`), from one live probe of the providers.
 | `STATUS` | `ok` — a cloud model, or local weights the probe found; `missing` — a registered local model that is not on disk; `unknown` — the provider could not be asked, wt has no probe for it, or the row's location does not resolve; `new` — on disk or pulled, not in the registry; `-` — an mlx_lm_server pairing, which is never enumerated |
 | `RUNNING` | `run`; `load` (omlx is still loading it); blank; `?` when the probe could not tell |
 | `SIZE` | the weights' size when the probe reports it (ollama); `-` otherwise |
-| `PATH` | the model's directory (omlx, mtplx) or its `fetch.local_path`; `-` otherwise, including when the only directory found belongs to another organization's model of the same name |
+| `PATH` | the model's directory (omlx, mtplx) or its `fetch.local_path`; `-` otherwise, including when the only directory found belongs to another organization's model of the same name, and when omlx has that name in more than one directory |
 
 The text table has no borders and fits the terminal: `PATH` is shown only when
 every row fits on one line with it, and `SIZE` only while it leaves `MODEL` at
-least 20 columns. A model id is never cut — one too long for its column gets a
+least 20 columns (or all its ids need, when that is less). A model id is never cut — one too long for its column gets a
 line of its own, above its cells. When a column is left out, a note on stderr
 says so. Into a pipe every column is printed, one model per line.
 

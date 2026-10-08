@@ -248,3 +248,117 @@ func TestRowsKeepOnlyTheModelsOwnDirectory(t *testing.T) {
 		t.Errorf("WeightsNote for a cross-organization match = %q, want the could-not-tell line", got)
 	}
 }
+
+// TestRowsKeepOnlyAnMtplxModelsOwnDirectory verifies the same rule for
+// mtplx, whose models all sit directly in its model directory as
+// <org>--<name>: "directly in the model directory" says nothing there, so
+// the directory's own name is what has to carry the row's organization.
+// Without it a row registered for OrgA/Model shows OrgB--Model as its
+// weights, the #266 case, whenever OrgB's copy is the only one on disk.
+func TestRowsKeepOnlyAnMtplxModelsOwnDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := home + "/.mtplx/models"
+	cfg := &config.Config{
+		Providers: []config.Provider{local("mtplx")},
+		Models: []config.Model{
+			{ID: "mtplx/own", Family: "q", ProviderID: "mtplx", ModelName: "A", Fetch: config.ModelArtifact{Repo: "OrgA/A"}},
+			{ID: "mtplx/other", Family: "q", ProviderID: "mtplx", ModelName: "B", Fetch: config.ModelArtifact{Repo: "OrgA/B"}},
+			{ID: "mtplx/by-name", Family: "q", ProviderID: "mtplx", ModelName: "OrgA/C"},
+			{ID: "mtplx/no-org", Family: "q", ProviderID: "mtplx", ModelName: "D"},
+			{ID: "mtplx/flat", Family: "q", ProviderID: "mtplx", ModelName: "E", Fetch: config.ModelArtifact{Repo: "OrgA/E"}},
+		},
+	}
+	entry := func(id, name, artifact, path string) localmodels.Entry {
+		return localmodels.Entry{ProviderID: "mtplx", ModelID: id, ModelName: name, Artifact: artifact, Registered: true, ArtifactKnown: true, Path: path}
+	}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK},
+		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
+		Entries: []localmodels.Entry{
+			entry("mtplx/own", "A", "OrgA/A", dir+"/OrgA--A"),
+			entry("mtplx/other", "B", "OrgB/B", dir+"/OrgB--B"),
+			entry("mtplx/by-name", "OrgA/C", "OrgB/C", dir+"/OrgB--C"),
+			entry("mtplx/no-org", "D", "OrgB/D", dir+"/OrgB--D"),
+			entry("mtplx/flat", "E", "E", dir+"/E"),
+		},
+	}
+	rows := Rows(cfg, snap)
+	for id, want := range map[string]string{
+		"mtplx/own":     dir + "/OrgA--A",
+		"mtplx/other":   "",
+		"mtplx/by-name": "",
+		"mtplx/no-org":  dir + "/OrgB--D",
+		"mtplx/flat":    dir + "/E",
+	} {
+		if got := rowByID(t, rows, id).Path; got != want {
+			t.Errorf("%s: Path = %q, want %q", id, got, want)
+		}
+	}
+	if got := WeightsNote(rowByID(t, rows, "mtplx/other")); got != "wt could not tell where its weights are" {
+		t.Errorf("WeightsNote for another organization's mtplx directory = %q, want the could-not-tell line", got)
+	}
+}
+
+// TestRowsTakeTheOrganizationFromAnOmlxModelName verifies an omlx row with
+// no fetch table whose model_name is written org/name is held to that
+// organization too. A hand-written row of that shape matched to another
+// organization's folder would otherwise print that folder as its weights.
+func TestRowsTakeTheOrganizationFromAnOmlxModelName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := home + "/.omlx/models"
+	cfg := &config.Config{
+		Providers: []config.Provider{local("omlx")},
+		Models: []config.Model{
+			{ID: "omlx/theirs", Family: "q", ProviderID: "omlx", ModelName: "org-a/Name"},
+			{ID: "omlx/ours", Family: "q", ProviderID: "omlx", ModelName: "org-a/Mine"},
+		},
+	}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/theirs", ModelName: "org-a/Name", Artifact: "Name", Registered: true, ArtifactKnown: true, Path: dir + "/org-b/Name"},
+			{ProviderID: "omlx", ModelID: "omlx/ours", ModelName: "org-a/Mine", Artifact: "Mine", Registered: true, ArtifactKnown: true, Path: dir + "/org-a/Mine"},
+		},
+	}
+	rows := Rows(cfg, snap)
+	if got := rowByID(t, rows, "omlx/theirs").Path; got != "" {
+		t.Errorf("a model_name of org-a matched to org-b's folder: Path = %q, want none", got)
+	}
+	if got := rowByID(t, rows, "omlx/ours").Path; got != dir+"/org-a/Mine" {
+		t.Errorf("a model_name of org-a in org-a's folder: Path = %q", got)
+	}
+}
+
+// TestRowsNeverListTwoRowsWithOneID verifies a discovered artifact whose id
+// a registry row already holds is left out: a row omlx/Foo whose model_name
+// matches nothing on disk, beside an on-disk Foo, would otherwise be listed
+// twice under omlx/Foo, once missing and once new. `wt model rm omlx/Foo`
+// and the Models tab both act on a row by its id.
+func TestRowsNeverListTwoRowsWithOneID(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{local("omlx")},
+		Models:    []config.Model{{ID: "omlx/Foo", Family: "q", ProviderID: "omlx", ModelName: "Renamed-4bit"}},
+	}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/Foo", ModelName: "Renamed-4bit", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", ModelID: "omlx/Foo", ModelName: "Foo", Artifact: "Foo", ArtifactKnown: true, Path: "/omlx/Foo"},
+			{ProviderID: "omlx", ModelID: "omlx/Bar", ModelName: "Bar", Artifact: "Bar", ArtifactKnown: true, Path: "/omlx/Bar"},
+		},
+	}
+	rows := Rows(cfg, snap)
+	if len(rows) != 2 {
+		t.Fatalf("%d rows, want the registry row and the one discovered model with a free id: %+v", len(rows), rows)
+	}
+	if r := rowByID(t, rows, "omlx/Foo"); !r.Registered || r.Status != StatusMissing {
+		t.Errorf("omlx/Foo = %+v, want the registered, missing row", r)
+	}
+	if r := rowByID(t, rows, "omlx/Bar"); r.Status != StatusNew {
+		t.Errorf("omlx/Bar status = %q, want new", r.Status)
+	}
+}

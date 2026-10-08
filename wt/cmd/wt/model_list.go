@@ -123,7 +123,8 @@ const modelListMinKey = 20
 // fitModelList picks the columns that fit width (0: no limit) and returns
 // them with the rows' cells. PATH is shown only when every row fits on one
 // line with it. SIZE stays as long as the other columns leave MODEL at least
-// modelListMinKey columns. The five columns that say what a row is are never
+// modelListMinKey columns, or all it needs when every id is shorter than
+// that. The five columns that say what a row is are never
 // dropped. dropped names what was left out, "" when nothing was.
 func fitModelList(rows []modeladmin.Row, width int) (cols []plainColumn, cells [][]string, dropped string) {
 	full := make([][]string, len(rows))
@@ -148,7 +149,7 @@ func fitModelList(rows []modeladmin.Row, width int) (cols []plainColumn, cells [
 		return cols, cells, ""
 	}
 	take(6)
-	if _, rest := plainTableWidth(cols, cells); modelListMinKey+rest <= width {
+	if key, rest := plainTableWidth(cols, cells); min(key, modelListMinKey)+rest <= width {
 		return cols, cells, "PATH"
 	}
 	take(5)

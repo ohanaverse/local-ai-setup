@@ -142,9 +142,18 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 		}
 		return rows[i].ID < rows[j].ID
 	})
+	// A registry id is taken: a discovered artifact that would be listed
+	// under one (a row omlx/Foo whose model_name is something else, beside an
+	// on-disk Foo) is left out, as internal/catalog leaves it out of the
+	// pickers. Two rows with one id would make `wt model rm <id>` and the
+	// Models tab's cursor, which both go by id, act on the wrong one.
+	taken := map[string]bool{}
+	for _, m := range cfg.Models {
+		taken[m.ID] = true
+	}
 	var found []Row
 	for _, e := range snap.Entries {
-		if e.Registered {
+		if e.Registered || taken[e.ModelID] {
 			continue
 		}
 		found = append(found, Row{
@@ -161,22 +170,37 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 // registered model is that model's own. The probe matches by leaf name, so a
 // model registered as org-a/Name can be matched to org-b/Name; printing that
 // path would send `wt model rm`'s reader to another organization's weights
-// (closed issue #266). A model with no fetch.repo has nothing to contradict
-// the match; one with a repo keeps the path only when the directory sits
-// directly in the provider's model directory or in a folder named after the
-// repo's organization.
+// (closed issue #266). The organization the row claims is its fetch.repo's,
+// or its model_name's when that is written org/name; a row that names none
+// has nothing to contradict the match. One that names an organization keeps
+// the path only when the directory does not belong to another:
+//
+//   - mtplx keeps every model directly in its model directory, named
+//     <org>--<name>, so the directory's own name has to start with the
+//     organization (one with no "--" in it names none and is kept);
+//   - omlx: the directory sits directly in the provider's model directory,
+//     or in a folder named after the organization.
 func ownDirectory(cfg *config.Config, m config.Model, path string) bool {
 	if path == "" {
 		return false
 	}
+	org, _, ok := strings.Cut(m.Fetch.Repo, "/")
 	if m.Fetch.Repo == "" {
+		org, _, ok = strings.Cut(m.ModelName, "/")
+	}
+	if !ok || org == "" {
 		return true
+	}
+	family := localmodels.Family(m.ProviderID)
+	if family == "mtplx" {
+		base := filepath.Base(path)
+		return !strings.Contains(base, "--") || strings.HasPrefix(base, org+"--")
 	}
 	parent := filepath.Dir(path)
-	if org, _, ok := strings.Cut(m.Fetch.Repo, "/"); ok && filepath.Base(parent) == org {
+	if filepath.Base(parent) == org {
 		return true
 	}
-	dir, err := localmodels.ModelDir(cfg, localmodels.Family(m.ProviderID))
+	dir, err := localmodels.ModelDir(cfg, family)
 	return err == nil && filepath.Clean(dir) == filepath.Clean(parent)
 }
 
