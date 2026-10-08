@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -343,5 +345,104 @@ func TestModelListCommandGate(t *testing.T) {
 	out, err = run(&app{cfg: &config.Config{}, cfgErr: loadErr, loadErr: loadErr})
 	if err == nil || !strings.Contains(err.Error(), "expected a value") || out != "" {
 		t.Errorf("a config that did not load: err = %v, out = %q; want the load error and no listing", err, out)
+	}
+}
+
+// TestModelListListsARowWithAMalformedFetch runs `wt model list --json` over
+// a registry file whose rows carry a fetch or draft that is not a table, as a
+// hand edit leaves one. The registry must load and each row must be listed,
+// its path or its pairing side simply not known: this listing is where the
+// user finds the row to repair, and a load that failed on it would take the
+// listing — and every launch — away over a key wt only reads for display.
+func TestModelListListsARowWithAMalformedFetch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	if err := os.MkdirAll(filepath.Join(home, "local-ai"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const registry = `
+[[providers]]
+id = "omlx"
+location = "local"
+[providers.auth]
+type = "none"
+
+[[providers]]
+id = "mlx_lm_server"
+location = "local"
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "omlx/slip"
+family = "qwen"
+provider_id = "omlx"
+model_name = "slip-4bit"
+fetch = "~/models/slip-4bit"
+
+[[models]]
+id = "mlx_lm_server/T+draft-D"
+family = "qwen"
+provider_id = "mlx_lm_server"
+model_name = "T+draft-D"
+draft = 7
+[models.fetch]
+repo = ["org/T"]
+`
+	if err := os.WriteFile(filepath.Join(home, "local-ai", "registry.toml"), []byte(registry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/slip", ModelName: "slip-4bit", Registered: true, ArtifactKnown: true},
+			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/T+draft-D", ModelName: "T+draft-D", Registered: true},
+		},
+	})
+	a, err := newApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.loadErr != nil {
+		t.Fatalf("the registry did not load: %v", a.loadErr)
+	}
+	c := modelListCmd(a)
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&bytes.Buffer{})
+	c.SetArgs([]string{"--json"})
+	if err := c.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Models []struct {
+			ID     string  `json:"id"`
+			Status string  `json:"status"`
+			Path   *string `json:"path"`
+			Target string  `json:"target"`
+			Draft  string  `json:"draft"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	if len(doc.Models) != 2 {
+		t.Fatalf("got %d rows, want both registry rows:\n%s", len(doc.Models), out.String())
+	}
+	for _, m := range doc.Models {
+		switch m.ID {
+		case "omlx/slip":
+			if m.Status != "missing" || m.Path != nil {
+				t.Errorf("omlx/slip = %+v, want it listed as the probe found it, with no path", m)
+			}
+		case "mlx_lm_server/T+draft-D":
+			if m.Status != "-" || m.Target != "" || m.Draft != "" {
+				t.Errorf("pairing = %+v, want it listed with neither side named", m)
+			}
+		default:
+			t.Errorf("unexpected row %q", m.ID)
+		}
 	}
 }

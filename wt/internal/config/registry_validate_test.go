@@ -61,6 +61,57 @@ input_price_per_million = -1
 		}
 	})
 
+	// A hand-edited fetch or draft the reader tolerates (it reads as absent):
+	// the writer is where the slip is named, and only for the row it sits in.
+	const withBadFetch = docRegistry + `
+[[models]]
+id = "ollama/slip"
+family = "fam"
+provider_id = "ollama"
+model_name = "slip"
+fetch = "org/slip"
+
+[models.draft]
+repo = 7
+`
+	t.Run("a malformed fetch elsewhere does not block the write", func(t *testing.T) {
+		path := scratchRegistry(t, withBadFetch)
+		if changed, err := UpdateRegistry(setFamily("ollama/beta", "fine")); err != nil || !changed {
+			t.Fatalf("UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+		}
+		if got := readFile(t, path); !strings.Contains(got, `fetch = "org/slip"`) || !strings.Contains(got, "repo = 7") {
+			t.Errorf("the untouched row's fetch and draft should be kept as written:\n%s", got)
+		}
+	})
+	t.Run("touching the row with the malformed fetch names the key", func(t *testing.T) {
+		path := scratchRegistry(t, withBadFetch)
+		_, err := UpdateRegistry(setFamily("ollama/slip", "other"))
+		if !errors.Is(err, ErrRegistryInvalid) || !strings.Contains(err.Error(), `model "ollama/slip": fetch must be a table`) {
+			t.Fatalf("err = %v, want ErrRegistryInvalid naming the row and fetch", err)
+		}
+		_, err = UpdateRegistry(func(d *RegistryDoc) error {
+			return d.PatchModel("ollama/slip", nil, []string{"fetch"})
+		})
+		if !errors.Is(err, ErrRegistryInvalid) || !strings.Contains(err.Error(), `model "ollama/slip": draft.repo must be a string`) {
+			t.Fatalf("err = %v, want ErrRegistryInvalid naming the row and draft.repo", err)
+		}
+		if got := readFile(t, path); got != withBadFetch {
+			t.Error("a refused write changed the file")
+		}
+	})
+	t.Run("and the edit that repairs it is written", func(t *testing.T) {
+		path := scratchRegistry(t, withBadFetch)
+		changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+			return d.PatchModel("ollama/slip", map[string]any{"draft.repo": "org/draft"}, []string{"fetch"})
+		})
+		if err != nil || !changed {
+			t.Fatalf("UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+		}
+		if got := readFile(t, path); strings.Contains(got, "org/slip") || !strings.Contains(got, `repo = "org/draft"`) {
+			t.Errorf("the repaired row should be written:\n%s", got)
+		}
+	})
+
 	invalid := []struct {
 		name  string
 		set   map[string]any
@@ -83,6 +134,10 @@ input_price_per_million = -1
 		{"a legacy period that is not a string", map[string]any{"cost.kind": "subscription", "cost.period": 12}, nil, "period must be a string"},
 		{"fetch that is not a table", map[string]any{"fetch": "org/beta"}, nil, "fetch must be a table"},
 		{"draft that is not a table", map[string]any{"draft": []string{"org/draft"}}, nil, "draft must be a table"},
+		{"a fetch repo that is not a string", map[string]any{"fetch.repo": 7}, nil, "fetch.repo must be a string"},
+		{"a fetch local_path that is not a string", map[string]any{"fetch": map[string]any{"repo": "org/beta", "local_path": true}}, nil, "fetch.local_path must be a string"},
+		{"a draft repo that is not a string", map[string]any{"draft.repo": []string{"org/draft"}}, nil, "draft.repo must be a string"},
+		{"a draft local_path that is not a string", map[string]any{"draft.local_path": 1.5}, nil, "draft.local_path must be a string"},
 		{"time_prices that are not rows", map[string]any{"cost.time_prices": "off-peak"}, nil, "time_prices must be an array of tables"},
 		{"a time price with an unknown zone", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "Mars/Olympus", "windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "01:00"}}}}}, nil, `timezone "Mars/Olympus" is not a known IANA timezone`},
 		{"a time price with no zone", map[string]any{"cost.time_prices": []map[string]any{{"windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "01:00"}}}}}, nil, `timezone "" is not a known IANA timezone`},
@@ -129,6 +184,8 @@ input_price_per_million = -1
 		{"a legacy per-token price", map[string]any{"cost.kind": "per_token", "cost.price_per_million_tokens": 2.5}, "price_per_million_tokens = 2.5"},
 		{"a legacy subscription", map[string]any{"cost.kind": "subscription", "cost.price_per_period": 20, "cost.period": "year"}, `period = "year"`},
 		{"fetch and draft tables", map[string]any{"fetch.repo": "org/beta", "draft": map[string]any{"repo": "org/draft"}}, "[models.draft]"},
+		{"an empty fetch table", map[string]any{"fetch": map[string]any{}}, "[models.fetch]"},
+		{"fetch keys wt does not model", map[string]any{"fetch": map[string]any{"repo": "org/beta", "files": []string{"a"}, "x_note": 3}}, "x_note = 3"},
 	}
 	for _, c := range valid {
 		t.Run("accepted: "+c.name, func(t *testing.T) {

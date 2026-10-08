@@ -191,7 +191,8 @@ func resolveRegistryFile(path string) (target string, exists bool, err error) {
 
 // loadRegistry decodes the shared registry.toml into providers and
 // models. A model's fetch and draft tables are decoded into Model.Fetch and
-// Model.Draft (a repo or a local_path each); model_info is decoded into
+// Model.Draft (a repo or a local_path each; a malformed one reads as absent
+// and never fails the load); model_info is decoded into
 // Model.ModelInfo and merged into the LiteLLM rows wt writes; model_dir and auth fields are parsed into the
 // provider data, and auth.type drives Model.Native — the single source of
 // truth for native-ness, consumed by driver dispatch and route resolution.

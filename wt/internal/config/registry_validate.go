@@ -71,19 +71,39 @@ func validateModelRow(row *tomlw.Table) error {
 			return fmt.Errorf("cost: %w", err)
 		}
 	}
-	// modelman reads these two with dict methods, so anything but a table
-	// makes its load crash rather than report; wt's Model has no field for
-	// either, so the typed decode below would not notice.
+	// wt's reader takes a malformed fetch or draft for an absent one
+	// (ModelArtifact.UnmarshalTOML), so the typed decode below does not
+	// notice it; this is where it is named.
 	for _, k := range []string{"fetch", "draft"} {
 		if v, ok := row.Get(k); ok {
-			if _, isTable := v.(*tomlw.Table); !isTable {
-				return fmt.Errorf("%s must be a table", k)
+			if err := validateArtifact(k, v); err != nil {
+				return err
 			}
 		}
 	}
 	return typedDecode("models", row, &struct {
 		Models []Model `toml:"models"`
 	}{})
+}
+
+// validateArtifact checks a fetch or draft value against the shape wt reads
+// (artifactFields): a table whose repo and local_path, when present, are
+// strings. modelman reads the two with dict methods, so anything but a table
+// crashes its load rather than reports. An empty table and keys wt does not
+// model pass, as they load.
+func validateArtifact(key string, v any) error {
+	table, isTable := v.(*tomlw.Table)
+	if !isTable {
+		return fmt.Errorf("%s must be a table", key)
+	}
+	for _, f := range artifactFields {
+		if fv, ok := table.Get(f.key); ok {
+			if _, isString := fv.(string); !isString {
+				return fmt.Errorf("%s.%s must be a string", key, f.key)
+			}
+		}
+	}
+	return nil
 }
 
 // requireStrings checks that each key is a non-empty string. modelman only
