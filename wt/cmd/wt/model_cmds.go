@@ -151,6 +151,12 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			failures = append(failures, err)
 		}
 	}
+	// The signal context comes before the wait below, not after it: the model
+	// loop released its own handler when it returned, and with none installed
+	// a Ctrl+C during the wait would kill wt outright, mid proxy restart. Caught
+	// here, it is seen by the first pass of the halt loop and reported.
+	ctx, cancel := startSignalCtx()
+	defer cancel()
 	if len(entries) > 0 && len(pools) > 0 {
 		// The model loop may have started a LiteLLM proxy restart (a stopped
 		// mtplx model's route), and halting a pool starts its own. They run
@@ -158,8 +164,6 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 		// finished here: two at once restart the proxy under each other.
 		waitPendingRoutes()
 	}
-	ctx, cancel := startSignalCtx()
-	defer cancel()
 	for i, id := range pools {
 		if ctx.Err() != nil {
 			failures = append(failures, notHalted(pools[i:]))
