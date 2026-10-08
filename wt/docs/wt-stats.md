@@ -167,8 +167,11 @@ The query waits at most 3 seconds for a connection and 10 seconds in all,
 and never prompts for a password. The window is `--window` ending at the
 report's instant (the one the launch counts are measured from), in UTC:
 `"startTime"` after `as_of - window` and no later than `as_of`, the same
-edges the launch counts use, so a request and the launch that sent it are
-counted or left out together. wt only reads; it writes nothing to the database.
+edges the launch counts use, so a launch and a request dated the same
+instant are counted or left out together. A request is logged after its
+launch, so a session launched just before the window starts can still show
+requests with no launch in the window. wt only reads; it writes nothing to
+the database.
 
 The connection string is never on `psql`'s command line, where `ps` would
 show it to every user of the machine. wt reads the string and gives `psql`

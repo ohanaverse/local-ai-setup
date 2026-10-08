@@ -161,7 +161,7 @@ What differs from `modelman usage report`:
 |---|---|
 | `--days N`, default 7 | `--window 1d\|7d\|30d`, default `30d`; no other lengths |
 | Three launch buckets (1d/7d/30d) beside a spend window of `--days` | One launch count and one spend total, both for `--window` |
-| `## Reconciliation` lists | Read them off the table: launches with `0` requests bypassed the proxy; requests with `0` launches did not come from wt. Both columns cover the same window — after `as_of - window`, up to and including `as_of` — so a request at the very edge is never counted without its launch |
+| `## Reconciliation` lists | Read them off the table: launches with `0` requests bypassed the proxy; requests with `0` launches did not come from wt. Both columns cover the same window — after `as_of - window`, up to and including `as_of`. A session launched just before the window starts can still show requests with `0` launches |
 | `## Last wt launch` | Not shown (`cat ~/.config/agent-wt/rotation.state`) |
 | Markdown on stdout | A plain table |
 | Fails without `config.yaml` or a database | Prints the launch counts, `-` in the spend cells, one note on stderr, exit 0 |
