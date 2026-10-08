@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -366,5 +367,58 @@ func TestRowsNeverListTwoRowsWithOneID(t *testing.T) {
 	}
 	if r := rowByID(t, rows, "omlx/Bar"); r.Status != StatusNew {
 		t.Errorf("omlx/Bar status = %q, want new", r.Status)
+	}
+}
+
+// TestRowsCarryWhatIsMalformedInTheRegistryRow verifies a row carries the
+// phrases for its model's malformed fetch or draft (config.Model.Malformed),
+// an empty list for a well-formed registry row and for a discovered one, and
+// that the record changes nothing else about the row. `wt model list` prints
+// them and the Models tab is built on the same rows; without them a
+// hand-typed `fetch = "~/models/x"` just reads "missing", with no hint why.
+func TestRowsCarryWhatIsMalformedInTheRegistryRow(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{local("omlx"), local("mlx_lm_server")},
+		Models: []config.Model{
+			{ID: "omlx/slip", Family: "q", ProviderID: "omlx", ModelName: "slip-4bit",
+				Fetch: config.ModelArtifact{Malformed: config.ArtifactFaults{NotTable: true}}},
+			{ID: "mlx_lm_server/T+draft-D", Family: "q", ProviderID: "mlx_lm_server", ModelName: "T+draft-D",
+				Fetch: config.ModelArtifact{LocalPath: "/m/T", Malformed: config.ArtifactFaults{Repo: true}},
+				Draft: config.ModelArtifact{Malformed: config.ArtifactFaults{NotTable: true}}},
+			{ID: "omlx/fine", Family: "q", ProviderID: "omlx", ModelName: "fine-4bit", Fetch: config.ModelArtifact{Repo: "org/fine-4bit"}},
+		},
+	}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/slip", ModelName: "slip-4bit", Registered: true, ArtifactKnown: true},
+			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/T+draft-D", ModelName: "T+draft-D", Registered: true},
+			{ProviderID: "omlx", ModelID: "omlx/fine", ModelName: "fine-4bit", Artifact: "fine-4bit", Registered: true, ArtifactKnown: true, Path: "/omlx/fine-4bit"},
+			{ProviderID: "omlx", ModelID: "omlx/Found-8bit", ModelName: "Found-8bit", Artifact: "Found-8bit", ArtifactKnown: true},
+		},
+	}
+	rows := map[string]Row{}
+	for _, r := range Rows(cfg, snap) {
+		rows[r.ID] = r
+	}
+	want := map[string][]string{
+		"omlx/slip":               {"fetch is not a table"},
+		"mlx_lm_server/T+draft-D": {"fetch.repo is not a string", "draft is not a table"},
+		"omlx/fine":               nil,
+		"omlx/Found-8bit":         nil,
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(rows), len(want))
+	}
+	for id, w := range want {
+		if got := rows[id].Malformed; !slices.Equal(got, w) {
+			t.Errorf("%s: Malformed = %q, want %q", id, got, w)
+		}
+	}
+	if r := rows["omlx/slip"]; r.Status != StatusMissing || r.Path != "" {
+		t.Errorf("omlx/slip = %+v, want it listed as the probe found it, with no path", r)
+	}
+	if r := rows["mlx_lm_server/T+draft-D"]; r.Status != StatusNone || r.Target != "/m/T" || r.Draft != "" {
+		t.Errorf("pairing = %+v, want the side that was read and no other", r)
 	}
 }

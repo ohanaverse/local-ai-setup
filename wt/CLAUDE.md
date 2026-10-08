@@ -168,7 +168,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 - **`ResolveLocation` is the one judge of a location**: every consumer keys off its error (`config.ErrLocation`), so catalog, inventory, sync and validation agree.
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
 - **`config.UpdateRegistry` is the only registry write path**: flock, symlink write-through, touched-row validation, no-op skip, re-check before rename. Its `apply` must be pure (it may run up to three times). `RegistryDoc`'s operations are patch-shaped — never round-trip a `config.Model` into the file.
-- **A malformed `fetch` or `draft` reads as absent and never fails the load** (`ModelArtifact.UnmarshalTOML`); the writer's touched-row check names it. modelman's loader crashes on a `fetch` that is not a table.
+- **A malformed `fetch` or `draft` reads as absent and never fails the load** (`ModelArtifact.UnmarshalTOML`); `wt model list` alone says so (a stderr line per row and `malformed` in `--json`, from `Model.Malformed()`), and the writer's touched-row check names it. modelman's loader crashes on a `fetch` that is not a table.
 - **Read-side schemas are pinned by contract fixtures** in `../docs/contracts/`, loaded by `internal/config` tests and modelman's `tests/contracts/` — a schema change updates both sides.
 - A missing registry lets an *unconfigured* agent launch as a native passthrough (`agents.BuildPassthroughCmd`); a configured one fails on model resolution.
 

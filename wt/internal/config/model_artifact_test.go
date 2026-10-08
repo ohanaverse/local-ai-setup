@@ -1,6 +1,14 @@
 package config
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/BurntSushi/toml"
+)
 
 // TestModelDecodesFetchAndDraft verifies wt reads a model's fetch and draft
 // tables: the repo of each side of the shared fixture's mlx_lm_server pairing,
@@ -125,6 +133,9 @@ repo = "org/second"
 			if first.ID != "omlx/first" || first.ModelName != "first-4bit" || len(first.Tags) != 1 {
 				t.Errorf("the rest of the row changed: %+v", first)
 			}
+			// What the two hold, apart from the record of what was malformed
+			// (TestModelNamesItsMalformedFetchAndDraft).
+			first.Fetch.Malformed, first.Draft.Malformed = ArtifactFaults{}, ArtifactFaults{}
 			if first.Fetch != c.fetch {
 				t.Errorf("Fetch = %+v, want %+v", first.Fetch, c.fetch)
 			}
@@ -135,5 +146,132 @@ repo = "org/second"
 				t.Errorf("the next row's Fetch = %+v, want its repo", got)
 			}
 		})
+	}
+}
+
+// TestModelNamesItsMalformedFetchAndDraft verifies the loader records what it
+// tolerated: Model.Malformed names each fetch or draft value that is not a
+// table and each repo or local_path that is not a string, fetch before draft
+// and repo before local_path, and names nothing for a well-formed, empty or
+// absent table. Tolerating a slip such as `fetch = "~/models/x"` in silence
+// leaves a row that reads "missing" with no hint why; `wt model list` prints
+// these phrases, so their wording and order are what the user sees. The
+// record must not change what Fetch and Draft hold.
+func TestModelNamesItsMalformedFetchAndDraft(t *testing.T) {
+	const head = `
+[[providers]]
+id = "omlx"
+location = "local"
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "omlx/first"
+family = "qwen"
+provider_id = "omlx"
+model_name = "first-4bit"
+`
+	// A well-formed row after the malformed one must report nothing: the
+	// record belongs to its own row.
+	const tail = `
+[[models]]
+id = "omlx/second"
+family = "qwen"
+provider_id = "omlx"
+model_name = "second-4bit"
+[models.fetch]
+repo = "org/second"
+`
+	cases := []struct {
+		name string
+		body string
+		want []string
+		// fetch and draft are what the two still hold.
+		fetch, draft string
+	}{
+		{"a string", `fetch = "~/models/x"`, []string{"fetch is not a table"}, "", ""},
+		{"an integer", "fetch = 7", []string{"fetch is not a table"}, "", ""},
+		{"an array", `fetch = ["org/S"]`, []string{"fetch is not a table"}, "", ""},
+		{"an array of tables", "[[models.fetch]]\nrepo = \"org/S\"", []string{"fetch is not a table"}, "", ""},
+		{"a repo that is not a string", "[models.fetch]\nrepo = 7\nlocal_path = \"/m/first\"",
+			[]string{"fetch.repo is not a string"}, "/m/first", ""},
+		{"a local_path that is not a string", "[models.fetch]\nrepo = \"org/S\"\nlocal_path = false",
+			[]string{"fetch.local_path is not a string"}, "org/S", ""},
+		{"both keys bad", "[models.fetch]\nlocal_path = 1\nrepo = [\"org/S\"]",
+			[]string{"fetch.repo is not a string", "fetch.local_path is not a string"}, "", ""},
+		{"fetch bad and draft fine", "fetch = \"org/S\"\n[models.draft]\nrepo = \"org/D\"",
+			[]string{"fetch is not a table"}, "", "org/D"},
+		{"draft bad and fetch fine", "draft = 7\n[models.fetch]\nrepo = \"org/S\"",
+			[]string{"draft is not a table"}, "org/S", ""},
+		{"a draft key that is not a string", "[models.fetch]\nrepo = \"org/S\"\n[models.draft]\nlocal_path = { a = 1 }",
+			[]string{"draft.local_path is not a string"}, "org/S", ""},
+		{"both malformed", "draft = true\n[models.fetch]\nlocal_path = 3\nrepo = 2",
+			[]string{"fetch.repo is not a string", "fetch.local_path is not a string", "draft is not a table"}, "", ""},
+		{"well formed", "[models.fetch]\nrepo = \"org/S\"\nlocal_path = \"/s\"\nfiles = [\"a\"]\n[models.draft]\nrepo = \"org/D\"", nil, "/s", "org/D"},
+		{"empty tables", "[models.fetch]\n[models.draft]", nil, "", ""},
+		{"absent", "", nil, "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("WT_REGISTRY", "")
+			t.Setenv("MODELMAN_REGISTRY", "")
+			writeRegistry(t, t.TempDir(), head+c.body+"\n"+tail)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() = %v, want the registry to load", err)
+			}
+			if len(cfg.Models) != 2 {
+				t.Fatalf("got %d models, want 2", len(cfg.Models))
+			}
+			first := cfg.Models[0]
+			if got := first.Malformed(); !slices.Equal(got, c.want) {
+				t.Errorf("Malformed() = %q, want %q", got, c.want)
+			}
+			if got := first.Fetch.Target(); got != c.fetch {
+				t.Errorf("Fetch.Target() = %q, want %q", got, c.fetch)
+			}
+			if got := first.Draft.Target(); got != c.draft {
+				t.Errorf("Draft.Target() = %q, want %q", got, c.draft)
+			}
+			if got := cfg.Models[1].Malformed(); got != nil {
+				t.Errorf("the next, well-formed row reports %q, want nothing", got)
+			}
+		})
+	}
+}
+
+// TestMalformedRecordIsNeverSerialised verifies the record of a malformed
+// fetch or draft stays in memory: neither the TOML encoder (wt's config.toml
+// writers encode a Config) nor encoding/json prints it. It describes how a
+// value was written, not a value, and a key for it in a file would be read
+// back by modelman as registry data it does not know.
+func TestMalformedRecordIsNeverSerialised(t *testing.T) {
+	m := Model{
+		ID: "omlx/x", Family: "q", ProviderID: "omlx", ModelName: "x",
+		Fetch: ModelArtifact{LocalPath: "/m/x", Malformed: ArtifactFaults{Repo: true}},
+		Draft: ModelArtifact{Malformed: ArtifactFaults{NotTable: true}},
+	}
+	if got := m.Malformed(); !slices.Equal(got, []string{"fetch.repo is not a string", "draft is not a table"}) {
+		t.Fatalf("Malformed() = %q: the model under test must carry a record", got)
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(struct {
+		Models []Model `toml:"models"`
+	}{[]Model{m}}); err != nil {
+		t.Fatal(err)
+	}
+	js, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"TOML": buf.String(), "JSON": string(js)} {
+		if !strings.Contains(text, "/m/x") {
+			t.Errorf("%s output lost the model's own fields:\n%s", name, text)
+		}
+		for _, leak := range []string{"alformed", "NotTable", "not_table", "true"} {
+			if strings.Contains(text, leak) {
+				t.Errorf("%s output carries %q:\n%s", name, leak, text)
+			}
+		}
 	}
 }

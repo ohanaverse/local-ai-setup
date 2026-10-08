@@ -503,18 +503,34 @@ type Model struct {
 type ModelArtifact struct {
 	Repo      string `toml:"repo,omitempty"`
 	LocalPath string `toml:"local_path,omitempty"`
+	// Malformed records what UnmarshalTOML tolerated while reading the
+	// value. It is about how the file was written, not part of the value:
+	// never encoded, and zero for a table that was well formed or absent.
+	Malformed ArtifactFaults `toml:"-" json:"-"`
+}
+
+// ArtifactFaults is what was wrong with a fetch or draft value that the
+// loader read as absent rather than fail on. It is comparable, so a
+// ModelArtifact still is.
+type ArtifactFaults struct {
+	// NotTable: the value is not a table at all (a string, a number, an
+	// array), so neither key was read.
+	NotTable bool
+	// Repo and LocalPath: that key is there and is not a string.
+	Repo, LocalPath bool
 }
 
 // artifactFields is the shape of a fetch or draft table as wt reads it: the
-// keys, each a string. The reader (UnmarshalTOML) and the writer's check
-// (validateArtifact) both go by this list, so the two cannot disagree about
-// what a well-formed table is.
+// keys, each a string. The reader (UnmarshalTOML), the record of what it
+// tolerated (ArtifactFaults) and the writer's check (validateArtifact) all go
+// by this list, so they cannot disagree about what a well-formed table is.
 var artifactFields = []struct {
 	key   string
 	field func(*ModelArtifact) *string
+	fault func(*ArtifactFaults) *bool
 }{
-	{"repo", func(a *ModelArtifact) *string { return &a.Repo }},
-	{"local_path", func(a *ModelArtifact) *string { return &a.LocalPath }},
+	{"repo", func(a *ModelArtifact) *string { return &a.Repo }, func(f *ArtifactFaults) *bool { return &f.Repo }},
+	{"local_path", func(a *ModelArtifact) *string { return &a.LocalPath }, func(f *ArtifactFaults) *bool { return &f.LocalPath }},
 }
 
 // UnmarshalTOML reads a fetch or draft value and never fails. wt only shows
@@ -524,18 +540,46 @@ var artifactFields = []struct {
 // A value that is not a table reads as an empty artifact, and a repo or
 // local_path that is not a string reads as absent while the other key is
 // still read. An empty table is an empty artifact, and any other key (files,
-// quantizations, one neither tool models) is ignored. The registry writer is
-// where a malformed value is named: validateArtifact refuses a row it
-// touches. modelman is stricter than this on one point — its loader crashes
-// on a fetch or draft that is not a table.
+// quantizations, one neither tool models) is ignored. What was tolerated is
+// recorded in Malformed, which `wt model list` prints (Model.Malformed); every
+// other command stays quiet. The registry writer names a malformed value too:
+// validateArtifact refuses a row it touches. modelman is stricter than this
+// on one point — its loader crashes on a fetch or draft that is not a table.
 func (a *ModelArtifact) UnmarshalTOML(v any) error {
 	*a = ModelArtifact{}
-	table, _ := v.(map[string]any)
+	table, isTable := v.(map[string]any)
+	a.Malformed.NotTable = !isTable
 	for _, f := range artifactFields {
+		fv, present := table[f.key]
 		// A failed assertion leaves "", which is what absent reads as.
-		*f.field(a), _ = table[f.key].(string)
+		s, isString := fv.(string)
+		*f.field(a), *f.fault(&a.Malformed) = s, present && !isString
 	}
 	return nil
+}
+
+// problems names what was malformed in the value read from key ("fetch" or
+// "draft"), in artifactFields' order; nil when nothing was.
+func (a ModelArtifact) problems(key string) []string {
+	if a.Malformed.NotTable {
+		return []string{key + " is not a table"}
+	}
+	var out []string
+	for _, f := range artifactFields {
+		if *f.fault(&a.Malformed) {
+			out = append(out, key+"."+f.key+" is not a string")
+		}
+	}
+	return out
+}
+
+// Malformed names what the loader tolerated in this row's fetch and draft
+// instead of failing on it, as phrases for a person: "fetch is not a table",
+// "draft.local_path is not a string". fetch comes before draft, and repo
+// before local_path. nil for a row with nothing malformed, and for a Model
+// that was not read from a registry file.
+func (m Model) Malformed() []string {
+	return append(m.Fetch.problems("fetch"), m.Draft.problems("draft")...)
 }
 
 // Target is the artifact as a user names it on a command line: the local

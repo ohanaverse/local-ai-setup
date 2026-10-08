@@ -27,12 +27,36 @@ least 20 columns (or all its ids need, when that is less). A model id is never c
 line of its own, above its cells. When a column is left out, a note on stderr
 says so. Into a pipe every column is printed, one model per line.
 
+A row whose `fetch` or `draft` is malformed in the registry — the value is not
+a table, or its `repo` or `local_path` is not a string — is still listed, and
+wt reads that value as absent: the row has no path (so a model meant to be
+found at a `local_path` reads `missing`), or a pairing has no target or draft.
+After the table, one line per such row on stderr says so, in the registry's
+order:
+
+```text
+omlx/mine: fetch is not a table; wt reads it as absent (fix the entry in ~/.config/local-ai/registry.toml)
+mlx_lm_server/T+draft-D: fetch.repo is not a string, draft is not a table; wt reads it as absent (fix the entry in ~/.config/local-ai/registry.toml)
+```
+
+The path is the registry wt read, in full. The table on stdout is the same
+with or without the line, and the command still exits 0. A hand-typed
+`fetch = "~/models/mine"` is the usual cause; what was meant is
+
+```toml
+[models.fetch]
+local_path = "~/models/mine"
+```
+
 `--json` always has everything: `registry` (the file), `models` (each with
 `id`, `family`, `provider_id`, `model_name`, `location`, `tags`,
 `registered`, `status`, `running`, `size_bytes` and `path` — the last two
-`null` when wt does not know them — and `target` and `draft` for a pairing),
-and `providers` (each probed provider's status: `ok`, `partial`,
-`unreachable`).
+`null` when wt does not know them — `target` and `draft` for a pairing, and
+`malformed`, an array of the phrases above (`"fetch is not a table"`,
+`"draft.local_path is not a string"`) that is always there and empty for a
+row with nothing malformed), and `providers` (each probed provider's status:
+`ok`, `partial`, `unreachable`). Stdout is that one document; the stderr
+lines for malformed rows are printed in this mode too.
 
 It runs on a registry that has a gap in it (a model whose provider has no
 row, a mistyped location): that is what the list is for. Only a registry that

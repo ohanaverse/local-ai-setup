@@ -446,3 +446,196 @@ repo = ["org/T"]
 		}
 	}
 }
+
+// malformedRegistry is a registry file as a hand edit leaves one. Its rows
+// are out of the listing's family-and-id order on purpose, and
+// malformedRegistry(false) is the same file with every malformed value taken
+// out. The first id carries an escape sequence, which the note must spell out
+// as the table does.
+func malformedRegistry(malformed bool) string {
+	slip := func(s string) string {
+		if malformed {
+			return s
+		}
+		return ""
+	}
+	return `
+[[providers]]
+id = "omlx"
+location = "local"
+[providers.auth]
+type = "none"
+
+[[providers]]
+id = "mlx_lm_server"
+location = "local"
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "omlx/z\u001bslip"
+family = "zeta"
+provider_id = "omlx"
+model_name = "slip-4bit"
+` + slip(`fetch = "~/models/slip-4bit"`) + `
+
+[[models]]
+id = "omlx/fine"
+family = "qwen"
+provider_id = "omlx"
+model_name = "fine-4bit"
+[models.fetch]
+repo = "org/fine-4bit"
+
+[[models]]
+id = "mlx_lm_server/T+draft-D"
+family = "alpha"
+provider_id = "mlx_lm_server"
+model_name = "T+draft-D"
+` + slip("draft = 7") + `
+[models.fetch]
+` + slip(`repo = ["org/T"]`+"\n"+`local_path = 3`) + `
+`
+}
+
+// runModelListOver loads registry text as the real loader does and runs the
+// listing over it, returning stdout, stderr and the registry's path.
+func runModelListOver(t *testing.T, registry string, asJSON bool) (stdout, stderr, path string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	path = filepath.Join(home, "local-ai", "registry.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(registry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/z\x1bslip", ModelName: "slip-4bit", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", ModelID: "omlx/fine", ModelName: "fine-4bit", Artifact: "fine-4bit", Registered: true, ArtifactKnown: true},
+			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/T+draft-D", ModelName: "T+draft-D", Registered: true},
+		},
+	})
+	a, err := newApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.loadErr != nil {
+		t.Fatalf("the registry did not load: %v", a.loadErr)
+	}
+	var out, errOut bytes.Buffer
+	if err := runModelList(&out, &errOut, a.cfg, asJSON, 0); err != nil {
+		t.Fatalf("runModelList = %v, want nil: a malformed fetch is a note, not a failure", err)
+	}
+	return out.String(), errOut.String(), path
+}
+
+// malformedNotes are the stderr lines for malformedRegistry(true): one per
+// affected row, in the registry's order, a row's problems joined on one line.
+func malformedNotes(path string) string {
+	return `omlx/z\x1bslip: fetch is not a table; wt reads it as absent (fix the entry in ` + path + ")\n" +
+		`mlx_lm_server/T+draft-D: fetch.repo is not a string, fetch.local_path is not a string, draft is not a table; wt reads it as absent (fix the entry in ` + path + ")\n"
+}
+
+// TestModelListNamesAMalformedFetchOrDraft verifies the text listing says
+// what the loader tolerated: after the table, one stderr line per affected
+// row, in registry order, with the id escaped as the table escapes it and the
+// registry's path to repair. The table on stdout is byte for byte the one the
+// same registry gives without the slips, and the command still succeeds.
+// Without the note a hand-typed `fetch = "~/models/x"` meant as a local_path
+// only makes the row read "missing", and nothing says why.
+func TestModelListNamesAMalformedFetchOrDraft(t *testing.T) {
+	clean, cleanErr, _ := runModelListOver(t, malformedRegistry(false), false)
+	if cleanErr != "" {
+		t.Fatalf("stderr without a malformed row = %q, want nothing", cleanErr)
+	}
+	out, errOut, path := runModelListOver(t, malformedRegistry(true), false)
+	if out != clean {
+		t.Errorf("the table changed:\n%s\nwant, as without the malformed values:\n%s", out, clean)
+	}
+	if !strings.Contains(out, "missing") || strings.Contains(out, "not a table") {
+		t.Errorf("stdout =\n%s\nwant the table alone, the slipped row missing", out)
+	}
+	if want := malformedNotes(path); errOut != want {
+		t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
+	}
+}
+
+// TestModelListJSONNamesAMalformedFetchOrDraft verifies --json carries the
+// same phrases: stdout is still exactly one document, every model object has
+// a "malformed" array (empty, never null or missing, on a well-formed row),
+// and the stderr lines are printed in JSON mode too. A script reads the
+// array; a person piping the JSON into a file still sees the note.
+func TestModelListJSONNamesAMalformedFetchOrDraft(t *testing.T) {
+	out, errOut, path := runModelListOver(t, malformedRegistry(true), true)
+	var doc struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	dec := json.NewDecoder(strings.NewReader(out))
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if dec.More() {
+		t.Fatalf("stdout holds more than one JSON document:\n%s", out)
+	}
+	want := map[string]string{
+		"omlx/z\x1bslip":          `["fetch is not a table"]`,
+		"omlx/fine":               `[]`,
+		"mlx_lm_server/T+draft-D": `["fetch.repo is not a string","fetch.local_path is not a string","draft is not a table"]`,
+	}
+	if len(doc.Models) != len(want) {
+		t.Fatalf("got %d rows, want %d:\n%s", len(doc.Models), len(want), out)
+	}
+	for _, m := range doc.Models {
+		var id string
+		if err := json.Unmarshal(m["id"], &id); err != nil {
+			t.Fatal(err)
+		}
+		raw, ok := m["malformed"]
+		if !ok {
+			t.Errorf("%s has no \"malformed\" key", id)
+			continue
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			t.Fatal(err)
+		}
+		if compact.String() != want[id] {
+			t.Errorf("%s: malformed = %s, want %s", id, compact.String(), want[id])
+		}
+	}
+	if want := malformedNotes(path); errOut != want {
+		t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
+	}
+}
+
+// TestModelListIsQuietOnAWellFormedRegistry verifies a registry with no
+// malformed fetch or draft prints nothing extra: no stderr line in either
+// mode, and an empty "malformed" array on every JSON row. A note that fired
+// on a healthy registry would be noise on every run and would break scripts
+// that treat stderr output as a warning.
+func TestModelListIsQuietOnAWellFormedRegistry(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		out, errOut, _ := runModelListOver(t, malformedRegistry(false), asJSON)
+		if errOut != "" {
+			t.Errorf("json=%v: stderr = %q, want nothing", asJSON, errOut)
+		}
+		if asJSON && (strings.Count(out, `"malformed": []`) != 3 || strings.Contains(out, `"malformed": null`)) {
+			t.Errorf("want an empty malformed array on each of the 3 rows:\n%s", out)
+		}
+	}
+	// Rows built in memory, with tags and discovered models: the same holds.
+	stubProbeInventory(t, modelListSnapshot())
+	var out, errOut bytes.Buffer
+	if err := runModelList(&out, &errOut, modelListConfig(), true, 0); err != nil {
+		t.Fatal(err)
+	}
+	if errOut.Len() != 0 || strings.Count(out.String(), `"malformed": []`) != 6 {
+		t.Errorf("stderr = %q, stdout =\n%s\nwant no note and six empty malformed arrays", errOut.String(), out.String())
+	}
+}

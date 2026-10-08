@@ -67,6 +67,11 @@ type Row struct {
 	// repo or a path; both "" for any other model.
 	Target string
 	Draft  string
+	// Malformed names what the loader tolerated in the registry row's fetch
+	// and draft (config.Model.Malformed): each reads as absent, which is why
+	// the row has no path or no pairing side. Empty for a well-formed row and
+	// for a discovered one.
+	Malformed []string
 }
 
 // Pairing reports whether the row is an mlx_lm_server target+draft pairing.
@@ -110,7 +115,7 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 	for _, m := range cfg.Models {
 		r := Row{
 			ID: m.ID, Family: m.Family, ProviderID: m.ProviderID, ModelName: m.ModelName,
-			Tags: m.Tags, Registered: true, Cost: m.Cost,
+			Tags: m.Tags, Registered: true, Cost: m.Cost, Malformed: m.Malformed(),
 		}
 		loc, err := cfg.ResolveLocation(m)
 		switch {

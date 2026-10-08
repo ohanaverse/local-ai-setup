@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
@@ -33,7 +34,11 @@ func modelListCmd(a *app) *cobra.Command {
 			"           -        an mlx_lm_server pairing (never enumerated)\n" +
 			"  RUNNING  run, load (omlx is still loading it), blank, or ? (could not tell)\n\n" +
 			"SIZE and PATH are shown when the terminal is wide enough for them; --json\n" +
-			"always has them (size_bytes, path).",
+			"always has them (size_bytes, path).\n\n" +
+			"A model whose fetch or draft is malformed in the registry (not a table, or a\n" +
+			"repo or local_path that is not a string) is still listed, with that value\n" +
+			"read as absent; a line on stderr names the row and the problem, and --json\n" +
+			"has the same in each model's \"malformed\" array.",
 		Example:      "  wt model list\n  wt model list --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -75,6 +80,9 @@ type modelListRow struct {
 	Path      *string `json:"path"`
 	Target    string  `json:"target,omitempty"`
 	Draft     string  `json:"draft,omitempty"`
+	// Malformed names each fetch or draft value the loader read as absent
+	// (config.Model.Malformed). Always an array, empty when there is none.
+	Malformed []string `json:"malformed"`
 }
 
 func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width int) error {
@@ -89,7 +97,7 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 			jr := modelListRow{
 				ID: r.ID, Family: r.Family, ProviderID: r.ProviderID, ModelName: r.ModelName, Location: r.Location,
 				Tags: append([]string{}, r.Tags...), Registered: r.Registered, Status: string(r.Status), Running: r.Running,
-				Target: r.Target, Draft: r.Draft,
+				Target: r.Target, Draft: r.Draft, Malformed: append([]string{}, r.Malformed...),
 			}
 			if r.Size > 0 {
 				jr.SizeBytes = &r.Size
@@ -101,7 +109,11 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(doc)
+		if err := enc.Encode(doc); err != nil {
+			return err
+		}
+		noteMalformed(errOut, cfg)
+		return nil
 	}
 	if len(rows) == 0 {
 		// Only a provider the registry calls local is probed: with none,
@@ -118,7 +130,26 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 	if dropped != "" {
 		fmt.Fprintf(errOut, "(%s not shown at this width; `wt model list --json` has every column)\n", dropped)
 	}
+	noteMalformed(errOut, cfg)
 	return nil
+}
+
+// noteMalformed prints one line for each registry row whose fetch or draft
+// the loader read as absent because it is malformed (config.Model.Malformed),
+// in the registry's own order — the order the user meets them in the file,
+// not the table's. The load tolerates such a value so that a hand edit cannot
+// stop wt, and this listing is the one place that says so: without the line a
+// `fetch = "~/models/x"` meant as a local_path only makes the row read
+// "missing". The id is escaped as the table escapes it.
+func noteMalformed(errOut io.Writer, cfg *config.Config) {
+	// A malformed fetch is a bad registry entry, so the repair is worded by
+	// the one function that words those.
+	hint := config.RegistryFixHint(config.ErrRegistryEntry)
+	for _, m := range cfg.Models {
+		if problems := m.Malformed(); len(problems) > 0 {
+			fmt.Fprintf(errOut, "%s: %s; wt reads it as absent (%s)\n", visibleID(m.ID), strings.Join(problems, ", "), hint)
+		}
+	}
 }
 
 // modelListMinKey is the least width the MODEL column is given before SIZE
