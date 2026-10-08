@@ -4,6 +4,15 @@
 
 ### Added
 
+- `wt config` has a second tab, Models (`Tab` switches; `wt model` opens the
+  editor on it): every registry model and every local model found, with
+  status and running state. `d` removes the selected model from the registry
+  after a prompt that shows where its weights are; `r` probes again; `/`
+  filters. A change is written at once, and the LiteLLM routes are synced
+  once when the editor closes. The selected row's detail names a malformed
+  `fetch` or `draft` (`fetch is not a table; read as absent`). Removing an id
+  that more than one registry row carries is refused with `wt model rm`'s
+  message, and nothing is written.
 - `wt model add <provider> <name> --family F`, `wt model edit <id>` and
   `wt model rm <id>...` register, change and remove models in the registry.
   Each makes one locked write and then syncs the LiteLLM routes once. `add`
@@ -111,6 +120,9 @@
 - Ctrl+C during `wt stop omlx` is reported as `cancelled`, with an error that
   says the service was not stopped. It printed `failed` and `context canceled`,
   as if the provider were broken.
+- `wt config`: `/` on the Agents tab filters the list (it showed `Filter: …`
+  above every agent), and `Esc` on the list no longer ends the editor without
+  the unsaved-changes prompt. Only `q` and `Ctrl+C` quit.
 - `wt litellm sync`, `status`, `on`, `off` and `set` name the repair that
   works when wt's configuration does not load (#291). Each ended its refusal
   with "run `wt config` to repair" whatever had failed, so a missing registry

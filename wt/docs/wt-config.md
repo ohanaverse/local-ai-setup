@@ -2,18 +2,22 @@
 
 User-level preferences for the `wt` launcher.
 
-- **`wt config`** (no subcommand) — interactive TUI for viewing and editing
-  agents in `config.toml`
+- **`wt config`** (no subcommand) — interactive TUI with two tabs: the agents
+  in `config.toml`, and the models in `registry.toml`
 - **`wt config theme`** — color theme management
 - **`wt config path`** — print the config directory
 
 ## Config viewer (`wt config`)
 
-Launching `wt config` with no subcommand opens a full-screen TUI that
-lets you browse and edit the **Agents** section of `config.toml`.
-Providers and models live in `registry.toml`, which `wt config` never
-writes (`wt model init` creates it and adds provider rows; models are
-edited by hand for now, then `wt litellm sync` — modelman's TUI is disabled).
+Launching `wt config` with no subcommand opens a full-screen TUI with two
+tabs, named on its first line; `Tab` switches between them.
+
+- **Agents** — the agents in `config.toml`. Edits are held in memory and
+  saved with `Ctrl+S`, from this tab. The sections below describe it.
+- **Models** — the models in `registry.toml`: every registry model and every
+  local model found on this machine. Each change is written at once, and the
+  LiteLLM routes are synced once when you quit. `wt model` opens the editor
+  on this tab; its keys and columns are in [`wt-model.md`](wt-model.md).
 
 ### Agent list
 
@@ -72,6 +76,16 @@ are unsaved changes, a prompt appears:
 - `y` — save and quit
 - `n` — discard changes and quit
 - `c` or `Esc` — return to the list
+
+If that save fails (validation, or the write itself), the editor does not
+quit: the prompt goes and the Agents tab is shown, with the reason on its
+status line, whichever tab `q` was typed on.
+
+The prompt is about agent edits only: a change made on the Models tab is
+already in `registry.toml` when it is made.
+
+`Esc` on either tab's list does not quit: it clears a filter (`/`) and does
+nothing else. Only `q` and `Ctrl+C` leave the editor.
 
 ## Where settings live
 

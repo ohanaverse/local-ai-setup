@@ -181,10 +181,11 @@ func selectAgentItem(m *model, name string) {
 // skeleton; without it, a missing Init or zero-value model could deadlock
 // or crash on startup.
 func TestRun_EmptyConfig_Launches(t *testing.T) {
-	err := Run(
+	_, err := Run(
 		testTheme(),
 		&config.Config{},
 		nil,
+		Options{},
 		tea.WithInput(strings.NewReader("q")),
 		tea.WithoutRenderer(),
 	)
@@ -271,7 +272,7 @@ func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
 				break
 			}
 		}
-		if !strings.HasPrefix(view, "Agents (providers/models") {
+		if !strings.HasPrefix(view, "[Agents]") {
 			t.Errorf("%dx%d: the title is not the first line:\n%s", size.w, size.h, view)
 		}
 	}

@@ -5,7 +5,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -153,13 +152,12 @@ func formatPerToken(cost config.ModelCost) string {
 }
 
 // styleTableTitle styles a list whose Title is the selector table's header so
-// it sits flush with the row text. Bubbles pads the title and its title bar by
-// default; both must be cleared (keeping the bottom spacing) or the header
-// columns shift relative to the rows. Shared by every table-backed list so the
-// agent-flow picker and wt smoke's PickModel cannot drift.
+// it sits flush with the row text, in the theme's dim colour. The reset is
+// tuilayout.StyleTableTitle, which `wt config`'s Models tab calls too; this
+// is the launcher's name for it, used by the agent-flow picker and wt smoke's
+// PickModel.
 func styleTableTitle(l *list.Model, theme themes.Theme) {
-	l.Styles.Title = lipgloss.NewStyle().Foreground(theme.Token(themes.TokenDim))
-	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
+	tuilayout.StyleTableTitle(l, theme.Token(themes.TokenDim))
 }
 
 // TableColumns is the layout this row's table shares, which is how

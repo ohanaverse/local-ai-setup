@@ -83,7 +83,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
-- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config` and `internal/modeladmin` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config`, `internal/modeladmin` and `internal/configeditor` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. A test elsewhere that sets `MODELMAN_REGISTRY` also blanks `WT_REGISTRY`, which outranks it. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
@@ -107,7 +107,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/main.go` | CLI entry point (cobra), exit-code handling |
 | `cmd/wt/app.go` | shared dependency struct (loads/validates config and profiles.toml once) |
 | `cmd/wt/commands.go` | `rotate` subcommand (debug helper) |
-| `cmd/wt/commands_config.go` | `wt config` subcommand family |
+| `cmd/wt/commands_config.go` | `wt config` subcommand family; `runConfigEditor` opens the editor on a tab (bare `wt config`: Agents; bare `wt model`: Models) and runs the one route sync the Models tab owes |
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch from live `catalog` rows; a `-M` pin on a start row starts it |
 | `cmd/wt/start.go` | `startForLaunch` — non-TUI start driver: stderr progress, Ctrl+C cancel, replace confirmation, `allowReplace` |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers; TTY seams and picker-TTY errors |
@@ -121,7 +121,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |
 | `cmd/wt/profile.go` | `wt profile list/show/status/on/off`; `setEnabledLine`'s surgical `enabled = ...` edit |
 | `cmd/wt/litellm.go` | `wt litellm ...` |
-| `cmd/wt/model.go` | `wt model` group; `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
+| `cmd/wt/model.go` | `wt model` group — bare, it opens the Models tab of `wt config` (needs a terminal); `wt model init [--json]` — creates the registry and seeds provider rows, then one route sync (`syncRoutesAfterWrite`) |
 | `cmd/wt/model_write.go` | `wt model add`, `edit`, `rm` — each one `modeladmin` write, then one route sync (`syncAndWarn`); the `ollamaCaps` seam, and `confirmRemove`, which is `wt stop`'s `promptStop` (it opens the terminal through `openTTY`) |
 | `cmd/wt/model_list.go` | `wt model list [--json]` — `modeladmin.Rows` over one probe; `fitModelList` drops PATH, then SIZE, on a narrow terminal |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
@@ -143,10 +143,10 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/worktree/` | repo detection, enumeration, creation |
 | `internal/initseed/` | `--init` seeding |
 | `internal/ollamacheck/` | pre-launch `ollama list` availability check |
-| `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor |
+| `internal/configeditor/` | the TUI behind `wt config`: the Agents tab (`config.toml`; edits buffered, saved with ctrl+s) and the Models tab (`registry.toml` through `internal/modeladmin`; each change written at once from a `tea.Cmd`, the probe in a `tea.Cmd` too). `Run` reports `Result.RegistryChanged`, and `cmd/wt`'s `runConfigEditor` then runs the one route sync the tab owes; a quit asked for while a write is in flight waits for it (`leave`, `quitPending`), so the result is never "unchanged" for a registry that changed, and is then an ordinary quit: agent edits made while it waited get the unsaved-changes prompt |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell, pickers, launch, start-on-select flow (`start_flow.go`); `modelrows.go` (rows + sort), `modeltable.go` (`buildTable`, `renderTable`); `PickStartModel` — standalone picker without launch-route gating, used by `wt start` and `wt smoke` (`PickModel`, the route-gated variant, currently has no production caller) |
-| `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`) |
+| `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`; `StyleTableTitle` is the one title-bar reset its `TitleRoom` counts on, called by every table-backed list) |
 
 ## Config (Go)
 
@@ -170,7 +170,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 - **What is on disk and what is running come from live probes.** wt reads no per-model `[model_state]` key; whether a model is routed is `wt litellm list`.
 - **`config.UpdateRegistry` is the only registry write path**: flock, symlink write-through, touched-row validation, no-op skip, re-check before rename. Its `apply` must be pure (it may run up to three times). `RegistryDoc`'s operations are patch-shaped — never round-trip a `config.Model` into the file.
 - **An id on more than one model row is refused, never resolved to the first row** (`config.ErrModelAmbiguous`, from `RegistryDoc.modelRow`): `wt model edit` and `wt model rm` run on a registry that fails validation, and a duplicated id is one such registry. Find a row for a write through `RegistryDoc.Model`/`PatchModel`/`RemoveModel`, not a loop of your own.
-- **A malformed `fetch` or `draft` reads as absent and never fails the load** (`ModelArtifact.UnmarshalTOML`); `wt model list` alone says so (a stderr line per row and `malformed` in `--json`, from `Model.Malformed()`), and the writer's touched-row check names it. modelman's loader crashes on a `fetch` that is not a table.
+- **A malformed `fetch` or `draft` reads as absent and never fails the load** (`ModelArtifact.UnmarshalTOML`); `wt model list` says so (a stderr line per row and `malformed` in `--json`, from `Model.Malformed()`), the Models tab says so for the selected row (`Row.Malformed`), and the writer's touched-row check names it. modelman's loader crashes on a `fetch` that is not a table.
 - **Read-side schemas are pinned by contract fixtures** in `../docs/contracts/`, loaded by `internal/config` tests and modelman's `tests/contracts/` — a schema change updates both sides.
 - A missing registry lets an *unconfigured* agent launch as a native passthrough (`agents.BuildPassthroughCmd`); a configured one fails on model resolution.
 
@@ -311,6 +311,7 @@ wt start <id> --plan --json          # dry run: what a start would unload (statu
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; modelman's fallback)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)
+wt model                             # `wt config` on its Models tab (needs TTY)
 wt model list [--json]               # every registry model and every local model found, with live status
 wt model add <provider> <name> --family F   # register a model (seeds a missing default provider row; one route sync)
 wt model edit <id> --tags code       # change family, tags, location or prices; nothing else in the row moves

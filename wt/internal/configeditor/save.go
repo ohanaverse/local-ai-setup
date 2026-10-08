@@ -50,6 +50,7 @@ func (m *model) handleSave() (tea.Model, tea.Cmd) {
 		if hint := config.RegistryFixHintFromAny(err); hint != "" {
 			m.status += " (" + hint + ")"
 		}
+		m.showQuitSaveFailure()
 		return m, nil
 	}
 	m.saving = true

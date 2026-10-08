@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -22,13 +23,7 @@ import (
 // args invokes the config editor TUI. We stub configeditorRun so the test
 // does not require a TTY.
 func TestConfig_NoSubcommand_LaunchesEditor(t *testing.T) {
-	called := false
-	old := configeditorRun
-	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
-		called = true
-		return nil
-	}
-	defer func() { configeditorRun = old }()
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
 
 	var buf bytes.Buffer
 	root := rootCmd()
@@ -39,7 +34,7 @@ func TestConfig_NoSubcommand_LaunchesEditor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !called {
+	if !call.called {
 		t.Fatal("expected configeditorRun to be called")
 	}
 }
