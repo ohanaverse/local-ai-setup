@@ -11,40 +11,69 @@ import (
 // to the second, with a numeric offset.
 func Stamp(now time.Time) string { return now.UTC().Format("2006-01-02T15:04:05+00:00") }
 
-// costPatch is the PatchModel arguments that give a row the prices of c: a
-// price that is nil is deleted, and the time_prices key goes when no row is
-// left. A subscription is only ever set, never cleared: no flow changes one.
-func costPatch(c Cost) (set map[string]any, unset []string) {
+// costPatch is the PatchModel arguments that take a row's cost table from
+// before (nil for a row with none) to after. It names only what differs: a
+// price that moved is set, one that went away is deleted, and time_prices is
+// written (or deleted, when no row is left) only when the rows changed, by
+// the comparison sameCost makes. A subscription is only ever set, never
+// cleared: no flow changes one.
+//
+// It is a diff and not a restatement of after because the planners read a
+// cost table lossily (Cost holds the keys they know, in the types they
+// expect). Writing every field back would delete what the read left out, an
+// empty `time_prices = []` for one, on a row whose plan line says nothing
+// changed.
+func costPatch(before *Cost, after Cost) (set map[string]any, unset []string) {
+	var b Cost
+	if before != nil {
+		b = *before
+	}
 	set = map[string]any{}
 	for _, kv := range []struct {
-		key string
-		v   *float64
+		key      string
+		old, new *float64
 	}{
-		{"cost.input_price_per_million", c.Input},
-		{"cost.cache_price_per_million", c.Cache},
-		{"cost.output_price_per_million", c.Output},
-		{"cost.subscription_price", c.SubscriptionPrice},
+		{"cost.input_price_per_million", b.Input, after.Input},
+		{"cost.cache_price_per_million", b.Cache, after.Cache},
+		{"cost.output_price_per_million", b.Output, after.Output},
 	} {
 		switch {
-		case kv.v != nil:
-			set[kv.key] = *kv.v
-		case kv.key != "cost.subscription_price":
+		case samePrice(kv.old, kv.new):
+		case kv.new != nil:
+			set[kv.key] = *kv.new
+		default:
 			unset = append(unset, kv.key)
 		}
 	}
-	if c.SubscriptionPeriod != nil {
-		set["cost.subscription_period"] = *c.SubscriptionPeriod
+	if after.SubscriptionPrice != nil && !samePrice(b.SubscriptionPrice, after.SubscriptionPrice) {
+		set["cost.subscription_price"] = *after.SubscriptionPrice
 	}
-	if len(c.TimePrices) == 0 {
+	if after.SubscriptionPeriod != nil && (b.SubscriptionPeriod == nil || *b.SubscriptionPeriod != *after.SubscriptionPeriod) {
+		set["cost.subscription_period"] = *after.SubscriptionPeriod
+	}
+	switch {
+	case sameRows(b.TimePrices, after.TimePrices):
+	case len(after.TimePrices) == 0:
 		unset = append(unset, "cost.time_prices")
-	} else {
-		rows := make([]any, len(c.TimePrices))
-		for i, row := range c.TimePrices {
+	default:
+		rows := make([]any, len(after.TimePrices))
+		for i, row := range after.TimePrices {
 			rows[i] = row
 		}
 		set["cost.time_prices"] = rows
 	}
 	return set, unset
+}
+
+// rowCost is the cost table of the row with this id as doc now holds it, nil
+// when the row has none.
+func rowCost(doc *config.RegistryDoc, id string) *Cost {
+	for _, e := range Entries(doc.Models()) {
+		if e.ID == id {
+			return e.Cost
+		}
+	}
+	return nil
 }
 
 // CatalogApplied is what Apply did to the registry and what is left to do in
@@ -78,7 +107,7 @@ func (p *CatalogPlan) Apply(doc *config.RegistryDoc, pulled []string, now time.T
 	var done CatalogApplied
 	stamp := Stamp(now)
 	for _, u := range p.Updates {
-		set, unset := costPatch(u.After)
+		set, unset := costPatch(u.Before, u.After)
 		set[CatalogNameKey] = u.CatalogName
 		set["pricing_updated_at"] = stamp
 		if err := doc.PatchModel(u.ModelID, set, unset); err != nil {
@@ -87,9 +116,6 @@ func (p *CatalogPlan) Apply(doc *config.RegistryDoc, pulled []string, now time.T
 		done.Updated++
 	}
 	for _, a := range p.Additions {
-		set, unset := costPatch(a.Cost)
-		set[CatalogNameKey] = a.CatalogName
-		set["pricing_updated_at"] = stamp
 		if a.CloneOf != "" {
 			if err := doc.CloneModel(a.CloneOf, map[string]any{
 				"id": a.ID, "model_name": a.ModelName, "location": "cloud", "source": "curated",
@@ -102,6 +128,10 @@ func (p *CatalogPlan) Apply(doc *config.RegistryDoc, pulled []string, now time.T
 		}); err != nil {
 			return CatalogApplied{}, err
 		}
+		// A new row has no cost yet; a clone has the one it was copied with.
+		set, unset := costPatch(rowCost(doc, a.ID), a.Cost)
+		set[CatalogNameKey] = a.CatalogName
+		set["pricing_updated_at"] = stamp
 		if err := doc.PatchModel(a.ID, set, unset); err != nil {
 			return CatalogApplied{}, err
 		}
@@ -159,7 +189,7 @@ func (p *PricePlan) Apply(doc *config.RegistryDoc, now time.Time) (PricesApplied
 	var done PricesApplied
 	stamp := Stamp(now)
 	for _, m := range p.Matched {
-		set, unset := costPatch(m.After)
+		set, unset := costPatch(m.Before, m.After)
 		set["pricing_updated_at"] = stamp
 		if err := doc.PatchModel(m.ModelID, set, unset); err != nil {
 			return PricesApplied{}, err

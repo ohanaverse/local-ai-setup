@@ -210,6 +210,10 @@ func TestCollectTablesReadsMarkupAsModelmanDid(t *testing.T) {
 		{"a row that reopens replaces the open one", "<table><tr><td>lost</td><tr><td>kept</td></tr></table>", [][][]string{{{"kept"}}}},
 		{"a table inside <noscript> is read", "<noscript><table><tr><td>a</td></tr></table></noscript>", [][][]string{{{"a"}}}},
 		{"markup inside <noscript> is markup", "<table><tr><td>a<noscript>n<td>x</td></noscript>b</td></tr></table>", [][][]string{{{"x"}}}},
+		// A self-closing tag never opens raw text in Python's parser, so the
+		// markup after <noscript/> or <script/> is still markup.
+		{"a self-closing <noscript/> swallows nothing", "<table><tr><td>a<noscript/>b<td>c</td></tr></table>", [][][]string{{{"c"}}}},
+		{"a self-closing <script/> swallows nothing", "<table><tr><td>a<script/>b</td><td>c</script>d</td></tr></table>", [][][]string{{{"ab", "cd"}}}},
 		{"a CDATA section is skipped whole", "<table><tr><td><![CDATA[x<td>y]]>z</td></tr></table>", [][][]string{{{"z"}}}},
 	}
 	for _, tc := range cases {

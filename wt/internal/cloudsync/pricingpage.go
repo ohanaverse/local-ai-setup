@@ -86,11 +86,15 @@ func isSpace(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f
 // It reads tokens, not a tree. html.Parse would move and close tags the way a
 // browser does, and the checks in ParsePricing are about the page as written.
 //
-// Two settings make the bare tokenizer read what Python's parser read. It
+// Three settings make the bare tokenizer read what Python's parser read. It
 // treats <noscript> content as raw text unless told otherwise (html.Parse
 // tells it; a tokenizer on its own must), and a pricing table inside a
-// <noscript> fallback would then be no table at all. And a CDATA section is
-// skipped whole, as Python skips it, instead of being cut at its first ">".
+// <noscript> fallback would then be no table at all. It also enters raw-text
+// mode after a self-closing <script/>, <noscript/>, <textarea/>, <title/> or
+// <style/>, which Python never does, and would swallow the markup that
+// follows as text; it is told not to after every self-closing tag. And a
+// CDATA section is skipped whole, as Python skips it, instead of being cut
+// at its first ">".
 // One case is still read differently and is not pinned: a <script> that
 // nests a <script> inside a comment ends at another </script>.
 func collectTables(page string) [][][]string {
@@ -146,6 +150,10 @@ func collectTables(page string) [][][]string {
 			name, _ := z.TagName()
 			end(string(name))
 		case html.SelfClosingTagToken:
+			// Before the next token is read: the tokenizer has already
+			// armed raw-text mode for <script/>, <noscript/>, <textarea/>
+			// and the like, as it does for their open tags.
+			z.NextIsNotRawText()
 			name, _ := z.TagName()
 			start(string(name))
 			end(string(name))

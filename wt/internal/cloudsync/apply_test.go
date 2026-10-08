@@ -257,7 +257,10 @@ func TestCatalogApplyWritesWhatThePlanSays(t *testing.T) {
 	if c := costOf(cost.(*tomlw.Table)); !samePrice(c.Input, f(0.5)) || c.Cache != nil || !samePrice(c.Output, f(1.5)) || !samePrice(c.SubscriptionPrice, f(100)) {
 		t.Errorf("re-tagged cost = %+v, want the page's 0.5/-/1.5 and the old subscription", c)
 	}
-	if str(rows["ollama/deepseek-v4-pro:cloud"], "catalog_name") != "deepseek-v4-pro" || str(rows["ollama/deepseek-v4-pro:cloud"], "pricing_updated_at") != applyStamp {
+	if CatalogNameKey != "catalog_name" || OffpeakLabel != "off-peak" {
+		t.Fatalf("CatalogNameKey = %q, OffpeakLabel = %q: both are spelled in registries modelman wrote", CatalogNameKey, OffpeakLabel)
+	}
+	if str(rows["ollama/deepseek-v4-pro:cloud"], CatalogNameKey) != "deepseek-v4-pro" || str(rows["ollama/deepseek-v4-pro:cloud"], "pricing_updated_at") != applyStamp {
 		t.Error("the updated row was not given its catalog name and stamp")
 	}
 	if rows["ollama/qwen3:8b"].Has("pricing_updated_at") {
@@ -457,5 +460,110 @@ location = "cloud"
 	}
 	if strings.Count(text, "pricing_updated_at") != 3 {
 		t.Errorf("want exactly the three matched models stamped:\n%s", text)
+	}
+}
+
+// TestApplyWritesOnlyWhatThePlanShows pins that an Apply changes nothing in
+// a cost table beyond what its plan printed. The planners read a row's cost
+// into a few typed fields, and an Apply that wrote those fields back whole
+// would delete what the read left out: here an empty `time_prices = []`,
+// which a plan calls unchanged. The printed plan is what the user approved,
+// so a key it does not mention must come through byte for byte, in the
+// prices flow (a matched model whose price is current, and one whose input
+// price moved) and in the catalog flow (an entry whose input price moved).
+func TestApplyWritesOnlyWhatThePlanShows(t *testing.T) {
+	const before = `[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "OPENROUTER_API_KEY"
+
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "openrouter/same"
+family = "x"
+provider_id = "openrouter"
+model_name = "vendor/same"
+location = "cloud"
+pricing_updated_at = "2026-09-01T00:00:00+00:00"
+
+[models.cost]
+input_price_per_million = 3
+output_price_per_million = 15
+time_prices = []
+
+[[models]]
+id = "openrouter/moved"
+family = "x"
+provider_id = "openrouter"
+model_name = "vendor/moved"
+location = "cloud"
+pricing_updated_at = "2026-09-01T00:00:00+00:00"
+
+[models.cost]
+input_price_per_million = 7
+output_price_per_million = 15
+time_prices = []
+
+[[models]]
+id = "ollama/x:cloud"
+family = "x"
+provider_id = "ollama"
+model_name = "x:cloud"
+location = "cloud"
+pricing_updated_at = "2026-09-01T00:00:00+00:00"
+catalog_name = "x"
+
+[models.cost]
+input_price_per_million = 9
+cache_price_per_million = 0.1
+output_price_per_million = 2
+time_prices = []
+`
+	path := scratchRegistry(t, before)
+	api := apiOf(t, `{"data": [
+		{"id": "vendor/same", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
+		{"id": "vendor/moved", "pricing": {"prompt": "0.000003", "completion": "0.000015"}}
+	]}`)
+	var planText string
+	var done PricesApplied
+	if _, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
+		plan := PlanPrices(Entries(d.Models()), Providers(d.Providers()), api)
+		planText = plan.Format()
+		var err error
+		done, err = plan.Apply(d, applyNow)
+		return err
+	}); err != nil {
+		t.Fatalf("UpdateRegistry (prices): %v", err)
+	}
+	if !strings.Contains(planText, "Price updates (1):\n  openrouter/moved: 7/-/15 -> 3/-/15\nUnchanged prices: 1") || done != (PricesApplied{Stamped: 2, Changed: 1}) {
+		t.Fatalf("plan =\n%s\napplied = %+v; want one price moved and one unchanged", planText, done)
+	}
+	const oldStamp = `pricing_updated_at = "2026-09-01T00:00:00+00:00"`
+	newStamp := `pricing_updated_at = "` + applyStamp + `"`
+	want := strings.Replace(before, oldStamp, newStamp, 2)
+	want = strings.Replace(want, "input_price_per_million = 7\n", "input_price_per_million = 3.0\n", 1)
+	if got := readFile(t, path); got != want {
+		t.Errorf("after the price refresh, registry.toml =\n%s\nwant only the two stamps and the one price changed:\n%s", got, want)
+	}
+
+	applied, _ := applyCatalog(t, catalogOf(cm("x", 1)), []string{"x:cloud"}, map[string]string{"x": "x:cloud"})
+	if applied.Updated != 1 {
+		t.Fatalf("catalog applied = %+v, want one update", applied)
+	}
+	want = strings.Replace(want, oldStamp, newStamp, 1)
+	want = strings.Replace(want, "input_price_per_million = 9\n", "input_price_per_million = 1.0\n", 1)
+	if got := readFile(t, path); got != want {
+		t.Errorf("after the catalog sync, registry.toml =\n%s\nwant only the stamp and the one price changed:\n%s", got, want)
 	}
 }

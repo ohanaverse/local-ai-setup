@@ -42,7 +42,10 @@ func apiOf(t *testing.T, body string) map[string]APIPrice {
 // TestParseOpenRouter pins how the API's per-token prices become prices per
 // million tokens: decimal strings (what OpenRouter sends) and JSON numbers
 // alike, a missing field as no price, and OpenRouter's -1 ("varies") marked
-// as not a price instead of written to the registry as minus one million.
+// as not a price instead of written to the registry as minus one million. A
+// price sent as text that is not a number at all ("soon", an empty string, a
+// number too large to hold) is marked the same way: read as "not reported"
+// it would clear the registry's price for that field with nothing said.
 func TestParseOpenRouter(t *testing.T) {
 	api := apiOf(t, `{"data": [
 		{"id": "a/strings", "pricing": {"prompt": "0.0000025", "completion": "0.0000100", "input_cache_read": "0.0000010"}},
@@ -51,11 +54,13 @@ func TestParseOpenRouter(t *testing.T) {
 		{"id": "a/varies", "pricing": {"prompt": "-1", "completion": "-1"}},
 		{"id": "a/junk", "pricing": {"prompt": "soon", "completion": null, "input_cache_read": true}},
 		{"id": "a/no-table", "pricing": "n/a"},
+		{"id": "a/text", "pricing": {"prompt": "", "completion": "1e999", "input_cache_read": "varies"}},
+		{"id": "a/huge", "pricing": {"prompt": 1e999, "completion": "0.000002"}},
 		{"pricing": {"prompt": "1"}},
 		"not an object"
 	]}`)
-	if len(api) != 6 {
-		t.Fatalf("ids = %d, want 6 (the two items with no id skipped)", len(api))
+	if len(api) != 8 {
+		t.Fatalf("ids = %d, want 8 (the two items with no id skipped)", len(api))
 	}
 	wantTriple(t, "strings", PriceTriple{Input: api["a/strings"].Input, Cache: api["a/strings"].Cache, Output: api["a/strings"].Output}, f(0.0000025*1e6), f(0.0000010*1e6), f(0.0000100*1e6))
 	wantTriple(t, "numbers", PriceTriple{Input: api["a/numbers"].Input, Cache: api["a/numbers"].Cache, Output: api["a/numbers"].Output}, f(0.000001*1e6), nil, f(2e-6*1e6))
@@ -65,10 +70,19 @@ func TestParseOpenRouter(t *testing.T) {
 	if v := api["a/varies"]; v.Input != nil || v.Output != nil || !reflect.DeepEqual(v.Skipped, []string{"prompt", "completion"}) {
 		t.Errorf("a/varies = %+v, want no prices and both fields skipped", v)
 	}
-	for _, id := range []string{"a/junk", "a/no-table"} {
-		if v := api[id]; v.Input != nil || v.Output != nil || v.Cache != nil || v.Skipped != nil {
-			t.Errorf("%s = %+v, want no prices", id, v)
-		}
+	// Text that is not a number is skipped; null and a boolean are fields the
+	// API did not report.
+	if v := api["a/junk"]; v.Input != nil || v.Output != nil || v.Cache != nil || !reflect.DeepEqual(v.Skipped, []string{"prompt"}) {
+		t.Errorf("a/junk = %+v, want no prices and only prompt skipped", v)
+	}
+	if v := api["a/text"]; v.Input != nil || v.Output != nil || v.Cache != nil || !reflect.DeepEqual(v.Skipped, []string{"prompt", "completion", "input_cache_read"}) {
+		t.Errorf("a/text = %+v, want no prices and all three fields skipped", v)
+	}
+	if v := api["a/huge"]; v.Input != nil || !samePrice(v.Output, f(0.000002*1e6)) || !reflect.DeepEqual(v.Skipped, []string{"prompt"}) {
+		t.Errorf("a/huge = %+v, want prompt skipped and the completion price read", v)
+	}
+	if v := api["a/no-table"]; v.Input != nil || v.Output != nil || v.Cache != nil || v.Skipped != nil {
+		t.Errorf("a/no-table = %+v, want no prices", v)
 	}
 }
 
@@ -174,8 +188,9 @@ func TestPlanPricesMergeRules(t *testing.T) {
 // true; an ollama cloud model (priced by ollama.com), a native agent
 // provider's model and a model of a provider that says openrouter_priced =
 // false are not, and get no "no match" warning (#151, #302); a candidate
-// OpenRouter does not list, lists with no price, or prices at -1 is a
-// warning and is left exactly as it is.
+// OpenRouter does not list, lists with no price, prices at -1 or prices
+// with text that is not a number is a warning and is left exactly as it is
+// (a price nobody could read must not delete the one in the registry).
 func TestPlanPricesCandidatesAndWarnings(t *testing.T) {
 	entries := []Entry{
 		orEntry("listed", nil),
@@ -188,11 +203,13 @@ func TestPlanPricesCandidatesAndWarnings(t *testing.T) {
 		orEntry("missing", &Cost{Input: f(7)}),
 		orEntry("unpriced", nil),
 		orEntry("varies", nil),
+		orEntry("soon", &Cost{Input: f(3), Output: f(3)}),
 	}
 	api := apiOf(t, `{"data": [
 		{"id": "vendor/listed", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
 		{"id": "vendor/unpriced", "pricing": {}},
-		{"id": "vendor/varies", "pricing": {"prompt": "-1", "completion": "0.000002"}}
+		{"id": "vendor/varies", "pricing": {"prompt": "-1", "completion": "0.000002"}},
+		{"id": "vendor/soon", "pricing": {"prompt": "soon", "completion": "0.00001"}}
 	]}`)
 	plan := PlanPrices(entries, priceProviders, api)
 	var matched []string
@@ -200,16 +217,20 @@ func TestPlanPricesCandidatesAndWarnings(t *testing.T) {
 		matched = append(matched, m.ModelID)
 	}
 	wantIDs(t, "matched", matched, "openrouter/listed", "acme/model-a", "gateway/y")
-	if plan.Candidates != 6 {
-		t.Errorf("candidates = %d, want 6", plan.Candidates)
+	if plan.Candidates != 7 {
+		t.Errorf("candidates = %d, want 7", plan.Candidates)
 	}
 	want := []string{
 		"No OpenRouter match for openrouter/missing (vendor/missing)",
 		"No pricing data for openrouter/unpriced",
 		"Could not use OpenRouter's pricing for openrouter/varies: its prompt price is negative or not a number",
+		"Could not use OpenRouter's pricing for openrouter/soon: its prompt price is negative or not a number",
 	}
 	if !reflect.DeepEqual(plan.Warnings, want) {
 		t.Errorf("warnings = %q\nwant %q", plan.Warnings, want)
+	}
+	if text := plan.Format(); strings.Contains(text, "  openrouter/soon:") {
+		t.Errorf("the plan changes a model whose price could not be read:\n%s", text)
 	}
 }
 

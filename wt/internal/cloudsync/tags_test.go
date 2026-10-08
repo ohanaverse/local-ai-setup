@@ -62,12 +62,15 @@ func TestCloudTag(t *testing.T) {
 // guessed tag would be registered, fail to pull, and be removed and re-added
 // on every run.
 func TestResolveCloudTags(t *testing.T) {
-	const base = "https://ollama.com/library/"
+	if LibraryTagsURL != "https://ollama.com/library/%s/tags" {
+		t.Fatalf("LibraryTagsURL = %q", LibraryTagsURL)
+	}
+	url := func(name string) string { return fmt.Sprintf(LibraryTagsURL, name) }
 	lib := &fakeLibrary{pages: map[string]string{
-		base + "glm-5.3/tags":         tagsPage("glm-5.3", "cloud", "latest"),
-		base + "mistral-large-3/tags": tagsPage("mistral-large-3", "675b-cloud", "latest"),
-		base + "two/tags":             tagsPage("two", "8b-cloud", "70b-cloud"),
-		base + "none/tags":            tagsPage("none", "latest", "8b"),
+		url("glm-5.3"):         tagsPage("glm-5.3", "cloud", "latest"),
+		url("mistral-large-3"): tagsPage("mistral-large-3", "675b-cloud", "latest"),
+		url("two"):             tagsPage("two", "8b-cloud", "70b-cloud"),
+		url("none"):            tagsPage("none", "latest", "8b"),
 	}}
 	names := []string{"glm-5.3", "mistral-large-3", "two", "none", "gone", "gpt-oss:120b"}
 	resolved, warnings := ResolveCloudTags(context.Background(), lib.get, names, nil)

@@ -18,14 +18,23 @@ const OpenRouterModelsURL = "https://openrouter.ai/api/v1/models"
 type APIPrice struct {
 	Input, Cache, Output *float64
 	// Skipped names the fields the API reported that are not prices: a
-	// negative number (OpenRouter's -1 for "varies") or one that is not
-	// finite. A model with any is not refreshed.
+	// number that is negative (OpenRouter's -1 for "varies") or not finite,
+	// or text that is not a number at all. A model with any is not
+	// refreshed.
 	Skipped []string
 }
 
 // perMillion converts one per-token price. OpenRouter sends decimal strings;
 // a JSON number is accepted too. The arithmetic is modelman's
 // (float(value) * 1_000_000), so both tools write the same digits.
+//
+// skipped is true for a value that was sent and is not a price: negative,
+// not finite, or text that does not parse as a number ("soon", "", a number
+// too large to hold). JSON null, a missing key and any other JSON type are
+// "not reported" (nil, false). The difference matters to PlanPrices: an
+// input or output price that was not reported is cleared, and one that was
+// skipped leaves the model alone with a warning. modelman read unparsable
+// text as not reported, and so cleared the registry's price without a word.
 func perMillion(v any) (price *float64, skipped bool) {
 	var text string
 	switch x := v.(type) {
@@ -40,7 +49,7 @@ func perMillion(v any) (price *float64, skipped bool) {
 	}
 	f, err := strconv.ParseFloat(text, 64)
 	if err != nil {
-		return nil, false
+		return nil, true
 	}
 	f *= 1_000_000
 	if f < 0 || math.IsNaN(f) || math.IsInf(f, 0) {

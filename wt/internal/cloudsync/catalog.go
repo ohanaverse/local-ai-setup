@@ -248,12 +248,18 @@ func sameCost(before *Cost, after Cost) bool {
 	if before != nil {
 		b = *before
 	}
-	if !samePrice(b.Input, after.Input) || !samePrice(b.Cache, after.Cache) || !samePrice(b.Output, after.Output) ||
-		len(b.TimePrices) != len(after.TimePrices) {
+	return samePrice(b.Input, after.Input) && samePrice(b.Cache, after.Cache) && samePrice(b.Output, after.Output) &&
+		sameRows(b.TimePrices, after.TimePrices)
+}
+
+// sameRows reports whether two time_prices lists hold equal rows in the same
+// order.
+func sameRows(a, b []*tomlw.Table) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	for i := range b.TimePrices {
-		if !tomlw.Same(b.TimePrices[i], after.TimePrices[i]) {
+	for i := range a {
+		if !tomlw.Same(a[i], b[i]) {
 			return false
 		}
 	}
@@ -385,7 +391,8 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 					continue
 				}
 				if e.ProviderID == ollamaProvider {
-					where = fmt.Sprintf("with model_name %q", e.ModelName)
+					// Single quotes: Python's repr, as format_plan prints it.
+					where = fmt.Sprintf("with model_name '%s'", e.ModelName)
 				} else {
 					where = "on another provider"
 				}

@@ -376,7 +376,9 @@ func TestPlanMassRemovalGuard(t *testing.T) {
 
 // TestPlanIDCollisionWarns pins that an id the page would add but another
 // row already holds is left alone with a warning that says who holds it. The
-// alternative, a duplicate id, is a registry wt refuses to load.
+// alternative, a duplicate id, is a registry wt refuses to load. The owner's
+// tag is quoted as modelman's format_plan quotes it (Python's repr, single
+// quotes): the plan text is meant to read the same from either tool.
 func TestPlanIDCollisionWarns(t *testing.T) {
 	squatter := Entry{ID: "ollama/x:cloud", Family: "f", ProviderID: "other", ModelName: "zzz"}
 	plan := PlanCatalog([]Entry{squatter}, catalogOf(cm("x")), nil, nil)
@@ -388,7 +390,7 @@ func TestPlanIDCollisionWarns(t *testing.T) {
 	renamed := Entry{ID: "ollama/foo:cloud", Family: "f", ProviderID: "ollama", ModelName: "foo:cloud-old"}
 	plan = PlanCatalog([]Entry{renamed}, catalogOf(cm("foo")), nil, nil)
 	wantIDs(t, "additions", additionIDs(plan))
-	if want := []string{`ollama/foo:cloud already exists with model_name "foo:cloud-old"; not adding`}; !reflect.DeepEqual(plan.Warnings, want) {
+	if want := []string{"ollama/foo:cloud already exists with model_name 'foo:cloud-old'; not adding"}; !reflect.DeepEqual(plan.Warnings, want) {
 		t.Errorf("warnings = %q, want %q", plan.Warnings, want)
 	}
 }
