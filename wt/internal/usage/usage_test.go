@@ -436,38 +436,18 @@ func TestAllCountsScopesToOneAgent(t *testing.T) {
 	}
 }
 
-// TestAllCountsWindowEdgesAndMissingFile verifies the bucket edges are the
-// ones Counts uses (an event exactly 24h, 7d or 30d old is outside that
-// window) and that a missing usage.jsonl reads as an empty, non-nil map.
-// `wt stats` on a fresh install must print "no usage data", not crash, and
-// its launch column must agree with the picker's 1d/7d/30d columns.
-func TestAllCountsWindowEdgesAndMissingFile(t *testing.T) {
+// TestAllCountsMissingFileIsAnEmptyMap verifies that a missing usage.jsonl
+// reads as an empty, non-nil map: `wt stats` on a fresh install must print
+// "no usage data", not crash. The bucket edges themselves — each bucket
+// (asOf - window, asOf], which is also what the picker's 1d/7d/30d columns
+// and the spend query use — are pinned by
+// TestAllCountsWindowIsOpenAtItsStartAndClosedAtItsEnd.
+func TestAllCountsMissingFileIsAnEmptyMap(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
 	if got := store.AllCounts("", fixed); got == nil || len(got) != 0 {
 		t.Fatalf("AllCounts on a missing file = %#v, want an empty non-nil map", got)
-	}
-
-	writeEvents(t, store, []event{
-		{ModelID: "day", Timestamp: fixed.Add(-24 * time.Hour)},
-		{ModelID: "week", Timestamp: fixed.Add(-7 * 24 * time.Hour)},
-		{ModelID: "month", Timestamp: fixed.Add(-30 * 24 * time.Hour)},
-		{ModelID: "month", Timestamp: fixed.Add(-30*24*time.Hour + time.Second)},
-	})
-	got := store.AllCounts("", fixed)
-	want := map[string]UsageCounts{
-		"day":   {SevenDay: 1, ThirtyDay: 1},
-		"week":  {ThirtyDay: 1},
-		"month": {ThirtyDay: 1},
-	}
-	for id, w := range want {
-		if got[id] != w {
-			t.Errorf("AllCounts(\"\")[%q] = %+v, want %+v", id, got[id], w)
-		}
-	}
-	if ids := []string{"day", "week", "month"}; len(got) != len(ids) {
-		t.Errorf("AllCounts(\"\") = %+v, want exactly %v", got, ids)
 	}
 }
 

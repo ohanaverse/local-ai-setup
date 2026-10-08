@@ -95,8 +95,10 @@ How to read a row:
 - **Launches, zero requests** — wt launched it and the proxy logged nothing:
   a native or direct launch (ollama, omlx, a subscription agent), which
   never reaches LiteLLM.
-- **Zero launches, requests** — something used the proxy without a wt
-  launch: `curl`, a script, another client.
+- **Zero launches, requests** — usually something used the proxy without a
+  wt launch: `curl`, a script, another client. A session launched just before
+  the window starts shows the same row: its launch is outside the window and
+  its requests are inside it.
 
 A model that has left `registry.toml` keeps its row; the registry is read
 only for `--family`. A model's family is the registry's, else the id's
