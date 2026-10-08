@@ -12,6 +12,7 @@ wt stop ollama/qwen3.8:27b-mlx   # stop one model
 wt stop ollama                   # stop every running model of a provider
 wt stop omlx                     # halt the omlx service and every model in it
 wt stop <target> --yes           # skip the in-use confirmation
+wt stop --all                    # stop every running local model, then the omlx service
 ```
 
 ## `wt start [model]`
@@ -78,6 +79,17 @@ wt stop <target> --yes           # skip the in-use confirmation
   running models; nothing running exits 0 with a note. For omlx it halts the
   service itself. Other names are an
   error.
+- `--all` stops every running local model wt can stop, on every provider,
+  and then halts the omlx service as `wt stop omlx` does — also when omlx has
+  nothing loaded, since that is what frees its memory. omlx's models are not
+  unloaded one by one first. It asks once when any of the models is in use by
+  a live wt session (`--yes` skips the question). Every stop is attempted: if
+  one fails the others still run, and the exit code is 1. Ctrl+C is not a
+  failure to step over: it cancels the stop in flight and ends the command
+  there, so a `--all` interrupted while it stops the models leaves the omlx
+  service up, and the error names it. It takes no argument. A running
+  mlx_lm_server pairing is not stopped, because wt has no engine for one;
+  `llmbench provider stop mlx_lm_server` stops it.
 - No argument: the stop picker (needs a TTY). Unlike the exit-flow pickers
   it also lists models in use by other wt sessions, marked with their
   session count. Type the numbers to stop, separated by spaces (`1 3`), or
