@@ -134,6 +134,14 @@ func TestLoadFixHint(t *testing.T) {
 		{"agent with an unknown provider (config.toml)", agentProvider, nil, wtConfig},
 		{"config.toml parse error", cfgParse, nil, wtConfig},
 		{"config.toml validation error", errors.New("default_tag must not be empty"), nil, wtConfig},
+		// Joined errors: registry error first, then config.toml error
+		{"joined: registry then config", errors.Join(
+			registryEntryError(fmt.Errorf("model \"omlx/m\": model_name is required")),
+			errors.New("default_tag must not be empty")), nil, entry + registry},
+		// Joined errors: config.toml error first, then registry error
+		{"joined: config then registry", errors.Join(
+			errors.New("default_tag must not be empty"),
+			registryEntryError(fmt.Errorf("model \"omlx/m\": model_name is required"))), nil, entry + registry},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -179,4 +187,62 @@ func wrapNonNil(err error) error {
 		return nil
 	}
 	return fmt.Errorf("config error: %w", err)
+}
+
+// TestRegistryFixHintFromAny pins the behavior of checking every error in a
+// joined error for a registry problem, returning the first hint found. This
+// ensures the correct repair location is shown even when a config.toml error
+// appears first in the join (e.g., empty default_tag + missing model_name
+// both present).
+func TestRegistryFixHintFromAny(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	registry := filepath.Join(home, "local-ai", "registry.toml")
+	if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a minimal registry so RegistryPath() works
+	if err := os.WriteFile(registry, []byte("providers = []\nmodels = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"single registry error", registryEntryError(fmt.Errorf("model \"omlx/m\": model_name is required")), "fix the entry in " + registry},
+		{"single config.toml error", errors.New("default_tag must not be empty"), ""},
+		// Joined errors: registry error first
+		{"joined: registry then config", errors.Join(
+			registryEntryError(fmt.Errorf("model \"omlx/m\": model_name is required")),
+			errors.New("default_tag must not be empty")), "fix the entry in " + registry},
+		// Joined errors: config.toml error first
+		{"joined: config then registry", errors.Join(
+			errors.New("default_tag must not be empty"),
+			registryEntryError(fmt.Errorf("model \"omlx/m\": model_name is required"))), "fix the entry in " + registry},
+		// Multiple registry errors
+		{"joined: multiple registry errors", errors.Join(
+			registryEntryError(fmt.Errorf("model \"omlx/m\": model_name is required")),
+			registryEntryError(fmt.Errorf("model \"omlx/n\": model_name is required"))), "fix the entry in " + registry},
+		// Multiple config.toml errors
+		{"joined: multiple config.toml errors", errors.Join(
+			errors.New("default_tag must not be empty"),
+			errors.New("agent \"claude\": must have at least one supported provider")), ""},
+		// Wrapped joined error
+		{"wrapped joined: config then registry", fmt.Errorf("context: %w", errors.Join(
+			errors.New("default_tag must not be empty"),
+			registryEntryError(fmt.Errorf("model \"omlx/m\": model_name is required")))), "fix the entry in " + registry},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := RegistryFixHintFromAny(c.err)
+			if got != c.want {
+				t.Errorf("RegistryFixHintFromAny(%v) = %q, want %q", c.err, got, c.want)
+			}
+		})
+	}
 }

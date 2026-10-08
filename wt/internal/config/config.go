@@ -960,6 +960,31 @@ func RegistryFixHint(err error) string {
 	return ""
 }
 
+// RegistryFixHintFromAny checks every error in a joined error (from
+// ValidateAll) for a registry problem and returns the first hint found.
+// This ensures the correct repair location is shown even when a config.toml
+// error appears first in the join (e.g., empty default_tag + missing
+// model_name both present).
+func RegistryFixHintFromAny(err error) string {
+	if err == nil {
+		return ""
+	}
+	// errors.Join returns an error that implements Unwrap() []error
+	type unwrapper interface{ Unwrap() []error }
+	if u, ok := err.(unwrapper); ok {
+		for _, e := range u.Unwrap() {
+			if hint := RegistryFixHint(e); hint != "" {
+				return hint
+			}
+		}
+	}
+	// Also check the error itself in case it's not a joined error
+	if hint := RegistryFixHint(err); hint != "" {
+		return hint
+	}
+	return ""
+}
+
 // LoadFixHint is the repair to name after a config load or validation error,
 // or "" when there is nothing to add (nil, and a missing registry, whose
 // error already says to run `wt model init` — a hint would name a second
