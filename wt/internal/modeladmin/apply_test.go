@@ -679,6 +679,22 @@ local_path = "~/models/Qwen3.8-4B-4bit/"
 		t.Errorf("a second add of the pairing: err = %v, want it refused", err)
 	}
 
+	// So is the same directory spelled without the "~": llmbench expands it,
+	// so the two spellings start the one pairing, and a second row for it
+	// would only ever be a duplicate.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, draft := range []string{filepath.Join(home, "models", "Qwen3.8-4B-4bit"), home + "//models/./Qwen3.8-4B-4bit/"} {
+		_, err = Add(AddRequest{ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit", Draft: draft, ID: "mlx_lm_server/absolute",
+			Fields: Fields{Family: ptr("qwen3.8")}}, config.SeedEnv{})
+		if !errors.As(err, &fe) || !strings.Contains(fe.Msg, `model "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit" already registers this pairing`) {
+			t.Errorf("a second add with the draft spelled %s: err = %v, want it refused as the same pairing", draft, err)
+		}
+	}
+	if got := read(t, path); got != want {
+		t.Errorf("a refused add changed the registry:\n%s", got)
+	}
+
 	// A different pairing whose two sides end in the same names — here the
 	// target quantized locally instead of the one on Hugging Face — is not
 	// that pairing. The names make the id that is taken, so the add says to

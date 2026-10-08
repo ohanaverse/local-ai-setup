@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/spf13/cobra"
 )
@@ -83,10 +86,12 @@ func modelAddCmd(a *app) *cobra.Command {
 			"vision; if that fails the model is added without them and a warning says\n" +
 			"so.\n\n" +
 			"An mlx_lm_server model is a target+draft pairing: <name> is the target and\n" +
-			"--draft the draft, each a Hugging Face repo or a local path. wt registers a\n" +
-			"pairing and cannot start one; it prints the llmbench command that does. Two\n" +
-			"pairings whose target and draft end in the same names need --id for the\n" +
-			"second.\n\n" +
+			"--draft the draft, each a Hugging Face repo or a local path. A local path\n" +
+			"starts with /, ~, ./ or ../; anything else is taken for a repo. A ./ or ../\n" +
+			"path is stored as the absolute path it names from the working directory.\n" +
+			"wt registers a pairing and cannot start one; it prints the llmbench command\n" +
+			"that does. Two pairings whose target and draft end in the same names need\n" +
+			"--id for the second.\n\n" +
 			"The LiteLLM routes are synced once afterwards; a sync that cannot run is a\n" +
 			"warning, and the exit status is still 0.",
 		Example: "  wt model add ollama qwen3:8b --family qwen3 --tags code\n" +
@@ -101,9 +106,60 @@ func modelAddCmd(a *app) *cobra.Command {
 	_ = c.MarkFlagRequired(modeladmin.FieldFamily)
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		req := modeladmin.AddRequest{ProviderID: args[0], ModelName: args[1], ID: id, Draft: draft, Fields: fields()}
+		if localmodels.RunningOnly(strings.TrimSpace(req.ProviderID)) {
+			// Here, where the working directory is the one the user typed
+			// the path in: internal/modeladmin never reads it.
+			var err error
+			if req.ModelName, err = absDotRelative(req.ModelName); err != nil {
+				return err
+			}
+			if req.Draft, err = absDotRelative(req.Draft); err != nil {
+				return err
+			}
+		}
 		return runModelAdd(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, req)
 	}
 	return c
+}
+
+// absDotRelative makes one side of a pairing that is spelled relative to the
+// working directory (".", "..", "./x", "../x") the absolute path it names
+// from here. The registry is shared: llmbench and modelman each resolve a
+// relative local_path against their own working directory — llmbench's is
+// llmbench/ under `uv run --directory llmbench` — so a row holding "./x"
+// would name a different directory for each of them, and the start command
+// wt prints would fail when run the documented way. A side spelled any other
+// way ("/x", "~/x", a repo id) is returned as it was typed.
+func absDotRelative(side string) (string, error) {
+	s := strings.TrimSpace(side)
+	if s != "." && s != ".." && !strings.HasPrefix(s, "./") && !strings.HasPrefix(s, "../") {
+		return side, nil
+	}
+	abs, err := filepath.Abs(s)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve %s against the working directory: %w", s, err)
+	}
+	return abs, nil
+}
+
+// repoThatIsADirectory returns the sides of a pairing that were registered as
+// Hugging Face repos (modeladmin.IsLocalPath says what is a path) and are
+// also directories under the working directory: `quant/Big-4bit` typed for
+// `./quant/Big-4bit`. mlx_lm.server would load that directory only when
+// started from this same directory, and try to download a repo of that name
+// from anywhere else, so the add says what it took the side for.
+func repoThatIsADirectory(sides ...string) []string {
+	var found []string
+	for _, side := range sides {
+		side = strings.TrimSpace(side)
+		if side == "" || modeladmin.IsLocalPath(side) || slices.Contains(found, side) {
+			continue
+		}
+		if info, err := os.Stat(side); err == nil && info.IsDir() {
+			found = append(found, side)
+		}
+	}
+	return found
 }
 
 // runModelAdd implements `wt model add`. cfg is the config as loaded (an
@@ -136,6 +192,9 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 		// Trimmed as the row was written (planAdd), so the command names
 		// what the registry holds.
 		fmt.Fprintf(out, "start it with: %s\n", catalog.PairingStartCommand(strings.TrimSpace(req.ModelName), strings.TrimSpace(req.Draft)))
+		for _, side := range repoThatIsADirectory(req.ModelName, req.Draft) {
+			fmt.Fprintf(errOut, "note: %s is also a directory here; it was registered as a Hugging Face repo — to register the directory, run `wt model rm %s` and add the pairing again with ./%s\n", side, res.ID, side)
+		}
 	}
 	for _, p := range res.ProvidersAdded {
 		fmt.Fprintf(out, "added provider: %s\n", p)

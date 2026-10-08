@@ -661,6 +661,45 @@ func TestModelAddAPairing(t *testing.T) {
 	if want := "added model: mlx_lm_server/T+draft-D\nstart it with: llmbench provider isolate --solo mlx_lm_server org/T --draft ~/d/D\n"; out2.String() != want {
 		t.Errorf("add with padded arguments = %q\nwant %q", out2.String(), want)
 	}
+	// A ./ or ../ side is the directory it names from here, written out in
+	// full. The registry is read by llmbench from llmbench/ and by wt from
+	// anywhere, so a relative local_path would be a different directory for
+	// each reader, and the printed command would fail from llmbench/.
+	work := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(filepath.Join(work, "quant", "Big-4bit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	absT, absD := filepath.Join(cwd, "T"), filepath.Join(filepath.Dir(cwd), "D")
+	out, err = runWT(t, "model", "add", "mlx_lm_server", "./T", "--draft", "../D/", "--family", "f", "--id", "mlx_lm_server/relative")
+	if want := "added model: mlx_lm_server/relative\nstart it with: llmbench provider isolate --solo mlx_lm_server " + absT + " --draft " + absD + "\n"; err != nil || out != want {
+		t.Errorf("add with ./ and ../ sides = %q, %v\nwant %q", out, err, want)
+	}
+	if got := mustRead(t, registry); !filepath.IsAbs(absT) || !strings.Contains(got, "[models.fetch]\nlocal_path = \""+absT+"\"\n\n[models.draft]\nlocal_path = \""+absD+"\"\n") {
+		t.Errorf("the ./ and ../ sides are not in the registry as absolute paths (%s, %s):\n%s", absT, absD, got)
+	}
+	// The same two directories spelled the same way again are the same
+	// pairing, since both spellings are compared as the paths they name.
+	if _, err := runWT(t, "model", "add", "mlx_lm_server", "./T/", "--draft", "../work/../D", "--family", "f", "--id", "mlx_lm_server/again"); err == nil || !strings.Contains(err.Error(), "already registers this pairing") {
+		t.Errorf("the same ./ and ../ sides again: err = %v, want it refused as the same pairing", err)
+	}
+	// A side with no such prefix is a repo id even when a directory of that
+	// name is here; the add says what it took it for, on stderr, and how to
+	// register the directory instead. A repo id that is no directory here
+	// (every add above) gets no note.
+	out, err = runWT(t, "model", "add", "mlx_lm_server", "quant/Big-4bit", "--draft", "org/D", "--family", "f")
+	if want := "added model: mlx_lm_server/Big-4bit+draft-D\n" +
+		"start it with: llmbench provider isolate --solo mlx_lm_server quant/Big-4bit --draft org/D\n" +
+		"note: quant/Big-4bit is also a directory here; it was registered as a Hugging Face repo — to register the directory, run `wt model rm mlx_lm_server/Big-4bit+draft-D` and add the pairing again with ./quant/Big-4bit\n"; err != nil || out != want {
+		t.Errorf("add of a bare relative directory = %q, %v\nwant %q", out, err, want)
+	}
+	if got := mustRead(t, registry); !strings.Contains(got, "[models.fetch]\nrepo = \"quant/Big-4bit\"\n") {
+		t.Errorf("a side with no path prefix was not registered as a repo:\n%s", got)
+	}
 	got = mustRead(t, registry)
 	before := got
 	for _, args := range [][]string{

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
@@ -214,12 +215,23 @@ func lastSegment(repoOrPath string) string {
 // dot-relative), a repo for anything else. A Hugging Face repo id is
 // org/name and never starts with one of those.
 func artifactTable(repoOrPath string) map[string]any {
-	for _, prefix := range []string{"/", "~", "./", "../"} {
-		if strings.HasPrefix(repoOrPath, prefix) {
-			return map[string]any{"local_path": repoOrPath}
-		}
+	if IsLocalPath(repoOrPath) {
+		return map[string]any{"local_path": repoOrPath}
 	}
 	return map[string]any{"repo": repoOrPath}
+}
+
+// IsLocalPath reports whether one side of a pairing, as typed, is taken for
+// a local path: it starts with "/", "~", "./" or "../". Anything else is
+// taken for a Hugging Face repo id — a bare relative directory included,
+// which is why `wt model add` says so when one is there.
+func IsLocalPath(repoOrPath string) bool {
+	for _, prefix := range []string{"/", "~", "./", "../"} {
+		if strings.HasPrefix(repoOrPath, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // samePairing returns the id of an mlx_lm_server row whose target and draft
@@ -247,11 +259,18 @@ func samePairing(models []*tomlw.Table, target, draft map[string]any) string {
 	return ""
 }
 
-// sideKey is one side of a pairing in a form two spellings of it share: what
-// kind it is, and its text without a trailing slash.
+// sideKey is one side of a pairing in a form every spelling of it shares:
+// what kind it is, and for a local path the directory it names — "~" put as
+// the home directory llmbench expands it to and the path cleaned ("//", a
+// "/./" and a trailing slash gone) — or for a repo its text without a
+// trailing slash. Only the comparison uses it; the row keeps what was typed.
+// When the home directory cannot be found the text is compared as it is.
 func sideKey(side map[string]any) string {
 	if p, _ := side["local_path"].(string); p != "" {
-		return "path:" + strings.TrimRight(p, "/")
+		if expanded, err := config.ExpandHome(p); err == nil {
+			p = expanded
+		}
+		return "path:" + filepath.Clean(p)
 	}
 	repo, _ := side["repo"].(string)
 	return "repo:" + strings.TrimRight(repo, "/")
