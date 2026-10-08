@@ -157,10 +157,6 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 	return append(rows, found...)
 }
 
-// defaultModelDirs are the model directories the probe scans when a provider
-// row names none (localmodels' own defaults, which it does not export).
-var defaultModelDirs = map[string]string{"omlx": "~/.omlx/models", "mtplx": "~/.mtplx/models"}
-
 // ownDirectory reports whether the directory the probe matched to a
 // registered model is that model's own. The probe matches by leaf name, so a
 // model registered as org-a/Name can be matched to org-b/Name; printing that
@@ -180,18 +176,7 @@ func ownDirectory(cfg *config.Config, m config.Model, path string) bool {
 	if org, _, ok := strings.Cut(m.Fetch.Repo, "/"); ok && filepath.Base(parent) == org {
 		return true
 	}
-	fam := localmodels.Family(m.ProviderID)
-	setting := defaultModelDirs[fam]
-	for _, id := range localmodels.FamilyProviderIDs(fam) {
-		if p := cfg.ProviderByID(id); p != nil && p.ModelDir != "" {
-			setting = p.ModelDir
-			break
-		}
-	}
-	if setting == "" {
-		return false
-	}
-	dir, err := config.ExpandHome(setting)
+	dir, err := localmodels.ModelDir(cfg, localmodels.Family(m.ProviderID))
 	return err == nil && filepath.Clean(dir) == filepath.Clean(parent)
 }
 

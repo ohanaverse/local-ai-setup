@@ -51,6 +51,24 @@ const (
 	defaultMtplxDir    = "~/.mtplx/models"
 )
 
+// ModelDir is the expanded model directory the probe scans for a family: the
+// first of the family's provider rows that names a model_dir, else the family
+// default. An omlx-6bit-only registry still resolves (same server). Callers
+// that need to agree with the probe use this rather than re-deriving it.
+func ModelDir(cfg *config.Config, family string) (string, error) {
+	setting := defaultOmlxDir
+	if family == "mtplx" {
+		setting = defaultMtplxDir
+	}
+	for _, id := range familyProviderIDs(family) {
+		if p := cfg.ProviderByID(id); p != nil && p.ModelDir != "" {
+			setting = p.ModelDir
+			break
+		}
+	}
+	return config.ExpandHome(setting)
+}
+
 // Entry is one local model: registered (Registered) or discovered.
 type Entry struct {
 	ProviderID string // registry provider id (omlx-6bit rows keep theirs); for discovered entries the family's registry provider id (familyProviderID), so the id resolves in the registry
@@ -413,19 +431,7 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.probeErr = err
 		}
 		s.loaded = loaded
-		def := defaultOmlxDir
-		if family == "mtplx" {
-			def = defaultMtplxDir
-		}
-		// A family with only an omlx-6bit row still scans (same server).
-		dirSetting := def
-		for _, id := range familyProviderIDs(family) {
-			if p := cfg.ProviderByID(id); p != nil && p.ModelDir != "" {
-				dirSetting = p.ModelDir
-				break
-			}
-		}
-		dir, err := config.ExpandHome(dirSetting)
+		dir, err := ModelDir(cfg, family)
 		if err != nil {
 			s.status = StatusUnreachable
 			return s
