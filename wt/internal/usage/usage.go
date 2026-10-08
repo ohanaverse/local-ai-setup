@@ -33,13 +33,16 @@ type event struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// Store is an interface for recording and querying model-launch history.
+// Store is what the consumers that take a store through an interface need:
+// rotation records launches, the picker reads counts for the models it
+// lists. It is not the whole surface of *StoreImpl. AllCounts is left out on
+// purpose (#289): its one caller, `wt stats`, holds the concrete type, and a
+// member here is a method every test double has to implement.
 type Store interface {
 	Record(modelID string) error
 	RecordFor(agent, modelID string) error
 	Counts(modelIDs []string) map[string]UsageCounts
 	CountsForAgent(agent string, modelIDs []string) map[string]UsageCounts
-	AllCounts(agent string) map[string]UsageCounts
 }
 
 // StoreImpl reads and appends to the usage history file.
@@ -59,7 +62,9 @@ func (s *StoreImpl) path() string {
 	return filepath.Join(s.dir, "usage.jsonl")
 }
 
-// now is overridable for tests.
+// now is the package clock: the timestamp RecordFor writes and the instant
+// Counts and CountsForAgent measure from. Overridable for tests. AllCounts
+// does not use it — its caller passes the instant.
 var now = time.Now
 
 // Record appends a launch event with no agent attribution. Prefer RecordFor;
@@ -146,26 +151,38 @@ func (s *StoreImpl) CountsForAgent(agent string, modelIDs []string) map[string]U
 }
 
 // AllCounts returns 1d/7d/30d counts for every model that has a launch in
-// the file within the last 30 days. Unlike Counts it takes no id list, so
-// it also reports models that have since left the registry — `wt stats`
-// has no other way to learn which models were launched. An empty agent
-// counts every launch, legacy agent-less lines included (the Counts rule);
-// a named agent counts only launches recorded for it (the CountsForAgent
-// rule). A model whose only events are older than 30 days is left out, so a
-// missing file and a stale one both read as an empty map. A line with no
-// model id is not a launch of any model and is left out too: wt never
+// the file in the 30 days ending at asOf. Unlike Counts it takes no id list,
+// so it also reports models that have since left the registry — `wt stats`
+// has no other way to learn which models were launched.
+//
+// asOf is the caller's instant, and the only clock consulted: `wt stats`
+// passes the instant its spend query ends at, so both halves of that report
+// cover one window (#287). A launch dated after asOf is not counted — it is
+// past the end of the window, whether the line was written by a clock that
+// was wrong or recorded after the caller read its instant. (Counts and
+// CountsForAgent, the picker's "up to now" columns, have no end and count
+// such a line in every bucket.) A launch dated exactly asOf is counted; one
+// exactly 24h, 7d or 30d before it is outside that bucket, as in Counts.
+//
+// An empty agent counts every launch, legacy agent-less lines included (the
+// Counts rule); a named agent counts only launches recorded for it (the
+// CountsForAgent rule). A model with no launch in the 30 days is left out,
+// so a missing file and a stale one both read as an empty map. A line with
+// no model id is not a launch of any model and is left out too: wt never
 // writes one, and a hand-edited file must not give `wt stats` a row with no
 // name.
-func (s *StoreImpl) AllCounts(agent string) map[string]UsageCounts {
+//
+// AllCounts is deliberately not part of Store; see the interface's comment.
+func (s *StoreImpl) AllCounts(agent string, asOf time.Time) map[string]UsageCounts {
 	out := map[string]UsageCounts{}
-	s.scan(func(ev event, age time.Duration) {
+	s.scan(asOf, func(ev event, age time.Duration) {
 		if ev.ModelID == "" {
 			return
 		}
 		if agent != "" && ev.Agent != agent {
 			return
 		}
-		if age >= retentionWindow {
+		if age < 0 || age >= retentionWindow {
 			return
 		}
 		out[ev.ModelID] = out[ev.ModelID].add(age)
@@ -196,7 +213,7 @@ func (s *StoreImpl) countsWhere(modelIDs []string, match func(event) bool) map[s
 	for _, id := range modelIDs {
 		out[id] = UsageCounts{}
 	}
-	s.scan(func(ev event, age time.Duration) {
+	s.scan(now(), func(ev event, age time.Duration) {
 		if _, want := out[ev.ModelID]; !want || !match(ev) {
 			return
 		}
@@ -206,27 +223,28 @@ func (s *StoreImpl) countsWhere(modelIDs []string, match func(event) bool) map[s
 }
 
 // scan calls fn once per parseable event in the file, with the event's age
-// as of now. A missing file yields no calls.
+// as of asOf (negative for an event dated after it). A missing file yields
+// no calls.
 //
 // Best-effort for display: if the scan aborts partway (e.g. a single corrupt
 // line exceeding bufio.Scanner's token limit), the events seen so far have
 // been reported and no error is returned — a truncated read only skews
 // displayed numbers. RecordFor's prune path is where scan errors are
 // surfaced, because there the result overwrites the on-disk history.
-func (s *StoreImpl) scan(fn func(ev event, age time.Duration)) {
+func (s *StoreImpl) scan(asOf time.Time, fn func(ev event, age time.Duration)) {
 	f, err := os.Open(s.path())
 	if err != nil {
 		return
 	}
 	defer f.Close()
 
-	today := now().UTC()
+	asOf = asOf.UTC()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		var ev event
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			continue
 		}
-		fn(ev, today.Sub(ev.Timestamp.UTC()))
+		fn(ev, asOf.Sub(ev.Timestamp.UTC()))
 	}
 }

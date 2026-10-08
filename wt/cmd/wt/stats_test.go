@@ -242,8 +242,7 @@ func TestStatsRowsSortsAgentsWithAllFirst(t *testing.T) {
 		survey.NewStore().Events(),
 		survey.Window30d,
 		now,
-		"", // no model filter
-		"", // no agent filter
+		statsFilter{}, // no filters
 	)
 
 	// Verify we have both aggregate and combo rows
@@ -304,5 +303,43 @@ func TestStatsRowsSortsAgentsWithAllFirst(t *testing.T) {
 			t.Errorf("combo rows with same agent not sorted by model id: %s before %s (agent=%s)",
 				prev.ModelID, curr.ModelID, prev.Agent)
 		}
+	}
+}
+
+// TestStatsRowsLeaveOutSurveyAnswersDatedAfterTheInstant verifies the survey
+// half ends where the usage half does: an answer dated exactly at the
+// report's instant is counted, one dated after it is not, in the aggregate
+// rows and the combo rows alike. Launches after the instant are already left
+// out (#287); without the same bound here a clock that was wrong when an
+// answer was written gives `wt stats` a survey row for a model the usage
+// table, measured from the same as_of, shows no launch of.
+func TestStatsRowsLeaveOutSurveyAnswersDatedAfterTheInstant(t *testing.T) {
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	rows := buildStatsRows([]survey.Event{
+		{Agent: "claude", ModelID: "m/past", Timestamp: asOf.Add(-time.Hour), Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "m/past", Timestamp: asOf.Add(time.Hour), Worked: boolPtr(false)},
+		{Agent: "claude", ModelID: "m/at", Timestamp: asOf, Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "m/future", Timestamp: asOf.Add(time.Second), Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "m/future", Timestamp: asOf.Add(40 * 24 * time.Hour), Skipped: true},
+	}, survey.Window30d, asOf, statsFilter{})
+
+	got := map[string]survey.Stats{}
+	for _, r := range rows {
+		if r.ModelID == "m/future" {
+			t.Errorf("row %+v: want no m/future row (every answer is dated after the instant)", r)
+		}
+		got[r.Agent+" "+r.ModelID] = r.Stats
+	}
+	one := survey.Stats{Answered: 1, Worked: 1}
+	for _, key := range []string{
+		statsAllAgents + " m/past", "claude m/past", // the later, failed answer is not counted
+		statsAllAgents + " m/at", "claude m/at", // the window includes its end
+	} {
+		if got[key] != one {
+			t.Errorf("row %q = %+v, want %+v", key, got[key], one)
+		}
+	}
+	if len(rows) != 4 {
+		t.Errorf("buildStatsRows returned %d rows, want 4: %+v", len(rows), rows)
 	}
 }

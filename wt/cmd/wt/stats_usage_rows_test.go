@@ -31,7 +31,7 @@ func TestBuildUsageRowsJoinsLaunchesAndSpend(t *testing.T) {
 	rows := buildUsageRows(map[string]usage.UsageCounts{
 		"ollama/both":        counts(0, 4, 5),
 		"ollama/launch-only": counts(7, 15, 17),
-	}, survey.Window7d, sp, nil, "", "")
+	}, survey.Window7d, sp, nil, statsFilter{})
 
 	if len(rows) != 3 {
 		t.Fatalf("rows = %+v, want 3", rows)
@@ -64,7 +64,7 @@ func TestBuildUsageRowsJoinsLaunchesAndSpend(t *testing.T) {
 // as "-". The spec's degradation rule: launch counts print whatever
 // happened to the database.
 func TestBuildUsageRowsWithoutSpendData(t *testing.T) {
-	rows := buildUsageRows(map[string]usage.UsageCounts{"ollama/a": counts(1, 2, 3)}, survey.Window30d, nil, nil, "", "")
+	rows := buildUsageRows(map[string]usage.UsageCounts{"ollama/a": counts(1, 2, 3)}, survey.Window30d, nil, nil, statsFilter{})
 	if len(rows) != 1 || rows[0].Launches != 3 || rows[0].Spend != nil {
 		t.Fatalf("rows = %+v, want one row with 3 launches and nil Spend", rows)
 	}
@@ -81,7 +81,7 @@ func TestBuildUsageRowsUsesTheWindowsLaunchBucket(t *testing.T) {
 		window time.Duration
 		want   int
 	}{{survey.Window1d, -1}, {survey.Window7d, 2}, {survey.Window30d, 5}} {
-		rows := buildUsageRows(c, tc.window, nil, nil, "", "")
+		rows := buildUsageRows(c, tc.window, nil, nil, statsFilter{})
 		switch {
 		case tc.want < 0 && len(rows) != 0:
 			t.Errorf("window %s: rows = %+v, want none (no launch in the window)", tc.window, rows)
@@ -111,7 +111,7 @@ func TestBuildUsageRowsFamilyAndFilters(t *testing.T) {
 	sp := &spend.Result{Rows: []spend.Row{{Model: "openrouter/x/y", Requests: 1}}}
 
 	got := map[string]string{}
-	for _, r := range buildUsageRows(c, survey.Window30d, sp, families, "", "") {
+	for _, r := range buildUsageRows(c, survey.Window30d, sp, families, statsFilter{}) {
 		got[r.Model] = r.Family
 	}
 	want := map[string]string{
@@ -133,7 +133,7 @@ func TestBuildUsageRowsFamilyAndFilters(t *testing.T) {
 
 	ids := func(model, family string) string {
 		var out []string
-		for _, r := range buildUsageRows(c, survey.Window30d, sp, families, model, family) {
+		for _, r := range buildUsageRows(c, survey.Window30d, sp, families, statsFilter{model: model, family: family}) {
 			out = append(out, r.Model)
 		}
 		return strings.Join(out, ",")
@@ -163,12 +163,12 @@ func TestBuildUsageRowsNeverMakesANamelessRow(t *testing.T) {
 	c := map[string]usage.UsageCounts{"": counts(1, 1, 1), "ollama/a": counts(2, 2, 2)}
 	sp := &spend.Result{Rows: []spend.Row{{Model: "", Requests: 9}, {Model: "ollama/a", Requests: 4}}}
 	for name, s := range map[string]*spend.Result{"with spend": sp, "without spend": nil} {
-		rows := buildUsageRows(c, survey.Window30d, s, nil, "", "")
+		rows := buildUsageRows(c, survey.Window30d, s, nil, statsFilter{})
 		if len(rows) != 1 || rows[0].Model != "ollama/a" || rows[0].Launches != 2 {
 			t.Errorf("%s: rows = %+v, want the one ollama/a row and none with an empty id", name, rows)
 		}
 	}
-	if rows := buildUsageRows(c, survey.Window30d, sp, nil, "", "unknown"); len(rows) != 0 {
+	if rows := buildUsageRows(c, survey.Window30d, sp, nil, statsFilter{family: "unknown"}); len(rows) != 0 {
 		t.Errorf("--family unknown: rows = %+v, want none (the empty id has no family row either)", rows)
 	}
 }
@@ -265,7 +265,7 @@ func TestBuildUsageRowsFoldsTheSlashSpelling(t *testing.T) {
 		for _, id := range tc.registry {
 			families[id] = "fam"
 		}
-		rows := buildUsageRows(c, survey.Window30d, &spend.Result{Rows: tc.spend}, families, "", "")
+		rows := buildUsageRows(c, survey.Window30d, &spend.Result{Rows: tc.spend}, families, statsFilter{})
 		if len(rows) != len(tc.want) {
 			t.Errorf("%s: rows = %+v, want %d", tc.name, rows, len(tc.want))
 			continue
@@ -302,7 +302,7 @@ func TestBuildUsageRowsSumsFoldedSpellings(t *testing.T) {
 		for _, i := range order {
 			sp.Rows = append(sp.Rows, in[i])
 		}
-		rows := buildUsageRows(c, survey.Window30d, sp, families, "", "")
+		rows := buildUsageRows(c, survey.Window30d, sp, families, statsFilter{})
 		if len(rows) != 1 {
 			t.Fatalf("order %v: rows = %+v, want one", order, rows)
 		}
@@ -346,7 +346,7 @@ func TestBuildUsageRowsFiltersApplyAfterFolding(t *testing.T) {
 		{"openrouter/z-ai/glm", "", "openrouter/z-ai/glm:2"},
 	} {
 		var got []string
-		for _, r := range buildUsageRows(c, survey.Window30d, sp, families, tc.model, tc.family) {
+		for _, r := range buildUsageRows(c, survey.Window30d, sp, families, statsFilter{model: tc.model, family: tc.family}) {
 			got = append(got, r.Model+":"+formatCount(r.Spend.Requests))
 		}
 		if g := strings.Join(got, ","); g != tc.want {
@@ -366,7 +366,7 @@ func TestBuildUsageRowsFoldsIntoAnIdLaunchedOutsideTheWindow(t *testing.T) {
 	c := map[string]usage.UsageCounts{"mtplx/Org--Name": counts(0, 0, 1)}
 	sp := &spend.Result{Rows: []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}}}
 	for _, window := range []time.Duration{survey.Window1d, survey.Window7d} {
-		rows := buildUsageRows(c, window, sp, nil, "", "")
+		rows := buildUsageRows(c, window, sp, nil, statsFilter{})
 		if len(rows) != 1 {
 			t.Fatalf("window %v: rows = %+v, want one", window, rows)
 		}

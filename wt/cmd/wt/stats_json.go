@@ -67,7 +67,11 @@ func optional(v float64, ok bool) *float64 {
 }
 
 // buildStatsJSON assembles the document from the same rows the text tables
-// are rendered from, so the two renderings cannot disagree.
+// are rendered from, and renders every row it is given, as surveyTableRows
+// and renderUsageTable do: no rule about which rows exist lives in a
+// renderer (buildStatsRows and buildUsageRows decide), so the two renderings
+// cannot disagree about that. TestStatsJSONAgreesWithTheTable compares both
+// halves.
 func buildStatsJSON(window string, asOf time.Time, survey []statsRow, rep usageReport) statsJSON {
 	doc := statsJSON{
 		Window: window,
@@ -76,9 +80,6 @@ func buildStatsJSON(window string, asOf time.Time, survey []statsRow, rep usageR
 		Usage:  usageJSON{SpendStatus: rep.SpendStatus, SpendReason: rep.SpendReason, Rows: []usageRowJSON{}},
 	}
 	for _, r := range survey {
-		if surveyEmptyStats(r.Stats) {
-			continue
-		}
 		j := surveyRowJSON{
 			Model: r.ModelID, Answered: r.Stats.Answered, Worked: r.Stats.Worked,
 			Failed: r.Stats.Failed, Skipped: r.Stats.Skipped,
