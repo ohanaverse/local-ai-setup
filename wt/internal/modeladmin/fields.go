@@ -24,6 +24,7 @@ const (
 	FieldOutputPrice        = "output-price"
 	FieldSubscriptionPrice  = "subscription-price"
 	FieldSubscriptionPeriod = "subscription-period"
+	FieldDraft              = "draft"
 )
 
 // FieldError is a value the user gave that cannot be used. Field names the

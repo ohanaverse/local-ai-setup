@@ -486,8 +486,9 @@ type Model struct {
 	ModelInfo map[string]any `toml:"model_info,omitempty"`
 	// Fetch and Draft say where a local model's weights come from: the
 	// registry's [models.fetch] table, and [models.draft] for the draft half
-	// of an mlx_lm_server pairing. wt only reads them — to show a local_path
-	// and to name the pairing in a hint; llmbench acts on them. Nothing
+	// of an mlx_lm_server pairing. wt reads them here — to show a local_path
+	// and to name the pairing in a hint; llmbench acts on them — and writes
+	// them only when `wt model add` registers a pairing (modeladmin.Add). Nothing
 	// encodes a Model back into the registry (RegistryDoc is patch-shaped),
 	// so decoding two more keys cannot change what a write touches.
 	// Neither can fail a load: a malformed one reads as absent
@@ -533,9 +534,9 @@ var artifactFields = []struct {
 	{"local_path", func(a *ModelArtifact) *string { return &a.LocalPath }, func(f *ArtifactFaults) *bool { return &f.LocalPath }},
 }
 
-// UnmarshalTOML reads a fetch or draft value and never fails. wt only shows
-// these two tables (a path, the two sides of a pairing), and models are
-// edited by hand, so a slip in one must not stop every wt command, launches
+// UnmarshalTOML reads a fetch or draft value and never fails. What wt reads
+// of these two tables it only shows (a path, the two sides of a pairing), and
+// registries are edited by hand too, so a slip in one must not stop every wt command, launches
 // included (as a typed decode would: one bad key fails the whole registry).
 // A value that is not a table reads as an empty artifact, and a repo or
 // local_path that is not a string reads as absent while the other key is

@@ -19,7 +19,8 @@ func tableTestRows() []tableRow {
 			Location: config.LocationCloud, Status: catalog.StatusOK}, counts: usage.UsageCounts{OneDay: 1, SevenDay: 12, ThirtyDay: 340}},
 		{Row: catalog.Row{Model: config.Model{ID: "omlx/Qwen3.8-27B-4bit", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusOK, Running: true}},
 		{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx"}, Location: config.LocationLocal, Status: catalog.StatusNew, Discovered: true}},
-		{Row: catalog.Row{Model: config.Model{ID: "mlx_lm_server/pair", ProviderID: "mlx_lm_server", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusUnknown}},
+		{Row: catalog.Row{Model: config.Model{ID: "mlx_lm_server/pair", ProviderID: "mlx_lm_server", Family: "qwen",
+			Fetch: config.ModelArtifact{Repo: "org/T"}, Draft: config.ModelArtifact{LocalPath: "~/d/D"}}, Location: config.LocationLocal, Status: catalog.StatusUnknown}},
 	}
 }
 
@@ -95,8 +96,8 @@ func TestRenderTableSurveySegmentTrailing(t *testing.T) {
 }
 
 // TestRenderTableBlockedAndMarkers verifies a non-running omlx row is a
-// start row, a provider wt cannot start is blocked with the modelman start
-// reason, only the last-launched row is marked, and the in-use ref count is
+// start row, a provider wt cannot start is blocked with the command that
+// starts it, only the last-launched row is marked, and the in-use ref count is
 // picked up.
 func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	tbl := renderTable(tableTestRows(), nil, "", map[string]int{"openrouter/cheap": 2}, "omlx/Qwen3.8-27B-4bit")
@@ -109,8 +110,10 @@ func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	if tbl.items[3].blocked == "" || tbl.items[3].start {
 		t.Errorf("mlx_lm_server row: start = %v blocked = %q, want blocked and not startable", tbl.items[3].start, tbl.items[3].blocked)
 	}
-	if !strings.Contains(tbl.items[3].blocked, "modelman start mlx_lm_server/pair") {
-		t.Errorf("mlx_lm_server row blocked = %q, want the modelman start reason", tbl.items[3].blocked)
+	// With the row's own two sides: the picker's hint is a command to paste,
+	// and one that named placeholders would start nothing.
+	if !strings.Contains(tbl.items[3].blocked, "llmbench provider isolate --solo mlx_lm_server org/T --draft ~/d/D") {
+		t.Errorf("mlx_lm_server row blocked = %q, want the llmbench command with the row's target and draft", tbl.items[3].blocked)
 	}
 	if !tbl.items[1].marked || tbl.items[0].marked {
 		t.Error("only the last-launched row is marked")

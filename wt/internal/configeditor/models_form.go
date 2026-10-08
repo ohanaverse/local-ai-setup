@@ -125,7 +125,8 @@ func (f *modelForm) editable(field int) bool {
 // formProviders are the providers an add can choose: every registry provider
 // and the ones wt can seed a row for when a model names them (openrouter
 // among them), without mlx_lm_server — its model is a target+draft pairing,
-// which modeladmin.Add refuses and the form has no fields for.
+// which takes two artifacts: `wt model add mlx_lm_server <target> --draft
+// <draft>` adds one, and the form has no field for a draft.
 func formProviders(cfg *config.Config) []string {
 	ids := []string{}
 	for _, p := range cfg.Providers {
@@ -495,6 +496,16 @@ var modelFormHints = []string{
 	"^s save · esc · ↑/↓ · ←/→ change",
 }
 
+// modelFormPairingHints say where an mlx_lm_server pairing is added, fullest
+// first: the add form's Provider choice does not offer one (a pairing is two
+// artifacts, and the form has one name field), and a user who added pairings
+// in modelman's form would otherwise find the provider missing and nothing
+// that says where it went.
+var modelFormPairingHints = []string{
+	"a pairing: wt model add mlx_lm_server <target> --draft <draft>",
+	"wt model add mlx_lm_server T --draft D",
+}
+
 // formWindow chooses which of a form's n fields are drawn in room rows: count
 // fields from first, always including the one under the cursor. When not all
 // of them fit and there are rows to spare for it, the first and the last row
@@ -578,12 +589,25 @@ func (m *model) modelFormLayout() modelFormLayout {
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	l.head = tabBar(m.theme, TabModels) + "\n" + wrapText(title, width) + "\n"
-	l.foot += dim.Render(fitHints(m.width, modelFormHints))
+	hints := dim.Render(fitHints(m.width, modelFormHints))
+	// While the add form's Provider choice is the field being changed, a
+	// line above the key hints says where the provider it lacks is added. It
+	// is a row the fields lose on a short terminal, so it is drawn only
+	// where they keep three (the focused field and the two markers), and
+	// never beside an error, which has its own rule for that below.
+	pairing := ""
+	if f.mode == modelFormAdd && f.cursor == mfProvider && f.err == "" {
+		pairing = dim.Render(fitHints(m.width, modelFormPairingHints)) + "\n"
+	}
 	l.room = mfCount
 	if m.height <= 0 {
-		l.head, l.foot = l.head+"\n", "\n"+l.foot
+		l.head, l.foot = l.head+"\n", "\n"+l.foot+pairing+hints
 		return l
 	}
+	if pairing != "" && m.height-lipgloss.Height(l.head+pairing+hints) < 3 {
+		pairing = ""
+	}
+	l.foot += pairing + hints
 	// head ends with a line break, so this is the lines of the two.
 	used := lipgloss.Height(l.head + l.foot)
 	// A blank line under the title and above the hints, when the terminal

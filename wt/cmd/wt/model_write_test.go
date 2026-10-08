@@ -632,3 +632,122 @@ func TestModelAddOfADuplicatedIDStillSaysItExists(t *testing.T) {
 		t.Errorf("a refused add must change nothing: syncs = %d", *syncs)
 	}
 }
+
+// TestModelAddAPairing verifies `wt model add mlx_lm_server <target> --draft
+// <draft>` registers the pairing and prints the llmbench command that starts
+// it, since wt has no engine for one, and that --draft on any other provider
+// is refused. Without the command the user has a registry row and no way to
+// find out how to run it.
+func TestModelAddAPairing(t *testing.T) {
+	registry := modelHome(t, writeRegistry)
+	stubSeedEnv(t, config.SeedEnv{})
+	stubRouteSync(t, "")
+	out, err := runWT(t, "model", "add", "mlx_lm_server", "mlx-community/Qwen3.8-27B-4bit", "--draft", "mlx-community/Qwen3.8-4B-4bit", "--family", "qwen3.8")
+	want := "added model: mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit\n" +
+		"start it with: llmbench provider isolate --solo mlx_lm_server mlx-community/Qwen3.8-27B-4bit --draft mlx-community/Qwen3.8-4B-4bit\n" +
+		"added provider: mlx_lm_server\n"
+	if err != nil || out != want {
+		t.Fatalf("add = %q, %v\nwant %q", out, err, want)
+	}
+	got := mustRead(t, registry)
+	if !strings.Contains(got, "[models.fetch]\nrepo = \"mlx-community/Qwen3.8-27B-4bit\"\n\n[models.draft]\nrepo = \"mlx-community/Qwen3.8-4B-4bit\"\n") {
+		t.Errorf("the pairing's two sides are not in the registry:\n%s", got)
+	}
+	// The command names the sides as the row holds them: trimmed.
+	var out2, errOut2 bytes.Buffer
+	if err := runModelAdd(&out2, &errOut2, nil, modeladmin.AddRequest{ProviderID: "mlx_lm_server", ModelName: " org/T ", Draft: " ~/d/D ", Fields: modeladmin.Fields{Family: sp("f")}}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "added model: mlx_lm_server/T+draft-D\nstart it with: llmbench provider isolate --solo mlx_lm_server org/T --draft ~/d/D\n"; out2.String() != want {
+		t.Errorf("add with padded arguments = %q\nwant %q", out2.String(), want)
+	}
+	// A ./ or ../ side is the directory it names from here, written out in
+	// full. The registry is read by llmbench from llmbench/ and by wt from
+	// anywhere, so a relative local_path would be a different directory for
+	// each reader, and the printed command would fail from llmbench/.
+	work := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(filepath.Join(work, "quant", "Big-4bit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	absT, absD := filepath.Join(cwd, "T"), filepath.Join(filepath.Dir(cwd), "D")
+	out, err = runWT(t, "model", "add", "mlx_lm_server", "./T", "--draft", "../D/", "--family", "f", "--id", "mlx_lm_server/relative")
+	if want := "added model: mlx_lm_server/relative\nstart it with: llmbench provider isolate --solo mlx_lm_server " + absT + " --draft " + absD + "\n"; err != nil || out != want {
+		t.Errorf("add with ./ and ../ sides = %q, %v\nwant %q", out, err, want)
+	}
+	if got := mustRead(t, registry); !filepath.IsAbs(absT) || !strings.Contains(got, "[models.fetch]\nlocal_path = \""+absT+"\"\n\n[models.draft]\nlocal_path = \""+absD+"\"\n") {
+		t.Errorf("the ./ and ../ sides are not in the registry as absolute paths (%s, %s):\n%s", absT, absD, got)
+	}
+	// The same two directories spelled the same way again are the same
+	// pairing, since both spellings are compared as the paths they name.
+	if _, err := runWT(t, "model", "add", "mlx_lm_server", "./T/", "--draft", "../work/../D", "--family", "f", "--id", "mlx_lm_server/again"); err == nil || !strings.Contains(err.Error(), "already registers this pairing") {
+		t.Errorf("the same ./ and ../ sides again: err = %v, want it refused as the same pairing", err)
+	}
+	// A side with no such prefix is a repo id even when a directory of that
+	// name is here; the add says what it took it for, on stderr, and how to
+	// register the directory instead. A repo id that is no directory here
+	// (every add above) gets no note.
+	out, err = runWT(t, "model", "add", "mlx_lm_server", "quant/Big-4bit", "--draft", "org/D", "--family", "f")
+	if want := "added model: mlx_lm_server/Big-4bit+draft-D\n" +
+		"start it with: llmbench provider isolate --solo mlx_lm_server quant/Big-4bit --draft org/D\n" +
+		"note: quant/Big-4bit is also a directory here; it was registered as a Hugging Face repo — to register the directory, run `wt model rm mlx_lm_server/Big-4bit+draft-D` and add the pairing again with ./quant/Big-4bit\n"; err != nil || out != want {
+		t.Errorf("add of a bare relative directory = %q, %v\nwant %q", out, err, want)
+	}
+	if got := mustRead(t, registry); !strings.Contains(got, "[models.fetch]\nrepo = \"quant/Big-4bit\"\n") {
+		t.Errorf("a side with no path prefix was not registered as a repo:\n%s", got)
+	}
+	got = mustRead(t, registry)
+	before := got
+	for _, args := range [][]string{
+		{"model", "add", "mlx_lm_server", "org/target", "--family", "f"},
+		{"model", "add", "ollama", "qwen3:8b", "--family", "f", "--draft", "org/d"},
+	} {
+		if _, err := runWT(t, args...); err == nil || !strings.Contains(err.Error(), "--draft") {
+			t.Errorf("wt %s: err = %v, want a refusal about --draft", strings.Join(args, " "), err)
+		}
+	}
+	if mustRead(t, registry) != before {
+		t.Error("a refused add changed the registry")
+	}
+}
+
+// TestModelEditAndRmOfAPairing verifies a pairing `wt model add` wrote is
+// edited and removed like any model: `edit` changes the metadata it is given
+// and leaves [models.fetch] and [models.draft] byte for byte (llmbench starts
+// the server from those two tables), and `rm` names both sides as untouched,
+// since wt deletes no weights and a local directory the user quantized for
+// hours is one of them.
+func TestModelEditAndRmOfAPairing(t *testing.T) {
+	registry := modelHome(t, writeRegistry)
+	stubSeedEnv(t, config.SeedEnv{})
+	stubRouteSync(t, "")
+	const id = "mlx_lm_server/T-4bit+draft-D-4bit"
+	if _, err := runWT(t, "model", "add", "mlx_lm_server", "/quant/T-4bit", "--draft", "~/models/D-4bit", "--family", "qwen3.8"); err != nil {
+		t.Fatal(err)
+	}
+	const sides = "[models.fetch]\nlocal_path = \"/quant/T-4bit\"\n\n[models.draft]\nlocal_path = \"~/models/D-4bit\"\n"
+	added := mustRead(t, registry)
+	if !strings.Contains(added, sides) {
+		t.Fatalf("the pairing's two sides are not in the registry:\n%s", added)
+	}
+	out, err := runWT(t, "model", "edit", id, "--tags", "code", "--family", "qwen")
+	if err != nil || out != "updated model: "+id+"\n" {
+		t.Fatalf("edit = %q, %v", out, err)
+	}
+	want := strings.Replace(added, "family = \"qwen3.8\"\nprovider_id = \"mlx_lm_server\"\nmodel_name = \"T-4bit+draft-D-4bit\"\ntags = []\n",
+		"family = \"qwen\"\nprovider_id = \"mlx_lm_server\"\nmodel_name = \"T-4bit+draft-D-4bit\"\ntags = [\n    \"code\",\n]\n", 1)
+	if got := mustRead(t, registry); got != want || !strings.Contains(got, sides) {
+		t.Errorf("registry after the edit =\n%s\nwant only family and tags changed:\n%s", got, want)
+	}
+	out, err = runWT(t, "model", "rm", id, "--yes")
+	if want := "removed model: " + id + "\n  target /quant/T-4bit and draft ~/models/D-4bit are untouched\n"; err != nil || out != want {
+		t.Errorf("rm = %q, %v\nwant %q", out, err, want)
+	}
+	if strings.Contains(mustRead(t, registry), id) {
+		t.Error("the pairing is still in the registry")
+	}
+}

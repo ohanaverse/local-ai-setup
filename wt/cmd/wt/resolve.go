@@ -86,7 +86,7 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 			// the eligible list (unsupported provider, filtered by -T/-F)
 			// would be told to pull, then refused as ineligible after.
 			if config.IndexModelByID(eligible, pinned) >= 0 {
-				if reason := catalog.MissingReason(&snap, pinned); reason != "" {
+				if reason := catalog.MissingReason(cfg, &snap, pinned); reason != "" {
 					return config.Model{}, launchable, errors.New(reason)
 				}
 			}

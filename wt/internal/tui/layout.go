@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
@@ -106,24 +107,59 @@ func (m *model) modelFrames() []listFrame {
 }
 
 // agentFrames are the agent+command picker's layouts: the worktree path and
-// any status above the list, the key hints below. A terminal too short for
-// both loses the path line, for the reason modelFrames gives: it repeats the
-// user's last choice, the status does not.
+// any status above the list, the key hints below.
+//
+// The status is wrapped to the terminal's width, not clipped. This is the
+// screen a refused -M pin comes back to, and its reason ends in what to do —
+// for an mlx_lm_server pairing, the llmbench command with the pairing's own
+// target and draft, which no terminal width reaches on one line — so a
+// status cut at the right edge shows the complaint and not the fix (#209).
+//
+// A terminal too short for all of it loses the path line first, for the
+// reason modelFrames gives: it repeats the user's last choice, the status
+// does not. Only one too short for the wrapped status and the list together
+// gets the status unwrapped, each line cut at the edge with an ellipsis to
+// say so.
 func (m *model) agentFrames() []listFrame {
-	build := func(withPath bool) listFrame {
+	build := func(withPath, wrapped bool) listFrame {
 		return func(listView string) string {
 			header := ""
 			if withPath {
 				header = clip("directory: "+m.selectedPath, m.width) + "\n\n"
 			}
 			if m.status != "" {
-				header += clip("status: "+m.status, m.width) + "\n\n"
+				status := "status: " + m.status
+				if wrapped {
+					header += clip(tuilayout.WrapText(status, m.width), m.width) + "\n\n"
+				} else {
+					header += cutLines(status, m.width) + "\n\n"
+				}
 			}
 			footer := "\n" + clip("[↑/↓] navigate   [enter] continue   [esc] back", m.width)
 			return header + listView + footer
 		}
 	}
-	return []listFrame{build(true), build(false)}
+	return []listFrame{build(true, true), build(false, true), build(true, false), build(false, false)}
+}
+
+// cutLines is clip that says when it cut: a line of s wider than width loses
+// its end to an ellipsis, where clip ends it at the edge with no sign that
+// anything is missing. A width that is not positive cuts nothing.
+func cutLines(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		switch {
+		case lipgloss.Width(line) <= width:
+		case width == 1:
+			lines[i] = "…"
+		default:
+			lines[i] = clip(line, width-1) + "…"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // worktreeFrame is the worktree list's layout: a reload error or a status

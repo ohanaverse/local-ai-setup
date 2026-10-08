@@ -144,58 +144,13 @@ func middleCut(s string, w int) string {
 	return string(runes[:w-1-tail]) + "…" + string(runes[len(runes)-tail:])
 }
 
-// flow lays units out on lines of at most width runes, sep between two units
-// on a line. A line is broken only between units — never inside one, and so
-// never at a hyphen inside an id or a path — except that a unit longer than a
-// whole line is cut at the line's end.
+// flow and wrapText are tuilayout's (the launcher wraps a status with the
+// same two), under the names this package's code and tests use.
 func flow(units []string, sep string, width int) []string {
-	width = max(width, 1)
-	var lines []string
-	cur := ""
-	for _, u := range units {
-		if cur != "" {
-			if utf8.RuneCountInString(cur+sep+u) <= width {
-				cur += sep + u
-				continue
-			}
-			lines, cur = append(lines, cur), ""
-		}
-		runes := []rune(u)
-		for len(runes) > width {
-			lines, runes = append(lines, string(runes[:width])), runes[width:]
-		}
-		cur = string(runes)
-	}
-	if cur != "" {
-		lines = append(lines, cur)
-	}
-	return lines
+	return tuilayout.Flow(units, sep, width)
 }
 
-// wrapText wraps free text to width at its spaces, keeping the line breaks
-// it has. A path on a line of its own is therefore cut only at the
-// terminal's edge and can be copied as one token. A line that fits is kept
-// as it was written, its spacing included, and so is every line when the
-// width is not known yet (0, before the first WindowSizeMsg), as in fitHints:
-// flow would otherwise put one rune on a line.
-func wrapText(s string, width int) string {
-	if width <= 0 {
-		return s
-	}
-	var lines []string
-	for _, line := range strings.Split(s, "\n") {
-		if strings.TrimSpace(line) == "" {
-			lines = append(lines, "")
-			continue
-		}
-		if utf8.RuneCountInString(line) <= width {
-			lines = append(lines, line)
-			continue
-		}
-		lines = append(lines, flow(strings.Fields(line), " ", width)...)
-	}
-	return strings.Join(lines, "\n")
-}
+func wrapText(s string, width int) string { return tuilayout.WrapText(s, width) }
 
 // userHome is the home directory paths are abbreviated against. A seam: the
 // package's TestMain names one, so no test reads the developer's.
@@ -374,10 +329,19 @@ func malformedLine(r modeladmin.Row) string {
 
 // modelsDetail is the block under the table, in two parts: the selected
 // row's id, whole, with its status and running state (the table may have cut
-// the id, and has no column for the rest) and its tags, then a line for a
-// malformed fetch or draft, which is why such a row has no path or reads
-// "missing"; and the path of its weights, on lines of its own.
+// the id, and has no column for the rest), its tags and, for a pairing, its
+// target and draft, then a line for a malformed fetch or draft, which is why
+// such a row has no path or reads "missing"; and the path of its weights, on
+// lines of its own.
 func (m *model) modelsDetail() (id, path []string) {
+	return m.modelsDetailLines(true)
+}
+
+// modelsDetailLines is modelsDetail, with a pairing's target and draft left
+// out of the id part when sides is false: the two are the longest text the
+// tab shows (a repo id and a directory), and a short terminal gives them up
+// before it gives up the id (modelsFrames).
+func (m *model) modelsDetailLines(sides bool) (id, path []string) {
 	r, ok := m.selectedModel()
 	if !ok {
 		return nil, nil
@@ -394,7 +358,7 @@ func (m *model) modelsDetail() (id, path []string) {
 	if len(r.Tags) > 0 {
 		parts = append(parts, "tags "+strings.Join(r.Tags, ","))
 	}
-	if r.Pairing() {
+	if r.Pairing() && sides {
 		parts = append(parts, "target "+dash(r.Target), "draft "+dash(r.Draft))
 	}
 	id = flow(parts, " · ", m.width)
@@ -431,7 +395,9 @@ func fitHints(width int, hints []string) string {
 // The first three are used only where they leave the table modelsTableMin
 // lines: blank lines round the status, and the path, are not worth a table
 // of one row. What a short terminal gives up, in order: the blank lines, the
-// path, table rows down to one, the hints, and last the id line with the
+// path, table rows down to one, a pairing's target and draft (two long
+// values that can take four lines of a 40-column terminal by themselves, and
+// more than the hints are worth), the hints, and last the id line with the
 // malformed line under it. The tab bar, the status and the table are never
 // given up by choice; a status too long to leave the table a row is drawn
 // without the table (modelsView).
@@ -467,7 +433,12 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 			frames = append(frames, f)
 		}
 	}
-	return append(frames, build(false, id, true), build(false, id, false), build(false, nil, false))
+	frames = append(frames, build(false, id, true))
+	if r, ok := m.selectedModel(); ok && r.Pairing() {
+		short, _ := m.modelsDetailLines(false)
+		return append(frames, build(false, short, true), build(false, short, false), build(false, nil, false))
+	}
+	return append(frames, build(false, id, false), build(false, nil, false))
 }
 
 // fitModels sizes the table to the room its frame leaves. Update calls it

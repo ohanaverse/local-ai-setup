@@ -7,6 +7,7 @@ package catalog
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -160,18 +161,66 @@ func listed(e localmodels.Entry) bool {
 	return false
 }
 
+// PairingStartCommand is the command that starts an mlx_lm_server
+// target+draft pairing beside the other local models: wt has no engine for
+// one, llmbench does. --solo is what keeps the other providers running. An
+// empty target or draft (a row with no fetch or draft table) is spelled as a
+// placeholder, so the hint still shows the command's shape. A side a shell
+// would split or expand — a local path with a space in it — is quoted, so
+// the line can be pasted; a repo id and an ordinary path are printed bare.
+func PairingStartCommand(target, draft string) string {
+	side := func(s, placeholder string) string {
+		if s == "" {
+			return placeholder
+		}
+		return shellArg(s)
+	}
+	return "llmbench provider isolate --solo mlx_lm_server " + side(target, "<target>") + " --draft " + side(draft, "<draft>")
+}
+
+// shellArg spells s as one word of a POSIX shell command line. A word made
+// only of characters no shell treats specially is returned as it is.
+// Anything else is single-quoted, with a leading "~/" left outside the
+// quotes so the shell still expands it.
+func shellArg(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r)
+	}
+	home, rest := "", s
+	if strings.HasPrefix(s, "~/") {
+		home, rest = "~/", s[2:]
+	}
+	if s == "~" || !strings.ContainsFunc(rest, func(r rune) bool { return !plain(r) }) {
+		return s
+	}
+	return home + "'" + strings.ReplaceAll(rest, "'", `'\''`) + "'"
+}
+
+// notRunning is the one wording for a local model that is not running and
+// that wt cannot start: an mlx_lm_server pairing gets the command that
+// starts it; any other provider with no lifecycle engine in wt is named, and
+// left to its own tool.
+func notRunning(m config.Model) string {
+	if localmodels.RunningOnly(m.ProviderID) {
+		return fmt.Sprintf("local model %q is not running, and wt cannot start an mlx_lm_server pairing — start it with `%s`",
+			m.ID, PairingStartCommand(m.Fetch.Target(), m.Draft.Target()))
+	}
+	return fmt.Sprintf("local model %q is not running, and wt cannot start provider %q — start it with that provider's own tool", m.ID, m.ProviderID)
+}
+
 // MissingReason is the message for a pin of a registry local model that has
 // no row (#179 Phase B: local rows come only from the inventory): "<id> is
 // not on disk" when the probe confirmed its artifact is missing, or the
-// `modelman start` hint for a non-running model of a running-only family
+// command that starts it for a non-running model of a running-only family
 // (localmodels.RunningOnly: an mlx_lm_server pairing), which wt can neither
-// discover nor start. It is "" for any id the snapshot cannot vouch
-// for — a model with a row, an unknown artifact, a discovered or unknown id,
-// or a nil snapshot (no probe ran) — so the caller keeps its own wording.
-// `wt start`, `wt smoke` and `wt -M` (both paths) consult it only when
-// catalog.Find misses; `wt -M` additionally only for a pin in the agent's
-// eligible list, so a pin the agent cannot use at all is never told to pull.
-func MissingReason(snap *localmodels.Snapshot, id string) string {
+// discover nor start. cfg is where the pairing's target and draft are read
+// from (nil is allowed). It is "" for any id the snapshot cannot vouch for — a
+// model with a row, an unknown artifact, a discovered or unknown id, or a nil
+// snapshot (no probe ran) — so the caller keeps its own wording. `wt start`,
+// `wt smoke` and `wt -M` (both paths) consult it only when catalog.Find
+// misses; `wt -M` additionally only for a pin in the agent's eligible list, so
+// a pin the agent cannot use at all is never told to pull.
+func MissingReason(cfg *config.Config, snap *localmodels.Snapshot, id string) string {
 	if snap == nil {
 		return ""
 	}
@@ -181,7 +230,13 @@ func MissingReason(snap *localmodels.Snapshot, id string) string {
 		}
 		switch {
 		case localmodels.RunningOnly(e.ProviderID):
-			return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", id, id)
+			m := config.Model{ID: id, ProviderID: e.ProviderID}
+			if cfg != nil {
+				if i := config.IndexModelByID(cfg.Models, id); i >= 0 {
+					m = cfg.Models[i]
+				}
+			}
+			return notRunning(m)
 		case e.ArtifactKnown && e.Artifact == "":
 			return fmt.Sprintf("%s is not on disk — pull or download it first", id)
 		}
@@ -236,12 +291,12 @@ func (r Row) Action() Action {
 }
 
 // BlockReason is the status line for an ActionBlock row ("" otherwise): a
-// provider wt cannot start needs modelman.
+// local model that is not running, on a provider wt has no engine to start.
 func (r Row) BlockReason() string {
 	if r.Action() != ActionBlock {
 		return ""
 	}
-	return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", r.Model.ID, r.Model.ID)
+	return notRunning(r.Model)
 }
 
 // RefusedByRoute reports whether the row must be refused because of how it

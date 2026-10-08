@@ -146,7 +146,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/configeditor/` | the TUI behind `wt config`: the Agents tab (`config.toml`; edits buffered, saved with ctrl+s) and the Models tab (`registry.toml` through `internal/modeladmin`: a table of `modeladmin.Rows`, `d` to remove, and the add / register / edit form of `models_form.go` on `n` and `enter`, hand-built on `bubbles/textinput` like the agent form; each change written at once from a `tea.Cmd`, the probe and the form's ollama lookup in a `tea.Cmd` too). A refused save stays on the form — the cursor on the field a `modeladmin.FieldError` names, any other refusal (`config.ErrModelAmbiguous`, a row the writer will not write back) shown as the save's error with nothing written. `Run` reports `Result.RegistryChanged`, and `cmd/wt`'s `runConfigEditor` then runs the one route sync the tab owes; a quit asked for while a write is in flight waits for it (`leave`, `quitPending`), so the result is never "unchanged" for a registry that changed, and is then an ordinary quit: agent edits made while it waited get the unsaved-changes prompt |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell, pickers, launch, start-on-select flow (`start_flow.go`); `modelrows.go` (rows + sort), `modeltable.go` (`buildTable`, `renderTable`); `PickStartModel` — standalone picker without launch-route gating, used by `wt start` and `wt smoke` (`PickModel`, the route-gated variant, currently has no production caller) |
-| `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`; `StyleTableTitle` is the one title-bar reset its `TitleRoom` counts on, called by every table-backed list) |
+| `internal/tuilayout/` | what both TUIs fit a terminal with: `ListFrame`, `FitTo`, `DrawnFrame`, `Clip` (a list-backed screen is never taller or wider than the terminal), `WrapText`/`Flow` (free text wrapped between words, for a status that must be read whole) and `Columns` (a table that drops whole columns, in an order each table names; a list item joins one through `TableItem`; `StyleTableTitle` is the one title-bar reset its `TitleRoom` counts on, called by every table-backed list) |
 
 ## Config (Go)
 
@@ -276,7 +276,7 @@ wt launches a fresh agent every time and leaves session handling to the agent (#
 
 `internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → launch, plus starting, routing, replace-confirm and ollama-warning screens. A picker is skipped when its selection is already resolved. Every picker uses `ThemedListDelegate`.
 
-- **A view fits the terminal** (`internal/tuilayout`, shared with `wt config`; `layout.go` holds the launcher's frames): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update`. Add a new line to the frame, and size lists through `fitTo`. Pinned by `TestEveryListPhaseFitsTheTerminal`.
+- **A view fits the terminal** (`internal/tuilayout`, shared with `wt config`; `layout.go` holds the launcher's frames): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update`. Add a new line to the frame, and size lists through `fitTo`. Pinned by `TestEveryListPhaseFitsTheTerminal`. A status that ends in what to do is wrapped, not clipped (the agent picker's, `agentFrames`): a clip cuts it before the command.
 - **The update goroutine never waits**: the launch-time route check uses the non-blocking `tryEnsureModelRoute`; waits happen in a command behind `phaseRouting`.
 - **The model table drops whole columns on a narrow terminal** (`tuilayout.Columns`, fitted by `tuilayout.FitTo`), keeping MODEL, STATUS and RUNNING.
 - A test that sets state by hand goes through `Update` before reading `View()`.
@@ -314,6 +314,7 @@ wt model init [--json]               # create registry.toml if missing; add defa
 wt model                             # `wt config` on its Models tab (needs TTY): n add, enter edit/register, d remove
 wt model list [--json]               # every registry model and every local model found, with live status
 wt model add <provider> <name> --family F   # register a model (seeds a missing default provider row; one route sync)
+wt model add mlx_lm_server <target> --draft <draft> --family F   # register a target+draft pairing; wt cannot start one and prints the llmbench command that does
 wt model edit <id> --tags code       # change family, tags, location or prices; nothing else in the row moves
 wt model rm <id> [--yes]             # registry only; prints where the weights are
 wt profile show -A <agent> -M <id>   # dry-run profile resolution

@@ -11,6 +11,7 @@ wt model init [--json]     # create the registry if it is missing; add the defau
 wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
 wt model edit <id> [--family F] [--tags a,b] [--location local|cloud] [price flags]
 wt model rm <id>... [--yes]
+wt model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing
 ```
 
 Each of the three writing commands makes one locked write of the registry and
@@ -119,6 +120,64 @@ and `model_info.supports_vision` when ollama lists the capability; wt copies
 `model_info` into the model's LiteLLM route. If the lookup fails the model is
 added without them and a warning says so.
 
+### An mlx_lm_server pairing
+
+An mlx_lm_server model is a target and a draft served together by
+`mlx_lm.server --draft-model`. `wt model add mlx_lm_server <target> --draft
+<draft> --family <family>` registers one: each side is a Hugging Face repo
+(`org/name`) or a local path (starting `/`, `~`, `./` or `../`), written to the
+row's `[models.fetch]` and `[models.draft]`. Anything else is taken for a
+repo, a bare relative directory such as `out/Big-4bit` included — when a
+directory of that name is in the working directory, a `note:` on stderr says
+what it was registered as and how to register the directory instead
+(`./out/Big-4bit`). A `./` or `../` path is stored as the absolute path it
+names from the directory the command ran in, so the row means the same
+directory to llmbench, which runs from `llmbench/`. A `~` path is stored as
+typed. The id is
+`mlx_lm_server/<target>+draft-<draft>`, from the last segment of each; when
+that would not be a usable id (a directory name with a space in it), the add
+is refused and `--id mlx_lm_server/<name>` names it.
+
+A pairing is its two sides, not their names. The same target and draft
+again are refused, whatever `--id` says and however a local path is spelled
+(`~/quant/Big-4bit`, the absolute path of the same directory, a trailing
+slash). A different pairing whose sides end
+in the same two names — a target you quantized into `/quant/Big-4bit` beside
+`mlx-community/Big-4bit`, with one draft — would get the id that is taken:
+the add says so, and `--id mlx_lm_server/<name>` registers it.
+
+wt registers a pairing and cannot start one. `add` prints the command that
+does, and so does a launch or `wt start` of a pairing that is not running:
+
+```bash
+llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>
+```
+
+(from the repository: `uv run --directory llmbench llmbench provider isolate
+--solo …`; `--solo` leaves the other local providers running; a path with a
+space in it is printed quoted, so the line can be pasted). A pairing is a
+row of `wt model list` and of the Models tab with `STATUS -`, since no probe
+can enumerate it; its family, tags and prices are edited like any model's,
+and the tab's form does not create one.
+
+A pairing row's `RUNNING` is not proof that this pairing is the one being
+served ([#299](https://github.com/ohanaverse/local-ai-setup/issues/299), open).
+The server lists the Hugging Face repo or path it serves, never a pairing's
+name, and nothing records which target and draft a running `mlx_lm.server`
+was started with:
+
+- With exactly one pairing registered, anything served on the mlx_lm_server
+  port marks that pairing `run` — a different, unregistered pairing started
+  with `llmbench provider isolate` included. `wt model add mlx_lm_server`
+  makes this case easy to reach: one add, and the registry has exactly one.
+- A pairing whose name is the end of a served repo id reads `run` as well.
+- With two or more registered and no name matching, `RUNNING` is `?`.
+
+wt shows the state and syncs the pairing's LiteLLM route by it, as it did
+before this command existed; `wt model add`, `edit` and `rm` decide nothing by
+it. When it matters which pairing is up, check
+`/tmp/local-ai-setup-mlx-lm-server.log` or the server's `/v1/models`.
+
 ## `wt model edit <id> [flags]`
 
 Changes the fields named by the flags, and nothing else in the row: every
@@ -170,10 +229,10 @@ share an id is a hand edit — only there can you see which row is which.
   "…"` (the `bin/mlx-quantize` workflow). wt keeps the key, shows the path, and
   takes the model's presence from a stat of it.
 - `[[families]]` display names. wt reads only each model's `family`.
-- An mlx_lm_server target+draft pairing (`[models.fetch]` and
-  `[models.draft]`): `wt model add` refuses that provider for now and names
-  the file, and the form does not offer it. A pairing that is there can be
-  edited and removed like any model.
+- The two sides of an mlx_lm_server pairing that is already registered: no
+  command changes a row's `[models.fetch]` or `[models.draft]`. (`wt model
+  add mlx_lm_server … --draft …` writes them once; to change a side, remove
+  the pairing and add it again, or edit the two tables.)
 - Two `[[models]]` rows with one id. Every launch refuses such a registry
   (`duplicate model id`), and `wt model edit`, `wt model rm` and the Models
   tab refuse the id rather than pick a row; `wt model list` and the tab still
@@ -196,7 +255,8 @@ says which provider, the end which variant.
 Under the table is the selected row's detail: its id, whole, then its status,
 `running` / `loading` / `running?`, and its tags (for a pairing, its target
 and draft); and the path of its weights on a line of its own, written from
-`~`. A short terminal drops the path before it drops table rows.
+`~`. A short terminal drops the path before it drops table rows, and a
+pairing's target and draft before its key hints and the id.
 
 A row whose `fetch` or `draft` is malformed in `registry.toml` has one more
 line under its id, in the words `wt model list` prints on stderr: `fetch is
@@ -235,8 +295,13 @@ per-token prices, and the subscription price and period.
 
 Provider offers every provider in the registry and the ones wt adds a row
 for by itself (ollama, omlx, mtplx, openrouter), but not mlx_lm_server: its
-model is a target+draft pairing, which `wt model add` refuses too (a hand
-edit, above). When editing, and when registering a `new` row, the provider
+model is a target+draft pairing, which takes two artifacts and is added on
+the command line (`wt model add mlx_lm_server <target> --draft <draft>`,
+above). While the add form's cursor is on Provider, a dim line above the key
+hints names that command (a shorter spelling at 40 columns; on a terminal too
+short to spare the row it is left out). `enter` on a pairing row opens the form like any other, to edit its
+family, tags, location and prices; its target and draft are not fields, and a
+save leaves `[models.fetch]` and `[models.draft]` as they are. When editing, and when registering a `new` row, the provider
 and the model name are fixed, and the title names the id. An edit writes only
 the fields you changed; saving an untouched form writes nothing and says `no
 change`. Adding an ollama model runs the `ollama show` lookup `wt model add`

@@ -550,7 +550,7 @@ func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, 
 	}
 	row, ok := catalog.Find(rows, id)
 	if !ok {
-		if reason := catalog.MissingReason(&snap, id); reason != "" {
+		if reason := catalog.MissingReason(cfg, &snap, id); reason != "" {
 			return errors.New(reason)
 		}
 		if config.IndexModelByID(cfg.Models, id) >= 0 {

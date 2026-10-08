@@ -10,8 +10,10 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -608,6 +610,7 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		{"worktree list, reload error", worktreeList(func(m *model) { m.listError = "boom" })},
 		{"agent picker", agentPicker("")},
 		{"agent picker, status", agentPicker(layoutStatus)},
+		{"agent picker, long status", agentPicker(pairingPinReason())},
 		{"model picker", modelPicker("")},
 		{"model picker, status", modelPicker(layoutStatus)},
 		{"ollama warning", modelPhase(func(t *testing.T, width, height int) model {
@@ -679,6 +682,97 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 				assertFits(t, p.name, view, width, height)
 				t.Logf("%-28s %3dx%2d: %2d lines, %3d columns", p.name, width, height, lipgloss.Height(view), lipgloss.Width(view))
 			}
+		}
+	}
+}
+
+// pairingPinReason is the status a refused `-M <pairing>` pin brings back to
+// the agent picker: catalog's own text for a registered mlx_lm_server pairing
+// that is not running, with ids of the length real pairings have.
+func pairingPinReason() string {
+	const id = "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit"
+	cfg := &config.Config{Models: []config.Model{{
+		ID: id, ProviderID: "mlx_lm_server", ModelName: "Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit",
+		Fetch: config.ModelArtifact{Repo: "mlx-community/Qwen3.8-27B-4bit"}, Draft: config.ModelArtifact{Repo: "mlx-community/Qwen3.8-4B-4bit"},
+	}}}
+	snap := &localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "mlx_lm_server", ModelID: id, Registered: true}}}
+	return catalog.MissingReason(cfg, snap, id)
+}
+
+// TestRefusedPairingPinShowsItsStartCommand verifies the agent picker shows a
+// refused pin's whole reason, not its first line's worth. `wt -M <pairing>`
+// with no -A comes back to this screen with a reason that ends in the llmbench
+// command that starts the pairing, its target and its draft; cut at the
+// terminal's edge, as it was, the screen named the problem and stopped before
+// the command at every width — while the unit tests of the text passed
+// (#209). At 80x24 and 120x50 the command and both sides must be on screen,
+// wrapped between words; at 40x12 there is no room to wrap it above the list,
+// so the line is cut — with an ellipsis, so the cut is visible — and the view
+// still fits.
+func TestRefusedPairingPinShowsItsStartCommand(t *testing.T) {
+	reason := pairingPinReason()
+	if !strings.Contains(reason, "llmbench provider isolate --solo mlx_lm_server") {
+		t.Fatalf("the fixture's reason = %q, want the pairing's start command", reason)
+	}
+	at := func(width, height int) string {
+		m := buildModelInPhaseAgent(t, singleModelConfig())
+		m.selectedPath = "/tmp/repo"
+		m.status = reason
+		view := resized(t, m, width, height).View()
+		assertFits(t, "agent picker, refused pairing pin", view, width, height)
+		return view
+	}
+	for _, size := range [][2]int{{80, 24}, {120, 50}} {
+		view := at(size[0], size[1])
+		// The wrap puts line breaks between words; read the screen as text.
+		text := strings.Join(strings.Fields(view), " ")
+		for _, want := range []string{
+			"llmbench provider isolate --solo mlx_lm_server",
+			"mlx-community/Qwen3.8-27B-4bit --draft mlx-community/Qwen3.8-4B-4bit",
+			"status: " + reason,
+			"directory: /tmp/repo",
+			"claude (agent)",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%dx%d: the screen does not show %q:\n%s", size[0], size[1], want, view)
+			}
+		}
+		// Between words only: a side broken in two could not be pasted.
+		for _, word := range []string{"mlx-community/Qwen3.8-27B-4bit", "mlx-community/Qwen3.8-4B-4bit`", "mlx_lm_server"} {
+			if !strings.Contains(view, word) {
+				t.Errorf("%dx%d: %q is broken across lines:\n%s", size[0], size[1], word, view)
+			}
+		}
+	}
+	small := at(40, 12)
+	if !strings.Contains(small, "status: local model") || !strings.Contains(small, "…") {
+		t.Errorf("40x12: want the status on one line, ending in an ellipsis where it is cut:\n%s", small)
+	}
+	if !strings.Contains(small, "claude  (agent)") {
+		t.Errorf("40x12: the list is gone:\n%s", small)
+	}
+}
+
+// TestCutLinesMarksWhatItCut verifies the last-resort status line says when it
+// is cut: a line that fits is untouched, one that does not ends in an
+// ellipsis inside the width, and each line of a two-line status is judged by
+// itself. Without the mark a cut status reads as a complete sentence.
+func TestCutLinesMarksWhatItCut(t *testing.T) {
+	cases := []struct {
+		in    string
+		width int
+		want  string
+	}{
+		{"fits", 10, "fits"},
+		{"exactly 10", 10, "exactly 10"},
+		{"one more than", 12, "one more th…"},
+		{"short\nthis line is long", 9, "short\nthis lin…"},
+		{"anything", 1, "…"},
+		{"no width yet", 0, "no width yet"},
+	}
+	for _, c := range cases {
+		if got := cutLines(c.in, c.width); got != c.want {
+			t.Errorf("cutLines(%q, %d) = %q, want %q", c.in, c.width, got, c.want)
 		}
 	}
 }

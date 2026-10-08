@@ -249,7 +249,8 @@ func TestAddRefusals(t *testing.T) {
 		{"NaN", func(r *AddRequest) { r.SubscriptionPrice = ptr("nan") }, FieldSubscriptionPrice, "subscription-price must be finite"},
 		{"a subscription with no period", func(r *AddRequest) { r.SubscriptionPrice = ptr("20") }, FieldSubscriptionPeriod, "a subscription price needs a subscription period (month or year)"},
 		{"a period that is not one", func(r *AddRequest) { r.SubscriptionPeriod = ptr("week") }, FieldSubscriptionPeriod, `subscription period must be month or year, got "week"`},
-		{"a pairing", func(r *AddRequest) { r.ProviderID = "mlx_lm_server" }, FieldProvider, "target+draft pairing"},
+		{"a pairing with no draft", func(r *AddRequest) { r.ProviderID = "mlx_lm_server" }, FieldDraft, "pass --draft <draft>"},
+		{"a draft on a provider whose models have none", func(r *AddRequest) { r.Draft = "org/d" }, FieldDraft, "--draft is for an mlx_lm_server pairing; a model of provider openrouter has no draft"},
 		{"an id with no slash", func(r *AddRequest) { r.ID = "noslash" }, FieldID, `an id is <provider>/<name> with no spaces, got "noslash"`},
 		{"an id with a space", func(r *AddRequest) { r.ID = "openrouter/has space" }, FieldID, `an id is <provider>/<name> with no spaces, got "openrouter/has space"`},
 		{"an id with nothing after the slash", func(r *AddRequest) { r.ID = "openrouter/" }, FieldID, "an id is <provider>/<name>"},
@@ -621,5 +622,254 @@ func TestADuplicatedIDDoesNotBlockTheOtherRows(t *testing.T) {
 	}
 	if got := read(t, path); strings.Contains(got, "a--b") || strings.Count(got, `id = "ollama/gemma4:9b"`) != 2 {
 		t.Errorf("only openrouter/a--b should be gone:\n%s", got)
+	}
+}
+
+// TestAddAPairing verifies `wt model add mlx_lm_server <target> --draft
+// <draft>` writes the row modelman's form wrote: an id and a model_name that
+// spell the pairing, the target under fetch and the draft under draft — each
+// a repo, or a local_path when it is spelled like a path — and the
+// mlx_lm_server provider row seeded beside it. llmbench reads fetch and draft
+// to start the server; a row without them is a pairing nothing can start.
+func TestAddAPairing(t *testing.T) {
+	path := scratchRegistry(t, "")
+	res, err := Add(AddRequest{
+		ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit", Draft: "~/models/Qwen3.8-4B-4bit/",
+		Fields: Fields{Family: ptr("qwen3.8"), Tags: ptr("code")},
+	}, config.SeedEnv{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ID != "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit" || strings.Join(res.ProvidersAdded, ",") != "mlx_lm_server" {
+		t.Errorf("result = %+v", res)
+	}
+	want := `[[providers]]
+id = "mlx_lm_server"
+name = "mlx-lm server (target+draft)"
+location = "local"
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8001/v1"
+
+[[models]]
+id = "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit"
+family = "qwen3.8"
+provider_id = "mlx_lm_server"
+model_name = "Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit"
+tags = [
+    "code",
+]
+
+[models.fetch]
+repo = "mlx-community/Qwen3.8-27B-4bit"
+
+[models.draft]
+local_path = "~/models/Qwen3.8-4B-4bit/"
+`
+	if got := read(t, path); got != want {
+		t.Errorf("registry =\n%s\nwant\n%s", got, want)
+	}
+	// The same pairing again — the same two sides, however the path is
+	// spelled and whatever id is asked for — is refused, not duplicated.
+	_, err = Add(AddRequest{ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit", Draft: "~/models/Qwen3.8-4B-4bit", ID: "mlx_lm_server/again",
+		Fields: Fields{Family: ptr("qwen3.8")}}, config.SeedEnv{})
+	var fe *FieldError
+	if !errors.As(err, &fe) || !strings.Contains(fe.Msg, `model "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit" already registers this pairing (target mlx-community/Qwen3.8-27B-4bit, draft ~/models/Qwen3.8-4B-4bit)`) {
+		t.Errorf("a second add of the pairing: err = %v, want it refused", err)
+	}
+
+	// So is the same directory spelled without the "~": llmbench expands it,
+	// so the two spellings start the one pairing, and a second row for it
+	// would only ever be a duplicate.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, draft := range []string{filepath.Join(home, "models", "Qwen3.8-4B-4bit"), home + "//models/./Qwen3.8-4B-4bit/"} {
+		_, err = Add(AddRequest{ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit", Draft: draft, ID: "mlx_lm_server/absolute",
+			Fields: Fields{Family: ptr("qwen3.8")}}, config.SeedEnv{})
+		if !errors.As(err, &fe) || !strings.Contains(fe.Msg, `model "mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit" already registers this pairing`) {
+			t.Errorf("a second add with the draft spelled %s: err = %v, want it refused as the same pairing", draft, err)
+		}
+	}
+	if got := read(t, path); got != want {
+		t.Errorf("a refused add changed the registry:\n%s", got)
+	}
+
+	// A different pairing whose two sides end in the same names — here the
+	// target quantized locally instead of the one on Hugging Face — is not
+	// that pairing. The names make the id that is taken, so the add says to
+	// pass --id, and with one it goes in beside the first.
+	local := AddRequest{ProviderID: "mlx_lm_server", ModelName: "/quant/dwq/Qwen3.8-27B-4bit", Draft: "~/models/Qwen3.8-4B-4bit", Fields: Fields{Family: ptr("qwen3.8")}}
+	before := read(t, path)
+	if _, err = Add(local, config.SeedEnv{}); !errors.Is(err, config.ErrModelExists) || !strings.Contains(err.Error(), "pass --id mlx_lm_server/<name>") {
+		t.Errorf("a different pairing with the same names: err = %v, want the taken id and the way round it", err)
+	}
+	if read(t, path) != before {
+		t.Error("a refused add changed the registry")
+	}
+	local.ID = "mlx_lm_server/qwen-dwq"
+	res, err = Add(local, config.SeedEnv{})
+	if err != nil || res.ID != "mlx_lm_server/qwen-dwq" {
+		t.Fatalf("with --id: %+v, %v; want it added", res, err)
+	}
+	if got := read(t, path); !strings.Contains(got, "id = \"mlx_lm_server/qwen-dwq\"\nfamily = \"qwen3.8\"\nprovider_id = \"mlx_lm_server\"\nmodel_name = \"Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit\"\ntags = []\n\n[models.fetch]\nlocal_path = \"/quant/dwq/Qwen3.8-27B-4bit\"\n") {
+		t.Errorf("the second pairing's row:\n%s", got)
+	}
+}
+
+// TestPairingName pins how a pairing is named from its two sides: the last
+// segment of each, whether it is a repo id or a path with a trailing slash.
+func TestPairingName(t *testing.T) {
+	cases := []struct{ target, draft, want string }{
+		{"org/T", "org/D", "T+draft-D"},
+		{"/models/target/", "~/d", "target+draft-d"},
+		{"plain", "./rel/draft", "plain+draft-draft"},
+	}
+	for _, c := range cases {
+		if got := PairingName(c.target, c.draft); got != c.want {
+			t.Errorf("PairingName(%q, %q) = %q, want %q", c.target, c.draft, got, c.want)
+		}
+	}
+}
+
+// TestAddAPairingWhoseSidesMakeNoUsableID verifies a pairing whose derived
+// id would have a space in it, or an empty half, is refused with the way
+// round it, and goes in under --id. Every other derived id comes from a name
+// a provider lists; a pairing's comes from the last segment of a path the
+// user typed, and an id with a space cannot be given to `wt -M`, `wt model
+// edit` or `wt model rm` without quoting it everywhere for ever.
+func TestAddAPairingWhoseSidesMakeNoUsableID(t *testing.T) {
+	path := scratchRegistry(t, "")
+	var fe *FieldError
+	for _, c := range []struct{ target, draft string }{
+		{"~/my models/Big 4bit", "org/D"},
+		{"org/T", "/"},
+		{"///", "org/D"},
+	} {
+		req := AddRequest{ProviderID: "mlx_lm_server", ModelName: c.target, Draft: c.draft, Fields: Fields{Family: ptr("f")}}
+		err := CheckAdd(req)
+		if !errors.As(err, &fe) || fe.Field != FieldName || !strings.Contains(fe.Msg, "pass --id mlx_lm_server/<name>") {
+			t.Errorf("target %q, draft %q: err = %v, want a refusal on the name that says to pass --id", c.target, c.draft, err)
+		}
+		if _, err := Add(req, config.SeedEnv{}); err == nil {
+			t.Errorf("target %q, draft %q: Add took what CheckAdd refuses", c.target, c.draft)
+		}
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("a refused add created the registry")
+	}
+	res, err := Add(AddRequest{ProviderID: "mlx_lm_server", ModelName: "~/my models/Big 4bit", Draft: "org/D", ID: "mlx_lm_server/big",
+		Fields: Fields{Family: ptr("f")}}, config.SeedEnv{})
+	if err != nil || res.ID != "mlx_lm_server/big" {
+		t.Fatalf("with --id: %+v, %v; want it added", res, err)
+	}
+	if got := read(t, path); !strings.Contains(got, "[models.fetch]\nlocal_path = \"~/my models/Big 4bit\"\n") {
+		t.Errorf("the target's path was not written as typed:\n%s", got)
+	}
+}
+
+// TestLastSegment pins the half of a pairing's name a side gives: what
+// follows its last slash, a trailing slash set aside, and nothing for a side
+// that is only slashes (which planAdd then refuses, rather than naming a
+// model "/+draft-...").
+func TestLastSegment(t *testing.T) {
+	for in, want := range map[string]string{"org/Name": "Name", "/a/b/c/": "c", "Name": "Name", "~/x": "x", "/": "", "//": "", "": ""} {
+		if got := lastSegment(in); got != want {
+			t.Errorf("lastSegment(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// malformedPairingRegistry holds a pairing a hand edit broke — its draft is
+// a number, which wt reads as absent — and an omlx model that names, as its
+// own fetch.repo, the repo the tests below use as a target.
+const malformedPairingRegistry = `[[providers]]
+id = "mlx_lm_server"
+name = "mlx-lm server (target+draft)"
+location = "local"
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8001/v1"
+
+[[providers]]
+id = "omlx"
+name = "oMLX"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "mlx_lm_server/T+draft-D"
+family = "f"
+provider_id = "mlx_lm_server"
+model_name = "T+draft-D"
+tags = []
+draft = 7
+
+[models.fetch]
+repo = "org/T"
+
+[[models]]
+id = "omlx/T"
+family = "f"
+provider_id = "omlx"
+model_name = "T"
+tags = []
+
+[models.fetch]
+repo = "org/T"
+
+[models.draft]
+repo = "org/D"
+`
+
+// TestAddAPairingBesideAMalformedOne verifies how an add judges "the same
+// pairing" on a registry whose rows are not all well formed. A pairing whose
+// draft is malformed has no draft wt can compare, so it is not the pairing
+// being added, whatever its target; an omlx row is never a pairing, even
+// with the same two tables. The derived id is still the malformed row's, so
+// the add says to pass --id, and with one it is written beside that row,
+// which is left byte for byte as it was. Before this was pinned, an
+// unreadable side could have compared equal to another unreadable side, and
+// the user told a pairing was registered that is not.
+func TestAddAPairingBesideAMalformedOne(t *testing.T) {
+	path := scratchRegistry(t, malformedPairingRegistry)
+	req := AddRequest{ProviderID: "mlx_lm_server", ModelName: "org/T", Draft: "org/D", Fields: Fields{Family: ptr("f")}}
+	_, err := Add(req, config.SeedEnv{})
+	var fe *FieldError
+	if errors.As(err, &fe) || !errors.Is(err, config.ErrModelExists) || !strings.Contains(err.Error(), "pass --id mlx_lm_server/<name>") {
+		t.Fatalf("err = %v, want the taken id and the way round it, not \"already registers this pairing\"", err)
+	}
+	if got := read(t, path); got != malformedPairingRegistry {
+		t.Errorf("a refused add changed the registry:\n%s", got)
+	}
+	req.ID = "mlx_lm_server/second"
+	res, err := Add(req, config.SeedEnv{})
+	if err != nil || res.ID != "mlx_lm_server/second" {
+		t.Fatalf("with --id: %+v, %v; want it added", res, err)
+	}
+	want := malformedPairingRegistry + `
+[[models]]
+id = "mlx_lm_server/second"
+family = "f"
+provider_id = "mlx_lm_server"
+model_name = "T+draft-D"
+tags = []
+
+[models.fetch]
+repo = "org/T"
+
+[models.draft]
+repo = "org/D"
+`
+	if got := read(t, path); got != want {
+		t.Errorf("registry =\n%s\nwant the new row after the others, and they untouched:\n%s", got, want)
+	}
+	// Now it is registered, and a third add of the same two sides says so.
+	req.ID = ""
+	if _, err := Add(req, config.SeedEnv{}); !errors.As(err, &fe) || !strings.Contains(fe.Msg, `model "mlx_lm_server/second" already registers this pairing`) {
+		t.Errorf("a second add of the pairing: err = %v, want it refused as registered", err)
 	}
 }
