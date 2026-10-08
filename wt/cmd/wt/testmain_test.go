@@ -87,6 +87,15 @@ func TestMain(m *testing.M) {
 	syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
 		return "syncRoutesAfterWrite not stubbed in this test"
 	}
+	// `wt cloud-sync` seams: no test may fetch a public page or open the
+	// terminal to ask. Tests use stubCloudFetch and stubConfirm
+	// (cloudsync_test.go).
+	cloudFetch = func(_ context.Context, url string) ([]byte, error) {
+		return nil, errors.New("cloudFetch not stubbed in this test: " + url)
+	}
+	confirmCloudSync = func(string) (bool, error) {
+		return false, errors.New("confirmCloudSync not stubbed in this test")
+	}
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)

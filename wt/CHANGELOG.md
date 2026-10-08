@@ -4,6 +4,18 @@
 
 ### Added
 
+- `wt cloud-sync [--only prices] [--dry-run] [--yes]` refreshes the per-token
+  prices of the registry's OpenRouter-priced models from OpenRouter's public
+  model list, replacing `modelman refresh-prices` (which still works). It
+  prints its plan as `id: old -> new` first; `--dry-run` stops there, and
+  otherwise it asks once on the terminal unless `--yes` is given. Input and
+  output prices take OpenRouter's value; a cache price is replaced only when
+  OpenRouter reports one, and a subscription or time-windowed price is never
+  touched. Every matched model is stamped, changed or not, which is what the
+  stale-pricing notice reads. The LiteLLM routes are synced once when a
+  price changed, and not at all when none did. With no OpenRouter-priced
+  model in the registry it says so and exits 0 without fetching, asking or
+  writing anything. Nothing refreshes prices automatically.
 - `wt model add mlx_lm_server <target> --draft <draft> --family F` registers a
   target+draft pairing, each side a Hugging Face repo or a local path, and
   prints the command that starts it. A side is a local path when it starts
