@@ -399,13 +399,45 @@ func desiredLocalEntries(cfg *config.Config, snap localmodels.Snapshot) []localm
 func desiredLocalModels(cfg *config.Config, snap localmodels.Snapshot) []config.Model {
 	var out []config.Model
 	for _, e := range desiredLocalEntries(cfg, snap) {
-		if i := config.IndexModelByID(cfg.Models, e.ModelID); e.Registered && i >= 0 {
-			out = append(out, cfg.Models[i])
+		if m, ok := registryRowOf(cfg, e); ok {
+			out = append(out, m)
 			continue
 		}
 		out = append(out, litellm.DiscoveredModel(e.ProviderID, e.Artifact))
 	}
 	return out
+}
+
+// registryRowOf is the registry row a registered inventory entry stands for:
+// the row with the entry's model id under the entry's own provider. The
+// provider is part of the lookup because sync runs on a registry that fails
+// validation, and two rows under one id is such a registry: by id alone
+// (config.IndexModelByID, the first row) a model running under the second
+// provider was routed with the first provider's row, and the id's route could
+// name a server that was not serving it. Of two rows with one id AND one
+// provider, the one with the entry's model_name is taken, else the first.
+// When both rows of an id are handed to Sync it routes neither and warns
+// (litellm.SyncPlan.Warnings).
+func registryRowOf(cfg *config.Config, e localmodels.Entry) (config.Model, bool) {
+	if !e.Registered {
+		return config.Model{}, false
+	}
+	found := -1
+	for i, m := range cfg.Models {
+		if m.ID != e.ModelID || m.ProviderID != e.ProviderID {
+			continue
+		}
+		if m.ModelName == e.ModelName {
+			return m, true
+		}
+		if found < 0 {
+			found = i
+		}
+	}
+	if found < 0 {
+		return config.Model{}, false
+	}
+	return cfg.Models[found], true
 }
 
 // untrustedFamilies lists the local provider families whose routes sync must

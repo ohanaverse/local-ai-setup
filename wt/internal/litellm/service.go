@@ -561,9 +561,13 @@ type SyncPlan struct {
 	// api_base the write will fill (File.EnsureOllamaAPIBase). Only PlanSync
 	// fills it: the real sync reports each repair as an Outcome.
 	Repair []string
-	// Warnings names the rows the write leaves in a state LiteLLM starts its
-	// own `ollama serve` for (File.ollamaServeWarnings). Only PlanSync fills
-	// it: the real sync puts them in Result.Warnings.
+	// Warnings holds what the plan leaves for the user to repair: first the
+	// registry ids that more than one desired row carries, whose route the
+	// plan does not touch (planSync fills these, and Sync copies them into
+	// Result.Warnings), then the rows the write leaves in a state LiteLLM
+	// starts its own `ollama serve` for (File.ollamaServeWarnings — only
+	// PlanSync adds those here: the real sync reads them off the document it
+	// wrote).
 	Warnings []string
 	Errors   []Outcome
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
@@ -579,9 +583,11 @@ type SyncPlan struct {
 // hand-written and never touched, and a desired DISCOVERED id that already
 // has a hand-written row is left to it (no add, no adoption). Untouched ids,
 // and every row whose RowFamily is in UntouchedFamilies, are neither added,
-// rewritten nor removed; Recheck (see Options) re-verifies local ids. Built
-// rows for plan.Add are returned alongside the plan: Sync's write path reuses
-// them instead of preparing every changed row a second time.
+// rewritten nor removed; Recheck (see Options) re-verifies local ids. A
+// registry id that more than one desired row carries is treated the same way
+// and named in plan.Warnings (two rows with one id: see the ambiguous map).
+// Built rows for plan.Add are returned alongside the plan: Sync's write path
+// reuses them instead of preparing every changed row a second time.
 //
 // Accepted cost of UntouchedFamilies: a marked row of a DELETED cloud model
 // whose id starts with a local family prefix (e.g. "ollama/x:cloud") reads as
@@ -623,26 +629,65 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 			gap[m.ID] = true
 		}
 	}
-	// A registry local id is wanted only when the caller hands in the registry
-	// model itself. A discovered model whose id merely spells a registry id
-	// (an unregistered artifact "foo" beside the registry model "ollama/foo",
-	// which serves another model_name) is dropped: the registry model owns
-	// the id, and routing it on the artifact's word would point the route at
-	// a model that may not be on disk.
-	wantLocal := map[string]bool{}
+	// A registry local model is wanted only when the caller hands in that very
+	// row: the same id, provider and model_name. A discovered model whose id
+	// merely spells a registry id (an unregistered artifact "foo" beside the
+	// registry model "ollama/foo", which serves another model_name) matches no
+	// row and is dropped: the registry model owns the id, and routing it on
+	// the artifact's word would point the route at a model that may not be on
+	// disk. The provider is part of the match, not a check against "the first
+	// row with the id": two rows may share an id (a registry Config.Validate
+	// refuses and sync still runs on), and each is wanted on its own entry's
+	// word alone.
+	type rowKey struct{ id, provider, name string }
+	keyOf := func(m config.Model) rowKey { return rowKey{m.ID, m.ProviderID, m.ModelName} }
+	wantLocal := map[rowKey]bool{}
 	for _, m := range localIn {
-		if i := config.IndexModelByID(cfg.Models, m.ID); i >= 0 &&
-			(cfg.Models[i].ProviderID != m.ProviderID || cfg.Models[i].ModelName != m.ModelName) {
-			continue
-		}
-		wantLocal[m.ID] = true
+		wantLocal[keyOf(m)] = true
 	}
 	// Registry local models keep registry order; discovered ones follow in
 	// the caller's order.
 	for _, m := range localModels {
-		if wantLocal[m.ID] && !frozen(m.ID) {
+		if wantLocal[keyOf(m)] && !frozen(m.ID) {
 			desired = append(desired, m)
 			local[m.ID] = true
+		}
+	}
+	// One id has one route, so two desired rows under one id cannot both be
+	// routed, and neither is the right one: the id names two servers. Route
+	// none of them, leave whatever route the id has (ambiguous, read by the
+	// removal loop below) and say so once. Only registry rows can collide
+	// here — the discovered models are added after this, each under an id no
+	// registry row has. One row desired of several is not ambiguous: it is
+	// routed, from its own row.
+	var plan SyncPlan
+	ambiguous := map[string]bool{}
+	perID := map[string]int{}
+	for _, m := range desired {
+		perID[m.ID]++
+	}
+	for _, m := range desired {
+		if perID[m.ID] < 2 || ambiguous[m.ID] {
+			continue
+		}
+		ambiguous[m.ID] = true
+		var providers []string
+		for _, r := range cfg.Models {
+			if r.ID == m.ID {
+				providers = append(providers, r.ProviderID)
+			}
+		}
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s; its route is left as it is — %s",
+			config.DuplicatedModelText(m.ID, providers), config.RegistryFixHint(config.ErrRegistryEntry)))
+	}
+	desired = slices.DeleteFunc(desired, func(m config.Model) bool { return ambiguous[m.ID] })
+	// cloudAdd holds the ids whose desired row is a cloud one, though a local
+	// row may carry the same id (and put it in local). No probe decides a
+	// cloud row, so Recheck must not prune its add.
+	cloudAdd := map[string]bool{}
+	for _, m := range desired {
+		if loc, err := cfg.ResolveLocation(m); err == nil && loc == config.LocationCloud {
+			cloudAdd[m.ID] = true
 		}
 	}
 	for _, m := range localIn {
@@ -660,7 +705,6 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 			local[r.ID] = true
 		}
 	}
-	var plan SyncPlan
 	built := map[string]*yaml.Node{}
 	want := map[string]bool{}
 	// rowsPerID counts the mapping rows sharing each model_name: LiteLLM
@@ -680,7 +724,7 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 	for _, m := range desired {
 		id := m.ID
 		want[id] = true
-		if err := providerCredErr(cfg, id, credErr); err != nil {
+		if err := providerCredErr(cfg, m, credErr); err != nil {
 			plan.Errors = append(plan.Errors, Outcome{ID: id, Err: fmt.Errorf("model %q: %w", id, err)})
 			continue
 		}
@@ -727,7 +771,7 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 	// the error branch would let one transient build failure delete a live route.
 	seen := map[string]bool{}
 	for _, r := range rows {
-		if want[r.ID] || gap[r.ID] || frozen(r.ID) || seen[r.ID] {
+		if want[r.ID] || gap[r.ID] || frozen(r.ID) || ambiguous[r.ID] || seen[r.ID] {
 			continue
 		}
 		if r.Managed || managed[r.ID] {
@@ -751,7 +795,7 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 				// the subsets of Add that SyncPlan documents: an id pruned from
 				// Add must not stay in either, or the plan describes a change it
 				// will not perform.
-				stoppedAgain := func(id string) bool { return local[id] && !slices.Contains(fresh, id) }
+				stoppedAgain := func(id string) bool { return local[id] && !cloudAdd[id] && !slices.Contains(fresh, id) }
 				plan.Add = slices.DeleteFunc(plan.Add, stoppedAgain)
 				plan.Adopt = slices.DeleteFunc(plan.Adopt, stoppedAgain)
 				plan.Rewrite = slices.DeleteFunc(plan.Rewrite, stoppedAgain)
@@ -775,15 +819,17 @@ func (plan SyncPlan) planned(built map[string]*yaml.Node) ([]plannedAdd, []plann
 	return add, rm
 }
 
-// providerCredErr is id's provider's credential error, resolved at most once
-// per memo; nil for providers whose policy takes no secret_ref (prepare
-// reports any other problem).
-func providerCredErr(cfg *config.Config, id string, memo map[string]error) error {
-	i := config.IndexModelByID(cfg.Models, id)
-	if i < 0 {
+// providerCredErr is the credential error of registry model m's provider,
+// resolved at most once per memo; nil for a model that is not a registry row
+// (a discovered one) and for providers whose policy takes no secret_ref
+// (prepare reports any other problem). The provider is m's own, not that of
+// "the row with m's id": two rows may share an id, and the row being routed
+// is the one whose credentials matter.
+func providerCredErr(cfg *config.Config, m config.Model, memo map[string]error) error {
+	if !isRegistryID(cfg, m.ID) {
 		return nil
 	}
-	p := cfg.ProviderByID(cfg.Models[i].ProviderID)
+	p := cfg.ProviderByID(m.ProviderID)
 	if p == nil {
 		return nil
 	}
@@ -840,7 +886,7 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 			plan.Repair = append(plan.Repair, oc.ID)
 		}
 	}
-	plan.Warnings = f.ollamaServeWarnings(loadProxyEnv())
+	plan.Warnings = append(plan.Warnings, f.ollamaServeWarnings(loadProxyEnv())...)
 	return plan, nil
 }
 
@@ -915,6 +961,9 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		}
 	}
 	res.Outcomes = append(res.Outcomes, plan.Errors...)
+	// The order the dry run reports them in (PlanSync): the duplicated ids
+	// the plan would not route, then the ollama-serve rows.
+	res.Warnings = append(res.Warnings, plan.Warnings...)
 	res.Warnings = append(res.Warnings, res.ollamaServe...)
 	return res, nil
 }

@@ -95,6 +95,15 @@
 
 ### Fixed
 
+- `wt litellm sync` on a registry with one model id on two rows (which every
+  launch refuses, and sync does not) routes the id from the row of the
+  provider that is serving it. It used to take the first row with the id for
+  its checks and the last one for the route, so the route could name a server
+  that was not serving the model. When more than one of the rows is to be
+  routed — both providers serve it, or a cloud model shares the id — sync
+  leaves the id's route as it is and warns once: `model "<id>" is in the
+  registry twice (providers A, B); its route is left as it is — fix the entry
+  in <registry path>`. The sync after a `wt model` write does the same.
 - Ctrl+C during `wt stop omlx` is reported as `cancelled`, with an error that
   says the service was not stopped. It printed `failed` and `context canceled`,
   as if the provider were broken.
