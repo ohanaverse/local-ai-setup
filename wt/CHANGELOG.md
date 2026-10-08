@@ -6,6 +6,17 @@
 
 - `WT_REGISTRY` names the model registry file. It outranks `MODELMAN_REGISTRY`,
   which keeps working as an alias; modelman and llmbench read the same name.
+- `wt model init [--json]` creates the model registry when it is missing and
+  adds the provider rows it lacks: ollama, omlx and mtplx when installed, used
+  by a model or listed by a configured agent; mlx_lm_server when used by a
+  model or listed by an agent; openrouter when an agent lists it, with
+  `auth.secret_ref = "OPENROUTER_API_KEY"` (the variable's name, never a key,
+  so a missing key is an error instead of an empty `api_key` in the route);
+  and a native row for each configured agent. It never changes a row that
+  exists, and it names any provider an agent lists that it has no default row
+  for. A `config.toml` that cannot be read is a warning, since no agent gets a
+  row until it is fixed. The "model registry not found" error now names this
+  command, once, where it named `modelman migrate` twice.
 - `wt stats` reports launches and LiteLLM spend per model. Below the survey
   table it prints a second table for the same `--window`: MODEL, LAUNCHES,
   REQUESTS, PROMPT, COMPLETION, SPEND. Launches come from `usage.jsonl`;

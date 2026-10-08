@@ -339,6 +339,28 @@ var noNativeAgents = map[string]bool{
 // exists in cfg, so subsequent calls are no-ops. The boolean return is true
 // iff any fixup actually changed cfg.
 func migrateConfigSchema(cfg *Config) (bool, error) {
+	changed := migrateAgentRefs(cfg)
+
+	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
+	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
+	// [litellm] table (managed with `wt litellm ...`). The decoded Config
+	// simply has no Gateway field, so re-saving drops the block; this
+	// fixup only detects its presence to point the user at the new
+	// control surface. Self-extinguishing: after the triggered Save, the
+	// block is gone and the probe no longer matches.
+	if dropLegacyGateway(Path()) {
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// migrateAgentRefs is the part of migrateConfigSchema that rewrites
+// cfg.Agents (fixups 1 to 3), with no file access and no output. Registry
+// seeding calls it on its own read of config.toml to learn which providers
+// the agents will name once Load has migrated the file. Reports whether it
+// changed cfg.
+func migrateAgentRefs(cfg *Config) bool {
 	changed := false
 
 	// ── Fixup 1: rename "google" → "agy" in agent references ────────
@@ -372,18 +394,7 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 		changed = true
 	}
 
-	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
-	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
-	// [litellm] table (managed with `wt litellm ...`). The decoded Config
-	// simply has no Gateway field, so re-saving drops the block; this
-	// fixup only detects its presence to point the user at the new
-	// control surface. Self-extinguishing: after the triggered Save, the
-	// block is gone and the probe no longer matches.
-	if dropLegacyGateway(Path()) {
-		changed = true
-	}
-
-	return changed, nil
+	return changed
 }
 
 // dropLegacyGateway detects a config.toml still carrying [gateway] (from

@@ -229,6 +229,10 @@ class Registry:
     providers: list[ProviderEntry] = field(default_factory=list)
     families: list[FamilyEntry] = field(default_factory=list)
     models: list[ModelEntry] = field(default_factory=list)
+    # Set by load_registry for the stale-snapshot guard: (resolved path, how
+    # many foreign changes loads had seen there). None for a Registry built in
+    # memory, which the guard treats as older than any foreign change.
+    _loaded_at: tuple[str, int] | None = field(default=None, repr=False, compare=False)
 
     def provider(self, provider_id: str) -> ProviderEntry:
         for p in self.providers:
@@ -577,10 +581,114 @@ def _reject_unknown_top_level_keys(raw: dict[str, Any]) -> None:
     )
 
 
+# What registry.toml looked like the last time this process read or wrote it:
+# resolved path -> (mtime_ns, size, inode), or None for "looked, and there was
+# no file". modelman's lock is in-process only, and its TUI saves the whole
+# Registry it loaded at start, so a save made after wt wrote the file would
+# silently revert wt's edit. _write_registry compares the file against this
+# record first and refuses when another program has changed it. Per process,
+# not per Registry object, on purpose: modelman's own background save (the
+# price refresh in app.py) must not make the screen's next save look stale.
+_SEEN_ON_DISK: dict[str, tuple[int, int, int] | None] = {}
+# How many times a load found the file changed by another program, per
+# resolved path. A Registry remembers the count it was loaded at
+# (Registry._loaded_at), so a snapshot older than such a load stays stale
+# after modelman's own background load has recorded the new file.
+_FOREIGN_CHANGES: dict[str, int] = {}
+# Guards the two records: the price-refresh worker loads on its own thread.
+_SEEN_LOCK = threading.Lock()
+
+
+def _stamp_of(st: os.stat_result) -> tuple[int, int, int]:
+    # The inode is more than the spec's mtime and size: wt replaces the file
+    # by rename, so a same-size write inside one tick of a coarse file clock
+    # still changes it.
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _disk_stamp(path: Path) -> tuple[int, int, int] | None:
+    """(mtime_ns, size, inode) of the file at `path`, or None when there is none."""
+    try:
+        return _stamp_of(os.stat(path))
+    except OSError:
+        return None
+
+
+def _note_loaded(path: Path, stamp: tuple[int, int, int] | None) -> tuple[str, int]:
+    """Record what a load found at `path` (None: no file). Returns the
+    (resolved path, foreign-change count) the loaded Registry carries.
+
+    The file is stat'd again here, under the lock, against the `stamp` the
+    load read: a write landing between that read and this call (another
+    thread's save, another program) must not be recorded as the stamp that
+    was read — that would leave the record describing a file that is gone and
+    make every later save in this process look stale. The record is left to
+    whoever wrote it instead, and a path this process never looked at is
+    stored as "no file", so saving what was read here (already out of date)
+    is still refused.
+    """
+    key = os.path.realpath(path)
+    with _SEEN_LOCK:
+        if _disk_stamp(path) == stamp:
+            if key in _SEEN_ON_DISK and _SEEN_ON_DISK[key] != stamp:
+                _FOREIGN_CHANGES[key] = _FOREIGN_CHANGES.get(key, 0) + 1
+            _SEEN_ON_DISK[key] = stamp
+        elif key not in _SEEN_ON_DISK:
+            _SEEN_ON_DISK[key] = None
+        return key, _FOREIGN_CHANGES.get(key, 0)
+
+
+def _record_seen(path: Path) -> None:
+    """Remember the file at `path` as this process just wrote it. The stat is
+    by name, after the rename: another program's write landing in between is
+    recorded as modelman's own. That window is one system call wide."""
+    with _SEEN_LOCK:
+        _SEEN_ON_DISK[os.path.realpath(path)] = _disk_stamp(path)
+
+
+def _refuse_stale_snapshot(registry: Registry, path: Path) -> None:
+    """Raise when the file at `path` is not the one this process last read or
+    wrote, or when `registry` was loaded before a load that found another
+    program's change. A path this process never looked at has no snapshot to
+    be stale against, so a first save is never refused.
+
+    A Registry built in memory carries no load to count from, so it is held
+    to "no foreign change seen at this path yet": the empty Registry the TUI
+    opens with when there is no file must not be saved over a registry that
+    wt created and a later load (the price-refresh worker) has since read.
+    """
+    key = os.path.realpath(path)
+    with _SEEN_LOCK:
+        stale = key in _SEEN_ON_DISK and _disk_stamp(path) != _SEEN_ON_DISK[key]
+        loaded = registry._loaded_at
+        if loaded is None:
+            stale = stale or _FOREIGN_CHANGES.get(key, 0) != 0
+        elif loaded[0] == key:
+            stale = stale or loaded[1] != _FOREIGN_CHANGES.get(key, 0)
+    if stale:
+        raise RegistryError("registry.toml changed on disk; reload")
+
+
 def load_registry(path: Path | None = None) -> Registry:
-    registry_path = _registry_read_path(path)
+    write_path = Path(path) if path else _default_registry_path()
+    try:
+        registry_path = _registry_read_path(path)
+    except RegistryNotFoundError:
+        # "No registry" is a snapshot too: a file another program creates
+        # before this process saves must not be overwritten.
+        _note_loaded(write_path, None)
+        raise
     with open(registry_path, "rb") as f:
         raw = tomllib.load(f)
+        # The file that was read, stamped while it is open: a stat by name
+        # afterwards could describe a file written in between. _note_loaded
+        # re-checks it under the lock, so a write landing between this read
+        # and that record is left to whoever wrote it.
+        stamp = _stamp_of(os.fstat(f.fileno()))
+    loaded_at = _note_loaded(registry_path, stamp)
+    if registry_path != write_path:
+        # The pre-XDG fallback: a save goes to write_path, not the file read.
+        loaded_at = _note_loaded(write_path, _disk_stamp(write_path))
     _reject_unknown_top_level_keys(raw)
     registry = Registry(
         providers=[_parse_provider(p) for p in raw.get("providers", [])],
@@ -588,6 +696,7 @@ def load_registry(path: Path | None = None) -> Registry:
         models=[_parse_model(m) for m in raw.get("models", [])],
     )
     _derive_native(registry)
+    registry._loaded_at = loaded_at
     return registry
 
 
@@ -823,16 +932,24 @@ def _write_registry(registry: Registry, path: Path) -> None:
     — writing its target would recreate a registry on a volume that
     unmounted while this process held one loaded, from whatever was in
     memory (#248).
+
+    A registry another program changed since this process last read or wrote
+    it is refused too (RegistryError "registry.toml changed on disk; reload"):
+    wt writes this file now, and saving an older snapshot over its edit would
+    revert it. A successful write records the new file as seen, so modelman's
+    own saves never trip the check.
     """
     _refuse_dangling_symlink(path)
     if path.is_symlink():
         path = Path(os.path.realpath(path))
+    _refuse_stale_snapshot(registry, path)
     payload = {
         "providers": [_provider_to_dict(p) for p in registry.providers],
         "families": [_family_to_dict(f) for f in registry.families],
         "models": [_model_to_dict(m) for m in registry.models],
     }
     atomic_write_toml(payload, path)
+    _record_seen(path)
 
 
 # Process-wide lock serializing every registry.toml write. registry.toml has

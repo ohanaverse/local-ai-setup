@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `modelman` is a Python 3.13 Textual TUI and CLI for managing LLM models across providers (Ollama, oMLX, MTPLX, mlx_lm_server, OpenRouter, native agents; llama.cpp is retired but its provider code is kept — see `../docs/reference/provider-artifacts.md`) and routing them through LiteLLM. **LiteLLM management is wt-owned (since 2026-09-21):** modelman never edits LiteLLM's `config.yaml` or restarts the proxy — it delegates to `wt litellm ...` and **requires `wt` on PATH** (`make install` from the repo root; write paths raise a clear error before changing any state when it is missing). User-facing behaviour (TUI keys, column formats, TOML schemas) is documented in `README.md`; this file covers internals and gotchas.
 
-CLI (`src/modelman/main.py`, Typer; bare `modelman` opens the TUI via `@app.callback(invoke_without_command=True)`):
+CLI (`src/modelman/main.py`, Typer). **The TUI is disabled**: bare `modelman` prints `TUI_DISABLED_MESSAGE` (where to go in wt) and exits 1, from `@app.callback(invoke_without_command=True)`. `run_tui()`, `app.py` and `screens/` are still in the tree and still tested, but nothing reaches them from the command line; the TUI sections below describe that code, not a command a user can run.
 
 | Command | Purpose |
 |---|---|
@@ -32,7 +32,7 @@ Sub-Typer apps mounted in `main.py`: `usage`, `litellm`, and from llmbench `benc
 
 `uv` for packaging; Python `==3.13.*`. Run `make help` for targets.
 
-- `make install` (`uv sync`), `uv run modelman` (TUI), `uv run modelman <subcommand>`
+- `make install` (`uv sync`), `uv run modelman <subcommand>` (bare `uv run modelman` prints the TUI-disabled notice and exits 1)
 - `make test`; single test: `uv run pytest tests/path/to/test.py::test_name`
 - `make check` = lint + `ruff format --check` + mypy; `make all` = format + test + check
 - Focused subsets: `uv run pytest tests/test_litellm.py tests/test_queue.py -q`, `uv run pytest -k "not screen" -q` (skips the slow Textual screen tests)
@@ -65,7 +65,7 @@ Read `docs/internals/tui.md` before changing `ModelScreen` (columns, `r`/`s` key
 
 ### Adding a new TUI screen
 
-See the `adding-a-tui-screen` skill (`.claude/skills/adding-a-tui-screen/SKILL.md`).
+Don't: the TUI is disabled and modelman is frozen until it is retired — new model-management UI goes in wt. The `adding-a-tui-screen` skill (`.claude/skills/adding-a-tui-screen/SKILL.md`) describes the screen code that is still in the tree.
 
 ### Pending changes queue
 
@@ -83,6 +83,7 @@ Nothing runs while the TUI is open: actions fill `ModelScreen`'s queued dicts, a
 
 ### Registry and state
 
+- `registry.py` — stale-snapshot guard: `load_registry` records the file's `(mtime_ns, size, inode)` per process (or that there was no file), `_write_registry` raises `RegistryError("registry.toml changed on disk; reload")` when the file no longer matches or when the `Registry` being saved was loaded before another program's change was seen (`Registry._loaded_at`; a `Registry()` built in memory counts as older than any such change), and a successful write records the new file. wt writes the registry too; this is what stops a modelman command saving its old snapshot over a wt edit. The TUI is disabled, so the writers left are the non-interactive commands, and a refused one is run again. (In the TUI code, which no command reaches now, the screens report a refused save as `Registry not saved: …`, a session cannot reload a registry, and a queued Apply whose final save is refused (`save:fail`) has already run its deletes and downloads, with neither `registry.toml` nor `modelman.toml` recording them.) `modelman migrate` and `modelman ollama-catalog sync` do not catch the refusal and end in a traceback.
 - `registry.py` — `Registry` (providers + models + families); path precedence `WT_REGISTRY` > `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config` (matches wt's `config.RegistryPath` and llmbench's `registry_path`).
 - `state.py` — `StateStore` over `modelman.toml` (`MODELMAN_STATE`). **`ModelState.running` is a hint**, confirmed by a live probe on every read. **Writers are merge-style through `locked_state()`**: update the fields you observed on the row as it is on disk.
 - **No exposure flag (#179)**: "is this model routed?" is `wt litellm list`.
@@ -110,7 +111,7 @@ Moved to llmbench (`../llmbench/src/llmbench/providers/lifecycle/`): see `../llm
 
 ### Local-model lifecycle
 
-`modelman start <id>` / `stop <id>` / `stop --all` and the TUI's `s` key are the sanctioned non-benchmark start/stop paths (`local_control.py`). **Per-provider process limits:** multiple local models may run concurrently across providers (advisory only). ollama is multi-tenant; omlx is a pool that can hold several loaded models, and its start and stop go through `wt` (`wt start --json`, `wt stop`; modelman needs a `wt` that has them), so starting an omlx model leaves the others loaded unless omlx evicts and `modelman stop <omlx model>` unloads just that one — asked of wt even for a model modelman has no running flag for; mtplx and mlx_lm_server serve one model per process, so starting a different model replaces the occupant. `omlx`/`omlx-6bit` are ONE server (shared port 8000). `modelman stop --all` and `modelman provider isolate|stop|restore` (benchmarks) still halt or restart the omlx service through the Python backend.
+`modelman start <id>` / `stop <id>` / `stop --all` are the sanctioned non-benchmark start/stop paths (`local_control.py`); the TUI's `s` key is the same path, in code no command reaches now. **Per-provider process limits:** multiple local models may run concurrently across providers (advisory only). ollama is multi-tenant; omlx is a pool that can hold several loaded models, and its start and stop go through `wt` (`wt start --json`, `wt stop`; modelman needs a `wt` that has them), so starting an omlx model leaves the others loaded unless omlx evicts and `modelman stop <omlx model>` unloads just that one — asked of wt even for a model modelman has no running flag for; mtplx and mlx_lm_server serve one model per process, so starting a different model replaces the occupant. `omlx`/`omlx-6bit` are ONE server (shared port 8000). `modelman stop --all` and `modelman provider isolate|stop|restore` (benchmarks) still halt or restart the omlx service through the Python backend.
 
 - Every start and stop closes with one `wt litellm sync`, after its state writes and outside the lock; sync warnings never fail the operation.
 - An occupant's flag is cleared only after its teardown is confirmed. An omlx start sets its target's flag and clears the flags of the ids wt reports `unloaded`; a failed start changes no flag, and an omlx stop wt refuses clears one only when the pool wt reads does not hold the model ("cannot say" never clears one — only a refused connection at the registry's omlx origin does). The omlx probe likewise answers "cannot say" when nothing answered; only a refused connection reads as "nothing loaded".

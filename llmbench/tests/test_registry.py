@@ -16,6 +16,11 @@ from llmbench.registry import (
 
 FIXTURE = Path(__file__).resolve().parents[2] / "docs" / "contracts" / "registry.sample.toml"
 
+# One registry in the exact form wt (and, until it is retired, modelman's
+# tomli-w) writes it; it holds no comments, so its purpose is recorded in its
+# readers. wt asserts it re-emits these bytes (wt/internal/tomlw/fixture_test.go).
+WRITTEN_FIXTURE = FIXTURE.with_name("registry.written.sample.toml")
+
 MINIMAL = """\
 [[providers]]
 id = "ollama"
@@ -192,3 +197,33 @@ def test_load_registry_reads_the_shared_contract_fixture():
     assert is_model_local(local.location, local.provider_id, registry)
     assert not is_model_local(None, "no-such-provider", registry)
     assert is_model_local(None, "no-such-provider", registry, missing_provider_is_local=True)
+
+
+def test_load_registry_reads_the_written_contract_fixture():
+    """docs/contracts/registry.written.sample.toml is what a registry looks
+    like after wt has written it: tomli-w layout, keys this reader does not
+    model at every level below the top, integer prices, local dates. wt is becoming the
+    registry's writer, so if this reader cannot load wt's output every
+    benchmark stops at "cannot read registry.toml"."""
+    registry = load_registry(WRITTEN_FIXTURE)
+
+    assert [p.id for p in registry.providers] == ["ollama", "openrouter", "mlx_lm_server", "agy"]
+    assert registry.provider("ollama").location == "local"
+    assert [m.id for m in registry.models] == [
+        "ollama/written-fixture:int",
+        "openrouter/written-fixture:cloud",
+        "mlx_lm_server/written-fixture:pair",
+        "agy/written-fixture:native",
+    ]
+    pair = registry.model("mlx_lm_server/written-fixture:pair")
+    assert (pair.family, pair.provider_id, pair.model_name) == (
+        "written-second",
+        "mlx_lm_server",
+        "org/written-fixture-target",
+    )
+    assert pair.fetch is not None and pair.fetch.repo == "org/written-fixture-target"
+    assert pair.draft is not None and pair.draft.repo == "org/written-fixture-draft"
+    cloud = registry.model("openrouter/written-fixture:cloud")
+    assert cloud.location == "cloud" and not is_model_local(
+        cloud.location, cloud.provider_id, registry
+    )

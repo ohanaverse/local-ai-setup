@@ -56,13 +56,13 @@ start with another directory; a bare `backends/...` is under
    `tests/providers/lifecycle/test_hermeticity.py` **and** its copy,
    `modelman/tests/test_hermeticity.py`.
 5. **Update the registry.** Add a provider entry to
-   `~/.config/local-ai/registry.toml` (via `modelman sync` or the TUI) and
+   `~/.config/local-ai/registry.toml` (by hand, or via `modelman sync`) and
    add the provider id to `DEFAULT_PROVIDER_IDS` in
    `src/llmbench/registry.py` (`LOCAL_PROVIDERS =
    set(DEFAULT_PROVIDER_IDS)` in `src/llmbench/benchmark/runner.py`) — a
    backend missing from that set is silently skipped by `llmbench run` —
    and, until modelman is retired, in `modelman/src/modelman/registry.py`,
-   which `modelman sync` and the TUI seed provider rows from
+   which `modelman sync` seeds provider rows from
    (`modelman/tests/test_llmbench_reexports.py` fails if the two differ).
    Give the id a `_DEFAULT_PROVIDER_TEMPLATES` entry in that same modelman
    file too: `default_provider_entry()` raises `KeyError` for an id in

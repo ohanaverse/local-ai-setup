@@ -341,3 +341,22 @@ func TestConfigErrorForABrokenRegistryLink(t *testing.T) {
 		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
 	}
 }
+
+// TestConfigErrorForAMissingRegistryNamesModelInit pins the whole line a
+// user reads when there is no registry: where it was looked for and the one
+// command that creates it, named once. It used to name `modelman migrate`, a
+// legacy import in a tool that is being retired, and to say it twice.
+func TestConfigErrorForAMissingRegistryNamesModelInit(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	_, loadErr := config.Load()
+	if !errors.Is(loadErr, config.ErrRegistryMissing) {
+		t.Fatalf("Load error = %v, want config.ErrRegistryMissing", loadErr)
+	}
+	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	want := "config error: model registry not found at " + registry +
+		" — seed it with `wt model init`"
+	if got := configError(loadErr).Error(); got != want {
+		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
+	}
+}
