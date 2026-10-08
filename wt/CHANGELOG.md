@@ -7,6 +7,8 @@
 - `wt stop --all [--yes]` stops every running local model and then halts the
   omlx service. It asks once when a live wt session is using one of them,
   keeps going when one stop fails (and then exits 1), and takes no argument.
+  Ctrl+C ends it where it is: a run interrupted while it stops the models does
+  not go on to halt omlx.
 - `WT_REGISTRY` names the model registry file. It outranks `MODELMAN_REGISTRY`,
   which keeps working as an alias; modelman and llmbench read the same name.
 - `wt model init [--json]` creates the model registry when it is missing and

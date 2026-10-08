@@ -741,6 +741,133 @@ func TestStopAllKeepsGoingAfterAFailure(t *testing.T) {
 	}
 }
 
+// TestStopAllCancelledModelLoopLeavesThePoolUp verifies Ctrl+C during the
+// per-model stops ends `wt stop --all` there: the omlx service is not halted,
+// and the error says so. Filed as one more failure, the cancellation was
+// stepped over and the command went on to halt the largest server the user
+// had just asked it to leave alone.
+func TestStopAllCancelledModelLoopLeavesThePoolUp(t *testing.T) {
+	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	old := stopEntries
+	t.Cleanup(func() { stopEntries = old })
+	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error { return survey.ErrStopCancelled }
+	halted := stubHalt(t)
+	var out bytes.Buffer
+	err := runStopAll(&out, modelCmdConfig(), false)
+	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
+	}
+	if len(*halted) != 0 || strings.Contains(out.String(), "Stopping omlx") {
+		t.Errorf("halted = %v out = %q, want no halt after a cancelled model loop", *halted, out.String())
+	}
+}
+
+// TestStopAllCancelledHaltReportsCancelled verifies Ctrl+C while the omlx
+// service is being halted prints "cancelled", not "failed", and the error
+// names the service as not stopped. A killed `omlx stop` reported as a failure
+// tells the user their provider is broken when they interrupted it.
+func TestStopAllCancelledHaltReportsCancelled(t *testing.T) {
+	stubStop(t, nil)
+	oldCtx, oldStop := startSignalCtx, stopProvider
+	t.Cleanup(func() { startSignalCtx, stopProvider = oldCtx, oldStop })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+	stopProvider = func(c context.Context, _ *config.Config, _ string) error {
+		cancel()
+		return c.Err()
+	}
+	var out bytes.Buffer
+	err := runStopAll(&out, modelCmdConfig(), false)
+	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
+	}
+	if got := out.String(); !strings.Contains(got, "Stopping omlx... cancelled") || strings.Contains(got, "failed") {
+		t.Errorf("out = %q, want the halt reported as cancelled, not failed", got)
+	}
+}
+
+// TestStopAllSettlesTheModelLoopsRestartBeforeAHalt verifies `wt stop --all`
+// waits for the LiteLLM proxy restart the model loop may have started before
+// it halts the omlx service, and does not wait when there was no model loop.
+// Halting omlx starts a restart of its own; nothing else orders the two, and
+// two at once bounce the proxy under each other.
+func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
+	var events []string
+	oldCands, oldEntries, oldHalt, oldWait := stopCandidates, stopEntries, stopProvider, waitPendingRoutes
+	t.Cleanup(func() {
+		stopCandidates, stopEntries, stopProvider, waitPendingRoutes = oldCands, oldEntries, oldHalt, oldWait
+	})
+	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
+		events = append(events, "models")
+		return nil
+	}
+	stopProvider = func(_ context.Context, _ *config.Config, id string) error {
+		events = append(events, "halt "+id)
+		return nil
+	}
+	waitPendingRoutes = func() { events = append(events, "wait") }
+
+	stopCandidates = func(*config.Config) []survey.Candidate {
+		return []survey.Candidate{cand("mtplx", "mtplx/c", "c", 0)}
+	}
+	if err := runStopAll(io.Discard, modelCmdConfig(), false); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"models", "wait", "halt omlx"}; !slices.Equal(events, want) {
+		t.Errorf("events = %v, want %v", events, want)
+	}
+
+	events = nil
+	stopCandidates = func(*config.Config) []survey.Candidate { return nil }
+	if err := runStopAll(io.Discard, modelCmdConfig(), false); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"halt omlx"}; !slices.Equal(events, want) {
+		t.Errorf("no model loop: events = %v, want %v (nothing to wait for)", events, want)
+	}
+}
+
+// TestStopAllYesFlagSkipsTheQuestion verifies `wt stop --all --yes`, run as
+// the command, stops in-use models without asking, and `wt stop --all` alone
+// asks. The other --all tests call runStopAll with the flag's value already in
+// hand; if the command stopped passing --yes, a cleanup script would block on
+// a prompt (or fail with no terminal) and no test would say so.
+func TestStopAllYesFlagSkipsTheQuestion(t *testing.T) {
+	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2), cand("omlx", "omlx/c", "c", 1)})
+	halted := stubHalt(t)
+	old := confirmStop
+	t.Cleanup(func() { confirmStop = old })
+	asked := 0
+	confirmStop = func(string) (bool, error) { asked++; return false, nil }
+	run := func(args ...string) error {
+		cmd := stopCmd(&app{cfg: modelCmdConfig()})
+		cmd.SetArgs(args)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		return cmd.Execute()
+	}
+
+	if err := run("--all", "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	if asked != 0 {
+		t.Errorf("--all --yes asked %d time(s), want none", asked)
+	}
+	if len(*stopped) != 1 || (*stopped)[0].ModelID != "ollama/a:1" || !slices.Equal(*halted, []string{"omlx"}) {
+		t.Errorf("--all --yes: stopped = %v halted = %v, want ollama/a:1 and the omlx halt", *stopped, *halted)
+	}
+
+	*stopped, *halted = nil, nil
+	err := run("--all")
+	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") {
+		t.Fatalf("--all, declined: err = %v, want a cancellation", err)
+	}
+	if asked != 1 || len(*stopped) != 0 || len(*halted) != 0 {
+		t.Errorf("--all: asked = %d stopped = %v halted = %v, want one question and nothing stopped", asked, *stopped, *halted)
+	}
+}
+
 // TestStopAllTakesNoArgument verifies `wt stop --all <something>` is refused
 // before anything is probed or stopped: a user who meant one provider must
 // not have every model stopped instead.

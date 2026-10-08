@@ -84,9 +84,12 @@ wt stop --all                    # stop every running local model, then the omlx
   nothing loaded, since that is what frees its memory. omlx's models are not
   unloaded one by one first. It asks once when any of the models is in use by
   a live wt session (`--yes` skips the question). Every stop is attempted: if
-  one fails the others still run, and the exit code is 1. It takes no
-  argument. A running mlx_lm_server pairing is not stopped, because wt has no
-  engine for one; `llmbench provider stop mlx_lm_server` stops it.
+  one fails the others still run, and the exit code is 1. Ctrl+C is not a
+  failure to step over: it cancels the stop in flight and ends the command
+  there, so a `--all` interrupted while it stops the models leaves the omlx
+  service up, and the error names it. It takes no argument. A running
+  mlx_lm_server pairing is not stopped, because wt has no engine for one;
+  `llmbench provider stop mlx_lm_server` stops it.
 - No argument: the stop picker (needs a TTY). Unlike the exit-flow pickers
   it also lists models in use by other wt sessions, marked with their
   session count. Type the numbers to stop, separated by spaces (`1 3`), or
