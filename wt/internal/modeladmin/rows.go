@@ -7,9 +7,7 @@ package modeladmin
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -56,8 +54,10 @@ type Row struct {
 	Registered bool
 	Status     Status
 	Running    string
-	// Path is where the weights are: the model's directory (omlx, mtplx), or
-	// the row's fetch.local_path. "" when wt does not know one.
+	// Path is where the weights are: the model's own directory as the
+	// inventory reports it (omlx, mtplx — localmodels.Entry.Path, which
+	// withholds a directory reached through another organization's copy of
+	// the name), or the row's fetch.local_path. "" when wt does not know one.
 	Path string
 	// Size is the weights' size in bytes when the probe reports one (ollama);
 	// 0 when it does not.
@@ -140,10 +140,9 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 			case e.Artifact == "":
 				r.Status = StatusMissing
 			default:
-				r.Status, r.Size = StatusOK, e.Size
-				if ownDirectory(cfg, m, e.Path) {
-					r.Path = e.Path
-				}
+				// The path as the inventory gives it: already the model's own
+				// directory or "" (localmodels.Entry.Path, #266).
+				r.Status, r.Path, r.Size = StatusOK, e.Path, e.Size
 			}
 		}
 		rows = append(rows, r)
@@ -176,44 +175,6 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 	}
 	sort.SliceStable(found, func(i, j int) bool { return found[i].ID < found[j].ID })
 	return append(rows, found...)
-}
-
-// ownDirectory reports whether the directory the probe matched to a
-// registered model is that model's own. The probe matches by leaf name, so a
-// model registered as org-a/Name can be matched to org-b/Name; printing that
-// path would send `wt model rm`'s reader to another organization's weights
-// (closed issue #266). The organization the row claims is its fetch.repo's,
-// or its model_name's when that is written org/name; a row that names none
-// has nothing to contradict the match. One that names an organization keeps
-// the path only when the directory does not belong to another:
-//
-//   - mtplx keeps every model directly in its model directory, named
-//     <org>--<name>, so the directory's own name has to start with the
-//     organization (one with no "--" in it names none and is kept);
-//   - omlx: the directory sits directly in the provider's model directory,
-//     or in a folder named after the organization.
-func ownDirectory(cfg *config.Config, m config.Model, path string) bool {
-	if path == "" {
-		return false
-	}
-	org, _, ok := strings.Cut(m.Fetch.Repo, "/")
-	if m.Fetch.Repo == "" {
-		org, _, ok = strings.Cut(m.ModelName, "/")
-	}
-	if !ok || org == "" {
-		return true
-	}
-	family := localmodels.Family(m.ProviderID)
-	if family == "mtplx" {
-		base := filepath.Base(path)
-		return !strings.Contains(base, "--") || strings.HasPrefix(base, org+"--")
-	}
-	parent := filepath.Dir(path)
-	if filepath.Base(parent) == org {
-		return true
-	}
-	dir, err := localmodels.ModelDir(cfg, family)
-	return err == nil && filepath.Clean(dir) == filepath.Clean(parent)
 }
 
 // running is a local row's RUNNING cell. A family whose probe did not fully

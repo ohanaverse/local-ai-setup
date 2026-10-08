@@ -1,6 +1,9 @@
 package modeladmin
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -205,143 +208,63 @@ func TestFormatSize(t *testing.T) {
 	}
 }
 
-// TestRowsKeepOnlyTheModelsOwnDirectory verifies a registered row shows the
-// scanned directory only when it is plausibly its own: the probe matches by
-// leaf name, so org-a/Name can be matched to org-b/Name, and `wt model rm`
-// would then point at another organization's weights (closed issue #266). A
-// discovered row has no repo to contradict and keeps the path.
-func TestRowsKeepOnlyTheModelsOwnDirectory(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := home + "/.omlx/models"
-	omlx := local("omlx")
+// TestRowsShowThePathTheInventoryGives verifies Rows copies a registered
+// entry's Path as it is, and adds no rule of its own: whether a scanned
+// directory is the model's own is decided where the match is made
+// (localmodels.Entry.Path, pinned by
+// TestInventoryPathIsTheModelsOwnDirectoryOrEmpty). An entry the inventory
+// left without a path is a row with none, whose note says wt could not tell
+// where the weights are; a second copy of the rule here could only drift from
+// the first. The second half runs the real inventory over a directory where
+// the row's name exists only under another organization, so the #266 case is
+// seen end to end: the model is there, and no path is printed for it.
+func TestRowsShowThePathTheInventoryGives(t *testing.T) {
 	cfg := &config.Config{
-		Providers: []config.Provider{omlx},
+		Providers: []config.Provider{local("omlx")},
 		Models: []config.Model{
-			{ID: "omlx/own-org", Family: "q", ProviderID: "omlx", ModelName: "A", Fetch: config.ModelArtifact{Repo: "org-a/A"}},
-			{ID: "omlx/other-org", Family: "q", ProviderID: "omlx", ModelName: "B", Fetch: config.ModelArtifact{Repo: "org-a/B"}},
-			{ID: "omlx/flat", Family: "q", ProviderID: "omlx", ModelName: "C", Fetch: config.ModelArtifact{Repo: "org-a/C"}},
+			{ID: "omlx/given", Family: "q", ProviderID: "omlx", ModelName: "A", Fetch: config.ModelArtifact{Repo: "org-a/A"}},
+			{ID: "omlx/withheld", Family: "q", ProviderID: "omlx", ModelName: "B", Fetch: config.ModelArtifact{Repo: "org-a/B"}},
 		},
 	}
 	entry := func(id, name, path string) localmodels.Entry {
 		return localmodels.Entry{ProviderID: "omlx", ModelID: id, ModelName: name, Artifact: name, Registered: true, ArtifactKnown: true, Path: path}
 	}
-	snap := localmodels.Snapshot{
+	rows := Rows(cfg, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
 		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
 		Entries: []localmodels.Entry{
-			entry("omlx/own-org", "A", dir+"/org-a/A"),
-			entry("omlx/other-org", "B", dir+"/org-b/B"),
-			entry("omlx/flat", "C", dir+"/C"),
-			{ProviderID: "omlx", ModelID: "omlx/New", ModelName: "New", Artifact: "New", ArtifactKnown: true, Path: dir + "/org-b/New"},
+			// Not a directory this package would have chosen: Rows does not judge it.
+			entry("omlx/given", "A", "/anywhere/the-inventory/says"),
+			entry("omlx/withheld", "B", ""),
 		},
+	})
+	if got := rowByID(t, rows, "omlx/given"); got.Path != "/anywhere/the-inventory/says" || got.Status != StatusOK {
+		t.Errorf("given = %+v, want the inventory's path unchanged", got)
 	}
-	rows := Rows(cfg, snap)
-	for id, want := range map[string]string{
-		"omlx/own-org":   dir + "/org-a/A",
-		"omlx/other-org": "",
-		"omlx/flat":      dir + "/C",
-		"omlx/New":       dir + "/org-b/New",
-	} {
-		if got := rowByID(t, rows, id).Path; got != want {
-			t.Errorf("%s: Path = %q, want %q", id, got, want)
-		}
+	withheld := rowByID(t, rows, "omlx/withheld")
+	if withheld.Path != "" || withheld.Status != StatusOK {
+		t.Errorf("withheld = %+v, want an ok row with no path", withheld)
 	}
-	// A provider row's own model_dir replaces the default one.
-	cfg.Providers[0].ModelDir = "/custom/models"
-	snap.Entries = []localmodels.Entry{entry("omlx/flat", "C", "/custom/models/C"), entry("omlx/other-org", "B", dir+"/B")}
-	rows = Rows(cfg, snap)
-	if got := rowByID(t, rows, "omlx/flat").Path; got != "/custom/models/C" {
-		t.Errorf("flat model under a custom model_dir: Path = %q", got)
+	if got := WeightsNote(withheld); got != "wt could not tell where its weights are" {
+		t.Errorf("WeightsNote for a withheld path = %q, want the could-not-tell line", got)
 	}
-	if got := rowByID(t, rows, "omlx/other-org").Path; got != "" {
-		t.Errorf("a model directly under the default dir while model_dir is custom: Path = %q, want none", got)
-	}
-	if got := WeightsNote(rowByID(t, rows, "omlx/other-org")); got != "wt could not tell where its weights are" {
-		t.Errorf("WeightsNote for a cross-organization match = %q, want the could-not-tell line", got)
-	}
-}
 
-// TestRowsKeepOnlyAnMtplxModelsOwnDirectory verifies the same rule for
-// mtplx, whose models all sit directly in its model directory as
-// <org>--<name>: "directly in the model directory" says nothing there, so
-// the directory's own name is what has to carry the row's organization.
-// Without it a row registered for OrgA/Model shows OrgB--Model as its
-// weights, the #266 case, whenever OrgB's copy is the only one on disk.
-func TestRowsKeepOnlyAnMtplxModelsOwnDirectory(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := home + "/.mtplx/models"
-	cfg := &config.Config{
-		Providers: []config.Provider{local("mtplx")},
-		Models: []config.Model{
-			{ID: "mtplx/own", Family: "q", ProviderID: "mtplx", ModelName: "A", Fetch: config.ModelArtifact{Repo: "OrgA/A"}},
-			{ID: "mtplx/other", Family: "q", ProviderID: "mtplx", ModelName: "B", Fetch: config.ModelArtifact{Repo: "OrgA/B"}},
-			{ID: "mtplx/by-name", Family: "q", ProviderID: "mtplx", ModelName: "OrgA/C"},
-			{ID: "mtplx/no-org", Family: "q", ProviderID: "mtplx", ModelName: "D"},
-			{ID: "mtplx/flat", Family: "q", ProviderID: "mtplx", ModelName: "E", Fetch: config.ModelArtifact{Repo: "OrgA/E"}},
-		},
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := localmodels.MakeOmlxModelsForTest(dir, "org-a/A", "org-b/B"); err != nil {
+		t.Fatal(err)
 	}
-	entry := func(id, name, artifact, path string) localmodels.Entry {
-		return localmodels.Entry{ProviderID: "mtplx", ModelID: id, ModelName: name, Artifact: artifact, Registered: true, ArtifactKnown: true, Path: path}
+	// A server that is not there: the directory scan is what fills Path.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close()
+	cfg.Providers[0].ModelDir = dir
+	cfg.Providers[0].Auth.BaseURL = srv.URL + "/v1"
+	rows = Rows(cfg, localmodels.Inventory(cfg))
+	if got := rowByID(t, rows, "omlx/given"); got.Path != filepath.Join(dir, "org-a", "A") || got.Status != StatusOK {
+		t.Errorf("a model in its own organization's folder = %+v, want its directory", got)
 	}
-	snap := localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK},
-		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
-		Entries: []localmodels.Entry{
-			entry("mtplx/own", "A", "OrgA/A", dir+"/OrgA--A"),
-			entry("mtplx/other", "B", "OrgB/B", dir+"/OrgB--B"),
-			entry("mtplx/by-name", "OrgA/C", "OrgB/C", dir+"/OrgB--C"),
-			entry("mtplx/no-org", "D", "OrgB/D", dir+"/OrgB--D"),
-			entry("mtplx/flat", "E", "E", dir+"/E"),
-		},
-	}
-	rows := Rows(cfg, snap)
-	for id, want := range map[string]string{
-		"mtplx/own":     dir + "/OrgA--A",
-		"mtplx/other":   "",
-		"mtplx/by-name": "",
-		"mtplx/no-org":  dir + "/OrgB--D",
-		"mtplx/flat":    dir + "/E",
-	} {
-		if got := rowByID(t, rows, id).Path; got != want {
-			t.Errorf("%s: Path = %q, want %q", id, got, want)
-		}
-	}
-	if got := WeightsNote(rowByID(t, rows, "mtplx/other")); got != "wt could not tell where its weights are" {
-		t.Errorf("WeightsNote for another organization's mtplx directory = %q, want the could-not-tell line", got)
-	}
-}
-
-// TestRowsTakeTheOrganizationFromAnOmlxModelName verifies an omlx row with
-// no fetch table whose model_name is written org/name is held to that
-// organization too. A hand-written row of that shape matched to another
-// organization's folder would otherwise print that folder as its weights.
-func TestRowsTakeTheOrganizationFromAnOmlxModelName(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := home + "/.omlx/models"
-	cfg := &config.Config{
-		Providers: []config.Provider{local("omlx")},
-		Models: []config.Model{
-			{ID: "omlx/theirs", Family: "q", ProviderID: "omlx", ModelName: "org-a/Name"},
-			{ID: "omlx/ours", Family: "q", ProviderID: "omlx", ModelName: "org-a/Mine"},
-		},
-	}
-	snap := localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Down:      map[string]bool{}, Ambiguous: map[string]bool{},
-		Entries: []localmodels.Entry{
-			{ProviderID: "omlx", ModelID: "omlx/theirs", ModelName: "org-a/Name", Artifact: "Name", Registered: true, ArtifactKnown: true, Path: dir + "/org-b/Name"},
-			{ProviderID: "omlx", ModelID: "omlx/ours", ModelName: "org-a/Mine", Artifact: "Mine", Registered: true, ArtifactKnown: true, Path: dir + "/org-a/Mine"},
-		},
-	}
-	rows := Rows(cfg, snap)
-	if got := rowByID(t, rows, "omlx/theirs").Path; got != "" {
-		t.Errorf("a model_name of org-a matched to org-b's folder: Path = %q, want none", got)
-	}
-	if got := rowByID(t, rows, "omlx/ours").Path; got != dir+"/org-a/Mine" {
-		t.Errorf("a model_name of org-a in org-a's folder: Path = %q", got)
+	if got := rowByID(t, rows, "omlx/withheld"); got.Path != "" || got.Status != StatusOK {
+		t.Errorf("a model found only under another organization = %+v, want ok with no path", got)
 	}
 }
 

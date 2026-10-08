@@ -48,6 +48,89 @@ func TestInventoryEntriesCarryTheModelDirectory(t *testing.T) {
 	}
 }
 
+// TestInventoryPathIsTheModelsOwnDirectoryOrEmpty pins the #266 rule where
+// the match is made: a registered entry's Path is the directory of the model
+// the row names, or "". The probe matches by leaf name, so a row for
+// org-a/Name is matched to org-b/Name when that is the only copy on disk; the
+// entry still says the model is there (Artifact), and withholds the path. A
+// path wt prints is a path someone may delete, and Entry.Path is exported:
+// held one layer up, in modeladmin, the rule protected `wt model list` and
+// left every other reader of a snapshot to print another organization's
+// weights as this model's.
+func TestInventoryPathIsTheModelsOwnDirectoryOrEmpty(t *testing.T) {
+	omlxDir, mtplxDir := t.TempDir(), t.TempDir()
+	mkOmlxModels(t, omlxDir,
+		"Direct-4bit", "org-a/Own-4bit", "org-b/Other-4bit",
+		"org-a/NamedOwn-4bit", "org-b/Named-4bit", "org-b/Prec-4bit",
+		"org-b/NoSlash-4bit", "org-b/NoOrg-4bit",
+		"org-a/Twice-4bit", "org-b/Twice-4bit", "org-b/Found-4bit")
+	mkdirs(t, mtplxDir, "OrgA--Own", "OrgB--Other", "OrgA--Named", "OrgB--Elsewhere", "OrgB--NoOrg", "Flat", "OrgB--Found")
+	omlx, mtplx := &fakeOmlx{}, modelsServer(t)
+
+	repo := func(r string) config.ModelArtifact { return config.ModelArtifact{Repo: r} }
+	inOmlx := func(parts ...string) string { return filepath.Join(append([]string{omlxDir}, parts...)...) }
+	cases := []struct {
+		name      string
+		model     config.Model
+		wantFound bool // the entry names an artifact: the model is on disk
+		wantPath  string
+	}{
+		// omlx: directly in the model directory, or in an organization folder.
+		{"directly under the model dir", config.Model{ID: "omlx/direct", ProviderID: "omlx", ModelName: "Direct-4bit", Fetch: repo("org-a/Direct-4bit")}, true, inOmlx("Direct-4bit")},
+		{"under the row's own organization", config.Model{ID: "omlx/own", ProviderID: "omlx", ModelName: "Own-4bit", Fetch: repo("org-a/Own-4bit")}, true, inOmlx("org-a", "Own-4bit")},
+		{"under another organization", config.Model{ID: "omlx/other", ProviderID: "omlx", ModelName: "Other-4bit", Fetch: repo("org-a/Other-4bit")}, true, ""},
+		{"model_name is org/name, its own folder", config.Model{ID: "omlx/named-own", ProviderID: "omlx", ModelName: "org-a/NamedOwn-4bit"}, true, inOmlx("org-a", "NamedOwn-4bit")},
+		{"model_name is org/name, another folder", config.Model{ID: "omlx/named", ProviderID: "omlx", ModelName: "org-a/Named-4bit"}, true, ""},
+		{"fetch.repo outranks model_name", config.Model{ID: "omlx/prec", ProviderID: "omlx", ModelName: "org-b/Prec-4bit", Fetch: repo("org-a/Prec-4bit")}, true, ""},
+		// A repo with no "/" names no organization, so nothing contradicts
+		// the match and the path is kept — as for a row with no fetch at all.
+		{"fetch.repo without a slash", config.Model{ID: "omlx/noslash", ProviderID: "omlx", ModelName: "NoSlash-4bit", Fetch: repo("NoSlash-4bit")}, true, inOmlx("org-b", "NoSlash-4bit")},
+		{"a row that names no organization", config.Model{ID: "omlx/noorg", ProviderID: "omlx", ModelName: "NoOrg-4bit"}, true, inOmlx("org-b", "NoOrg-4bit")},
+		{"a name found in two directories", config.Model{ID: "omlx/twice", ProviderID: "omlx", ModelName: "Twice-4bit", Fetch: repo("org-a/Twice-4bit")}, true, ""},
+		// mtplx: every model sits directly in the model directory as
+		// <org>--<name>, so the directory's own name carries the organization.
+		{"mtplx, its own organization", config.Model{ID: "mtplx/own", ProviderID: "mtplx", ModelName: "Own", Fetch: repo("OrgA/Own")}, true, filepath.Join(mtplxDir, "OrgA--Own")},
+		{"mtplx, another organization", config.Model{ID: "mtplx/other", ProviderID: "mtplx", ModelName: "Other", Fetch: repo("OrgA/Other")}, true, ""},
+		{"mtplx, model_name is org/name", config.Model{ID: "mtplx/named", ProviderID: "mtplx", ModelName: "OrgA/Named"}, true, filepath.Join(mtplxDir, "OrgA--Named")},
+		// org/name against another organization's copy is not a match at all.
+		{"mtplx, model_name of another organization", config.Model{ID: "mtplx/elsewhere", ProviderID: "mtplx", ModelName: "OrgA/Elsewhere"}, false, ""},
+		{"mtplx, a row that names no organization", config.Model{ID: "mtplx/noorg", ProviderID: "mtplx", ModelName: "NoOrg"}, true, filepath.Join(mtplxDir, "OrgB--NoOrg")},
+		{"mtplx, a directory that names no organization", config.Model{ID: "mtplx/flat", ProviderID: "mtplx", ModelName: "Flat", Fetch: repo("OrgA/Flat")}, true, filepath.Join(mtplxDir, "Flat")},
+	}
+	cfg := &config.Config{Providers: []config.Provider{
+		localProvider("omlx", omlx.serve(t), omlxDir),
+		localProvider("mtplx", mtplx.URL+"/v1", mtplxDir),
+	}}
+	for _, c := range cases {
+		cfg.Models = append(cfg.Models, c.model)
+	}
+	snap := inventory(cfg, testClient)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e, ok := byModelID(snap, c.model.ID)
+			if !ok || !e.Registered || !e.ArtifactKnown {
+				t.Fatalf("entry = %+v ok=%v, want a registered, probed entry", e, ok)
+			}
+			if found := e.Artifact != ""; found != c.wantFound {
+				t.Errorf("Artifact = %q, want found=%v: withholding a path must not change whether the model is on disk", e.Artifact, c.wantFound)
+			}
+			if e.Path != c.wantPath {
+				t.Errorf("Path = %q, want %q", e.Path, c.wantPath)
+			}
+		})
+	}
+	// A discovered entry has no row to contradict the scan: it keeps the
+	// directory it was found in, organization folder and all.
+	for id, want := range map[string]string{
+		"omlx/Found-4bit":  inOmlx("org-b", "Found-4bit"),
+		"mtplx/OrgB/Found": filepath.Join(mtplxDir, "OrgB--Found"),
+	} {
+		if e, ok := byModelID(snap, id); !ok || e.Registered || e.Path != want {
+			t.Errorf("discovered %s = %+v ok=%v, want Path %q", id, e, ok, want)
+		}
+	}
+}
+
 // TestScanOmlxModelPathsDropsAmbiguousPath verifies a name found in two
 // organization folders is listed once with no path. A leaf-name match across
 // organizations must never put another organization's directory on a row
