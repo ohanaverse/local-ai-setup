@@ -653,6 +653,15 @@ func TestModelAddAPairing(t *testing.T) {
 	if !strings.Contains(got, "[models.fetch]\nrepo = \"mlx-community/Qwen3.8-27B-4bit\"\n\n[models.draft]\nrepo = \"mlx-community/Qwen3.8-4B-4bit\"\n") {
 		t.Errorf("the pairing's two sides are not in the registry:\n%s", got)
 	}
+	// The command names the sides as the row holds them: trimmed.
+	var out2, errOut2 bytes.Buffer
+	if err := runModelAdd(&out2, &errOut2, nil, modeladmin.AddRequest{ProviderID: "mlx_lm_server", ModelName: " org/T ", Draft: " ~/d/D ", Fields: modeladmin.Fields{Family: sp("f")}}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "added model: mlx_lm_server/T+draft-D\nstart it with: llmbench provider isolate --solo mlx_lm_server org/T --draft ~/d/D\n"; out2.String() != want {
+		t.Errorf("add with padded arguments = %q\nwant %q", out2.String(), want)
+	}
+	got = mustRead(t, registry)
 	before := got
 	for _, args := range [][]string{
 		{"model", "add", "mlx_lm_server", "org/target", "--family", "f"},

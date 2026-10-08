@@ -304,8 +304,22 @@ func TestBlockReasonNamesTheFix(t *testing.T) {
 // TestPairingStartCommand pins the command the hints print: --solo, so the
 // other local providers keep running (llmbench stops them without it), the
 // target as the positional and the draft behind --draft, and a placeholder
-// for a side the registry row does not record.
+// for a side the registry row does not record. A side a shell would split or
+// expand is quoted (with "~/" left for the shell), because the line is there
+// to be pasted: unquoted, `~/My Models/Big-4bit` starts the server on a
+// target called ~/My and fails on the rest.
 func TestPairingStartCommand(t *testing.T) {
+	const prefix = "llmbench provider isolate --solo mlx_lm_server "
+	for _, c := range []struct{ target, draft, want string }{
+		{"mlx-community/Qwen3.8-27B-4bit", "~/models/Qwen3.8-4B-4bit/", "mlx-community/Qwen3.8-27B-4bit --draft ~/models/Qwen3.8-4B-4bit/"},
+		{"~/My Models/Big-4bit", "/quant/it's here/D", `~/'My Models/Big-4bit' --draft '/quant/it'\''s here/D'`},
+		{"./out/a b", "org/d;rm", "'./out/a b' --draft 'org/d;rm'"},
+		{"~", "~/", "~ --draft ~/"},
+	} {
+		if got := PairingStartCommand(c.target, c.draft); got != prefix+c.want {
+			t.Errorf("PairingStartCommand(%q, %q) =\n%s\nwant\n%s", c.target, c.draft, got, prefix+c.want)
+		}
+	}
 	if got, want := PairingStartCommand("org/t", "org/d"), "llmbench provider isolate --solo mlx_lm_server org/t --draft org/d"; got != want {
 		t.Errorf("PairingStartCommand = %q, want %q", got, want)
 	}

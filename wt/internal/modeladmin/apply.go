@@ -80,9 +80,17 @@ func planAdd(req AddRequest) (addPlan, error) {
 	if pairing {
 		// The registry row names the pairing, and records each side where
 		// llmbench reads it to start the server.
-		plan.target, plan.draft = artifactTable(req.ModelName), artifactTable(req.Draft)
-		req.ModelName = PairingName(req.ModelName, req.Draft)
+		target, draft := req.ModelName, req.Draft
+		plan.target, plan.draft = artifactTable(target), artifactTable(draft)
+		req.ModelName = PairingName(target, draft)
 		set["fetch"], set["draft"] = plan.target, plan.draft
+		// Any other derived id comes from a name a provider lists; this one
+		// comes from the last segment of what the user typed, which may be a
+		// directory with a space in it, or nothing at all ("/").
+		if derived := DeriveID(req.ProviderID, req.ModelName); req.ID == "" &&
+			(lastSegment(target) == "" || lastSegment(draft) == "" || checkID(derived) != nil) {
+			return addPlan{}, fieldErr(FieldName, "the target and draft do not make a usable id (%q): pass --id mlx_lm_server/<name>", derived)
+		}
 	}
 	_, hasPrice := set["cost.subscription_price"]
 	period, _ := set["cost.subscription_period"].(string)
@@ -194,15 +202,11 @@ func PairingName(target, draft string) string {
 	return lastSegment(target) + "+draft-" + lastSegment(draft)
 }
 
+// lastSegment is what follows the last "/" of a repo id or a path, a
+// trailing "/" set aside; "" for one that is nothing but slashes.
 func lastSegment(repoOrPath string) string {
 	trimmed := strings.TrimRight(repoOrPath, "/")
-	if i := strings.LastIndex(trimmed, "/"); i >= 0 && trimmed[i+1:] != "" {
-		return trimmed[i+1:]
-	}
-	if trimmed == "" {
-		return repoOrPath
-	}
-	return trimmed
+	return trimmed[strings.LastIndex(trimmed, "/")+1:]
 }
 
 // artifactTable is one side of a pairing as a fetch or draft table: a

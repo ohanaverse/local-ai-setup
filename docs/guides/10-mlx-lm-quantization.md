@@ -74,7 +74,7 @@ id = "mlx_lm_server/<target-basename>+draft-<draft-basename>"
 family = "<existing-family>"
 provider_id = "mlx_lm_server"
 model_name = "<target-basename>+draft-<draft-basename>"
-location = "local"
+tags = []
 
 [models.fetch]                       # the target
 repo = "<org>/<target repo>"         # or: local_path = "/abs/path/to/target"
@@ -83,7 +83,7 @@ repo = "<org>/<target repo>"         # or: local_path = "/abs/path/to/target"
 repo = "<org>/<draft repo>"          # or: local_path = "/abs/path/to/draft"
 ```
 
-The id convention `<target-basename>+draft-<draft-basename>` is the one modelman's TUI used, so the pairing reads clearly in wt's picker. `wt model init` adds the `mlx_lm_server` provider row once a model references it; then `wt litellm sync`.
+The id convention `<target-basename>+draft-<draft-basename>` is the one modelman's TUI used, so the pairing reads clearly in wt's picker. The add also writes the `mlx_lm_server` provider row when the registry has none, in the same write, and syncs the LiteLLM routes itself.
 
 ### 4. Isolate and serve the pairing
 

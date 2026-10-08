@@ -133,7 +133,9 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 	fmt.Fprintf(out, "added model: %s\n", res.ID)
 	if req.Draft != "" {
 		// wt registers a pairing and has no engine to start one.
-		fmt.Fprintf(out, "start it with: %s\n", catalog.PairingStartCommand(req.ModelName, req.Draft))
+		// Trimmed as the row was written (planAdd), so the command names
+		// what the registry holds.
+		fmt.Fprintf(out, "start it with: %s\n", catalog.PairingStartCommand(strings.TrimSpace(req.ModelName), strings.TrimSpace(req.Draft)))
 	}
 	for _, p := range res.ProvidersAdded {
 		fmt.Fprintf(out, "added provider: %s\n", p)

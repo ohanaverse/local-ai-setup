@@ -126,8 +126,13 @@ An mlx_lm_server model is a target and a draft served together by
 `mlx_lm.server --draft-model`. `wt model add mlx_lm_server <target> --draft
 <draft> --family <family>` registers one: each side is a Hugging Face repo
 (`org/name`) or a local path (starting `/`, `~`, `./` or `../`), written to the
-row's `[models.fetch]` and `[models.draft]`. The id is
-`mlx_lm_server/<target>+draft-<draft>`, from the last segment of each.
+row's `[models.fetch]` and `[models.draft]`. Anything else is taken for a
+repo, a bare relative directory such as `out/Big-4bit` included, and a `./` or
+`../` path is stored as typed and so means a different directory from
+another working directory: give an absolute path or one under `~`. The id is
+`mlx_lm_server/<target>+draft-<draft>`, from the last segment of each; when
+that would not be a usable id (a directory name with a space in it), the add
+is refused and `--id mlx_lm_server/<name>` names it.
 
 A pairing is its two sides, not their names. The same target and draft
 again are refused, whatever `--id` says. A different pairing whose sides end
@@ -143,7 +148,8 @@ llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>
 ```
 
 (from the repository: `uv run --directory llmbench llmbench provider isolate
---solo …`; `--solo` leaves the other local providers running). A pairing is a
+--solo …`; `--solo` leaves the other local providers running; a path with a
+space in it is printed quoted, so the line can be pasted). A pairing is a
 row of `wt model list` and of the Models tab with `STATUS -`, since no probe
 can enumerate it; its family, tags and prices are edited like any model's,
 and the tab's form does not create one.

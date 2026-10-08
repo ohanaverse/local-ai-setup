@@ -7,6 +7,7 @@ package catalog
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -164,15 +165,35 @@ func listed(e localmodels.Entry) bool {
 // target+draft pairing beside the other local models: wt has no engine for
 // one, llmbench does. --solo is what keeps the other providers running. An
 // empty target or draft (a row with no fetch or draft table) is spelled as a
-// placeholder, so the hint still shows the command's shape.
+// placeholder, so the hint still shows the command's shape. A side a shell
+// would split or expand — a local path with a space in it — is quoted, so
+// the line can be pasted; a repo id and an ordinary path are printed bare.
 func PairingStartCommand(target, draft string) string {
-	if target == "" {
-		target = "<target>"
+	side := func(s, placeholder string) string {
+		if s == "" {
+			return placeholder
+		}
+		return shellArg(s)
 	}
-	if draft == "" {
-		draft = "<draft>"
+	return "llmbench provider isolate --solo mlx_lm_server " + side(target, "<target>") + " --draft " + side(draft, "<draft>")
+}
+
+// shellArg spells s as one word of a POSIX shell command line. A word made
+// only of characters no shell treats specially is returned as it is.
+// Anything else is single-quoted, with a leading "~/" left outside the
+// quotes so the shell still expands it.
+func shellArg(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r)
 	}
-	return "llmbench provider isolate --solo mlx_lm_server " + target + " --draft " + draft
+	home, rest := "", s
+	if strings.HasPrefix(s, "~/") {
+		home, rest = "~/", s[2:]
+	}
+	if s == "~" || !strings.ContainsFunc(rest, func(r rune) bool { return !plain(r) }) {
+		return s
+	}
+	return home + "'" + strings.ReplaceAll(rest, "'", `'\''`) + "'"
 }
 
 // notRunning is the one wording for a local model that is not running and

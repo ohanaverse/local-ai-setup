@@ -715,3 +715,51 @@ func TestPairingName(t *testing.T) {
 		}
 	}
 }
+
+// TestAddAPairingWhoseSidesMakeNoUsableID verifies a pairing whose derived
+// id would have a space in it, or an empty half, is refused with the way
+// round it, and goes in under --id. Every other derived id comes from a name
+// a provider lists; a pairing's comes from the last segment of a path the
+// user typed, and an id with a space cannot be given to `wt -M`, `wt model
+// edit` or `wt model rm` without quoting it everywhere for ever.
+func TestAddAPairingWhoseSidesMakeNoUsableID(t *testing.T) {
+	path := scratchRegistry(t, "")
+	var fe *FieldError
+	for _, c := range []struct{ target, draft string }{
+		{"~/my models/Big 4bit", "org/D"},
+		{"org/T", "/"},
+		{"///", "org/D"},
+	} {
+		req := AddRequest{ProviderID: "mlx_lm_server", ModelName: c.target, Draft: c.draft, Fields: Fields{Family: ptr("f")}}
+		err := CheckAdd(req)
+		if !errors.As(err, &fe) || fe.Field != FieldName || !strings.Contains(fe.Msg, "pass --id mlx_lm_server/<name>") {
+			t.Errorf("target %q, draft %q: err = %v, want a refusal on the name that says to pass --id", c.target, c.draft, err)
+		}
+		if _, err := Add(req, config.SeedEnv{}); err == nil {
+			t.Errorf("target %q, draft %q: Add took what CheckAdd refuses", c.target, c.draft)
+		}
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("a refused add created the registry")
+	}
+	res, err := Add(AddRequest{ProviderID: "mlx_lm_server", ModelName: "~/my models/Big 4bit", Draft: "org/D", ID: "mlx_lm_server/big",
+		Fields: Fields{Family: ptr("f")}}, config.SeedEnv{})
+	if err != nil || res.ID != "mlx_lm_server/big" {
+		t.Fatalf("with --id: %+v, %v; want it added", res, err)
+	}
+	if got := read(t, path); !strings.Contains(got, "[models.fetch]\nlocal_path = \"~/my models/Big 4bit\"\n") {
+		t.Errorf("the target's path was not written as typed:\n%s", got)
+	}
+}
+
+// TestLastSegment pins the half of a pairing's name a side gives: what
+// follows its last slash, a trailing slash set aside, and nothing for a side
+// that is only slashes (which planAdd then refuses, rather than naming a
+// model "/+draft-...").
+func TestLastSegment(t *testing.T) {
+	for in, want := range map[string]string{"org/Name": "Name", "/a/b/c/": "c", "Name": "Name", "~/x": "x", "/": "", "//": "", "": ""} {
+		if got := lastSegment(in); got != want {
+			t.Errorf("lastSegment(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
