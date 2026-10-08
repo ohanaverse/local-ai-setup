@@ -142,7 +142,7 @@ type PriceChange struct {
 	Before *Cost
 	After  Cost
 	// Changed is false when the prices already match. The model is still
-	// stamped: the stale-price notice reads the stamp.
+	// stamped, as modelman's refresh stamps every matched model.
 	Changed bool
 }
 

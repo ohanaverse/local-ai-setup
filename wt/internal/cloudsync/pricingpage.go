@@ -20,8 +20,15 @@ const PricingURL = "https://ollama.com/pricing"
 const MinRows = 5
 
 var (
+	// Cells reach these patterns already folded: collectTables splits each
+	// cell on runs of isSpace — a superset of Python's `\s`, so a non-breaking
+	// or thin space the page restyles a cell with is gone too — and rejoins it
+	// with one ASCII space. ASCII `\s` is therefore all that remains to match.
 	offpeakSuffix = regexp.MustCompile(`(?i)\s*\(\s*off[\s-]*peak\s*\)\s*$`)
-	priceCell     = regexp.MustCompile(`^\$\s*([0-9]+(?:\.[0-9]+)?)$`)
+	// [0-9], not Python's Unicode `\d`: strconv.ParseFloat reads ASCII digits
+	// only, so `$٣`, which modelman's float() reads as 3, warns here and keeps
+	// the old price instead.
+	priceCell = regexp.MustCompile(`^\$\s*([0-9]+(?:\.[0-9]+)?)$`)
 	// What an ollama model name looks like once the off-peak suffix is gone.
 	// A cell that does not match (spaces, parentheses, a footnote mark) means
 	// the page's wording changed: fail loudly instead of registering a junk
@@ -77,6 +84,51 @@ type Catalog struct {
 // Go's unicode.IsSpace plus the four ASCII separators U+001C to U+001F.
 func isSpace(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f) }
 
+// pyRepr quotes s as Python's repr does for the text this package prints:
+// single quotes, or double ones when the text holds a single quote and no
+// double, with the quote it picked and any backslash escaped. modelman writes
+// its warnings with `{cell!r}` and a plan is meant to read the same from
+// either tool.
+func pyRepr(s string) string {
+	quote := byte('\'')
+	if strings.Contains(s, "'") && !strings.Contains(s, `"`) {
+		quote = '"'
+	}
+	// A byte loop, not a rune one: Python leaves printable non-ASCII as it is
+	// and escapes only the quote and the backslash, which is what copying the
+	// bytes does.
+	var b strings.Builder
+	b.WriteByte(quote)
+	for i := 0; i < len(s); i++ {
+		if ch := s[i]; ch == quote || ch == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	b.WriteByte(quote)
+	return b.String()
+}
+
+// pyReprList formats a list of strings as Python's repr of a list of strings,
+// which is how modelman prints the header rows and the orphan rows it names.
+func pyReprList(items []string) string {
+	parts := make([]string, len(items))
+	for i, item := range items {
+		parts[i] = pyRepr(item)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// pyReprListOfLists is pyReprList one level deeper, for modelman's list of
+// header rows.
+func pyReprListOfLists(rows [][]string) string {
+	parts := make([]string, len(rows))
+	for i, row := range rows {
+		parts[i] = pyReprList(row)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
 // collectTables returns every <table> as a list of rows, each row a list of
 // cell texts with runs of whitespace folded to one space. It is the port of
 // modelman's _TableCollector, quirks included, so the two read a page the
@@ -125,7 +177,6 @@ func collectTables(page string) [][][]string {
 		case (tag == "td" || tag == "th") && inCell && inRow:
 			row = append(row, strings.Join(strings.FieldsFunc(cell.String(), isSpace), " "))
 			inCell = false
-		case tag == "td" || tag == "th":
 		case tag == "tr" && inRow && len(open) > 0:
 			if len(row) > 0 {
 				at := open[len(open)-1]
@@ -219,7 +270,7 @@ func ParsePricing(page string) (Catalog, error) {
 				headers = append(headers, table[0])
 			}
 		}
-		return Catalog{}, parseErrorf("no table has Model/Input/Cached/Output headers (found headers: %q)", headers)
+		return Catalog{}, parseErrorf("no table has Model/Input/Cached/Output headers (found headers: %s)", pyReprListOfLists(headers))
 	}
 	if len(rows) < MinRows {
 		return Catalog{}, parseErrorf("found %d model rows, expected at least %d", len(rows), MinRows)
@@ -240,7 +291,7 @@ func ParsePricing(page string) (Catalog, error) {
 			}
 		}
 		unrecognized++
-		warnings = append(warnings, fmt.Sprintf("%s: unrecognized price %q; existing price kept", where, cell))
+		warnings = append(warnings, fmt.Sprintf("%s: unrecognized price %s; existing price kept", where, pyRepr(cell)))
 		return nil, true
 	}
 
@@ -288,7 +339,7 @@ func ParsePricing(page string) (Catalog, error) {
 	}
 	if len(orphans) > 0 {
 		sort.Strings(orphans)
-		return Catalog{}, parseErrorf("off-peak rows with no base row: %q", orphans)
+		return Catalog{}, parseErrorf("off-peak rows with no base row: %s", pyReprList(orphans))
 	}
 	models := make([]CatalogModel, 0, len(order))
 	for _, name := range order {

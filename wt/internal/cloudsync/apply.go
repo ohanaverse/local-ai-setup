@@ -128,8 +128,13 @@ func (p *CatalogPlan) Apply(doc *config.RegistryDoc, pulled []string, now time.T
 		}); err != nil {
 			return CatalogApplied{}, err
 		}
-		// A new row has no cost yet; a clone has the one it was copied with.
-		set, unset := costPatch(rowCost(doc, a.ID), a.Cost)
+		// A new row has no cost table yet, so there is nothing to diff against;
+		// a clone has the one it was copied with.
+		var before *Cost
+		if a.CloneOf != "" {
+			before = rowCost(doc, a.ID)
+		}
+		set, unset := costPatch(before, a.Cost)
 		set[CatalogNameKey] = a.CatalogName
 		set["pricing_updated_at"] = stamp
 		if err := doc.PatchModel(a.ID, set, unset); err != nil {
@@ -180,10 +185,12 @@ type PricesApplied struct {
 }
 
 // Apply writes the plan's prices to doc and stamps every matched model with
-// now, changed or not: the stale-price notice reads the newest stamp, so a
-// refresh that found every price current must still leave its mark. A price
-// that did not change is not rewritten (config.RegistryDoc.PatchModel skips a
-// value that is already there), so an integer stays an integer. Like
+// now, changed or not, as modelman's refresh does: pricing_updated_at records
+// when each row's prices were last checked, the date modelman's model form
+// shows. (wt's stale-price notice reads modelman.toml's
+// price_refresh_last_run, which this flow does not touch.) A price that did
+// not change is not rewritten (config.RegistryDoc.PatchModel skips a value
+// that is already there), so an integer stays an integer. Like
 // CatalogPlan.Apply it is safe inside config.UpdateRegistry.
 func (p *PricePlan) Apply(doc *config.RegistryDoc, now time.Time) (PricesApplied, error) {
 	var done PricesApplied

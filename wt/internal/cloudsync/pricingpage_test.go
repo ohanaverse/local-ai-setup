@@ -142,7 +142,7 @@ func TestParsePricingFailsLoudly(t *testing.T) {
 	}
 	cases := []struct{ name, html, want string }{
 		{"no table", "<html><div>pricing moved</div></html>", "no <table>"},
-		{"a header renamed", page("<tr><th>Model</th><th>Prompt</th><th>Cached input</th><th>Output</th></tr>"), `"Prompt"`},
+		{"a header renamed", page("<tr><th>Model</th><th>Prompt</th><th>Cached input</th><th>Output</th></tr>"), `['Model', 'Prompt', 'Cached input', 'Output']`},
 		{"too few rows", "<table>" + pageHead + pageRow("a", "$1", "$1", "$1") + "</table>", "expected at least 5"},
 		{"off-peak row with no base row", page(pageHead, pageRow("ghost (Off-Peak)", "$1", "$1", "$1")), "no base row"},
 		{"the same model twice", page(pageHead, pageRow("m0", "$1", "$1", "$1")), "duplicate"},
@@ -181,8 +181,30 @@ func TestParsePricingUnknownCellWarns(t *testing.T) {
 	if zz.Name != "zz" || zz.Prices.Input != nil || zz.Prices.Unknown != (Unknown{Input: true}) {
 		t.Errorf("zz = %+v, want no input price, marked unknown", zz)
 	}
-	if want := []string{`zz input: unrecognized price "Free"; existing price kept`}; !reflect.DeepEqual(catalog.Warnings, want) {
+	// Single quotes: modelman prints the cell with Python's repr (`{cell!r}`),
+	// and the two tools' plans are meant to read the same.
+	if want := []string{`zz input: unrecognized price 'Free'; existing price kept`}; !reflect.DeepEqual(catalog.Warnings, want) {
 		t.Errorf("warnings = %q, want %q", catalog.Warnings, want)
+	}
+}
+
+// TestPyReprMatchesPythonsRepr pins the two branches of the quoting a plan's
+// warnings carry: a cell whose text holds an apostrophe is the one case
+// Python's repr switches to double quotes, and a plan that quoted it the
+// other way would read differently from modelman's for the same page.
+func TestPyReprMatchesPythonsRepr(t *testing.T) {
+	for in, want := range map[string]string{
+		"Free":            "'Free'",
+		"~$3/mo":          "'~$3/mo'",
+		`don't know`:      `"don't know"`,
+		`a ' and a " one`: `'a \' and a " one'`,
+	} {
+		if got := pyRepr(in); got != want {
+			t.Errorf("pyRepr(%q) = %s, want %s", in, got, want)
+		}
+	}
+	if got := pyReprList([]string{"a", "b"}); got != "['a', 'b']" {
+		t.Errorf("pyReprList = %s, want ['a', 'b']", got)
 	}
 }
 

@@ -179,8 +179,8 @@ func applyCatalog(t *testing.T, catalog Catalog, pulled []string, resolved map[s
 }
 
 // TestStamp pins the pricing_updated_at format to modelman's: UTC, whole
-// seconds, a numeric +00:00 offset. Both tools write the key and the
-// stale-price notice parses it, so a second spelling would be a second
+// seconds, a numeric +00:00 offset. Both tools write the key and modelman
+// reads it back into its model form, so a second spelling would be a second
 // format to read forever.
 func TestStamp(t *testing.T) {
 	if got := Stamp(applyNow); got != applyStamp {
@@ -367,9 +367,9 @@ location = "cloud"
 
 // TestPricesApplyStampsEveryMatchedModel runs a refresh through the real
 // registry writer. It pins that every matched model is stamped, including
-// one whose price did not move: the stale-price notice reads the newest
-// stamp, and a run that stamped only changed models would leave the notice
-// up after a refresh that found every price current. It also pins that a
+// one whose price did not move, as modelman's refresh stamps every matched
+// model: a run that stamped only the changed models would leave the check it
+// just made looking older than it is. It also pins that a
 // price that did not change is not rewritten (an integer stays an integer),
 // that a cost.time_prices row the user wrote comes through byte for byte
 // whether or not a price beside it moved (the prices flow owns no such row),
