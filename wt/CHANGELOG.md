@@ -70,10 +70,17 @@
   say what `wt start` and `wt stop` say: nothing more for a missing registry,
   `fix the link or move it aside` for a broken link, and `wt config` only for
   a problem in `config.toml`. Every command also stops sending a registry.toml
-  that does not parse to `wt config`: the hint is `fix that file by hand`,
-  which `wt model init` now adds too, for that and for a top-level key it
-  will not write. The `--family` note of `wt stats` follows the same rule and
-  no longer names `modelman migrate`.
+  that does not parse, cannot be read, or sits at a path wt cannot examine (a
+  file where its directory should be) to `wt config`: the hint is `fix that
+  file by hand`, which `wt model init` now adds too, for a registry it cannot
+  parse or read and for a top-level key it will not write. A provider or
+  model row that fails validation (an empty or repeated id, no `model_name`,
+  a model whose provider has no row, no location) gets `fix the entry in
+  <registry path>`, as a mistyped location already did, from `wt`, `wt
+  start`, `wt stop`, `wt smoke` and the `wt config` editor; the `model_name`
+  error no longer carries its own `(add model_name to this registry.toml
+  entry)` beside it. The `--family` note of `wt stats` follows the same rule
+  and no longer names `modelman migrate`.
 - A registry path that is a symlink to a file that is not there is reported
   as a broken link, naming the link and its target, instead of `model
   registry not found` (#248). An unconfigured agent no longer launches with no

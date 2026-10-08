@@ -17,7 +17,9 @@ import (
 // `wt config` to repair" for all of them — including a missing registry
 // (whose error already says `wt model init`) and a registry link that leads
 // nowhere, neither of which `wt config` can touch (#291). `wt config` edits
-// config.toml, so it is the answer for a config.toml problem and nothing else.
+// config.toml, so it is the answer for a config.toml problem and nothing else:
+// a provider or model row that fails validation is registry.toml's, and so is
+// a registry path wt cannot even stat.
 func TestLoadFixHint(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
@@ -73,6 +75,42 @@ func TestLoadFixHint(t *testing.T) {
 	}
 	_, topLevel := newRegistryDoc(root)
 
+	// first is Validate's error for a config whose only problem is in the
+	// given registry rows (or, for the agent case, in config.toml).
+	first := func(t *testing.T, c Config) error {
+		t.Helper()
+		c.DefaultTag = "code"
+		err := c.Validate()
+		if err == nil {
+			t.Fatal("Validate accepted a broken fixture")
+		}
+		return err
+	}
+	local := Provider{ID: "omlx", Location: LocationLocal}
+	noModelName := first(t, Config{Providers: []Provider{local}, Models: []Model{{ID: "omlx/m", ProviderID: "omlx"}}})
+	unknownProvider := first(t, Config{Models: []Model{{ID: "ghost/m", ProviderID: "ghost", ModelName: "m"}}})
+	dupModel := first(t, Config{Providers: []Provider{local}, Models: []Model{
+		{ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}, {ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}}})
+	dupProvider := first(t, Config{Providers: []Provider{local, local}})
+	emptyProviderID := first(t, Config{Providers: []Provider{{Location: LocationLocal}}})
+	emptyModelID := first(t, Config{Providers: []Provider{local}, Models: []Model{{ProviderID: "omlx", ModelName: "m"}}})
+	noLocation := first(t, Config{Providers: []Provider{{ID: "omlx"}}, Models: []Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}}})
+	agentProvider := first(t, Config{Agents: []Agent{{Name: "pi", SupportedProviders: []string{"ghost"}}}})
+
+	// The registry's directory is a regular file: lstat fails, and not with
+	// "no such file".
+	os.Remove(registry)
+	os.Remove(cfgFile)
+	os.Remove(filepath.Dir(registry))
+	if err := os.WriteFile(filepath.Dir(registry), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, cannotStat := Load()
+	if cannotStat == nil {
+		t.Fatal("Load succeeded with a file where the registry's directory should be")
+	}
+	const entry = "fix the entry in "
+
 	cases := []struct {
 		name string
 		err  error
@@ -84,7 +122,16 @@ func TestLoadFixHint(t *testing.T) {
 		{"dangling registry link", link, ErrRegistryLink, "fix the link or move it aside"},
 		{"registry parse error", registryParse, ErrRegistryFile, byHand},
 		{"unknown top-level key", topLevel, ErrRegistryTopLevel, byHand},
-		{"mistyped location", location, ErrLocation, "fix the entry in " + registry},
+		{"registry path that cannot be examined", cannotStat, ErrRegistryFile, byHand},
+		{"mistyped location", location, ErrLocation, entry + registry},
+		{"model without model_name", noModelName, ErrRegistryEntry, entry + registry},
+		{"model with an unknown provider", unknownProvider, ErrRegistryEntry, entry + registry},
+		{"duplicate model id", dupModel, ErrRegistryEntry, entry + registry},
+		{"duplicate provider id", dupProvider, ErrRegistryEntry, entry + registry},
+		{"provider with an empty id", emptyProviderID, ErrRegistryEntry, entry + registry},
+		{"model with an empty id", emptyModelID, ErrRegistryEntry, entry + registry},
+		{"model with no location", noLocation, ErrRegistryEntry, entry + registry},
+		{"agent with an unknown provider (config.toml)", agentProvider, nil, wtConfig},
 		{"config.toml parse error", cfgParse, nil, wtConfig},
 		{"config.toml validation error", errors.New("default_tag must not be empty"), nil, wtConfig},
 	}
@@ -112,6 +159,18 @@ func TestLoadFixHint(t *testing.T) {
 	}
 	if errors.Is(cfgParse, ErrRegistryFile) {
 		t.Errorf("a config.toml parse error (%v) is marked as a registry file error", cfgParse)
+	}
+	if got, want := cannotStat.Error(), "lstat "+registry+": not a directory"; got != want {
+		t.Errorf("stat error = %q, want %q", got, want)
+	}
+	// One error names one place: the hint says where the entry is, so the
+	// text must not name the file as well (it used to, and then got
+	// `wt config` appended after it).
+	if got, want := noModelName.Error(), `model "omlx/m": model_name is required`; got != want {
+		t.Errorf("model_name error = %q, want %q", got, want)
+	}
+	if errors.Is(agentProvider, ErrRegistryEntry) {
+		t.Errorf("an agent error (%v) is marked as a registry entry error: agents are config.toml's", agentProvider)
 	}
 }
 

@@ -98,8 +98,10 @@ func ExpandHome(path string) (string, error) { return expandHome(path) }
 // which would shadow the real registry when its target comes back (#248).
 var ErrRegistryLink = errors.New("registry link is broken")
 
-// ErrRegistryFile marks an error about the registry file's own bytes: it is
-// there, and wt cannot read it or it is not TOML. The repair is a hand edit
+// ErrRegistryFile marks an error about the registry file itself: wt cannot
+// examine its path (lstat fails for a reason other than absence), cannot
+// read it, or it is not TOML. The reader (loadRegistry) and the writer
+// (UpdateRegistry) mark the same failures. The repair is a hand edit
 // of that file — `wt config` edits config.toml and cannot help — and
 // RegistryFixHint says so. The marked error's text is unchanged; it names
 // the file.
@@ -156,6 +158,9 @@ func brokenLinkAbove(path string) error {
 //     writer renames onto the real file and the link survives.
 //   - a symlink that leads nowhere: ErrRegistryLink, naming the link and what
 //     it points at.
+//   - a path that cannot be examined at all (a regular file where its
+//     directory should be, no permission to search the directory):
+//     ErrRegistryFile, with the system's error text.
 func resolveRegistryFile(path string) (target string, exists bool, err error) {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -165,7 +170,10 @@ func resolveRegistryFile(path string) (target string, exists bool, err error) {
 		return path, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		// Something is in the way of the path (a file where the registry's
+		// directory should be, a directory wt may not search). Not a
+		// config.toml problem, so it is marked; the error names the path.
+		return "", false, registryFileError(err)
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		return path, true, nil

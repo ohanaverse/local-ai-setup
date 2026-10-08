@@ -275,3 +275,35 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 		t.Error("expected error status after failed save")
 	}
 }
+
+// TestSave_RegistryRowErrorNamesTheRegistry pins what a refused save says
+// when the problem is a registry row. This editor writes config.toml; a model
+// with no model_name is in registry.toml, and the save status is the last
+// thing the user reads before trying to fix it here. It carries the hint
+// every refusing command gives for the same error (#291), and a config.toml
+// problem keeps its own wording with no hint.
+func TestSave_RegistryRowErrorNamesTheRegistry(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	m := newModel(testTheme(), &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
+		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx"}},
+	}, nil)
+	m.dirty = true
+	got, cmd := m.handleSave()
+	if cmd != nil {
+		t.Fatal("a config that fails validation was saved")
+	}
+	const want = `validation: model "omlx/m": model_name is required (fix the entry in /tmp/somewhere/registry.toml)`
+	if status := got.(*model).status; status != want {
+		t.Errorf("status = %q, want %q", status, want)
+	}
+
+	m = newModel(testTheme(), &config.Config{}, nil)
+	m.dirty = true
+	got, _ = m.handleSave()
+	if status := got.(*model).status; status != "validation: default_tag must not be empty" {
+		t.Errorf("a config.toml problem's status = %q, want it with no registry hint", status)
+	}
+}

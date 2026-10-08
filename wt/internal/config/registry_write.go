@@ -73,11 +73,12 @@ func UpdateRegistry(apply func(*RegistryDoc) error) (changed bool, err error) {
 			return false, err
 		}
 	}
-	// Also before the lock: under a directory link that leads nowhere the
-	// lock file cannot be created, and that failure names neither the link
-	// nor its target. The locked read below asks again, for a link that
-	// breaks in between.
-	if _, _, err := resolveRegistryFile(path); errors.Is(err, ErrRegistryLink) {
+	// Also before the lock: under a directory link that leads nowhere, or a
+	// path that cannot be examined (a file where the directory should be),
+	// the lock file cannot be created, and that failure names neither the
+	// link and its target nor the registry. The locked read below asks
+	// again, for a path that breaks in between.
+	if _, _, err := resolveRegistryFile(path); err != nil {
 		return false, err
 	}
 	err = withFileLock(path+".lock", func() error {
@@ -98,7 +99,8 @@ func UpdateRegistry(apply func(*RegistryDoc) error) (changed bool, err error) {
 }
 
 // readRegistryFile resolves and reads the registry: the file to write, its
-// bytes, and whether it exists. A missing file reads as no bytes.
+// bytes, and whether it exists. A missing file reads as no bytes. A file that
+// is there and cannot be read is ErrRegistryFile, as it is for loadRegistry.
 func readRegistryFile(path string) (target string, data []byte, exists bool, err error) {
 	target, exists, err = resolveRegistryFile(path)
 	if err != nil || !exists {
@@ -108,7 +110,10 @@ func readRegistryFile(path string) (target string, data []byte, exists bool, err
 	if os.IsNotExist(err) {
 		return target, nil, false, nil
 	}
-	return target, data, err == nil, err
+	if err != nil {
+		return target, nil, false, registryFileError(err)
+	}
+	return target, data, true, nil
 }
 
 // updateRegistryOnce is one attempt: steps 2 to 6 of UpdateRegistry. retry is
