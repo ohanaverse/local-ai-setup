@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"gopkg.in/yaml.v3"
@@ -428,11 +429,13 @@ func TestModelInitReportsABrokenRegistryLink(t *testing.T) {
 	}
 }
 
-// TestModelCommandGroup pins the `wt model` group as cobra serves it in this
-// step: `wt model init` runs with no registry (the case it exists for — the
-// root command would refuse on the same load error), bare `wt model` prints
-// help, an unknown word under it is an error rather than a worktree name, and
-// the removed `wt models` keeps its own message.
+// TestModelCommandGroup pins the `wt model` group as cobra serves it:
+// `wt model init` runs with no registry (the case it exists for — the root
+// command would refuse on the same load error), bare `wt model` opens the
+// editor on the Models tab (TestBareModelOpensTheModelsTab) and without a
+// terminal says which commands work without one, an unknown word under it is
+// an error rather than a worktree name, and the removed `wt models` keeps its
+// own message.
 func TestModelCommandGroup(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
@@ -452,9 +455,11 @@ func TestModelCommandGroup(t *testing.T) {
 	if err != nil || !strings.Contains(out, `"providers_added":["ollama"]`) {
 		t.Errorf("wt model init --json = %q, %v", out, err)
 	}
-	out, err = run("model")
-	if err != nil || !strings.Contains(out, "init") || !strings.Contains(out, "Manage the model registry") {
-		t.Errorf("bare `wt model` should print the group's help, got %q, %v", out, err)
+	oldTTY := stdinTTY
+	stdinTTY = func() bool { return false }
+	t.Cleanup(func() { stdinTTY = oldTTY })
+	if _, err = run("model"); err == nil || !strings.Contains(err.Error(), "wt model needs a terminal to open the Models tab") || !strings.Contains(err.Error(), "`wt model list`") {
+		t.Errorf("bare `wt model` with no terminal: err = %v, want it to name the commands that need none", err)
 	}
 	if _, err = run("model", "bogus"); err == nil || !strings.Contains(err.Error(), `unknown command "bogus" for "wt model"`) {
 		t.Errorf("wt model bogus: err = %v, want an unknown-command error", err)
@@ -476,5 +481,160 @@ func TestModelCommandGroup(t *testing.T) {
 func TestRegistryWriteGuardIsArmedHere(t *testing.T) {
 	if !config.RegistryWriteGuardArmed() {
 		t.Fatal("registry write guard is not armed: TestMain must call config.IsolateConfigHomeForTest")
+	}
+}
+
+// TestBareModelOpensTheModelsTab verifies bare `wt model`, on a terminal,
+// opens the config editor on its Models tab and hands it this package's own
+// seams for the probe, the seeding environment and the ollama lookup — so the
+// tab reaches the machine the same way the commands do, and a test of either
+// can stand in for both.
+func TestBareModelOpensTheModelsTab(t *testing.T) {
+	modelHome(t, writeRegistry)
+	oldTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	t.Cleanup(func() { stdinTTY = oldTTY })
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
+	syncs := stubRouteSync(t, "")
+	if _, err := runWT(t, "model"); err != nil {
+		t.Fatal(err)
+	}
+	if !call.called || call.opts.StartTab != configeditor.TabModels {
+		t.Fatalf("called = %v, start tab = %d; want the editor opened on the Models tab", call.called, call.opts.StartTab)
+	}
+	d := call.opts.Models
+	if d.Probe == nil || d.SeedEnv == nil || d.Capabilities == nil {
+		t.Errorf("the tab was not given cmd/wt's seams: %+v", d)
+	}
+	if *syncs != 0 {
+		t.Errorf("syncs = %d with nothing changed, want 0", *syncs)
+	}
+}
+
+// TestEditorSyncsRoutesOnceOnExit verifies the Models tab's one route sync:
+// it runs once after the editor closes, only when the tab wrote the registry,
+// a sync warning is printed, and it still runs when the editor ended with an
+// error — the registry write already happened. Per-change syncs would restart
+// the proxy once for every model added in a sitting.
+func TestEditorSyncsRoutesOnceOnExit(t *testing.T) {
+	modelHome(t, writeRegistry)
+	oldTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	t.Cleanup(func() { stdinTTY = oldTTY })
+
+	for _, args := range [][]string{{"model"}, {"config"}} {
+		stubConfigEditor(t, configeditor.Result{}, nil)
+		syncs := stubRouteSync(t, "")
+		if _, err := runWT(t, args...); err != nil || *syncs != 0 {
+			t.Errorf("wt %s, nothing changed: err = %v, syncs = %d; want no sync", args[0], err, *syncs)
+		}
+		stubConfigEditor(t, configeditor.Result{RegistryChanged: true}, nil)
+		syncs = stubRouteSync(t, "LiteLLM routes not synced: proxy config is read-only")
+		out, err := runWT(t, args...)
+		if err != nil || *syncs != 1 || !strings.Contains(out, "warning: LiteLLM routes not synced: proxy config is read-only") {
+			t.Errorf("wt %s, registry changed: err = %v, syncs = %d, out = %q; want one sync and its warning", args[0], err, *syncs, out)
+		}
+	}
+
+	stubConfigEditor(t, configeditor.Result{RegistryChanged: true}, errors.New("terminal went away"))
+	syncs := stubRouteSync(t, "")
+	if _, err := runWT(t, "model"); err == nil || *syncs != 1 {
+		t.Errorf("editor failed after a write: err = %v, syncs = %d; want the error and still one sync", err, *syncs)
+	}
+}
+
+// TestEditorExitSyncUnderARedirectedRegistry is the scratch-registry safety
+// test for the two commands that open the editor, `wt model` and `wt config`:
+// the Models tab writes the registry, and the sync that follows on exit obeys
+// the same rule as `wt model add`. LiteLLM's config.yaml follows neither
+// registry variable, so with the registry redirected and config.yaml not
+// named, the default file is not touched and the user is told why; named,
+// that file is the one synced. The exit status is 0 either way: the registry
+// change was made.
+func TestEditorExitSyncUnderARedirectedRegistry(t *testing.T) {
+	setup := func(t *testing.T) (registry, defaultYAML string) {
+		registry, defaultYAML = redirectedRegistry(t, writeRegistry)
+		oldTTY := stdinTTY
+		stdinTTY = func() bool { return true }
+		t.Cleanup(func() { stdinTTY = oldTTY })
+		// The editor itself needs a terminal; what it reports is a registry
+		// its Models tab wrote.
+		stubConfigEditor(t, configeditor.Result{RegistryChanged: true}, nil)
+		return registry, defaultYAML
+	}
+	for _, command := range []string{"model", "config"} {
+		t.Run("wt "+command+": config.yaml not named", func(t *testing.T) {
+			registry, defaultYAML := setup(t)
+			out, err := runWT(t, command)
+			if err != nil {
+				t.Fatalf("the registry was written, so the command must exit 0: %v", err)
+			}
+			want := "warning: LiteLLM routes not touched: the registry is " + registry +
+				" but config.yaml is the default " + defaultYAML +
+				" — set WT_LITELLM_CONFIG to the config.yaml that registry belongs to\n"
+			if out != want {
+				t.Errorf("output = %q\nwant %q", out, want)
+			}
+			if got := mustRead(t, defaultYAML); got != "model_list: []\n" {
+				t.Errorf("the default config.yaml was touched:\n%s", got)
+			}
+		})
+		t.Run("wt "+command+": config.yaml named", func(t *testing.T) {
+			_, defaultYAML := setup(t)
+			scratchYAML := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(scratchYAML, []byte("model_list: []\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("WT_LITELLM_CONFIG", scratchYAML)
+			out, err := runWT(t, command)
+			if err != nil || strings.Contains(out, "warning") {
+				t.Fatalf("wt %s = %q, %v; want a clean sync", command, out, err)
+			}
+			if got := mustRead(t, scratchYAML); !strings.Contains(got, "openrouter/a--b") {
+				t.Errorf("the named config.yaml was not synced:\n%s", got)
+			}
+			if got := mustRead(t, defaultYAML); got != "model_list: []\n" {
+				t.Errorf("the default config.yaml was touched:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestRouteSyncThatChangesNothingDoesNotRestartTheProxy is the requirement
+// the exit sync rests on: a sync that leaves config.yaml byte-identical does
+// not restart the LiteLLM proxy. The first sync here writes the registry's
+// cloud route and restarts once; the second finds nothing to change, leaves
+// the file's bytes alone and runs no restart command. Without this, opening
+// the Models tab and renaming a family would bounce the proxy under every
+// running agent.
+func TestRouteSyncThatChangesNothingDoesNotRestartTheProxy(t *testing.T) {
+	modelHome(t, writeRegistry)
+	t.Setenv("OPENROUTER_API_KEY", "sk-test-not-a-key")
+	yaml := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(yaml, []byte("model_list: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	realRouteSync(t)
+	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	t.Setenv("WT_LITELLM_CONFIG", yaml)
+	restarts := filepath.Join(t.TempDir(), "restarts")
+	t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
+
+	var out, errOut bytes.Buffer
+	if w := syncRoutesAfterWrite(&out, &errOut); w != "" {
+		t.Fatalf("first sync: %s", w)
+	}
+	first := mustRead(t, yaml)
+	if !strings.Contains(first, "openrouter/a--b") || mustRead(t, restarts) != "restart\n" {
+		t.Fatalf("the first sync should write the cloud route and restart once; restarts = %q, config.yaml:\n%s", mustRead(t, restarts), first)
+	}
+	if w := syncRoutesAfterWrite(&out, &errOut); w != "" {
+		t.Fatalf("second sync: %s", w)
+	}
+	if mustRead(t, yaml) != first {
+		t.Error("a sync with nothing to change rewrote config.yaml")
+	}
+	if got := mustRead(t, restarts); got != "restart\n" {
+		t.Errorf("restarts = %q after a sync that changed nothing, want still one", got)
 	}
 }

@@ -12,6 +12,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/charmbracelet/lipgloss"
@@ -23,29 +24,47 @@ import (
 
 // configeditorRun is the entry point for the config viewer TUI. It is a
 // package-level var so tests can verify it is called without needing a TTY.
-var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
-	// The editor's options and its result are not used yet: `wt config`
-	// opens on the Agents tab, and the route sync a change on the Models tab
-	// is owed waits for the next `wt start`, `wt stop` or `wt litellm sync`.
-	_, err := configeditor.Run(theme, cfg, cfgErr, configeditor.Options{})
+var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error, o configeditor.Options) (configeditor.Result, error) {
+	return configeditor.Run(theme, cfg, cfgErr, o)
+}
+
+// runConfigEditor opens the editor on tab start and, when its Models tab
+// wrote the registry, runs the one LiteLLM route sync that tab owes: the tab
+// does not sync per change, so that a run of edits costs one proxy restart.
+// The sync runs even when the editor ended with an error, because the write
+// already happened; if wt dies before it, the next `wt start`, `wt stop` or
+// launch through LiteLLM repairs the routes.
+func runConfigEditor(out, errOut io.Writer, a *app, start configeditor.Tab) error {
+	res, err := configeditorRun(a.theme, a.cfg, a.cfgErr, configeditor.Options{
+		StartTab: start,
+		Models:   configeditor.ModelsDeps{Probe: probeInventory, SeedEnv: seedEnv, Capabilities: ollamaCaps},
+	})
+	if res.RegistryChanged {
+		if w := syncRoutesAfterWrite(out, errOut); w != "" {
+			fmt.Fprintf(errOut, "warning: %s\n", w)
+		}
+	}
 	return err
 }
 
 // configCmd returns the `wt config` command. With no subcommand, launches
-// an interactive TUI for viewing and editing agents in config.toml.
+// the interactive editor: agents in config.toml, models in registry.toml.
 // Subcommands configure specific concerns without entering the TUI.
 func configCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Manage wt preferences and config.toml",
 		Long: "Manage wt user preferences.\n\n" +
-			"With no subcommand, launches an interactive TUI to view and edit\n" +
-			"agents in config.toml.\n\n" +
+			"With no subcommand, launches an interactive TUI with two tabs (tab\n" +
+			"switches): Agents, the agents in config.toml, saved with ctrl+s; and\n" +
+			"Models, the models in registry.toml, where each change is written at\n" +
+			"once and the LiteLLM routes are synced when you quit. `wt model` opens\n" +
+			"it on the Models tab.\n\n" +
 			"Subcommands:\n" +
 			"  theme   active color theme\n" +
 			"  path    print the config directory",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return configeditorRun(a.theme, a.cfg, a.cfgErr)
+			return runConfigEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), a, configeditor.TabAgents)
 		},
 	}
 	cmd.AddCommand(configPathCmd(a), configThemeCmd(a))

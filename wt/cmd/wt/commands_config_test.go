@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -56,17 +57,33 @@ func newTestApp(t *testing.T) (*app, string) {
 	return a, tmp
 }
 
+// editorCall records one run of the config editor.
+type editorCall struct {
+	called bool
+	cfg    *config.Config
+	cfgErr error
+	opts   configeditor.Options
+}
+
+// stubConfigEditor replaces the editor (which needs a terminal) with one that
+// records how it was opened and returns res and err.
+func stubConfigEditor(t *testing.T, res configeditor.Result, err error) *editorCall {
+	t.Helper()
+	call := &editorCall{}
+	old := configeditorRun
+	configeditorRun = func(_ themes.Theme, cfg *config.Config, cfgErr error, o configeditor.Options) (configeditor.Result, error) {
+		*call = editorCall{called: true, cfg: cfg, cfgErr: cfgErr, opts: o}
+		return res, err
+	}
+	t.Cleanup(func() { configeditorRun = old })
+	return call
+}
+
 // TestConfigCmd_NoSubcommand_LaunchesEditor: wt config with no args now
 // launches the config editor TUI. We stub configeditorRun to avoid the
 // TTY requirement in tests.
 func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
-	called := false
-	old := configeditorRun
-	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
-		called = true
-		return nil
-	}
-	defer func() { configeditorRun = old }()
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
 
 	a, _ := newTestApp(t)
 	cmd := configCmd(a)
@@ -76,8 +93,11 @@ func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !called {
+	if !call.called {
 		t.Fatal("expected configeditorRun to be called")
+	}
+	if call.opts.StartTab != configeditor.TabAgents {
+		t.Errorf("wt config opened on tab %d, want the Agents tab", call.opts.StartTab)
 	}
 }
 
@@ -85,15 +105,7 @@ func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
 // launches the repair TUI even when the loaded config has a validation
 // error. Without this, a broken config.toml would be a dead end.
 func TestConfigCmd_InvalidConfig_LaunchesEditor(t *testing.T) {
-	var passedCfg *config.Config
-	var passedErr error
-	old := configeditorRun
-	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
-		passedCfg = cfg
-		passedErr = cfgErr
-		return nil
-	}
-	defer func() { configeditorRun = old }()
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
 
 	a, _ := newTestApp(t)
 	a.cfgErr = fmt.Errorf("validation failed")
@@ -104,10 +116,10 @@ func TestConfigCmd_InvalidConfig_LaunchesEditor(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if passedCfg == nil {
+	if call.cfg == nil {
 		t.Fatal("expected configeditorRun to receive the config")
 	}
-	if passedErr == nil {
+	if call.cfgErr == nil {
 		t.Fatal("expected configeditorRun to receive the validation error")
 	}
 }

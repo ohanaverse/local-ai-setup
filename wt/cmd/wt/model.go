@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/spf13/cobra"
 )
@@ -49,15 +50,25 @@ func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 	return "LiteLLM routes not synced: " + err.Error()
 }
 
-// modelCmd is the `wt model` group: list (model_list.go), add, edit and rm
-// (model_write.go), and init, which creates the registry and seeds its
-// provider rows.
+// modelCmd is the `wt model` group: bare, it opens `wt config` on the Models
+// tab; list (model_list.go), add, edit and rm (model_write.go) and init, which
+// creates the registry and seeds its provider rows, work without a terminal.
 func modelCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "model",
 		Short: "Manage the model registry (registry.toml)",
-		Args:  cobra.NoArgs,
-		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		Long: "Manage the models in the registry.\n\n" +
+			"With no subcommand, opens `wt config` on its Models tab (needs a terminal).\n" +
+			"The subcommands do the same work without one.",
+		Args: cobra.NoArgs,
+		// A missing terminal is not a usage mistake.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !stdinTTY() {
+				return errors.New("wt model needs a terminal to open the Models tab; without one use `wt model list`, `wt model add`, `wt model edit` or `wt model rm`")
+			}
+			return runConfigEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), a, configeditor.TabModels)
+		},
 	}
 	var initJSON bool
 	initC := &cobra.Command{
