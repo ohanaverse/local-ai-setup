@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
@@ -79,6 +80,16 @@ type Entry struct {
 	// isn't there" — a transient probe failure would then hide a model that is
 	// pulled and launchable.
 	ArtifactKnown bool
+	// Path is where the artifact is on disk: the model's directory for omlx
+	// and mtplx. "" when the probe does not learn it: ollama keeps its
+	// models in a blob store with no per-model path, an mlx_lm_server pairing
+	// is never enumerated, a model that is not on disk has none, and neither
+	// has an omlx name found in more than one directory.
+	Path string
+	// Size is the artifact's size in bytes when the probe's own answer
+	// carries it: ollama's /api/tags. 0 means not known, never "empty": no
+	// directory is walked to fill it.
+	Size int64
 }
 
 // Snapshot is one inventory round. Providers is keyed by provider family
@@ -173,12 +184,14 @@ func RoutesFollowArtifact(family string) bool { return family == "ollama" }
 type source struct {
 	family     string
 	status     Status
-	artifacts  []string // discovered names, provider spelling (mtplx: repo id form)
-	loaded     []string // names serving right now
-	registered int      // local registry models in this family
-	down       bool     // the server refused the connection (nothing listening)
-	probeErr   error    // the probe failure, for a caller that shows the reason
-	pool       *Pool    // omlx only: the reading loaded came from
+	artifacts  []string          // discovered names, provider spelling (mtplx: repo id form)
+	loaded     []string          // names serving right now
+	paths      map[string]string // artifact -> its directory (omlx, mtplx)
+	sizes      map[string]int64  // artifact -> bytes (ollama)
+	registered int               // local registry models in this family
+	down       bool              // the server refused the connection (nothing listening)
+	probeErr   error             // the probe failure, for a caller that shows the reason
+	pool       *Pool             // omlx only: the reading loaded came from
 }
 
 func (s *source) matchArtifact(artifact, modelName string) bool {
@@ -352,13 +365,17 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 	origin := familyOrigin(cfg, family)
 	switch family {
 	case "ollama":
-		names, err := ollamaModelNames(context.Background(), client, origin+"/api/tags")
+		models, err := ollamaModels(context.Background(), client, origin+"/api/tags")
 		if err != nil {
 			s.status = StatusUnreachable
 			s.down = refused(err)
 			return s
 		}
-		s.artifacts = names
+		s.sizes = map[string]int64{}
+		for _, m := range models {
+			s.artifacts = append(s.artifacts, m.Name)
+			s.sizes[m.Name] = m.Size
+		}
 		// Same endpoint construction as the lifecycle re-probe's OllamaLoaded,
 		// so the two always describe the same server.
 		if loaded, err := OllamaLoaded(context.Background(), client, origin); err == nil {
@@ -414,21 +431,24 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			return s
 		}
 		// omlx discovers models two levels deep; mtplx's directory is flat.
-		scan := scanOmlxModels
+		var names []string
+		var paths map[string]string
 		if family == "mtplx" {
-			scan = scanModelDirs
+			var dirs []string
+			dirs, err = scanModelDirs(dir)
+			paths = map[string]string{}
+			for _, n := range dirs {
+				names = append(names, mtplxRepoID(n))
+				paths[mtplxRepoID(n)] = filepath.Join(dir, n)
+			}
+		} else {
+			names, paths, err = scanOmlxModelPaths(dir)
 		}
-		names, err := scan(dir)
 		if err != nil {
 			s.status = StatusUnreachable
 			return s
 		}
-		if family == "mtplx" {
-			for i, n := range names {
-				names[i] = mtplxRepoID(n)
-			}
-		}
-		s.artifacts = names
+		s.artifacts, s.paths = names, paths
 	case "mlx_lm_server":
 		// Running state only: a target+draft pairing cannot be enumerated
 		// (knowsArtifacts stays false), but /v1/models still says whether the
@@ -520,6 +540,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				if !consumed[key] && src.matchArtifact(a, m.ModelName) {
 					consumed[key] = true
 					e.Artifact = a
+					e.Path, e.Size = src.paths[a], src.sizes[a]
 					break
 				}
 			}
@@ -571,6 +592,8 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				Running:       running,
 				Loading:       running && src.isLoading(a),
 				ArtifactKnown: true,
+				Path:          src.paths[a],
+				Size:          src.sizes[a],
 			})
 		}
 	}
