@@ -170,6 +170,24 @@
 
 ### Changed
 
+- **Breaking:** wt no longer reads `~/.config/local-ai/modelman.toml`. Its
+  `[litellm]` table was a fallback for routing state (on/off, proxy URL, API
+  key); wt has kept that state in its own `~/.config/agent-wt/config.toml`
+  since 2026-09-21, and copied the old table there the first time it ran
+  with a `config.toml` that had none. A machine where that copy was made is
+  unaffected. On a machine that has no `config.toml`, or where wt has not
+  run since that date, routing now reads as off and unset
+  (`wt litellm status`), agents dial providers directly, and a launch that
+  needs the proxy (codex, always) stops with `litellm routing is required
+  for this model but no URL is configured`. Nothing warns about it. To
+  restore it, take the URL and key from the `[litellm]` table of the old
+  file and run `wt litellm set --url <url> --api-key <key>`, then
+  `wt litellm on`; both write `config.toml` (0600), creating it if needed.
+  If wt then stops with `config error: agent "agy": unknown provider "agy"`,
+  run `wt model init`: the restore created `config.toml`, and that command
+  adds the provider row it needs to `registry.toml`.
+  A malformed or unreadable `modelman.toml` no longer stops every wt command
+  with `parse modelman.toml: …`.
 - The stale-pricing notice wt prints after a launch takes its date from
   `registry.toml`: the newest `pricing_updated_at` among the models priced by
   OpenRouter. It now speaks when that is more than 7 days old, or when no

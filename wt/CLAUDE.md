@@ -165,7 +165,7 @@ Read [docs/internals/config-and-registry.md](docs/internals/config-and-registry.
 
 ## LiteLLM routing state (wt-owned)
 
-The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides whether non-native models route through the proxy (`Config.IsLitellm()`) or dial providers directly (`Config.IsDirect()`). `modelman.toml`'s `[litellm]` is a legacy read-only fallback, copied in once. Toggling is routing policy only — it never touches the proxy, which reads `config.yaml` only at startup ([docs/wt-agents/README.md#litellm-proxy-lifecycle](docs/wt-agents/README.md#litellm-proxy-lifecycle)). Details: [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#litellm-routing-state-wt-owned).
+The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides whether non-native models route through the proxy (`Config.IsLitellm()`) or dial providers directly (`Config.IsDirect()`). It is set with `wt litellm status|on|off|set` and read from nowhere else. Toggling is routing policy only — it never touches the proxy, which reads `config.yaml` only at startup ([docs/wt-agents/README.md#litellm-proxy-lifecycle](docs/wt-agents/README.md#litellm-proxy-lifecycle)). Details: [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#litellm-routing-state-wt-owned).
 
 ## Registry
 

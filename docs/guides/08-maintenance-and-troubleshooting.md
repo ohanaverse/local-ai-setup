@@ -45,6 +45,7 @@ Reading it fast:
 - Ollama row has no PID (`-`) and no LaunchAgent plist exists for it — the `com.ollama.ollama` login item (Ollama.app) owns the daemon; the `application.com.electron.ollama.*` row appears only while the app window is open.
 - Any line that differs → §1 for restart mechanics, §3 for logs.
 - Looking for a `modelman` command? §6 has the `wt` or `llmbench` command for each.
+- Cleaning up after modelman? §7 lists the files it left and what to check first.
 
 ## Steps
 
@@ -444,6 +445,103 @@ name. `MODELMAN_BENCHMARK_WORKLOAD` and `MODELMAN_AGENT_DEBUG` still work in
 llmbench, after `LLMBENCH_WORKLOAD` and `LLMBENCH_AGENT_DEBUG`. No other
 `MODELMAN_*` variable is read by anything.
 
+### 7. Files modelman left behind
+
+Nothing reads these any more: neither `wt` nor `llmbench` opens any of them,
+and wt never deletes them. Remove them by hand when you are ready. **Some of
+them hold a secret:** do not `cat` them in a shared terminal or paste them
+into an issue.
+
+| File | Holds a secret? | What it was |
+|---|---|---|
+| `~/.config/local-ai/modelman.toml` | **Yes** — its `[litellm]` table has the LiteLLM API key | modelman's per-machine state |
+| copies of it that you or an old runbook made (`modelman.toml.bak-*`, or any other name) | **Yes**, the same key | hand-made backups; modelman never wrote one, so check each name before deleting |
+| `.modelman.toml.*.tmp` (the name starts with a dot) | **Yes**, the same key | left by a modelman write that crashed; usually absent |
+| `~/.config/local-ai/config.yaml` — modelman's legacy file, **not** LiteLLM's `~/.config/litellm/config.yaml` | Check: `grep -c -i 'api_key\|secret' ~/.config/local-ai/config.yaml` (a number above 0 means treat it as one) | provider types from before `registry.toml` |
+| `~/.config/local-ai/settings.yaml` | No | the TUI's theme |
+| `~/.config/local-ai/families/` | No | per-family variants and download markers from before `registry.toml` |
+| `.registry.toml.*.tmp` (the name starts with a dot) | No | left by a modelman write of the registry that crashed; usually absent |
+
+**Leave these alone**, in the same directory, because they are in use:
+
+- `registry.toml` — the model list wt and llmbench read.
+- `registry.toml.lock` — the lock wt takes before it writes the registry.
+- `registry.toml.<random>.tmp`, with **no** leading dot — a wt write in
+  progress.
+- `benchmarks/` and everything in it, `benchmarks/latest.toml` included —
+  llmbench's results and its latest-run pointers.
+
+**Where the files are.** The paths above are the defaults. If you ran
+modelman with `XDG_CONFIG_HOME` set, `modelman.toml` (and `registry.toml`)
+are under `$XDG_CONFIG_HOME/local-ai/` instead, while `settings.yaml`,
+`config.yaml`, `families/` and `benchmarks/` stay under `~/.config/local-ai/`.
+A `MODELMAN_STATE` export in your shell profile named yet another place for
+`modelman.toml`: look there too, then delete the export. Nothing reads that
+variable now, llmbench included.
+
+Before deleting anything, three checks:
+
+```bash
+ls ~/.config/local-ai/registry.toml             # the model list wt uses
+wt litellm status                               # routing state wt holds in its own config.toml
+ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
+```
+
+- **No `registry.toml`** (a machine that never ran `modelman migrate`):
+  modelman's `config.yaml` and `families/` are the only record of your
+  models, and nothing imports them any more. Read the model names out of
+  them and add each with `wt model add`
+  ([02-providers-and-models](02-providers-and-models.md) Step 1) before you
+  delete the two.
+- **`wt litellm status` prints `litellm: off` with `url: (unset)`, and you do
+  route through LiteLLM:** wt has no copy of the routing state. wt used to
+  read the `[litellm]` table of `modelman.toml` as a fallback, and copied it
+  into `~/.config/agent-wt/config.toml` the first time it ran, on or after
+  2026-09-21, with a `config.toml` that had no `[litellm]` table. A machine
+  with no `config.toml`, or one where wt has not run since that date, never
+  got the copy, and wt no longer reads the old file. Until you restore the
+  state, agents dial their providers directly (nothing is logged by the
+  proxy), and a launch that needs the proxy (codex, always) stops with
+  `litellm routing is required for this model but no URL is configured`.
+  Take the URL and key from the `[litellm]` table of `modelman.toml` and run
+  `wt litellm set --url <url> --api-key <key>`, then `wt litellm on`. Both
+  write `config.toml` (mode 0600), creating it if it does not exist; run
+  `wt litellm status` again to see `litellm: on`. If wt then stops with
+  `config error: agent "agy": unknown provider "agy"`, run `wt model init`:
+  the restore created `config.toml`, and that command adds the provider row
+  it needs to `registry.toml`. The key is on the command
+  line, the only form wt offers, so it lands in your shell history: start
+  the line with a space if your shell is set to skip such lines
+  (`HISTCONTROL=ignorespace` in bash, `setopt HIST_IGNORE_SPACE` in zsh), or
+  remove the line from the history file afterwards.
+- **No `latest.toml`, and you want `--latest` to keep finding a run you made
+  through modelman:** llmbench no longer falls back to `modelman.toml`, so
+  `--latest` answers `error: no latest run recorded` (or `… agent run …`,
+  `… eval run …`). Copy the four keys of the old file's `[benchmarks]` table
+  (`last_run`, `last_run_dir`, `agent_last_run`, `eval_last_run`) into
+  `latest.toml` as top-level keys. The results themselves are untouched
+  either way, and a new run writes the file by itself.
+
+Then:
+
+```bash
+ls -la ~/.config/local-ai/        # see what is there first
+# modelman.toml moves with XDG_CONFIG_HOME — see "Where the files are" above
+rm "${XDG_CONFIG_HOME:-$HOME/.config}/local-ai/modelman.toml"   # the one holding the key
+rm ~/.config/local-ai/settings.yaml
+rm -r ~/.config/local-ai/families
+rm ~/.config/local-ai/config.yaml       # modelman's legacy file, after the check above
+```
+
+Delete each backup copy and each dot-prefixed `.tmp` file by its own name
+once you have read the listing; do not use a wildcard in this directory,
+which also holds `registry.toml`.
+
+In each checkout of this repo, `git pull` removes modelman's tracked files
+and leaves the untracked ones (`modelman/.venv`, caches). If
+`git ls-files modelman | wc -l` prints `0`, remove the directory:
+`rm -r modelman`.
+
 ## Verification
 
 Everything this guide promises reduces to the TL;DR block being green — no destructive simulation is needed to verify it, and none was used. On the healthy 2026-08-29 stack, the block's verbatim output is pasted in TL;DR above; re-running it must reproduce: `401` on :4000, `200` on the two backend ports, five launchd rows with live PIDs (Ollama's row legitimately shows `-`), `accepting connections`, `PONG`.
@@ -475,6 +573,7 @@ Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth
 - **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
 - **Upgrades recreate the LiteLLM tool env** — after `uv tool upgrade` (or a `--force` reinstall), redo it as `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'` and re-run `prisma generate` (guide 01 §1/§6), or the Postgres-backed UI/auth features die on the next kickstart with one of: `ModuleNotFoundError: No module named 'prisma'` (Prisma ships in the `extra-proxy` extra on LiteLLM ≥1.98, not `[proxy]`) or `Unable to find Prisma binaries. Please run 'prisma generate' first.` (unpinned Python — uv picked 3.14 on the 2026-09-30 rebuild, where the engines are missing; 3.11 is known-good). Both symptoms verified 2026-09-30.
 - **Redis crash-loops on `redisearch.so` on this machine (2026-09-30).** The module file is unreadable system-wide (`dlopen ... errno=1` in `/opt/homebrew/var/log/redis.log`), even source-built; the bottle pour itself can also `EPERM` on it during `brew install`/`upgrade`, so use `--build-from-source`. Fix applied in `/opt/homebrew/etc/redis.conf`: only the `redisearch.so` `loadmodule` line is commented out (RedisBloom/ReJSON/Timeseries load fine; original at `redis.conf.bak-original`). LiteLLM needs plain Redis only.
+- **`Registry file not found` from llmbench with `XDG_CONFIG_HOME` set.** With that variable set, llmbench used to fall back to a registry at `~/.config/local-ai/registry.toml`. It now looks only at `$XDG_CONFIG_HOME/local-ai/registry.toml`, the file wt names in that case, and says `Registry file not found: <that path>` when it is missing. Move the file there, or name it with `WT_REGISTRY`.
 - **`homebrew.mxcl.omlx.plist` is optional (2026-09-30 rebuild omitted it).** wt's and llmbench's lifecycle backends run `omlx start` on demand when an omlx model starts, and wt's live probes keep `omlx/*` routes out of `config.yaml` while it's down — `omlx none` in `brew services list` is the *healthy* state now, not something to fix. `brew services start omlx` only if you want oMLX always-on; remember KeepAlive then fights `omlx stop` during benchmark isolation.
 
 ## Going deeper

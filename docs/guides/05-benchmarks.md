@@ -135,7 +135,7 @@ error: no latest run recorded                             # never ran a benchmar
 error: results not found: /Users/keith/.config/local-ai/benchmarks/<run-id>/summary.md
 ```
 
-Latest-run pointer: after a run, `cli.py` writes `last_run` / `last_run_dir` into `~/.config/local-ai/benchmarks/latest.toml` (override: `LLMBENCH_LATEST`), beside the results. Until a run has completed there is no such file (`cat ~/.config/local-ai/benchmarks/latest.toml` fails) and `--latest` errors as shown above — unless modelman recorded a run earlier: while `latest.toml` is absent, the pointers are read from the `[benchmarks]` table of `~/.config/local-ai/modelman.toml`, and the next recorded run copies them into `latest.toml`. Gotcha: `--run-id` always resolves under the default dir even if you overrode `--results-dir` (hardcoded in `cli.py`); for custom-dir runs, open `summary.md` by hand.
+Latest-run pointer: after a run, `cli.py` writes `last_run` / `last_run_dir` into `~/.config/local-ai/benchmarks/latest.toml` (override: `LLMBENCH_LATEST`), beside the results. Until a run has completed there is no such file (`cat ~/.config/local-ai/benchmarks/latest.toml` fails) and `--latest` errors as shown above. A run recorded through the retired modelman is not found either; [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §7 says how to carry its pointers over. Gotcha: `--run-id` always resolves under the default dir even if you overrode `--results-dir` (hardcoded in `cli.py`); for custom-dir runs, open `summary.md` by hand.
 
 ### 5. Legacy scripts (superseded — kept for history)
 

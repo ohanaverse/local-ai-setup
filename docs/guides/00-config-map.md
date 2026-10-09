@@ -13,7 +13,7 @@ None — this is a reference doc, not a procedure.
 | File | Owner (writes) | Consumers | Purpose |
 |---|---|---|---|
 | `~/.config/local-ai/registry.toml` | `wt` (`wt model add\|edit\|rm` and the Models tab of `wt config`: models; `wt model init`: creates it, adds provider rows; `wt cloud-sync`: cloud prices and the ollama cloud entries), and you by hand for the few things wt has no command for | `wt` (source of the LiteLLM routes), `llmbench` (read-only) | Canonical providers + models |
-| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only: `[litellm]` only, as a legacy fallback — no per-model key, and not `price_refresh_last_run`) | Per-machine state: downloads, running hints, family display names (its `[litellm]` table is a legacy read-only fallback) |
+| `~/.config/local-ai/modelman.toml`, `settings.yaml`, `config.yaml`, `families/` | nobody | nothing | Left by modelman; safe to remove ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §7) |
 | `~/.config/local-ai/benchmarks/latest.toml` | `llmbench` | `llmbench` | Latest-run pointers behind `--latest`; the run directories sit beside it |
 | `~/.config/litellm/config.yaml` | `wt` (`wt litellm ...`), you by hand | LiteLLM proxy | `model_list`, general settings |
 | `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag, and the `[litellm]` routing state (enabled/url/api_key). (NO providers/models — those live in registry.toml) |
@@ -52,96 +52,14 @@ source = "discovered"
 tags = []
 ```
 
-### `~/.config/local-ai/modelman.toml`
+### Left on disk, read by nothing
 
-- **Owner:** `modelman` (written by `modelman sync` and by the local-model lifecycle, `modelman start`/`stop`; the `[litellm]` table is no longer written — `modelman litellm ...` passes through to wt).
-- **Consumers:** `modelman`, plus `wt` (read-only — it reads the legacy `[litellm]` table as a fallback for routing state wt has not migrated, and nothing else: not `price_refresh_last_run` (wt's stale-pricing notice takes its date from the `pricing_updated_at` stamps in `registry.toml`), and **no** `[model_state]` key, not even `ready`: what is on disk and what is running come from wt's own live probes (#179 Phase B). That read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
-- **Purpose:** per-machine state: ready/downloaded status, disk path, size, the `running` hint (modelman's start/stop intent, confirmed by a live probe whenever `wt` or modelman needs the truth), a legacy `[litellm]` routing table (modelman round-trips it verbatim; wt owns the live copy), and family display names.
-- **Env override:** `MODELMAN_STATE`.
-- **Benchmark pointers moved out.** The `[benchmarks]` table (`last_run`, `last_run_dir`, `agent_last_run`, `eval_last_run`) is no longer written. `llmbench` keeps those four keys in `~/.config/local-ai/benchmarks/latest.toml` (override: `LLMBENCH_LATEST`) and reads the old table only while that file does not exist yet.
-- **No exposure flag (#179).** `wt` derives the routes: every cloud model `registry.toml` configures, and a local model while it runs (for ollama, while it is pulled) — with or without a registry entry. A legacy pre-#179 `exposed`/`litellm_exposed` key is ignored by both tools — modelman drops it on the next save, so an older file self-cleans; never write one. The authoritative "is it routed" answer is `wt litellm list`. Routing decisions live in `wt/CLAUDE.md`'s "Local-model resolution" section — this guide does not repeat them.
-
-Count your own entries with:
-
-```bash
-grep -c '^\[model_state\.' ~/.config/local-ai/modelman.toml   # model_state entries
-grep -c '^running = true' ~/.config/local-ai/modelman.toml    # entries believed running
-```
-
-Each `[model_state."<id>"]` block has one of two shapes: a downloaded local model carries `ready = true` plus `disk_path`/`size_bytes`; a cloud model has no download, so it carries `ready = false` and is routed on its registry entry alone. The legacy `[litellm]` routing table, when present, sits at the top.
-
-Example (illustrative — your ids, sizes and flags will differ):
-
-```toml
-[litellm]
-enabled = true
-url = "http://localhost:4000"
-api_key = "sk-litellm-…"
-
-[model_state."ollama/qwen3.8:27b-mlx"]
-ready = true
-disk_path = "ollama:qwen3.8:27b-mlx"
-size_bytes = 19327352832
-running = false
-
-[model_state."ollama/kimi-k3:cloud"]
-ready = false
-
-[families.deepseek-v4]
-display_name = "deepseek-v4"
-```
-
-### `~/.config/local-ai/settings.yaml`
-
-- **Owner:** `modelman` (its TUI's preferences).
-- **Consumers:** modelman's TUI only — which is disabled, so nothing reads the file today.
-- **Purpose:** user preferences (theme).
-- **Env override:** `MODELMAN_SETTINGS`.
-
-```yaml
-theme: atom-one-light
-```
-
-### `~/.config/local-ai/config.yaml` (legacy)
-
-- **Owner:** you by hand, pre-modelman. modelman no longer reads it outside `modelman migrate`.
-- **Consumers:** `modelman migrate` (read-only input; imports providers into `registry.toml`).
-- **Purpose:** legacy provider types + paths. Superseded by `registry.toml` `[[providers]]`.
-- **Env override:** `MODELMAN_CONFIG`.
-
-```yaml
-providers:
-  ollama:
-    type: ollama
-  llamacpp:
-    type: llamacpp
-  omlx:
-    type: omlx
-    model_dir: ~/.omlx/models
-```
-
-### `~/.config/local-ai/families/*.yaml` (legacy)
-
-- **Owner:** pre-registry modelman tooling (files dated 2026-08-27; current `modelman.toml` supersedes the download markers in them).
-- **Consumers:** `modelman migrate` (read-only input). Every current modelman command reads `registry.toml`/`modelman.toml` instead.
-- **Purpose:** legacy family manifests: variants per provider, per-variant download state.
-- **Env override:** `MODELMAN_FAMILY_DIR`.
-
-Legacy example (illustrative — your families will differ):
-
-```yaml
-family: qwen3.8
-display_name: Qwen 3.8
-variants:
-- id: ollama/qwen3.8:27b-mlx
-  provider: ollama
-  name: qwen3.8:27b-mlx
-  repo: null
-  files: null
-  quantizations: null
-  model_info:
-    supports_vision: true
-```
+`~/.config/local-ai/modelman.toml`, `settings.yaml`, `config.yaml` and
+`families/` were modelman's. modelman is retired and deleted; neither wt nor
+llmbench opens any of them. `modelman.toml` holds an API key in its
+`[litellm]` table. How to remove them, and what to check first:
+[08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md),
+"Files modelman left behind".
 
 ### `~/.config/litellm/config.yaml`
 
@@ -179,7 +97,7 @@ model_list:
 - **Owner:** `wt` (`wt config` editor; writes atomically on save).
 - **Consumers:** `wt` only.
 - **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — those live in `registry.toml`; `wt` joins that file in memory, and nothing writes providers or models into this one: the Models tab of `wt config` and `wt model add|edit|rm` write `registry.toml`.
-- **LiteLLM routing state lives here (wt-owned).** The `[litellm]` table (`enabled`/`url`/`api_key`; file is 0600 when a key is stored) is controlled with `wt litellm status|on|off|set --url ... --api-key ...`. On the first wt load where this file already exists, wt copies modelman.toml's legacy `[litellm]` table in once; afterwards wt's copy wins and modelman.toml's is ignored. A legacy `[gateway]` block is dropped on wt's next save with a notice and is not imported — re-enter the values with `wt litellm set --url ... --api-key ...`. Writes to this file are whole-file last-writer-wins: an open `wt config` editor session and a `wt litellm on|off|set` will overwrite each other's changes (issue #143).
+- **LiteLLM routing state lives here (wt-owned).** The `[litellm]` table (`enabled`/`url`/`api_key`; file is 0600 when a key is stored) is controlled with `wt litellm status|on|off|set --url ... --api-key ...`. wt reads this state from here and nowhere else. A legacy `[gateway]` block is dropped on wt's next save with a notice and is not imported — re-enter the values with `wt litellm set --url ... --api-key ...`. Writes to this file are whole-file last-writer-wins: an open `wt config` editor session and a `wt litellm on|off|set` will overwrite each other's changes (issue #143).
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them for a migration tool that no longer exists. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
 
@@ -274,12 +192,11 @@ ollama/glm-5.3-flash:cloud
 Files exist and match the table above:
 
 ```bash
-ls ~/.config/local-ai/registry.toml ~/.config/local-ai/modelman.toml ~/.config/agent-wt/config.toml ~/.config/litellm/config.yaml
+ls ~/.config/local-ai/registry.toml ~/.config/agent-wt/config.toml ~/.config/litellm/config.yaml
 ```
 
 ```text
 /Users/keith/.config/local-ai/registry.toml
-/Users/keith/.config/local-ai/modelman.toml
 /Users/keith/.config/agent-wt/config.toml
 /Users/keith/.config/litellm/config.yaml
 ```
@@ -308,8 +225,8 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 - **Models change through `wt model`.** A model is added, edited or removed with `wt model add|edit|rm` or on the Models tab of `wt config` (`wt model`), and the routes follow — [02-providers-and-models](02-providers-and-models.md) Step 1. Downloads are the provider's own tool (guide 02 Step 5), and routes change through `wt litellm ...`.
 - **Routing is derived, not stored.** There is no routing flag to edit (the per-model `exposed` flag went in #179): `wt` builds `model_list` from `registry.toml` plus live probes, so the `config.yaml` entry is the only copy that exists and `wt litellm list` is the way to read it. Don't hand-edit a managed row — change the registry (or start/stop the model) and let the sync that follows do the writing.
 - **`~/.config/agent-wt/config.toml` trap:** the `[[providers]]`/`[[models]]` blocks you see there are stale migration output that `wt` ignores. Only `default_tag` and `[[agents]]` are live; providers/models come from `registry.toml`.
-- **Legacy files are migration inputs, not config:** `~/.config/local-ai/config.yaml`, `~/.config/local-ai/families/*.yaml`, and `~/.config/agent-wt/models.conf` are read by nothing but wt's first-run `models.conf` migration. Fix models in the new files, don't resurrect the old ones.
-- **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist. Redact before pasting either into issues, docs, or chats.
+- **Legacy files are not config:** `~/.config/local-ai/config.yaml` and `~/.config/local-ai/families/*.yaml` are read by nothing (see "Left on disk, read by nothing" above), and `~/.config/agent-wt/models.conf` only by wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
+- **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist; the LiteLLM API key in modelman's leftover `~/.config/local-ai/modelman.toml` ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md), "Files modelman left behind"). Redact before pasting any of them into issues, docs, or chats.
 - **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `llmbench run`. Don't create them by hand.
 - Stray siblings are uninteresting: `config.toml.bak`, `*.plist.qwen3.8.bak`, `config.yaml.qwen3.8.bak` are manual backups; `usage.jsonl.lock` is wt's lock file.
 

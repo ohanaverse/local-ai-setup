@@ -461,12 +461,8 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("MODELMAN_REGISTRY", "")
 
-	// Running state is live truth now: the localgate flag-and-probe dance
-	// this test used to perform (modelman running flag + a fake `ollama`
-	// binary on PATH) is gone. resolveModel consults the local-model
-	// inventory directly, so the stub probe must report the model serving
-	// or the row is a start row, not a launch row, and the auto-launch
-	// short-circuit never fires.
+	// Running state comes from the live inventory, so the stub probe must
+	// report the model serving or the row is a start row, not a launch row.
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
@@ -485,7 +481,7 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	// Providers/models now live in modelman-owned registry.toml.
+	// Providers/models now live in registry.toml.
 	regDir := filepath.Join(home, ".config", "local-ai")
 	if err := os.MkdirAll(regDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -494,14 +490,6 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		[]byte("[[providers]]\nid = \"ollama\"\nname = \"Ollama\"\nlocation = \"local\"\nauth = { type = \"none\", base_url = \"http://localhost:11434\" }\n[[providers]]\nid = \"agy\"\nname = \"Antigravity\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n[[models]]\nid = \"ollama/gemma4:9b\"\nprovider_id = \"ollama\"\nmodel_name = \"gemma4:9b\"\nlocation = \"local\"\ntags = [\"code\"]\n"),
 		0o644); err != nil {
 		t.Fatalf("write registry: %v", err)
-	}
-	// Mark the ollama model ready. The modelman per-model `running` flag is
-	// deliberately left false: wt decides running state from the live
-	// inventory probe (stubbed above), never from modelman-owned state.
-	if err := os.WriteFile(filepath.Join(regDir, "modelman.toml"),
-		[]byte("[model_state.\"ollama/gemma4:9b\"]\nready = true\n"),
-		0o644); err != nil {
-		t.Fatalf("write modelman state: %v", err)
 	}
 
 	called := false

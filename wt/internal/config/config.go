@@ -41,6 +41,15 @@ const OllamaBaseURL = "http://localhost:11434"
 
 // ── LiteLLM routing state (wt-owned) ─────────────────────
 
+// LitellmState is the `[litellm]` table of wt's config.toml. It controls
+// whether agents dial providers directly or route through the LiteLLM proxy.
+// wt reads it from config.toml and nowhere else.
+type LitellmState struct {
+	Enabled bool   `toml:"enabled"`
+	URL     string `toml:"url"`
+	APIKey  string `toml:"api_key"`
+}
+
 // UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
 // wt's config.toml. wt owns this state.
 //
@@ -95,7 +104,7 @@ func (c *Config) LitellmBaseURL() string { return strings.TrimRight(c.litellm.UR
 func (c *Config) LitellmAPIKey() string { return c.litellm.APIKey }
 
 // SetLitellmForTest overrides the [litellm] routing state.
-// Production wiring goes through finalizeCfg (config.toml / legacy fallback); tests in
+// Production wiring goes through finalizeCfg (config.toml); tests in
 // other packages cannot set the unexported field directly.
 func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
@@ -638,9 +647,8 @@ type Config struct {
 	Models     []Model    `toml:"models"`
 	Agents     []Agent    `toml:"agents"`
 	// LitellmTable is the wt-owned persisted [litellm] routing state.
-	LitellmTable    *LitellmState `toml:"litellm,omitempty"`
-	migratedLitellm bool          `toml:"-"`
-	litellm         LitellmState  `toml:"-"` // runtime copy of LitellmTable (or the legacy fallback)
+	LitellmTable *LitellmState `toml:"litellm,omitempty"`
+	litellm      LitellmState  `toml:"-"` // runtime copy of LitellmTable
 	// wt decides which local models are running from the live inventory
 	// (internal/localmodels), never from a stored flag. See
 	// docs/superpowers/specs/2026-09-20-wt-live-resolution-design.md.
@@ -703,11 +711,7 @@ func Load() (*Config, error) {
 		if err != nil {
 			return cfgOrNilOnMissingRegistry(cfg, err), err
 		}
-		legacy, err := loadModelmanState()
-		if err != nil {
-			return nil, err
-		}
-		return finalizeCfg(cfg, providers, models, legacy)
+		return finalizeCfg(cfg, providers, models), nil
 	}
 
 	providers, models, err := loadRegistry()
@@ -737,40 +741,11 @@ func Load() (*Config, error) {
 		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
 	}
 
-	legacy, err := loadModelmanState()
-	if err != nil {
-		return nil, err
-	}
-
 	// Join the registry LAST so wt never mutates registry data
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	c, err := finalizeCfg(fresh, providers, models, legacy)
-	if err != nil {
-		return nil, err
-	}
-	if c.migratedLitellm {
-		// Re-checks LitellmTable on a fresh lockedApply read rather than
-		// blindly writing c: a concurrent `wt litellm set` between the
-		// schema-migration lock above and here must win over the legacy
-		// modelman.toml value finalizeCfg fell back to in memory.
-		_, persisted, err := lockedApply(func(fresh2 *Config) (bool, error) {
-			if fresh2.LitellmTable != nil {
-				return false, nil
-			}
-			fresh2.LitellmTable = c.LitellmTable
-			return true, nil
-		})
-		switch {
-		case err != nil:
-			fmt.Fprintf(os.Stderr, "wt: could not persist [litellm] to config.toml: %v\n", err)
-		case persisted:
-			fmt.Fprintln(os.Stderr, "wt: moved [litellm] routing state from modelman.toml into wt's config.toml")
-		}
-		c.migratedLitellm = false
-	}
-	return c, nil
+	return finalizeCfg(fresh, providers, models), nil
 }
 
 // cfgOrNilOnMissingRegistry returns cfg (whatever Load has decoded from
@@ -787,22 +762,15 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
-// from provider auth types, and applies the already-loaded legacy [litellm]
-// table (legacy). Callers must already have loaded config.toml,
-// registry.toml, and modelman.toml (loadModelmanState) — finalizeCfg never
-// reads modelman.toml itself, so Load reads it exactly once.
-func finalizeCfg(cfg *Config, providers []Provider, models []Model, legacy *LitellmState) (*Config, error) {
+// from provider auth types, and copies config.toml's [litellm] table, when it
+// has one, into the runtime routing state. With no table, routing is off.
+func finalizeCfg(cfg *Config, providers []Provider, models []Model) *Config {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	switch {
-	case cfg.LitellmTable != nil:
+	if cfg.LitellmTable != nil {
 		cfg.litellm = *cfg.LitellmTable
-	case legacy != nil:
-		cfg.litellm = *legacy
-		cfg.LitellmTable = legacy
-		cfg.migratedLitellm = true
 	}
-	return cfg, nil
+	return cfg
 }
 
 // Validate returns an error describing the first invalid entry.
@@ -1369,10 +1337,9 @@ func (c *Config) PatchSave(apply func(fresh *Config)) error {
 }
 
 // lockedApply is Load's version of PatchSave's re-read-fresh pattern for its
-// two self-persisting migrations (schema fixups, legacy-litellm import): it
-// takes the config.toml lock, reads the file fresh, lets apply mutate that
-// fresh copy and report whether anything actually changed, and writes back
-// only when it did. Without this, Load's migration writes read config.toml
+// self-persisting schema fixups: it takes the config.toml lock, reads the
+// file fresh, lets apply mutate that fresh copy and report whether anything
+// actually changed, and writes back only when it did. Without this, Load's migration writes read config.toml
 // once — before loadRegistry and the migration probe run — and then saved
 // that stale snapshot wholesale, silently reverting a concurrent
 // PatchSave-based writer (`wt config` editor, `wt litellm set`) that landed

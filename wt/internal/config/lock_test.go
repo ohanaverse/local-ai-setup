@@ -227,59 +227,6 @@ func TestLockedApplyPreservesConcurrentLitellmChange(t *testing.T) {
 	}
 }
 
-// TestLockedApplySkipsLegacyLitellmImportWhenConcurrentlySet mirrors Load's
-// second migration write — the one-time legacy modelman.toml -> config.toml
-// [litellm] import — and pins that it never overwrites a [litellm] table a
-// concurrent `wt litellm set` wrote after finalizeCfg decided (from a stale,
-// litellm-less read) that the legacy value needed importing. The importing
-// closure must check LitellmTable on its own fresh read, not on the caller's
-// already-decided value, or it reopens the same race for this second writer.
-func TestLockedApplySkipsLegacyLitellmImportWhenConcurrentlySet(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("MODELMAN_REGISTRY", "")
-	must(t, filepath.Join(home, "local-ai", "registry.toml"), "providers = []\nmodels = []\n")
-	// Agy agent already present so the schema-migration fixup is a no-op and
-	// this test isolates the legacy-litellm-import closure.
-	must(t, filepath.Join(home, "agent-wt", "config.toml"), "default_tag = \"code\"\n\n[[agents]]\nname = \"agy\"\nsupported_providers = [\"agy\"]\ndefault_provider = \"agy\"\n")
-
-	// A caller (standing in for finalizeCfg) decided from a stale read that
-	// the legacy modelman.toml value below needs importing.
-	legacy := &LitellmState{Enabled: true, URL: "http://legacy:4000", APIKey: "sk-legacy"}
-
-	// Meanwhile `wt litellm set` persists its own [litellm] first.
-	if err := (&Config{}).UpdateLitellm(func(s *LitellmState) {
-		s.Enabled, s.URL, s.APIKey = true, "http://localhost:4000", "sk-concurrent"
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	fresh, changed, err := lockedApply(func(fresh2 *Config) (bool, error) {
-		if fresh2.LitellmTable != nil {
-			return false, nil
-		}
-		fresh2.LitellmTable = legacy
-		return true, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed {
-		t.Fatal("expected the legacy import to be skipped once a concurrent [litellm] exists")
-	}
-	if fresh.LitellmTable == nil || fresh.LitellmTable.APIKey != "sk-concurrent" {
-		t.Fatalf("legacy import clobbered the concurrent litellm change: %+v", fresh.LitellmTable)
-	}
-
-	reloaded, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.LitellmAPIKey() != "sk-concurrent" {
-		t.Fatalf("concurrent litellm change lost on disk: %+v", reloaded.litellm)
-	}
-}
-
 func hasAgent(agents []Agent, name string) bool {
 	for _, a := range agents {
 		if a.Name == name {
