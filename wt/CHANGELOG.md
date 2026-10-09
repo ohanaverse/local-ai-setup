@@ -242,8 +242,10 @@
   refuses with no such process behind it is still "nothing running", and so
   is a pidfile that is a symlink or that another user owns.
   `wt stop <mtplx model>` during a load stops nothing and names
-  `wt stop mtplx`. Bare `wt stop` has no picker row for a loading mtplx and
-  stops none: it prints
+  `wt stop mtplx`; a pidfile naming a process wt could not verify, or one
+  that is not an mtplx server, puts that line in the error in place of the
+  bare "is not running". Bare `wt stop` has no picker row for a loading
+  mtplx and stops none: it prints
   `wt: mtplx is still loading (pid N) — "wt stop mtplx" or "wt stop --all" stops it`
   where it used to print `wt: no running local models`. An mtplx started by
   hand has no pidfile and is still not seen while it loads.
@@ -262,13 +264,16 @@
   and its port does not refuse, `wt stop ollama` and `wt stop --all` exit 1
   with `cannot tell what is running on ollama` (`--all` after stopping
   everything else), and bare `wt stop` with nothing to list exits 1 naming
-  the provider it could not read. Each used to report nothing running and
-  exit 0. When the picker does list models, bare `wt stop` adds a line naming
-  a provider it could not read (`wt: could not tell what is running on
-  mtplx — "wt stop mtplx" or "wt stop --all" stops mtplx`); the command it
-  names is given only for mtplx and omlx, since no command stops an ollama wt
-  cannot read. None of these failures prints the usage text: `wt stop` now
-  shows it only for an argument mistake, as `wt stop --all` already did.
+  the provider it could not read. `wt stop <model>` of such a provider exits 1
+  the same way, instead of reporting the model not running: a model id stops
+  nothing there, and the model may be loaded. Each used to report nothing
+  running and exit 0. When the picker does list models, bare `wt stop` adds
+  a line naming a provider it could not read (`wt: could not tell what is
+  running on mtplx — "wt stop mtplx" or "wt stop --all" stops mtplx`); the
+  command it names is given only for mtplx and omlx, since no command stops
+  an ollama wt cannot read. None of these failures prints the usage text:
+  `wt stop` now shows it only for an argument mistake, as `wt stop --all`
+  already did.
 - `wt stop --all` waits for the LiteLLM proxy restart one halted provider
   started before it halts the next (mtplx, then omlx), as it already did
   between the model stops and the first halt.

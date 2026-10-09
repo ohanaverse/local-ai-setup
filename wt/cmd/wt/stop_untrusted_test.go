@@ -366,6 +366,31 @@ func TestStopSaysNothingRunningOnlyWhenThatIsKnown(t *testing.T) {
 	}
 }
 
+// TestStopModelIDOfAProviderItCannotReadIsNotSaidToBeNotRunning verifies `wt
+// stop ollama/a:1` says the same cannot-tell as `wt stop ollama` when ollama's
+// probe gave no usable answer and its port did not refuse: a model id stops
+// nothing there, and "model ... is not running" would be a claim about a
+// model wt never read — the user would believe it is down while it is
+// loaded. A refused port is still "not running", since that much is known.
+func TestStopModelIDOfAProviderItCannotReadIsNotSaidToBeNotRunning(t *testing.T) {
+	stopped := stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true}))
+	var out bytes.Buffer
+	err := runStop(&out, modelCmdConfig(), "ollama/a:1", false)
+	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on ollama") || out.Len() != 0 {
+		t.Errorf("err = %v out = %q, want a cannot-tell error and no output", err, out.String())
+	}
+	if len(*stopped) != 0 {
+		t.Errorf("stopped = %v, want nothing stopped", *stopped)
+	}
+
+	stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true, Down: true}))
+	out.Reset()
+	err = runStop(&out, modelCmdConfig(), "ollama/a:1", false)
+	if err == nil || !strings.Contains(err.Error(), `model "ollama/a:1" is not running`) {
+		t.Errorf("refused port: err = %v, want the not-running error", err)
+	}
+}
+
 // stubPicker makes bare `wt stop` see a terminal and a picker that reports
 // offered and the families it could not read.
 func stubPicker(t *testing.T, offered bool, unknown ...string) {

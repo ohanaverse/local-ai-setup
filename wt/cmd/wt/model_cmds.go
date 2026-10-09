@@ -547,13 +547,28 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 				// loading holds, so a model id stops nothing there; the
 				// provider does.
 				prov := cfg.Models[i].ProviderID
-				switch l := st.Families[localmodels.Family(prov)].Loading; {
+				fs := st.Families[localmodels.Family(prov)]
+				switch l := fs.Loading; {
 				case l.PID > 0:
 					return fmt.Errorf("model %q is not running — %s is still loading (pid %d); \"wt stop %s\" stops it", arg, prov, l.PID, prov)
 				case l.Err != nil:
 					// Not known to be "not running": the pidfile names a
 					// live pid wt could not inspect.
 					return errLoadingUnknown(prov, l.Err, " — nothing was stopped")
+				case l.Stray != "":
+					// A live process the pidfile names that is not this
+					// provider's server. wt stops nothing here, but the line
+					// says what it found and left alone, as `wt stop
+					// <provider>` does: "not running" alone would hide a
+					// process the user may have to end by hand.
+					return fmt.Errorf("model %q is not running — %s", arg, l.Stray)
+				}
+				if fs.Untrusted && !fs.Down {
+					// A probe that gave no usable answer is not "not
+					// running" either: the model may well be loaded, and
+					// this id stops nothing where the provider could. Say
+					// what `wt stop <provider>` says.
+					return errCannotTell([]string{prov}, " — nothing was stopped")
 				}
 				return fmt.Errorf("model %q is not running", arg)
 			}

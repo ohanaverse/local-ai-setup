@@ -363,6 +363,16 @@ func TestStopModelIDOfALoadingMtplxPointsAtTheProvider(t *testing.T) {
 	if want := "cannot tell whether mtplx is still loading: " + cannot.Error() + " — nothing was stopped"; err == nil || err.Error() != want {
 		t.Errorf("unread pidfile: err = %v\nwant  %s", err, want)
 	}
+	// The pidfile names a live process that is not an mtplx server on the
+	// provider's port: wt stops nothing, but says what it found — the same
+	// line `wt stop mtplx` prints — instead of leaving the user with "not
+	// running" and no hint of the process still on the machine.
+	stray := "the mtplx pidfile names pid 77, which is not an mtplx server on port 8003 — left alone"
+	stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Stray: stray}}))
+	err = runStop(io.Discard, stopCfg(), "mtplx/big", false)
+	if want := `model "mtplx/big" is not running — ` + stray; err == nil || err.Error() != want {
+		t.Errorf("stray pidfile: err = %v\nwant  %s", err, want)
+	}
 	stubStopState(t, families("mtplx", loadingFS(0)))
 	// Another family's model keeps the plain message.
 	if err := runStop(io.Discard, stopCfg(), "ollama/a:1", false); err == nil || err.Error() != `model "ollama/a:1" is not running` {

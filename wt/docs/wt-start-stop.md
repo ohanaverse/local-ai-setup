@@ -73,7 +73,10 @@ wt stop --all                    # stop every running local model, then the omlx
 ## `wt stop [model|provider]`
 
 - `<provider>/<name>` stops one running model; not running or unknown is
-  an error. mtplx serves one process, so stopping it stops the whole
+  an error. A model of a provider whose probe gave no usable answer is
+  neither: wt says it cannot tell what is running there, as the bare
+  provider does, rather than that the model is not running. mtplx serves one
+  process, so stopping it stops the whole
   provider. On omlx it unloads that one model and leaves the service and the
   other loaded models up; use `wt stop omlx` to halt the service.
 - A bare provider (`ollama`, `omlx`, `omlx-6bit`, `mtplx`) stops all its
@@ -132,7 +135,8 @@ wt stop --all                    # stop every running local model, then the omlx
     fails with
     `model "<id>" is not running — mtplx is still loading (pid N); "wt stop mtplx" stops it`
     (or with `cannot tell whether mtplx is still loading` when wt could not
-    read the process table).
+    read the process table, or with the `left alone` line when the pidfile
+    names a live process that is not an mtplx server on the provider's port).
     Limits:
     - Only a server wt or llmbench started has a pidfile. An mtplx started by
       hand is invisible while it loads: `wt stop mtplx` and `--all` print

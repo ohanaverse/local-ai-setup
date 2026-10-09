@@ -40,16 +40,28 @@ type stopDeps struct {
 
 func defaultStopDeps() stopDeps {
 	store := refcount.NewStore()
+	// Sweep first: Sweep otherwise runs only at launch start, so an entry
+	// left by a killed session would count as "in use" forever. Once per
+	// stopDeps, which serves one read of the state (defaultStopDeps is called
+	// per read): both reads below want the same pruned file, and Sweep takes
+	// the store's lock and rewrites the file whether or not it dropped
+	// anything, so sweeping again in the same read is pure work.
+	swept := false
+	sweep := func() {
+		if swept {
+			return
+		}
+		swept = true
+		_ = store.Sweep()
+	}
 	return stopDeps{
 		inventory: localmodels.Inventory,
-		// Sweep first: Sweep otherwise runs only at launch start, so an entry
-		// left by a killed session would count as "in use" forever.
 		counts: func(ids []string) map[string]int {
-			_ = store.Sweep()
+			sweep()
 			return store.Counts(ids)
 		},
 		live: func() map[string]int {
-			_ = store.Sweep()
+			sweep()
 			return store.Live()
 		},
 		stop:    lifecycle.StopModelDeferred,
