@@ -185,6 +185,8 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` decides 
 
 Full rules (catalog membership, passthrough, decoded fields): [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry).
 
+Adding a provider: the `adding-a-provider` skill (`.claude/skills/adding-a-provider/SKILL.md`).
+
 ## Local-model resolution
 
 Every model row wt shows or resolves — the TUI picker, `wt start`/`wt smoke`'s picker, the non-TUI launch path — is built by `internal/catalog` from the agent's eligible list plus one `localmodels.Inventory` snapshot. A row's action is **launch** (cloud, or a local model the probe reports running and loaded), **start** (a local row of ollama/omlx/omlx-6bit/mtplx that is not running, or that omlx is still loading), or **block**.

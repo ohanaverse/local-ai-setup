@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - **LiteLLM proxy running with Postgres spend logging** — the stack from [01-initial-setup](01-initial-setup.md) / [04-litellm-config](04-litellm-config.md). Spend rows land in the Postgres `LiteLLM_SpendLogs` table; without it the REQUESTS, PROMPT, COMPLETION and SPEND columns have nothing to read (launch counts still work).
-- **wt launch history exists**: `~/.config/agent-wt/usage.jsonl` — wt appends one JSON line per TUI launch (guide 06 §7). Example line (captured 2026-08-29 — your model ids will differ):
+- **wt launch history exists**: `~/.config/agent-wt/usage.jsonl` — wt appends one JSON line per TUI launch (guide 06 §8). Example line (captured 2026-08-29 — your model ids will differ):
   ```json
   {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
   ```

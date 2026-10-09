@@ -89,7 +89,7 @@ See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for 
 
 ### Migration from legacy `models.conf`
 
-On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, which nothing reads back (the sections are inert); `wt` itself reads Providers/Models back out of the registry, and writes that file only through `wt model init`.
+On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, which nothing reads back (the sections are inert); `wt` itself reads Providers/Models back out of the registry, and writes that file through `wt model init`, `wt model add|edit|rm`, the Models tab of `wt config` and `wt cloud-sync`.
 
 ## User preferences (`wt config`)
 
