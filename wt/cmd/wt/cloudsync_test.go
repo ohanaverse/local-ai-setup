@@ -244,21 +244,23 @@ func TestRealCloudFetch(t *testing.T) {
 // every flow because of it.
 func TestSelectFlows(t *testing.T) {
 	cases := []struct {
-		only    string
-		given   bool
-		prices  bool
-		wantErr string
+		only            string
+		given           bool
+		prices, catalog bool
+		wantErr         string
 	}{
-		{"", false, true, ""},
-		{"prices", true, true, ""},
-		{" prices ", true, true, ""},
-		{"prices,prices", true, true, ""},
-		{"price", true, false, `--only: unknown flow "price" (valid: prices)`},
-		{"prices,", true, true, `--only: unknown flow "" (valid: prices)`},
+		{"", false, true, true, ""},
+		{"prices", true, true, false, ""},
+		{" prices ", true, true, false, ""},
+		{"prices,prices", true, true, false, ""},
+		{"catalog", true, false, true, ""},
+		{" catalog , prices ", true, true, true, ""},
+		{"price", true, false, false, `--only: unknown flow "price" (valid: prices, catalog)`},
+		{"prices,", true, true, false, `--only: unknown flow "" (valid: prices, catalog)`},
 		// The flag given with nothing in it, as from `--only "$FLOWS"` with
 		// the variable unset, is not the flag left out.
-		{"", true, false, `--only: no flow named (valid: prices)`},
-		{"  ", true, false, `--only: no flow named (valid: prices)`},
+		{"", true, false, false, `--only: no flow named (valid: prices, catalog)`},
+		{"  ", true, false, false, `--only: no flow named (valid: prices, catalog)`},
 	}
 	for _, tc := range cases {
 		var o cloudSyncOpts
@@ -269,16 +271,18 @@ func TestSelectFlows(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || o.prices != tc.prices {
-			t.Errorf("selectFlows(%q, given %v) = prices %v, err %v", tc.only, tc.given, o.prices, err)
+		if err != nil || o.prices != tc.prices || o.catalog != tc.catalog {
+			t.Errorf("selectFlows(%q, given %v) = prices %v, catalog %v, err %v", tc.only, tc.given, o.prices, o.catalog, err)
 		}
 	}
 }
 
 // TestCloudSyncCommandRefusals pins what the command refuses before it does
-// anything: an unknown flow, --only with no flow in it, a stray argument, and
-// a config that could not be loaded, which gets the same repair hint every
-// other command gives.
+// anything: a catalog-only flag with the catalog flow left out (the flag
+// would be silently ignored, and --force or a digest ignored is a user
+// believing a gate was passed), an unknown flow, --only with no flow in it, a
+// stray argument, and a config that could not be loaded, which gets the same
+// repair hint every other command gives.
 func TestCloudSyncCommandRefusals(t *testing.T) {
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	run := func(a *app, args ...string) error {
@@ -293,9 +297,12 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--only", "routes"}, `--only: unknown flow "routes" (valid: prices)`},
-		{[]string{"--only", "", "--dry-run"}, `--only: no flow named (valid: prices)`},
-		{[]string{"--only=", "--dry-run"}, `--only: no flow named (valid: prices)`},
+		{[]string{"--only", "prices", "--force"}, "--force is for the catalog flow, which --only prices leaves out"},
+		{[]string{"--only", "prices", "--html", "x.html"}, "--html is for the catalog flow, which --only prices leaves out"},
+		{[]string{"--only", "prices", "--approve-removals", "abc"}, "--approve-removals is for the catalog flow, which --only prices leaves out"},
+		{[]string{"--only", "routes"}, `--only: unknown flow "routes" (valid: prices, catalog)`},
+		{[]string{"--only", "", "--dry-run"}, `--only: no flow named (valid: prices, catalog)`},
+		{[]string{"--only=", "--dry-run"}, `--only: no flow named (valid: prices, catalog)`},
 		{[]string{"extra"}, `unknown command "extra" for "cloud-sync"`},
 	} {
 		err := run(ok, tc.args...)

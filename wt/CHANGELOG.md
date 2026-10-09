@@ -4,6 +4,28 @@
 
 ### Added
 
+- `wt cloud-sync` gains its second flow, `catalog`, replacing
+  `modelman ollama-catalog sync` (which still works): it mirrors
+  <https://ollama.com/pricing> into the registry's ollama cloud entries
+  (prices, off-peak included), into ollama (`ollama pull` for new cloud
+  models, `ollama rm` for retired ones, both pinned to the registry's ollama
+  address) and, through one route sync, into LiteLLM. Both flows run unless
+  `--only prices` or `--only catalog` picks one, and neither stops the
+  other. `--yes` never deletes on its own: a plan that removes anything
+  needs `--approve-removals` with the digest a dry run printed (the same
+  digest modelman prints), and a plan that removes more than half the cloud
+  entries needs `--force` as well. `--html FILE` reads a saved pricing page
+  instead of fetching it; a catalog flag together with `--only prices` is a
+  usage error. Exit codes 2 to 5 say why the catalog flow changed nothing
+  (inputs unreadable, page shape changed with its HTML saved, mass removal
+  refused, removals not approved); every other wt command still exits 1 on
+  an error. A registry with no `ollama` provider row has no catalog to
+  mirror: the flow prints one line and is skipped with exit 0, also when it
+  was asked for by name (`--only catalog` or one of its flags), so with
+  neither an ollama row nor an OpenRouter-priced model the command fetches,
+  asks and writes nothing. An ollama cloud entry the plan would change or
+  remove whose id is in the registry twice is refused before the plan, in a
+  dry run too (exit 1).
 - `wt cloud-sync [--only prices] [--dry-run] [--yes]` refreshes the per-token
   prices of the registry's OpenRouter-priced models from OpenRouter's public
   model list, replacing `modelman refresh-prices` (which still works). It

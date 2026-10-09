@@ -4,10 +4,10 @@ import "errors"
 
 // exitCodeError is an error that says which status the process exits with.
 // Every command exits 1 on an error; `wt cloud-sync` is the one whose codes
-// will mean something to a caller (2 to 5 are to say why its catalog flow
-// changed nothing, once that flow lands; until then it only ever carries 1),
-// so it wraps its error in this and main reads the code back with
-// exitCodeOf. The message is what main prints after "wt:".
+// mean something to a caller (2 to 5 say why its catalog flow changed
+// nothing, 1 that a step failed in either flow), so it wraps its error in
+// this and main reads the code back with exitCodeOf. The message is what main
+// prints after "wt:".
 type exitCodeError struct {
 	code int
 	err  error
