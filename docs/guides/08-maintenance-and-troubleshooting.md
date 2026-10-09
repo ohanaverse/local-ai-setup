@@ -526,7 +526,9 @@ Then:
 
 ```bash
 ls -la ~/.config/local-ai/        # see what is there first
-rm ~/.config/local-ai/modelman.toml ~/.config/local-ai/settings.yaml
+# modelman.toml moves with XDG_CONFIG_HOME — see "Where the files are" above
+rm "${XDG_CONFIG_HOME:-$HOME/.config}/local-ai/modelman.toml"   # the one holding the key
+rm ~/.config/local-ai/settings.yaml
 rm -r ~/.config/local-ai/families
 rm ~/.config/local-ai/config.yaml       # modelman's legacy file, after the check above
 ```
