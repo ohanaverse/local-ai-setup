@@ -15,15 +15,10 @@ import (
 // flows, an error that lists the valid names, so a script still using one
 // stops instead of running a flow it did not ask for.
 func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
-	// A registry with an openrouter model and no ollama provider row: the
+	// noOllamaRegistry is one openrouter model and no ollama provider row: the
 	// openrouter flow has a plan to print and the ollama flow its skip line,
 	// so both prefixes are seen with one stubbed page.
-	registry, _, _ := strings.Cut(cloudSyncRegistry, "[[models]]\nid = \"ollama/")
-	registry = strings.Replace(registry, "[[providers]]\nid = \"ollama\"\nname = \"Ollama\"\nlocation = \"local\"\n\n[providers.auth]\ntype = \"none\"\nbase_url = \"http://127.0.0.1:11434\"\n\n", "", 1)
-	if strings.Contains(registry, "ollama") || !strings.Contains(registry, "openrouter/vendor--gpt") {
-		t.Fatalf("the fixture is not one openrouter model and no ollama row:\n%s", registry)
-	}
-	_, cfg := cloudSyncHome(t, registry)
+	_, cfg := cloudSyncHome(t, noOllamaRegistry)
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 	run := func(args ...string) (string, error) {
 		cmd := cloudSyncCmd(&app{cfg: cfg})

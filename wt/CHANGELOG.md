@@ -178,9 +178,11 @@
   `--help`. There are no aliases: `--only prices` and `--only catalog` are
   unknown flows (exit 1, `--only: unknown flow "prices" (valid: openrouter,
   ollama)`), so a script that names one stops instead of running something
-  else. One line was reworded with the rename, because `ollama: ollama at
-  <address>` read badly: it is `ollama: daemon at <address>`. What each
-  flow does has not changed. Reference: `docs/wt-cloud-sync.md`.
+  else. Two lines were reworded with the rename: `ollama: ollama at
+  <address>` read badly and is now `ollama: daemon at <address>`, and the
+  refusal both gates print ends `Nothing was changed by the ollama flow.`
+  where it said `Nothing was changed for the catalog.` What each flow does
+  has not changed. Reference: `docs/wt-cloud-sync.md`.
 - **Breaking:** wt no longer reads `~/.config/local-ai/modelman.toml`. Its
   `[litellm]` table was a fallback for routing state (on/off, proxy URL, API
   key); wt has kept that state in its own `~/.config/agent-wt/config.toml`

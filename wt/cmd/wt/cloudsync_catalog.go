@@ -51,7 +51,7 @@ func saveFailedHTML(page string, now time.Time) (string, error) {
 // the plan was made from, so it can be made again under the registry lock.
 type ollamaRun struct {
 	origin      string
-	page        cloudsync.Catalog
+	catalog     cloudsync.Catalog
 	tags        []string
 	resolved    map[string]string
 	tagWarnings []string
@@ -62,7 +62,7 @@ type ollamaRun struct {
 // replan makes the plan again from entries, with the same page, tags and
 // resolved names.
 func (c *ollamaRun) replan(entries []cloudsync.Entry) *cloudsync.CatalogPlan {
-	plan := cloudsync.PlanCatalog(entries, c.page, c.tags, c.resolved)
+	plan := cloudsync.PlanCatalog(entries, c.catalog, c.tags, c.resolved)
 	plan.Warnings = append(plan.Warnings, c.tagWarnings...)
 	return plan
 }
@@ -135,7 +135,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 		return stop(3, "could not parse ollama.com/pricing: %v\nollama: %s — the parser to update is wt/internal/cloudsync/pricingpage.go; nothing was changed", err, where)
 	}
 
-	run := &ollamaRun{page: catalog, origin: origin}
+	run := &ollamaRun{catalog: catalog, origin: origin}
 	// Without it, what to pull and what to rm is unknowable: refuse instead
 	// of mirroring half the plan.
 	if run.tags, err = ollamaTags(ctx, run.origin); err != nil {
