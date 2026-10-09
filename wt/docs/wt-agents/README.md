@@ -38,8 +38,7 @@ through the proxy or dial providers directly lives in the `[litellm]` table
 toggled with `wt litellm on` / `wt litellm off` (current state:
 `wt litellm status`). Toggling is routing policy only — it never starts,
 stops, or restarts the proxy; the proxy-process lifecycle below is a separate
-concern. (`~/.config/local-ai/modelman.toml`'s `[litellm]` table is only a
-legacy read-only fallback, migrated into wt's config once.)
+concern.
 
 **wt owns reconciliation.** `wt litellm sync` (and the
 automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then

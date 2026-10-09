@@ -168,8 +168,7 @@ preflight() {
 
 # ── LiteLLM routing-mode flipping ─────────────────────────────────────────────
 # wt owns the routing on/off switch: the [litellm] table of its own
-# ${XDG_CONFIG_HOME:-$HOME/.config}/agent-wt/config.toml (modelman.toml's
-# [litellm] is only a legacy fallback that wt copies in once). The script
+# ${XDG_CONFIG_HOME:-$HOME/.config}/agent-wt/config.toml. The script
 # flips the mode through the tool itself — `wt litellm on` / `wt litellm off`,
 # using the same `wt` found on PATH that runs the matrix rows, so the state is
 # written properly (0600 when a key is stored) and a wt built from a branch is

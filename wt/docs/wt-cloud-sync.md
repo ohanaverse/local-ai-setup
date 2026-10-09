@@ -361,10 +361,6 @@ the job.
   every tool that writes the registry, comments in the file do not survive.
 - **Writes LiteLLM's `config.yaml`** only through the route sync.
 - **Changes ollama's store** through `ollama pull` and `ollama rm`.
-- It never writes `modelman.toml` and takes nothing for the sync from it:
-  not `price_refresh_last_run`, and no per-model key. (Like every wt
-  command, loading wt's config reads that file's legacy `[litellm]` table
-  as a fallback.)
 
 ### Against a copy of the registry
 

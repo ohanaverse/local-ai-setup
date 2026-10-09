@@ -45,18 +45,6 @@ func RegistryPath() string {
 	return filepath.Join(baseConfigHome(), "local-ai", "registry.toml")
 }
 
-// ModelmanPath returns the modelman-owned modelman.toml location. It uses the
-// same XDG base-directory resolution as RegistryPath(): XDG_CONFIG_HOME (with
-// tilde expansion), falling back to ~/.config. It honors none of
-// WT_REGISTRY, MODELMAN_REGISTRY or modelman's MODELMAN_STATE override — a
-// deliberate asymmetry: wt is a read-only consumer and never needs to redirect
-// the state file the way tests (or wt itself) redirect the registry. The
-// one table wt reads (the legacy [litellm] table) is pinned by
-// docs/contracts/modelman.sample.toml. wt reads this file read-only.
-func ModelmanPath() string {
-	return filepath.Join(baseConfigHome(), "local-ai", "modelman.toml")
-}
-
 // expandHome expands a leading "~" or "~/" in path to the user's home
 // directory, matching Python's Path.expanduser() as llmbench's registry_path
 // does, so WT_REGISTRY and MODELMAN_REGISTRY behave the same in both tools.

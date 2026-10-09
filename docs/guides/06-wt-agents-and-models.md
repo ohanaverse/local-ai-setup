@@ -103,8 +103,7 @@ By default (routing off) wt agents dial providers directly — e.g. Ollama on
 `localhost:11434`. To route non-native traffic through the LiteLLM proxy
 (`localhost:4000`) and populate the dashboard, flip the routing switch with
 `wt litellm`. The switch lives in wt's own `~/.config/agent-wt/config.toml`
-(the `[litellm]` table; copied once from modelman.toml's legacy table on first
-load):
+(the `[litellm]` table):
 
 ```bash
 wt litellm status   # on/off + url + api_key_set (key never printed)

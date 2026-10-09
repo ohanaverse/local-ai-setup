@@ -10,78 +10,71 @@ import (
 	"testing"
 )
 
-func litellmStateEnv(t *testing.T, wtToml, modelmanToml string) string {
+func litellmStateEnv(t *testing.T, wtToml string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", "")
-	must := func(rel, body string) {
-		p := filepath.Join(home, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	must("local-ai/registry.toml", "providers = []\nmodels = []\n")
+	writeUnder(t, home, "local-ai/registry.toml", "providers = []\nmodels = []\n")
 	if wtToml != "" {
-		must("agent-wt/config.toml", wtToml)
-	}
-	if modelmanToml != "" {
-		must("local-ai/modelman.toml", modelmanToml)
+		writeUnder(t, home, "agent-wt/config.toml", wtToml)
 	}
 	return home
 }
 
-const legacyLitellm = "[litellm]\nenabled = true\nurl = \"http://localhost:4000\"\napi_key = \"sk-legacy\"\n"
-
-// TestLitellmStateMigratesFromModelmanOnce pins the one-time migration: when
-// wt's config.toml has no [litellm] but modelman.toml does, Load copies it
-// into config.toml (so wt owns it from then on), and a second Load reads wt's
-// copy. Without it, users would silently lose their proxy URL/key on upgrade.
-func TestLitellmStateMigratesFromModelmanOnce(t *testing.T) {
-	home := litellmStateEnv(t, "default_tag = \"code\"\n", legacyLitellm)
-	cfg, err := Load()
-	if err != nil {
+// writeUnder writes body to home/rel, creating the directories.
+func writeUnder(t *testing.T, home, rel, body string) {
+	t.Helper()
+	p := filepath.Join(home, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.IsLitellm() || cfg.LitellmBaseURL() != "http://localhost:4000" || cfg.LitellmAPIKey() != "sk-legacy" {
-		t.Fatalf("legacy state not read: %+v", cfg.litellm)
-	}
-	b, _ := os.ReadFile(filepath.Join(home, "agent-wt", "config.toml"))
-	if !strings.Contains(string(b), "[litellm]") || !strings.Contains(string(b), "sk-legacy") {
-		t.Fatalf("state not persisted to config.toml:\n%s", b)
-	}
-	// The migration writes a secret without the user asking, so the file it
-	// lands in must be 0600 (fixture creates config.toml 0644).
-	if st, err := os.Stat(filepath.Join(home, "agent-wt", "config.toml")); err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("migrated config.toml mode = %v (err %v), want 0600", st.Mode().Perm(), err)
-	}
-	// Owner is now wt: changing modelman's copy must have no effect.
-	os.WriteFile(filepath.Join(home, "local-ai", "modelman.toml"), []byte("[litellm]\nenabled = false\n"), 0o644)
-	cfg2, _ := Load()
-	if !cfg2.IsLitellm() {
-		t.Fatal("wt's own [litellm] must win over modelman.toml after migration")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestLitellmStateNoConfigTomlDoesNotCreateIt pins the safety guard: when
-// config.toml does not exist yet, Load must not create it just to persist a
-// migration (that would pre-empt agent seeding); it falls back to modelman's
-// values in memory.
-func TestLitellmStateNoConfigTomlDoesNotCreateIt(t *testing.T) {
-	home := litellmStateEnv(t, "", legacyLitellm)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.IsLitellm() {
-		t.Fatal("fallback to modelman.toml not applied")
-	}
-	if _, err := os.Stat(filepath.Join(home, "agent-wt", "config.toml")); !os.IsNotExist(err) {
-		t.Fatalf("config.toml was created by Load (err=%v)", err)
+// TestLoadNeverReadsModelmanToml pins the end of the legacy fallback: wt used
+// to take LiteLLM routing state from modelman.toml's [litellm] table when its
+// own config.toml had none, and to copy it in. modelman is gone, and the file
+// is one the user is told to delete, so it must change nothing: routing stays
+// off, config.toml is not created, the key in the old file is not copied
+// into it, and a file that is not even TOML no longer stops every wt command
+// with "parse modelman.toml". The old file is present in every case, at the
+// path wt read it from ($XDG_CONFIG_HOME/local-ai) and at the pre-XDG default
+// (~/.config/local-ai), so the test proves it is ignored, not that it is
+// absent.
+func TestLoadNeverReadsModelmanToml(t *testing.T) {
+	const populated = "[litellm]\nenabled = true\nurl = \"http://localhost:4000\"\napi_key = \"sk-legacy\"\n"
+	const ownConfig = "default_tag = \"code\"\n"
+	for _, tc := range []struct {
+		name, wtToml, modelmanToml string
+	}{
+		{"config.toml without [litellm]", ownConfig, populated},
+		{"no config.toml", "", populated},
+		{"modelman.toml is not TOML", ownConfig, "this is not toml {{{"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := litellmStateEnv(t, tc.wtToml)
+			writeUnder(t, home, "local-ai/modelman.toml", tc.modelmanToml)
+			writeUnder(t, home, ".config/local-ai/modelman.toml", tc.modelmanToml)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load = %v, want modelman.toml ignored", err)
+			}
+			if cfg.IsLitellm() || cfg.LitellmBaseURL() != "" || cfg.LitellmAPIKey() != "" || cfg.LitellmTable != nil {
+				t.Fatalf("routing state = %+v (table %+v), want none: modelman.toml was read", cfg.litellm, cfg.LitellmTable)
+			}
+			got, err := os.ReadFile(filepath.Join(home, "agent-wt", "config.toml"))
+			switch {
+			case tc.wtToml == "" && !os.IsNotExist(err):
+				t.Fatalf("config.toml was created by Load (err=%v):\n%s", err, got)
+			case tc.wtToml != "" && (strings.Contains(string(got), "litellm") || strings.Contains(string(got), "sk-legacy")):
+				t.Fatalf("modelman.toml's [litellm] was copied into config.toml:\n%s", got)
+			}
+		})
 	}
 }
 
@@ -89,7 +82,7 @@ func TestLitellmStateNoConfigTomlDoesNotCreateIt(t *testing.T) {
 // it updates memory and config.toml, and writes the file 0600 when it holds an
 // api_key (the LiteLLM master key must not be world-readable).
 func TestUpdateLitellmPersists(t *testing.T) {
-	home := litellmStateEnv(t, "default_tag = \"code\"\n", "")
+	home := litellmStateEnv(t, "default_tag = \"code\"\n")
 	cfg, _ := Load()
 	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.Enabled, s.URL, s.APIKey = true, "http://x:4000/", "sk-new" }); err != nil {
 		t.Fatal(err)
@@ -108,33 +101,26 @@ func TestUpdateLitellmPersists(t *testing.T) {
 	}
 }
 
-// TestLitellmOwnEmptyTableWinsOverLegacy pins precedence for present-but-empty:
-// a config.toml with its own zero-valued [litellm] (user turned it off in wt)
-// must win over a populated legacy modelman.toml table, must decode to a
-// non-nil pointer (distinguishable from absent), and must not re-migrate.
-func TestLitellmOwnEmptyTableWinsOverLegacy(t *testing.T) {
-	home := litellmStateEnv(t, "default_tag = \"code\"\n[litellm]\nenabled = false\nurl = \"\"\napi_key = \"\"\n", legacyLitellm)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LitellmTable == nil {
-		t.Fatal("bare/zero [litellm] must decode to a non-nil pointer")
-	}
-	if cfg.IsLitellm() || cfg.LitellmAPIKey() != "" || cfg.LitellmBaseURL() != "" {
-		t.Fatalf("legacy table overrode wt's own empty [litellm]: %+v", cfg.litellm)
-	}
-	if cfg.migratedLitellm {
-		t.Fatal("must not re-migrate when wt has its own [litellm]")
-	}
-	b, _ := os.ReadFile(filepath.Join(home, "agent-wt", "config.toml"))
-	if strings.Contains(string(b), "sk-legacy") {
-		t.Fatalf("legacy key leaked into config.toml:\n%s", b)
-	}
-	litellmStateEnv(t, "default_tag = \"code\"\n[litellm]\n", "")
-	c2, err := Load()
-	if err != nil || c2.LitellmTable == nil {
-		t.Fatalf("bare [litellm] table: err=%v table=%v", err, c2.LitellmTable)
+// TestLitellmOwnEmptyTableIsATableNotAbsence pins that a config.toml with its
+// own zero-valued [litellm] (the user turned routing off in wt), or a bare
+// [litellm] header, decodes to a non-nil table with routing off. `wt litellm
+// status` and UpdateLitellm tell "off" from "never set" by that pointer.
+func TestLitellmOwnEmptyTableIsATableNotAbsence(t *testing.T) {
+	for _, body := range []string{
+		"default_tag = \"code\"\n[litellm]\nenabled = false\nurl = \"\"\napi_key = \"\"\n",
+		"default_tag = \"code\"\n[litellm]\n",
+	} {
+		litellmStateEnv(t, body)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LitellmTable == nil {
+			t.Fatalf("[litellm] in %q must decode to a non-nil pointer", body)
+		}
+		if cfg.IsLitellm() || cfg.LitellmAPIKey() != "" || cfg.LitellmBaseURL() != "" {
+			t.Fatalf("empty [litellm] turned routing on: %+v", cfg.litellm)
+		}
 	}
 }
 
@@ -241,7 +227,7 @@ func TestWriteFileAtomicConcurrent(t *testing.T) {
 // in-memory state untouched. Otherwise `wt litellm on` reports an error while
 // this process keeps routing through LiteLLM on a state that was never saved.
 func TestUpdateLitellmRollsBackOnSaveFailure(t *testing.T) {
-	home := litellmStateEnv(t, "default_tag = \"code\"\n", "")
+	home := litellmStateEnv(t, "default_tag = \"code\"\n")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
