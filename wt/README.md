@@ -89,7 +89,7 @@ See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for 
 
 ### Migration from legacy `models.conf`
 
-On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, so that a subsequent `modelman migrate` can import them into `registry.toml`; `wt` itself reads Providers/Models back out of the registry, and writes that file only through `wt model init`.
+On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, which nothing reads back (the sections are inert); `wt` itself reads Providers/Models back out of the registry, and writes that file through `wt model init`, `wt model add|edit|rm`, the Models tab of `wt config` and `wt cloud-sync`.
 
 ## User preferences (`wt config`)
 
@@ -190,7 +190,7 @@ go vet ./...       # Vet
 | `cmd/wt/commands.go` | Subcommand constructors: `rotate` (debug helper) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd`, `launchFiltered`, `launchPassthroughImpl`, `runAgentCmd` |
-| `internal/config/` | Config loading, model registry types (joined from modelman's `registry.toml`), validation, secrets, legacy migration |
+| `internal/config/` | Config loading, model registry types (joined from `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook |

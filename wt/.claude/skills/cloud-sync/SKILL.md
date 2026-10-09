@@ -222,10 +222,3 @@ a saved copy of the page and work from that. Work from `wt/`.
 
 If the page's off-peak **window** wording changes (it is not parsed), update
 `offpeakRow` in `internal/cloudsync/catalog.go` and its test.
-
-## While modelman still exists
-
-`modelman refresh-prices` and `modelman ollama-catalog sync` still work and
-are frozen; use `wt cloud-sync`. Both tools stamp the same
-`pricing_updated_at` key, and they print the same removal digest for the
-same plan.

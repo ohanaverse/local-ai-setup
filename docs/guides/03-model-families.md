@@ -2,7 +2,7 @@
 
 > Use this to: set the `family` and `tags` of a model with `wt model edit` or the Models tab of `wt config`, and a family's display name by hand in `registry.toml`, and understand how `family` and `tags` decide what the `wt` picker offers and which model it lands on next.
 >
-> Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
 
 ## Prerequisites
 
@@ -15,13 +15,6 @@ grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml
 
 It prints the number of `[[models]]` entries in your registry; anything ≥2 is enough to follow along.
 
-- modelman runnable from its repo, for the read-only check in Verification (not installed globally — see [02-providers-and-models](02-providers-and-models.md) Gotchas for why it must be run from the `modelman/` directory):
-
-```bash
-# from: ~/github/ohanaverse/local-ai-setup/modelman
-uv sync
-```
-
 - A `wt` on PATH built before the 2026-08-28 registry-consumer merge serves a stale catalog — see Gotchas (stale-binary item); rebuild with `make install` if in doubt.
 
 ## TL;DR
@@ -29,7 +22,7 @@ uv sync
 | Knob | Lives in | Who reads it | How to change it |
 |---|---|---|---|
 | `family` per model | `~/.config/local-ai/registry.toml` (canonical) | `wt` (`-F` family filter) | `wt model edit <id> --family <name>`, or the Family field of the Models tab's form |
-| display name per family | `~/.config/local-ai/registry.toml` `[[families]]` (canonical) | modelman's TUI only, which is disabled — **never read by `wt`**, so nothing shows it today | Hand-edit the `[[families]]` entry (Step 2) |
+| display name per family | `~/.config/local-ai/registry.toml` `[[families]]` (canonical) | nothing: wt never reads it | Hand-edit the `[[families]]` entry (Step 2) |
 | `tags` per model (rotation groups, e.g. `code`/`design`) | `~/.config/local-ai/registry.toml` | `wt` (`-T` filter, tag rotation) | `wt model edit <id> --tags code,design`, or the Tags field of the Models tab's form (Step 3) |
 
 ```bash
@@ -44,7 +37,7 @@ wt -F <family>[,<family>…]    # filter picker to families (OR within flag)
 wt -T <tag>[,<tag>…]          # filter picker to tagged models (OR within flag)
 ```
 
-`wt`'s TUI `d` toggle between code/design groups is documented in the wt README but has no key handler in the shipped wt 0.1.0 build (see Gotchas). Tags are empty (`tags = []`) on every row modelman's TUI wrote — see Step 3 to check yours.
+`wt`'s TUI `d` toggle between code/design groups is documented in the wt README but has no key handler in the shipped wt 0.1.0 build (see Gotchas). Tags are empty (`tags = []`) on many older rows — see Step 3 to check yours.
 
 ## Steps
 
@@ -53,14 +46,12 @@ wt -T <tag>[,<tag>…]          # filter picker to tagged models (OR within flag
 A family groups variants of the same base model across providers (the data-model spec: all `gemma4` variants share `family = "gemma4"`; a model with an empty family "is treated as its own unique family").
 
 ```bash
-grep -n -A3 '\[families' ~/.config/local-ai/modelman.toml
 grep '^family = ' ~/.config/local-ai/registry.toml | sort -u
 ```
 
-The first command shows the line number of the legacy `[families]` table (if present); the second lists each distinct `family = "…"` value once. Example (illustrative — your ids will differ):
+It lists each distinct `family = "…"` value once. Example (illustrative — your ids will differ):
 
 ```text
-115:[families]
 family = "ornith-1.5:35b"
 family = "ornith-1.5:9b"
 family = "qwen3.8:27b-mlx"
@@ -70,17 +61,7 @@ Compare the number of distinct family values with the model count from Prerequis
 
 ### 2. Display names in `registry.toml` `[[families]]`
 
-Display names were shown by modelman's TUI only — `wt` never reads them, and with that TUI disabled nothing displays them today. They are still kept: they live in `registry.toml`'s first-class `[[families]]` entries (the legacy `modelman.toml` `[families]` table is still loaded as a read-side fallback, and nothing writes it). Shape (from the modelman README):
-
-```toml
-[[families]]
-name = "ornith"
-display_name = "Ornith"   # optional; omitted when unset
-```
-
-Set or rename one by hand — add the entry, or change its `display_name` — a hand edit of `registry.toml`, with the procedure in [02-providers-and-models](02-providers-and-models.md) Step 1 under *A few things stay a hand edit* (edit, `wt litellm sync --dry-run` to check the file, `wt litellm sync`). `name` is the family id, the same string the models' `family = "…"` lines carry; a family needs no `[[families]]` entry to exist, only a model that names it. To move a model to another family, `wt model edit <id> --family <name>`; a family is gone once no model names it, and `uv run modelman delete-family <name>` (from the `modelman/` directory) removes an empty family's leftover `[[families]]` entry — or delete the entry by hand.
-
-A display name changes nothing in the `wt` picker, which groups and filters by the family id.
+`registry.toml` may hold `[[families]]` entries with a `display_name`. Nothing reads them: wt shows and rotates families by their id. wt preserves the entries on every write. Set or rename one by hand (guide 02 Step 1, *A few things stay a hand edit*) if you keep them for your own reference.
 
 ### 3. Tag groups (`code`/`design`) and how `wt` consumes them
 
@@ -92,7 +73,7 @@ grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml
 
 If this equals the `[[models]]` count from Prerequisites, no model is tagged yet and tag filters/rotation have nothing to match.
 
-Tags are set with `wt model edit <id> --tags code` (or `--tags code,design`; `--tags ""` clears them), or in the Tags field of the Models tab's form ([02-providers-and-models](02-providers-and-models.md) Step 1). They are stored as the model's `tags` line in `~/.config/local-ai/registry.toml`, e.g. `tags = ["code"]`. A modelman subcommand that rewrites the file keeps them. What wt does with them:
+Tags are set with `wt model edit <id> --tags code` (or `--tags code,design`; `--tags ""` clears them), or in the Tags field of the Models tab's form ([02-providers-and-models](02-providers-and-models.md) Step 1). They are stored as the model's `tags` line in `~/.config/local-ai/registry.toml`, e.g. `tags = ["code"]`. What wt does with them:
 
 - `-T/--tags code,design` — model must have at least one matching tag (OR within the flag);
 - `-F/--family` — model's `family` must equal one of the listed families (OR within the flag);
@@ -202,8 +183,8 @@ ollama/glm-5.3-flash:cloud
 ## Gotchas
 
 - **Tags and families drive agent rotation — editing them changes what `wt` offers next launch.** The picker cursor starts after `rotation.state`'s last-launched id; narrow the tag/family sets too far and you get `no models for agent "…" in tag "…" — edit your config`.
-- **Display names are consumed by modelman's TUI only, which is disabled.** They never change what `wt` shows or rotates, and nothing displays them today.
-- **Family/tag structure is canonical in `registry.toml`.** Change a model's family and tags with `wt model edit` or the Models tab ([02-providers-and-models](02-providers-and-models.md) Step 1); a `[[families]]` display name is a hand edit, and nothing reads it today. modelman's TUI is disabled, and its subcommands keep what is there when they rewrite the file.
+- **Display names are read by nothing.** They never change what `wt` shows or rotates.
+- **Family/tag structure is canonical in `registry.toml`.** Change a model's family and tags with `wt model edit` or the Models tab ([02-providers-and-models](02-providers-and-models.md) Step 1); a `[[families]]` display name is a hand edit, and nothing reads it today.
 - **`~/.config/local-ai/families/` is LEGACY** (per-family YAML manifests such as `ornith-1.5.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per [00-config-map](00-config-map.md): don't resurrect it.
 - **TUI behavior:** there is no `d` tag-toggle key, `rotation.state` is a single global slot, and per-tag `rotation-<tag>.state` files are legacy migration inputs that are deleted after migration.
 - **A `wt` binary built before the registry-consumer merge (2026-08-28) serves a stale catalog.** Symptom: `wt rotate code`/`design` return models although `registry.toml` has no tags — the old build still serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks, so its catalog can be missing models the registry has (and list ones it doesn't). A rebuild from `~/github/ohanaverse/local-ai-setup/wt` (`go build -o /Users/keith/.local/bin/wt ./cmd/wt` — build over the PATH copy, not GOPATH, which `~/.local/bin` shadows; see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4) makes `registry.toml` authoritative — expected to fail the `wt rotate code/design` pair-check above until tags exist.
@@ -213,5 +194,4 @@ ollama/glm-5.3-flash:cloud
 - wt README (flags, TUI keys, rotation, config split): `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
 - wt registry-consumer design (fail-closed load, joined Config, tag/family filter semantics): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`
 - Model registry data model (family/tags/agents, cascading filters): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
-- modelman README (`modelman.toml` shapes; its TUI section describes the disabled screen): `/Users/keith/github/ohanaverse/local-ai-setup/modelman/README.md`
 - Previous/next in this set: [02-providers-and-models](02-providers-and-models.md), [04-litellm-config](04-litellm-config.md)

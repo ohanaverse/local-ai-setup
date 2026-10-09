@@ -2,12 +2,11 @@
 
 > Use this to: keep the running stack healthy day-to-day — one health-check block, per-service restart/repair, crash-loop triage, and safe upgrades.
 >
-> Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
 
 ## Prerequisites
 
-- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`; **`homebrew.mxcl.omlx.plist` is optional since the 2026-09-30 rebuild** — wt/modelman lifecycle backends run `omlx start` on demand, and the rebuild omits it; `brew services start omlx` restores it if you want oMLX always-on) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
-- modelman runnable from its repo, not a global install (it is not installed as a `uv tool` — guide 02 Gotchas).
+- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`; **`homebrew.mxcl.omlx.plist` is optional since the 2026-09-30 rebuild** — wt's and llmbench's lifecycle backends run `omlx start` on demand, and the rebuild omits it; `brew services start omlx` restores it if you want oMLX always-on) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
 - This repo checked out — `llmbench` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `llmbench/`, and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
 
@@ -45,6 +44,7 @@ Reading it fast:
 - `local.litellm.proxy` shows status `-15` here because it was SIGTERMed by a `kickstart -k` earlier that day (see Gotchas — `0`/`-15` are the only healthy readings for the middle column).
 - Ollama row has no PID (`-`) and no LaunchAgent plist exists for it — the `com.ollama.ollama` login item (Ollama.app) owns the daemon; the `application.com.electron.ollama.*` row appears only while the app window is open.
 - Any line that differs → §1 for restart mechanics, §3 for logs.
+- Looking for a `modelman` command? §6 has the `wt` or `llmbench` command for each.
 
 ## Steps
 
@@ -137,44 +137,33 @@ Output is one `<line>:  - model_name: <id>` row per routed model. Example (illus
 
 Present here but absent from `:4000`? config.yaml changed since the proxy last started → jump to step 7 (restart). Absent here too? Continue.
 
-**Step 3 — is the model runnable at all?** Check modelman's state for the id:
+**Step 3 — is the model on disk and running?** Ask wt's live inventory:
 
 ```bash
-grep -A5 '^\[model_state."<model-id>"\]' /Users/keith/.config/local-ai/modelman.toml
+wt model list
 ```
 
-Example shape (illustrative — a downloaded, running local model; your id, path and size will differ):
+Read the row for the id. STATUS `ok` means on disk, `missing` means the registry names it and no probe finds it, `new` means on disk with no registry entry (`unknown`: the provider could not be asked). RUNNING `run` or `load` means the model is serving (`load`: omlx is still loading it), which is what a local model's route depends on. Routing itself is recorded nowhere but `config.yaml`, and `wt litellm list` reads it back. What to do, by kind of model:
 
-```text
-[model_state."ollama/qwen3.8:27b-mlx"]
-ready = true
-disk_path = "ollama:qwen3.8:27b-mlx"
-size_bytes = 19327352832
-running = true
-```
+- **Local model** (omlx/mtplx/mlx_lm_server): its route exists only while it runs, so an on-disk model with no route is simply a stopped model. Start it — the route appears: `wt start <model-id>` (an `mlx_lm_server` pairing: Step 9). A model that is running with no route was started outside wt: launching it through wt, or `wt start <model-id>`, writes the route (Step 10). A model *missing from wt's picker* is a different question: wt lists only what its live probes of ollama/omlx/mtplx find — plus a running `mlx_lm_server` pairing, which has no artifact scan (a stopped one is not listed) — so a local model that is not on disk is not listed at all — download it with the provider's own tool (`ollama pull`, `hf download` into omlx's model directory, `mtplx pull` — [02-providers-and-models](02-providers-and-models.md) Step 5). Run `wt -A <agent>` and read the STATUS/RUNNING columns: a non-running local model on disk is a start row, and a model with no registry entry is listed as `new` (hidden while `-T`/`-F` is set).
+- **Ollama model**: routed while it is *pulled* — `ollama list` must show it (and the daemon must be answering, or `wt litellm sync` leaves ollama's routes alone with a warning; a daemon that refuses the connection gets its local routes removed). A pulled ollama model with no route usually means no sync has run since the pull: run `wt litellm sync`. Launching the model through wt, or `wt start <model-id>`, also writes the route once the model is running (Step 10); `wt litellm sync` stays the fix for a client that reaches the proxy without wt.
+- **Cloud model** (openrouter, or `location = "cloud"`): there is nothing to download or start — wt routes a cloud model whenever `registry.toml` configures it, so a missing route means no sync has run since it was added (a hand edit of `registry.toml`; `wt model add` syncs for itself) or the last sync could not build its row. `wt litellm sync --dry-run` tells them apart: `<model-id>: would route` for the first, a per-id error for the second (a `secret_ref` that `resolved empty`, or an empty `model_name`). If the id is not in the plan at all, its provider has no LiteLLM mapping (check `wt litellm providers`) — such a model is never routed.
 
-No block at all means modelman has no state for that id yet (`modelman sync` reconciles a registered model; a local model with no registry entry gets a block only when modelman starts it, under its discovered id `<family>/<artifact>`). Note that routing is not recorded in `modelman.toml` at all (the pre-#179 `exposed` field is gone), so this file can never tell you whether a model is on `:4000` — `config.yaml` is the only record, and `wt litellm list` reads it back. What the block *does* tell you is whether the model can be started, which is what the route depends on:
-
-- **Local model** (omlx/mtplx/mlx_lm_server): its route exists only while it runs, so a `ready = true` model with no route is simply a stopped model. Start it — the route appears: `uv run modelman start <model-id>` (needs the `wt` binary on PATH). A model that is running with no route was started outside wt and modelman: launching it through wt, or `wt start <model-id>`, writes the route (Step 10). A model *missing from wt's picker* is a different question: wt lists only what its live probes of ollama/omlx/mtplx find — plus a running `mlx_lm_server` pairing, which has no artifact scan (a stopped one is not listed) — so a local model that is not on disk is not listed at all — download it with the provider's own tool (`ollama pull`, `hf download` into omlx's model directory, `mtplx pull` — [02-providers-and-models](02-providers-and-models.md) Step 5; modelman's TUI, which used to queue downloads, is disabled). Run `wt -A <agent>` and read the STATUS/RUNNING columns: a non-running local model on disk is a start row, and a model with no registry entry is listed as `new` (hidden while `-T`/`-F` is set). `ready` plays no role there, and modelman.toml's `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section).
-- **Ollama model**: routed while it is *pulled* — `ollama list` must show it (and the daemon must be answering, or `wt litellm sync` leaves ollama's routes alone with a warning; a daemon that refuses the connection gets its local routes removed). A pulled ollama model with no route usually means no sync has run since the pull: run `wt litellm sync`. Launching the model through wt, or `wt start <model-id>`, also writes the route once the model is running (Step 10); `wt litellm sync` stays the fix for a client that reaches the proxy without wt. `uv run modelman start <model-id>` also works, but refuses rather than guess when the daemon isn't answering.
-- **Cloud model** (openrouter, or `location = "cloud"`): it has no `ready` gate — wt routes a cloud model whenever `registry.toml` configures it, so a missing route means no sync has run since it was added (a hand edit of `registry.toml`; `wt model add` syncs for itself) or the last sync could not build its row. `wt litellm sync --dry-run` tells them apart: `<model-id>: would route` for the first, a per-id error for the second (a `secret_ref` that `resolved empty`, or an empty `model_name`). If the id is not in the plan at all, its provider has no LiteLLM mapping (check `wt litellm providers`) — such a model is never routed.
-
-**Step 4 — give it a route.** There is no per-model routing command (`modelman expose` and `wt litellm expose` were removed in #179). A route comes from the registry plus the model's live state, so the two moves are a start and a sync:
+**Step 4 — give it a route.** There is no per-model routing command (`wt litellm expose` was removed in #179). A route comes from the registry plus the model's live state, so the two moves are a start and a sync:
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman start <model-id>        # local model: load it; the sync every start ends with writes its route
+wt start <model-id>                     # local model: load it; the start writes its route
 wt litellm sync --dry-run               # any model: what the next sync would route, and any per-id error
 wt litellm sync                         # write it (restarts the proxy only if config.yaml changed)
 ```
 
 ```text
-Started <model-id>.
+wt: <model-id> is running
 ```
 
-A *cloud* model that is not in `registry.toml` cannot be routed by wt at all — add it first (guide 02). A *local* model needs no registry entry: one that is on disk is started by its native name or its discovered id `<family>/<artifact>` (`modelman start` with no argument lists them under `Discovered`), and is routed under that id — only an `mlx_lm_server` pairing must be registered. For a local model, starting it is the durable fix: the next sync removes a stopped omlx/mtplx/mlx_lm_server model's route again.
+A *cloud* model that is not in `registry.toml` cannot be routed by wt at all — add it first (guide 02). A *local* model needs no registry entry: one that is on disk is started by its discovered id `<family>/<artifact>` (`wt model list` shows them as `new`), and is routed under that id — only an `mlx_lm_server` pairing must be registered. For a local model, starting it is the durable fix: the next sync removes a stopped omlx/mtplx/mlx_lm_server model's route again.
 
-Bad ids refuse instead — an `error: …` line on stderr, exit 1 — meaning the id from Steps 1–3 never existed; fix the id, not the config.
+Bad ids refuse instead — `wt: unknown model "<id>"` on stderr, exit 1 — meaning the id from Steps 1–3 never existed; fix the id, not the config.
 
 **Step 5 — backend port actually up?** The `api_base` in the model's row points at a backend; probe the one that owns your model (both ran live, 2026-08-29):
 
@@ -229,14 +218,16 @@ kickstart OK
 
 Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; the port refused connections and answered `401` again after **7 s**. Guides 01/04 measured 9–15 s on earlier runs — plan for a ~10–20 s dead window and confirm with the Step 1 curl rather than assuming. Everything else uses the mechanics in the §1 table.
 
-**Step 9 — omlx/mtplx/mlx_lm_server route dropped by `wt litellm sync`? Start the model; `modelman sync` does not re-add it.** (Observed 2026-09-30, rebuild session; updated for #179.) `wt litellm sync` has no ready gate and routes exactly the local models that are *running* at that moment — plus, for ollama, every model that is *pulled*, registered or not — and every other local model wt owns a row for loses it (sync prints a `<model-id>: unrouted` line for each; preview with `wt litellm sync --dry-run`). "Running" is a live probe (`wt/internal/localmodels/sources.go`); "pulled" is ollama's `/api/tags`, with the daemon fully answering (`wt/cmd/wt/litellm.go` `desiredLocalIDs`). Downloading an omlx/mtplx artifact + `modelman sync` flips `ready = true` in `modelman.toml` but does not route it. The durable fix is to start the model:
+**Step 9 — omlx/mtplx/mlx_lm_server route dropped by `wt litellm sync`? Start the model.** (Observed 2026-09-30, rebuild session; updated for #179.) `wt litellm sync` has no ready gate and routes exactly the local models that are *running* at that moment — plus, for ollama, every model that is *pulled*, registered or not — and every other local model wt owns a row for loses it (sync prints a `<model-id>: unrouted` line for each; preview with `wt litellm sync --dry-run`). "Running" is a live probe (`wt/internal/localmodels/sources.go`); "pulled" is ollama's `/api/tags`, with the daemon fully answering (`wt/cmd/wt/litellm.go` `desiredLocalIDs`). Downloading an omlx/mtplx artifact does not route it. The durable fix is to start the model:
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman start <model-id>   # any local provider; for omlx/mtplx `wt start <model-id>` does the same via its lifecycle route hook (wt has no backend for mlx_lm_server, so use modelman for that one)
+wt start <model-id>   # omlx, mtplx (and ollama); the start writes the route
+# an mlx_lm_server pairing — wt has no backend for one:
+uv run --directory llmbench llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>
+wt litellm sync
 ```
 
-A model that is already running — one you started by hand — gets its route back from `wt start <model-id>` or from the next launch through wt (Step 10). (Nothing in `modelman.toml` records routing, so there is no flag that could disagree with sync.)
+A model that is already running — one you started by hand — gets its route back from `wt start <model-id>` or from the next launch through wt (Step 10).
 
 A model with no registry entry is routed the same way, under its discovered id `<family>/<artifact>` (`wt litellm sync --dry-run` lists it as `<id>: would route`). A `(hand-written)` row in `wt litellm list` whose name equals a discovered model's id (an alias you wrote before #179, say) keeps serving that name: wt never replaces it, so delete the row from `config.yaml` if you want wt's marked row, then run `wt litellm sync`.
 
@@ -248,7 +239,7 @@ wt litellm sync --dry-run                # expect: <model-id>: would route
 wt litellm sync                          # writes the row and restarts the proxy; give it ~10–20 s
 ```
 
-`wt start <model-id>` does the same for that one model: for a model that is already running it writes the route if it is missing, then prints `wt: <model-id> is already running`. Any modelman command that ends in a sync (`modelman sync`, `start`, `stop`) writes it too. If a launch through wt still ends in `Invalid model name`, look on stderr for `wt: LiteLLM route not updated: …` (the write failed). Launched from the `wt` picker, the check shows an "Updating the LiteLLM route" screen while the proxy restarts, and that line and any route warning are printed on the terminal when the agent starts (or after wt exits, if the launch did not happen). They are not shown in the picker's status line. If the launch itself fails, the status line shows the launch error, and the route line is printed on the terminal when wt exits. Also check `wt litellm list` for a `(hand-written)` row under that name: wt leaves it in place when the name is a discovered model's id (Step 9), and adopts it as its own row when the name is a registry model id ([04-litellm-config](04-litellm-config.md) Gotchas). One case the check cannot see: the row is listed in `wt litellm list` but the proxy is stale, because a restart failed or was interrupted — restart the proxy (Step 8).
+`wt start <model-id>` does the same for that one model: for a model that is already running it writes the route if it is missing, then prints `wt: <model-id> is already running`. If a launch through wt still ends in `Invalid model name`, look on stderr for `wt: LiteLLM route not updated: …` (the write failed). Launched from the `wt` picker, the check shows an "Updating the LiteLLM route" screen while the proxy restarts, and that line and any route warning are printed on the terminal when the agent starts (or after wt exits, if the launch did not happen). They are not shown in the picker's status line. If the launch itself fails, the status line shows the launch error, and the route line is printed on the terminal when wt exits. Also check `wt litellm list` for a `(hand-written)` row under that name: wt leaves it in place when the name is a discovered model's id (Step 9), and adopts it as its own row when the name is a registry model id ([04-litellm-config](04-litellm-config.md) Gotchas). One case the check cannot see: the row is listed in `wt litellm list` but the proxy is stale, because a restart failed or was interrupted — restart the proxy (Step 8).
 
 ### 3. Log triage
 
@@ -300,32 +291,6 @@ Startup-fault lines worth reacting to: repeated `Error loading config`, YAML par
 
 ### 4. Upgrades — command per tool, then verify
 
-**modelman** (repo-local; it is not installed globally — guide 02):
-
-<!-- UNVERIFIED — upgrade not run in this session (mutates the repo + tool env); checkout was d93f5b9, 2026-08-29. Under-way output depends on how far behind the checkout is; when current: `Already up to date.` plus uv's install line. -->
-
-```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-git pull && uv sync
-```
-
-Verify — these commands ran live, 2026-08-29, on current checkout `d93f5b9`:
-
-```bash
-git -C /Users/keith/github/ohanaverse/local-ai-setup/modelman rev-parse --short HEAD
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
-uv run modelman sync --help
-```
-
-```text
-d93f5b9
-Usage: modelman sync [OPTIONS]
-
-  Reconcile configured models against their providers.
-```
-
-(A `VIRTUAL_ENV does not match the project environment` warning from pyenv is normal noise; see guide 07.)
-
 **wt** — rebuild over the PATH copy (`~/.local/bin/wt`), not GOPATH; the gotcha below explains why:
 
 <!-- UNVERIFIED — build not run in this session (writes a binary); checkout was bf98d14, 2026-08-29. -->
@@ -337,7 +302,7 @@ cd /Users/keith/github/ohanaverse/local-ai-setup/wt
 git pull && go build -o /Users/keith/.local/bin/wt ./cmd/wt
 ```
 
-Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before any modelman command triggers the first real sync.
+Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before the first `wt model add|edit|rm`, `wt model init` or `wt cloud-sync` triggers the first real sync.
 
 Verify — `wt --version` ran live, 2026-08-29:
 
@@ -446,6 +411,39 @@ restored providers
 
 <!-- UNVERIFIED — the residue states above were not induced in this session (inducing them means stopping live backends); the detection commands and the loaded-header `ollama ps` output are the same ones verified live in the healthy state (header only, no rows). -->
 
+### 6. Where modelman's commands went
+
+modelman, the Python model manager this repo used to ship, was retired into
+`wt` and deleted. `uv run --directory modelman modelman` fails because the
+directory is gone; that is expected. Each thing it did:
+
+| modelman | Now |
+|---|---|
+| TUI (`a`, `e`, `d` keys) | `wt config` Models tab, or `wt model add\|edit\|rm` |
+| `start` with no argument | `wt model list` |
+| `start <id>`, `stop <id>` | `wt start <id>`, `wt stop <id>` |
+| `stop --all` | `wt stop --all`, and for a running `mlx_lm_server` pairing, which wt does not stop, `uv run --directory llmbench llmbench provider stop mlx_lm_server` |
+| `start <mlx_lm_server pairing>` | `uv run --directory llmbench llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>`, then `wt litellm sync` to route it |
+| `stop <mlx_lm_server pairing>` | `uv run --directory llmbench llmbench provider stop mlx_lm_server`, then `wt litellm sync` to drop its route |
+| `sync` | `wt model init` for provider rows; nothing for state — wt probes disk and servers each time |
+| `refresh-prices`, `ollama-catalog sync` | `wt cloud-sync` |
+| `usage report` | `wt stats` |
+| `usage report --days N`, the Markdown report, its Reconciliation sections and "Last wt launch" line | dropped — `wt stats --window 1d\|7d\|30d`, `wt stats --json` ([07-usage-and-spend](07-usage-and-spend.md)) |
+| `litellm …` | `wt litellm …` |
+| `benchmark …`, `provider …` | `uv run --directory llmbench llmbench …`, `… llmbench provider …` |
+| `migrate`, `delete-family`, TUI `r` (download, delete), `l`, `s` | dropped — download with the provider's own tool (guide 02 Step 5); `wt litellm on\|off`, `wt start` and `wt stop` cover `l` and `s` |
+
+llmbench is not installed on `PATH`. Where wt prints a command that starts
+with `llmbench provider …` (the start hint of a stopped pairing, the text of
+`wt stop --help`), run it from the repo root with
+`uv run --directory llmbench` in front, as in the table.
+
+`MODELMAN_REGISTRY`, `MODELMAN_LITELLM_CONFIG`, `MODELMAN_LITELLM_RESTART_CMD`
+and `MODELMAN_LITELLM_DATABASE_URL` still work: wt reads each after its `WT_`
+name. `MODELMAN_BENCHMARK_WORKLOAD` and `MODELMAN_AGENT_DEBUG` still work in
+llmbench, after `LLMBENCH_WORKLOAD` and `LLMBENCH_AGENT_DEBUG`. No other
+`MODELMAN_*` variable is read by anything.
+
 ## Verification
 
 Everything this guide promises reduces to the TL;DR block being green — no destructive simulation is needed to verify it, and none was used. On the healthy 2026-08-29 stack, the block's verbatim output is pasted in TL;DR above; re-running it must reproduce: `401` on :4000, `200` on the two backend ports, five launchd rows with live PIDs (Ollama's row legitimately shows `-`), `accepting connections`, `PONG`.
@@ -474,12 +472,10 @@ Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth
 - **A model still loaded after wt stopped it means two Ollama servers.** `wt stop` (or the stop prompt on exit) prints `done`, yet `ollama ps` still lists the model and the memory is not freed: run `pgrep -fl "ollama serve"`. Two lines means LiteLLM started a second server beside the app's, which it does at proxy startup for any ollama row in `config.yaml` with no `api_base` ([04-litellm-config](04-litellm-config.md) Gotchas). wt fills that field in on its next write; to clear it at once, kill the extra `ollama serve` (the one that is not under `Ollama.app`) and restart the proxy (§2 Step 8). Left alone, the stray copy unloads after Ollama's keep-alive, five minutes by default, which makes this look intermittent.
 - **An omlx model is running only when omlx has it loaded.** The omlx service lists every model in its directory on `/v1/models` whether or not it is loaded, so that list is not "what is running"; wt asks omlx what is loaded instead (`curl -s http://localhost:8000/health` shows the pool's `model_count` and `loaded_count`). When some omlx models are loaded and others are not, only omlx's key-protected status endpoint says which: if the server has an API key, set `auth.secret_ref` on the registry's omlx provider, or `wt litellm sync` warns that the omlx probe did not succeed and leaves its routes unchanged, and a start asks before replacing.
 - **There is no Ollama LaunchAgent.** `launchctl list | grep ollama` shows `-	0	com.ollama.ollama` because the row comes from the app's login item — you cannot `kickstart` Ollama back; relaunch Ollama.app. (The `application.com.electron.ollama.*` row appears only while the app window lives — don't grep for it in scripts.)
-- **Run modelman from the `modelman/` directory.** modelman is not installed globally (only `download` would be available from an old install; guide 02 Gotchas) — always `# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman` + `uv run modelman …`.
 - **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
 - **Upgrades recreate the LiteLLM tool env** — after `uv tool upgrade` (or a `--force` reinstall), redo it as `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'` and re-run `prisma generate` (guide 01 §1/§6), or the Postgres-backed UI/auth features die on the next kickstart with one of: `ModuleNotFoundError: No module named 'prisma'` (Prisma ships in the `extra-proxy` extra on LiteLLM ≥1.98, not `[proxy]`) or `Unable to find Prisma binaries. Please run 'prisma generate' first.` (unpinned Python — uv picked 3.14 on the 2026-09-30 rebuild, where the engines are missing; 3.11 is known-good). Both symptoms verified 2026-09-30.
 - **Redis crash-loops on `redisearch.so` on this machine (2026-09-30).** The module file is unreadable system-wide (`dlopen ... errno=1` in `/opt/homebrew/var/log/redis.log`), even source-built; the bottle pour itself can also `EPERM` on it during `brew install`/`upgrade`, so use `--build-from-source`. Fix applied in `/opt/homebrew/etc/redis.conf`: only the `redisearch.so` `loadmodule` line is commented out (RedisBloom/ReJSON/Timeseries load fine; original at `redis.conf.bak-original`). LiteLLM needs plain Redis only.
-- **`homebrew.mxcl.omlx.plist` is optional (2026-09-30 rebuild omitted it).** wt/modelman's lifecycle backends run `omlx start` on demand when an omlx model starts, and wt's live probes keep `omlx/*` routes out of `config.yaml` while it's down — `omlx none` in `brew services list` is the *healthy* state now, not something to fix. `brew services start omlx` only if you want oMLX always-on; remember KeepAlive then fights `omlx stop` during benchmark isolation.
-- **Bare `modelman` prints `modelman's TUI is disabled` and exits 1.** That is deliberate, not a broken install: wt writes `registry.toml` now, and the TUI went in the same step. What replaces it: `wt model init` for the file and its provider rows; `wt model` (the Models tab of `wt config`) or `wt model add|edit|rm` to add, edit or remove a model; the provider's own tool to download one; `wt start`/`wt stop` to load and unload — all in [02-providers-and-models](02-providers-and-models.md) Steps 1–7; and `wt cloud-sync` to refresh cloud prices and ollama's cloud models ([wt/docs/wt-cloud-sync.md](../../wt/docs/wt-cloud-sync.md)). modelman's subcommands (`sync`, `start`, `stop`, `refresh-prices`, `ollama-catalog sync`, `usage`) still work.
+- **`homebrew.mxcl.omlx.plist` is optional (2026-09-30 rebuild omitted it).** wt's and llmbench's lifecycle backends run `omlx start` on demand when an omlx model starts, and wt's live probes keep `omlx/*` routes out of `config.yaml` while it's down — `omlx none` in `brew services list` is the *healthy* state now, not something to fix. `brew services start omlx` only if you want oMLX always-on; remember KeepAlive then fights `omlx stop` during benchmark isolation.
 
 ## Going deeper
 

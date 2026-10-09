@@ -50,9 +50,6 @@ gui/$(id -u)/local.litellm.proxy`. `wt litellm sync` restarts and returns
 automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI start flow
 and stop picker, and the route check at launch, then wait up to 30s for `/health/liveliness`, when a LiteLLM
 URL is configured and a pre-probe before the restart was not refused.
-`modelman` no longer routes models itself (#179): it changes its own state and
-then runs one `wt litellm sync`, which is what makes a start/stop/registry
-change show up in `config.yaml` (no wait).
 A model id that two registry rows carry has one route at most: sync builds it
 from the row of the provider that is serving the model, and when more than
 one of the rows is to be routed — or a cloud row shares the id with a local

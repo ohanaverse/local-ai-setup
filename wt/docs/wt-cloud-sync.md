@@ -12,10 +12,6 @@ wt cloud-sync --yes --approve-removals <digest>      # apply without a terminal
 wt cloud-sync --only prices                          # one flow
 ```
 
-It replaces `modelman refresh-prices` and `modelman ollama-catalog sync`.
-Both still work until modelman is deleted; see
-[Beside modelman](#beside-modelman).
-
 An agent running the sync for you follows the `cloud-sync` skill
 (`wt/.claude/skills/cloud-sync/SKILL.md`), which is this page as a
 procedure.
@@ -398,15 +394,3 @@ and with no OpenRouter-priced model the notice is silent.
 Running `wt cloud-sync` clears it as long as the prices flow matches at
 least one model. To stop it for a provider whose models OpenRouter does not
 price, set `openrouter_priced = false` on that provider row.
-
-## Beside modelman
-
-Until modelman is deleted, `modelman refresh-prices` and
-`modelman ollama-catalog sync` still work, unchanged. Both stamp the same
-`pricing_updated_at` key, but on different rows: refresh-prices on the
-OpenRouter-priced models, ollama-catalog sync on the ollama rows. So
-refresh-prices clears the notice as this command's prices flow does, and
-ollama-catalog sync's stamps do not count, as the catalog flow's do not
-(above). ollama-catalog sync prints the same removal digest as this
-command's catalog flow for the same plan; refresh-prices prints none. wt's
-notice does not read `modelman.toml`'s `price_refresh_last_run`.

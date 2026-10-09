@@ -50,15 +50,15 @@ supports_function_calling = true
 supports_vision = true
 ```
 
-**2. `~/.config/local-ai/modelman.toml`** — Model state tracking
+**2. No state file** — routing is derived
 
 Routing (not a stored flag) is what decides whether a local model appears in
 the proxy's `model_list`: wt derives it from `registry.toml` plus live probes,
 so a cloud model is routed whenever it is configured, with no toggle to flip
 (#179). `wt litellm list` is the answer to "is it routed?"; there is no
 hand-write command any more (`wt litellm expose`/`unexpose` went with the flag),
-and `wt litellm on|off` is the separate LiteLLM *routing* on/off toggle. See guide 04 for the workflow. No TOML to copy here —
-the state file is machine state, not a config to hand-edit.
+and `wt litellm on|off` is the separate LiteLLM *routing* on/off toggle. See guide 04 for the workflow. No TOML to copy here:
+wt stores no per-model state (`wt model list` shows what is on disk and running).
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration
 ```yaml
@@ -116,7 +116,7 @@ wt --cwd -A pi -M openrouter/z-ai/glm-5.3-flash -- -p "Your prompt"
 
 ### Check that it is registered and routed
 
-modelman's TUI, which used to list the model, is disabled. Ask the files and wt instead:
+Ask the files and wt:
 
 ```bash
 grep -n -A6 'id = "openrouter/z-ai/glm-5.3-flash"' ~/.config/local-ai/registry.toml   # its [[models]] block
@@ -274,7 +274,7 @@ cd ~/github/ohanaverse/local-ai-setup
 # Check model is in registry
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/local-ai/registry.toml
 
-# Check model is routed (modelman.toml stores no routing state)
+# Check model is routed (nothing stores routing state)
 wt litellm list | grep "openrouter/z-ai/glm-5.3-flash"
 
 # Check LiteLLM config

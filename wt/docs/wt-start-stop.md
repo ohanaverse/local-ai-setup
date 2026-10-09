@@ -221,8 +221,8 @@ loads on request, so it has no "serving now".
   Exit `1` means it gave no usable answer — nothing is listening, or it would
   not say which model is loaded — and is never to be read as "nothing".
 
-`modelman` asks this when its own keyless probe of a partly loaded omlx pool
-is refused, since only wt resolves a `secret_ref`.
+It is a diagnostic: it answers with the key the registry names, so it works
+where a keyless probe of a partly loaded omlx pool is refused.
 
 ## `wt warm <provider> <model>`
 
@@ -235,7 +235,7 @@ When the server has an API key, wt sends the one the registry's omlx provider
 row names (`auth.secret_ref`). A server that refuses the request (401/403)
 fails the command at once, saying whether a key is missing or was refused.
 
-`modelman start` asks this when omlx refuses its own keyless warmup, since
+llmbench's omlx backend asks this when omlx refuses its keyless warmup, since
 only wt resolves a `secret_ref`. To start a model yourself, use `wt start`.
 
 ## Exit codes

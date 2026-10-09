@@ -2,7 +2,7 @@
 
 > Use this to: install and auto-start the full local-AI stack on a fresh macOS (Apple Silicon) machine and smoke-test it through the LiteLLM proxy on :4000.
 >
-> Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · **rebuild-verified 2026-09-30** on LiteLLM 1.103.1 — fresh box restored from the old machine's backup volume (§1 LiteLLM+Prisma, §4 oMLX, §6 Postgres/Redis, §7 LaunchAgent)
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · **rebuild-verified 2026-09-30** on LiteLLM 1.103.1 — fresh box restored from the old machine's backup volume (§1 LiteLLM+Prisma, §4 oMLX, §6 Postgres/Redis, §7 LaunchAgent) · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
 
 ## Prerequisites
 
@@ -62,15 +62,12 @@ echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY —
 # 3. Pull a model — example id; pick one from your registry (an already-pulled model returns "success" instantly)
 ollama pull qwen3.8:27b-mlx
 
-# 4. modelman setup + start a model (which routes it through LiteLLM)
-# modelman and wt both need ~/.config/local-ai/registry.toml. `wt model init` creates it when it is missing, with a
+# 4. registry + start a model (which routes it through LiteLLM)
+# wt needs ~/.config/local-ai/registry.toml. `wt model init` creates it when it is missing, with a
 # provider row for each local tool it finds on PATH (ollama, omlx, mtplx); it never changes a row that exists.
 # (needs `wt` on PATH — `make install` from the repo root.)
 wt model init
-# from: ~/github/ohanaverse/local-ai-setup/modelman
-uv sync
-# (bare `uv run modelman` used to open a TUI; it is disabled — models are added with `wt model add` or the Models tab of `wt config`, guide 02)
-uv run modelman start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its name or its `ollama/<name:tag>` id). No routing step: every start ends with the `wt litellm sync` that writes the model_list entry and restarts the proxy (needs `wt` on PATH); a pulled ollama model stays routed after a stop
+wt start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its `ollama/<name:tag>` id). No routing step: the start writes the model_list entry and restarts the proxy; a pulled ollama model stays routed after a stop
 
 # 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the sync — this is only needed if that restart was skipped or failed)
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
@@ -230,7 +227,7 @@ brew services list | grep omlx
 omlx          none            keith   # 2026-09-30 rebuild — deliberately NO service ("started" was the old machine)
 ```
 
-(It used to run as a brew service; since the wt/modelman lifecycle engines it's **optional**. Starting any omlx model — `wt start`, `modelman start`, `llmbench provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
+(It used to run as a brew service; since wt's lifecycle engine it's **optional**. Starting any omlx model — `wt start`, `llmbench provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
 
 oMLX auto-discovers models in `~/.omlx/models/` (set via `~/.omlx/settings.json`, key `model.model_dirs`). Get a model in with the HF CLI:
 
@@ -305,7 +302,7 @@ hf auth whoami   # -> user=gitmanntoo orgs=Wisconsin,mlx-community
 
 What hf is needed for here:
 
-- **Downloading oMLX artifacts** the modelman registry references — e.g. the Tier-1 starter `hf download mlx-community/Qwen3.8-27B-4bit --local-dir ~/.omlx/models/Qwen3.8-27B-4bit` (the directory must be **flat** and sit in oMLX's model directory — oMLX cannot parse the nested HF-cache layout, which a bare `hf download <repo>` without `--local-dir` produces. This command is the download path now: modelman's TUI, which used to queue the same download, is disabled, and wt downloads nothing — [02-providers-and-models](02-providers-and-models.md) Step 5 has the command for each provider)
+- **Downloading oMLX artifacts** `registry.toml` references — e.g. the Tier-1 starter `hf download mlx-community/Qwen3.8-27B-4bit --local-dir ~/.omlx/models/Qwen3.8-27B-4bit` (the directory must be **flat** and sit in oMLX's model directory — oMLX cannot parse the nested HF-cache layout, which a bare `hf download <repo>` without `--local-dir` produces. This command is the download path: wt downloads nothing — [02-providers-and-models](02-providers-and-models.md) Step 5 has the command for each provider)
 - `bin/mlx-quantize` (see [10-mlx-lm-quantization](10-mlx-lm-quantization.md)) and `benchmarks/` scripts that fetch models
 
 (Auth is not required for public repos like `mlx-community`; it raises rate limits and covers gated orgs.)
@@ -537,15 +534,6 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).
 - **Discrepancies in the archive doc, reality wins:** (1) it says `omlx status` — oMLX 0.6.3rc3 has no `status` subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only); (2) its `sk-1234` Bearer examples are placeholders — real key is `LITELLM_MASTER_KEY` from the plist; (3) its `hf login` is stale — current huggingface-hub v1.28.0 CLI says `hf auth login`. (The archive doc's llama.cpp items are moot — llama.cpp was retired 2026-09-07, see [provider-artifacts.md](../reference/provider-artifacts.md).)
-- **Run modelman from the `modelman/` directory.** modelman is not installed globally anymore. Run it from `~/github/ohanaverse/local-ai-setup/modelman`:
-
-  ```bash
-  # from: ~/github/ohanaverse/local-ai-setup/modelman
-  uv run modelman          # bare = the disabled TUI: prints where to go in wt, exits 1
-  uv run modelman sync     # reconcile ready/running state, then one route sync
-  uv run modelman start <model-id>   # ...and a start routes it while it runs
-  ```
-
 - **`echo "model_list: []"` beats `touch`** for the initial LiteLLM config — an empty file fails to start.
 - **Reinstalling LiteLLM wipes its tool env and resets the Python version.** Always reinstall as `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'` (§1): bare `litellm[proxy]` drops Prisma (`No module named 'prisma'` at proxy startup), and without the 3.11 pin uv may pick 3.14, where Prisma's engine binaries are missing. After any reinstall/upgrade, re-run §6's `prisma generate` — the generated client lives inside the tool env.
 - **`redisearch.so` is unreadable on this machine (2026-09-30).** The brew bottle pour fails on it (`Errno::EPERM`), and even a source-built copy aborts Redis at module load — no third-party AV is running; it's a per-file read denial this box applies to that module. If `brew services list` shows redis `error`/crash-looping, check `/opt/homebrew/var/log/redis.log` for `redisearch` first and apply the §6 fix (build-from-source + commented `loadmodule` line; original conf at `redis.conf.bak-original`).

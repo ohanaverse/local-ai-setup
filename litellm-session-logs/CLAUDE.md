@@ -3,7 +3,7 @@
 Standalone pipeline (psql SQL + sh + stdlib-only Python) for pulling one
 LiteLLM proxy session's logs out of the `LiteLLM_SpendLogs` Postgres table
 and reconstructing a readable Markdown chat transcript from them. Not wired
-into modelman or wt — run manually, per session, from this directory.
+into wt — run manually, per session, from this directory.
 
 The pipeline can only see sessions whose harness sends a session id LiteLLM
 recognizes. Which harnesses do, and where each keeps its own local session
@@ -111,4 +111,4 @@ protobuf FileDescriptorProtos from the `agy` binary to decode Antigravity
   run tens to hundreds of MB) — prefer targeted `grep`/`jq`/line-range reads
   over loading a whole file when investigating a specific turn or thread.
 - Related guide: [docs/guides/07-usage-and-spend.md](../docs/guides/07-usage-and-spend.md)
-  covers the same `LiteLLM_SpendLogs` table via `modelman usage report`.
+  covers the same `LiteLLM_SpendLogs` table via `wt stats`.
