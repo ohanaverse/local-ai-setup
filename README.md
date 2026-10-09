@@ -7,7 +7,7 @@ components — fresh install starts at
 | Component | Role |
 |---|---|
 | Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
-| `modelman/` | model registry CLI (its TUI is disabled; being retired into `wt`) — download state, usage, price and catalog refresh. Models are managed with `wt model` (the Models tab of `wt config`) and `wt model add\|edit\|rm\|list`: `docs/guides/02-providers-and-models.md` |
+| `modelman/` | model registry CLI (its TUI is disabled; being retired into `wt`) — download state, usage. Cloud prices and the ollama cloud catalog are refreshed with `wt cloud-sync` (modelman's `refresh-prices` and `ollama-catalog sync` still work until it is deleted). Models are managed with `wt model` (the Models tab of `wt config`) and `wt model add\|edit\|rm\|list`: `docs/guides/02-providers-and-models.md` |
 | `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 

@@ -32,7 +32,14 @@
   neither an ollama row nor an OpenRouter-priced model the command fetches,
   asks and writes nothing. An ollama cloud entry the plan would change or
   remove whose id is in the registry twice is refused before the plan, in a
-  dry run too (exit 1).
+  dry run too (exit 1). Reference: `docs/wt-cloud-sync.md`.
+- `docs/wt-cloud-sync.md`, the reference for `wt cloud-sync`: the two flows,
+  what a run does in order, every flag and exit code with each of its
+  causes, what is skipped and when, what it reads and writes, and how to
+  recover from a failed pull, a failed removal or an interrupted run. The
+  `cloud-sync` skill (`.claude/skills/cloud-sync/`) is the same command as a
+  procedure for an agent, including the parser repair after an exit 3; it
+  replaces modelman's `ollama-catalog` skill, which moved here.
 - `wt cloud-sync [--only prices] [--dry-run] [--yes]` refreshes the per-token
   prices of the registry's OpenRouter-priced models from OpenRouter's public
   model list, replacing `modelman refresh-prices` (which still works). It

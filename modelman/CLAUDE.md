@@ -14,7 +14,7 @@ CLI (`src/modelman/main.py`, Typer). **The TUI is disabled**: bare `modelman` pr
 | `sync` | Reconcile state against providers, then one `wt litellm sync` |
 | `litellm status\|on\|off\|set` | Passthroughs to `wt litellm ...` (wt owns routing state) |
 | `start [model_id]` / `stop <id>\|--all` | Local-model lifecycle (`local_control.py`); bare `stop` is a usage error. No-arg `start` prints a live inventory (see "Local-model lifecycle") |
-| `ollama-catalog sync [--dry-run] [--yes --approve-removals DIGEST] [--force]` | Mirror ollama.com/pricing into the registry and ollama (prices, added/removed cloud models), then one `wt litellm sync`. Flags, confirmation and exit codes 1–5: the `ollama-catalog` skill (`.claude/skills/ollama-catalog/SKILL.md`) |
+| `ollama-catalog sync [--dry-run] [--yes --approve-removals DIGEST] [--force]` | Mirror ollama.com/pricing into the registry and ollama (prices, added/removed cloud models), then one `wt litellm sync`. Frozen: `wt cloud-sync` replaces it, and the `ollama-catalog` skill moved with it — it is now the `cloud-sync` skill (`../wt/.claude/skills/cloud-sync/SKILL.md`), which documents wt's command, not this one. This command's own flags, confirmation and exit codes 1–5 are in `ollama_catalog_cli.py` |
 | `refresh-prices` | Refresh OpenRouter-priced models' per-token prices from OpenRouter (`pricing.py`); stamps `price_refresh_last_run` only when it updated at least one model |
 | `delete-family <name>` | Remove an empty family's lingering `[[families]]` entry (queue.py keeps families sticky); refuses if the family still has models |
 | `provider isolate\|stop\|stop-all\|restore\|list` | llmbench's `provider_app`, mounted here until modelman is retired; prefer `llmbench provider ...` |

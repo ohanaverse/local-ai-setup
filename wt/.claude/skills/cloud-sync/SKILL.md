@@ -1,101 +1,215 @@
 ---
-name: ollama-catalog
-description: Mirror https://ollama.com/pricing into ollama, modelman and LiteLLM — pull and register cloud models (wt then routes them), rm/unregister/unroute ones Ollama no longer lists, and sync prices (including off-peak) into registry.toml and config.yaml. Use when asked to update/refresh ollama cloud models or ollama pricing, or when the ollama pricing scrape breaks.
+name: cloud-sync
+description: Refresh cloud model prices and the ollama cloud catalog with `wt cloud-sync` — OpenRouter prices into registry.toml, and https://ollama.com/pricing mirrored into the registry, ollama and LiteLLM (new cloud models registered and pulled, ones Ollama no longer lists unregistered and removed, prices including off-peak). Use when asked to update or refresh model prices, ollama cloud models or ollama pricing, when wt prints "token pricing last refreshed … — run 'wt cloud-sync'", or when `wt cloud-sync` exits 3 (the ollama pricing page changed shape and the parser needs repair).
 ---
 
-# Ollama catalog sync
+# Cloud sync
 
-`modelman ollama-catalog sync` makes three things match
-<https://ollama.com/pricing>: the cloud models in `ollama list`, the
-ollama cloud entries in `registry.toml` along with their prices, and
-LiteLLM's routes in `config.yaml`.
+`wt cloud-sync` runs two independent flows and prefixes every line with the
+one it is about. Both run unless `--only prices` or `--only catalog` picks
+one; a flow that fails or is refused does not stop the other.
 
-- **Full mirror.** A sync does four things. It adds registry entries for
-  new page models. It `ollama pull`s every page model that isn't pulled.
-  It removes registry entries the page no longer lists, running `ollama rm`
-  first if they're pulled. It also `ollama rm`s pulled cloud stubs that
-  have no registry entry.
-- **LiteLLM mirrors the registry.** There is no per-model routing step:
-  the sync ends with one `wt litellm sync`, which routes every registry
-  cloud model — so every page model gets a `config.yaml` row, rebuilt with
-  its current prices — and drops the rows of the entries it removed. wt
-  restarts the proxy only if `config.yaml` actually changed. A failed route
-  sync is a `warning:` line, never a failed run; re-run `wt litellm sync`.
-- **Real cloud tags.** A page name doesn't determine its tag: some models
-  publish `<name>:cloud`, others only a sized `<name>:<size>-cloud`. Each
-  bare name is resolved from `https://ollama.com/library/<name>/tags`. A
-  model with no cloud tag, or several, is skipped with a `warning:` line
-  (nothing is added or pulled for it, and nothing with its name is removed);
-  ask the user before hand-editing anything for it. An existing entry under
-  the wrong tag is replaced by the correctly tagged one (`re-tagged as …`);
-  the replacement keeps the old entry's family, extras and `model_info`, but
-  its LiteLLM route name changes, because the route name *is* the model id.
-  Names whose registry tag is already pulled aren't looked up again, unless
-  two pulled entries claim the same name — an interrupted re-tag — in which
-  case the lookup decides which one is current.
-- **Off-peak prices.** These are stored as a `[[models.cost.time_prices]]`
-  row labelled `off-peak`: UTC, weekdays outside 12:00–18:00, and all day
-  on weekends.
+- **`prices:`** re-prices the registry's OpenRouter-priced models from
+  OpenRouter's public model list and stamps each one it matched. The stamps
+  are what clear wt's `token pricing last refreshed <date> — run 'wt
+  cloud-sync'` notice.
+- **`catalog:`** makes three things match <https://ollama.com/pricing>: the
+  ollama cloud entries in `registry.toml` with their prices (off-peak
+  included), the cloud tags in `ollama list`, and, through one route sync at
+  the end, LiteLLM's routes. It adds and `ollama pull`s new page models,
+  removes entries the page no longer lists and `ollama rm`s their tags, and
+  `ollama rm`s pulled cloud tags that have no entry.
+
+Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
+
+## Rules that hold throughout
+
+- **Stop and ask the human before anything is removed.** Never pass `--yes`,
+  `--approve-removals` or `--force` on your own judgement: each stands for
+  an approval only the user can give, for the plan they were shown.
+- **Never run `ollama pull` or `ollama rm` yourself**, and never hand-edit
+  `registry.toml` to "finish" a sync. The command does both, in the right
+  order, against the daemon the registry names.
+- **A skipped flow is not a failure.** A registry with no OpenRouter-priced
+  model prints `prices: no OpenRouter-priced model in the registry; nothing
+  to refresh`; one with no `ollama` provider row prints `catalog: no ollama
+  provider in the registry; nothing to mirror`. Either is exit 0, however
+  the flow was asked for (`--only catalog` and the catalog's flags
+  included). Report the line and go on; do not add a provider row to make a
+  flow run unless the user asks for that.
 - **Real local models are never touched.** Only ollama cloud entries and
-  `*:cloud`/`*-cloud` tags are in scope.
-
-Run everything from `modelman/`.
+  `*:cloud` / `*-cloud` tags are in scope. An entry marked
+  `location = "cloud"` whose tag is not a cloud tag is still removed from
+  the registry when the page does not list it, and the plan carries a
+  `warning:` saying its tag is left in ollama: show the user that line.
+- **`--html FILE` is not an offline mode.** It replaces only the fetch of
+  the pricing page; cloud tags are still looked up on ollama.com/library,
+  and `ollama list` is still run.
 
 ## Steps
 
-1. Dry run: `uv run modelman ollama-catalog sync --dry-run`
-   - Summarize the plan for the user: price updates (old → new), registry
-     additions (id + family — each also gets a LiteLLM route), pulls,
-     registry removals (each also loses its route), and stray `ollama rm`s.
-   - Point out any `warning:` lines, e.g. a subscription disagreement or an
-     unrecognized price cell.
-   - Ask whether any added model's family should be changed. If so, edit
-     `family` in registry.toml after the sync.
-2. Get the user's go-ahead for the whole plan, especially the removals.
-3. Real run: `uv run modelman ollama-catalog sync --yes --approve-removals <digest>`,
-   with the `Removal digest:` the dry run printed (omit the flag if it
-   printed none — the plan deletes nothing). Your Bash tool has no TTY, so
-   the CLI's single confirmation prompt can't be answered (click reads EOF
-   and aborts). Pass `--yes` only once the user has approved the dry-run
-   plan.
-   - Exit 5 means the deletions differ from what was approved: the page or
-     registry changed since the dry run. Nothing was written. Start over
-     from step 1 and show the user the new plan.
-   - Exit 4 means more than half of the ollama cloud entries would be
-     removed. Nothing was written. Check the dry run's page parse with the
-     user, and add `--force` only if they confirm the removals are real.
-4. Check the routes with `wt litellm list`.
-5. Refresh the OpenRouter-priced models too: `uv run modelman refresh-prices`.
-   The sync only covers ollama cloud prices, so this step updates every
-   other price and stamps `price_refresh_last_run`, which clears wt's
-   stale-pricing notice. Pass any `warning:` lines on to the user; a fetch
-   `error:` (exit 1) doesn't undo the sync.
+1. **Dry run:** `wt cloud-sync --dry-run`. It changes nothing.
+   - Summarize **both** plans for the user. Prices: each `id: old -> new`
+     under `Price updates`. Catalog: `Price updates`, `Registry additions`
+     (id and family; each also gets a route), `ollama pull`, `Registry
+     removals` (each also loses its route; `(re-tagged as …)` marks an entry
+     that comes straight back under the tag ollama publishes, with a new id
+     and so a new route name), and `ollama rm` (pulled cloud tags with no
+     entry).
+   - Read out every `warning:` line: an OpenRouter-priced model with no
+     match or no usable price, ollama cloud entries that disagree on
+     subscription pricing, an unrecognized price cell, a model whose cloud
+     tag did not resolve (it is skipped: nothing is added or pulled for it,
+     and nothing with its name is removed), a removed entry whose tag is not
+     a cloud tag.
+   - If it prints `prices: no model could be refreshed, so nothing is
+     stamped and wt's stale-pricing notice is not cleared; set
+     openrouter_priced = false on a provider whose model names are not
+     OpenRouter ids`, tell the user: running the sync will not clear the
+     notice, and that provider key is the fix. It is their decision.
+   - Note the line `catalog: Removal digest: <digest> (apply
+     non-interactively with …)` if there is one. No such line means the
+     catalog plan deletes nothing.
+   - A non-zero exit here is 1, 2 or 3 from the table below (a dry run never
+     exits 4 or 5). Nothing was changed.
+2. **Ask.** Get the user's go-ahead for the whole of both plans. List every
+   registry removal and every `ollama rm` by name and get an explicit yes to
+   those in particular. If the plan removes more than half the ollama cloud
+   entries, say so now: the apply will refuse it without `--force` (exit 4),
+   and that many removals usually means the page parsed wrong, not that the
+   catalog shrank.
+3. **Apply:** `wt cloud-sync --yes --approve-removals <digest>`, with the
+   digest from step 1. Leave `--approve-removals` out if the dry run printed
+   no digest. Your shell has no terminal, so the command's one question
+   cannot be answered: without `--yes` it stops with `error: not applied:
+   there is no terminal to confirm on — rerun with --yes to apply without
+   asking` (exit 1).
+   - `catalog: ollama at <address>` names the daemon the pulls and removals
+     go to. It is the registry's ollama provider row's address, whatever
+     `OLLAMA_HOST` your shell exports.
+   - Exit 5: go back to step 1 and show the user the new plan. Never reuse
+     the old digest, and never retry with a digest the user did not see
+     next to its plan.
+   - Exit 4: go back to the user. Add `--force` only if they confirm the
+     removals are real. `--force` does not replace the digest.
+   - With exit 2 to 5 the `prices:` flow may still have been applied in the
+     same run. Read its lines before telling the user that nothing changed.
+4. **Check the routes:** `wt litellm list`. After a `routes: warning:`, an
+   exit 1, or a run that was interrupted (Ctrl-C, a crash), run `wt litellm
+   sync` first: the route sync is the last thing a run does.
+5. **Families.** A new entry's family is derived (an existing ollama entry
+   with the same name stem, else the stem itself). Ask whether any should
+   change, and change it with `wt model edit <id> --family <name>`, which
+   syncs the routes itself. Not a hand edit.
+
+To run one flow: `--only prices` or `--only catalog`. A catalog flag
+(`--html`, `--approve-removals`, `--force`) together with `--only prices`
+is a usage error, and so is `--only ""`.
 
 ## Exit codes
 
+The last line on stderr says which: `wt: cloud-sync: the catalog flow
+changed nothing: <why>` for 2 to 5, `wt: cloud-sync: a step failed; see the
+error lines above` for 1. Codes 2 to 5 are about the catalog flow only, and
+win over 1: with 2 to 5, also read the `prices:` lines for an `error:`.
+
 | Code | Meaning | Do |
 |---|---|---|
-| 0 | done (or nothing to do) | — |
-| 1 | a pull, an `ollama rm`, or the registry save failed; the other steps still ran (a failed route sync is only a `warning:`) | read the error, then re-run the sync (it only redoes what is still out of sync) |
-| 2 | page fetch failed, `ollama list` couldn't run, or no cloud tag resolved (ollama.com/library unreachable); nothing changed | check network / start ollama, retry. `--html <saved page>` only replaces the pricing-page fetch — the library tag lookups still need ollama.com |
-| 3 | page shape changed | follow "Repairing the parser" |
-| 4 | mass removal refused (> half the cloud entries); nothing changed | verify the parse, then `--force` with the user's OK |
-| 5 | the plan deletes something not approved (no or stale `--approve-removals` digest, or the registry changed mid-run); nothing changed | re-run the dry run, get the user's OK for the new plan, use its digest |
+| 0 | Every selected flow finished, was skipped, had nothing to do, or was declined at the question | Step 4 |
+| 1 | A step failed in either flow; see "Exit 1" below. Also a usage error, and a registry that is missing or cannot be read | Read every `error:` line, then the matching entry below |
+| 2 | Catalog changed nothing: an input could not be read; see "Exit 2" below | Fix the cause the `catalog: error:` line names, then step 1 |
+| 3 | Catalog changed nothing: the pricing page changed shape. Its HTML is saved and the path printed | "Repairing the parser" below |
+| 4 | Catalog changed nothing: the plan removes more than half the ollama cloud entries and `--force` was not given | Ask the user; `--force` only on their confirmation |
+| 5 | Catalog changed nothing: under `--yes` the plan deletes and no digest, or another plan's, was given (`…: removals not approved`); or the registry changed after the plan was printed (`…: the registry changed after the plan was printed`) | Step 1 again; get the user's yes for the new plan; use its digest |
+
+### Exit 1
+
+- `prices: error: could not read OpenRouter's prices: …; no price was
+  changed` — the fetch or its parse failed. Retry later.
+- `prices: error: no price was changed: …` or `catalog: error: nothing was
+  changed: model "<id>" is in the registry twice …` — a row the plan
+  addresses has a duplicated id. Refused before the plan is printed, in a
+  dry run too. Removing one of two rows that share an id is a hand edit of
+  `registry.toml`, and which row to keep is the user's call: stop and ask.
+- `prices: error: the registry changed after the plan was printed; no price
+  was changed — run it again` — another program wrote the registry while
+  the plan was open. Step 1 again.
+- `… error: not applied: there is no terminal to confirm on — rerun with
+  --yes to apply without asking` — nothing was changed. `--yes` needs the
+  user's approval of the plan (step 2).
+- `… error: registry.toml was not changed: …`, `prices: error: the price
+  changes were not written: …` or `catalog: error: the catalog's changes
+  were not written: …` — the write was refused; the message names the row or
+  file and, where there is one, the repair. When a row one flow must change
+  would not load, each flow is written on its own, so the other flow may
+  have been applied: read both.
+- ``catalog: error: `ollama pull <tag>` failed: <ollama's last line>``,
+  followed by ``<tag> is in the registry but not pulled, so it is not routed;
+  run `wt cloud-sync` again to retry the pull``. The registry is already
+  written and the other pulls and removals still ran. Run the sync again
+  (a pull needs no digest, but go through step 1 anyway: the plan is
+  different now). Whether `ollama pull` of a cloud model needs the user to
+  be signed in to ollama has not been verified; if ollama's line reads like
+  an authorization failure, show it to the user and ask them to sign in.
+- ``catalog: error: `ollama rm <tag>` failed: …``, followed by `<tag> is
+  left pulled; the next run lists it as a stray tag — start again from
+  --dry-run, since the removal digest may have changed`. Do exactly that:
+  step 1, a new approval, the new digest. (An `ollama rm` that answers "not
+  found" and names the tag counts as done; that match is on those words
+  and the tag, and ollama's exact wording has not been checked against a
+  real daemon.)
+- `… timed out after 10m (wt's own limit)` (pull; `1m` for rm) — wt
+  stopped the command, not ollama. Treat it as the failed pull or rm above.
+
+### Exit 2
+
+Each is one `catalog: error:` line ending `nothing was changed`:
+
+- `could not fetch ollama.com/pricing: …` — network. Retry.
+- `cannot read <file>: …` — the `--html` file.
+- ``could not run `ollama list` against <address> (is the ollama daemon
+  up?): …`` — ask the user to start ollama; do not start it yourself unless
+  asked. Without the hint, the reason is `the ollama command is not
+  installed (not on PATH)`.
+- `could not resolve a cloud tag for any model on ollama.com/library` —
+  ollama.com/library is unreachable or changed; the `catalog:` lines above
+  it say why for each model. Retry later.
+- `the ollama provider row's base_url names no daemon (it reads as "…"):
+  set auth.base_url to http://host:port` — a registry fix for the user to
+  make or approve.
 
 ## Repairing the parser (exit 3)
 
-The error names the failed check and a saved file
-(`$TMPDIR/ollama-pricing-<timestamp>.html`).
+The error names the check that failed and where the page was saved:
+`catalog: raw HTML saved to <path>`, a file
+`$TMPDIR/ollama-pricing-<YYYYMMDD-HHMMSS>.html`, mode 0600. (A `--html FILE`
+that does not parse is copied there too, and the message still says
+`could not parse ollama.com/pricing`.) Work from `wt/`.
 
-1. Open the saved HTML and find the pricing table/markup.
-2. Update **only** `src/modelman/ollama_catalog.py::parse_pricing` (and
-   `_TableCollector`/`_map_columns` if the structure moved). Keep the
-   sanity checks: header-keyed columns, ≥ `MIN_ROWS` rows, off-peak rows
-   must have a base row, and most price cells must parse.
-3. Replace `tests/fixtures/ollama_pricing.html` with the saved page, update
-   `test_parse_fixture_happy_path`'s expected counts/prices, and run
-   `uv run pytest tests/test_ollama_catalog.py -q && make check`.
-4. Retry with `--html <saved page> --dry-run`, then run the steps above.
+1. Open the saved HTML and find the pricing table.
+2. Change **only** `internal/cloudsync/pricingpage.go`: `ParsePricing`, and
+   `collectTables` / `mapColumns` if the structure moved. Keep every check:
+   columns found by header text, at least `MinRows` rows, a model name that
+   is an ollama tag, no duplicate row, every off-peak row has a base row,
+   and most price cells parse. A check that fires is the parser working: a
+   catalog that silently lost rows would plan the removal of every ollama
+   cloud entry.
+3. Replace `internal/cloudsync/testdata/ollama_pricing.html` with the saved
+   page, update `TestParsePricingFixture`'s expected count and prices, and
+   run `go test ./internal/cloudsync && make check`.
+4. Try it on the page that broke it:
+   `go run ./cmd/wt cloud-sync --only catalog --dry-run --html <saved page>`
+   (it still reads ollama.com/library and runs `ollama list`), then go
+   through the steps above from step 1. The first plan after a parser change
+   deserves a slower read than usual: check its model count and removals
+   with the user before any apply.
 
-If the page's off-peak **window** wording changes (it's not parsed), update
-`offpeak_time_price()` and its test to match the new window.
+If the page's off-peak **window** wording changes (it is not parsed), update
+`offpeakRow` in `internal/cloudsync/catalog.go` and its test.
+
+## While modelman still exists
+
+`modelman refresh-prices` and `modelman ollama-catalog sync` still work and
+are frozen; use `wt cloud-sync`. Both tools stamp the same
+`pricing_updated_at` key, and they print the same removal digest for the
+same plan.
