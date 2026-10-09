@@ -272,6 +272,16 @@
 - `wt stop --all` waits for the LiteLLM proxy restart one halted provider
   started before it halts the next (mtplx, then omlx), as it already did
   between the model stops and the first halt.
+- `wt config`, Models tab: a refusal too long for a short terminal even with
+  the screen to itself (a registry path of 160 characters or more at 40x12)
+  no longer ends, unmarked, wherever the terminal does — which first dropped
+  the "press a key to go back to the form" line and then the end of the
+  registry's path, the file the message tells the user to fix. The key hint
+  is always the last line; the message keeps its first and its last lines,
+  and one line between them says how many are not shown (`… 9 lines not
+  shown …`). The same holds for the table's status (a refused removal), which
+  now always has the key hints under it. The tests of these two screens no
+  longer pass or fail with the length of `TMPDIR` (#318).
 - The check wt makes before launching an ollama model directly (not through
   LiteLLM) now runs `ollama list` against the ollama address in
   `registry.toml`, as `wt stop`, `wt model add` and `wt cloud-sync` already

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -124,9 +125,34 @@ tags = []
 
 func newTabMachine(t *testing.T, content string) *tabMachine {
 	t.Helper()
+	return newTabMachineAt(t, content, 0)
+}
+
+// newTabMachineAt is newTabMachine with the registry's path made at least
+// pathLen characters long, by directories with padded names between the
+// test's temporary directory and local-ai/registry.toml. The writer's
+// refusals end with that path, so its length decides how many lines they
+// wrap to: a test of how a long one is drawn sets the length here instead of
+// inheriting it from TMPDIR. Padding can only lengthen, so the path is
+// exactly pathLen wherever the temporary directory leaves room for that.
+func newTabMachineAt(t *testing.T, content string, pathLen int) *tabMachine {
+	t.Helper()
 	home := t.TempDir()
+	const tail = "/local-ai/registry.toml"
+	for need := pathLen - len(home) - len(tail); need > 0; need = pathLen - len(home) - len(tail) {
+		// A directory's name is at most 255 bytes; digits make a cut in the
+		// wrong place visible.
+		name := strings.Repeat("0123456789", 20)[:max(min(need-1, 200), 1)]
+		home = filepath.Join(home, name)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("XDG_CONFIG_HOME", home)
 	path := filepath.Join(home, "local-ai", "registry.toml")
+	if pathLen > 0 && len(path) < pathLen {
+		t.Fatalf("fixture: the registry path is %d characters, want at least %d", len(path), pathLen)
+	}
 	if content != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -136,6 +162,42 @@ func newTabMachine(t *testing.T, content string) *tabMachine {
 		}
 	}
 	return &tabMachine{registry: path}
+}
+
+// cutMarker is the line a message with the screen to itself puts where its
+// middle lines were (tuilayout.MessageAlone).
+var cutMarker = regexp.MustCompile(`… \d+ lines not shown …`)
+
+// assertMessageShown fails unless message — a refusal that ends with the
+// registry's path — is on screen the way a terminal of this size allows:
+// whole, with no marker, when the tab bar, its lines and one hint line fit
+// the height; otherwise with a marker for the lines taken out of its middle,
+// and still with its start (which model, which providers) and its end (the
+// last characters of the path, the part that says which file to fix). A cut
+// with no marker, or one that took the end, is what #318 was.
+func assertMessageShown(t *testing.T, name, view, message string, width, height int) {
+	t.Helper()
+	assertFits(t, name, view, width, height)
+	lines := lipgloss.Height(wrapText(message, width))
+	cut := 1+lines+1 > height
+	if got := cutMarker.MatchString(view); got != cut {
+		t.Errorf("%s at %dx%d: marker shown = %v, want %v (the message is %d lines):\n%s", name, width, height, got, cut, lines, view)
+	}
+	if !strings.Contains(view, "[Models]") {
+		t.Errorf("%s at %dx%d: the tab bar should be on screen:\n%s", name, width, height, view)
+	}
+	whole, shown := flat(message), flat(view)
+	if !cut {
+		if !strings.Contains(shown, whole) {
+			t.Errorf("%s at %dx%d: the message fits and should be whole on screen:\n%s", name, width, height, view)
+		}
+		return
+	}
+	start, end := []rune(whole)[:width/2], []rune(whole)
+	end = end[len(end)-width:]
+	if !strings.Contains(shown, string(start)) || !strings.Contains(shown, string(end)) {
+		t.Errorf("%s at %dx%d: a cut message should keep its start %q and its end %q:\n%s", name, width, height, string(start), string(end), view)
+	}
 }
 
 func (tm *tabMachine) text(t *testing.T) string {
@@ -621,10 +683,11 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 
 // TestRemovePromptGivesUpLinesBeforeThePath verifies what the remove prompt
 // loses on a terminal too short for it, and in which order: its blank lines,
-// then the closing sentence, and only then — cut at the bottom — the path. A
-// 72-column id with a path of five lines is 15 lines at 40 columns; clipped as
-// written, the 12-line screen asked y/N with the end of the path, the model's
-// own directory name, off its bottom edge. With room, the prompt is as it was.
+// then the closing sentence — the question and the path (weights location) are
+// always kept. A 72-column id with a path of five lines is 15 lines at 40
+// columns; the 12-line screen cuts from the middle, keeping the question at
+// the top and the path's end (the model's directory name) at the bottom, with
+// a marker line counting the removed lines. With room, the prompt is whole.
 func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 	const closing = "wt removes the registry entry only; it never deletes weights."
 	prompt := func(t *testing.T, path string, width, height int) string {
@@ -635,10 +698,13 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 		return view
 	}
 	question := flat("Remove " + tabLongID + " from the registry? [y/N]")
+	// The path is wrapped at width, so check for its last segment.
+	longWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongWeights), "/"))
+	longerWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongerWeights), "/"))
 
 	// The blank lines go first: everything else is still said.
 	view := prompt(t, tabLongWeights, 40, 12)
-	for _, want := range []string{question, flat(tildePath(tabLongWeights)), flat(closing)} {
+	for _, want := range []string{question, longWeightsEnd, flat(closing)} {
 		if !strings.Contains(flat(view), want) {
 			t.Errorf("at 40x12 the prompt lost %q:\n%s", want, view)
 		}
@@ -649,7 +715,7 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 
 	// Then the closing sentence, with the path still whole.
 	view = prompt(t, tabLongerWeights, 40, 12)
-	if !strings.Contains(flat(view), question) || !strings.Contains(flat(view), flat(tildePath(tabLongerWeights))) {
+	if !strings.Contains(flat(view), question) || !strings.Contains(flat(view), longerWeightsEnd) {
 		t.Errorf("at 40x12 the question and the whole path must be on screen:\n%s", view)
 	}
 	if strings.Contains(flat(view), flat(closing)) {
@@ -658,8 +724,29 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 
 	// With the room, nothing is given up.
 	view = prompt(t, tabLongerWeights, 40, 24)
-	if blankLines(view) != 2 || !strings.HasSuffix(flat(view), flat(closing)) {
-		t.Errorf("at 40x24 the prompt should be whole, its two blank lines and the closing sentence included:\n%s", view)
+	// The closing sentence is present (the hints come after it).
+	if !strings.Contains(flat(view), flat(closing)) {
+		t.Errorf("at 40x24 the prompt should be whole, closing sentence included:\n%s", view)
+	}
+
+	// On a very short terminal, the prompt cuts from the MIDDLE, not the
+	// bottom — the path end (weights location) must remain visible.
+	// The question itself is long (72 cols) and wraps to multiple lines at 40
+	// cols, so only its first wrapped lines survive the head cut. The important
+	// thing is the PATH END is preserved in the tail.
+	view = prompt(t, tabLongWeights, 40, 8)
+	// The start of the question should be visible (it's the head of the message).
+	if !strings.Contains(flat(view), "Removeomlx") {
+		t.Errorf("at 40x8 the question start must remain visible:\n%s", view)
+	}
+	// Path end must be near the bottom (before the hint).
+	if !strings.Contains(flat(view), longWeightsEnd) {
+		t.Errorf("at 40x8 the path end must remain visible:\n%s", view)
+	}
+	// There should be a marker line showing content was cut.
+	// The marker "… 4 lines not shown …" flattens to "…4linesshown…"
+	if !strings.Contains(flat(view), "linesnotshown") {
+		t.Errorf("at 40x8 there should be a marker line for cut content:\n%s", view)
 	}
 }
 
@@ -867,11 +954,11 @@ func TestModelsTabRefusesToRemoveADuplicatedID(t *testing.T) {
 				at("the registry changed:\n%s", got)
 			}
 			view := m.View()
-			assertFits(t, "refused removal of a duplicated id", view, size[0], size[1])
 			refusal := `model "omlx/Gone-4bit" is in the registry twice (providers omlx, openrouter); wt cannot tell which one you mean — fix the entry in ` + tm.registry
-			if !strings.Contains(view, "[Models]") || !strings.Contains(flat(view), flat("not removed: "+refusal)) {
-				at("the status should carry the writer's refusal %q under the tab bar", refusal)
+			if m.models.status != "not removed: "+refusal {
+				at("the status = %q, want the writer's refusal unchanged: %q", m.models.status, refusal)
 			}
+			assertMessageShown(t, "refused removal of a duplicated id", view, "not removed: "+refusal, size[0], size[1])
 			if m.registryChanged || strings.Contains(view, routesPending) || m.models.busy {
 				at("registryChanged = %v, busy = %v; a refused removal owes no route sync", m.registryChanged, m.models.busy)
 			}
@@ -886,6 +973,81 @@ func TestModelsTabRefusesToRemoveADuplicatedID(t *testing.T) {
 			}
 			assertFits(t, "one key after a refusal", m.View(), size[0], size[1])
 		}
+	}
+}
+
+// TestALongRefusalKeepsItsHintAndThePathsEnd verifies how the two refusals
+// that end with the registry's path are drawn — the form's (a refused edit)
+// and the table's status (a refused removal) — with the path at lengths from
+// 100 to 700 characters, on a short terminal, a narrow one and one that is
+// both. Whatever the length, the view fits the terminal, its last line is
+// the key hint, and the end of the path is on screen; a marker line stands
+// for the lines taken out of the middle when, and only when, the message did
+// not fit. Before #318 a message taller than the terminal was cut from the
+// bottom with no mark: first the hint that says how to leave went, then the
+// end of the path, which is the file the user is told to fix — and the tests
+// of these screens passed or failed with the length of TMPDIR, because the
+// registry lived under it at whatever length that gave. The path's length is
+// set here (newTabMachineAt), so the cut is exercised on every machine.
+func TestALongRefusalKeepsItsHintAndThePathsEnd(t *testing.T) {
+	long := strings.TrimPrefix(tabLongID, "omlx/")
+	cut := map[string]int{}
+	for _, size := range [][2]int{{40, 12}, {80, 12}, {40, 24}} {
+		for _, pathLen := range []int{100, 200, 300, 700} {
+			for _, name := range []string{"Gone-4bit", long} {
+				id := "omlx/" + name
+				registry := strings.ReplaceAll(tabDuplicatedRegistry, "Gone-4bit", name)
+				refusal := func(tm *tabMachine) string {
+					return `model "` + id + `" is in the registry twice (providers omlx, openrouter); wt cannot tell which one you mean — fix the entry in ` + tm.registry
+				}
+				lastLine := func(view string) string {
+					lines := strings.Split(view, "\n")
+					return lines[len(lines)-1]
+				}
+				where := fmt.Sprintf("a %d-column id, a path of %d", len(id), pathLen)
+
+				// The form: a refused edit.
+				tm := newTabMachineAt(t, registry, pathLen)
+				m := keys(t, selectRowOf(t, modelsEditor(t, tm, size[0], size[1]), id, "omlx"), "enter")
+				m = keys(t, typeText(t, moveTo(t, m, mfTags), "code"), "ctrl+s")
+				if f := m.models.form; f == nil || f.err != refusal(tm) {
+					t.Fatalf("%s at %dx%d: the form should hold the writer's refusal:\n%s", where, size[0], size[1], m.View())
+				}
+				view := m.View()
+				assertMessageShown(t, "refused edit, "+where, view, refusal(tm), size[0], size[1])
+				if m.modelFormLayout().errorAlone && lastLine(view) != modelFormErrorHint {
+					t.Errorf("refused edit, %s at %dx%d: the last line should be the hint %q:\n%s", where, size[0], size[1], modelFormErrorHint, view)
+				}
+				if cutMarker.MatchString(view) {
+					cut["form"]++
+				}
+				if got := tm.text(t); got != registry {
+					t.Errorf("refused edit, %s: the registry changed:\n%s", where, got)
+				}
+
+				// The table: a refused removal.
+				tm = newTabMachineAt(t, registry, pathLen)
+				m = keys(t, selectRowOf(t, modelsEditor(t, tm, size[0], size[1]), id, "omlx"), "d", "y")
+				status := "not removed: " + refusal(tm)
+				if m.models.status != status {
+					t.Fatalf("%s at %dx%d: the status = %q, want %q", where, size[0], size[1], m.models.status, status)
+				}
+				view = m.View()
+				assertMessageShown(t, "refused removal, "+where, view, status, size[0], size[1])
+				if !strings.Contains(view, "MODEL") && lastLine(view) != fitHints(size[0], modelsHints) {
+					t.Errorf("refused removal, %s at %dx%d: the last line should be the key hints:\n%s", where, size[0], size[1], view)
+				}
+				if cutMarker.MatchString(view) {
+					cut["table"]++
+				}
+				if got := tm.text(t); got != registry {
+					t.Errorf("refused removal, %s: the registry changed:\n%s", where, got)
+				}
+			}
+		}
+	}
+	if cut["form"] == 0 || cut["table"] == 0 {
+		t.Errorf("fixture: cut messages seen = %v; want some for the form and for the table, or the cut was not tested", cut)
 	}
 }
 
@@ -1234,18 +1396,17 @@ func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 // blank screen or a crash — and that the reason ends with the repair
 // config.RegistryFixHint gives every other place that reports this error, so
 // the tab that manages the registry is not the one screen that leaves it out.
-// At every size wt supports the reason is whole under the tab bar; at 40x12
-// it is longer than the table has room beside.
+// At every size wt supports the reason is under the tab bar — whole where it
+// fits, and where the registry's path makes it taller than the terminal, cut
+// in the middle behind a marker with its start and its end (the repair) kept
+// (#318); at 40x12 it is longer than the table has room beside.
 func TestModelsTabShowsARegistryThatDoesNotLoad(t *testing.T) {
 	for _, size := range tabSizes {
 		tm := newTabMachine(t, "this is not = = toml\n")
 		m := modelsEditor(t, tm, size[0], size[1])
 		view := m.View()
-		assertFits(t, "broken registry", view, size[0], size[1])
 		want := "config load error: parse " + tm.registry + ": toml: line 1: expected '.' or '=', but got 'i' instead (fix that file by hand)"
-		if !strings.Contains(flat(view), flat(want)) || !strings.Contains(view, "[Models]") {
-			t.Errorf("at %dx%d the tab should say %q:\n%s", size[0], size[1], want, view)
-		}
+		assertMessageShown(t, "broken registry", view, want, size[0], size[1])
 	}
 }
 

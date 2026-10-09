@@ -497,13 +497,12 @@ func (m *model) modelsView() string {
 	// terminal (a refusal that ends with the registry's path, at 40x12).
 	// Bubble Tea would drop the view's top lines: the tab bar and the start
 	// of the very status that has to be read. So the status has the screen
-	// to itself, under the tab bar, until the next key takes it down; the
-	// hints join it when there is a line left for them.
-	out := tabBar(m.theme, TabModels) + "\n" + status
-	if lipgloss.Height(out) < m.height {
-		out += "\n" + lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim)).Render(fitHints(m.width, modelsHints))
-	}
-	return lipgloss.NewStyle().MaxHeight(m.height).Render(out)
+	// to itself, under the tab bar and over the hints, until the next key
+	// takes it down. A status too tall even for that loses lines from its
+	// middle, behind a marker that counts them, never the hints or its end:
+	// the end is the path of the file to fix (tuilayout.MessageAlone).
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	return tuilayout.MessageAlone(tabBar(m.theme, TabModels), status, fitHints(m.width, modelsHints), m.width, m.height, dim)
 }
 
 // applyModels takes a probe's result: the rows replace the table, with the
@@ -737,30 +736,46 @@ func (m *model) updateModelsRemove(msg tea.Msg) (tea.Model, tea.Cmd) {
 // 72-column id and its omlx directory are 13 lines at 40 columns). What the
 // prompt gives up, in order: its two blank lines, then the closing sentence —
 // the question and the path are what y is answered on. Only a prompt still
-// too tall after that is cut at the bottom.
+// too tall after that is cut from its middle, behind a marker that counts the
+// removed lines, keeping the path's end (the weights location) visible.
 func (m *model) modelsRemoveView() string {
 	r := m.models.remove
 	question := "Remove " + r.ID + " from the registry? [y/N]"
 	weights := strings.Join(weightsLines(r), "\n")
-	build := func(gap string, closing bool) string {
+	const closing = "wt removes the registry entry only; it never deletes weights."
+
+	// Build the core message: question and weights (the path end must be at
+	// the end so MessageAlone preserves it when cutting from the middle).
+	buildCore := func(gap string) string {
 		parts := []string{question}
 		if weights != "" {
 			parts = append(parts, weights)
 		}
-		text := strings.Join(parts, gap)
-		if closing {
-			text += "\nwt removes the registry entry only; it never deletes weights."
-		}
-		return tabBar(m.theme, TabModels) + gap + wrapText(text, m.width)
+		return wrapText(strings.Join(parts, gap), m.width)
 	}
-	view := build("\n\n", true)
-	for _, spare := range []string{build("\n", true), build("\n", false)} {
-		if m.height <= 0 || lipgloss.Height(view) <= m.height {
+	core := buildCore("\n\n")
+	// Try with less spacing if it still doesn't fit.
+	for _, spare := range []string{buildCore("\n"), buildCore("")} {
+		if m.height <= 0 || lipgloss.Height(tabBar(m.theme, TabModels)+"\n\n"+spare) <= m.height {
+			core = spare
 			break
 		}
-		view = spare
 	}
-	return lipgloss.NewStyle().MaxHeight(max(m.height, 1)).Render(view)
+
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	hints := fitHints(m.width, modelsHints)
+
+	// If the core message fits with room for the closing sentence and hints,
+	// append the closing sentence to the message.
+	coreHeight := lipgloss.Height(core)
+	topHeight := lipgloss.Height(tabBar(m.theme, TabModels)) + 1 // tab bar + gap
+	hintHeight := 1
+	room := m.height - topHeight - coreHeight - hintHeight
+	if room >= 1 {
+		// There's room for the closing sentence between core and hint.
+		core += "\n" + wrapText(closing, m.width)
+	}
+	return tuilayout.MessageAlone(tabBar(m.theme, TabModels), core, hints, m.width, m.height, dim)
 }
 
 // applyModelRemoved takes a removal's outcome and re-probes: the rows are
