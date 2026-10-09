@@ -150,9 +150,10 @@ func TestRegistryFixtureCost(t *testing.T) {
 }
 
 // TestRegistryFixtureNativeExposure pins the rule that a native model is
-// always in the catalog even without a model_state row. The fixture
-// (docs/contracts/registry.sample.toml) is read by this test and by
-// llmbench/tests/test_registry.py.
+// always in the catalog, with no stored flag to say so. If it were not, a
+// native agent's own model would drop out of its picker and a launch would
+// fail on model resolution. The fixture (docs/contracts/registry.sample.toml)
+// is read by this test and by llmbench/tests/test_registry.py.
 func TestRegistryFixtureNativeExposure(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
