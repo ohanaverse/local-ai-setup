@@ -26,7 +26,7 @@ import (
 )
 
 // Test seams: production talks to the live inventory/providers; cmd/wt's
-// TestMain stubs all four.
+// TestMain stubs all of them.
 var (
 	// stopState is one inventory round and one read of the live sessions: the
 	// stop candidates, and per provider family what its probe said and how
@@ -42,6 +42,10 @@ var (
 	confirmStop = promptStop
 	// stopProvider stops a provider's server as a whole (`wt stop omlx`).
 	stopProvider = lifecycle.Stop
+	// stopLoading ends a provider's server that has not opened its port yet
+	// (an mtplx still reading its weights), by the pid the stop state
+	// verified.
+	stopLoading = lifecycle.StopLoading
 )
 
 // promptStop is promptReplace's twin for stopping an in-use model, and what
@@ -71,14 +75,16 @@ func stopCmd(a *app) *cobra.Command {
 			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
 			"models up; \"wt stop omlx\" stops the service.\n\n" +
 			"--all stops every running local model on every provider at once, then the\n" +
-			"omlx service and an mtplx it cannot read (below). It takes no argument. A\n" +
-			"running mlx_lm_server pairing is not stopped (wt has no engine for one);\n" +
-			"\"llmbench provider stop mlx_lm_server\" stops it.\n\n" +
+			"omlx service and an mtplx it cannot read or that is still loading (below).\n" +
+			"It takes no argument. A running mlx_lm_server pairing is not stopped (wt has\n" +
+			"no engine for one); \"llmbench provider stop mlx_lm_server\" stops it.\n\n" +
 			"\"wt stop mtplx\" and --all stop mtplx unless its port refuses the connection,\n" +
 			"also when wt cannot tell what it has loaded (an error answer, or none within\n" +
-			"2 seconds). An mtplx that has not opened its port yet reads as nothing\n" +
-			"running. ollama's models are stopped one by one, so when wt cannot tell what\n" +
-			"ollama is running it stops nothing there and exits 1.\n\n" +
+			"2 seconds). An mtplx that is still loading has not opened its port: they\n" +
+			"stop it too, by the pid wt recorded when it started the server, once that\n" +
+			"process is confirmed to be the mtplx server on this port (anything else is\n" +
+			"left alone). ollama's models are stopped one by one, so when wt cannot tell\n" +
+			"what ollama is running it stops nothing there and exits 1.\n\n" +
 			"Stopping a model or a provider a live wt session uses asks for confirmation;\n" +
 			"--yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
@@ -113,7 +119,7 @@ func stopCmd(a *app) *cobra.Command {
 		},
 	}
 	cmd.Flags().Bool("yes", false, "Skip the confirmation when a target is in use by a live wt session")
-	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service and an mtplx wt cannot read")
+	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service and an mtplx wt cannot read or that is still loading")
 	return cmd
 }
 
@@ -124,16 +130,19 @@ func stopCmd(a *app) *cobra.Command {
 // Exclusive provider (mtplx) is when the probe gave no candidate to stop it
 // through and its port did not refuse — a server that answered with nothing
 // loaded, with an error or not in time is a server that is up (#308). A refused port is
-// nothing to stop, and so is a family the inventory never probed
-// (FamilyState.Probed): "did not refuse" is an answer only when wt asked. A
-// Shared provider (ollama) never is: wt leaves its daemon up.
+// nothing to stop unless wt's pidfile names a live process it verified as the
+// server (FamilyState.Loading): mtplx reads its weights before it opens its
+// port, so that is a server still loading. A family the inventory never
+// probed (FamilyState.Probed) is nothing to stop either: "did not refuse" is
+// an answer only when wt asked. A Shared provider (ollama) never is: wt
+// leaves its daemon up.
 func haltsWhole(st survey.StopState, providerID string, candidates int) bool {
 	switch lifecycle.TenancyOf(providerID) {
 	case lifecycle.Pool:
 		return true
 	case lifecycle.Exclusive:
 		fs := st.Families[localmodels.Family(providerID)]
-		return candidates == 0 && fs.Probed && !fs.Down
+		return candidates == 0 && fs.Probed && (!fs.Down || fs.Loading.PID > 0)
 	}
 	return false
 }
@@ -176,12 +185,48 @@ func unreadShared(cfg *config.Config, st survey.StopState) []string {
 // haltImpact is what halting a family's server costs the live wt sessions:
 // how many use a model of the family, which models, and whether wt is asking
 // blind (the probe was not trusted). A server whose port refused serves
-// nobody, so halting it costs nothing whatever the refcount file still lists.
+// nobody, so halting it costs nothing whatever the refcount file still lists
+// — unless it is still loading (FamilyState.Loading): the sessions on its
+// family are then waiting for that load, and wt is not asking blind, since it
+// knows what is there.
 func haltImpact(fs survey.FamilyState) (sessions int, users []string, blind bool) {
 	if fs.Down {
+		if fs.Loading.PID > 0 {
+			return fs.Sessions, fs.Users, false
+		}
 		return 0, nil, false
 	}
 	return fs.Sessions, fs.Users, fs.Untrusted
+}
+
+// errLoadingUnknown is the error of a stop that found a live pid in a
+// provider's pidfile behind a refused port and could not read the process
+// table to say what it is: neither "nothing running" nor something wt may
+// signal.
+func errLoadingUnknown(provider string, err error) error {
+	return fmt.Errorf("cannot tell whether %s is still loading: %w — nothing was stopped", provider, err)
+}
+
+// pidfileFindings is what the pidfiles behind refused ports name besides a
+// verified server, one entry per family in provider order: a note for a live
+// process that is not the server (left alone), an error for a process table
+// wt could not read.
+func pidfileFindings(cfg *config.Config, st survey.StopState) (notes []string, errs []error) {
+	seen := map[string]bool{}
+	for _, id := range stoppableProviders(cfg) {
+		fam := localmodels.Family(id)
+		if seen[fam] {
+			continue
+		}
+		seen[fam] = true
+		switch l := st.Families[fam].Loading; {
+		case l.Err != nil:
+			errs = append(errs, errLoadingUnknown(id, l.Err))
+		case l.Stray != "":
+			notes = append(notes, l.Stray)
+		}
+	}
+	return notes, errs
 }
 
 // errCannotTell is the error of a stop that could not read what the named
@@ -232,7 +277,8 @@ func unreadClause(names []string, it bool) string {
 // `wt stop omlx`, it halts a configured pool service even when no model is
 // loaded: that is what frees the server's memory. An Exclusive provider
 // (mtplx) with no candidate is halted too unless its port refused, so "all"
-// does not depend on what a probe managed to read (#308). Every stop is
+// does not depend on what a probe managed to read (#308) — and behind a
+// refused port when its pidfile names the verified server, still loading. Every stop is
 // attempted; a failure does not leave the rest running, and the command then
 // exits non-zero.
 //
@@ -261,16 +307,21 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	}
 	inUse, users := stopImpact(oneByOne)
 	var unread []string
+	loading := ""
 	for _, id := range halts {
-		n, ids, blind := haltImpact(st.Families[localmodels.Family(id)])
+		fs := st.Families[localmodels.Family(id)]
+		n, ids, blind := haltImpact(fs)
 		inUse += n
 		users = append(users, ids...)
 		if blind {
 			unread = append(unread, id)
 		}
+		if fs.Loading.PID > 0 {
+			loading += fmt.Sprintf(", and %s is still loading (pid %d)", id, fs.Loading.PID)
+		}
 	}
 	if inUse > 0 && !yes {
-		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false)))
+		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
 		if err != nil {
 			return err
 		}
@@ -282,6 +333,15 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	if fams := unreadShared(cfg, st); len(fams) > 0 {
 		failures = append(failures, errCannotTell(fams, " — nothing was stopped there"))
 	}
+	// What a pidfile behind a refused port names that wt will not signal:
+	// said once everything else is, so it is the last thing on the screen.
+	notes, unknown := pidfileFindings(cfg, st)
+	failures = append(failures, unknown...)
+	defer func() {
+		for _, n := range notes {
+			fmt.Fprintf(out, "wt: %s\n", n)
+		}
+	}()
 	if len(entries) == 0 && len(halts) == 0 {
 		if len(failures) == 0 {
 			fmt.Fprintln(out, "wt: no running local models")
@@ -320,7 +380,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			failures = append(failures, notHalted(halts[i:]))
 			break
 		}
-		cancelled, err := haltProvider(ctx, out, cfg, id)
+		cancelled, err := haltProvider(ctx, out, cfg, id, st.Families[localmodels.Family(id)].Loading.PID)
 		if cancelled {
 			failures = append(failures, notHalted(halts[i:]))
 			break
@@ -334,12 +394,19 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 
 // haltProvider stops one provider's server as a whole (`wt stop omlx`, `wt
 // stop mtplx` with no candidate, and each halt of `wt stop --all`) and
-// reports it on out. cancelled means Ctrl+C
+// reports it on out. loadingPID > 0 is a server that has not opened its port
+// (FamilyState.Loading): it is stopped by that pid, since its provider's own
+// stop goes through the port, and the line says so. cancelled means Ctrl+C
 // ended it: the provider's stop was killed, not broken, so it is printed as
 // "cancelled" and the caller reports it as one, not as a failed stop.
-func haltProvider(ctx context.Context, out io.Writer, cfg *config.Config, id string) (cancelled bool, err error) {
-	fmt.Fprintf(out, "Stopping %s... ", id)
-	err = stopProvider(ctx, cfg, id)
+func haltProvider(ctx context.Context, out io.Writer, cfg *config.Config, id string, loadingPID int) (cancelled bool, err error) {
+	if loadingPID > 0 {
+		fmt.Fprintf(out, "Stopping %s (still loading, pid %d)... ", id, loadingPID)
+		err = stopLoading(ctx, cfg, id, loadingPID)
+	} else {
+		fmt.Fprintf(out, "Stopping %s... ", id)
+		err = stopProvider(ctx, cfg, id)
+	}
 	switch {
 	case err == nil:
 		fmt.Fprintln(out, "done")
@@ -432,7 +499,14 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			}
 		}
 		if len(targets) == 0 {
-			if config.IndexModelByID(cfg.Models, arg) >= 0 {
+			if i := config.IndexModelByID(cfg.Models, arg); i >= 0 {
+				// wt does not know which model a server that is still
+				// loading holds, so a model id stops nothing there; the
+				// provider does.
+				prov := cfg.Models[i].ProviderID
+				if pid := st.Families[localmodels.Family(prov)].Loading.PID; pid > 0 {
+					return fmt.Errorf("model %q is not running — %s is still loading (pid %d); \"wt stop %s\" stops it", arg, prov, pid, prov)
+				}
 				return fmt.Errorf("model %q is not running", arg)
 			}
 			return fmt.Errorf("unknown model %q", arg)
@@ -448,12 +522,19 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		}
 		halt = haltsWhole(st, arg, len(targets))
 		if len(targets) == 0 && !halt {
-			if fs := st.Families[localmodels.Family(arg)]; fs.Untrusted && !fs.Down {
+			fs := st.Families[localmodels.Family(arg)]
+			if fs.Untrusted && !fs.Down {
 				// Only a Shared provider gets here: its models are stopped
 				// one by one, so there is nothing to stop blind.
 				return errCannotTell([]string{arg}, " — nothing was stopped")
 			}
+			if fs.Loading.Err != nil {
+				return errLoadingUnknown(arg, fs.Loading.Err)
+			}
 			fmt.Fprintf(out, "wt: nothing running on %s\n", arg)
+			if fs.Loading.Stray != "" {
+				fmt.Fprintf(out, "wt: %s\n", fs.Loading.Stray)
+			}
 			return nil
 		}
 	}
@@ -464,18 +545,22 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		entries = append(entries, c.Entry)
 	}
 	inUse, users := stopImpact(targets)
-	blind := ""
+	blind, what, loadingPID := "", arg+" is", 0
 	if halt {
 		// A halt takes every model of the family down, so it is the family's
 		// sessions that count — whatever the candidates were (#307).
+		fs := st.Families[localmodels.Family(arg)]
 		var unread bool
-		inUse, users, unread = haltImpact(st.Families[localmodels.Family(arg)])
+		inUse, users, unread = haltImpact(fs)
 		if unread {
 			blind = unreadClause([]string{arg}, true)
 		}
+		if loadingPID = fs.Loading.PID; loadingPID > 0 {
+			what = fmt.Sprintf("%s is still loading (pid %d) and is", arg, loadingPID)
+		}
 	}
 	if inUse > 0 && !yes {
-		ok, err := confirmStop(fmt.Sprintf("%s is in use by %d live wt session(s) (%s)%s; stop anyway?", arg, inUse, strings.Join(users, ", "), blind))
+		ok, err := confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
 		if err != nil {
 			return err
 		}
@@ -489,7 +574,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		// Exclusive provider with no candidate is halted the same way.
 		ctx, cancel := startSignalCtx()
 		defer cancel()
-		cancelled, err := haltProvider(ctx, out, cfg, arg)
+		cancelled, err := haltProvider(ctx, out, cfg, arg, loadingPID)
 		if cancelled {
 			return notHalted([]string{arg})
 		}

@@ -21,8 +21,8 @@ import (
 )
 
 // stopDeps are the picker's seams: live inventory, the two live-session
-// refcount reads, the per-model stop and the batch's single proxy restart.
-// Tests substitute all five.
+// refcount reads, the per-model stop, the batch's single proxy restart and the
+// pidfile read behind a refused port. Tests substitute all six.
 type stopDeps struct {
 	inventory func(*config.Config) localmodels.Snapshot
 	counts    func(modelIDs []string) map[string]int
@@ -33,6 +33,9 @@ type stopDeps struct {
 	// the proxy; restartOwed reports that settle must run (issue #142).
 	stop   func(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error)
 	settle func(ctx context.Context, cfg *config.Config)
+	// loading reads what the pidfile of a family's server says, for a family
+	// whose port refused (lifecycle.LoadingServer). It signals nothing.
+	loading func(cfg *config.Config, family string) lifecycle.Loading
 }
 
 func defaultStopDeps() stopDeps {
@@ -49,8 +52,9 @@ func defaultStopDeps() stopDeps {
 			_ = store.Sweep()
 			return store.Live()
 		},
-		stop:   lifecycle.StopModelDeferred,
-		settle: lifecycle.SettleRoutes,
+		stop:    lifecycle.StopModelDeferred,
+		settle:  lifecycle.SettleRoutes,
+		loading: lifecycle.LoadingServer,
 	}
 }
 
@@ -123,6 +127,12 @@ type FamilyState struct {
 	// lists. A stop that takes the whole provider down asks about these.
 	Sessions int
 	Users    []string
+	// Loading is what the family's pidfile says when Down: a server that has
+	// not opened its port yet (Loading.PID, verified — mtplx reads its
+	// weights first), a live process wt could not verify as one
+	// (Loading.Stray), or a process table it could not read (Loading.Err).
+	// Zero when the port did not refuse, and for a family with no pidfile.
+	Loading lifecycle.Loading
 }
 
 // StopState is the view `wt stop` acts on, from one inventory round:
@@ -157,7 +167,12 @@ func stopState(cfg *config.Config, d stopDeps) StopState {
 	st := StopState{Candidates: candidatesFrom(snap, d), Families: map[string]FamilyState{}}
 	for fam := range snap.Providers {
 		if lifecycle.CanStop(fam) {
-			st.Families[fam] = FamilyState{Probed: true, Untrusted: !lifecycle.ProbeTrusted(snap, fam), Down: snap.Down[fam]}
+			fs := FamilyState{Probed: true, Untrusted: !lifecycle.ProbeTrusted(snap, fam), Down: snap.Down[fam]}
+			if fs.Down {
+				// Nothing listens, which is not yet "nothing is there".
+				fs.Loading = d.loading(cfg, fam)
+			}
+			st.Families[fam] = fs
 		}
 	}
 	for id, n := range d.live() {

@@ -89,12 +89,36 @@ wt stop --all                    # stop every running local model, then the omlx
     has to recognise the server on the port: when it does not (a server that
     accepts the connection and answers nothing), the stop is `failed` with
     mtplx's own message, and the process has to be ended by hand.
-    A port that refuses the connection is "nothing running" — and so is an
-    mtplx that has not opened its port yet: while `wt start` is still
-    loading a model behind a closed port, `wt stop mtplx` and `--all` print
-    that nothing is running and exit 0. Press Ctrl+C in the `wt start` that
-    is loading it. A provider row wt does not probe (no `location` and no
-    local model) is "nothing running" as well.
+    A port that refuses the connection is "nothing running", unless mtplx
+    is still loading (next item). A provider row wt does not probe (no
+    `location` and no local model) is "nothing running" as well.
+  - **An mtplx that is still loading** has not opened its port — it reads
+    its weights first — so `mtplx stop` cannot reach it. `wt stop mtplx` and
+    `--all` stop it by the pid in the pidfile wt wrote when it started the
+    server, and print `Stopping mtplx (still loading, pid N)... done`. wt
+    never acts on the pid alone, since a pid can be reused. It signals the
+    process only when all of this holds: the process is alive; the current
+    user owns it; its arguments are those of the mtplx server on this
+    provider's port (`mtplx serve ... --port <port>`, or the
+    `python -m mtplx.server.openai ... --port <port>` it turns into, compared
+    argument by argument); and, when wt recorded the server's start time —
+    `wt start` writes it beside the pidfile — the process started at that
+    time. A pidfile from an older wt or from llmbench holds only the pid, and
+    is judged by the first three. wt sends SIGTERM, waits up to 10 seconds,
+    checks again that the pid is still the same process, and only then sends
+    SIGKILL. The stop is `done` once the process is gone; if wt cannot
+    confirm that, it prints `failed` and exits 1.
+    When the pidfile names a live process that fails a check, wt signals
+    nothing: it prints that nothing is running, then what it found
+    (`wt: the mtplx pidfile names pid N, which is not an mtplx server on port 8003 — left alone`),
+    and exits 0. When it cannot read the process table at all it exits 1
+    with `cannot tell whether mtplx is still loading`. A pidfile that is
+    missing, unreadable or names a dead pid is "nothing running"; wt does
+    not delete it.
+    `wt stop <provider>/<name>` for an mtplx model during a load stops
+    nothing — wt does not know which model the loading process holds — and
+    fails with
+    `model "<id>" is not running — mtplx is still loading (pid N); "wt stop mtplx" stops it`.
   - ollama's models are stopped one by one and its daemon is left up, so
     when ollama's probe gives no usable answer (and its port does not
     refuse) there is nothing wt can stop: `wt stop ollama` fails with
@@ -104,7 +128,8 @@ wt stop --all                    # stop every running local model, then the omlx
   nothing loaded, since that is what frees its memory. omlx's models are not
   unloaded one by one first. mtplx is stopped as `wt stop mtplx` stops it:
   unless its port refuses the connection, also when wt cannot tell what it
-  has loaded (then as `Stopping mtplx...`, before omlx). It asks once when any of the
+  has loaded (then as `Stopping mtplx...`, before omlx), and while it is
+  still loading. It asks once when any of the
   models, or any provider it is about to stop as a whole, is in use by
   a live wt session (`--yes` skips the question). Every stop is attempted: if
   one fails the others still run, and the exit code is 1. When ollama's probe
@@ -112,7 +137,7 @@ wt stop --all                    # stop every running local model, then the omlx
   stopped, and the command exits 1 with
   `cannot tell what is running on ollama`. `wt: no running local models` is
   printed only when every provider either answered with nothing running or
-  refused the connection. Ctrl+C is not a
+  refused the connection with no mtplx loading behind it. Ctrl+C is not a
   failure to step over: it cancels the stop in flight and ends the command
   there, so a `--all` interrupted while it stops the models leaves the omlx
   service up, and the error names it. It takes no argument. A running
@@ -148,7 +173,10 @@ When a provider is stopped as a whole — `wt stop omlx`, `wt stop mtplx` with
 nothing wt could list, and the same two inside `wt stop --all` — N is every
 live wt session on any model of that provider, whether or not wt could see
 the model running, a model with no registry entry included. A provider whose
-port refuses the connection serves nobody, so it is stopped with no question.
+port refuses the connection serves nobody, so it is stopped with no question
+— except an mtplx that is still loading, whose sessions are waiting for that
+load: `mtplx is still loading (pid N) and is in use by 1 live wt session(s) (mtplx/m); stop anyway? [y/N]`
+(in `--all`'s question: `..., and mtplx is still loading (pid N); stop them all?`).
 If wt could not tell what the provider has loaded, the question says so:
 `omlx is in use by 1 live wt session(s) (omlx/c), and wt could not tell what it has loaded; stop anyway? [y/N]`.
 

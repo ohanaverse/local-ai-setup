@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -42,6 +43,10 @@ type stopHarness struct {
 	notOwed bool
 	// settles counts settle calls: the proxy restarts the stop loop asked for.
 	settles int
+	// loading is what each family's pidfile says; loadingAsked records the
+	// families the stop state read it for.
+	loading      map[string]lifecycle.Loading
+	loadingAsked []string
 }
 
 func (h *stopHarness) deps() stopDeps {
@@ -72,6 +77,10 @@ func (h *stopHarness) deps() stopDeps {
 			return !h.notOwed, nil
 		},
 		settle: func(context.Context, *config.Config) { h.settles++ },
+		loading: func(_ *config.Config, fam string) lifecycle.Loading {
+			h.loadingAsked = append(h.loadingAsked, fam)
+			return h.loading[fam]
+		},
 	}
 }
 

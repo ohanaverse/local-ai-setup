@@ -85,9 +85,9 @@ func TestStopExclusiveProviderIsHaltedWithoutACandidate(t *testing.T) {
 
 // TestStopExclusiveProviderWhosePortRefusesIsNotRunning verifies `wt stop
 // mtplx` and `wt stop --all` leave mtplx alone and say nothing is running when
-// its port actively refused the probe: a refused connection is the one
-// untrusted answer that is known to mean "nothing to stop", so the commands
-// stay idempotent on a machine where mtplx is simply off.
+// its port actively refused the probe and no pidfile names a server behind
+// it: that is the one untrusted answer known to mean "nothing to stop", so
+// the commands stay idempotent on a machine where mtplx is simply off.
 func TestStopExclusiveProviderWhosePortRefusesIsNotRunning(t *testing.T) {
 	stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true, Down: true}))
 	halted := stubHalt(t)
@@ -533,7 +533,8 @@ func localProvider(id, baseURL, modelDir string) config.Provider {
 // stop mtplx`; one whose port refuses is not. The commands printed "no running
 // local models" / "nothing running on mtplx" and exited 0 with the server up.
 // Neither case stands for a model that is still loading: an mtplx that has
-// not opened its port yet is the "refused" case, and is left alone.
+// not opened its port yet is the "refused" case, which is left alone here
+// because no pidfile names a server (stop_loading_test.go has the other).
 func TestStopHaltsAnMtplxItCannotReadThroughTheRealProbe(t *testing.T) {
 	for name, handler := range map[string]http.HandlerFunc{
 		"empty list": func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"data":[]}`) },

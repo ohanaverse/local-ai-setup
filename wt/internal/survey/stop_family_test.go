@@ -2,10 +2,12 @@ package survey
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -192,5 +194,48 @@ func TestStopStateMarksOnlyProbedFamilies(t *testing.T) {
 	st = stopState(&config.Config{Providers: []config.Provider{{ID: "mtplx"}}}, d)
 	if fs, ok := st.Families["mtplx"]; ok || fs.Probed {
 		t.Errorf("mtplx = %+v (present %v), want no entry for a row the inventory does not probe", fs, ok)
+	}
+}
+
+// TestStopStateReadsThePidfileOnlyBehindARefusedPort verifies the stop state
+// asks what a family's pidfile says exactly when its port refused, and
+// carries the answer: mtplx reads its weights before it opens its port, so a
+// refused port with a verified live server behind it is a server still
+// loading, which `wt stop mtplx` and `wt stop --all` must be able to see
+// (#308). A family that answered, or gave an unusable answer, is stopped
+// through its port and the pidfile is not consulted.
+func TestStopStateReadsThePidfileOnlyBehindARefusedPort(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{
+		{ID: "mtplx", Location: config.LocationLocal}, {ID: "omlx", Location: config.LocationLocal}, {ID: "ollama", Location: config.LocationLocal},
+	}}
+	for name, tc := range map[string]struct {
+		status localmodels.Status
+		down   bool
+		want   lifecycle.Loading
+	}{
+		"refused":          {localmodels.StatusUnreachable, true, lifecycle.Loading{PID: 4242}},
+		"answered":         {localmodels.StatusOK, false, lifecycle.Loading{}},
+		"no usable answer": {localmodels.StatusUnreachable, false, lifecycle.Loading{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := &stopHarness{
+				snap: localmodels.Snapshot{
+					Providers: map[string]localmodels.Status{"mtplx": tc.status, "omlx": localmodels.StatusOK, "ollama": localmodels.StatusOK},
+					Down:      map[string]bool{"mtplx": tc.down},
+				},
+				loading: map[string]lifecycle.Loading{"mtplx": {PID: 4242}},
+			}
+			st := stopState(cfg, h.deps())
+			if got := st.Families["mtplx"].Loading; got != tc.want {
+				t.Errorf("mtplx Loading = %+v, want %+v", got, tc.want)
+			}
+			wantAsked := []string(nil)
+			if tc.down {
+				wantAsked = []string{"mtplx"}
+			}
+			if !slices.Equal(h.loadingAsked, wantAsked) {
+				t.Errorf("pidfile read for %v, want %v", h.loadingAsked, wantAsked)
+			}
+		})
 	}
 }

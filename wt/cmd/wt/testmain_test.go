@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -61,6 +62,15 @@ func TestMain(m *testing.M) {
 		return errors.New("stopProvider not stubbed in this test")
 	}
 	stopPickerAll = func(*config.Config) (bool, []string) { return false, nil }
+	// No test may read the developer's mtplx pidfile or signal one of their
+	// processes: the stop of a loading server is refused here, and the
+	// engine's own process seams are closed beneath it for a test that
+	// swaps the real stop state back in (liveStopState). Tests call
+	// stubStopLoading.
+	stopLoading = func(_ context.Context, _ *config.Config, id string, pid int) error {
+		return fmt.Errorf("stopLoading not stubbed in this test (%s, pid %d)", id, pid)
+	}
+	lifecycle.IsolateProcessesForTest()
 	// No test may read the developer's refcount file for session counts.
 	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	confirmStop = func(string) (bool, error) { return false, nil }

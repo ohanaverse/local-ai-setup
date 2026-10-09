@@ -28,6 +28,10 @@ func TestMain(m *testing.M) {
 		helperMtplx()
 		return
 	}
+	// No test may read the real mtplx pidfile or signal a process it did not
+	// start: the production env's process seams fail and its pidfile is
+	// nowhere (TestProcessSeamsFailClosedHere).
+	IsolateProcessesForTest()
 	// No test may reach the real config.yaml or proxy through the public wrappers.
 	applyRoutes = func(*config.Config, litellm.Change, litellm.Options) (litellm.Result, error) {
 		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
@@ -248,12 +252,22 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 // backend uses (MTPLX_PIDFILE and MTPLX_LOG in its backends/mtplx.py). With
 // two paths, a server one tool started would be invisible to the other.
 func TestDefaultEnvRegistersMtplx(t *testing.T) {
+	t.Setenv(mtplxPidfileEnv, "") // TestMain points it away from the real files
 	e := defaultEnv()
 	if e.backends["mtplx"] == nil || e.backends["mtplx"].tenancy() != Exclusive {
 		t.Fatal("mtplx backend missing or not single-model")
 	}
 	if e.mtplxProc.pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.mtplxProc.logfile != "/tmp/local-ai-setup-mtplx.log" {
 		t.Errorf("mtplxProc = %+v, want the paths llmbench's mtplx backend uses", e.mtplxProc)
+	}
+	if got := e.mtplxProc.startfile(); got != "/tmp/local-ai-setup-mtplx.pid.wt" {
+		t.Errorf("start record = %q, want it beside the pidfile, which stays a bare pid for llmbench", got)
+	}
+	// WT_MTPLX_PIDFILE moves all three, so a run against scratch state never
+	// touches the real ones.
+	t.Setenv(mtplxPidfileEnv, "/scratch/m.pid")
+	if p := defaultEnv().mtplxProc; p.pidfile != "/scratch/m.pid" || p.logfile != "/scratch/m.log" || p.startfile() != "/scratch/m.pid.wt" {
+		t.Errorf("mtplxProc under %s = %+v, want the pidfile it names and the log beside it", mtplxPidfileEnv, p)
 	}
 }
 

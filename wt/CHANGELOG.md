@@ -218,11 +218,26 @@
   answered with an error, with nothing loaded, or not at all within the
   probe's 2 seconds. They used to print `wt: no running local models` /
   `wt: nothing running on mtplx` and exit 0 with the server still up (#308).
-  A port that refuses the connection is still "nothing running", and that
-  includes an mtplx that has not opened its port yet: a load in progress
-  behind a closed port is not stopped by these commands (Ctrl+C the
-  `wt start` that is loading it). A stop that leaves the port answering
-  prints `failed` and exits 1.
+  A stop that leaves the port answering prints `failed` and exits 1.
+- `wt stop --all` and `wt stop mtplx` stop an mtplx that is still loading
+  (#308). mtplx reads its weights before it opens its port, so a load in
+  progress refuses the connection and both commands reported nothing running
+  and exited 0. They now read the pidfile wt writes when it starts mtplx and
+  stop the process it names — `Stopping mtplx (still loading, pid N)... done`
+  — after the in-use question when a live wt session is on mtplx
+  (`mtplx is still loading (pid N) and is in use by ...; stop anyway?`). The
+  pid alone is never enough: the process must be alive, the current user's,
+  an mtplx server on the provider's port by its exact arguments, and, when
+  wt recorded its start time (a new file beside the pidfile, written by
+  `wt start` from now on), the process that started then. Anything else is
+  left alone, with a line saying what the pidfile names; if the process
+  table cannot be read the commands exit 1 with
+  `cannot tell whether mtplx is still loading`. wt sends SIGTERM, waits 10
+  seconds, checks the process is still the same one, and only then sends
+  SIGKILL; a stop it cannot confirm prints `failed` and exits 1. A port that
+  refuses with no such process behind it is still "nothing running".
+  `wt stop <mtplx model>` during a load stops nothing and names
+  `wt stop mtplx`.
 - `wt stop omlx`, `wt stop --all` and the mtplx stop above ask the in-use
   question whenever a live wt session uses any model of the provider they are
   about to stop as a whole, counted across the provider and not from the
