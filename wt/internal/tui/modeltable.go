@@ -46,6 +46,28 @@ var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colLoc, colFa
 
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
 
+// timePricedMark follows the COST cell of a model that has cost.time_prices
+// rows: the prices shown are the ones in force when the table was built, and
+// they change with the time. costLegend is the COST heading of a table that
+// has such a row; it says what the mark means. It is used only when the
+// column is already that wide (a marked cell with three prices is one column
+// wider), so it never widens the table.
+const (
+	timePricedMark = "~"
+	costLegend     = "COST (~ varies by time)"
+)
+
+// costCell is a row's COST cell: the three prices in force for it
+// (tableRow.price), marked when the model's price depends on the time.
+func costCell(r tableRow) string {
+	p := r.price()
+	text := formatPerToken(config.ModelCost{InputPricePerMillion: p.Input, CachePricePerMillion: p.Cache, OutputPricePerMillion: p.Output})
+	if r.Model.Cost.TimePriced() {
+		text += timePricedMark
+	}
+	return text
+}
+
 func padRunes(s string, w int) string { return tuilayout.PadRunes(s, w) }
 
 func maxRunes(min int, ss ...string) int { return tuilayout.MaxRunes(min, ss...) }
@@ -127,6 +149,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	c1, c7, c30 := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
 	famW, idW, costW, w1, w7, w30 := len("FAMILY"), len("MODEL"), len("COST"), len("1D"), len("7D"), len("30D")
 	wS := len("STATUS")
+	timePriced := false
 	for i, r := range rows {
 		fam[i] = r.Model.Family
 		if fam[i] == "" {
@@ -134,7 +157,8 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		}
 		cost[i] = "-"
 		if !r.Discovered {
-			cost[i] = formatPerToken(r.Model.Cost)
+			cost[i] = costCell(r)
+			timePriced = timePriced || r.Model.Cost.TimePriced()
 		}
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])
@@ -143,12 +167,16 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		w1, w7, w30 = maxRunes(w1, c1[i]), maxRunes(w7, c7[i]), maxRunes(w30, c30[i])
 		wS = maxRunes(wS, string(r.Status))
 	}
+	costHead := "COST"
+	if timePriced && len(costLegend) <= costW {
+		costHead = costLegend
+	}
 	// One layout for the header and every row. It starts with every column
 	// shown; whoever sizes the list narrows it (tuilayout.FitTo).
 	cols := tuilayout.NewColumns(
 		[]string{
 			padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", wS),
-			padRunes("RUNNING", 7), padRunes("COST", costW),
+			padRunes("RUNNING", 7), padRunes(costHead, costW),
 			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
 		},
 		[]int{famW, idW, 5, wS, 7, costW, w1, w7, w30, len("SURVEY")},

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -839,5 +841,123 @@ func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
 	failed, _ := updateMsg(fresh, entriesLoadedMsg{err: errors.New("not a git repo")})
 	if !strings.Contains(failed.status, "not a git repo") {
 		t.Errorf("status after a failed load = %q, want the error", failed.status)
+	}
+}
+
+// timedPickerConfig is modelTestConfig with the three models of
+// timedTableRows added under the fixture's cloud provider: one priced by
+// OpenRouter's schedule, one with ollama's off-peak row, one with a single
+// price. The ids are the real ones' length, because the fit depends on it.
+func timedPickerConfig() *config.Config {
+	cfg := modelTestConfig()
+	for _, r := range timedTableRows(time.Time{}) {
+		_, name, _ := strings.Cut(r.Model.ID, "/")
+		cfg.Models = append(cfg.Models, config.Model{ID: "claude/" + name, ProviderID: "claude", ModelName: name, Family: r.Model.Family, Tags: []string{"code"}, Cost: r.Model.Cost})
+	}
+	return cfg
+}
+
+// TestModelPickerWithTimePricedModelsFitsTheTerminal pins the model picker
+// with time-priced models in it at every supported terminal size, built at
+// an instant on each side of both models' windows. The COST cell of such a
+// model is one column wider than a plain one (the "~" mark) and its heading
+// is longer, so this is where a table could come out one column too wide for
+// its list, which loses the header or the last column on a real screen. The
+// view must fit; where the COST column is drawn it must show the price in
+// force at that instant, marked; and at 120 columns it must be drawn, so the
+// price is somewhere a user can see it. Both pickers are measured: the
+// launcher's and the standalone one `wt start` and `wt smoke` open.
+func TestModelPickerWithTimePricedModelsFitsTheTerminal(t *testing.T) {
+	old := pickerNow
+	t.Cleanup(func() { pickerNow = old })
+	for _, c := range []struct {
+		name             string
+		at               time.Time
+		deepseek, ollama string
+	}{
+		{"deepseek dear, ollama off-peak", deepseekDear, " 1.3200  0.0440  3.9600~", " 0.2500  0.0250  1.0000~"},
+		{"deepseek cheap, ollama peak", ollamaPeak, " 0.6600  0.0220  1.9800~", " 0.5000  0.0500  2.0000~"},
+	} {
+		pickerNow = func() time.Time { return c.at }
+		for _, width := range layoutWidths {
+			for _, height := range layoutHeights {
+				tempStateDir(t)
+				stubUsageStore(t)
+				stubRefcountStore(t)
+				stubInventory(t, runningOmlxSnapshot())
+				cfg := timedPickerConfig()
+				check := func(picker, view string, cols *tuilayout.Columns) {
+					t.Helper()
+					assertFits(t, c.name+", "+picker, view, width, height)
+					if width == 120 && !cols.Shown(colCost) {
+						t.Errorf("%s, %s at %dx%d: the COST column is not drawn", c.name, picker, width, height)
+					}
+					if !cols.Shown(colCost) {
+						return
+					}
+					// A short terminal shows one page of the rows; the two
+					// time-priced models sort first among the priced ones, so
+					// at 24 lines and more both are on screen.
+					if !strings.Contains(view, "COST (~ varies by time)") {
+						t.Errorf("%s, %s at %dx%d: the COST heading does not explain the mark:\n%s", c.name, picker, width, height, view)
+					}
+					if height >= 24 && (!strings.Contains(view, c.deepseek) || !strings.Contains(view, c.ollama)) {
+						t.Errorf("%s, %s at %dx%d: the view lacks %q or %q:\n%s", c.name, picker, width, height, c.deepseek, c.ollama, view)
+					}
+				}
+
+				m := flowEnter(t, model{cfg: cfg, agent: "claude", selectedPath: t.TempDir(), width: width, height: height}, "claude")
+				m = resized(t, m, width, height)
+				check("the launcher's picker", m.View(), m.models.Items()[0].(*modelItem).cols)
+
+				pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+				next, _ := pm.Update(tea.WindowSizeMsg{Width: width, Height: height})
+				standalone := next.(pickModel)
+				check("the standalone picker", standalone.View(), standalone.list.Items()[0].(*modelItem).cols)
+			}
+		}
+	}
+}
+
+// TestAnOpenPickerKeepsThePricesItOpenedWith pins when the picker reads its
+// clock: once, when the table is built, and not again while the picker is
+// open. The cost sort is also the default selection, so a table that priced
+// itself again on a resize or a cursor move would reorder its rows under the
+// cursor at a window boundary, between the user reading a row and pressing
+// Enter. Here the clock moves from deepseek's dear window to its cheap one
+// (and from ollama's off-peak hours to its peak) while the picker is
+// resized through every width, redrawn and moved in: the clock is read
+// once, the rows keep their order, and the COST cells still show the prices
+// of the instant the picker opened at.
+func TestAnOpenPickerKeepsThePricesItOpenedWith(t *testing.T) {
+	reads, now := 0, deepseekDear
+	old := pickerNow
+	pickerNow = func() time.Time { reads++; return now }
+	t.Cleanup(func() { pickerNow = old })
+	stubInventory(t, runningOmlxSnapshot())
+	m := flowEnter(t, model{cfg: timedPickerConfig(), agent: "claude", selectedPath: t.TempDir(), width: 120, height: 24}, "claude")
+	m = resized(t, m, 120, 24)
+	order := strings.Join(itemIDs(m), ",")
+	if view := m.View(); reads != 1 || !strings.Contains(view, " 1.3200  0.0440  3.9600~") || !strings.Contains(view, " 0.2500  0.0250  1.0000~") {
+		t.Fatalf("on opening: the clock was read %d time(s), want 1, and the view must show deepseek's dear price and ollama's off-peak one:\n%s", reads, view)
+	}
+
+	now = ollamaPeak
+	for _, size := range [][2]int{{40, 12}, {120, 50}, {80, 24}, {120, 24}} {
+		m = resized(t, m, size[0], size[1])
+		_ = m.View()
+		m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		_ = m.View()
+		m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+		_ = m.View()
+	}
+	if reads != 1 {
+		t.Errorf("after four resizes and eight cursor moves the clock was read %d time(s), want the one reading the table was built with", reads)
+	}
+	if got := strings.Join(itemIDs(m), ","); got != order {
+		t.Errorf("the rows moved while the picker was open:\n%s\nwant the order it opened with:\n%s", got, order)
+	}
+	if view := m.View(); !strings.Contains(view, " 1.3200  0.0440  3.9600~") || strings.Contains(view, " 0.6600  0.0220  1.9800~") {
+		t.Errorf("the open picker shows the new window's price, want the one it opened with:\n%s", view)
 	}
 }
