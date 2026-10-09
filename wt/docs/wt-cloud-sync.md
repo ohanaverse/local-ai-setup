@@ -65,7 +65,9 @@ route sync) LiteLLM's routes.
   directly (`<name>:<size>` to `<name>:<size>-cloud`). A bare name is looked
   up on `https://ollama.com/library/<name>/tags`: `<name>:cloud` if ollama
   publishes it, else the single `<name>:<size>-cloud`. A name whose
-  registry entry's tag is already pulled is not looked up again. A model
+  registry entry's tag is already pulled is not looked up again — unless
+  two pulled entries claim it, the mark of an earlier re-tag killed before
+  its removal, where the library lookup decides. A model
   with no cloud tag, several, or a library page that could not be read is
   skipped with a `warning:`: nothing is added or pulled for it, and no entry
   or pulled tag with its name is removed; an entry wt can still match to it
@@ -74,8 +76,10 @@ route sync) LiteLLM's routes.
 - **Re-tagging.** An entry under a tag ollama does not publish is replaced
   by one under the real tag; its removal line reads `(re-tagged as <new
   id>)`. The replacement is a copy of the old row (family, tags, and every
-  other key), but its id changes, and so does its LiteLLM route name,
-  because the route name is the model id.
+  other key) with four overrides: `id` and `model_name` become the new
+  tag, and `location` and `source` are set to `cloud` and `curated`. Its
+  LiteLLM route name changes with the id, because the route name is the
+  model id.
 - **A new entry's family** is that of an existing ollama entry with the same
   name stem, else the stem itself. Change it afterwards with
   `wt model edit <id> --family <name>` ([wt-model.md](wt-model.md)).
@@ -303,7 +307,8 @@ skill has the steps.
 
 **Exit 4** — `<n> of <m> ollama cloud entries would be removed — check the
 page parsed correctly, then re-run with --force. Nothing was changed for
-the catalog.`
+the catalog.` The line's `<n>` counts every removal line, a re-tagged one
+included, though the gate above leaves re-tagged entries out.
 
 **Exit 5** — two causes, told apart by the last line:
 
@@ -397,7 +402,11 @@ price, set `openrouter_priced = false` on that provider row.
 ## Beside modelman
 
 Until modelman is deleted, `modelman refresh-prices` and
-`modelman ollama-catalog sync` still work, unchanged. They stamp the same
-`pricing_updated_at` key, so either tool's refresh clears the notice, and
-the two print the same removal digest for the same plan. wt's notice does
-not read `modelman.toml`'s `price_refresh_last_run`.
+`modelman ollama-catalog sync` still work, unchanged. Both stamp the same
+`pricing_updated_at` key, but on different rows: refresh-prices on the
+OpenRouter-priced models, ollama-catalog sync on the ollama rows. So
+refresh-prices clears the notice as this command's prices flow does, and
+ollama-catalog sync's stamps do not count, as the catalog flow's do not
+(above). ollama-catalog sync prints the same removal digest as this
+command's catalog flow for the same plan; refresh-prices prints none. wt's
+notice does not read `modelman.toml`'s `price_refresh_last_run`.
