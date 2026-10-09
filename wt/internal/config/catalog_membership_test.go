@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -55,6 +56,24 @@ location = "cloud"
 tags = ["code"]
 `)
 
+	// modelman's leftover [model_state] flags, on disk: they must change
+	// nothing here (see the test comment above).
+	must(t, filepath.Join(dir, "local-ai/modelman.toml"), `
+[model_state]
+
+[model_state."ollama/exposed"]
+exposed = true
+ready = true
+
+[model_state."ollama/unexposed"]
+exposed = false
+ready = false
+
+[model_state."agy/native"]
+exposed = false
+ready = false
+`)
+
 	cfgDir := Dir()
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -80,7 +99,7 @@ tags = ["code"]
 		t.Errorf("ollama/exposed (local model) must be in the catalog (configured means exposed, #179)")
 	}
 	if !cfg.InCatalog(byID["ollama/unexposed"]) {
-		t.Errorf("ollama/unexposed (a second local model) must be in the catalog too (configured means exposed, #179 — visibility is governed by the live model inventory (internal/localmodels), not this predicate)")
+		t.Errorf("ollama/unexposed (local model, exposed=false) must still be in the catalog (configured means exposed, #179 — visibility is governed by the live model inventory (internal/localmodels), not this predicate)")
 	}
 }
 
@@ -161,6 +180,35 @@ family = "cloud-inherited"
 provider_id = "openrouter"
 model_name = "cloud-inherited"
 tags = ["code"]
+`)
+
+	// modelman's leftover [model_state] flags, on disk: the table says
+	// exposed/ready for each of these ids, and none of it may reach the
+	// predicate.
+	must(t, filepath.Join(dir, "local-ai/modelman.toml"), `
+[model_state]
+
+[model_state."native-provider/native-model"]
+exposed = false
+ready = false
+
+[model_state."ollama/local-flag-ready"]
+exposed = true
+ready = true
+
+[model_state."ollama/local-flag-not-ready"]
+exposed = true
+ready = false
+
+[model_state."ollama/local-flag-unexposed"]
+exposed = false
+ready = true
+
+[model_state."openrouter/cloud-flag"]
+exposed = true
+
+[model_state."openrouter/cloud-inherited"]
+exposed = true
 `)
 
 	cfgDir := Dir()

@@ -17,23 +17,11 @@ func litellmStateEnv(t *testing.T, wtToml string) string {
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", "")
-	writeUnder(t, home, "local-ai/registry.toml", "providers = []\nmodels = []\n")
+	must(t, filepath.Join(home, "local-ai/registry.toml"), "providers = []\nmodels = []\n")
 	if wtToml != "" {
-		writeUnder(t, home, "agent-wt/config.toml", wtToml)
+		must(t, filepath.Join(home, "agent-wt/config.toml"), wtToml)
 	}
 	return home
-}
-
-// writeUnder writes body to home/rel, creating the directories.
-func writeUnder(t *testing.T, home, rel, body string) {
-	t.Helper()
-	p := filepath.Join(home, rel)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // TestLoadNeverReadsModelmanToml pins the end of the legacy fallback: wt used
@@ -58,8 +46,8 @@ func TestLoadNeverReadsModelmanToml(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := litellmStateEnv(t, tc.wtToml)
-			writeUnder(t, home, "local-ai/modelman.toml", tc.modelmanToml)
-			writeUnder(t, home, ".config/local-ai/modelman.toml", tc.modelmanToml)
+			must(t, filepath.Join(home, "local-ai/modelman.toml"), tc.modelmanToml)
+			must(t, filepath.Join(home, ".config/local-ai/modelman.toml"), tc.modelmanToml)
 			cfg, err := Load()
 			if err != nil {
 				t.Fatalf("Load = %v, want modelman.toml ignored", err)
