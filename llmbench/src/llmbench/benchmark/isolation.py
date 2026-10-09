@@ -20,7 +20,8 @@ from ..providers import lifecycle
 # The isolable provider set now lives with the backends that implement it
 # (llmbench/providers/lifecycle/backends/__init__.py) — re-exported here
 # under its established name so existing importers
-# (benchmark/agent/runner.py) are unaffected.
+# (benchmark/agent/runner.py, benchmark/eval/runner.py — both alias it as
+# ISOLATABLE_PROVIDERS) are unaffected.
 SUPPORTED_PROVIDER_IDS = lifecycle.SUPPORTED_PROVIDER_IDS
 
 # IsolateResult is llmbench.local_process.ProcessResult under its

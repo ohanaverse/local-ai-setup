@@ -40,11 +40,16 @@ rows.
 **Removed from the repo** in the modelman retirement (Step 6): modelman's
 `providers/llamacpp.py` with modelman itself, and llmbench's
 `backends/llamacpp.py` (the `LlamaCppBackend`, with its test). Both are in git
-history; the last commit that has them is the parent of the commit that
-deleted `modelman/`
-(`git log --diff-filter=D --format=%H -1 -- modelman/pyproject.toml`) and of
-the one that deleted the backend
-(`git log --diff-filter=D --format=%H -1 -- llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py`).
+history, but in two commits one apart — the backend outlived modelman by one
+commit, so the parent of each is a different SHA (the earlier one is the only
+commit that has both files):
+
+- the commit that deleted `modelman/`
+  (`git log --diff-filter=D --format=%H -1 -- modelman/pyproject.toml`); its
+  parent has both files
+- the commit that deleted the backend
+  (`git log --diff-filter=D --format=%H -1 -- llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py`);
+  its parent no longer has modelman's copy
 
 What that changes on a machine: `llmbench provider list` has no `llamacpp`
 row, `llmbench provider isolate llamacpp` and `llmbench provider stop llamacpp`
