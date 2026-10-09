@@ -14,6 +14,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -97,9 +98,29 @@ func TestMain(m *testing.M) {
 	// stop the developer's running models.
 	releaseSession = func() {}
 	runStopPhase = func(*config.Config) {}
+	// The model picker's pre-launch ollama check (#317): unstubbed, Enter on
+	// a direct-route ollama model would run whatever `ollama` is on the
+	// developer's PATH, and the test's result would depend on what that
+	// daemon has pulled. Tests that reach the check call stubOllamaList.
+	ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+		return nil, true, errors.New("ollamacheck list not stubbed in this test (ollama list at " + origin + ")")
+	})
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)
+}
+
+// stubOllamaList makes the picker's pre-launch ollama check see an installed
+// ollama whose daemon lists names, for the duration of a test, and returns
+// where the origin of each `ollama list` it would have run is recorded.
+func stubOllamaList(t *testing.T, names ...string) *[]string {
+	t.Helper()
+	var origins []string
+	t.Cleanup(ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+		origins = append(origins, origin)
+		return names, true, nil
+	}))
+	return &origins
 }
 
 // stubInventory makes both enterModelPhase and newPickModel see snap (via the

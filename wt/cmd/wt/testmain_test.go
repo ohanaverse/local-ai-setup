@@ -14,6 +14,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
@@ -100,6 +101,13 @@ func TestMain(m *testing.M) {
 	confirmCloudSync = func(string) (bool, error) {
 		return false, errors.New("confirmCloudSync not stubbed in this test")
 	}
+	// The pre-launch ollama check (#317), reached by a direct launch of an
+	// ollama model here and through the TUI: unstubbed it would run whatever
+	// `ollama` is on the developer's PATH. Tests that reach it call
+	// stubOllamaList (launch_test.go).
+	ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+		return nil, true, errors.New("ollamacheck list not stubbed in this test (ollama list at " + origin + ")")
+	})
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)
