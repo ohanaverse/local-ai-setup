@@ -74,7 +74,12 @@ func stopCmd(a *app) *cobra.Command {
 			"provider at once. It takes no argument. A running mlx_lm_server pairing is\n" +
 			"not stopped (wt has no engine for one); \"llmbench provider stop mlx_lm_server\"\n" +
 			"stops it.\n\n" +
-			"Stopping a model a live wt session uses asks for confirmation; --yes skips it.",
+			"\"wt stop mtplx\" and --all stop mtplx whenever its port answers, also when wt\n" +
+			"cannot tell what it has loaded (a model still loading, or no answer in time).\n" +
+			"ollama's models are stopped one by one, so when wt cannot tell what ollama is\n" +
+			"running it stops nothing there and exits 1.\n\n" +
+			"Stopping a model or a provider a live wt session uses asks for confirmation;\n" +
+			"--yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -104,14 +109,37 @@ func stopCmd(a *app) *cobra.Command {
 	return cmd
 }
 
-// poolProviders lists one configured provider id per pool server (omlx):
-// "omlx" and "omlx-6bit" are one service, and it is halted once.
-func poolProviders(cfg *config.Config) []string {
+// haltsWhole reports whether stopping providerID with the given number of
+// stop candidates in its family means halting its server as a whole
+// (haltProvider) rather than stopping models one by one. A Pool (omlx) always
+// is: unloading its models leaves the service and its memory in place. An
+// Exclusive provider (mtplx) is when the probe gave no candidate to stop it
+// through and its port did not refuse — a model still loading, or a probe
+// that got no usable answer, is a server that is up (#308). A refused port is
+// nothing to stop. A Shared provider (ollama) never is: wt leaves its daemon up.
+func haltsWhole(st survey.StopState, providerID string, candidates int) bool {
+	switch lifecycle.TenancyOf(providerID) {
+	case lifecycle.Pool:
+		return true
+	case lifecycle.Exclusive:
+		return candidates == 0 && !st.Families[localmodels.Family(providerID)].Down
+	}
+	return false
+}
+
+// haltProviders lists, in id order, one configured provider id per server
+// `wt stop --all` halts as a whole (haltsWhole): "omlx" and "omlx-6bit" are
+// one service, and it is halted once.
+func haltProviders(cfg *config.Config, st survey.StopState) []string {
+	perFamily := map[string]int{}
+	for _, c := range st.Candidates {
+		perFamily[localmodels.Family(c.Entry.ProviderID)]++
+	}
 	var ids []string
 	seen := map[string]bool{}
 	for _, id := range stoppableProviders(cfg) {
 		fam := localmodels.Family(id)
-		if lifecycle.TenancyOf(id) != lifecycle.Pool || seen[fam] {
+		if seen[fam] || !haltsWhole(st, id, perFamily[fam]) {
 			continue
 		}
 		seen[fam] = true
@@ -120,20 +148,97 @@ func poolProviders(cfg *config.Config) []string {
 	return ids
 }
 
+// unreadShared lists, in id order, the configured Shared families (ollama)
+// whose probe was neither trusted nor refused. wt stops their models one by
+// one and so can stop nothing there, and may not report them as idle.
+func unreadShared(cfg *config.Config, st survey.StopState) []string {
+	var fams []string
+	for _, id := range stoppableProviders(cfg) {
+		fam := localmodels.Family(id)
+		if fs := st.Families[fam]; lifecycle.TenancyOf(id) == lifecycle.Shared && fs.Untrusted && !fs.Down && !slices.Contains(fams, fam) {
+			fams = append(fams, fam)
+		}
+	}
+	return fams
+}
+
+// haltImpact is what halting a family's server costs the live wt sessions:
+// how many use a model of the family, which models, and whether wt is asking
+// blind (the probe was not trusted). A server whose port refused serves
+// nobody, so halting it costs nothing whatever the refcount file still lists.
+func haltImpact(fs survey.FamilyState) (sessions int, users []string, blind bool) {
+	if fs.Down {
+		return 0, nil, false
+	}
+	return fs.Sessions, fs.Users, fs.Untrusted
+}
+
+// errCannotTell is the error of a stop that could not read what the named
+// providers are running and has no way to stop them regardless.
+func errCannotTell(families []string, hint string) error {
+	return fmt.Errorf("cannot tell what is running on %s: the probe gave no usable answer%s", strings.Join(families, ", "), hint)
+}
+
+// unreadClause is the part of the in-use question that says wt is asking
+// blind: the providers about to be halted whose probe was not trusted. ""
+// when every one was read, which keeps the question's usual wording.
+func unreadClause(names []string, it bool) string {
+	switch {
+	case len(names) == 0:
+		return ""
+	case it:
+		return ", and wt could not tell what it has loaded"
+	case len(names) == 1:
+		return fmt.Sprintf(", and wt could not tell what %s has loaded", names[0])
+	}
+	return fmt.Sprintf(", and wt could not tell what %s and %s have loaded", strings.Join(names[:len(names)-1], ", "), names[len(names)-1])
+}
+
 // runStopAll implements `wt stop --all`: every running local model wt can
-// stop, then each pool service as a whole. A pool's models go down with their
-// service, so they are not unloaded one by one first. Like `wt stop omlx`, it
-// halts a configured pool service even when no model is loaded: that is what
-// frees the server's memory. Every stop is attempted; a failure does not
-// leave the rest running, and the command then exits non-zero.
+// stop, then each server it halts as a whole (haltsWhole). A pool's models go
+// down with their service, so they are not unloaded one by one first. Like
+// `wt stop omlx`, it halts a configured pool service even when no model is
+// loaded: that is what frees the server's memory. An Exclusive provider
+// (mtplx) with no candidate is halted too unless its port refused, so "all"
+// does not depend on what a probe managed to read (#308). Every stop is
+// attempted; a failure does not leave the rest running, and the command then
+// exits non-zero.
+//
+// The in-use question covers the halts with each halted family's own session
+// count (survey.FamilyState), which no candidate has to carry (#307).
 //
 // Ctrl+C is not a failure to step over: it ends the command where it is. A
-// model loop that was cancelled leaves the pool services alone, and a
-// cancelled halt is not followed by another.
+// model loop that was cancelled leaves the halts alone, and a cancelled halt
+// is not followed by another.
 func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
-	cands := stopState(cfg).Candidates
-	if inUse, users := stopImpact(cands); inUse > 0 && !yes {
-		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s); stop them all?", inUse, strings.Join(users, ", ")))
+	st := stopState(cfg)
+	halts := haltProviders(cfg, st)
+	halted := map[string]bool{}
+	for _, id := range halts {
+		halted[localmodels.Family(id)] = true
+	}
+	// A halted family's models go down with its server; the rest are stopped
+	// one by one.
+	var entries []localmodels.Entry
+	var oneByOne []survey.Candidate
+	for _, c := range st.Candidates {
+		if !halted[localmodels.Family(c.Entry.ProviderID)] {
+			entries = append(entries, c.Entry)
+			oneByOne = append(oneByOne, c)
+		}
+	}
+	inUse, users := stopImpact(oneByOne)
+	var unread []string
+	for _, id := range halts {
+		n, ids, blind := haltImpact(st.Families[localmodels.Family(id)])
+		inUse += n
+		users = append(users, ids...)
+		if blind {
+			unread = append(unread, id)
+		}
+	}
+	if inUse > 0 && !yes {
+		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false)))
 		if err != nil {
 			return err
 		}
@@ -141,16 +246,15 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			return errors.New("cancelled — nothing was stopped")
 		}
 	}
-	var entries []localmodels.Entry
-	for _, c := range cands {
-		if lifecycle.TenancyOf(c.Entry.ProviderID) != lifecycle.Pool {
-			entries = append(entries, c.Entry)
-		}
+	var failures []error
+	if fams := unreadShared(cfg, st); len(fams) > 0 {
+		failures = append(failures, errCannotTell(fams, " — nothing was stopped there"))
 	}
-	pools := poolProviders(cfg)
-	if len(entries) == 0 && len(pools) == 0 {
-		fmt.Fprintln(out, "wt: no running local models")
-		return nil
+	if len(entries) == 0 && len(halts) == 0 {
+		if len(failures) == 0 {
+			fmt.Fprintln(out, "wt: no running local models")
+		}
+		return errors.Join(failures...)
 	}
 	// One signal context for the whole command, installed before the model
 	// loop. The loop runs under a context of its own (survey.StopEntries) and
@@ -162,31 +266,31 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	// halt loop and reported.
 	ctx, cancel := startSignalCtx()
 	defer cancel()
-	var failures []error
 	if len(entries) > 0 {
 		if err := stopEntries(out, cfg, entries); err != nil {
 			if errors.Is(err, survey.ErrStopCancelled) {
-				return notHalted(pools)
+				return notHalted(halts)
 			}
 			failures = append(failures, err)
 		}
-		if len(pools) > 0 {
-			// The model loop may have started a LiteLLM proxy restart (a
-			// stopped mtplx model's route), and halting a pool starts its
-			// own. They run asynchronously and nothing else orders them, so
-			// the first is finished here: two at once restart the proxy
-			// under each other.
+	}
+	// The model loop may have started a LiteLLM proxy restart (a stopped
+	// mtplx model's route), and halting a server starts its own. They run
+	// asynchronously and nothing else orders them, so each is finished
+	// before the next halt: two at once restart the proxy under each other.
+	restartPending := len(entries) > 0
+	for i, id := range halts {
+		if restartPending {
 			waitPendingRoutes()
 		}
-	}
-	for i, id := range pools {
+		restartPending = true
 		if ctx.Err() != nil {
-			failures = append(failures, notHalted(pools[i:]))
+			failures = append(failures, notHalted(halts[i:]))
 			break
 		}
 		cancelled, err := haltProvider(ctx, out, cfg, id)
 		if cancelled {
-			failures = append(failures, notHalted(pools[i:]))
+			failures = append(failures, notHalted(halts[i:]))
 			break
 		}
 		if err != nil {
@@ -196,8 +300,9 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	return errors.Join(failures...)
 }
 
-// haltProvider stops one provider's server as a whole (`wt stop omlx`, and
-// each pool of `wt stop --all`) and reports it on out. cancelled means Ctrl+C
+// haltProvider stops one provider's server as a whole (`wt stop omlx`, `wt
+// stop mtplx` with no candidate, and each halt of `wt stop --all`) and
+// reports it on out. cancelled means Ctrl+C
 // ended it: the provider's stop was killed, not broken, so it is printed as
 // "cancelled" and the caller reports it as one, not as a failed stop.
 func haltProvider(ctx context.Context, out io.Writer, cfg *config.Config, id string) (cancelled bool, err error) {
@@ -215,14 +320,14 @@ func haltProvider(ctx context.Context, out io.Writer, cfg *config.Config, id str
 	return false, err
 }
 
-// notHalted is the error of a stop cut short by Ctrl+C: it names the pool
-// services the command did not halt, so "cancelled" alone cannot be read as
+// notHalted is the error of a stop cut short by Ctrl+C: it names the servers
+// the command did not halt, so "cancelled" alone cannot be read as
 // "everything else is down".
-func notHalted(pools []string) error {
-	if len(pools) == 0 {
+func notHalted(ids []string) error {
+	if len(ids) == 0 {
 		return survey.ErrStopCancelled
 	}
-	return fmt.Errorf("%w — %s was not stopped", survey.ErrStopCancelled, strings.Join(pools, ", "))
+	return fmt.Errorf("%w — %s was not stopped", survey.ErrStopCancelled, strings.Join(ids, ", "))
 }
 
 // stoppableProviders lists, sorted, the configured provider ids wt can stop.
@@ -254,12 +359,21 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		}
 		// The picker takes the one inventory snapshot itself and reports whether
 		// it had anything to offer, so nothing is probed twice.
-		if offered, _ := stopPickerAll(cfg); !offered {
+		offered, unknown := stopPickerAll(cfg)
+		if !offered && len(unknown) > 0 {
+			// Nothing to list is not "nothing running" when a probe gave
+			// no usable answer.
+			return errCannotTell(unknown, " — \"wt stop <provider>\" or \"wt stop --all\" stops a server wt cannot read")
+		}
+		if !offered {
 			fmt.Fprintln(out, "wt: no running local models")
 		}
 		return nil
 	}
-	cands := stopState(cfg).Candidates
+	st := stopState(cfg)
+	cands := st.Candidates
+	// halt: the provider's server is stopped as a whole, not model by model.
+	halt := false
 
 	var targets []survey.Candidate
 	if strings.Contains(arg, "/") {
@@ -283,7 +397,13 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 				targets = append(targets, c)
 			}
 		}
-		if len(targets) == 0 && !pool {
+		halt = haltsWhole(st, arg, len(targets))
+		if len(targets) == 0 && !halt {
+			if fs := st.Families[localmodels.Family(arg)]; fs.Untrusted && !fs.Down {
+				// Only a Shared provider gets here: its models are stopped
+				// one by one, so there is nothing to stop blind.
+				return errCannotTell([]string{arg}, " — nothing was stopped")
+			}
 			fmt.Fprintf(out, "wt: nothing running on %s\n", arg)
 			return nil
 		}
@@ -294,8 +414,19 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	for _, c := range targets {
 		entries = append(entries, c.Entry)
 	}
-	if inUse, users := stopImpact(targets); inUse > 0 && !yes {
-		ok, err := confirmStop(fmt.Sprintf("%s is in use by %d live wt session(s) (%s); stop anyway?", arg, inUse, strings.Join(users, ", ")))
+	inUse, users := stopImpact(targets)
+	blind := ""
+	if halt {
+		// A halt takes every model of the family down, so it is the family's
+		// sessions that count — whatever the candidates were (#307).
+		var unread bool
+		inUse, users, unread = haltImpact(st.Families[localmodels.Family(arg)])
+		if unread {
+			blind = unreadClause([]string{arg}, true)
+		}
+	}
+	if inUse > 0 && !yes {
+		ok, err := confirmStop(fmt.Sprintf("%s is in use by %d live wt session(s) (%s)%s; stop anyway?", arg, inUse, strings.Join(users, ", "), blind))
 		if err != nil {
 			return err
 		}
@@ -303,9 +434,10 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			return fmt.Errorf("cancelled — %s is still running", arg)
 		}
 	}
-	if !strings.Contains(arg, "/") && lifecycle.TenancyOf(arg) == lifecycle.Pool {
+	if halt {
 		// A model stop on a pool only unloads; the bare provider halts the
-		// service, which is the one way to free the server itself.
+		// service, which is the one way to free the server itself. An
+		// Exclusive provider with no candidate is halted the same way.
 		ctx, cancel := startSignalCtx()
 		defer cancel()
 		cancelled, err := haltProvider(ctx, out, cfg, arg)

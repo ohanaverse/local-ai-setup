@@ -405,3 +405,29 @@ func TestLogTailClampsWhatArrivedAfterTheSizeWasSampled(t *testing.T) {
 		t.Errorf("logTail(0) over a FIFO = %d bytes, want empty: the clamp must never hand back everything it read", len(got))
 	}
 }
+
+// TestMtplxStopNeverReportsAServerItLeftUp pins what `wt stop mtplx` and `wt
+// stop --all` rely on when they halt an mtplx whose probe they could not
+// read (#308): the stop is an error whenever the port still answers
+// afterwards — `mtplx stop` exited 0 (a stale pidfile, or a server it does
+// not own), or the mtplx binary is missing — so the command cannot print
+// "done" and exit 0 over a server that is still up.
+func TestMtplxStopNeverReportsAServerItLeftUp(t *testing.T) {
+	_, addr := serveFree(t, chatHandler())
+	_, portStr, _ := net.SplitHostPort(addr)
+	cfg := provCfg("mtplx", "http://"+addr+"/v1")
+	e := testEnv()
+	e.stopTimeout = 60 * time.Millisecond
+	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
+	e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte("no server to stop"), nil }
+	err := (mtplxBackend{}).stop(context.Background(), e, cfg)
+	if err == nil || !strings.Contains(err.Error(), "mtplx still listening on port "+portStr) {
+		t.Errorf("exit 0, port open: err = %v, want still-listening", err)
+	}
+
+	e.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	var missing *BinaryMissingError
+	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); !errors.As(err, &missing) {
+		t.Errorf("no binary: err = %v, want *BinaryMissingError", err)
+	}
+}

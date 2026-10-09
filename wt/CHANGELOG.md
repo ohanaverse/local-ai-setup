@@ -213,6 +213,33 @@
 
 ### Fixed
 
+- `wt stop --all` and `wt stop mtplx` stop mtplx whenever its port answers,
+  also when wt cannot tell what it has loaded — a model that is still
+  loading, or a server that gave no usable answer within the probe's 2
+  seconds. They used to print `wt: no running local models` /
+  `wt: nothing running on mtplx` and exit 0 with the server still up (#308).
+  A port that refuses the connection is still "nothing running"; a stop that
+  leaves the port answering prints `failed` and exits 1.
+- `wt stop omlx`, `wt stop --all` and the mtplx stop above ask the in-use
+  question whenever a live wt session uses any model of the provider they are
+  about to stop as a whole, counted across the provider and not from the
+  models wt could see running. With omlx's probe untrusted (an omlx that
+  wants its API key with no `auth.secret_ref` on the registry's omlx row and
+  a partly loaded pool, or a `/health` that did not answer in time), or with
+  the session on a model that was not loaded or has no registry entry, the
+  service was halted under the other terminal's session with no question
+  (#307). When wt could not tell what the provider has loaded the question
+  says so (`..., and wt could not tell what it has loaded; stop anyway?`).
+- `wt: nothing running on <provider>` and `wt: no running local models` are
+  printed only when that is known. When ollama's probe gives no usable answer
+  and its port does not refuse, `wt stop ollama` and `wt stop --all` exit 1
+  with `cannot tell what is running on ollama` (`--all` after stopping
+  everything else), and bare `wt stop` with nothing to list exits 1 naming
+  the provider it could not read. Each used to report nothing running and
+  exit 0.
+- `wt stop --all` waits for the LiteLLM proxy restart one halted provider
+  started before it halts the next (mtplx, then omlx), as it already did
+  between the model stops and the first halt.
 - `wt litellm sync` on a registry with one model id on two rows (which every
   launch refuses, and sync does not) routes the id from the row of the
   provider that is serving it. It used to take the first row with the id for

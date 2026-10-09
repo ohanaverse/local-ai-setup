@@ -134,7 +134,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
 | `internal/usage/` | append-only JSONL launch history (1d/7d/30d); `RecordFor` tags the agent; `CountsForAgent` per agent×model, legacy agent-less lines count toward `Counts` only; `(*StoreImpl).AllCounts(agent, asOf)` enumerates every model in the file, bucketed against the caller's instant (for `wt stats`; not on the `Store` interface) |
 | `internal/refcount/` | live-session "in use" counts: JSONL keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point |
-| `internal/survey/` | post-session survey + stats; stop picker and stop loop (`Picker`, `PickerWith`, `StopCandidates`, `StopEntries`) |
+| `internal/survey/` | post-session survey + stats; stop picker and stop loop (`Picker`, `PickerWith`, `ReadStopState`, `StopEntries`) |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, capabilities), picker catalog, drivers, `RunAndCleanup` (shared apply-run-cleanup core for both launch paths), `BuildPassthroughCmd` |
 | `internal/profiles/` | launch-profile overlays — see [Profiles](#profiles-internalprofiles) |
 | `internal/smoke/` | `wt smoke`'s core: `Eligibility`/`Candidates` (rows per agent from one inventory snapshot — call `Eligibility` directly when you need both the model union and per-model agent lists, to avoid two probe rounds), `RunRow` (PASS/FAIL/SKIP via the `buildAndRun` seam) |
