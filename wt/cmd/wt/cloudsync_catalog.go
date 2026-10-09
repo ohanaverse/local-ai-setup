@@ -1,4 +1,4 @@
-// The catalog flow of wt cloud-sync: mirror https://ollama.com/pricing into
+// The ollama flow of wt cloud-sync: mirror https://ollama.com/pricing into
 // the registry's ollama cloud entries and into ollama itself. Everything that
 // decides what changes is internal/cloudsync's; this file reads the page and
 // `ollama list`, gates the plan, and runs the pulls and removals the registry
@@ -47,9 +47,9 @@ func saveFailedHTML(page string, now time.Time) (string, error) {
 	return path, f.Close()
 }
 
-// catalogRun is the catalog flow between its plan and its apply: everything
+// ollamaRun is the ollama flow between its plan and its apply: everything
 // the plan was made from, so it can be made again under the registry lock.
-type catalogRun struct {
+type ollamaRun struct {
 	origin      string
 	catalog     cloudsync.Catalog
 	tags        []string
@@ -61,7 +61,7 @@ type catalogRun struct {
 
 // replan makes the plan again from entries, with the same page, tags and
 // resolved names.
-func (c *catalogRun) replan(entries []cloudsync.Entry) *cloudsync.CatalogPlan {
+func (c *ollamaRun) replan(entries []cloudsync.Entry) *cloudsync.CatalogPlan {
 	plan := cloudsync.PlanCatalog(entries, c.catalog, c.tags, c.resolved)
 	plan.Warnings = append(plan.Warnings, c.tagWarnings...)
 	return plan
@@ -74,31 +74,31 @@ func hasOllamaProvider(providers []cloudsync.Provider) bool {
 	return slices.ContainsFunc(providers, func(p cloudsync.Provider) bool { return p.ID == "ollama" })
 }
 
-// planCatalogFlow reads the page and `ollama list`, resolves the cloud tags
-// and prints the catalog plan. It returns nil when there is nothing to apply:
+// planOllamaFlow reads the page and `ollama list`, resolves the cloud tags
+// and prints the ollama plan. It returns nil when there is nothing to apply:
 // a registry with no ollama provider row (one line, nothing fetched,
 // res untouched), or a flow that cannot go on, with res saying why. In every
 // such case it has changed nothing.
-func planCatalogFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Config, o cloudSyncOpts,
-	doc *config.RegistryDoc, res *cloudSyncOutcome) *catalogRun {
-	stop := func(code int, format string, args ...any) *catalogRun {
-		fmt.Fprintf(errOut, "catalog: error: "+format+"\n", args...)
+func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Config, o cloudSyncOpts,
+	doc *config.RegistryDoc, res *cloudSyncOutcome) *ollamaRun {
+	stop := func(code int, format string, args ...any) *ollamaRun {
+		fmt.Fprintf(errOut, "ollama: error: "+format+"\n", args...)
 		if code == 1 {
 			res.failed = true
 		} else {
-			res.catalogCode = code
+			res.ollamaCode = code
 		}
 		return nil
 	}
 	entries, providers := cloudsync.Entries(doc.Models()), cloudsync.Providers(doc.Providers())
 	// A registry that does not use ollama has no catalog to mirror, however
-	// the flow was asked for (--only catalog and the catalog's own flags
+	// the flow was asked for (--only ollama and the ollama flow's own flags
 	// included): it is skipped, never an error. A new entry would be a row
 	// with provider_id "ollama", which the registry writer refuses without
 	// the provider row, and there is no daemon address to pin the CLI to.
 	// `wt cloud-sync` never seeds the row.
 	if !hasOllamaProvider(providers) {
-		fmt.Fprintln(out, "catalog: no ollama provider in the registry; nothing to mirror")
+		fmt.Fprintln(out, "ollama: no ollama provider in the registry; nothing to mirror")
 		return nil
 	}
 	// Every ollama command is pinned to this address, and ollama reads an
@@ -132,10 +132,10 @@ func planCatalogFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Con
 		if saveErr != nil {
 			where = "the raw HTML could not be saved: " + saveErr.Error()
 		}
-		return stop(3, "could not parse ollama.com/pricing: %v\ncatalog: %s — the parser to update is wt/internal/cloudsync/pricingpage.go; nothing was changed", err, where)
+		return stop(3, "could not parse ollama.com/pricing: %v\nollama: %s — the parser to update is wt/internal/cloudsync/pricingpage.go; nothing was changed", err, where)
 	}
 
-	run := &catalogRun{catalog: catalog, origin: origin}
+	run := &ollamaRun{catalog: catalog, origin: origin}
 	// Without it, what to pull and what to rm is unknowable: refuse instead
 	// of mirroring half the plan.
 	if run.tags, err = ollamaTags(ctx, run.origin); err != nil {
@@ -152,7 +152,7 @@ func planCatalogFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Con
 	run.resolved, run.tagWarnings = cloudsync.ResolveCloudTags(ctx, cloudFetch, names, cloudsync.VerifiedTags(entries, run.tags))
 	if !slices.ContainsFunc(names, func(n string) bool { return run.resolved[n] != "" }) {
 		for _, w := range run.tagWarnings {
-			fmt.Fprintf(errOut, "catalog:   %s\n", w)
+			fmt.Fprintf(errOut, "ollama:   %s\n", w)
 		}
 		return stop(2, "could not resolve a cloud tag for any model on ollama.com/library; nothing was changed")
 	}
@@ -162,20 +162,20 @@ func planCatalogFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Con
 	// more than once, so a plan that changes, clones or removes such a row
 	// can never be applied. Say so now, in a dry run too, instead of printing
 	// a plan and a digest that the apply then refuses.
-	for _, id := range catalogTouchedIDs(run.plan) {
+	for _, id := range ollamaTouchedIDs(run.plan) {
 		if _, err := doc.Model(id); err != nil {
 			return stop(1, "nothing was changed: %v", err)
 		}
 	}
 	run.printed = run.plan.Format()
-	prefixLines(out, "catalog", run.printed)
+	prefixLines(out, "ollama", run.printed)
 	return run
 }
 
-// catalogTouchedIDs are the ids of the existing rows a catalog plan
+// ollamaTouchedIDs are the ids of the existing rows an ollama plan
 // addresses: those it re-prices, those it removes, and those it clones a
 // re-tagged entry from.
-func catalogTouchedIDs(plan *cloudsync.CatalogPlan) []string {
+func ollamaTouchedIDs(plan *cloudsync.CatalogPlan) []string {
 	var ids []string
 	add := func(id string) {
 		if id != "" && !slices.Contains(ids, id) {
@@ -194,15 +194,15 @@ func catalogTouchedIDs(plan *cloudsync.CatalogPlan) []string {
 	return ids
 }
 
-// catalogGate decides whether a printed catalog plan may be applied: not a
+// ollamaGate decides whether a printed ollama plan may be applied: not a
 // mass removal without --force, and under --yes not a plan that deletes
 // anything without the digest of a reviewed dry run. It reports false, with
-// the reason printed and res.catalogCode set, when it may not.
-func catalogGate(errOut io.Writer, c *catalogRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
+// the reason printed and res.ollamaCode set, when it may not.
+func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
 	if c.plan.MassRemoval() && !o.force {
-		fmt.Fprintf(errOut, "catalog: error: %d of %d ollama cloud entries would be removed — check the page parsed correctly, then re-run with --force. Nothing was changed for the catalog.\n",
+		fmt.Fprintf(errOut, "ollama: error: %d of %d ollama cloud entries would be removed — check the page parsed correctly, then re-run with --force. Nothing was changed by the ollama flow.\n",
 			len(c.plan.Removals), c.plan.CloudEntries)
-		res.catalogCode = 4
+		res.ollamaCode = 4
 		return false
 	}
 	if digest := c.plan.RemovalDigest(); o.yes && digest != "" && o.approve != digest {
@@ -210,8 +210,8 @@ func catalogGate(errOut io.Writer, c *catalogRun, o cloudSyncOpts, res *cloudSyn
 		if o.approve != "" {
 			reason = "the removals are not the ones digest " + o.approve + " approved"
 		}
-		fmt.Fprintf(errOut, "catalog: error: %s — review a --dry-run, then re-run with `--yes --approve-removals %s`. Nothing was changed for the catalog.\n", reason, digest)
-		res.catalogCode = 5
+		fmt.Fprintf(errOut, "ollama: error: %s — review a --dry-run, then re-run with `--yes --approve-removals %s`. Nothing was changed by the ollama flow.\n", reason, digest)
+		res.ollamaCode = 5
 		return false
 	}
 	return true
@@ -230,24 +230,24 @@ func catalogGate(errOut io.Writer, c *catalogRun, o cloudSyncOpts, res *cloudSyn
 // and no other line of a run that works says so.
 func runOllamaWork(ctx context.Context, out, errOut io.Writer, origin string, done cloudsync.CatalogApplied, res *cloudSyncOutcome) {
 	if len(done.Pulls)+len(done.Removes) > 0 {
-		fmt.Fprintf(out, "catalog: ollama at %s\n", origin)
+		fmt.Fprintf(out, "ollama: daemon at %s\n", origin)
 	}
 	for _, tag := range done.Pulls {
 		if err := ollamaPull(ctx, origin, tag); err != nil {
-			fmt.Fprintf(errOut, "catalog: error: %v\n", err)
-			fmt.Fprintf(errOut, "catalog:   %s is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n", tag)
+			fmt.Fprintf(errOut, "ollama: error: %v\n", err)
+			fmt.Fprintf(errOut, "ollama:   %s is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n", tag)
 			res.failed = true
 			continue
 		}
-		fmt.Fprintf(out, "catalog: pulled %s\n", tag)
+		fmt.Fprintf(out, "ollama: pulled %s\n", tag)
 	}
 	for _, tag := range done.Removes {
 		if err := ollamaRemove(ctx, origin, tag); err != nil {
-			fmt.Fprintf(errOut, "catalog: error: %v\n", err)
-			fmt.Fprintf(errOut, "catalog:   %s is left pulled; the next run lists it as a stray tag — start again from --dry-run, since the removal digest may have changed\n", tag)
+			fmt.Fprintf(errOut, "ollama: error: %v\n", err)
+			fmt.Fprintf(errOut, "ollama:   %s is left pulled; the next run lists it as a stray tag — start again from --dry-run, since the removal digest may have changed\n", tag)
 			res.failed = true
 			continue
 		}
-		fmt.Fprintf(out, "catalog: removed %s\n", tag)
+		fmt.Fprintf(out, "ollama: removed %s\n", tag)
 	}
 }

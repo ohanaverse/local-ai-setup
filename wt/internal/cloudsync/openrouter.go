@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// OpenRouterModelsURL is the public model list the prices flow reads.
+// OpenRouterModelsURL is the public model list the openrouter flow reads.
 const OpenRouterModelsURL = "https://openrouter.ai/api/v1/models"
 
 // APIPrice is what OpenRouter publishes for one model, per million tokens.

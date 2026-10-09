@@ -9,7 +9,7 @@ for you: wt never fetches prices on a launch, it only reminds you (see
 wt cloud-sync --dry-run                              # print both plans, change nothing
 wt cloud-sync                                        # print both plans, ask once, apply
 wt cloud-sync --yes --approve-removals <digest>      # apply without a terminal
-wt cloud-sync --only prices                          # one flow
+wt cloud-sync --only openrouter                      # one flow
 ```
 
 An agent running the sync for you follows the `cloud-sync` skill
@@ -20,9 +20,9 @@ procedure.
 
 Both run unless `--only` names one. They are independent: a flow that fails
 or is refused does not stop the other. Every output line says which flow it
-is about (`prices:`, `catalog:`); the route sync's lines are `routes:`.
+is about (`openrouter:`, `ollama:`); the route sync's lines are `routes:`.
 
-### prices
+### openrouter
 
 Fetches `https://openrouter.ai/api/v1/models` and re-prices the registry's
 OpenRouter-priced models: an `openrouter` model, or a model of any other
@@ -42,11 +42,11 @@ matched on its `model_name`.
   OpenRouter's pricing for …`; OpenRouter gives `-1` for a price that
   varies) is left exactly as it is, and is not stamped.
 - When there are OpenRouter-priced models and not one could be matched, the
-  run says so: `prices: no model could be refreshed, so nothing is stamped
+  run says so: `openrouter: no model could be refreshed, so nothing is stamped
   and wt's stale-pricing notice is not cleared; set openrouter_priced =
   false on a provider whose model names are not OpenRouter ids`.
 
-### catalog
+### ollama
 
 Mirrors `https://ollama.com/pricing` into three places: the registry's
 ollama cloud entries, the cloud tags `ollama list` shows, and (through the
@@ -102,7 +102,7 @@ route sync) LiteLLM's routes.
 - **`ollama` is run as a command** (`list`, `pull`, `rm`), pinned with
   `OLLAMA_HOST` to the address of the registry's `ollama` provider row,
   whatever `OLLAMA_HOST` your shell exports. A run with pulls or removals
-  prints that address once: `catalog: ollama at <address>`.
+  prints that address once: `ollama: daemon at <address>`.
 
 ## A flow the registry does not use is skipped
 
@@ -112,13 +112,13 @@ finished (exit 0). This is never an error, however the flow was asked for.
 
 | The registry has | Line printed |
 |---|---|
-| no OpenRouter-priced model | `prices: no OpenRouter-priced model in the registry; nothing to refresh` |
-| no `ollama` provider row | `catalog: no ollama provider in the registry; nothing to mirror` |
+| no OpenRouter-priced model | `openrouter: no OpenRouter-priced model in the registry; nothing to refresh` |
+| no `ollama` provider row | `ollama: no ollama provider in the registry; nothing to mirror` |
 
-- The prices rule is judged by the models, not by whether an `openrouter`
+- The openrouter rule is judged by the models, not by whether an `openrouter`
   provider row exists: a model another cloud provider prices through
   OpenRouter still counts.
-- The catalog rule holds for `--only catalog`, `--html`,
+- The ollama rule holds for `--only ollama`, `--html`,
   `--approve-removals` and `--force` too; with no `ollama` row the `--html`
   file is not even opened. `wt cloud-sync` never adds a provider row:
   `wt model init` does, for one on a machine where `ollama` is on `PATH`
@@ -131,33 +131,33 @@ finished (exit 0). This is never an error, however the flow was asked for.
 1. **Reads the registry and plans both flows.** Nothing is locked or
    written. A model id that is in the registry more than once stops a flow
    here (exit 1), in a dry run too, because the write could never address
-   the row: for prices, on any OpenRouter-priced model, before anything is
-   fetched; for the catalog, on a row its plan re-prices, removes or copies
+   the row: for openrouter, on any OpenRouter-priced model, before anything is
+   fetched; for ollama, on a row its plan re-prices, removes or copies
    a re-tagged entry from.
 2. **Prints both plans.** `--dry-run` stops here.
-3. **Applies the catalog's gates** ([Removals need approval](#removals-need-approval)).
-   A gated catalog plan is dropped; the prices plan goes on.
+3. **Applies the ollama flow's gates** ([Removals need approval](#removals-need-approval)).
+   A gated ollama plan is dropped; the openrouter plan goes on.
 4. **Asks one question** on the terminal, `Apply these changes? [y/N]`,
    covering every plan still pending. Only `y` or `yes` applies; anything
    else prints `<flow>: not applied (declined)` for each pending flow, which
    then counts as finished (exit 0, unless another flow failed or step 3
-   refused the catalog). Input piped to the command can never approve.
+   refused the ollama flow). Input piped to the command can never approve.
    `--yes` skips the question; with no terminal and no `--yes` the run stops
    (`<flow>: error: not applied: there is no terminal to confirm on — rerun
    with --yes to apply without asking` for each pending flow; exit 1, or
-   the catalog's 4 or 5 if step 3 refused it). A plan with nothing to apply
+   the ollama flow's 4 or 5 if step 3 refused it). A plan with nothing to apply
    is not asked about.
 5. **Writes `registry.toml` once**, for both flows. Under the file's lock
    each plan is made again from the file as it then is, and a plan that no
    longer prints as it did is not applied; the other flow's still is. A
    registry removed since the plan was printed is not created. Each flow
-   that was written says so: `prices: refreshed N model(s); N price(s)
-   changed`, `catalog: updated N, added N and removed N model(s)`.
-6. **Runs the catalog's `ollama pull`s, then its `ollama rm`s.** A failure
+   that was written says so: `openrouter: refreshed N model(s); N price(s)
+   changed`, `ollama: updated N, added N and removed N model(s)`.
+6. **Runs the ollama flow's `ollama pull`s, then its `ollama rm`s.** A failure
    is an `error:` line and exit 1, and the rest still run. A tag is removed
    only if it is a cloud tag, `ollama list` showed it, and no remaining
-   registry entry names it. Each one that worked is a line: `catalog:
-   pulled <tag>`, `catalog: removed <tag>`.
+   registry entry names it. Each one that worked is a line: `ollama:
+   pulled <tag>`, `ollama: removed <tag>`.
 7. **Syncs the LiteLLM routes once**, if a price or the set of models
    changed, or a tag was pulled or removed. A run that only re-stamped
    prices that were already current does not sync, so it cannot restart the
@@ -173,21 +173,21 @@ interrupted run, run `wt litellm sync`.
 An illustrative dry run (made-up models and prices; yours will differ):
 
 ```text
-prices: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)
-prices: Price updates (1):
-prices:   openrouter/acme--alpha-1: 1/-/4 -> 0.8/-/3.2
-prices: Unchanged prices: 1
-catalog: ollama.com/pricing: 6 models (prices are input/cached/output per million tokens)
-catalog: Price updates (0):
-catalog: Registry additions (1):
-catalog:   ollama/beta-2:cloud [family beta-2]: 0.5/0.05/2 (off-peak 0.25/0.025/1)
-catalog: Unchanged prices: 5
-catalog: ollama pull (1):
-catalog:   ollama/beta-2:cloud
-catalog: Registry removals — off ollama.com/pricing or under a tag ollama doesn't publish; `ollama rm` if pulled (1):
-catalog:   ollama/gamma-3:cloud
-catalog: ollama rm — pulled, unregistered, off the page (0):
-catalog: Removal digest: 0bcc560b956e (apply non-interactively with `--yes --approve-removals 0bcc560b956e`)
+openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)
+openrouter: Price updates (1):
+openrouter:   openrouter/acme--alpha-1: 1/-/4 -> 0.8/-/3.2
+openrouter: Unchanged prices: 1
+ollama: ollama.com/pricing: 6 models (prices are input/cached/output per million tokens)
+ollama: Price updates (0):
+ollama: Registry additions (1):
+ollama:   ollama/beta-2:cloud [family beta-2]: 0.5/0.05/2 (off-peak 0.25/0.025/1)
+ollama: Unchanged prices: 5
+ollama: ollama pull (1):
+ollama:   ollama/beta-2:cloud
+ollama: Registry removals — off ollama.com/pricing or under a tag ollama doesn't publish; `ollama rm` if pulled (1):
+ollama:   ollama/gamma-3:cloud
+ollama: ollama rm — pulled, unregistered, off the page (0):
+ollama: Removal digest: 0bcc560b956e (apply non-interactively with `--yes --approve-removals 0bcc560b956e`)
 ```
 
 ## Removals need approval
@@ -195,7 +195,7 @@ catalog: Removal digest: 0bcc560b956e (apply non-interactively with `--yes --app
 Answering `y` at the question approves the plans on the screen, removals
 included. `--yes` has nobody reading, so it never deletes on its own.
 
-- **The removal digest.** When the catalog plan removes anything (a registry
+- **The removal digest.** When the ollama plan removes anything (a registry
   entry, or a stray pulled tag), it ends with a `Removal digest:` line, as
   in the example above. Under `--yes` that plan is applied only with
   `--approve-removals` and that digest. The digest covers exactly the
@@ -209,26 +209,26 @@ included. `--yes` has nobody reading, so it never deletes on its own.
   does not replace the digest. A dry run of such a plan still exits 0; the
   refusal is the apply's.
 
-Either refusal means the catalog flow changes nothing at all: no price
+Either refusal means the ollama flow changes nothing at all: no price
 update, no addition, no pull.
 
 ## Flags
 
 | Flag | Meaning |
 |---|---|
-| `--only <flows>` | Run only these flows: a comma list of `prices`, `catalog`. Default: both |
+| `--only <flows>` | Run only these flows: a comma list of `openrouter`, `ollama`. Default: both |
 | `--dry-run` | Print the plans and change nothing |
 | `--yes` | Apply without asking. Removals still need `--approve-removals` |
-| `--approve-removals <digest>` | catalog, with `--yes`: the removal digest a reviewed `--dry-run` printed |
-| `--force` | catalog: apply even if more than half the ollama cloud entries would be removed |
-| `--html <file>` | catalog: parse this saved pricing page instead of fetching it |
+| `--approve-removals <digest>` | ollama, with `--yes`: the removal digest a reviewed `--dry-run` printed |
+| `--force` | ollama: apply even if more than half the ollama cloud entries would be removed |
+| `--html <file>` | ollama: parse this saved pricing page instead of fetching it |
 
 - `--html` is not an offline mode: cloud tags are still looked up on
   ollama.com/library, and `ollama list` is still run.
 - Usage errors (exit 1, nothing fetched): `--only` with an empty value
-  (`--only: no flow named (valid: prices, catalog)`) or an unknown name; and
-  `--html`, `--approve-removals` or `--force` together with `--only prices`
-  (`--force is for the catalog flow, which --only prices leaves out`). An
+  (`--only: no flow named (valid: openrouter, ollama)`) or an unknown name; and
+  `--html`, `--approve-removals` or `--force` together with `--only openrouter`
+  (`--force is for the ollama flow, which --only openrouter leaves out`). An
   ignored `--force` or digest would be a gate you believe was passed.
 
 ## Exit status
@@ -237,36 +237,36 @@ update, no addition, no pull.
 |---|---|
 | 0 | Every selected flow finished, was skipped, had nothing to do, or was declined at the question |
 | 1 | A step failed in either flow, or a usage error |
-| 2 | Catalog changed nothing: an input could not be read |
-| 3 | Catalog changed nothing: the pricing page changed shape |
-| 4 | Catalog changed nothing: mass removal refused |
-| 5 | Catalog changed nothing: removals not approved, or the registry changed after the plan was printed |
+| 2 | ollama changed nothing: an input could not be read |
+| 3 | ollama changed nothing: the pricing page changed shape |
+| 4 | ollama changed nothing: mass removal refused |
+| 5 | ollama changed nothing: removals not approved, or the registry changed after the plan was printed |
 
-Codes 2 to 5 describe the catalog flow only, and win over 1. The prices flow
+Codes 2 to 5 describe the ollama flow only, and win over 1. The openrouter flow
 may have been applied, or have failed, in the same run; its lines say which.
 Every other wt command exits 1 on any error.
 
-The last line on stderr gives the reason: `wt: cloud-sync: the catalog flow
+The last line on stderr gives the reason: `wt: cloud-sync: the ollama flow
 changed nothing: <why>` for 2 to 5, and `wt: cloud-sync: a step failed; see
 the error lines above` for 1.
 
 **Exit 1** — each cause has its own `error:` line:
 
-- prices: OpenRouter's list could not be fetched or read (`could not read
+- openrouter: OpenRouter's list could not be fetched or read (`could not read
   OpenRouter's prices: …; no price was changed`).
-- prices: the registry changed after the plan was printed (`no price was
+- openrouter: the registry changed after the plan was printed (`no price was
   changed — run it again`).
 - either flow: a model id is in the registry twice — on any
-  OpenRouter-priced model (prices), or on a row the catalog plan addresses.
+  OpenRouter-priced model (openrouter), or on a row the ollama plan addresses.
   Refused before the plan is printed.
 - either flow: no terminal to confirm on, without `--yes`.
 - either flow: the registry write was refused (`registry.toml was not
   changed: …`). When the refusal is a row that would not load and both flows
   were pending, each flow is then written on its own, so the broken row
   holds up only the flow that owns it; that flow's line names the row (`the
-  price changes were not written: …` / `the catalog's changes were not
+  price changes were not written: …` / `the ollama flow's changes were not
   written: …`).
-- catalog: an `ollama pull` or an `ollama rm` failed, or wt stopped it at
+- ollama: an `ollama pull` or an `ollama rm` failed, or wt stopped it at
   its time limit. See [Failure and recovery](#failure-and-recovery).
 - a usage error; a `config.toml` or registry that could not be loaded; a
   missing registry (``model registry not found at <path> — seed it with
@@ -292,18 +292,18 @@ changed`:
 
 **Exit 3** — the pricing page no longer reads as a price table. The line
 names the check that failed, and the page is saved:
-`catalog: raw HTML saved to <path>`, a new file
+`ollama: raw HTML saved to <path>`, a new file
 `$TMPDIR/ollama-pricing-<YYYYMMDD-HHMMSS>.html`, mode 0600. A `--html` file
 that does not parse is copied there too, and its message still says `could
 not parse ollama.com/pricing`. If the page cannot be saved, that line
-reads `catalog: the raw HTML could not be saved: <why>` instead: fetch the
+reads `ollama: the raw HTML could not be saved: <why>` instead: fetch the
 page again yourself, or pass a saved copy with `--html`. The repair is a
 code change to `wt/internal/cloudsync/pricingpage.go`; the `cloud-sync`
 skill has the steps.
 
 **Exit 4** — `<n> of <m> ollama cloud entries would be removed — check the
-page parsed correctly, then re-run with --force. Nothing was changed for
-the catalog.` The line's `<n>` counts every removal line, a re-tagged one
+page parsed correctly, then re-run with --force. Nothing was changed by
+the ollama flow.` The line's `<n>` counts every removal line, a re-tagged one
 included, though the gate above leaves re-tagged entries out.
 
 **Exit 5** — two causes, told apart by the last line:
@@ -314,7 +314,7 @@ included, though the gate above leaves re-tagged entries out.
   before using it.
 - `…: the registry changed after the plan was printed`: another program
   wrote the registry between the plan and the write, so this is no longer
-  the plan that was approved. Run it again. (The prices flow's version of
+  the plan that was approved. Run it again. (The openrouter flow's version of
   this is exit 1.)
 
 ## Failure and recovery
@@ -323,13 +323,13 @@ The registry is written before ollama is touched, so a failure after the
 write leaves the two out of step in a known way, and the next run finishes
 the job.
 
-- **A failed pull.** One line, ``catalog: error: `ollama pull <tag>`
+- **A failed pull.** One line, ``ollama: error: `ollama pull <tag>`
   failed: <ollama's last line>``, then ``<tag> is in the registry but not
   pulled, so it is not routed; run `wt cloud-sync` again to retry the
   pull``. A pull needs no digest. Whether pulling a cloud model needs you to
   be signed in to ollama has not been verified; if it does, this is where
   it shows.
-- **A failed rm.** ``catalog: error: `ollama rm <tag>` failed: …``, then
+- **A failed rm.** ``ollama: error: `ollama rm <tag>` failed: …``, then
   `<tag> is left pulled; the next run lists it as a stray tag — start again
   from --dry-run, since the removal digest may have changed`. When the tag
   belonged to a removed entry, that entry is already gone from the
@@ -354,8 +354,8 @@ the job.
   `ollama.com/library/<name>/tags`), and `ollama list`. No API key is sent
   to any of them.
 - **Writes `registry.toml`** through wt's one registry writer, which keeps
-  every key it was not asked to change. prices: the cost keys that moved,
-  and `pricing_updated_at`. catalog: the same on ollama cloud entries, plus
+  every key it was not asked to change. openrouter: the cost keys that moved,
+  and `pricing_updated_at`. ollama: the same on ollama cloud entries, plus
   the `off-peak` row of `cost.time_prices` and `catalog_name` (the page name
   an entry was matched to); ollama cloud rows added and removed. As with
   every tool that writes the registry, comments in the file do not survive.
@@ -384,9 +384,9 @@ After a launch wt prints `wt: token pricing last refreshed <date> — run 'wt
 cloud-sync'` when the newest `pricing_updated_at` among the OpenRouter-priced
 models is more than 7 days old, or `wt: token pricing has never been
 refreshed — run 'wt cloud-sync'` when none has a stamp. Nothing else stores
-the date. The catalog flow's stamps on ollama cloud entries do not count,
+the date. The ollama flow's stamps on ollama cloud entries do not count,
 and with no OpenRouter-priced model the notice is silent.
 
-Running `wt cloud-sync` clears it as long as the prices flow matches at
+Running `wt cloud-sync` clears it as long as the openrouter flow matches at
 least one model. To stop it for a provider whose models OpenRouter does not
 price, set `openrouter_priced = false` on that provider row.

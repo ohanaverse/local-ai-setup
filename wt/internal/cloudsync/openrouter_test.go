@@ -87,7 +87,7 @@ func TestParseOpenRouter(t *testing.T) {
 }
 
 // TestParseOpenRouterRejectsAnotherShape pins that an answer that is not the
-// model list (an error page, a changed API) is an error, so the prices flow
+// model list (an error page, a changed API) is an error, so the openrouter flow
 // fails as a step instead of reporting "no OpenRouter match" for every model.
 func TestParseOpenRouterRejectsAnotherShape(t *testing.T) {
 	for body, want := range map[string]string{
@@ -106,7 +106,7 @@ func TestParseOpenRouterRejectsAnotherShape(t *testing.T) {
 // predicate to docs/contracts/catalog-predicates. The same fixture is read by
 // internal/config's TestCatalogPredicatesFixture, which pins the other
 // implementation of the rule (config.Config.OpenRouterPriced, over the typed
-// registry); if the two drifted, the prices flow would refresh one set of
+// registry); if the two drifted, the openrouter flow would refresh one set of
 // models while the stale-price notice watched another.
 func TestOpenRouterPricedMatchesTheContract(t *testing.T) {
 	const dir = "../../../docs/contracts/"

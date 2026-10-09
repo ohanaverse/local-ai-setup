@@ -78,12 +78,12 @@ func Available(origin, modelName string) (bool, error) {
 var list = realList
 
 // How long `ollama list` may take before wt stops it: the same limit cmd/wt's
-// catalog flow gives the same command (ollamaListTimeout), because the
+// ollama flow gives the same command (ollamaListTimeout), because the
 // address is the registry's and may be a remote daemon. Check runs on the
 // TUI's update goroutine, so a daemon that accepts the connection and then
 // never answers would otherwise freeze the launcher for good. A var so a test
 // can lower it; listWaitDelay bounds what the limit leaves open, exactly as
-// ollamaWaitDelay does for the catalog flow's commands.
+// ollamaWaitDelay does for the ollama flow's commands.
 var listTimeout = 30 * time.Second
 
 const listWaitDelay = 5 * time.Second

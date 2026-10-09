@@ -12,7 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
 )
 
-// OffpeakLabel is the label of the time_prices row the catalog flow owns.
+// OffpeakLabel is the label of the time_prices row the ollama flow owns.
 // Rows with any other label are the user's and are never touched.
 const OffpeakLabel = "off-peak"
 

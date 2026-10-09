@@ -77,7 +77,7 @@ func PriceNotice(last time.Time, present bool, now time.Time) string {
 }
 
 // HasOpenRouterPricedModel reports whether any model in cfg takes its price
-// from OpenRouter — what `wt cloud-sync`'s prices flow refreshes. It
+// from OpenRouter — what `wt cloud-sync`'s openrouter flow refreshes. It
 // delegates to config.OpenRouterPriced: an openrouter model, or a model of a
 // non-native cloud provider. Keyed on the provider's location, not the
 // model's, so ollama cloud models (location "cloud" on the local ollama

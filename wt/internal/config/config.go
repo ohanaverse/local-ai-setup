@@ -456,7 +456,7 @@ type CostWindow struct {
 }
 
 // TimePrice is a time-windowed override of a ModelCost's flat (default)
-// per-token prices. The rows are written by `wt cloud-sync`'s catalog flow
+// per-token prices. The rows are written by `wt cloud-sync`'s ollama flow
 // (ollama's off-peak pricing) and applied by nothing: wt decodes them and
 // shows the flat prices. What a row means: the first row whose window
 // contains an instant wins, per field, falling back to the flat prices.
@@ -961,7 +961,7 @@ func (c *Config) InCatalog(m Model) bool {
 }
 
 // OpenRouterPriced reports whether m's price comes from OpenRouter — what
-// `wt cloud-sync`'s prices flow refreshes: an openrouter model, or a model of a
+// `wt cloud-sync`'s openrouter flow refreshes: an openrouter model, or a model of a
 // non-native cloud provider. Keyed on the provider's location, not the
 // model's, so ollama cloud models don't count. Pinned by
 // docs/contracts/catalog-predicates.sample.toml.

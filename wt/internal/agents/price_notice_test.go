@@ -52,8 +52,8 @@ func TestPriceNoticeShowsTheLocalDate(t *testing.T) {
 
 // TestLastPriceRefresh pins where the date comes from now that nothing
 // stores it: the newest pricing_updated_at among OpenRouter-priced models
-// only. An ollama cloud model's stamp must not count (the catalog flow
-// writes those, and a catalog-only run would silence a notice about prices
+// only. An ollama cloud model's stamp must not count (the ollama flow
+// writes those, and an ollama-only run would silence a notice about prices
 // it never refreshed), a model without a stamp or with a mistyped one is
 // skipped, not fatal, and with no usable stamp the answer is "never". A
 // stamp more than a day ahead of the clock is a typo and is skipped too:

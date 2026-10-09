@@ -62,7 +62,7 @@ func (f *fakeOllama) changes() []string {
 }
 
 // TestOllamaSeamFailsClosed pins TestMain: with nothing stubbed, no test in
-// this package runs the developer's ollama. An unstubbed catalog test fails
+// this package runs the developer's ollama. An unstubbed ollama-flow test fails
 // with "not stubbed" instead of pulling a model onto, or removing one from,
 // the machine it runs on.
 func TestOllamaSeamFailsClosed(t *testing.T) {
@@ -149,7 +149,7 @@ func TestRealOllamaCLIPinsTheDaemon(t *testing.T) {
 
 // TestOllamaFailureIsOneCleanLine pins how a failed ollama command is worded.
 // `ollama pull` writes its progress, cursor escapes included, to stderr before
-// its `Error:` line, and wt prints the failure after a `catalog: error:`
+// its `Error:` line, and wt prints the failure after an `ollama: error:`
 // prefix: handed the whole of stderr, every line after the first would lose
 // the prefix a reader (or the cloud-sync skill) finds errors by, and the
 // escapes would reach the terminal. One line comes back: the last one that
