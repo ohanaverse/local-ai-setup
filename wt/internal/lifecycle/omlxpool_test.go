@@ -688,7 +688,7 @@ func TestStartOnALoadingTargetAsksNothing(t *testing.T) {
 	snap := loadingSnap(poolSnap(100, sizes, "A"), "B")
 	target := Target{ProviderID: "omlx", ModelName: "B", ModelID: "omlx/B"}
 	if victims, known := Evictions(target, snap); !known || len(victims) != 0 {
-		t.Errorf("Evictions = %v known=%v, want none and known: the plan `wt start --plan` prints must agree with the start", victims, known)
+		t.Errorf("Evictions = %v known=%v, want none and known: the plan must agree with the start", victims, known)
 	}
 	e, stopped := poolEnv(t, snap)
 	if err := start(context.Background(), e, provCfg("omlx", fp.serve(t)), target, Options{}); err != nil {

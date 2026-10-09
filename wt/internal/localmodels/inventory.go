@@ -139,8 +139,8 @@ type Snapshot struct {
 	// alone.
 	ProbeFailures map[string]error
 	// OmlxPool is the omlx pool reading this round's Running flags came
-	// from: sizes, pins and the ceiling the eviction plan needs
-	// (lifecycle.Evictions). Nil when omlx was not probed or gave no reading.
+	// from: sizes, pins and the ceiling the eviction plan needs (package
+	// lifecycle, evictions.go). Nil when omlx was not probed or gave no reading.
 	OmlxPool *Pool
 }
 

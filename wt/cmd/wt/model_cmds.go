@@ -360,8 +360,7 @@ func stopImpact(targets []survey.Candidate) (sessions int, users []string) {
 }
 
 func startCmd(a *app) *cobra.Command {
-	var asJSON, plan bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "start [model]",
 		Short: "Start a local model",
 		Long: "Start a local model (<provider>/<name>, as with -M). With no argument, shows\n" +
@@ -376,7 +375,7 @@ func startCmd(a *app) *cobra.Command {
 			"the question.",
 		Example: "  wt start ollama/qwen3.8:27b-mlx\n  wt start",
 		Args:    cobra.MaximumNArgs(1),
-		// A refused or failed JSON start is not a usage mistake.
+		// A refused or failed start is not a usage mistake.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
@@ -387,18 +386,9 @@ func startCmd(a *app) *cobra.Command {
 				id = args[0]
 			}
 			replace, _ := cmd.Flags().GetBool("replace")
-			if plan && !asJSON {
-				return errors.New("--plan needs --json")
-			}
-			if asJSON {
-				return runStartJSON(cmd.OutOrStdout(), a.cfg, id, plan, replace)
-			}
 			return runStart(cmd.OutOrStdout(), a.cfg, a.theme, id, replace)
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output; never prompts")
-	cmd.Flags().BoolVar(&plan, "plan", false, "with --json: report what a start would unload, and change nothing")
-	return cmd
 }
 
 // servedProbeTimeout bounds each request `wt served` makes — the lifecycle

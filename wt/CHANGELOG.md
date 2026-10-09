@@ -185,11 +185,13 @@
   first, and asks only when the model does not fit, naming what omlx is
   expected to unload. `wt stop <model>` unloads that model and leaves the
   others up; `wt stop omlx` stops the service. Routes follow each model's
-  loaded state, so two loaded omlx models are both routed. `wt start --json`
-  and `--plan` give scripted callers the plan and the result. On an omlx
-  that wants its API key for load and unload but not for inference, and with
+  loaded state, so two loaded omlx models are both routed. On an omlx that
+  wants its API key for load and unload but not for inference, and with
   no `auth.secret_ref` in the registry, a start still loads the model through
   a keyless chat request, and a model stop fails with the two ways to proceed.
+- **Removed:** `wt start --json` and `wt start --plan`. modelman, their only
+  caller, is deleted. Either flag is now `unknown flag`. `wt model list --json`
+  shows what is on disk and running before a `wt start <id> --replace`.
 
 ### Fixed
 

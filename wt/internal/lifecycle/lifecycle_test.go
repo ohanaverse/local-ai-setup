@@ -482,8 +482,8 @@ func TestStartUsesSnapshotWhenProbeIsTrustworthy(t *testing.T) {
 
 // TestStartReprobesAServerTheSnapshotSawDown verifies the engine still asks
 // the server itself when the snapshot's probe was refused. The plan reads a
-// refused connection as "nothing serving" (Evictions), which is right for a
-// dry run, but the engine acts on the answer: a server that came up with a
+// refused connection as "nothing serving" (evictions), which is right for a
+// snapshot, but the engine acts on the answer: a server that came up with a
 // model between the snapshot and the start must still be found, or the start
 // replaces that model with no confirmation.
 func TestStartReprobesAServerTheSnapshotSawDown(t *testing.T) {
