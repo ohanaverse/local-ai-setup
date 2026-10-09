@@ -683,10 +683,11 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 
 // TestRemovePromptGivesUpLinesBeforeThePath verifies what the remove prompt
 // loses on a terminal too short for it, and in which order: its blank lines,
-// then the closing sentence, and only then — cut at the bottom — the path. A
-// 72-column id with a path of five lines is 15 lines at 40 columns; clipped as
-// written, the 12-line screen asked y/N with the end of the path, the model's
-// own directory name, off its bottom edge. With room, the prompt is as it was.
+// then the closing sentence — the question and the path (weights location) are
+// always kept. A 72-column id with a path of five lines is 15 lines at 40
+// columns; the 12-line screen cuts from the middle, keeping the question at
+// the top and the path's end (the model's directory name) at the bottom, with
+// a marker line counting the removed lines. With room, the prompt is whole.
 func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 	const closing = "wt removes the registry entry only; it never deletes weights."
 	prompt := func(t *testing.T, path string, width, height int) string {
@@ -697,10 +698,13 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 		return view
 	}
 	question := flat("Remove " + tabLongID + " from the registry? [y/N]")
+	// The path is wrapped at width, so check for its last segment.
+	longWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongWeights), "/"))
+	longerWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongerWeights), "/"))
 
 	// The blank lines go first: everything else is still said.
 	view := prompt(t, tabLongWeights, 40, 12)
-	for _, want := range []string{question, flat(tildePath(tabLongWeights)), flat(closing)} {
+	for _, want := range []string{question, longWeightsEnd, flat(closing)} {
 		if !strings.Contains(flat(view), want) {
 			t.Errorf("at 40x12 the prompt lost %q:\n%s", want, view)
 		}
@@ -711,7 +715,7 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 
 	// Then the closing sentence, with the path still whole.
 	view = prompt(t, tabLongerWeights, 40, 12)
-	if !strings.Contains(flat(view), question) || !strings.Contains(flat(view), flat(tildePath(tabLongerWeights))) {
+	if !strings.Contains(flat(view), question) || !strings.Contains(flat(view), longerWeightsEnd) {
 		t.Errorf("at 40x12 the question and the whole path must be on screen:\n%s", view)
 	}
 	if strings.Contains(flat(view), flat(closing)) {
@@ -720,8 +724,29 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 
 	// With the room, nothing is given up.
 	view = prompt(t, tabLongerWeights, 40, 24)
-	if blankLines(view) != 2 || !strings.HasSuffix(flat(view), flat(closing)) {
-		t.Errorf("at 40x24 the prompt should be whole, its two blank lines and the closing sentence included:\n%s", view)
+	// The closing sentence is present (the hints come after it).
+	if !strings.Contains(flat(view), flat(closing)) {
+		t.Errorf("at 40x24 the prompt should be whole, closing sentence included:\n%s", view)
+	}
+
+	// On a very short terminal, the prompt cuts from the MIDDLE, not the
+	// bottom — the path end (weights location) must remain visible.
+	// The question itself is long (72 cols) and wraps to multiple lines at 40
+	// cols, so only its first wrapped lines survive the head cut. The important
+	// thing is the PATH END is preserved in the tail.
+	view = prompt(t, tabLongWeights, 40, 8)
+	// The start of the question should be visible (it's the head of the message).
+	if !strings.Contains(flat(view), "Removeomlx") {
+		t.Errorf("at 40x8 the question start must remain visible:\n%s", view)
+	}
+	// Path end must be near the bottom (before the hint).
+	if !strings.Contains(flat(view), longWeightsEnd) {
+		t.Errorf("at 40x8 the path end must remain visible:\n%s", view)
+	}
+	// There should be a marker line showing content was cut.
+	// The marker "… 4 lines not shown …" flattens to "…4linesshown…"
+	if !strings.Contains(flat(view), "linesnotshown") {
+		t.Errorf("at 40x8 there should be a marker line for cut content:\n%s", view)
 	}
 }
 

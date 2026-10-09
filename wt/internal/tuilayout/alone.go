@@ -15,7 +15,7 @@ import (
 // When the three are taller than the terminal the message is the part that
 // is cut, and from its middle: its first lines say what was refused, and its
 // last lines are the end of the path of the file to fix, which nothing else
-// on screen repeats. One dim marker line stands where the lines were taken
+// on screen repeats. One marker line stands where the lines were taken
 // out and counts them, and the result is exactly height lines. The lines left
 // for the message are shared evenly between its start and its end, the odd
 // one going to the end.
@@ -61,7 +61,10 @@ func MessageAlone(top, message, hint string, width, height int, dim lipgloss.Sty
 		keep := max(room-1, 0)
 		tail := (keep + 1) / 2
 		head := keep - tail
-		marker := dim.Render(Clip(fmt.Sprintf("… %d lines not shown …", len(msg)-keep), width))
+		marker := Clip(fmt.Sprintf("… %d lines not shown …", len(msg)-keep), width)
+		// The marker is structural (content was cut), not instructional —
+		// make it more visible than the dim hint.
+		marker = lipgloss.NewStyle().Bold(true).Render(marker)
 		cut := append([]string{}, msg[:head]...)
 		if room >= 1 {
 			cut = append(cut, marker)
