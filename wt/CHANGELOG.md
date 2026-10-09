@@ -183,6 +183,9 @@
   restore it, take the URL and key from the `[litellm]` table of the old
   file and run `wt litellm set --url <url> --api-key <key>`, then
   `wt litellm on`; both write `config.toml` (0600), creating it if needed.
+  If wt then stops with `config error: agent "agy": unknown provider "agy"`,
+  run `wt model init`: the restore created `config.toml`, and that command
+  adds the provider row it needs to `registry.toml`.
   A malformed or unreadable `modelman.toml` no longer stops every wt command
   with `parse modelman.toml: …`.
 - The stale-pricing notice wt prints after a launch takes its date from

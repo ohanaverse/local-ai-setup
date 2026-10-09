@@ -506,7 +506,10 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
   Take the URL and key from the `[litellm]` table of `modelman.toml` and run
   `wt litellm set --url <url> --api-key <key>`, then `wt litellm on`. Both
   write `config.toml` (mode 0600), creating it if it does not exist; run
-  `wt litellm status` again to see `litellm: on`. The key is on the command
+  `wt litellm status` again to see `litellm: on`. If wt then stops with
+  `config error: agent "agy": unknown provider "agy"`, run `wt model init`:
+  the restore created `config.toml`, and that command adds the provider row
+  it needs to `registry.toml`. The key is on the command
   line, the only form wt offers, so it lands in your shell history: start
   the line with a space if your shell is set to skip such lines
   (`HISTCONTROL=ignorespace` in bash, `setopt HIST_IGNORE_SPACE` in zsh), or
