@@ -1,5 +1,4 @@
-"""The latest-run pointers: their own file, and the one-time read of the
-keys modelman.toml used to hold."""
+"""The latest-run pointers: one flat file, and nothing read from anywhere else."""
 
 import tomllib
 from pathlib import Path
@@ -25,10 +24,17 @@ ready = true
 
 @pytest.fixture
 def paths(monkeypatch, tmp_path):
-    """(latest.toml, modelman.toml) under tmp_path, neither written yet."""
+    """(latest.toml, modelman.toml) under tmp_path, neither written yet.
+    XDG_CONFIG_HOME points at tmp_path, so the second path is where modelman
+    kept its state file under that variable, and MODELMAN_STATE, the override
+    it honoured, names it as well. HOME is a directory of its own, for the
+    test that also puts the old file at the pre-XDG default."""
     latest = tmp_path / "benchmarks" / "latest.toml"
-    legacy = tmp_path / "modelman.toml"
+    legacy = tmp_path / "local-ai" / "modelman.toml"
+    legacy.parent.mkdir(parents=True)
     monkeypatch.setenv("LLMBENCH_LATEST", str(latest))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("MODELMAN_STATE", str(legacy))
     return latest, legacy
 
@@ -42,8 +48,7 @@ def test_latest_path_default_and_override(monkeypatch, tmp_path):
 
 def test_latest_path_ignores_xdg_config_home(monkeypatch, tmp_path):
     """latest.toml sits beside the results it points at, and the results
-    directory is ~/.config/local-ai/benchmarks whatever XDG_CONFIG_HOME says.
-    (The fallback read of modelman.toml does honour XDG: see below.)"""
+    directory is ~/.config/local-ai/benchmarks whatever XDG_CONFIG_HOME says."""
     monkeypatch.delenv("LLMBENCH_LATEST", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert latest_path() == Path.home() / ".config" / "local-ai" / "benchmarks" / "latest.toml"
@@ -64,62 +69,39 @@ def test_pointers_round_trip_through_a_flat_file(paths):
     assert load_state().extra["benchmarks"] == {"agent_last_run": "/results/agent-2"}
 
 
-def test_first_read_falls_back_to_modelmans_benchmarks_table(paths):
-    """A user who ran benchmarks through modelman has their --latest pointers
-    in modelman.toml. `llmbench agent show --latest` must still find that run
-    the first time, not report "no latest run recorded"."""
+def test_modelman_toml_is_never_read(paths):
+    """llmbench used to read the pointers from modelman.toml's [benchmarks]
+    table while latest.toml did not exist. modelman is gone and the file is
+    one the maintenance guide says to delete, so it must not matter whether
+    it is there: with no latest.toml there is no latest run, wherever the old
+    file sits (the XDG path, the path MODELMAN_STATE names, ~/.config) and a
+    read writes nothing. The file is present in all of those places, so this
+    proves it is ignored, not that it is absent."""
     latest, legacy = paths
     legacy.write_text(MODELMAN_TOML, encoding="utf-8")
+    home_copy = Path.home() / ".config" / "local-ai" / "modelman.toml"
+    home_copy.parent.mkdir(parents=True)
+    home_copy.write_text(MODELMAN_TOML, encoding="utf-8")
 
-    assert load_state().extra["benchmarks"] == {
-        "last_run": "2026-08-28T14:32:00+00:00",
-        "last_run_dir": "/results",
-        "agent_last_run": "/results/agent-1",
-        "eval_last_run": "/results/eval-1",
-    }
-    assert not latest.exists()  # a read never writes
+    assert load_state() == StateStore()
+    assert not latest.exists()
+    assert legacy.read_text(encoding="utf-8") == MODELMAN_TOML
+    assert home_copy.read_text(encoding="utf-8") == MODELMAN_TOML
 
 
-def test_the_fallback_is_read_once(paths):
-    """The first recorded run carries the old pointers into latest.toml;
-    after that modelman.toml is never consulted, so a pointer modelman.toml
-    still holds cannot shadow a newer one."""
+def test_a_recorded_run_is_all_that_latest_toml_holds(paths):
+    """The first recorded run writes its own pointer and no other: nothing
+    is carried over from modelman.toml, so a stale pointer there cannot come
+    back as "the latest run"."""
     latest, legacy = paths
     legacy.write_text(MODELMAN_TOML, encoding="utf-8")
 
     store = load_state()
-    store.extra["benchmarks"]["eval_last_run"] = "/results/eval-2"
+    store.extra.setdefault("benchmarks", {})["eval_last_run"] = "/results/eval-2"
     save_state(store)
 
-    legacy.write_text(MODELMAN_TOML.replace("agent-1", "agent-STALE"), encoding="utf-8")
-    assert load_state().extra["benchmarks"] == {
-        "last_run": "2026-08-28T14:32:00+00:00",
-        "last_run_dir": "/results",
-        "agent_last_run": "/results/agent-1",
-        "eval_last_run": "/results/eval-2",
-    }
-    assert legacy.read_text(encoding="utf-8").count("agent-STALE") == 1  # never written
-
-
-@pytest.mark.parametrize(
-    "legacy_text",
-    [
-        None,  # no modelman.toml at all: a machine that never ran modelman
-        "[benchmarks\n",  # unreadable
-        'benchmarks = "not a table"\n',
-        "[benchmarks]\nlast_run_dir = 7\n",  # not a string: not a pointer
-        "[model_state]\n",  # no [benchmarks] table
-        b'[benchmarks]\nlast_run = "\xff\xfe"\n',  # not UTF-8
-    ],
-    ids=["absent", "corrupt", "not-a-table", "wrong-type", "no-table", "bytes"],
-)
-def test_an_unusable_modelman_toml_reads_as_no_pointers(paths, legacy_text):
-    _, legacy = paths
-    if isinstance(legacy_text, bytes):
-        legacy.write_bytes(legacy_text)
-    elif legacy_text is not None:
-        legacy.write_text(legacy_text, encoding="utf-8")
-    assert load_state().extra.get("benchmarks", {}) == {}
+    assert tomllib.loads(latest.read_text(encoding="utf-8")) == {"eval_last_run": "/results/eval-2"}
+    assert load_state().extra["benchmarks"] == {"eval_last_run": "/results/eval-2"}
 
 
 def test_a_corrupt_latest_toml_reads_as_no_pointers_and_is_replaced(paths):
@@ -152,35 +134,14 @@ def test_latest_toml_yields_only_string_pointers(paths):
 
 def _assert_replaced(latest, legacy):
     store = load_state()
-    assert store.extra.get("benchmarks", {}) == {}  # present: no fallback either
+    assert store.extra.get("benchmarks", {}) == {}
     store.extra.setdefault("benchmarks", {})["last_run_dir"] = "/results"
     save_state(store)
     assert load_state().extra["benchmarks"] == {"last_run_dir": "/results"}
 
 
-def test_the_fallback_finds_modelman_toml_where_modelman_kept_it(monkeypatch, tmp_path):
-    """MODELMAN_STATE > XDG_CONFIG_HOME > ~/.config, modelman's own rule."""
-    monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "latest.toml"))
-    monkeypatch.delenv("MODELMAN_STATE", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    home_file = tmp_path / "home" / ".config" / "local-ai" / "modelman.toml"
-    home_file.parent.mkdir(parents=True)
-    home_file.write_text('[benchmarks]\nlast_run_dir = "/from-home"\n', encoding="utf-8")
-    assert load_state().extra["benchmarks"] == {"last_run_dir": "/from-home"}
-
-    xdg_file = tmp_path / "xdg" / "local-ai" / "modelman.toml"
-    xdg_file.parent.mkdir(parents=True)
-    xdg_file.write_text('[benchmarks]\nlast_run_dir = "/from-xdg"\n', encoding="utf-8")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    assert load_state().extra["benchmarks"] == {"last_run_dir": "/from-xdg"}
-
-    named_file = tmp_path / "named.toml"
-    named_file.write_text('[benchmarks]\nlast_run_dir = "/from-named"\n', encoding="utf-8")
-    monkeypatch.setenv("MODELMAN_STATE", str(named_file))  # XDG_CONFIG_HOME still set
-    assert load_state().extra["benchmarks"] == {"last_run_dir": "/from-named"}
-
-
-def test_an_explicit_path_never_falls_back(paths, tmp_path):
+def test_an_explicit_path_reads_only_that_file(paths, tmp_path):
+    """A caller that names the pointer file gets that file or nothing."""
     _, legacy = paths
     legacy.write_text(MODELMAN_TOML, encoding="utf-8")
     assert load_state(tmp_path / "elsewhere.toml") == StateStore()
