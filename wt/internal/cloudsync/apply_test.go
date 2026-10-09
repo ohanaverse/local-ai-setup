@@ -436,7 +436,7 @@ location = "cloud"
 	var done PricesApplied
 	changed, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		var err error
-		done, err = PlanPrices(Entries(d.Models()), Providers(d.Providers()), api).Apply(d, applyNow)
+		done, err = PlanPrices(Entries(d.Models()), api).Apply(d, applyNow)
 		return err
 	})
 	if err != nil || !changed {
@@ -539,7 +539,7 @@ time_prices = []
 	var planText string
 	var done PricesApplied
 	if _, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
-		plan := PlanPrices(Entries(d.Models()), Providers(d.Providers()), api)
+		plan := PlanPrices(Entries(d.Models()), api)
 		planText = plan.Format()
 		var err error
 		done, err = plan.Apply(d, applyNow)

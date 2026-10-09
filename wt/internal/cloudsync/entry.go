@@ -26,12 +26,10 @@ type Cost struct {
 	TimePrices []*tomlw.Table
 }
 
-// Provider is what the planners read of one provider row.
+// Provider is what the command reads of one provider row: its id, which is
+// how it knows the registry has an ollama row at all.
 type Provider struct {
-	ID, Location, AuthType string
-	// OpenRouterPriced is the row's openrouter_priced override: nil when the
-	// key is absent (or is not a boolean, which wt's loader refuses anyway).
-	OpenRouterPriced *bool
+	ID string
 }
 
 // Entries reads model rows (config.RegistryDoc.Models) into Entry values. A
@@ -62,18 +60,7 @@ func Entries(rows []*tomlw.Table) []Entry {
 func Providers(rows []*tomlw.Table) []Provider {
 	out := make([]Provider, 0, len(rows))
 	for _, row := range rows {
-		p := Provider{ID: str(row, "id"), Location: str(row, "location")}
-		if v, ok := row.Get("openrouter_priced"); ok {
-			if b, isBool := v.(bool); isBool {
-				p.OpenRouterPriced = &b
-			}
-		}
-		if v, ok := row.Get("auth"); ok {
-			if auth, isTable := v.(*tomlw.Table); isTable {
-				p.AuthType = str(auth, "type")
-			}
-		}
-		out = append(out, p)
+		out = append(out, Provider{ID: str(row, "id")})
 	}
 	return out
 }

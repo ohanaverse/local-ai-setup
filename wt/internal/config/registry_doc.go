@@ -40,7 +40,7 @@ var (
 	registryTopLevelKeys = []string{"providers", "families", "models"}
 
 	providerSchemas = map[string][]string{
-		"":     {"id", "name", "location", "model_dir", "protocols", "openrouter_priced", "auth"},
+		"":     {"id", "name", "location", "model_dir", "protocols", "auth"},
 		"auth": {"type", "secret_ref", "base_url"},
 	}
 	modelSchemas = map[string][]string{

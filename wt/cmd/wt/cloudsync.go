@@ -132,7 +132,8 @@ func cloudSyncCmd(a *app) *cobra.Command {
 		Short: "Refresh cloud prices (OpenRouter) and the ollama cloud catalog into registry.toml",
 		Long: "Bring registry.toml up to date with what two public services publish. Two\n" +
 			"independent flows, both run unless --only picks one:\n\n" +
-			"  openrouter  OpenRouter's per-token prices, for the models priced by OpenRouter\n" +
+			"  openrouter  OpenRouter's per-token prices, for the models of the openrouter\n" +
+			"              provider\n" +
 			"  ollama      https://ollama.com/pricing, mirrored: prices (off-peak included),\n" +
 			"              new cloud models added and pulled, models the page no longer\n" +
 			"              lists removed from the registry and from ollama\n\n" +
@@ -263,8 +264,8 @@ type openRouterRun struct {
 // line, no fetch is made, res.failed stays false), a fetch that failed, or a
 // plan the write would refuse (both reported, and res.failed set).
 func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.RegistryDoc, res *cloudSyncOutcome) *openRouterRun {
-	entries, providers := cloudsync.Entries(doc.Models()), cloudsync.Providers(doc.Providers())
-	if !slices.ContainsFunc(entries, func(e cloudsync.Entry) bool { return cloudsync.OpenRouterPriced(e, providers) }) {
+	entries := cloudsync.Entries(doc.Models())
+	if !slices.ContainsFunc(entries, cloudsync.OpenRouterPriced) {
 		fmt.Fprintln(out, "openrouter: no OpenRouter-priced model in the registry; nothing to refresh")
 		return nil
 	}
@@ -272,7 +273,7 @@ func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.
 	// that appears more than once, so a plan with such a model can never be
 	// applied. Fail fast to avoid a wasted network request.
 	for _, e := range entries {
-		if !cloudsync.OpenRouterPriced(e, providers) {
+		if !cloudsync.OpenRouterPriced(e) {
 			continue
 		}
 		if _, err := doc.Model(e.ID); err != nil {
@@ -291,15 +292,16 @@ func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.
 		res.failed = true
 		return nil
 	}
-	run := &openRouterRun{api: api, plan: cloudsync.PlanPrices(entries, providers, api)}
+	run := &openRouterRun{api: api, plan: cloudsync.PlanPrices(entries, api)}
 	run.printed = run.plan.Format()
 	prefixLines(out, "openrouter", run.printed)
 	if run.plan.Candidates > 0 && len(run.plan.Matched) == 0 {
 		// Not part of run.printed: it is advice, not the plan. With nothing
 		// matched nothing is stamped, so the stale-pricing notice (which
-		// names this command) is not cleared by running it again.
+		// names this command) is not cleared by running it again. Each
+		// candidate has a warning in the plan above that says why.
 		fmt.Fprintln(out, "openrouter: no model could be refreshed, so nothing is stamped and wt's stale-pricing notice is not cleared; "+
-			"set openrouter_priced = false on a provider whose model names are not OpenRouter ids")
+			"the warnings above say why for each model")
 	}
 	return run
 }
@@ -471,7 +473,7 @@ func writeCloudSync(openrouter *openRouterRun, ollama *ollamaRun, now time.Time)
 		entries, providers := cloudsync.Entries(d.Models()), cloudsync.Providers(d.Providers())
 		var freshOpenRouter *cloudsync.PricePlan
 		if openrouter != nil {
-			freshOpenRouter = cloudsync.PlanPrices(entries, providers, openrouter.api)
+			freshOpenRouter = cloudsync.PlanPrices(entries, openrouter.api)
 			applied.openrouterStale = freshOpenRouter.Format() != openrouter.printed
 		}
 		var freshOllama *cloudsync.CatalogPlan

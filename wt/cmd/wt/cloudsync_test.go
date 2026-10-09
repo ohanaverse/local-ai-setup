@@ -729,21 +729,21 @@ func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testin
 	}
 }
 
-// TestCloudSyncJudgesOpenRouterPricingByTheModelsNotTheProviderRow pins what
-// "OpenRouter-priced" means to the skip: the rule config.Config.OpenRouterPriced
-// applies to each model, not whether a provider row is called openrouter. A
-// registry with no openrouter row whose provider says openrouter_priced = true
-// is refreshed, and one whose only cloud provider says openrouter_priced =
-// false (a corporate gateway, #302) is skipped without a request. Judged by
-// the row's name, the first would never be refreshed and the second would be
-// fetched for and warned about on every run.
-func TestCloudSyncJudgesOpenRouterPricingByTheModelsNotTheProviderRow(t *testing.T) {
-	registry := func(priced string) string {
-		return `[[providers]]
+// TestCloudSyncRefreshesOnlyTheOpenRouterProvidersModels pins who the
+// openrouter flow refreshes: the models whose provider_id is "openrouter",
+// and no other. The provider key openrouter_priced, which until #322 could
+// put another provider's models in or take them out, is no longer read. A
+// registry that still carries it must go on working: it loads, the key
+// decides nothing either way (a cloud gateway marked true is not fetched
+// for, and the openrouter provider's own models are refreshed although their
+// row says false), nothing is printed about the key, and a write leaves it
+// in the file, because wt never deletes a key it does not model.
+func TestCloudSyncRefreshesOnlyTheOpenRouterProvidersModels(t *testing.T) {
+	const relay = `[[providers]]
 id = "relay"
 name = "Relay"
 location = "cloud"
-openrouter_priced = ` + priced + `
+openrouter_priced = true
 
 [providers.auth]
 type = "api_key"
@@ -758,33 +758,11 @@ location = "cloud"
 source = "curated"
 tags = []
 `
-	}
 
-	t.Run("openrouter_priced = true with no openrouter row: refreshed", func(t *testing.T) {
-		text := registry("true")
-		path, cfg := cloudSyncHome(t, text)
-		if len(cfg.Models) != 1 || !cfg.OpenRouterPriced(cfg.Models[0]) {
-			t.Fatalf("config.OpenRouterPriced is false for the fixture's model (%d models); the fixture no longer says what this test needs", len(cfg.Models))
-		}
-		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-		synced := stubRouteSync(t, "")
-		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
-		if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter:   relay/vendor--gpt: no cost -> 3/-/15\nopenrouter: Unchanged prices: 0\nopenrouter: refreshed 1 model(s); 1 price(s) changed\n") {
-			t.Errorf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
-		}
-		if urls := got.all(); !reflect.DeepEqual(urls, []string{cloudsync.OpenRouterModelsURL}) || *synced != 1 {
-			t.Errorf("fetched %v, synced %d time(s); want one request and one sync", urls, *synced)
-		}
-		if !strings.Contains(mustRead(t, path), "pricing_updated_at = \""+cloudSyncStamp+"\"") {
-			t.Error("the refreshed model was not stamped")
-		}
-	})
-
-	t.Run("openrouter_priced = false on the only cloud provider: skipped", func(t *testing.T) {
-		text := registry("false")
-		path, cfg := cloudSyncHome(t, text)
+	t.Run("another cloud provider's model, marked true: not refreshed", func(t *testing.T) {
+		path, cfg := cloudSyncHome(t, relay)
 		if len(cfg.Models) != 1 || cfg.OpenRouterPriced(cfg.Models[0]) {
-			t.Fatalf("config.OpenRouterPriced is true for the fixture's model (%d models); the fixture no longer says what this test needs", len(cfg.Models))
+			t.Fatalf("config.OpenRouterPriced is true for a model of provider relay (%d models)", len(cfg.Models))
 		}
 		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 		synced := stubRouteSync(t, "")
@@ -792,8 +770,46 @@ tags = []
 		if stdout != "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || code != 0 {
 			t.Errorf("stdout = %q, stderr = %q, exit %d", stdout, stderr, code)
 		}
-		if len(got.all()) != 0 || *synced != 0 || mustRead(t, path) != text {
+		if len(got.all()) != 0 || *synced != 0 || mustRead(t, path) != relay {
 			t.Errorf("fetched %v, synced %d time(s) or changed the registry; want none of them", got.all(), *synced)
+		}
+	})
+
+	t.Run("the openrouter provider's model, marked false: refreshed, and the key kept", func(t *testing.T) {
+		text := strings.Replace(cloudSyncRegistry, "id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\n",
+			"id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\nopenrouter_priced = false\n", 1) + "\n" + relay
+		if strings.Count(text, "openrouter_priced = ") != 2 {
+			t.Fatal("the fixture does not carry the key on both provider rows")
+		}
+		path, cfg := cloudSyncHome(t, text)
+		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+		synced := stubRouteSync(t, "")
+		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		const want = "openrouter: openrouter.ai: 1 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+			"openrouter: Price updates (1):\n" +
+			"openrouter:   openrouter/vendor--gpt: 2.5/-/10 -> 3/-/15\n" +
+			"openrouter: Unchanged prices: 0\n" +
+			"openrouter: refreshed 1 model(s); 1 price(s) changed\n"
+		if stdout != want || stderr != "" || code != 0 {
+			t.Errorf("stdout = %q\nstderr = %q, exit %d\nwant stdout %q", stdout, stderr, code, want)
+		}
+		if urls := got.all(); !reflect.DeepEqual(urls, []string{cloudsync.OpenRouterModelsURL}) || *synced != 1 {
+			t.Errorf("fetched %v, synced %d time(s); want one request and one sync", urls, *synced)
+		}
+		after := mustRead(t, path)
+		for _, kept := range []string{
+			"id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\nopenrouter_priced = false\n",
+			"id = \"relay\"\nname = \"Relay\"\nlocation = \"cloud\"\nopenrouter_priced = true\n",
+		} {
+			if !strings.Contains(after, kept) {
+				t.Errorf("the write did not keep a provider row as it was:\n%s\nfile:\n%s", kept, after)
+			}
+		}
+		if strings.Contains(after, "id = \"relay/vendor--gpt\"\nfamily = \"gpt\"\nprovider_id = \"relay\"\nmodel_name = \"vendor/gpt\"\nlocation = \"cloud\"\nsource = \"curated\"\ntags = []\npricing_updated_at") {
+			t.Error("the relay model was stamped: it is not the openrouter flow's")
+		}
+		if _, err := config.Load(); err != nil {
+			t.Errorf("config.Load after the write: %v", err)
 		}
 	})
 }
@@ -803,11 +819,12 @@ tags = []
 // of them: a model it does not list, or one it prices "-1" (a router model).
 // Such a run stamps nothing, so wt's stale-pricing notice goes on naming `wt
 // cloud-sync` after every launch; without this line nothing says that
-// running it again will not help, or what will (openrouter_priced = false).
-// A run that matched a model does not print it.
+// running it again will not help, or where to look (the warnings, each of
+// which names a model and what is wrong with it). A run that matched a model
+// does not print it.
 func TestCloudSyncSaysWhenNoModelCouldBeRefreshed(t *testing.T) {
 	const line = "openrouter: no model could be refreshed, so nothing is stamped and wt's stale-pricing notice is not cleared; " +
-		"set openrouter_priced = false on a provider whose model names are not OpenRouter ids\n"
+		"the warnings above say why for each model\n"
 	for name, body := range map[string]string{
 		"OpenRouter does not list the model": `{"data": []}`,
 		"OpenRouter prices the model at -1":  `{"data": [{"id": "vendor/gpt", "pricing": {"prompt": "-1", "completion": "-1"}}]}`,

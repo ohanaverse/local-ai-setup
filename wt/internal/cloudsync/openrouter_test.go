@@ -10,22 +10,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
 )
 
-var (
-	priced, notPriced = true, false
-
-	priceProviders = []Provider{
-		{ID: "openrouter", Location: "cloud", AuthType: "api_key"},
-		{ID: "ollama", Location: "local", AuthType: "none"},
-		{ID: "claude", Location: "cloud", AuthType: "native"},
-		{ID: "acme", Location: "cloud", AuthType: "none"},
-		// The two overrides (#302): a corporate gateway whose model names
-		// are not OpenRouter ids opts out, a local proxy serving OpenRouter
-		// ids opts in.
-		{ID: "corp", Location: "cloud", AuthType: "api_key", OpenRouterPriced: &notPriced},
-		{ID: "gateway", Location: "local", AuthType: "none", OpenRouterPriced: &priced},
-	}
-)
-
 func orEntry(name string, cost *Cost) Entry {
 	return Entry{ID: "openrouter/" + name, Family: "x", ProviderID: "openrouter", ModelName: "vendor/" + name, Location: "cloud", Cost: cost}
 }
@@ -136,10 +120,9 @@ func TestOpenRouterPricedMatchesTheContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &want); err != nil {
 		t.Fatal(err)
 	}
-	providers := Providers(rows("providers"))
 	var got []string
 	for _, e := range Entries(rows("models")) {
-		if OpenRouterPriced(e, providers) {
+		if OpenRouterPriced(e) {
 			got = append(got, e.ID)
 		}
 	}
@@ -166,7 +149,7 @@ func TestPlanPricesMergeRules(t *testing.T) {
 		{"id": "vendor/cache-reported", "pricing": {"prompt": "0.000001", "completion": "0.000002", "input_cache_read": "0.0000005"}},
 		{"id": "vendor/new", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
 	]}`)
-	plan := PlanPrices(entries, priceProviders, api)
+	plan := PlanPrices(entries, api)
 	if plan.Candidates != 3 || len(plan.Matched) != 3 || len(plan.Warnings) != 0 {
 		t.Fatalf("plan = %+v", plan)
 	}
@@ -184,14 +167,14 @@ func TestPlanPricesMergeRules(t *testing.T) {
 }
 
 // TestPlanPricesCandidatesAndWarnings pins who is refreshed and what is said
-// about the rest: a model of a non-native cloud provider is a candidate like
-// an openrouter one, and so is one whose provider says openrouter_priced =
-// true; an ollama cloud model (priced by ollama.com), a native agent
-// provider's model and a model of a provider that says openrouter_priced =
-// false are not, and get no "no match" warning (#151, #302); a candidate
-// OpenRouter does not list, lists with no price, prices at -1 or prices
-// with text that is not a number is a warning and is left exactly as it is
-// (a price nobody could read must not delete the one in the registry).
+// about the rest. A candidate is a model whose provider_id is "openrouter",
+// and nothing else: not another cloud provider's model whose name happens to
+// be an OpenRouter id, not an ollama cloud model (priced by ollama.com), not
+// a native agent provider's model. None of those is fetched for, changed or
+// warned about. A candidate OpenRouter does not list, lists with no price,
+// prices at -1 or prices with text that is not a number is a warning and is
+// left exactly as it is (a price nobody could read must not delete the one
+// in the registry).
 func TestPlanPricesCandidatesAndWarnings(t *testing.T) {
 	entries := []Entry{
 		orEntry("listed", nil),
@@ -212,14 +195,14 @@ func TestPlanPricesCandidatesAndWarnings(t *testing.T) {
 		{"id": "vendor/varies", "pricing": {"prompt": "-1", "completion": "0.000002"}},
 		{"id": "vendor/soon", "pricing": {"prompt": "soon", "completion": "0.00001"}}
 	]}`)
-	plan := PlanPrices(entries, priceProviders, api)
+	plan := PlanPrices(entries, api)
 	var matched []string
 	for _, m := range plan.Matched {
 		matched = append(matched, m.ModelID)
 	}
-	wantIDs(t, "matched", matched, "openrouter/listed", "acme/model-a", "gateway/y")
-	if plan.Candidates != 7 {
-		t.Errorf("candidates = %d, want 7", plan.Candidates)
+	wantIDs(t, "matched", matched, "openrouter/listed")
+	if plan.Candidates != 5 {
+		t.Errorf("candidates = %d, want 5", plan.Candidates)
 	}
 	want := []string{
 		"No OpenRouter match for openrouter/missing (vendor/missing)",
@@ -249,7 +232,7 @@ func TestPricePlanFormat(t *testing.T) {
 		{"id": "vendor/same", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
 		{"id": "vendor/new", "pricing": {"prompt": "0.00000068", "completion": "0.00000209"}}
 	]}`)
-	plan := PlanPrices(entries, priceProviders, api)
+	plan := PlanPrices(entries, api)
 	want := strings.Join([]string{
 		"openrouter.ai: 4 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)",
 		"Price updates (2):",
@@ -263,5 +246,65 @@ func TestPricePlanFormat(t *testing.T) {
 	}
 	if !plan.HasWork() || (&PricePlan{Candidates: 1}).HasWork() {
 		t.Error("HasWork: want true with a matched model, false with none")
+	}
+}
+
+// TestTheTwoFlowsNeverShareAModel pins what lets each flow write
+// cost.time_prices rows without looking at the other's: no registry row is
+// in both flows' scope. The openrouter flow takes the rows whose provider_id
+// is "openrouter"; the ollama flow addresses only rows whose provider_id is
+// "ollama". If a row could be in both, one run would have two plans made
+// from the same reading of the registry, and the flow applied second would
+// write back the rows it read, dropping the first flow's.
+func TestTheTwoFlowsNeverShareAModel(t *testing.T) {
+	var entries []Entry
+	for _, provider := range []string{"openrouter", "ollama", "acme", ""} {
+		for _, location := range []string{"cloud", "local", ""} {
+			// A cloud tag, an OpenRouter id, and one name that is both a page
+			// name's tag and listed by OpenRouter below.
+			for _, name := range []string{"a:cloud", "vendor/a", "a"} {
+				e := Entry{ID: provider + "/" + location + "/" + name, Family: "x", ProviderID: provider, ModelName: name, Location: location, CatalogName: "a", Cost: &Cost{Input: f(9)}}
+				if isOllamaCloud(e) && OpenRouterPriced(e) {
+					t.Errorf("%s is in both flows' scope", e.ID)
+				}
+				entries = append(entries, e)
+			}
+		}
+	}
+	api := apiOf(t, `{"data": [
+		{"id": "a:cloud", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+		{"id": "vendor/a", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+		{"id": "a", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+	]}`)
+	prices := PlanPrices(entries, api)
+	catalog := PlanCatalog(entries, catalogOf(withOffpeak(cm("a"), f(0.5), nil, f(1))), []string{"a:cloud"}, nil)
+	touched := map[string]string{}
+	for _, m := range prices.Matched {
+		touched[m.ModelID] = "openrouter"
+	}
+	if len(touched) != 9 {
+		t.Fatalf("the openrouter plan matched %d rows, want the 9 openrouter ones:\n%s", len(touched), prices.Format())
+	}
+	var catalogIDs []string
+	for _, u := range catalog.Updates {
+		catalogIDs = append(catalogIDs, u.ModelID)
+	}
+	catalogIDs = append(catalogIDs, catalog.Removals...)
+	for _, a := range catalog.Additions {
+		catalogIDs = append(catalogIDs, a.ID)
+		if a.CloneOf != "" {
+			catalogIDs = append(catalogIDs, a.CloneOf)
+		}
+	}
+	if len(catalogIDs) == 0 {
+		t.Fatalf("the ollama plan addresses no row; the fixture proves nothing:\n%s", catalog.Format())
+	}
+	for _, id := range catalogIDs {
+		if touched[id] != "" {
+			t.Errorf("%s is changed by both plans:\n%s\n\n%s", id, prices.Format(), catalog.Format())
+		}
+		if !strings.HasPrefix(id, "ollama/") {
+			t.Errorf("the ollama plan addresses %s, a row of another provider", id)
+		}
 	}
 }

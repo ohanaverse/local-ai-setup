@@ -25,11 +25,10 @@ is about (`openrouter:`, `ollama:`); the route sync's lines are `routes:`.
 ### openrouter
 
 Fetches `https://openrouter.ai/api/v1/models` and re-prices the registry's
-OpenRouter-priced models: an `openrouter` model, or a model of any other
-cloud provider that is not an agent's native provider, unless the provider's
-`openrouter_priced` key says otherwise
-([guide 02](../../docs/guides/02-providers-and-models.md)). A model is
-matched on its `model_name`.
+OpenRouter-priced models: the models whose `provider_id` is `openrouter`,
+and no other ([guide 02](../../docs/guides/02-providers-and-models.md)). A
+model is matched on its `model_name`. A model of any other provider is never
+fetched for, changed or warned about, whatever its name is.
 
 - Input and output prices always take OpenRouter's value. The cache price is
   replaced only when OpenRouter reports one. A subscription price and any
@@ -43,8 +42,23 @@ matched on its `model_name`.
   varies) is left exactly as it is, and is not stamped.
 - When there are OpenRouter-priced models and not one could be matched, the
   run says so: `openrouter: no model could be refreshed, so nothing is stamped
-  and wt's stale-pricing notice is not cleared; set openrouter_priced =
-  false on a provider whose model names are not OpenRouter ids`.
+  and wt's stale-pricing notice is not cleared; the warnings above say why
+  for each model`.
+- **The provider key `openrouter_priced` is no longer read.** It used to put
+  another provider's models into this flow (`true`) or take a provider's
+  models out (`false`). A registry that still has it loads as before, the
+  key decides nothing, nothing warns about it, and wt leaves it in the file
+  when it writes; delete it by hand when you like.
+- **A model under any other cloud provider is no longer refreshed**, whether
+  or not that key was ever set. Until #322 a model of a cloud provider that
+  is not an agent's native one (a gateway that serves OpenRouter ids, say)
+  was refreshed from OpenRouter and counted for the stale-pricing notice.
+  It now keeps the price it has, and the notice does not watch it. To have
+  it refreshed, register it under the `openrouter` provider
+  (`provider_id = "openrouter"`); it is then also reached through
+  OpenRouter. To keep it where it is, set its price yourself:
+  `wt model edit <id> --input-price … --output-price …`
+  ([wt-model.md](wt-model.md)).
 
 ### ollama
 
@@ -116,8 +130,8 @@ finished (exit 0). This is never an error, however the flow was asked for.
 | no `ollama` provider row | `ollama: no ollama provider in the registry; nothing to mirror` |
 
 - The openrouter rule is judged by the models, not by whether an `openrouter`
-  provider row exists: a model another cloud provider prices through
-  OpenRouter still counts.
+  provider row exists: a row with no model under it is skipped, and a model
+  whose `provider_id` is `openrouter` counts even when the row is missing.
 - The ollama rule holds for `--only ollama`, `--html`,
   `--approve-removals` and `--force` too; with no `ollama` row the `--html`
   file is not even opened. `wt cloud-sync` never adds a provider row:
@@ -388,5 +402,12 @@ the date. The ollama flow's stamps on ollama cloud entries do not count,
 and with no OpenRouter-priced model the notice is silent.
 
 Running `wt cloud-sync` clears it as long as the openrouter flow matches at
-least one model. To stop it for a provider whose models OpenRouter does not
-price, set `openrouter_priced = false` on that provider row.
+least one model. When it matches none, every model of the `openrouter`
+provider has a `warning:` that says why (a `model_name` OpenRouter does not
+list, most often); correct the name, or remove the model
+(`wt model rm <id>`), and the notice goes with the last of them.
+
+The notice watches the models of the `openrouter` provider only. A model
+under any other cloud provider neither raises it nor clears it, and the
+provider key `openrouter_priced`, which once changed that, is no longer
+read (see [openrouter](#openrouter)).
