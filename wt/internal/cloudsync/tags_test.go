@@ -42,7 +42,7 @@ func (l *fakeLibrary) get(_ context.Context, url string) ([]byte, error) {
 }
 
 // TestCloudTag pins the guess and the cloud-tag test. IsCloudTag decides
-// which pulled tags and registry entries the catalog flow may remove, so a
+// which pulled tags and registry entries the ollama flow may remove, so a
 // local model such as gpt-oss:20b must never pass it.
 func TestCloudTag(t *testing.T) {
 	if got := CloudTag("glm-5.3"); got != "glm-5.3:cloud" {

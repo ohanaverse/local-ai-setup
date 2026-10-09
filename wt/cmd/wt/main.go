@@ -100,7 +100,7 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wt:", err)
 		// 1 unless the error carries another status (exitCodeError): `wt
-		// cloud-sync` says with 2 to 5 why its catalog flow changed nothing.
+		// cloud-sync` says with 2 to 5 why its ollama flow changed nothing.
 		os.Exit(exitCodeOf(err))
 	}
 }

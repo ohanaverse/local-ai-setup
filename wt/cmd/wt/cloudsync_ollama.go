@@ -1,4 +1,4 @@
-// The ollama CLI as wt cloud-sync's catalog flow uses it: list what is
+// The ollama CLI as wt cloud-sync's ollama flow uses it: list what is
 // pulled, pull a tag, remove a tag. Always the CLI, never the HTTP API, and
 // always pinned to the daemon the registry's ollama provider row names.
 package main
@@ -64,7 +64,7 @@ var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 // ollamaFailure words a failed ollama command in one line: the last line it
 // printed on stderr that says anything (ollama prints its `Error:` line
 // last, after any progress), with terminal escapes removed, else why it
-// could not run. One line, because the caller prints it after a `catalog:`
+// could not run. One line, because the caller prints it after an `ollama:`
 // prefix and a second line would have none.
 func ollamaFailure(stderr string, err error) string {
 	lines := strings.FieldsFunc(ansiEscape.ReplaceAllString(stderr, ""), func(r rune) bool { return r == '\n' || r == '\r' })

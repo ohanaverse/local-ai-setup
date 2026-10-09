@@ -55,7 +55,7 @@ func modelRows(t *testing.T, path string) map[string]*tomlw.Table {
 }
 
 // userTimePrice is a cost.time_prices row a user wrote: a label that is not
-// the catalog's, a key wt does not model, integer prices, and keys in an
+// the ollama flow's, a key wt does not model, integer prices, and keys in an
 // order no schema gives. Neither flow owns it, so it must come through every
 // write byte for byte. (It is in the layout the registry writer emits; a row
 // written as an inline table is laid out again by any write, with the same
@@ -194,7 +194,7 @@ func TestStamp(t *testing.T) {
 // the file back. It pins what a user finds in registry.toml afterwards:
 // prices and stamps on the rows the page lists, keys wt does not model still
 // there, an integer the sync did not change still an integer, a time_prices
-// row the user wrote untouched beside the off-peak row the catalog adds, a
+// row the user wrote untouched beside the off-peak row the ollama flow adds, a
 // re-tagged entry's tags and model_info on its replacement, and the local
 // model's row exactly as it was.
 func TestCatalogApplyWritesWhatThePlanSays(t *testing.T) {
@@ -222,7 +222,7 @@ func TestCatalogApplyWritesWhatThePlanSays(t *testing.T) {
 		"context_length = 131072\ncatalog_name = \"deepseek-v4-pro\"\nid = \"ollama/deepseek-v4-pro:cloud\"",
 		"vendor_note = \"kept\"\ninput_price_per_million = 1.32\ncache_price_per_million = 0.044\noutput_price_per_million = 3.96\nsubscription_price = 100\nsubscription_period = \"month\"\n",
 		// The user's time_prices row byte for byte, and the off-peak row the
-		// catalog owns added after it.
+		// ollama flow owns added after it.
 		"subscription_period = \"month\"\n\n" + userTimePrice + "\n[[models.cost.time_prices]]\nlabel = \"off-peak\"\ntimezone = \"UTC\"\ninput_price_per_million = 0.66\ncache_price_per_million = 0.022\noutput_price_per_million = 1.98\n",
 		// The new row, whole, its keys in schema order.
 		"[[models]]\ncatalog_name = \"glm-5.3\"\nid = \"ollama/glm-5.3:cloud\"\nfamily = \"glm-5.3\"\nprovider_id = \"ollama\"\nmodel_name = \"glm-5.3:cloud\"\nlocation = \"cloud\"\nsource = \"curated\"\ntags = []\npricing_updated_at = \"" + applyStamp + "\"\n\n" +
@@ -373,7 +373,7 @@ location = "cloud"
 // that a price that did not change is not rewritten (an integer stays an
 // integer),
 // that a cost.time_prices row the user wrote comes through byte for byte
-// whether or not a price beside it moved (the prices flow owns no such row),
+// whether or not a price beside it moved (the openrouter flow owns no such row),
 // and that an unmatched model is not stamped.
 func TestPricesApplyStampsEveryMatchedModel(t *testing.T) {
 	path := scratchRegistry(t, `[[providers]]
@@ -470,8 +470,8 @@ location = "cloud"
 // would delete what the read left out: here an empty `time_prices = []`,
 // which a plan calls unchanged. The printed plan is what the user approved,
 // so a key it does not mention must come through byte for byte, in the
-// prices flow (a matched model whose price is current, and one whose input
-// price moved) and in the catalog flow (an entry whose input price moved).
+// openrouter flow (a matched model whose price is current, and one whose input
+// price moved) and in the ollama flow (an entry whose input price moved).
 func TestApplyWritesOnlyWhatThePlanShows(t *testing.T) {
 	const before = `[[providers]]
 id = "openrouter"

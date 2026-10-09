@@ -15,10 +15,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
-// catalogPage is a small ollama.com/pricing: five models, one with an
+// ollamaPage is a small ollama.com/pricing: five models, one with an
 // off-peak row. Of cloudSyncRegistry's two ollama cloud entries it lists
 // deepseek-v4-pro and not retired.
-const catalogPage = `<html><table>
+const ollamaPage = `<html><table>
 <thead><tr><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th></tr></thead>
 <tbody>
 <tr><td><a href="/library/deepseek-v4-pro">deepseek-v4-pro</a></td><td>$1.32</td><td>$0.044</td><td>$3.96</td></tr>
@@ -29,10 +29,10 @@ const catalogPage = `<html><table>
 <tr><td><a href="/library/gpt-oss">gpt-oss:120b</a></td><td>$0.15</td><td>$0.014</td><td>$0.60</td></tr>
 </tbody></table></html>`
 
-// catalogPages is everything the catalog flow fetches for catalogPage: the
+// ollamaPages is everything the ollama flow fetches for ollamaPage: the
 // page, and a library tags page for each bare name (gpt-oss:120b pins its
 // size and needs none). kimi-k3 publishes only a sized cloud tag.
-func catalogPages() map[string]string {
+func ollamaPages() map[string]string {
 	lib := func(name string, tags ...string) string {
 		var b strings.Builder
 		for _, tag := range tags {
@@ -41,7 +41,7 @@ func catalogPages() map[string]string {
 		return b.String()
 	}
 	return map[string]string{
-		cloudsync.PricingURL:                              catalogPage,
+		cloudsync.PricingURL:                              ollamaPage,
 		"https://ollama.com/library/deepseek-v4-pro/tags": lib("deepseek-v4-pro", "cloud"),
 		"https://ollama.com/library/glm-5.3/tags":         lib("glm-5.3", "cloud", "latest"),
 		"https://ollama.com/library/gemma4/tags":          lib("gemma4", "cloud", "9b"),
@@ -49,61 +49,61 @@ func catalogPages() map[string]string {
 	}
 }
 
-// bothPages is catalogPages plus OpenRouter's model list, for a run of both
+// bothPages is ollamaPages plus OpenRouter's model list, for a run of both
 // flows.
 func bothPages() map[string]string {
-	pages := catalogPages()
+	pages := ollamaPages()
 	pages[cloudsync.OpenRouterModelsURL] = openRouterBody
 	return pages
 }
 
-// catalogPulled is what `ollama list` shows in these tests: the two
+// ollamaPulled is what `ollama list` shows in these tests: the two
 // registered cloud stubs, a stray one, and a real local model.
-var catalogPulled = []string{"deepseek-v4-pro:cloud", "retired:cloud", "stray:cloud", "qwen3:8b"}
+var ollamaPulled = []string{"deepseek-v4-pro:cloud", "retired:cloud", "stray:cloud", "qwen3:8b"}
 
 func digestIn(t *testing.T, stdout string) string {
 	t.Helper()
-	m := regexp.MustCompile(`catalog: Removal digest: ([0-9a-f]{12}) `).FindStringSubmatch(stdout)
+	m := regexp.MustCompile(`ollama: Removal digest: ([0-9a-f]{12}) `).FindStringSubmatch(stdout)
 	if m == nil {
 		t.Fatalf("no removal digest in:\n%s", stdout)
 	}
 	return m[1]
 }
 
-const catalogPlanText = `catalog: ollama.com/pricing: 5 models (prices are input/cached/output per million tokens)
-catalog: Price updates (1):
-catalog:   ollama/deepseek-v4-pro:cloud: 9/-/- -> 1.32/0.044/3.96 (off-peak 0.66/0.022/1.98)
-catalog: Registry additions (4):
-catalog:   ollama/glm-5.3:cloud [family glm-5.3]: 1.4/0.26/4.4
-catalog:   ollama/gemma4:cloud [family gemma4]: 0.14/0.05/0.4
-catalog:   ollama/kimi-k3:1t-cloud [family kimi-k3]: 3/0.3/15
-catalog:   ollama/gpt-oss:120b-cloud [family gpt-oss]: 0.15/0.014/0.6
-catalog: Unchanged prices: 0
-catalog: ollama pull (4):
-catalog:   ollama/glm-5.3:cloud
-catalog:   ollama/gemma4:cloud
-catalog:   ollama/kimi-k3:1t-cloud
-catalog:   ollama/gpt-oss:120b-cloud
-catalog: Registry removals — off ollama.com/pricing or under a tag ollama doesn't publish; ` + "`ollama rm`" + ` if pulled (1):
-catalog:   ollama/retired:cloud
-catalog: ollama rm — pulled, unregistered, off the page (1):
-catalog:   stray:cloud
-catalog: Removal digest: DIGEST (apply non-interactively with ` + "`--yes --approve-removals DIGEST`" + `)
-catalog: warning: ollama cloud entries disagree on subscription pricing; new entries get none
+const ollamaPlanText = `ollama: ollama.com/pricing: 5 models (prices are input/cached/output per million tokens)
+ollama: Price updates (1):
+ollama:   ollama/deepseek-v4-pro:cloud: 9/-/- -> 1.32/0.044/3.96 (off-peak 0.66/0.022/1.98)
+ollama: Registry additions (4):
+ollama:   ollama/glm-5.3:cloud [family glm-5.3]: 1.4/0.26/4.4
+ollama:   ollama/gemma4:cloud [family gemma4]: 0.14/0.05/0.4
+ollama:   ollama/kimi-k3:1t-cloud [family kimi-k3]: 3/0.3/15
+ollama:   ollama/gpt-oss:120b-cloud [family gpt-oss]: 0.15/0.014/0.6
+ollama: Unchanged prices: 0
+ollama: ollama pull (4):
+ollama:   ollama/glm-5.3:cloud
+ollama:   ollama/gemma4:cloud
+ollama:   ollama/kimi-k3:1t-cloud
+ollama:   ollama/gpt-oss:120b-cloud
+ollama: Registry removals — off ollama.com/pricing or under a tag ollama doesn't publish; ` + "`ollama rm`" + ` if pulled (1):
+ollama:   ollama/retired:cloud
+ollama: ollama rm — pulled, unregistered, off the page (1):
+ollama:   stray:cloud
+ollama: Removal digest: DIGEST (apply non-interactively with ` + "`--yes --approve-removals DIGEST`" + `)
+ollama: warning: ollama cloud entries disagree on subscription pricing; new entries get none
 `
 
-// TestCloudSyncCatalogDryRun pins the catalog flow's dry run: the whole plan
-// under the catalog: prefix, with the removal digest the real run will ask
+// TestCloudSyncOllamaDryRun pins the ollama flow's dry run: the whole plan
+// under the ollama: prefix, with the removal digest the real run will ask
 // for, and nothing changed — the registry byte-identical, and ollama asked
 // only for its list, pinned to the provider row's address.
-func TestCloudSyncCatalogDryRun(t *testing.T) {
+func TestCloudSyncOllamaDryRun(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, catalogPages())
-	ollama := stubOllama(t, catalogPulled...)
+	stubCloudFetch(t, ollamaPages())
+	ollama := stubOllama(t, ollamaPulled...)
 	synced := stubRouteSync(t, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true})
-	want := strings.ReplaceAll(catalogPlanText, "DIGEST", digestIn(t, stdout))
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
+	want := strings.ReplaceAll(ollamaPlanText, "DIGEST", digestIn(t, stdout))
 	if stdout != want || stderr != "" || code != 0 {
 		t.Errorf("stdout:\n%s\nstderr: %q, exit %d\nwant stdout:\n%s", stdout, stderr, code, want)
 	}
@@ -115,16 +115,16 @@ func TestCloudSyncCatalogDryRun(t *testing.T) {
 	}
 }
 
-// TestCloudSyncCatalogApplyUnderTheApprovedDigest pins the path the skill
+// TestCloudSyncOllamaApplyUnderTheApprovedDigest pins the path the skill
 // takes: a dry run, then --yes with the digest it printed. The registry gets
 // the page's prices, the new models and loses the retired one; then, and
 // only then, ollama is asked to pull what is missing and to remove the
 // retired stub and the stray one, every command pinned to the provider row's
 // address; and the routes are synced once, at the end.
-func TestCloudSyncCatalogApplyUnderTheApprovedDigest(t *testing.T) {
+func TestCloudSyncOllamaApplyUnderTheApprovedDigest(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	fetches := stubCloudFetch(t, catalogPages())
-	ollama := stubOllama(t, catalogPulled...)
+	fetches := stubCloudFetch(t, ollamaPages())
+	ollama := stubOllama(t, ollamaPulled...)
 	var order []string
 	old := syncRoutesAfterWrite
 	syncRoutesAfterWrite = func(out, _ io.Writer) string {
@@ -134,16 +134,16 @@ func TestCloudSyncCatalogApplyUnderTheApprovedDigest(t *testing.T) {
 	}
 	t.Cleanup(func() { syncRoutesAfterWrite = old })
 
-	dry, _, _ := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true})
+	dry, _, _ := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	ollama.calls = nil
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, yes: true, approve: digestIn(t, dry)})
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, yes: true, approve: digestIn(t, dry)})
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q\nstdout:\n%s", code, stderr, stdout)
 	}
-	wantTail := "catalog: updated 1, added 4 and removed 1 model(s)\n" +
-		"catalog: ollama at " + testOllamaOrigin + "\n" +
-		"catalog: pulled glm-5.3:cloud\ncatalog: pulled gemma4:cloud\ncatalog: pulled kimi-k3:1t-cloud\ncatalog: pulled gpt-oss:120b-cloud\n" +
-		"catalog: removed retired:cloud\ncatalog: removed stray:cloud\n" +
+	wantTail := "ollama: updated 1, added 4 and removed 1 model(s)\n" +
+		"ollama: daemon at " + testOllamaOrigin + "\n" +
+		"ollama: pulled glm-5.3:cloud\nollama: pulled gemma4:cloud\nollama: pulled kimi-k3:1t-cloud\nollama: pulled gpt-oss:120b-cloud\n" +
+		"ollama: removed retired:cloud\nollama: removed stray:cloud\n" +
 		"routes: ollama/glm-5.3:cloud: routed\n"
 	if !strings.HasSuffix(stdout, wantTail) {
 		t.Errorf("stdout ends:\n%s\nwant it to end:\n%s", stdout, wantTail)
@@ -179,8 +179,8 @@ func TestCloudSyncCatalogApplyUnderTheApprovedDigest(t *testing.T) {
 	ollama.tags = []string{"deepseek-v4-pro:cloud", "qwen3:8b", "glm-5.3:cloud", "gemma4:cloud", "kimi-k3:1t-cloud", "gpt-oss:120b-cloud"}
 	ollama.calls, order = nil, nil
 	before := len(fetches.all())
-	stdout, stderr, code = runCS(t, cfg, cloudSyncOpts{catalog: true, yes: true})
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "catalog: Unchanged prices: 5\n") || len(ollama.changes()) != 0 || len(order) != 0 || mustRead(t, path) != text {
+	stdout, stderr, code = runCS(t, cfg, cloudSyncOpts{ollama: true, yes: true})
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "ollama: Unchanged prices: 5\n") || len(ollama.changes()) != 0 || len(order) != 0 || mustRead(t, path) != text {
 		t.Errorf("a second run was not a no-op: exit %d, stderr %q, ollama %q, syncs %q\n%s", code, stderr, ollama.changes(), order, stdout)
 	}
 	// Every tag is now pulled and recorded, so none is looked up again: the
@@ -190,15 +190,15 @@ func TestCloudSyncCatalogApplyUnderTheApprovedDigest(t *testing.T) {
 	}
 }
 
-// TestCloudSyncCatalogChangesNothingAndSaysWhy walks every way the catalog
+// TestCloudSyncOllamaChangesNothingAndSaysWhy walks every way the ollama flow
 // flow stops before changing anything, and pins the exit code a caller (the
 // cloud-sync skill) branches on: 2 for an input that could not be read, 3
 // for a page that changed shape (with its HTML saved for the repair), 4 for a
 // mass removal, 5 for removals nobody approved. In each the registry is
 // byte-identical, ollama was asked for nothing but its list, and the
-// command's own error (the last line main prints) says the catalog flow
+// command's own error (the last line main prints) says the ollama flow
 // changed nothing and why.
-func TestCloudSyncCatalogChangesNothingAndSaysWhy(t *testing.T) {
+func TestCloudSyncOllamaChangesNothingAndSaysWhy(t *testing.T) {
 	massRegistry := cloudSyncRegistry + `
 [[models]]
 id = "ollama/retired2:cloud"
@@ -210,7 +210,7 @@ source = "curated"
 tags = []
 `
 	// A page of bare names only, with ollama.com/library unreachable.
-	allBare := map[string]string{cloudsync.PricingURL: strings.Replace(catalogPage, ">gpt-oss:120b<", ">gpt-oss<", 1)}
+	allBare := map[string]string{cloudsync.PricingURL: strings.Replace(ollamaPage, ">gpt-oss:120b<", ">gpt-oss<", 1)}
 	cases := []struct {
 		name     string
 		registry string
@@ -221,29 +221,29 @@ tags = []
 		stderr   string
 	}{
 		{name: "the page cannot be fetched", pages: map[string]string{}, opts: cloudSyncOpts{yes: true}, code: 2,
-			stderr: "catalog: error: could not fetch ollama.com/pricing: HTTP 404; nothing was changed\n"},
-		{name: "--html names a file that is not there", pages: catalogPages(), opts: cloudSyncOpts{yes: true, htmlFile: "/nonexistent/page.html"}, code: 2,
-			stderr: "catalog: error: cannot read /nonexistent/page.html: open /nonexistent/page.html: no such file or directory; nothing was changed\n"},
-		{name: "ollama list fails", pages: catalogPages(), listFail: "Error: could not connect to ollama server", opts: cloudSyncOpts{yes: true}, code: 2,
-			stderr: "catalog: error: could not run `ollama list` against " + testOllamaOrigin + " (is the ollama daemon up?): Error: could not connect to ollama server; nothing was changed\n"},
+			stderr: "ollama: error: could not fetch ollama.com/pricing: HTTP 404; nothing was changed\n"},
+		{name: "--html names a file that is not there", pages: ollamaPages(), opts: cloudSyncOpts{yes: true, htmlFile: "/nonexistent/page.html"}, code: 2,
+			stderr: "ollama: error: cannot read /nonexistent/page.html: open /nonexistent/page.html: no such file or directory; nothing was changed\n"},
+		{name: "ollama list fails", pages: ollamaPages(), listFail: "Error: could not connect to ollama server", opts: cloudSyncOpts{yes: true}, code: 2,
+			stderr: "ollama: error: could not run `ollama list` against " + testOllamaOrigin + " (is the ollama daemon up?): Error: could not connect to ollama server; nothing was changed\n"},
 		{name: "no cloud tag resolves", pages: allBare, opts: cloudSyncOpts{yes: true}, code: 2,
-			stderr: "catalog:   deepseek-v4-pro: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
-				"catalog:   glm-5.3: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
-				"catalog:   gemma4: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
-				"catalog:   kimi-k3: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
-				"catalog:   gpt-oss: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
-				"catalog: error: could not resolve a cloud tag for any model on ollama.com/library; nothing was changed\n"},
+			stderr: "ollama:   deepseek-v4-pro: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
+				"ollama:   glm-5.3: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
+				"ollama:   gemma4: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
+				"ollama:   kimi-k3: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
+				"ollama:   gpt-oss: could not read its ollama.com/library tags (HTTP 404); skipped\n" +
+				"ollama: error: could not resolve a cloud tag for any model on ollama.com/library; nothing was changed\n"},
 		{name: "the page changed shape", pages: map[string]string{cloudsync.PricingURL: "<html><p>pricing moved</p></html>"}, opts: cloudSyncOpts{yes: true}, code: 3,
-			stderr: "catalog: error: could not parse ollama.com/pricing: no <table> found on the page\n" +
-				"catalog: raw HTML saved to TMPDIR/ollama-pricing-20261007-090000.html — the parser to update is wt/internal/cloudsync/pricingpage.go; nothing was changed\n"},
-		{name: "more than half the cloud entries would go", registry: massRegistry, pages: catalogPages(), opts: cloudSyncOpts{yes: true, approve: "anything"}, code: 4,
-			stderr: "catalog: error: 2 of 3 ollama cloud entries would be removed — check the page parsed correctly, then re-run with --force. Nothing was changed for the catalog.\n"},
-		{name: "--yes with no digest", pages: catalogPages(), opts: cloudSyncOpts{yes: true}, code: 5,
-			stderr: "catalog: error: the plan deletes models — review a --dry-run, then re-run with `--yes --approve-removals DIGEST`. Nothing was changed for the catalog.\n"},
-		{name: "--yes with another plan's digest", pages: catalogPages(), opts: cloudSyncOpts{yes: true, approve: "000000000000"}, code: 5,
-			stderr: "catalog: error: the removals are not the ones digest 000000000000 approved — review a --dry-run, then re-run with `--yes --approve-removals DIGEST`. Nothing was changed for the catalog.\n"},
-		{name: "--force does not stand in for the digest", registry: massRegistry, pages: catalogPages(), opts: cloudSyncOpts{yes: true, force: true}, code: 5,
-			stderr: "catalog: error: the plan deletes models — review a --dry-run, then re-run with `--yes --approve-removals DIGEST`. Nothing was changed for the catalog.\n"},
+			stderr: "ollama: error: could not parse ollama.com/pricing: no <table> found on the page\n" +
+				"ollama: raw HTML saved to TMPDIR/ollama-pricing-20261007-090000.html — the parser to update is wt/internal/cloudsync/pricingpage.go; nothing was changed\n"},
+		{name: "more than half the cloud entries would go", registry: massRegistry, pages: ollamaPages(), opts: cloudSyncOpts{yes: true, approve: "anything"}, code: 4,
+			stderr: "ollama: error: 2 of 3 ollama cloud entries would be removed — check the page parsed correctly, then re-run with --force. Nothing was changed by the ollama flow.\n"},
+		{name: "--yes with no digest", pages: ollamaPages(), opts: cloudSyncOpts{yes: true}, code: 5,
+			stderr: "ollama: error: the plan deletes models — review a --dry-run, then re-run with `--yes --approve-removals DIGEST`. Nothing was changed by the ollama flow.\n"},
+		{name: "--yes with another plan's digest", pages: ollamaPages(), opts: cloudSyncOpts{yes: true, approve: "000000000000"}, code: 5,
+			stderr: "ollama: error: the removals are not the ones digest 000000000000 approved — review a --dry-run, then re-run with `--yes --approve-removals DIGEST`. Nothing was changed by the ollama flow.\n"},
+		{name: "--force does not stand in for the digest", registry: massRegistry, pages: ollamaPages(), opts: cloudSyncOpts{yes: true, force: true}, code: 5,
+			stderr: "ollama: error: the plan deletes models — review a --dry-run, then re-run with `--yes --approve-removals DIGEST`. Nothing was changed by the ollama flow.\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,15 +261,15 @@ tags = []
 				}
 			}
 			stubCloudFetch(t, tc.pages)
-			ollama := stubOllama(t, catalogPulled...)
+			ollama := stubOllama(t, ollamaPulled...)
 			if tc.listFail != "" {
 				ollama.fail["list"] = tc.listFail
 			}
 			synced := stubRouteSync(t, "")
-			tc.opts.catalog = true
+			tc.opts.ollama = true
 
 			stdout, stderr, final, code := runCSFinal(t, cfg, tc.opts)
-			if want := "cloud-sync: the catalog flow changed nothing: " + map[int]string{
+			if want := "cloud-sync: the ollama flow changed nothing: " + map[int]string{
 				2: "an input could not be read", 3: "the pricing page changed shape", 4: "mass removal refused", 5: "removals not approved",
 			}[tc.code]; final != want {
 				t.Errorf("the command's error = %q, want %q", final, want)
@@ -296,31 +296,31 @@ tags = []
 	}
 }
 
-// TestCloudSyncCatalogWithTheLibraryDown pins the run where ollama.com's
+// TestCloudSyncOllamaWithTheLibraryDown pins the run where ollama.com's
 // pricing page answers and its library pages do not. A name that pins its
 // size still resolves, so the flow goes on, and every model whose tag could
 // not be read is treated as still on the page: its entry keeps getting
 // prices, nothing is added or pulled under a guessed tag, and nothing that
 // may be it is removed. An outage must never be read as "these models are
 // gone".
-func TestCloudSyncCatalogWithTheLibraryDown(t *testing.T) {
+func TestCloudSyncOllamaWithTheLibraryDown(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.PricingURL: catalogPage})
+	stubCloudFetch(t, map[string]string{cloudsync.PricingURL: ollamaPage})
 	stubOllama(t, "deepseek-v4-pro:cloud", "glm-5.3:9b-cloud", "stray:cloud")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true})
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	for _, line := range []string{
-		"catalog: Price updates (1):\ncatalog:   ollama/deepseek-v4-pro:cloud: ",
-		"catalog: Registry additions (1):\ncatalog:   ollama/gpt-oss:120b-cloud ",
-		"catalog: ollama pull (1):\ncatalog:   ollama/gpt-oss:120b-cloud\n",
+		"ollama: Price updates (1):\nollama:   ollama/deepseek-v4-pro:cloud: ",
+		"ollama: Registry additions (1):\nollama:   ollama/gpt-oss:120b-cloud ",
+		"ollama: ollama pull (1):\nollama:   ollama/gpt-oss:120b-cloud\n",
 		// retired is on no page and still goes; glm-5.3's pulled stub, whose
 		// name is on the page, is not a stray.
-		"`ollama rm` if pulled (1):\ncatalog:   ollama/retired:cloud\n",
-		"off the page (1):\ncatalog:   stray:cloud\n",
-		"catalog: warning: glm-5.3: could not read its ollama.com/library tags (HTTP 404); skipped\n",
+		"`ollama rm` if pulled (1):\nollama:   ollama/retired:cloud\n",
+		"off the page (1):\nollama:   stray:cloud\n",
+		"ollama: warning: glm-5.3: could not read its ollama.com/library tags (HTTP 404); skipped\n",
 	} {
 		if !strings.Contains(stdout, line) {
 			t.Errorf("the plan lacks %q:\n%s", line, stdout)
@@ -331,23 +331,23 @@ func TestCloudSyncCatalogWithTheLibraryDown(t *testing.T) {
 	}
 }
 
-// TestCloudSyncCatalogForceAppliesAMassRemoval pins the way through exit 4:
+// TestCloudSyncOllamaForceAppliesAMassRemoval pins the way through exit 4:
 // with --force and the digest, the plan that removes most cloud entries is
 // applied. --force is an answer to one question only (is this many removals
 // right?) and the digest is still needed.
-func TestCloudSyncCatalogForceAppliesAMassRemoval(t *testing.T) {
+func TestCloudSyncOllamaForceAppliesAMassRemoval(t *testing.T) {
 	registry := strings.Replace(cloudSyncRegistry, "id = \"ollama/deepseek-v4-pro:cloud\"", "id = \"ollama/also-retired:cloud\"", 1)
 	registry = strings.Replace(registry, "model_name = \"deepseek-v4-pro:cloud\"", "model_name = \"also-retired:cloud\"", 1)
 	path, cfg := cloudSyncHome(t, registry)
-	stubCloudFetch(t, catalogPages())
+	stubCloudFetch(t, ollamaPages())
 	ollama := stubOllama(t)
 	stubRouteSync(t, "")
 
-	dry, _, code := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true})
+	dry, _, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	if code != 0 {
 		t.Fatalf("a dry run of a mass removal exits %d, want 0: it only prints", code)
 	}
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, yes: true, force: true, approve: digestIn(t, dry)})
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, yes: true, force: true, approve: digestIn(t, dry)})
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
@@ -361,51 +361,51 @@ func TestCloudSyncCatalogForceAppliesAMassRemoval(t *testing.T) {
 }
 
 // TestCloudSyncFlowsAreIndependent pins that neither flow's trouble stops
-// the other, and that a catalog code wins the exit status: the catalog is
-// refused for want of a digest (5) while the prices flow, in the same run,
-// is applied and its routes synced; and when the prices fetch fails (1) in a
-// run whose catalog is refused, the exit status is still the catalog's.
+// the other, and that an ollama-flow code wins the exit status: the ollama flow is
+// refused for want of a digest (5) while the openrouter flow, in the same run,
+// is applied and its routes synced; and when the openrouter fetch fails (1) in a
+// run whose ollama flow is refused, the exit status is still the ollama flow's.
 func TestCloudSyncFlowsAreIndependent(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	pages := catalogPages()
+	pages := ollamaPages()
 	pages[cloudsync.OpenRouterModelsURL] = openRouterBody
 	stubCloudFetch(t, pages)
-	ollama := stubOllama(t, catalogPulled...)
+	ollama := stubOllama(t, ollamaPulled...)
 	synced := stubRouteSync(t, "")
 
-	stdout, _, code := runCS(t, cfg, cloudSyncOpts{prices: true, catalog: true, yes: true})
-	if code != 5 || !strings.HasSuffix(stdout, "prices: refreshed 1 model(s); 1 price(s) changed\n") {
+	stdout, _, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
+	if code != 5 || !strings.HasSuffix(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\n") {
 		t.Errorf("exit %d, want 5 with the prices applied; stdout ends %q", code, stdout[max(0, len(stdout)-80):])
 	}
 	text := mustRead(t, path)
 	if !strings.Contains(text, "input_price_per_million = 3.0") || !strings.Contains(text, "ollama/retired:cloud") || strings.Contains(text, "glm-5.3") {
-		t.Errorf("want the OpenRouter price applied and the catalog untouched:\n%s", text)
+		t.Errorf("want the OpenRouter price applied and the ollama flow untouched:\n%s", text)
 	}
 	if *synced != 1 || len(ollama.changes()) != 0 {
 		t.Errorf("syncs = %d, ollama = %q; want one sync for the price and no ollama command", *synced, ollama.changes())
 	}
-	if strings.Index(stdout, "prices: openrouter.ai:") > strings.Index(stdout, "catalog: ollama.com/pricing:") {
-		t.Error("the plans are not printed prices first, then catalog")
+	if strings.Index(stdout, "openrouter: openrouter.ai:") > strings.Index(stdout, "ollama: ollama.com/pricing:") {
+		t.Error("the plans are not printed openrouter first, then ollama")
 	}
 
 	delete(pages, cloudsync.OpenRouterModelsURL)
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, catalog: true, yes: true})
-	if code != 5 || !strings.HasPrefix(stderr, "prices: error: could not read OpenRouter's prices: HTTP 404") {
-		t.Errorf("exit %d, stderr %q; want the catalog's 5 over the prices flow's 1", code, stderr)
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
+	if code != 5 || !strings.HasPrefix(stderr, "openrouter: error: could not read OpenRouter's prices: HTTP 404") {
+		t.Errorf("exit %d, stderr %q; want the ollama flow's 5 over the openrouter flow's 1", code, stderr)
 	}
 }
 
-// TestCloudSyncCatalogRefusesAPlanThatChangedUnderTheLock pins the last
+// TestCloudSyncOllamaRefusesAPlanThatChangedUnderTheLock pins the last
 // gate. The plan is made again under the registry lock, and if it is no
 // longer the plan that was printed and approved (here another program adds a
 // cloud entry, which the re-plan would remove, while the user reads the
 // question) nothing is applied and the exit status is 5. Without this a
 // model nobody saw in the plan could be removed from the registry and from
 // ollama.
-func TestCloudSyncCatalogRefusesAPlanThatChangedUnderTheLock(t *testing.T) {
+func TestCloudSyncOllamaRefusesAPlanThatChangedUnderTheLock(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, catalogPages())
-	ollama := stubOllama(t, catalogPulled...)
+	stubCloudFetch(t, ollamaPages())
+	ollama := stubOllama(t, ollamaPulled...)
 	synced := stubRouteSync(t, "")
 	raced := cloudSyncRegistry + `
 [[models]]
@@ -421,15 +421,15 @@ location = "cloud"
 		}
 	})
 
-	_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{catalog: true})
-	want := "catalog: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again\n"
+	_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{ollama: true})
+	want := "ollama: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again\n"
 	if code != 5 || stderr != want {
 		t.Errorf("exit %d, stderr %q\nwant exit 5, stderr %q", code, stderr, want)
 	}
 	// The last line, the one a caller that reads only it goes by, gives this
 	// reason and not "removals not approved": the user approved, and the
 	// plan printed here removed what it said.
-	if want := "cloud-sync: the catalog flow changed nothing: the registry changed after the plan was printed"; final != want {
+	if want := "cloud-sync: the ollama flow changed nothing: the registry changed after the plan was printed"; final != want {
 		t.Errorf("the command's error = %q, want %q", final, want)
 	}
 	if mustRead(t, path) != raced || len(ollama.changes()) != 0 || *synced != 0 {
@@ -445,7 +445,7 @@ location = "cloud"
 			t.Fatal(err)
 		}
 	})
-	if _, stderr, code = runCS(t, cfg, cloudSyncOpts{catalog: true}); code != 0 || stderr != "" {
+	if _, stderr, code = runCS(t, cfg, cloudSyncOpts{ollama: true}); code != 0 || stderr != "" {
 		t.Fatalf("with an unrelated row added: exit %d, stderr %q", code, stderr)
 	}
 	if text := mustRead(t, path); !strings.Contains(text, "ollama/late:7b") || !strings.Contains(text, "ollama/glm-5.3:cloud") || strings.Contains(text, "retired") {
@@ -453,7 +453,7 @@ location = "cloud"
 	}
 }
 
-// TestCloudSyncCatalogOllamaFailuresExit1AndTheRestStillRuns pins what a
+// TestCloudSyncOllamaCLIFailuresExit1AndTheRestStillRuns pins what a
 // failed pull or rm costs: an error line and exit 1, with every other
 // command still run and the routes still synced. The registry is already
 // written by then, so stopping at the first failure would leave more out of
@@ -463,25 +463,25 @@ location = "cloud"
 // digest that approved this run may not be the next run's. A tag whose pull
 // failed is named too, with what that leaves (an entry in the registry that
 // is not routed) and that running the command again retries it.
-func TestCloudSyncCatalogOllamaFailuresExit1AndTheRestStillRuns(t *testing.T) {
+func TestCloudSyncOllamaCLIFailuresExit1AndTheRestStillRuns(t *testing.T) {
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, catalogPages())
-	ollama := stubOllama(t, catalogPulled...)
+	stubCloudFetch(t, ollamaPages())
+	ollama := stubOllama(t, ollamaPulled...)
 	ollama.fail["pull gemma4:cloud"] = "Error: pull model manifest: 401 unauthorized"
 	ollama.fail["rm retired:cloud"] = "Error: model 'retired:cloud' not found"
 	ollama.fail["rm stray:cloud"] = "Error: permission denied"
 	synced := stubRouteSync(t, "")
 	stubConfirm(t, true, nil, nil)
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true})
-	wantErr := "catalog: error: `ollama pull gemma4:cloud` failed: Error: pull model manifest: 401 unauthorized\n" +
-		"catalog:   gemma4:cloud is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n" +
-		"catalog: error: `ollama rm stray:cloud` failed: Error: permission denied\n" +
-		"catalog:   stray:cloud is left pulled; the next run lists it as a stray tag — start again from --dry-run, since the removal digest may have changed\n"
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true})
+	wantErr := "ollama: error: `ollama pull gemma4:cloud` failed: Error: pull model manifest: 401 unauthorized\n" +
+		"ollama:   gemma4:cloud is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n" +
+		"ollama: error: `ollama rm stray:cloud` failed: Error: permission denied\n" +
+		"ollama:   stray:cloud is left pulled; the next run lists it as a stray tag — start again from --dry-run, since the removal digest may have changed\n"
 	if code != 1 || stderr != wantErr {
 		t.Errorf("exit %d, stderr:\n%s\nwant exit 1, stderr:\n%s", code, stderr, wantErr)
 	}
-	for _, line := range []string{"catalog: pulled glm-5.3:cloud\n", "catalog: pulled gpt-oss:120b-cloud\n", "catalog: removed retired:cloud\n"} {
+	for _, line := range []string{"ollama: pulled glm-5.3:cloud\n", "ollama: pulled gpt-oss:120b-cloud\n", "ollama: removed retired:cloud\n"} {
 		if !strings.Contains(stdout, line) {
 			t.Errorf("stdout lacks %q:\n%s", line, stdout)
 		}
@@ -495,59 +495,59 @@ func TestCloudSyncCatalogOllamaFailuresExit1AndTheRestStillRuns(t *testing.T) {
 // provider and its one model.
 var noOllamaRegistry = cloudSyncRegistry[strings.Index(cloudSyncRegistry, "[[providers]]\nid = \"openrouter\""):strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\"")]
 
-// TestCloudSyncSkipsTheCatalogOnARegistryWithoutOllama pins the plain
+// TestCloudSyncSkipsOllamaOnARegistryWithoutOllama pins the plain
 // `wt cloud-sync` on a machine that has no ollama provider row, which is
 // every machine that uses only OpenRouter, and the command the stale-price
 // notice tells its user to run. There is no catalog to mirror, so the
-// catalog flow says so and is skipped: the prices are refreshed, nothing is
+// ollama flow says so and is skipped: the prices are refreshed, nothing is
 // fetched from ollama.com, no ollama command runs, and the exit status is 0.
 // A run that "failed" every time for want of a provider nobody uses would
 // teach people to ignore the exit status.
-func TestCloudSyncSkipsTheCatalogOnARegistryWithoutOllama(t *testing.T) {
+func TestCloudSyncSkipsOllamaOnARegistryWithoutOllama(t *testing.T) {
 	path, cfg := cloudSyncHome(t, noOllamaRegistry)
 	got := stubCloudFetch(t, bothPages())
 	ollama := stubOllama(t)
 	synced := stubRouteSync(t, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, catalog: true, yes: true})
-	wantTail := "catalog: no ollama provider in the registry; nothing to mirror\n" +
-		"prices: refreshed 1 model(s); 1 price(s) changed\n"
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
+	wantTail := "ollama: no ollama provider in the registry; nothing to mirror\n" +
+		"openrouter: refreshed 1 model(s); 1 price(s) changed\n"
 	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, wantTail) {
 		t.Errorf("exit %d, stderr %q, stdout:\n%s\nwant exit 0 and stdout ending:\n%s", code, stderr, stdout, wantTail)
 	}
 	if !strings.Contains(mustRead(t, path), "input_price_per_million = 3.0") || *synced != 1 {
-		t.Errorf("the prices flow was not applied (syncs = %d)", *synced)
+		t.Errorf("the openrouter flow was not applied (syncs = %d)", *synced)
 	}
 	if urls := got.all(); !reflect.DeepEqual(urls, []string{cloudsync.OpenRouterModelsURL}) || len(ollama.calls) != 0 {
 		t.Errorf("fetched %v and ran %q; want OpenRouter's list only and no ollama command", urls, ollama.calls)
 	}
 }
 
-// TestCloudSyncSkipsTheCatalogHoweverItIsAskedFor pins the same registry
-// when the catalog flow was asked for by name: --only naming it, or one of
+// TestCloudSyncSkipsOllamaHoweverItIsAskedFor pins the same registry
+// when the ollama flow was asked for by name: --only naming it, or one of
 // its own flags (--html, --approve-removals, --force). A registry with no
 // ollama provider row has no catalog, whoever asks: the flow prints the one
 // nothing-to-mirror line on stdout and contributes exit 0. Nothing is fetched
 // from ollama.com, the --html file is not even opened, no ollama command
 // runs, and the registry is byte-identical. `wt cloud-sync` is two syncs, one
 // per provider, and a sync whose provider the registry does not use is never
-// an error: a script that runs `wt cloud-sync --only catalog --yes` on every
+// an error: a script that runs `wt cloud-sync --only ollama --yes` on every
 // machine must not fail on the ones that have no ollama.
-func TestCloudSyncSkipsTheCatalogHoweverItIsAskedFor(t *testing.T) {
-	const skip = "catalog: no ollama provider in the registry; nothing to mirror\n"
+func TestCloudSyncSkipsOllamaHoweverItIsAskedFor(t *testing.T) {
+	const skip = "ollama: no ollama provider in the registry; nothing to mirror\n"
 	for _, tc := range []struct {
 		args []string
-		// alone: the catalog is the only flow, so the skip line is all of
+		// alone: the ollama flow is the only flow, so the skip line is all of
 		// stdout and nothing at all is fetched.
 		alone bool
 	}{
-		{[]string{"--only", "catalog"}, true},
-		{[]string{"--only", "catalog", "--yes"}, true},
-		{[]string{"--only", "catalog", "--dry-run"}, true},
-		{[]string{"--only", "catalog", "--html", "/nonexistent/page.html", "--yes"}, true},
-		{[]string{"--only", "catalog", "--yes", "--approve-removals", "abc"}, true},
-		{[]string{"--only", "catalog", "--yes", "--force"}, true},
-		{[]string{"--only", "prices,catalog", "--dry-run"}, false},
+		{[]string{"--only", "ollama"}, true},
+		{[]string{"--only", "ollama", "--yes"}, true},
+		{[]string{"--only", "ollama", "--dry-run"}, true},
+		{[]string{"--only", "ollama", "--html", "/nonexistent/page.html", "--yes"}, true},
+		{[]string{"--only", "ollama", "--yes", "--approve-removals", "abc"}, true},
+		{[]string{"--only", "ollama", "--yes", "--force"}, true},
+		{[]string{"--only", "openrouter,ollama", "--dry-run"}, false},
 		{[]string{"--dry-run"}, false},
 		{[]string{"--dry-run", "--force"}, false},
 		{[]string{"--dry-run", "--html", "/nonexistent/page.html"}, false},
@@ -576,7 +576,7 @@ func TestCloudSyncSkipsTheCatalogHoweverItIsAskedFor(t *testing.T) {
 			}
 			for _, url := range got.all() {
 				if tc.alone || url != cloudsync.OpenRouterModelsURL {
-					t.Errorf("the skipped catalog flow fetched %s", url)
+					t.Errorf("the skipped ollama flow fetched %s", url)
 				}
 			}
 			if len(ollama.calls) != 0 || *asked != 0 || *synced != 0 || mustRead(t, path) != noOllamaRegistry {
@@ -616,20 +616,20 @@ tags = []
 // or reporting an error for services it does not use.
 func TestCloudSyncWithNeitherProviderDoesNothing(t *testing.T) {
 	for name, o := range map[string]cloudSyncOpts{
-		"plain":     {prices: true, catalog: true},
-		"--yes":     {prices: true, catalog: true, yes: true},
-		"--dry-run": {prices: true, catalog: true, dryRun: true},
+		"plain":     {openrouter: true, ollama: true},
+		"--yes":     {openrouter: true, ollama: true, yes: true},
+		"--dry-run": {openrouter: true, ollama: true, dryRun: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path, cfg := cloudSyncHome(t, neitherRegistry)
 			got := stubCloudFetch(t, bothPages())
-			ollama := stubOllama(t, catalogPulled...)
+			ollama := stubOllama(t, ollamaPulled...)
 			asked := stubConfirm(t, true, nil, nil)
 			synced := stubRouteSync(t, "")
 
 			stdout, stderr, final, code := runCSFinal(t, cfg, o)
-			want := "prices: no OpenRouter-priced model in the registry; nothing to refresh\n" +
-				"catalog: no ollama provider in the registry; nothing to mirror\n"
+			want := "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" +
+				"ollama: no ollama provider in the registry; nothing to mirror\n"
 			if stdout != want || stderr != "" || final != "" || code != 0 {
 				t.Errorf("stdout = %q, stderr = %q, error %q, exit %d\nwant stdout %q, nothing else and exit 0", stdout, stderr, final, code, want)
 			}
@@ -649,15 +649,15 @@ func TestCloudSyncWithNeitherProviderDoesNothing(t *testing.T) {
 	}
 }
 
-// TestCloudSyncCatalogRefusesADuplicatedModelIDBeforeThePlan pins a registry
-// in which an ollama cloud entry the catalog plan would change or remove is
+// TestCloudSyncOllamaRefusesADuplicatedModelIDBeforeThePlan pins a registry
+// in which an ollama cloud entry the ollama plan would change or remove is
 // there twice. The write addresses a row by its id and refuses such an id, so
 // the plan could never be applied: the run must say so (exit 1, a failed
-// step, not one of the catalog's own codes) instead of printing a plan, a
+// step, not one of the ollama flow's own codes) instead of printing a plan, a
 // removal digest and a question that the apply then refuses. A dry run says
 // the same. An entry that is there twice and that the plan leaves alone does
 // not stop the flow.
-func TestCloudSyncCatalogRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
+func TestCloudSyncOllamaRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 	block := func(id string) string {
 		start := strings.Index(cloudSyncRegistry, "[[models]]\nid = \""+id+"\"")
 		end := start + strings.Index(cloudSyncRegistry[start+1:], "[[models]]") + 1
@@ -666,18 +666,18 @@ func TestCloudSyncCatalogRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 	for _, id := range []string{"ollama/deepseek-v4-pro:cloud", "ollama/retired:cloud"} {
 		registry := cloudSyncRegistry + "\n" + strings.TrimRight(block(id), "\n") + "\n"
 		for name, o := range map[string]cloudSyncOpts{
-			"--dry-run": {catalog: true, dryRun: true},
-			"plain":     {catalog: true},
-			"--yes":     {catalog: true, yes: true, approve: "000000000000"},
+			"--dry-run": {ollama: true, dryRun: true},
+			"plain":     {ollama: true},
+			"--yes":     {ollama: true, yes: true, approve: "000000000000"},
 		} {
 			t.Run(id+" "+name, func(t *testing.T) {
 				path, cfg := cloudSyncHome(t, registry)
-				stubCloudFetch(t, catalogPages())
-				ollama := stubOllama(t, catalogPulled...)
+				stubCloudFetch(t, ollamaPages())
+				ollama := stubOllama(t, ollamaPulled...)
 				asked := stubConfirm(t, true, nil, nil)
 				synced := stubRouteSync(t, "")
 				stdout, stderr, final, code := runCSFinal(t, cfg, o)
-				want := "catalog: error: nothing was changed: model \"" + id + "\" is in the registry twice (providers ollama, ollama); " +
+				want := "ollama: error: nothing was changed: model \"" + id + "\" is in the registry twice (providers ollama, ollama); " +
 					"wt cannot tell which one you mean — fix the entry in " + path + "\n"
 				if stderr != want || stdout != "" || code != 1 || final != "cloud-sync: a step failed; see the error lines above" {
 					t.Errorf("stdout = %q\nstderr = %q, error %q, exit %d\nwant no plan, stderr %q and exit 1", stdout, stderr, final, code, want)
@@ -689,40 +689,40 @@ func TestCloudSyncCatalogRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 		}
 	}
 
-	// The local model twice: no catalog plan touches it, so the catalog flow
+	// The local model twice: no ollama plan touches it, so the ollama flow
 	// is planned as ever.
 	registry := cloudSyncRegistry + "\n" + block("ollama/qwen3:8b")
 	_, cfg := cloudSyncHome(t, registry)
-	stubCloudFetch(t, catalogPages())
-	stubOllama(t, catalogPulled...)
-	if stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true}); code != 0 || stderr != "" || !strings.HasPrefix(stdout, "catalog: ollama.com/pricing: 5 models") {
+	stubCloudFetch(t, ollamaPages())
+	stubOllama(t, ollamaPulled...)
+	if stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true}); code != 0 || stderr != "" || !strings.HasPrefix(stdout, "ollama: ollama.com/pricing: 5 models") {
 		t.Errorf("with an untouched id duplicated: exit %d, stderr %q, stdout:\n%s", code, stderr, stdout)
 	}
 }
 
 // TestCloudSyncRefusedPlansDoNotCreateARegistry pins the refusal of a changed
 // plan when the registry is gone by the time of the write (removed while the
-// user reads the question), for the catalog flow and for both flows at once.
-// Every pending plan is refused (the catalog's with exit 5, as "no longer the
+// user reads the question), for the ollama flow and for both flows at once.
+// Every pending plan is refused (the ollama flow's with exit 5, as "no longer the
 // plan that was approved"), no ollama command runs, and no registry.toml is
 // left behind: an empty one would make every later command load an empty
 // registry instead of saying that there is none and naming `wt model init`.
-// The catalog-only half starts from a registry with no ollama model, whose
+// The ollama-only half starts from a registry with no ollama model, whose
 // plan is all additions and so reads the same when made again from nothing:
 // it is the ollama provider row, gone with the file, that makes it another
 // plan.
 func TestCloudSyncRefusedPlansDoNotCreateARegistry(t *testing.T) {
-	const catalogStale = "catalog: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again\n"
-	const pricesStale = "prices: error: the registry changed after the plan was printed; no price was changed — run it again\n"
+	const ollamaStale = "ollama: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again\n"
+	const openrouterStale = "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"
 	onlyProvider := cloudSyncRegistry[:strings.Index(cloudSyncRegistry, "[[providers]]\nid = \"openrouter\"")]
 	for _, tc := range []struct {
 		name, registry string
 		opts           cloudSyncOpts
 		stderr         string
 	}{
-		{"the catalog alone, a plan of additions only", onlyProvider, cloudSyncOpts{catalog: true}, catalogStale},
-		{"the catalog alone", cloudSyncRegistry, cloudSyncOpts{catalog: true}, catalogStale},
-		{"both flows", cloudSyncRegistry, cloudSyncOpts{prices: true, catalog: true}, pricesStale + catalogStale},
+		{"the ollama flow alone, a plan of additions only", onlyProvider, cloudSyncOpts{ollama: true}, ollamaStale},
+		{"the ollama flow alone", cloudSyncRegistry, cloudSyncOpts{ollama: true}, ollamaStale},
+		{"both flows", cloudSyncRegistry, cloudSyncOpts{openrouter: true, ollama: true}, openrouterStale + ollamaStale},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path, cfg := cloudSyncHome(t, tc.registry)
@@ -751,15 +751,15 @@ func TestCloudSyncRefusedPlansDoNotCreateARegistry(t *testing.T) {
 
 // TestCloudSyncBothFlowsInOneRun pins the default invocation, the one the
 // spec's sequence describes: both plans printed, one question for the two of
-// them, both applied to the registry, the catalog's ollama work, and one
+// them, both applied to the registry, the ollama flow's ollama work, and one
 // route sync at the end. Run with a terminal and no --yes, so the question
 // is the gate (the digest is for the run nobody watches).
 func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
-	both := cloudSyncOpts{prices: true, catalog: true}
+	both := cloudSyncOpts{openrouter: true, ollama: true}
 	start := func(t *testing.T, pages map[string]string) (string, *config.Config, *fakeOllama, *int) {
 		path, cfg := cloudSyncHome(t, cloudSyncRegistry)
 		stubCloudFetch(t, pages)
-		return path, cfg, stubOllama(t, catalogPulled...), stubRouteSync(t, "")
+		return path, cfg, stubOllama(t, ollamaPulled...), stubRouteSync(t, "")
 	}
 
 	t.Run("approved: one question, both applied, one sync", func(t *testing.T) {
@@ -770,14 +770,14 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 			t.Fatalf("exit %d, stderr %q, asked %d, syncs %d; want exit 0, one question, one sync\n%s", code, stderr, *asked, *synced, stdout)
 		}
 		// Both plans come before either result.
-		plans := strings.Index(stdout, "catalog: ollama.com/pricing:")
-		results := strings.Index(stdout, "prices: refreshed 1 model(s); 1 price(s) changed\ncatalog: updated 1, added 4 and removed 1 model(s)\n")
-		if strings.Index(stdout, "prices: openrouter.ai:") != 0 || plans < 0 || results < plans {
-			t.Errorf("want the prices plan, the catalog plan, then the two result lines:\n%s", stdout)
+		plans := strings.Index(stdout, "ollama: ollama.com/pricing:")
+		results := strings.Index(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\nollama: updated 1, added 4 and removed 1 model(s)\n")
+		if strings.Index(stdout, "openrouter: openrouter.ai:") != 0 || plans < 0 || results < plans {
+			t.Errorf("want the openrouter plan, the ollama plan, then the two result lines:\n%s", stdout)
 		}
 		text := mustRead(t, path)
 		if !strings.Contains(text, "input_price_per_million = 3.0") || !strings.Contains(text, "ollama/glm-5.3:cloud") || strings.Contains(text, "retired:cloud") {
-			t.Errorf("want the OpenRouter price and the catalog's additions and removal in one registry:\n%s", text)
+			t.Errorf("want the OpenRouter price and the ollama flow's additions and removal in one registry:\n%s", text)
 		}
 		if got := ollama.changes(); len(got) != 6 {
 			t.Errorf("ollama commands = %q, want the four pulls and the two removals", got)
@@ -788,7 +788,7 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
 		stubConfirm(t, false, nil, nil)
 		stdout, stderr, code := runCS(t, cfg, both)
-		if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "prices: not applied (declined)\ncatalog: not applied (declined)\n") {
+		if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: not applied (declined)\nollama: not applied (declined)\n") {
 			t.Errorf("exit %d, stderr %q, stdout ends %q", code, stderr, stdout[max(0, len(stdout)-90):])
 		}
 		if mustRead(t, path) != cloudSyncRegistry || len(ollama.changes()) != 0 || *synced != 0 {
@@ -800,8 +800,8 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
 		noTerminal(t)
 		_, stderr, code := runCS(t, cfg, both)
-		want := "prices: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n" +
-			"catalog: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n"
+		want := "openrouter: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n" +
+			"ollama: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n"
 		if code != 1 || stderr != want {
 			t.Errorf("exit %d, stderr %q\nwant exit 1, stderr %q", code, stderr, want)
 		}
@@ -810,7 +810,7 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 		}
 	})
 
-	t.Run("the prices plan went stale, the catalog is applied: exit 1", func(t *testing.T) {
+	t.Run("the openrouter plan went stale, the ollama flow is applied: exit 1", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
 		stubConfirm(t, true, nil, func() {
 			raced := strings.Replace(cloudSyncRegistry, "input_price_per_million = 2.5", "input_price_per_million = 7", 1)
@@ -819,19 +819,19 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 			}
 		})
 		stdout, stderr, code := runCS(t, cfg, both)
-		if want := "prices: error: the registry changed after the plan was printed; no price was changed — run it again\n"; code != 1 || stderr != want {
+		if want := "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"; code != 1 || stderr != want {
 			t.Errorf("exit %d, stderr %q\nwant exit 1, stderr %q", code, stderr, want)
 		}
 		text := mustRead(t, path)
-		if !strings.Contains(stdout, "catalog: updated 1, added 4 and removed 1 model(s)\n") || !strings.Contains(text, "ollama/glm-5.3:cloud") || !strings.Contains(text, "input_price_per_million = 7\n") {
-			t.Errorf("want the catalog applied and the other writer's price kept:\n%s\n%s", stdout, text)
+		if !strings.Contains(stdout, "ollama: updated 1, added 4 and removed 1 model(s)\n") || !strings.Contains(text, "ollama/glm-5.3:cloud") || !strings.Contains(text, "input_price_per_million = 7\n") {
+			t.Errorf("want the ollama flow applied and the other writer's price kept:\n%s\n%s", stdout, text)
 		}
 		if len(ollama.changes()) != 6 || *synced != 1 {
-			t.Errorf("ollama %q, syncs %d; want the catalog's six commands and one sync", ollama.changes(), *synced)
+			t.Errorf("ollama %q, syncs %d; want the ollama flow's six commands and one sync", ollama.changes(), *synced)
 		}
 	})
 
-	t.Run("the catalog plan went stale, the prices are applied: exit 5", func(t *testing.T) {
+	t.Run("the ollama plan went stale, the prices are applied: exit 5", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
 		stubConfirm(t, true, nil, func() {
 			raced := cloudSyncRegistry + "\n[[models]]\nid = \"ollama/late:cloud\"\nfamily = \"late\"\nprovider_id = \"ollama\"\nmodel_name = \"late:cloud\"\nlocation = \"cloud\"\n"
@@ -840,49 +840,49 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 			}
 		})
 		stdout, stderr, code := runCS(t, cfg, both)
-		if code != 5 || !strings.HasPrefix(stderr, "catalog: error: the registry changed after the plan was printed") {
-			t.Errorf("exit %d, stderr %q; want the catalog's 5", code, stderr)
+		if code != 5 || !strings.HasPrefix(stderr, "ollama: error: the registry changed after the plan was printed") {
+			t.Errorf("exit %d, stderr %q; want the ollama flow's 5", code, stderr)
 		}
 		text := mustRead(t, path)
-		if !strings.Contains(stdout, "prices: refreshed 1 model(s); 1 price(s) changed\n") || !strings.Contains(text, "input_price_per_million = 3.0") ||
+		if !strings.Contains(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\n") || !strings.Contains(text, "input_price_per_million = 3.0") ||
 			!strings.Contains(text, "ollama/late:cloud") || !strings.Contains(text, "ollama/retired:cloud") || strings.Contains(text, "glm-5.3") {
-			t.Errorf("want the price applied, the other writer's row kept and the catalog untouched:\n%s\n%s", stdout, text)
+			t.Errorf("want the price applied, the other writer's row kept and the ollama flow untouched:\n%s\n%s", stdout, text)
 		}
 		if len(ollama.changes()) != 0 || *synced != 1 {
 			t.Errorf("ollama %q, syncs %d; want no ollama command and one sync for the price", ollama.changes(), *synced)
 		}
 	})
 
-	t.Run("OpenRouter is down, the catalog is applied: exit 1", func(t *testing.T) {
-		path, cfg, ollama, synced := start(t, catalogPages())
+	t.Run("OpenRouter is down, the ollama flow is applied: exit 1", func(t *testing.T) {
+		path, cfg, ollama, synced := start(t, ollamaPages())
 		asked := stubConfirm(t, true, nil, nil)
 		stdout, stderr, code := runCS(t, cfg, both)
-		if want := "prices: error: could not read OpenRouter's prices: HTTP 404; no price was changed\n"; code != 1 || stderr != want || *asked != 1 {
+		if want := "openrouter: error: could not read OpenRouter's prices: HTTP 404; no price was changed\n"; code != 1 || stderr != want || *asked != 1 {
 			t.Errorf("exit %d, asked %d, stderr %q\nwant exit 1, one question, stderr %q", code, *asked, stderr, want)
 		}
 		text := mustRead(t, path)
-		if !strings.Contains(stdout, "catalog: updated 1, added 4 and removed 1 model(s)\n") || !strings.Contains(text, "ollama/glm-5.3:cloud") || !strings.Contains(text, "input_price_per_million = 2.5\n") {
-			t.Errorf("want the catalog applied and the OpenRouter price as it was:\n%s\n%s", stdout, text)
+		if !strings.Contains(stdout, "ollama: updated 1, added 4 and removed 1 model(s)\n") || !strings.Contains(text, "ollama/glm-5.3:cloud") || !strings.Contains(text, "input_price_per_million = 2.5\n") {
+			t.Errorf("want the ollama flow applied and the OpenRouter price as it was:\n%s\n%s", stdout, text)
 		}
 		if len(ollama.changes()) != 6 || *synced != 1 {
-			t.Errorf("ollama %q, syncs %d; want the catalog's six commands and one sync", ollama.changes(), *synced)
+			t.Errorf("ollama %q, syncs %d; want the ollama flow's six commands and one sync", ollama.changes(), *synced)
 		}
 	})
 }
 
-// TestCloudSyncCatalogDeclinedChangesNothing pins a "no" to a catalog plan
+// TestCloudSyncOllamaDeclinedChangesNothing pins a "no" to an ollama plan
 // that deletes: the registry is byte-identical, ollama is asked for nothing
 // but its list, the routes are not synced, and the exit status is 0 (the
 // user's answer is not a failure).
-func TestCloudSyncCatalogDeclinedChangesNothing(t *testing.T) {
+func TestCloudSyncOllamaDeclinedChangesNothing(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, catalogPages())
-	ollama := stubOllama(t, catalogPulled...)
+	stubCloudFetch(t, ollamaPages())
+	ollama := stubOllama(t, ollamaPulled...)
 	synced := stubRouteSync(t, "")
 	asked := stubConfirm(t, false, nil, nil)
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true})
-	if *asked != 1 || code != 0 || stderr != "" || !strings.HasSuffix(stdout, "catalog: not applied (declined)\n") {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true})
+	if *asked != 1 || code != 0 || stderr != "" || !strings.HasSuffix(stdout, "ollama: not applied (declined)\n") {
 		t.Errorf("asked %d, exit %d, stderr %q, stdout ends %q", *asked, code, stderr, stdout[max(0, len(stdout)-60):])
 	}
 	if mustRead(t, path) != cloudSyncRegistry || len(ollama.changes()) != 0 || *synced != 0 {
@@ -890,19 +890,19 @@ func TestCloudSyncCatalogDeclinedChangesNothing(t *testing.T) {
 	}
 }
 
-// TestCloudSyncCatalogAsksWhenADigestComesWithoutYes pins
+// TestCloudSyncOllamaAsksWhenADigestComesWithoutYes pins
 // --approve-removals without --yes: the digest is ignored (even a wrong
 // one), the question is asked, and the answer decides. The digest exists
 // for the run nobody is watching; with a person at the terminal, the person
 // is the gate.
-func TestCloudSyncCatalogAsksWhenADigestComesWithoutYes(t *testing.T) {
+func TestCloudSyncOllamaAsksWhenADigestComesWithoutYes(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, catalogPages())
-	stubOllama(t, catalogPulled...)
+	stubCloudFetch(t, ollamaPages())
+	stubOllama(t, ollamaPulled...)
 	stubRouteSync(t, "")
 	asked := stubConfirm(t, true, nil, nil)
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, approve: "000000000000"})
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, approve: "000000000000"})
 	if *asked != 1 || code != 0 || stderr != "" {
 		t.Fatalf("asked %d, exit %d, stderr %q; want one question and the plan applied", *asked, code, stderr)
 	}
@@ -920,11 +920,11 @@ func TestCloudSyncCatalogAsksWhenADigestComesWithoutYes(t *testing.T) {
 // happens to sync.
 func TestCloudSyncFinishesAnInterruptedRun(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, catalogPages())
-	ollama := stubOllama(t, catalogPulled...)
+	stubCloudFetch(t, ollamaPages())
+	ollama := stubOllama(t, ollamaPulled...)
 	stubRouteSync(t, "")
 	stubConfirm(t, true, nil, nil)
-	if _, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true}); code != 0 {
+	if _, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true}); code != 0 {
 		t.Fatalf("the first run: exit %d, stderr %q", code, stderr)
 	}
 	written := mustRead(t, path)
@@ -933,8 +933,8 @@ func TestCloudSyncFinishesAnInterruptedRun(t *testing.T) {
 	// sync: ollama is as it was, the registry is as the run left it.
 	ollama.calls = nil
 	synced := stubRouteSync(t, "")
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true})
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "catalog: updated 0, added 0 and removed 0 model(s)\n") {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true})
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "ollama: updated 0, added 0 and removed 0 model(s)\n") {
 		t.Fatalf("exit %d, stderr %q\n%s", code, stderr, stdout)
 	}
 	want := []string{"pull glm-5.3:cloud", "pull gemma4:cloud", "pull kimi-k3:1t-cloud", "pull gpt-oss:120b-cloud", "rm retired:cloud", "rm stray:cloud"}
@@ -957,71 +957,71 @@ func TestCloudSyncFinishesAnInterruptedRun(t *testing.T) {
 // nor the reverse. The broken flow's error names the row, and the exit
 // status is 1.
 func TestCloudSyncWritesEachFlowAloneWhenARowWouldNotLoad(t *testing.T) {
-	both := cloudSyncOpts{prices: true, catalog: true}
+	both := cloudSyncOpts{openrouter: true, ollama: true}
 
-	t.Run("a broken ollama entry: prices applied, catalog not", func(t *testing.T) {
+	t.Run("a broken ollama entry: openrouter applied, ollama not", func(t *testing.T) {
 		broken := strings.Replace(cloudSyncRegistry, "family = \"deepseek\"\n", "", 1)
 		path, cfg := cloudSyncHome(t, broken)
 		stubCloudFetch(t, bothPages())
-		ollama := stubOllama(t, catalogPulled...)
+		ollama := stubOllama(t, ollamaPulled...)
 		synced := stubRouteSync(t, "")
 		stubConfirm(t, true, nil, nil)
 
 		stdout, stderr, code := runCS(t, cfg, both)
-		want := "catalog: error: the catalog's changes were not written: invalid registry entry: model \"ollama/deepseek-v4-pro:cloud\": family is required\n"
+		want := "ollama: error: the ollama flow's changes were not written: invalid registry entry: model \"ollama/deepseek-v4-pro:cloud\": family is required\n"
 		if code != 1 || stderr != want {
 			t.Errorf("exit %d, stderr %q\nwant exit 1, stderr %q", code, stderr, want)
 		}
 		text := mustRead(t, path)
-		if !strings.HasSuffix(stdout, "prices: refreshed 1 model(s); 1 price(s) changed\n") || !strings.Contains(text, "input_price_per_million = 3.0") ||
+		if !strings.HasSuffix(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\n") || !strings.Contains(text, "input_price_per_million = 3.0") ||
 			strings.Contains(text, "glm-5.3") || !strings.Contains(text, "ollama/retired:cloud") {
-			t.Errorf("want the price written and no catalog change:\n%s\n%s", stdout, text)
+			t.Errorf("want the price written and no ollama-flow change:\n%s\n%s", stdout, text)
 		}
 		if len(ollama.changes()) != 0 || *synced != 1 {
 			t.Errorf("ollama %q, syncs %d; want no ollama command and one sync for the price", ollama.changes(), *synced)
 		}
 	})
 
-	t.Run("a broken OpenRouter model: catalog applied, prices not", func(t *testing.T) {
+	t.Run("a broken OpenRouter model: ollama applied, openrouter not", func(t *testing.T) {
 		broken := strings.Replace(cloudSyncRegistry, "family = \"gpt\"\n", "", 1)
 		path, cfg := cloudSyncHome(t, broken)
 		stubCloudFetch(t, bothPages())
-		ollama := stubOllama(t, catalogPulled...)
+		ollama := stubOllama(t, ollamaPulled...)
 		synced := stubRouteSync(t, "")
 		stubConfirm(t, true, nil, nil)
 
 		stdout, stderr, code := runCS(t, cfg, both)
-		want := "prices: error: the price changes were not written: invalid registry entry: model \"openrouter/vendor--gpt\": family is required\n"
+		want := "openrouter: error: the price changes were not written: invalid registry entry: model \"openrouter/vendor--gpt\": family is required\n"
 		if code != 1 || stderr != want {
 			t.Errorf("exit %d, stderr %q\nwant exit 1, stderr %q", code, stderr, want)
 		}
 		text := mustRead(t, path)
-		if !strings.Contains(stdout, "catalog: updated 1, added 4 and removed 1 model(s)\n") || !strings.Contains(text, "ollama/glm-5.3:cloud") ||
+		if !strings.Contains(stdout, "ollama: updated 1, added 4 and removed 1 model(s)\n") || !strings.Contains(text, "ollama/glm-5.3:cloud") ||
 			!strings.Contains(text, "input_price_per_million = 2.5\n") {
-			t.Errorf("want the catalog written and the OpenRouter price as it was:\n%s\n%s", stdout, text)
+			t.Errorf("want the ollama flow written and the OpenRouter price as it was:\n%s\n%s", stdout, text)
 		}
 		if len(ollama.changes()) != 6 || *synced != 1 {
-			t.Errorf("ollama %q, syncs %d; want the catalog's six commands and one sync", ollama.changes(), *synced)
+			t.Errorf("ollama %q, syncs %d; want the ollama flow's six commands and one sync", ollama.changes(), *synced)
 		}
 	})
 }
 
-// TestCloudSyncCatalogReadsASavedPage pins --html: the page comes from the
+// TestCloudSyncOllamaReadsASavedPage pins --html: the page comes from the
 // file and ollama.com/pricing is not fetched (the library tag lookups still
 // are). It is how a repaired parser is tried against the page that broke it.
-func TestCloudSyncCatalogReadsASavedPage(t *testing.T) {
+func TestCloudSyncOllamaReadsASavedPage(t *testing.T) {
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	saved := filepath.Join(t.TempDir(), "saved.html")
-	if err := os.WriteFile(saved, []byte(catalogPage), 0o600); err != nil {
+	if err := os.WriteFile(saved, []byte(ollamaPage), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pages := catalogPages()
+	pages := ollamaPages()
 	delete(pages, cloudsync.PricingURL)
 	got := stubCloudFetch(t, pages)
-	stubOllama(t, catalogPulled...)
+	stubOllama(t, ollamaPulled...)
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true, htmlFile: saved})
-	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "catalog: ollama.com/pricing: 5 models") {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true, htmlFile: saved})
+	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "ollama: ollama.com/pricing: 5 models") {
 		t.Errorf("exit %d, stderr %q, stdout:\n%s", code, stderr, stdout)
 	}
 	for _, url := range got.all() {
@@ -1058,27 +1058,27 @@ func TestSaveFailedHTMLNeverWritesThroughALink(t *testing.T) {
 	}
 }
 
-// TestCloudSyncCatalogRefusesABaseURLThatNamesNoDaemon pins the pin itself.
+// TestCloudSyncOllamaRefusesABaseURLThatNamesNoDaemon pins the pin itself.
 // Every ollama command is run with OLLAMA_HOST set from the ollama provider
 // row's base_url, and ollama reads an empty or unusable OLLAMA_HOST as its
 // default daemon: a hand-edited base_url such as "/v1" would send the pulls
 // and removals to a daemon the registry does not name, with nothing said.
-// Such a row stops the catalog flow before it fetches or runs anything
+// Such a row stops the ollama flow before it fetches or runs anything
 // (exit 2), dry run included.
-func TestCloudSyncCatalogRefusesABaseURLThatNamesNoDaemon(t *testing.T) {
+func TestCloudSyncOllamaRefusesABaseURLThatNamesNoDaemon(t *testing.T) {
 	for _, base := range []string{"/v1", "/", " ", "not a url", "127.0.0.1:11999", "ftp://127.0.0.1:11434"} {
 		for name, o := range map[string]cloudSyncOpts{"dry run": {dryRun: true}, "--yes": {yes: true, approve: "000000000000"}} {
 			t.Run(base+" "+name, func(t *testing.T) {
 				registry := strings.Replace(cloudSyncRegistry, `base_url = "http://127.0.0.1:11434"`, `base_url = "`+base+`"`, 1)
 				path, cfg := cloudSyncHome(t, registry)
-				fetches := stubCloudFetch(t, catalogPages())
-				ollama := stubOllama(t, catalogPulled...)
+				fetches := stubCloudFetch(t, ollamaPages())
+				ollama := stubOllama(t, ollamaPulled...)
 				synced := stubRouteSync(t, "")
-				o.catalog = true
+				o.ollama = true
 
 				stdout, stderr, final, code := runCSFinal(t, cfg, o)
-				if code != 2 || stdout != "" || final != "cloud-sync: the catalog flow changed nothing: an input could not be read" ||
-					!strings.HasPrefix(stderr, "catalog: error: the ollama provider row's base_url names no daemon") ||
+				if code != 2 || stdout != "" || final != "cloud-sync: the ollama flow changed nothing: an input could not be read" ||
+					!strings.HasPrefix(stderr, "ollama: error: the ollama provider row's base_url names no daemon") ||
 					!strings.HasSuffix(stderr, "set auth.base_url to http://host:port; nothing was changed\n") || strings.Count(stderr, "\n") != 1 {
 					t.Errorf("exit %d, final %q\nstdout: %q\nstderr: %q", code, final, stdout, stderr)
 				}
@@ -1090,21 +1090,21 @@ func TestCloudSyncCatalogRefusesABaseURLThatNamesNoDaemon(t *testing.T) {
 	}
 }
 
-// TestCloudSyncCatalogSaysWhenOllamaIsNotInstalled pins the wording when
+// TestCloudSyncOllamaSaysWhenOllamaIsNotInstalled pins the wording when
 // there is no ollama command at all. It runs the real exec path with an empty
 // PATH, so nothing can be run. The line must not ask whether the daemon is
 // up: that sends the user to start a daemon when what is missing is the
 // program.
-func TestCloudSyncCatalogSaysWhenOllamaIsNotInstalled(t *testing.T) {
+func TestCloudSyncOllamaSaysWhenOllamaIsNotInstalled(t *testing.T) {
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, catalogPages())
+	stubCloudFetch(t, ollamaPages())
 	old := ollamaCLI
 	ollamaCLI = realOllamaCLI
 	t.Cleanup(func() { ollamaCLI = old })
 	t.Setenv("PATH", t.TempDir())
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true})
-	want := "catalog: error: could not run `ollama list` against " + testOllamaOrigin + ": the ollama command is not installed (not on PATH); nothing was changed\n"
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
+	want := "ollama: error: could not run `ollama list` against " + testOllamaOrigin + ": the ollama command is not installed (not on PATH); nothing was changed\n"
 	if code != 2 || stderr != want {
 		t.Errorf("exit %d, stderr %q\nwant exit 2, stderr %q", code, stderr, want)
 	}
