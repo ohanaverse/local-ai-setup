@@ -7,6 +7,24 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
+// Evictions is the tests' way to ask the eviction plan by provider id: it
+// looks up the family's tenancy, as the engine does, and returns what
+// evictions says. It reports the running models that starting t is expected to
+// displace: an Exclusive server's one occupant, nobody on a Shared server, and
+// on a Pool the models the plan says omlx would unload to make room. known is
+// false when the snapshot's probe for the family cannot be trusted — a caller
+// acting on "nobody" there would displace a model it never saw. A family whose
+// server refused the connection is the exception: that is known, and empty.
+// So is a target that is itself mid-load: it displaces nobody new.
+func Evictions(t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, known bool) {
+	family := localmodels.Family(t.ProviderID)
+	b := backendsByFamily[family]
+	if b == nil {
+		return nil, true
+	}
+	return evictions(b.tenancy(), family, t, snap)
+}
+
 func ids(es []localmodels.Entry) []string {
 	var out []string
 	for _, e := range es {
@@ -94,9 +112,8 @@ func TestEvictionsByTenancy(t *testing.T) {
 		t.Errorf("untrusted probe: %v known=%v, want none and unknown", ids(v), known)
 	}
 	// A refused connection is a positive answer: nothing is serving, so a cold
-	// start displaces nobody. Reading it as "unknown" made `wt start <id>
-	// --plan --json` answer unknown, and a scripted start fail, whenever the
-	// server was simply not running.
+	// start displaces nobody. Reading it as "unknown" made a start that does
+	// not name --replace fail, whenever the server was simply not running.
 	for _, tc := range []struct {
 		ten    Tenancy
 		family string

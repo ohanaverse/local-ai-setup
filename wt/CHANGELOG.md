@@ -190,6 +190,9 @@
   that wants its API key for load and unload but not for inference, and with
   no `auth.secret_ref` in the registry, a start still loads the model through
   a keyless chat request, and a model stop fails with the two ways to proceed.
+- **Removed:** `wt start --json` and `wt start --plan`. modelman, their only
+  caller, is deleted. Either flag is now `unknown flag`. `wt model list --json`
+  shows what is on disk and running before a `wt start <id> --replace`.
 
 ### Fixed
 

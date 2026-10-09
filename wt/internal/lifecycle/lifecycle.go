@@ -191,7 +191,7 @@ func targetIs(snap localmodels.Snapshot, family string, t Target, is func(localm
 
 // backendsByFamily is the single source of truth for which providers wt can
 // start and how each one's server holds models (tenancy). defaultEnv copies
-// it, and Evictions and TenancyOf read it (they have no *env). Keeping these in
+// it, and TenancyOf reads it (it has no *env). Keeping these in
 // agreement used to be manual — the occupancy check held its own hardcoded
 // family list — so a new single-model backend could be startable while the
 // check still reported no occupant, replacing a running model without a
