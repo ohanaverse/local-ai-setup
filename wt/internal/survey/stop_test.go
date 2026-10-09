@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -42,6 +43,10 @@ type stopHarness struct {
 	notOwed bool
 	// settles counts settle calls: the proxy restarts the stop loop asked for.
 	settles int
+	// loading is what each family's pidfile says; loadingAsked records the
+	// families the stop state read it for.
+	loading      map[string]lifecycle.Loading
+	loadingAsked []string
 }
 
 func (h *stopHarness) deps() stopDeps {
@@ -54,6 +59,7 @@ func (h *stopHarness) deps() stopDeps {
 			}
 			return out
 		},
+		live: func() map[string]int { return h.counts },
 		stop: func(ctx context.Context, _ *config.Config, en localmodels.Entry) (bool, error) {
 			if h.ctxSeen == nil {
 				h.ctxSeen = ctx
@@ -71,6 +77,10 @@ func (h *stopHarness) deps() stopDeps {
 			return !h.notOwed, nil
 		},
 		settle: func(context.Context, *config.Config) { h.settles++ },
+		loading: func(_ *config.Config, fam string) lifecycle.Loading {
+			h.loadingAsked = append(h.loadingAsked, fam)
+			return h.loading[fam]
+		},
 	}
 }
 
@@ -567,7 +577,7 @@ func TestStopPickerCtrlCAtMenuSkipsAndDrains(t *testing.T) {
 	}
 }
 
-// TestStopCandidatesReportsSessionCounts verifies StopCandidates returns every
+// TestStopCandidatesReportsSessionCounts verifies StopState.Candidates holds every
 // running stoppable model INCLUDING ones a live session uses, with the count,
 // that a single-model provider (mtplx) reports its whole family's count, and
 // that an omlx pool counts per model (stopping one leaves the others). `wt stop`
@@ -586,7 +596,7 @@ func TestStopCandidatesReportsSessionCounts(t *testing.T) {
 		counts: map[string]int{"ollama/busy": 2, "omlx/x": 1, "mtplx/p": 1},
 	}
 	got := map[string]int{}
-	for _, c := range stopCandidates(&config.Config{}, h.deps()) {
+	for _, c := range stopState(&config.Config{}, h.deps()).Candidates {
 		got[c.Entry.ModelID] = c.Sessions
 	}
 	want := map[string]int{"ollama/a": 0, "ollama/busy": 2, "omlx/x": 1, "omlx-6bit/y": 0, "mtplx/p": 1, "mtplx/q": 1}
@@ -708,7 +718,7 @@ func TestStopCandidatesIncludeAModelMidLoad(t *testing.T) {
 	loading := runningEntry("omlx", "omlx/x", "x")
 	loading.Loading = true
 	h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{loading}}}
-	cands := stopCandidates(&config.Config{}, h.deps())
+	cands := stopState(&config.Config{}, h.deps()).Candidates
 	if len(cands) != 1 || cands[0].Entry.ModelID != "omlx/x" {
 		t.Errorf("candidates = %+v, want the loading omlx/x", cands)
 	}

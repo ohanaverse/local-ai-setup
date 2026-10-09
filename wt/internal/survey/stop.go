@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,30 +20,53 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 )
 
-// stopDeps are the picker's seams: live inventory, the live-session refcount
-// read, the per-model stop and the batch's single proxy restart. Tests
-// substitute all four.
+// stopDeps are the picker's seams: live inventory, the two live-session
+// refcount reads, the per-model stop, the batch's single proxy restart and the
+// pidfile read behind a refused port. Tests substitute all six.
 type stopDeps struct {
 	inventory func(*config.Config) localmodels.Snapshot
 	counts    func(modelIDs []string) map[string]int
+	// live is the session count of every model id with a live session,
+	// unregistered ids included (refcount.Live) — the family-wide count.
+	live func() map[string]int
 	// stop stops one model and writes its route removal without restarting
 	// the proxy; restartOwed reports that settle must run (issue #142).
 	stop   func(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error)
 	settle func(ctx context.Context, cfg *config.Config)
+	// loading reads what the pidfile of a family's server says, for a family
+	// whose port refused (lifecycle.LoadingServer). It signals nothing.
+	loading func(cfg *config.Config, family string) lifecycle.Loading
 }
 
 func defaultStopDeps() stopDeps {
 	store := refcount.NewStore()
+	// Sweep first: Sweep otherwise runs only at launch start, so an entry
+	// left by a killed session would count as "in use" forever. Once per
+	// stopDeps, which serves one read of the state (defaultStopDeps is called
+	// per read): both reads below want the same pruned file, and Sweep takes
+	// the store's lock and rewrites the file whether or not it dropped
+	// anything, so sweeping again in the same read is pure work.
+	swept := false
+	sweep := func() {
+		if swept {
+			return
+		}
+		swept = true
+		_ = store.Sweep()
+	}
 	return stopDeps{
 		inventory: localmodels.Inventory,
-		// Sweep first: Sweep otherwise runs only at launch start, so an entry
-		// left by a killed session would count as "in use" forever.
 		counts: func(ids []string) map[string]int {
-			_ = store.Sweep()
+			sweep()
 			return store.Counts(ids)
 		},
-		stop:   lifecycle.StopModelDeferred,
-		settle: lifecycle.SettleRoutes,
+		live: func() map[string]int {
+			sweep()
+			return store.Live()
+		},
+		stop:    lifecycle.StopModelDeferred,
+		settle:  lifecycle.SettleRoutes,
+		loading: lifecycle.LoadingServer,
 	}
 }
 
@@ -74,11 +98,13 @@ type Options struct{ IncludeInUse bool }
 
 // PickerWith is Picker with options; same silent-when-not-a-TTY behavior. It
 // reports whether the picker had any model to offer (false when stdin is not a
-// TTY), so a caller like `wt stop` can say "nothing running" without probing the
-// inventory a second time.
-func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) bool {
+// TTY), the provider families whose probe gave no usable answer
+// (StopState.Unknown) and what the pidfiles behind refused ports said
+// (StopState.Loading), so a caller like `wt stop` can say "nothing running"
+// only when that is known, without probing the inventory a second time.
+func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) (offered bool, unknown []string, loading map[string]lifecycle.Loading) {
 	if !stdinTTY() {
-		return false
+		return false, nil, nil
 	}
 	return runStopPickerWith(r, w, cfg, defaultStopDeps(), opts)
 }
@@ -91,14 +117,126 @@ type Candidate struct {
 	Sessions int
 }
 
-// StopCandidates is the exported view `wt stop` uses: every running, trusted,
-// stoppable model, in-use ones included.
-func StopCandidates(cfg *config.Config) []Candidate {
-	return stopCandidates(cfg, defaultStopDeps())
+// FamilyState is what one inventory round knows about a stoppable provider
+// family as a whole, whether or not it produced a candidate. The zero value
+// is a family that was not probed: nothing is known about its server.
+type FamilyState struct {
+	// Probed: the inventory probed the family, so Untrusted and Down are an
+	// answer. False for a family the snapshot carries no status for — a
+	// provider row the inventory does not probe (no location and no local
+	// model), or a family known only from a live session's model id — whose
+	// Untrusted and Down are false because nobody asked.
+	Probed bool
+	// Untrusted: the probe could not say what the family is running
+	// (!lifecycle.ProbeTrusted), so it has no candidates whatever it serves.
+	Untrusted bool
+	// Down: the server actively refused the connection (Snapshot.Down) —
+	// nothing is listening, which is known even when Untrusted.
+	Down bool
+	// Sessions is the number of live wt sessions on any model of the family,
+	// and Users the model ids they use, sorted. Taken from every live
+	// refcount entry, so it does not depend on the candidates: it counts a
+	// model that does not read as running and a discovered model no registry
+	// lists. A stop that takes the whole provider down asks about these.
+	Sessions int
+	Users    []string
+	// Loading is what the family's pidfile says when Down: a server that has
+	// not opened its port yet (Loading.PID, verified — mtplx reads its
+	// weights first), a live process wt could not verify as one
+	// (Loading.Stray), or a process table it could not read (Loading.Err).
+	// Zero when the port did not refuse, and for a family with no pidfile.
+	Loading lifecycle.Loading
 }
 
-func stopCandidates(cfg *config.Config, d stopDeps) []Candidate {
+// StopState is the view `wt stop` acts on, from one inventory round:
+// Candidates is every running, trusted, stoppable model, in-use ones
+// included; Families is keyed by provider family (localmodels.Family).
+type StopState struct {
+	Candidates []Candidate
+	Families   map[string]FamilyState
+}
+
+// Unknown lists, sorted, the families whose probe was neither trusted nor
+// refused: wt cannot say whether they are running anything.
+func (s StopState) Unknown() []string {
+	var out []string
+	for fam, fs := range s.Families {
+		if fs.Untrusted && !fs.Down {
+			out = append(out, fam)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Loading returns, by family, what a pidfile behind a refused port said
+// (FamilyState.Loading) for the families where it said anything: a server
+// still loading, a live process that is not one, or a process table wt could
+// not read. None of them is a candidate, so the picker cannot list them.
+func (s StopState) Loading() map[string]lifecycle.Loading {
+	out := map[string]lifecycle.Loading{}
+	for fam, fs := range s.Families {
+		if fs.Loading != (lifecycle.Loading{}) {
+			out[fam] = fs.Loading
+		}
+	}
+	return out
+}
+
+// ReadStopState takes one live inventory snapshot and one read of the live
+// sessions and returns what `wt stop` needs from them.
+func ReadStopState(cfg *config.Config) StopState {
+	return stopState(cfg, defaultStopDeps())
+}
+
+func stopState(cfg *config.Config, d stopDeps) StopState {
 	snap := d.inventory(cfg)
+	st := StopState{Candidates: candidatesFrom(snap, d), Families: map[string]FamilyState{}}
+	for fam := range snap.Providers {
+		if lifecycle.CanStop(fam) {
+			fs := FamilyState{Probed: true, Untrusted: !lifecycle.ProbeTrusted(snap, fam), Down: snap.Down[fam]}
+			if fs.Down {
+				// Nothing listens, which is not yet "nothing is there".
+				fs.Loading = d.loading(cfg, fam)
+			}
+			st.Families[fam] = fs
+		}
+	}
+	for id, n := range d.live() {
+		fam := modelFamily(cfg, id)
+		if n == 0 || !lifecycle.CanStop(fam) {
+			continue
+		}
+		fs := st.Families[fam]
+		fs.Sessions += n
+		fs.Users = append(fs.Users, id)
+		st.Families[fam] = fs
+	}
+	for fam, fs := range st.Families {
+		sort.Strings(fs.Users)
+		st.Families[fam] = fs
+	}
+	return st
+}
+
+// modelFamily is the provider family a session's model id belongs to: the
+// registry model's provider when the id is registered (a cloud model has no
+// local server, so none), else the id's own prefix — a discovered model's id
+// is family-prefixed (config.DiscoveredModelID). "" when wt has no probe for
+// it.
+func modelFamily(cfg *config.Config, id string) string {
+	if i := config.IndexModelByID(cfg.Models, id); i >= 0 {
+		m := cfg.Models[i]
+		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+			return ""
+		}
+		return localmodels.Family(m.ProviderID)
+	}
+	prefix, _, _ := strings.Cut(id, "/")
+	return localmodels.Family(prefix)
+}
+
+func candidatesFrom(snap localmodels.Snapshot, d stopDeps) []Candidate {
 	var cands []localmodels.Entry
 	for _, e := range snap.Entries {
 		if !e.Running || !lifecycle.CanStop(e.ProviderID) {
@@ -193,11 +331,15 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	runStopPickerWith(r, w, cfg, d, Options{})
 }
 
-// runStopPickerWith runs the picker and reports whether it had any model to offer.
-func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) bool {
+// runStopPickerWith runs the picker and reports whether it had any model to
+// offer, the families it could not read (StopState.Unknown) and what it
+// cannot list because no port answers for it (StopState.Loading).
+func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) (bool, []string, map[string]lifecycle.Loading) {
 	var offered []localmodels.Entry
 	var labels []string
-	for _, c := range stopCandidates(cfg, d) {
+	st := stopState(cfg, d)
+	unknown, loading := st.Unknown(), st.Loading()
+	for _, c := range st.Candidates {
 		if !opts.IncludeInUse && c.Sessions > 0 {
 			continue
 		}
@@ -213,7 +355,7 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 		labels = append(labels, label)
 	}
 	if len(offered) == 0 {
-		return false
+		return false, unknown, loading
 	}
 	header := exitFlowHeader
 	if opts.IncludeInUse {
@@ -247,17 +389,17 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	case selected = <-answer:
 	case <-ctx.Done():
 		fmt.Fprintln(w, "\ncancelled")
-		return true
+		return true, unknown, loading
 	}
 	if len(selected) == 0 {
-		return true
+		return true, unknown, loading
 	}
 	entries := make([]localmodels.Entry, 0, len(selected))
 	for _, i := range selected {
 		entries = append(entries, offered[i])
 	}
 	_ = stopEntries(ctx, w, cfg, d, entries)
-	return true
+	return true, unknown, loading
 }
 
 // ErrStopCancelled is what a stop loop returns when Ctrl+C or SIGTERM ended it

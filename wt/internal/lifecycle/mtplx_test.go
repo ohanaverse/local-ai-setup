@@ -28,6 +28,10 @@ func TestMain(m *testing.M) {
 		helperMtplx()
 		return
 	}
+	// No test may read the real mtplx pidfile or signal a process it did not
+	// start: the production env's process seams fail and its pidfile is
+	// nowhere (TestProcessSeamsFailClosedHere).
+	IsolateProcessesForTest()
 	// No test may reach the real config.yaml or proxy through the public wrappers.
 	applyRoutes = func(*config.Config, litellm.Change, litellm.Options) (litellm.Result, error) {
 		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
@@ -248,12 +252,22 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 // backend uses (MTPLX_PIDFILE and MTPLX_LOG in its backends/mtplx.py). With
 // two paths, a server one tool started would be invisible to the other.
 func TestDefaultEnvRegistersMtplx(t *testing.T) {
+	t.Setenv(mtplxPidfileEnv, "") // TestMain points it away from the real files
 	e := defaultEnv()
 	if e.backends["mtplx"] == nil || e.backends["mtplx"].tenancy() != Exclusive {
 		t.Fatal("mtplx backend missing or not single-model")
 	}
 	if e.mtplxProc.pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.mtplxProc.logfile != "/tmp/local-ai-setup-mtplx.log" {
 		t.Errorf("mtplxProc = %+v, want the paths llmbench's mtplx backend uses", e.mtplxProc)
+	}
+	if got := e.mtplxProc.startfile(); got != "/tmp/local-ai-setup-mtplx.pid.wt" {
+		t.Errorf("start record = %q, want it beside the pidfile, which stays a bare pid for llmbench", got)
+	}
+	// WT_MTPLX_PIDFILE moves all three, so a run against scratch state never
+	// touches the real ones.
+	t.Setenv(mtplxPidfileEnv, "/scratch/m.pid")
+	if p := defaultEnv().mtplxProc; p.pidfile != "/scratch/m.pid" || p.logfile != "/scratch/m.log" || p.startfile() != "/scratch/m.pid.wt" {
+		t.Errorf("mtplxProc under %s = %+v, want the pidfile it names and the log beside it", mtplxPidfileEnv, p)
 	}
 }
 
@@ -403,5 +417,31 @@ func TestLogTailClampsWhatArrivedAfterTheSizeWasSampled(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("logTail(0) over a FIFO = %d bytes, want empty: the clamp must never hand back everything it read", len(got))
+	}
+}
+
+// TestMtplxStopNeverReportsAServerItLeftUp pins what `wt stop mtplx` and `wt
+// stop --all` rely on when they halt an mtplx whose probe they could not
+// read (#308): the stop is an error whenever the port still answers
+// afterwards — `mtplx stop` exited 0 (a stale pidfile, or a server it does
+// not own), or the mtplx binary is missing — so the command cannot print
+// "done" and exit 0 over a server that is still up.
+func TestMtplxStopNeverReportsAServerItLeftUp(t *testing.T) {
+	_, addr := serveFree(t, chatHandler())
+	_, portStr, _ := net.SplitHostPort(addr)
+	cfg := provCfg("mtplx", "http://"+addr+"/v1")
+	e := testEnv()
+	e.stopTimeout = 60 * time.Millisecond
+	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
+	e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte("no server to stop"), nil }
+	err := (mtplxBackend{}).stop(context.Background(), e, cfg)
+	if err == nil || !strings.Contains(err.Error(), "mtplx still listening on port "+portStr) {
+		t.Errorf("exit 0, port open: err = %v, want still-listening", err)
+	}
+
+	e.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	var missing *BinaryMissingError
+	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); !errors.As(err, &missing) {
+		t.Errorf("no binary: err = %v, want *BinaryMissingError", err)
 	}
 }

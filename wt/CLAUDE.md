@@ -83,6 +83,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 - **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
+- **No test reads the real mtplx pidfile or signals a process it did not start**: the `TestMain`s of `internal/lifecycle`, `internal/survey` and `cmd/wt` call `lifecycle.IsolateProcessesForTest()`.
 - **Tests stay off the developer's machine.** The `TestMain`s of `cmd/wt`, `internal/tui`, `internal/config`, `internal/modeladmin`, `internal/configeditor` and `internal/cloudsync` call `config.IsolateConfigHomeForTest`, which points `XDG_CONFIG_HOME` at a throwaway directory and clears `WT_REGISTRY` and `MODELMAN_REGISTRY`; `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts, and no-op the route check. `cmd/wt`'s also replaces `querySpend`, and `internal/spend`'s fails its `lookPath`/`runPsql` seams, so no test runs `psql` or reaches the LiteLLM database. Tests name a scratch registry through `WT_REGISTRY`. In a package with no isolating `TestMain`, a test that sets it also sets `MODELMAN_REGISTRY` to `""`: the alias is read after `WT_REGISTRY`, permanently, so a test that clears only one name can still inherit the other. The alias's own tests are in `internal/config/registry_env_test.go`. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
@@ -134,7 +135,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
 | `internal/usage/` | append-only JSONL launch history (1d/7d/30d); `RecordFor` tags the agent; `CountsForAgent` per agent×model, legacy agent-less lines count toward `Counts` only; `(*StoreImpl).AllCounts(agent, asOf)` enumerates every model in the file, bucketed against the caller's instant (for `wt stats`; not on the `Store` interface) |
 | `internal/refcount/` | live-session "in use" counts: JSONL keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point |
-| `internal/survey/` | post-session survey + stats; stop picker and stop loop (`Picker`, `PickerWith`, `StopCandidates`, `StopEntries`) |
+| `internal/survey/` | post-session survey + stats; stop picker and stop loop (`Picker`, `PickerWith`, `ReadStopState`, `StopEntries`) |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, capabilities), picker catalog, drivers, `RunAndCleanup` (shared apply-run-cleanup core for both launch paths), `BuildPassthroughCmd` |
 | `internal/profiles/` | launch-profile overlays — see [Profiles](#profiles-internalprofiles) |
 | `internal/smoke/` | `wt smoke`'s core: `Eligibility`/`Candidates` (rows per agent from one inventory snapshot — call `Eligibility` directly when you need both the model union and per-model agent lists, to avoid two probe rounds), `RunRow` (PASS/FAIL/SKIP via the `buildAndRun` seam) |
@@ -200,13 +201,14 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md) before cha
 
 ## Lifecycle (`internal/lifecycle`)
 
-The start/stop engine: `Start`, `Stop`, `StopModelDeferred` + `SettleRoutes`; backends ollama (`Shared`), omlx (`Pool`: loads beside, `/unload` per model), mtplx (`Exclusive`). Used by the TUI start flow, `startForLaunch`, `wt start`, and `wt smoke`.
+The start/stop engine: `Start`, `Stop`, `StopModelDeferred` + `SettleRoutes`, `LoadingServer` + `StopLoading`; backends ollama (`Shared`), omlx (`Pool`: loads beside, `/unload` per model), mtplx (`Exclusive`). Used by the TUI start flow, `startForLaunch`, `wt start`, and `wt smoke`.
 
 - **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`, `Occupants` lists them): an `Exclusive` occupant (mtplx) to be replaced, or the `Pool` victims (omlx) the eviction plan (`evictions.go`) predicts omlx will unload (`poolAdmissionMarginPct` margin, 15% of the ceiling; `reconcilePool` handles what omlx unloaded anyway, on failure too); undeterminable occupancy is `*OccupancyUnknownError`, never assumed empty.
 - **Route hook** (`routes.go`): a start/stop wt performs updates `config.yaml` through `internal/litellm`. A launch of an already-running model gets the Add-only launch-time check, `lifecycle.EnsureModelRoute` (#192), which never fails a launch.
 - **Call `WaitPendingRoutes()` on every process exit and before handing a model to an agent**: the `config.yaml` write is synchronous, the proxy restart and readiness wait are async.
 - **The restart goroutine runs on `context.WithoutCancel(ctx)` on purpose** — callers cancel as soon as the hook returns. Pinned by `TestRouteRestartSurvivesCallerCancelAfterReturn`.
 - Route output goes through `routePrintf(ctx, …)`; a caller-supplied writer rides on the context.
+- **wt signals a process only after identifying it** (`mtplx_loading.go`): the one stop with no port to go through is an mtplx still loading, found by wt's pidfile. A pid is never enough — alive, the user's own, an mtplx server on the provider's port by exact argv, and the recorded start time when there is one, checked again before SIGKILL. A process that is exiting (`kern.procargs2` gives `EINVAL` while the kernel frees its memory) has no argv: it is never identified, never signalled, and a stop waits for it instead of killing it. The pidfile stays a bare pid (llmbench shares the path); wt's start record is `<pidfile>.wt`; both are read only as the user's own regular files (`readOwnFile`). Ctrl+C after a signal was sent is a `*StopInterruptedError`, which `wt stop` reports as "was sent SIGTERM", never "was not stopped".
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, the launch-time route check, restart or readiness waits, or replace.
 
