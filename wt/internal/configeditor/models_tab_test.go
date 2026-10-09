@@ -1371,18 +1371,17 @@ func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 // blank screen or a crash — and that the reason ends with the repair
 // config.RegistryFixHint gives every other place that reports this error, so
 // the tab that manages the registry is not the one screen that leaves it out.
-// At every size wt supports the reason is whole under the tab bar; at 40x12
-// it is longer than the table has room beside.
+// At every size wt supports the reason is under the tab bar — whole where it
+// fits, and where the registry's path makes it taller than the terminal, cut
+// in the middle behind a marker with its start and its end (the repair) kept
+// (#318); at 40x12 it is longer than the table has room beside.
 func TestModelsTabShowsARegistryThatDoesNotLoad(t *testing.T) {
 	for _, size := range tabSizes {
 		tm := newTabMachine(t, "this is not = = toml\n")
 		m := modelsEditor(t, tm, size[0], size[1])
 		view := m.View()
-		assertFits(t, "broken registry", view, size[0], size[1])
 		want := "config load error: parse " + tm.registry + ": toml: line 1: expected '.' or '=', but got 'i' instead (fix that file by hand)"
-		if !strings.Contains(flat(view), flat(want)) || !strings.Contains(view, "[Models]") {
-			t.Errorf("at %dx%d the tab should say %q:\n%s", size[0], size[1], want, view)
-		}
+		assertMessageShown(t, "broken registry", view, want, size[0], size[1])
 	}
 }
 

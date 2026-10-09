@@ -800,11 +800,10 @@ func TestModelFormRefusesAnEditOfARowWithAMalformedFetch(t *testing.T) {
 		if f.err != want {
 			at("the form's error = %q, want the writer's refusal, which names the row and the key, and the file to fix: %q", f.err, want)
 		}
-		assertFits(t, "refused edit of a malformed row", view, size[0], size[1])
+		// Whole where it fits; where the registry's path makes it taller
+		// than the terminal, cut in the middle behind a marker (#318).
+		assertMessageShown(t, "refused edit of a malformed row", view, want, size[0], size[1])
 		assertCutFieldsAreCounted(t, "refused edit of a malformed row", m, view)
-		if !strings.Contains(flat(view), flat(want)) {
-			at("the refusal is not whole on screen")
-		}
 		if m.modelFormLayout().errorAlone {
 			// Too long to share a short terminal with at least three rows of
 			// the form: it has the screen, and a key brings the form back.
