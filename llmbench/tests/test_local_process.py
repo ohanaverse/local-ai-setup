@@ -37,10 +37,20 @@ def test_http_models_ids_reads_the_ids_of_a_models_listing(monkeypatch):
         b"<html>502 Bad Gateway</html>",
         b"[]",
         b'{"data": "nope"}',
+        # A string can be iterated, so the per-entry filter alone would read it
+        # as no models; a number cannot, so this one needs the list check itself.
+        b'{"data": 7}',
         b'{"error": {"message": "no key"}}',
         b"\xff\xfe",
     ],
-    ids=["not-json", "a-list", "data-not-a-list", "an-error-body", "not-utf8"],
+    ids=[
+        "not-json",
+        "a-list",
+        "data-a-string",
+        "data-a-number",
+        "an-error-body",
+        "not-utf8",
+    ],
 )
 def test_http_models_ids_reads_an_unusable_body_as_nothing_serving(monkeypatch, body):
     """Anything that is not a models listing is "no models", never an

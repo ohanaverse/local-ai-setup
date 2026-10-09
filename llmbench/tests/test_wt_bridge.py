@@ -95,6 +95,9 @@ _MSG_CASES = [
     ),
     ("distinct lines join with '; '", "", "Error: first\nwt: second\n", "first; second"),
     ("blank lines and padding are dropped", "", "\n  Error:   padded  \n\n", "padded"),
+    # The whole output is stripped before it is split, so only a line after the
+    # first can show that each line is stripped too, before its prefix is looked for.
+    ("an indented later line still loses its prefix", "", "Error: a\n  wt: b\n", "a; b"),
     # From modelman's own test_msg_cleans_wt_output: the only case with a blank
     # line between two others, which is what `if line` is there for.
     ("a blank line between two lines is dropped", "", "Error: a\n\nwt: b\n", "a; b"),
