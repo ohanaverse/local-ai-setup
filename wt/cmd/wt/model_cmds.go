@@ -70,14 +70,15 @@ func stopCmd(a *app) *cobra.Command {
 			"are using, marked with their session count.\n\n" +
 			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
 			"models up; \"wt stop omlx\" stops the service.\n\n" +
-			"--all stops every running local model and then the omlx service, on every\n" +
-			"provider at once. It takes no argument. A running mlx_lm_server pairing is\n" +
-			"not stopped (wt has no engine for one); \"llmbench provider stop mlx_lm_server\"\n" +
-			"stops it.\n\n" +
-			"\"wt stop mtplx\" and --all stop mtplx whenever its port answers, also when wt\n" +
-			"cannot tell what it has loaded (a model still loading, or no answer in time).\n" +
-			"ollama's models are stopped one by one, so when wt cannot tell what ollama is\n" +
-			"running it stops nothing there and exits 1.\n\n" +
+			"--all stops every running local model on every provider at once, then the\n" +
+			"omlx service and an mtplx it cannot read (below). It takes no argument. A\n" +
+			"running mlx_lm_server pairing is not stopped (wt has no engine for one);\n" +
+			"\"llmbench provider stop mlx_lm_server\" stops it.\n\n" +
+			"\"wt stop mtplx\" and --all stop mtplx unless its port refuses the connection,\n" +
+			"also when wt cannot tell what it has loaded (an error answer, or none within\n" +
+			"2 seconds). An mtplx that has not opened its port yet reads as nothing\n" +
+			"running. ollama's models are stopped one by one, so when wt cannot tell what\n" +
+			"ollama is running it stops nothing there and exits 1.\n\n" +
 			"Stopping a model or a provider a live wt session uses asks for confirmation;\n" +
 			"--yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
@@ -101,11 +102,18 @@ func stopCmd(a *app) *cobra.Command {
 				cmd.SilenceUsage = true
 				return runStopAll(cmd.OutOrStdout(), a.cfg, yes)
 			}
+			if err := stopArgError(a.cfg, arg); err != nil {
+				return err
+			}
+			// As for --all: past the argument check a failure is a stop
+			// that failed, a declined question or a provider wt could not
+			// read, never a usage mistake.
+			cmd.SilenceUsage = true
 			return runStop(cmd.OutOrStdout(), a.cfg, arg, yes)
 		},
 	}
 	cmd.Flags().Bool("yes", false, "Skip the confirmation when a target is in use by a live wt session")
-	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service")
+	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service and an mtplx wt cannot read")
 	return cmd
 }
 
@@ -114,15 +122,18 @@ func stopCmd(a *app) *cobra.Command {
 // (haltProvider) rather than stopping models one by one. A Pool (omlx) always
 // is: unloading its models leaves the service and its memory in place. An
 // Exclusive provider (mtplx) is when the probe gave no candidate to stop it
-// through and its port did not refuse — a model still loading, or a probe
-// that got no usable answer, is a server that is up (#308). A refused port is
-// nothing to stop. A Shared provider (ollama) never is: wt leaves its daemon up.
+// through and its port did not refuse — a server that answered with nothing
+// loaded, with an error or not in time is a server that is up (#308). A refused port is
+// nothing to stop, and so is a family the inventory never probed
+// (FamilyState.Probed): "did not refuse" is an answer only when wt asked. A
+// Shared provider (ollama) never is: wt leaves its daemon up.
 func haltsWhole(st survey.StopState, providerID string, candidates int) bool {
 	switch lifecycle.TenancyOf(providerID) {
 	case lifecycle.Pool:
 		return true
 	case lifecycle.Exclusive:
-		return candidates == 0 && !st.Families[localmodels.Family(providerID)].Down
+		fs := st.Families[localmodels.Family(providerID)]
+		return candidates == 0 && fs.Probed && !fs.Down
 	}
 	return false
 }
@@ -177,6 +188,27 @@ func haltImpact(fs survey.FamilyState) (sessions int, users []string, blind bool
 // providers are running and has no way to stop them regardless.
 func errCannotTell(families []string, hint string) error {
 	return fmt.Errorf("cannot tell what is running on %s: the probe gave no usable answer%s", strings.Join(families, ", "), hint)
+}
+
+// unreadHint is what bare `wt stop` adds after naming the families it could
+// not read: the commands that stop such a server regardless, named only for
+// the families wt halts as a whole. A Shared family (ollama) has no such
+// command — `wt stop ollama` and `wt stop --all` stop nothing on an ollama wt
+// cannot read — so a list of only those gets "" and the caller's own ending.
+func unreadHint(cfg *config.Config, unknown []string) string {
+	var cmds, fams []string
+	for _, id := range stoppableProviders(cfg) {
+		fam := localmodels.Family(id)
+		if lifecycle.TenancyOf(id) == lifecycle.Shared || !slices.Contains(unknown, fam) || slices.Contains(fams, fam) {
+			continue
+		}
+		fams = append(fams, fam)
+		cmds = append(cmds, fmt.Sprintf("%q", "wt stop "+id))
+	}
+	if len(fams) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — %s or \"wt stop --all\" stops %s", strings.Join(cmds, ", "), strings.Join(fams, " and "))
 }
 
 // unreadClause is the part of the in-use question that says wt is asking
@@ -344,28 +376,45 @@ func stoppableProviders(cfg *config.Config) []string {
 	return ids
 }
 
-// runStop implements `wt stop`. Argument errors return before any side effect.
-func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
-	// A bare provider is validated before the live inventory probe; a model id
-	// still needs the probe to find its running entry.
+// stopArgError is the usage mistake in `wt stop`'s argument, nil when there is
+// none: a bare provider wt cannot stop, or no argument without a terminal for
+// the picker. It probes nothing; a model id still needs the live inventory to
+// find its running entry.
+func stopArgError(cfg *config.Config, arg string) error {
 	if arg != "" && !strings.Contains(arg, "/") {
 		if valid := stoppableProviders(cfg); !slices.Contains(valid, arg) {
 			return fmt.Errorf("unknown provider %q (valid: %s)", arg, strings.Join(valid, ", "))
 		}
 	}
+	if arg == "" && !stdinTTY() {
+		return fmt.Errorf("wt stop needs a TTY to list models; pass a model or provider (wt stop <provider>/<name> | wt stop <provider>)")
+	}
+	return nil
+}
+
+// runStop implements `wt stop`. Argument errors return before any side effect.
+func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
+	if err := stopArgError(cfg, arg); err != nil {
+		return err
+	}
 	if arg == "" {
-		if !stdinTTY() {
-			return fmt.Errorf("wt stop needs a TTY to list models; pass a model or provider (wt stop <provider>/<name> | wt stop <provider>)")
-		}
 		// The picker takes the one inventory snapshot itself and reports whether
 		// it had anything to offer, so nothing is probed twice.
 		offered, unknown := stopPickerAll(cfg)
-		if !offered && len(unknown) > 0 {
+		hint := unreadHint(cfg, unknown)
+		switch {
+		case offered && len(unknown) > 0:
+			// The list was not everything that may be running.
+			fmt.Fprintf(out, "wt: could not tell what is running on %s%s\n", strings.Join(unknown, ", "), hint)
+		case offered:
+		case len(unknown) > 0:
 			// Nothing to list is not "nothing running" when a probe gave
 			// no usable answer.
-			return errCannotTell(unknown, " — \"wt stop <provider>\" or \"wt stop --all\" stops a server wt cannot read")
-		}
-		if !offered {
+			if hint == "" {
+				hint = " — nothing was stopped"
+			}
+			return errCannotTell(unknown, hint)
+		default:
 			fmt.Fprintln(out, "wt: no running local models")
 		}
 		return nil

@@ -36,7 +36,9 @@ func mtplxOnlyCfg() *config.Config {
 	return &config.Config{Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal}}}
 }
 
+// families is the stop state of one probed family and no candidate.
 func families(fam string, fs survey.FamilyState) survey.StopState {
+	fs.Probed = true
 	return survey.StopState{Families: map[string]survey.FamilyState{fam: fs}}
 }
 
@@ -52,8 +54,8 @@ func stubStopConfirm(t *testing.T, ok bool) *[]string {
 
 // TestStopExclusiveProviderIsHaltedWithoutACandidate verifies `wt stop mtplx`
 // halts mtplx when its probe produced no candidate but its port did not
-// refuse: the server answered with nothing loaded (a model mid-load), or gave
-// no usable answer in time. It used to print "nothing running on mtplx" and
+// refuse: the server answered with nothing loaded, or gave no usable answer
+// in time. It used to print "nothing running on mtplx" and
 // exit 0 with a 28GB server still up (#308).
 func TestStopExclusiveProviderIsHaltedWithoutACandidate(t *testing.T) {
 	for name, fs := range map[string]survey.FamilyState{
@@ -295,8 +297,8 @@ func TestStopAllAsksAboutEveryHaltedFamily(t *testing.T) {
 	st := survey.StopState{
 		Candidates: []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)},
 		Families: map[string]survey.FamilyState{
-			"omlx":  {Untrusted: true, Sessions: 1, Users: []string{"omlx/c"}},
-			"mtplx": {Untrusted: true, Sessions: 1, Users: []string{"mtplx/big"}},
+			"omlx":  {Probed: true, Untrusted: true, Sessions: 1, Users: []string{"omlx/c"}},
+			"mtplx": {Probed: true, Untrusted: true, Sessions: 1, Users: []string{"mtplx/big"}},
 		},
 	}
 	stopped := stubStopState(t, st)
@@ -363,19 +365,126 @@ func TestStopSaysNothingRunningOnlyWhenThatIsKnown(t *testing.T) {
 	}
 }
 
-// TestStopPickerWithNothingToOfferSaysWhatItCouldNotRead verifies bare `wt
-// stop` does not print "no running local models" when the picker had nothing
-// to offer because a provider's probe gave no usable answer: it names the
-// provider and the command that stops it anyway, and exits non-zero.
-func TestStopPickerWithNothingToOfferSaysWhatItCouldNotRead(t *testing.T) {
+// stubPicker makes bare `wt stop` see a terminal and a picker that reports
+// offered and the families it could not read.
+func stubPicker(t *testing.T, offered bool, unknown ...string) {
+	t.Helper()
 	oldTTY, oldPick := stdinTTY, stopPickerAll
 	t.Cleanup(func() { stdinTTY, stopPickerAll = oldTTY, oldPick })
 	stdinTTY = func() bool { return true }
-	stopPickerAll = func(*config.Config) (bool, []string) { return false, []string{"mtplx"} }
+	stopPickerAll = func(*config.Config) (bool, []string) { return offered, unknown }
+}
+
+// TestStopPickerWithNothingToOfferSaysWhatItCouldNotRead verifies bare `wt
+// stop` does not print "no running local models" when the picker had nothing
+// to offer because a provider's probe gave no usable answer: it exits non-zero
+// naming the provider, and names a command that stops it only for a provider
+// wt stops as a whole. For ollama no such command exists — `wt stop ollama`
+// and `wt stop --all` stop nothing there — so the user must not be sent to one.
+func TestStopPickerWithNothingToOfferSaysWhatItCouldNotRead(t *testing.T) {
+	for _, tc := range []struct {
+		unknown []string
+		want    string
+	}{
+		{[]string{"mtplx"}, `cannot tell what is running on mtplx: the probe gave no usable answer — "wt stop mtplx" or "wt stop --all" stops mtplx`},
+		{[]string{"ollama"}, `cannot tell what is running on ollama: the probe gave no usable answer — nothing was stopped`},
+		{[]string{"mtplx", "ollama", "omlx"}, `cannot tell what is running on mtplx, ollama, omlx: the probe gave no usable answer — "wt stop mtplx", "wt stop omlx" or "wt stop --all" stops mtplx and omlx`},
+	} {
+		stubPicker(t, false, tc.unknown...)
+		var out bytes.Buffer
+		err := runStop(&out, stopCfg(), "", false)
+		if err == nil || err.Error() != tc.want || out.Len() != 0 {
+			t.Errorf("unknown %v: err = %v out = %q\n want %s and no no-running note", tc.unknown, err, out.String(), tc.want)
+		}
+	}
+}
+
+// TestStopPickerThatListedModelsNotesWhatItCouldNotRead verifies bare `wt
+// stop` says so when the picker listed models but a provider's probe gave no
+// usable answer: the list is then not everything that may be running. Without
+// the note the list looked complete while mtplx, the largest server, was up.
+func TestStopPickerThatListedModelsNotesWhatItCouldNotRead(t *testing.T) {
+	stubPicker(t, true, "mtplx", "ollama")
 	var out bytes.Buffer
-	err := runStop(&out, stopCfg(), "", false)
-	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on mtplx") || !strings.Contains(err.Error(), "wt stop --all") || out.Len() != 0 {
-		t.Fatalf("err = %v out = %q, want a cannot-tell error naming wt stop --all and no no-running note", err, out.String())
+	if err := runStop(&out, stopCfg(), "", false); err != nil {
+		t.Fatal(err)
+	}
+	want := "wt: could not tell what is running on mtplx, ollama — \"wt stop mtplx\" or \"wt stop --all\" stops mtplx\n"
+	if out.String() != want {
+		t.Errorf("out = %q, want %q", out.String(), want)
+	}
+	stubPicker(t, true)
+	out.Reset()
+	if err := runStop(&out, stopCfg(), "", false); err != nil || out.Len() != 0 {
+		t.Errorf("every provider read: err = %v out = %q, want no note", err, out.String())
+	}
+}
+
+// TestStopDoesNotHaltAnExclusiveProviderThatWasNotProbed verifies `wt stop
+// mtplx` and `wt stop --all` leave alone an mtplx the inventory never probed
+// (a provider row with no location and no local model): with no probe there is
+// no "its port did not refuse", so it is "nothing running" as before, and
+// --all still halts omlx. Read as up, every --all ran `mtplx stop` there and
+// failed with "mtplx binary not found" on a machine without mtplx.
+func TestStopDoesNotHaltAnExclusiveProviderThatWasNotProbed(t *testing.T) {
+	for name, st := range map[string]survey.StopState{
+		"no family state":     {},
+		"a live session only": {Families: map[string]survey.FamilyState{"mtplx": {Sessions: 1, Users: []string{"mtplx/big"}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubStopState(t, st)
+			halted := stubHalt(t)
+			asked := stubStopConfirm(t, false)
+			var out bytes.Buffer
+			if err := runStop(&out, stopCfg(), "mtplx", false); err != nil {
+				t.Fatal(err)
+			}
+			if len(*halted) != 0 || out.String() != "wt: nothing running on mtplx\n" {
+				t.Errorf("wt stop mtplx: halted = %v out = %q, want no halt and the nothing-running note", *halted, out.String())
+			}
+			out.Reset()
+			if err := runStopAll(&out, stopCfg(), false); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(*halted, []string{"omlx"}) || len(*asked) != 0 {
+				t.Errorf("wt stop --all: halted = %v asked = %q, want omlx alone halted and no question", *halted, *asked)
+			}
+		})
+	}
+}
+
+// TestStopFailurePrintsNoUsage verifies a `wt stop <provider>` that fails
+// after its arguments were accepted — a declined question, a provider wt
+// cannot read, a failed halt — prints no usage text, and an argument mistake
+// still does. With an unread provider these are the ordinary output of a
+// routine command, and 14 lines of flags between two copies of the message
+// hide the one line that says what happened.
+func TestStopFailurePrintsNoUsage(t *testing.T) {
+	stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true}))
+	stubHalt(t)
+	run := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		cmd := stopCmd(&app{cfg: stopCfg()})
+		cmd.SetArgs(args)
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	got, err := run("ollama")
+	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on ollama") || strings.Contains(got, "Usage:") {
+		t.Errorf("wt stop ollama: err = %v out = %q, want the cannot-tell error and no usage text", err, got)
+	}
+	stubPicker(t, false, "ollama")
+	if got, err = run(); err == nil || strings.Contains(got, "Usage:") {
+		t.Errorf("wt stop: err = %v out = %q, want an error and no usage text", err, got)
+	}
+	if got, err = run("nosuch"); err == nil || !strings.Contains(got, "Usage:") {
+		t.Errorf("wt stop nosuch: err = %v out = %q, want the usage text for an argument mistake", err, got)
+	}
+	stdinTTY = func() bool { return false }
+	if got, err = run(); err == nil || !strings.Contains(got, "Usage:") {
+		t.Errorf("wt stop without a TTY: err = %v out = %q, want the usage text", err, got)
 	}
 }
 
@@ -418,13 +527,14 @@ func localProvider(id, baseURL, modelDir string) config.Provider {
 	return config.Provider{ID: id, Location: config.LocationLocal, ModelDir: modelDir, Auth: config.AuthConfig{Type: "none", BaseURL: baseURL}}
 }
 
-// TestStopAllHaltsALoadingMtplxThroughTheRealProbe is #308's reproduction,
+// TestStopHaltsAnMtplxItCannotReadThroughTheRealProbe is #308's reproduction,
 // through the real inventory probe: an mtplx server that answers /v1/models
-// with an empty list (a model still loading), or with an error, is halted by
-// `wt stop --all` and `wt stop mtplx`; one whose port refuses is not. The
-// commands printed "no running local models" / "nothing running on mtplx" and
-// exited 0 with the server up.
-func TestStopAllHaltsALoadingMtplxThroughTheRealProbe(t *testing.T) {
+// with an empty list, or with an error, is halted by `wt stop --all` and `wt
+// stop mtplx`; one whose port refuses is not. The commands printed "no running
+// local models" / "nothing running on mtplx" and exited 0 with the server up.
+// Neither case stands for a model that is still loading: an mtplx that has
+// not opened its port yet is the "refused" case, and is left alone.
+func TestStopHaltsAnMtplxItCannotReadThroughTheRealProbe(t *testing.T) {
 	for name, handler := range map[string]http.HandlerFunc{
 		"empty list": func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"data":[]}`) },
 		"error":      func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "busy", http.StatusServiceUnavailable) },

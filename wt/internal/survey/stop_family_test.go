@@ -161,3 +161,36 @@ func TestStopPickerReportsFamiliesItCouldNotRead(t *testing.T) {
 		t.Fatalf("offered = %v unknown = %v out = %q, want nothing offered, mtplx unknown, no output", offered, unknown, out.String())
 	}
 }
+
+// TestStopStateMarksOnlyProbedFamilies verifies FamilyState.Probed is set for
+// the families the inventory probed and for no other: a family known only
+// from a live session's model id, and a provider row the inventory does not
+// probe (no location, no local model), have none. `wt stop --all` halts mtplx
+// unless its port refused, and a family nobody probed must not read as "did
+// not refuse" — that ran `mtplx stop` on machines where mtplx is only a row.
+func TestStopStateMarksOnlyProbedFamilies(t *testing.T) {
+	h := &stopHarness{
+		snap: localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+			Down:      map[string]bool{},
+		},
+		counts: map[string]int{"mtplx/m": 1},
+	}
+	st := stopState(&config.Config{}, h.deps())
+	if !st.Families["omlx"].Probed {
+		t.Errorf("omlx = %+v, want Probed: the snapshot carries its status", st.Families["omlx"])
+	}
+	if m := st.Families["mtplx"]; m.Probed || m.Sessions != 1 {
+		t.Errorf("mtplx = %+v, want its session counted and Probed false", m)
+	}
+
+	// Through the real inventory: a row with no location and no local model
+	// is not probed at all (nothing is dialed here).
+	d := h.deps()
+	d.inventory = localmodels.Inventory
+	d.live = func() map[string]int { return nil }
+	st = stopState(&config.Config{Providers: []config.Provider{{ID: "mtplx"}}}, d)
+	if fs, ok := st.Families["mtplx"]; ok || fs.Probed {
+		t.Errorf("mtplx = %+v (present %v), want no entry for a row the inventory does not probe", fs, ok)
+	}
+}

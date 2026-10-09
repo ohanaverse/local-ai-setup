@@ -101,10 +101,15 @@ type Candidate struct {
 }
 
 // FamilyState is what one inventory round knows about a stoppable provider
-// family as a whole, whether or not it produced a candidate. The zero value —
-// a family the snapshot carries no status for — reads as trusted, up and
-// unused, as lifecycle.ProbeTrusted reads an absent status.
+// family as a whole, whether or not it produced a candidate. The zero value
+// is a family that was not probed: nothing is known about its server.
 type FamilyState struct {
+	// Probed: the inventory probed the family, so Untrusted and Down are an
+	// answer. False for a family the snapshot carries no status for — a
+	// provider row the inventory does not probe (no location and no local
+	// model), or a family known only from a live session's model id — whose
+	// Untrusted and Down are false because nobody asked.
+	Probed bool
 	// Untrusted: the probe could not say what the family is running
 	// (!lifecycle.ProbeTrusted), so it has no candidates whatever it serves.
 	Untrusted bool
@@ -152,7 +157,7 @@ func stopState(cfg *config.Config, d stopDeps) StopState {
 	st := StopState{Candidates: candidatesFrom(snap, d), Families: map[string]FamilyState{}}
 	for fam := range snap.Providers {
 		if lifecycle.CanStop(fam) {
-			st.Families[fam] = FamilyState{Untrusted: !lifecycle.ProbeTrusted(snap, fam), Down: snap.Down[fam]}
+			st.Families[fam] = FamilyState{Probed: true, Untrusted: !lifecycle.ProbeTrusted(snap, fam), Down: snap.Down[fam]}
 		}
 	}
 	for id, n := range d.live() {
@@ -187,10 +192,6 @@ func modelFamily(cfg *config.Config, id string) string {
 	}
 	prefix, _, _ := strings.Cut(id, "/")
 	return localmodels.Family(prefix)
-}
-
-func stopCandidates(cfg *config.Config, d stopDeps) []Candidate {
-	return candidatesFrom(d.inventory(cfg), d)
 }
 
 func candidatesFrom(snap localmodels.Snapshot, d stopDeps) []Candidate {

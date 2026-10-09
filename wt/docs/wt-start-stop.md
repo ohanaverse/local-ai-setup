@@ -11,7 +11,7 @@ wt stop ollama/qwen3.8:27b-mlx   # stop one model
 wt stop ollama                   # stop every running model of a provider
 wt stop omlx                     # halt the omlx service and every model in it
 wt stop <target> --yes           # skip the in-use confirmation
-wt stop --all                    # stop every running local model, then the omlx service
+wt stop --all                    # stop every running local model, then the omlx service (and an mtplx wt cannot read)
 ```
 
 ## `wt start [model]`
@@ -81,12 +81,20 @@ wt stop --all                    # stop every running local model, then the omlx
   (`wt: nothing running on <provider>`). For omlx it halts the
   service itself. Other names are an
   error.
-  - `wt stop mtplx` stops mtplx whenever its port answers, also when wt
-    cannot tell what it has loaded: a model that is still loading, or a
-    server that gave no usable answer within the probe's 2 seconds. It prints
-    `Stopping mtplx... done`, or `failed` and exits 1 when the port still
-    answers afterwards. Only a port that refuses the connection is
-    "nothing running".
+  - `wt stop mtplx` stops mtplx unless its port refuses the connection, also
+    when wt cannot tell what it has loaded: a server that answered with an
+    error, or gave no answer within the probe's 2 seconds. It prints
+    `Stopping mtplx... done`, or `failed` and exits 1 when the port is still
+    open afterwards. wt stops mtplx with mtplx's own `mtplx stop`, which
+    has to recognise the server on the port: when it does not (a server that
+    accepts the connection and answers nothing), the stop is `failed` with
+    mtplx's own message, and the process has to be ended by hand.
+    A port that refuses the connection is "nothing running" — and so is an
+    mtplx that has not opened its port yet: while `wt start` is still
+    loading a model behind a closed port, `wt stop mtplx` and `--all` print
+    that nothing is running and exit 0. Press Ctrl+C in the `wt start` that
+    is loading it. A provider row wt does not probe (no `location` and no
+    local model) is "nothing running" as well.
   - ollama's models are stopped one by one and its daemon is left up, so
     when ollama's probe gives no usable answer (and its port does not
     refuse) there is nothing wt can stop: `wt stop ollama` fails with
@@ -95,8 +103,8 @@ wt stop --all                    # stop every running local model, then the omlx
   and then halts the omlx service as `wt stop omlx` does — also when omlx has
   nothing loaded, since that is what frees its memory. omlx's models are not
   unloaded one by one first. mtplx is stopped as `wt stop mtplx` stops it:
-  whenever its port answers, also when wt cannot tell what it has loaded
-  (then as `Stopping mtplx...`, before omlx). It asks once when any of the
+  unless its port refuses the connection, also when wt cannot tell what it
+  has loaded (then as `Stopping mtplx...`, before omlx). It asks once when any of the
   models, or any provider it is about to stop as a whole, is in use by
   a live wt session (`--yes` skips the question). Every stop is attempted: if
   one fails the others still run, and the exit code is 1. When ollama's probe
@@ -118,15 +126,22 @@ wt stop --all                    # stop every running local model, then the omlx
   anything else on it stops nothing and the prompt asks again. With nothing
   to list it prints `wt: no running local models` and exits 0 — unless a
   provider's probe gave no usable answer, when it fails with
-  `cannot tell what is running on <provider>` (exit 1); `wt stop <provider>`
-  or `wt stop --all` stops a server wt cannot read.
+  `cannot tell what is running on <provider>` (exit 1). For mtplx and omlx
+  the message names the commands that stop a server wt cannot read
+  (`"wt stop mtplx" or "wt stop --all" stops mtplx`); for ollama there is
+  none, and it ends `nothing was stopped`. When the picker does have models
+  to list, it prints one line after it for a provider it could not read
+  (`wt: could not tell what is running on mtplx — ...`): the list is then
+  not everything that may be running.
 
 ### In-use confirmation
 
 If live wt sessions use the target, wt asks
 `... in use by N live wt session(s) (models); stop anyway? [y/N]` on the
 controlling terminal, default No. N is the total across the models being
-stopped (an mtplx provider counts once). `--yes` skips the question; with no terminal and no
+stopped (an mtplx provider counts once) — also for an mtplx stopped through a
+model wt could list, where a session recorded on another mtplx model is not
+counted. `--yes` skips the question; with no terminal and no
 `--yes`, the command fails and says to rerun with `--yes`.
 
 When a provider is stopped as a whole — `wt stop omlx`, `wt stop mtplx` with

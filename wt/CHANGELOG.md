@@ -213,13 +213,16 @@
 
 ### Fixed
 
-- `wt stop --all` and `wt stop mtplx` stop mtplx whenever its port answers,
-  also when wt cannot tell what it has loaded — a model that is still
-  loading, or a server that gave no usable answer within the probe's 2
-  seconds. They used to print `wt: no running local models` /
+- `wt stop --all` and `wt stop mtplx` stop mtplx unless its port refuses the
+  connection, also when wt cannot tell what it has loaded — a server that
+  answered with an error, with nothing loaded, or not at all within the
+  probe's 2 seconds. They used to print `wt: no running local models` /
   `wt: nothing running on mtplx` and exit 0 with the server still up (#308).
-  A port that refuses the connection is still "nothing running"; a stop that
-  leaves the port answering prints `failed` and exits 1.
+  A port that refuses the connection is still "nothing running", and that
+  includes an mtplx that has not opened its port yet: a load in progress
+  behind a closed port is not stopped by these commands (Ctrl+C the
+  `wt start` that is loading it). A stop that leaves the port answering
+  prints `failed` and exits 1.
 - `wt stop omlx`, `wt stop --all` and the mtplx stop above ask the in-use
   question whenever a live wt session uses any model of the provider they are
   about to stop as a whole, counted across the provider and not from the
@@ -236,7 +239,12 @@
   with `cannot tell what is running on ollama` (`--all` after stopping
   everything else), and bare `wt stop` with nothing to list exits 1 naming
   the provider it could not read. Each used to report nothing running and
-  exit 0.
+  exit 0. When the picker does list models, bare `wt stop` adds a line naming
+  a provider it could not read (`wt: could not tell what is running on
+  mtplx — "wt stop mtplx" or "wt stop --all" stops mtplx`); the command it
+  names is given only for mtplx and omlx, since no command stops an ollama wt
+  cannot read. None of these failures prints the usage text: `wt stop` now
+  shows it only for an argument mistake, as `wt stop --all` already did.
 - `wt stop --all` waits for the LiteLLM proxy restart one halted provider
   started before it halts the next (mtplx, then omlx), as it already did
   between the model stops and the first halt.
