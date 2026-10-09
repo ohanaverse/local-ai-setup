@@ -103,8 +103,9 @@ func TestUpdateLitellmPersists(t *testing.T) {
 
 // TestLitellmOwnEmptyTableIsATableNotAbsence pins that a config.toml with its
 // own zero-valued [litellm] (the user turned routing off in wt), or a bare
-// [litellm] header, decodes to a non-nil table with routing off. `wt litellm
-// status` and UpdateLitellm tell "off" from "never set" by that pointer.
+// [litellm] header, decodes to a non-nil table with routing off. The pointer
+// matters to the writer only: the next save keeps a non-nil table and omits
+// a nil one, so a table the user wrote is not dropped from the file.
 func TestLitellmOwnEmptyTableIsATableNotAbsence(t *testing.T) {
 	for _, body := range []string{
 		"default_tag = \"code\"\n[litellm]\nenabled = false\nurl = \"\"\napi_key = \"\"\n",
