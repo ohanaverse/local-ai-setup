@@ -22,6 +22,27 @@ type listFrame = tuilayout.ListFrame
 
 func clip(s string, width int) string { return tuilayout.Clip(s, width) }
 
+// modeLine is the line under the launcher's model table: the LiteLLM mode
+// and, after it, the highlighted row's price (costNote; "" for a row with
+// none). A price is shown whole or not at all, because the footer is clipped
+// at the terminal's edge with no sign of the cut, and a price cut there
+// reads as another price (0.33 as 0). So when the two do not fit the width
+// together the price takes the line and the mode gives way (at 40 columns:
+// always under "LiteLLM: off (direct)", and under "LiteLLM: on" for a price
+// with many digits); when the price does not fit even alone, the line is
+// the mode, as for a row with no price.
+func modeLine(mode, cost string, width int) string {
+	switch {
+	case cost == "":
+		return mode
+	case lipgloss.Width(mode)+3+lipgloss.Width(cost) <= width:
+		return mode + "   " + cost
+	case lipgloss.Width(cost) <= width:
+		return cost
+	}
+	return mode
+}
+
 func listExtent(l list.Model, avail int) (width, floor int) { return tuilayout.ListExtent(l, avail) }
 
 func fitList(height, minList int, frames ...listFrame) (listFrame, int) {
@@ -84,6 +105,14 @@ func (m *model) modelFrames() []listFrame {
 			mode := "LiteLLM: off (direct)"
 			if m.cfg != nil && m.cfg.IsLitellm() {
 				mode = "LiteLLM: on"
+			}
+			// And the highlighted row's price in force: the COST column is
+			// given up on a narrow terminal (a table with an OpenRouter id
+			// gives it up at 80 columns), and this line is not. It is on
+			// the mode line, not a line of its own, so the footer is as tall
+			// as it was and nothing about the fit changes.
+			if it, ok := m.models.SelectedItem().(*modelItem); ok {
+				mode = modeLine(mode, it.cost, inner)
 			}
 			// Enter's effect depends on the highlighted row — launch for a cloud or
 			// already-running row, start through the lifecycle engine for a

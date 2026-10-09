@@ -961,3 +961,163 @@ func TestAnOpenPickerKeepsThePricesItOpenedWith(t *testing.T) {
 		t.Errorf("the open picker shows the new window's price, want the one it opened with:\n%s", view)
 	}
 }
+
+// tencentCheap is Monday 2026-10-12 17:00 UTC: after 16:00, when the two
+// tencent models are at their cheaper level; deepseek is in its cheap window
+// and ollama in its peak hours.
+var tencentCheap = time.Date(2026, 10, 12, 17, 0, 0, 0, time.UTC)
+
+// modeLinePickerConfig is timedPickerConfig with the two tencent models
+// OpenRouter prices by time of day, as `wt cloud-sync` stores them: the
+// dearer level flat, the cheaper one a row from 16:00 UTC. Their prices are
+// the longest of the real time-priced models', which is what the mode line
+// has to fit at 40 columns.
+func modeLinePickerConfig(litellm bool) *config.Config {
+	cfg := timedPickerConfig()
+	evening := []config.CostWindow{{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}, Start: "16:00", End: "24:00"}}
+	for _, m := range []struct {
+		name       string
+		flat, late [3]float64
+	}{
+		{"hy3", [3]float64{0.132, 0.033, 0.528}, [3]float64{0.0825, 0.020625, 0.33}},
+		{"hy4-preview", [3]float64{0.834, 0.042, 2.501}, [3]float64{0.7506, 0.0378, 2.2509}},
+	} {
+		cfg.Models = append(cfg.Models, config.Model{ID: "claude/" + m.name, ProviderID: "claude", ModelName: m.name, Family: "hy", Tags: []string{"code"}, Cost: config.ModelCost{
+			InputPricePerMillion: f64(m.flat[0]), CachePricePerMillion: f64(m.flat[1]), OutputPricePerMillion: f64(m.flat[2]),
+			TimePrices: []config.TimePrice{{Label: "openrouter", Timezone: "UTC", Windows: evening,
+				InputPricePerMillion: f64(m.late[0]), CachePricePerMillion: f64(m.late[1]), OutputPricePerMillion: f64(m.late[2])}}}})
+	}
+	if !litellm {
+		cfg.SetLitellmForTest(config.LitellmState{})
+	}
+	return cfg
+}
+
+// TestModelPickerNamesTheHighlightedModelsPrice pins the mode line under the
+// table: beside the LiteLLM mode it names the price in force for the
+// highlighted model, `cost <input>/<cached>/<output>` per million tokens,
+// as `cost~` when that price depends on the time. The COST column is the
+// first thing a narrow table gives up after usage and survey, and a table
+// with an OpenRouter id in it gives it up at 80 columns, so without this
+// line the price a user picks by is on screen only on a wide terminal.
+//
+// The price is on the line whole or not at all. The footer is clipped at the
+// terminal's edge with no sign of the cut, so a price that did not fit used
+// to lose its last digits and read as another price (output 0.33 as 0) and
+// lose its mark; at 40 columns that was every price under "LiteLLM: off
+// (direct)" and two of the three real time-priced models under "LiteLLM:
+// on". Now the mode gives way to the price when both do not fit. The line
+// follows the cursor, is the mode alone for a row with no per-token price,
+// and costs no line.
+func TestModelPickerNamesTheHighlightedModelsPrice(t *testing.T) {
+	old := pickerNow
+	t.Cleanup(func() { pickerNow = old })
+	const deepseek, ollama, plain, hy3, hy4 = "claude/deepseek--deepseek-v4-pro-0813", "claude/glm-5.3:cloud", "claude/z-ai--glm-5.2", "claude/hy3", "claude/hy4-preview"
+	// fits: the note fits beside "LiteLLM: on" in the 36 columns a 40-column
+	// terminal leaves the line.
+	type note struct {
+		text string
+		fits bool
+	}
+	for _, c := range []struct {
+		name string
+		at   time.Time
+		want map[string]note
+	}{
+		{"deepseek dear, ollama off-peak, tencent dear", deepseekDear, map[string]note{
+			deepseek: {"cost~ 1.32/0.044/3.96", true}, ollama: {"cost~ 0.25/0.025/1", true}, plain: {"cost 0.06/0.059/6", true},
+			hy3: {"cost~ 0.132/0.033/0.528", false}, hy4: {"cost~ 0.834/0.042/2.501", false}}},
+		{"deepseek cheap, ollama peak, tencent cheap", tencentCheap, map[string]note{
+			deepseek: {"cost~ 0.66/0.022/1.98", true}, ollama: {"cost~ 0.5/0.05/2", true}, plain: {"cost 0.06/0.059/6", true},
+			hy3: {"cost~ 0.0825/0.020625/0.33", false}, hy4: {"cost~ 0.7506/0.0378/2.2509", false}}},
+	} {
+		pickerNow = func() time.Time { return c.at }
+		for _, litellm := range []bool{true, false} {
+			mode := "LiteLLM: off (direct)"
+			if litellm {
+				mode = "LiteLLM: on"
+			}
+			for _, size := range [][2]int{{80, 24}, {40, 12}, {120, 50}} {
+				width, height := size[0], size[1]
+				tempStateDir(t)
+				stubUsageStore(t)
+				stubRefcountStore(t)
+				stubInventory(t, runningOmlxSnapshot())
+				m := flowEnter(t, model{cfg: modeLinePickerConfig(litellm), agent: "claude", selectedPath: t.TempDir(), width: width, height: height}, "claude")
+				for id, n := range c.want {
+					want := mode + "   " + n.text
+					if width == 40 && !(litellm && n.fits) {
+						want = n.text
+					}
+					m.models.Select(indexOfID(m, id))
+					m = resized(t, m, width, height)
+					view := m.View()
+					assertFits(t, c.name+", on "+id, view, width, height)
+					// Exactly this line and no other with a price on it: the
+					// three numbers whole, the mark when the price depends on
+					// the time, and nothing after the last number.
+					found := false
+					for _, line := range strings.Split(view, "\n") {
+						switch {
+						case strings.TrimSpace(line) == want:
+							found = true
+						case strings.Contains(line, "cost"):
+							t.Errorf("%s, %s at %dx%d, on %s: the line %q names a price and is not %q", c.name, mode, width, height, id, strings.TrimSpace(line), want)
+						}
+					}
+					if !found {
+						t.Errorf("%s, %s at %dx%d, on %s: no line reads %q:\n%s", c.name, mode, width, height, id, want, view)
+					}
+				}
+				// A row with no per-token price in force (the fixture's local
+				// model, and its native one) leaves the line as it was.
+				for _, id := range []string{"omlx/qwen3.8", "claude/opus"} {
+					m.models.Select(indexOfID(m, id))
+					m = resized(t, m, width, height)
+					if view := m.View(); strings.Contains(view, "cost") || !strings.Contains(view, mode) {
+						t.Errorf("%s, %s at %dx%d, on %s: the mode line names a price or lacks the mode:\n%s", c.name, mode, width, height, id, view)
+					}
+				}
+			}
+		}
+	}
+
+	// modeLine, which decides what the line holds: both when both fit, the
+	// price alone when it fits alone, and the mode alone otherwise. Never a
+	// part of a price.
+	for _, c := range []struct {
+		mode, cost string
+		width      int
+		want       string
+	}{
+		{"LiteLLM: on", "", 36, "LiteLLM: on"},
+		{"LiteLLM: on", "cost~ 1.32/0.044/3.96", 36, "LiteLLM: on   cost~ 1.32/0.044/3.96"},
+		{"LiteLLM: on", "cost~ 1.32/0.044/3.96", 35, "LiteLLM: on   cost~ 1.32/0.044/3.96"},
+		{"LiteLLM: on", "cost~ 1.32/0.044/3.96", 34, "cost~ 1.32/0.044/3.96"},
+		{"LiteLLM: on", "cost~ 0.0825/0.020625/0.33", 36, "cost~ 0.0825/0.020625/0.33"},
+		{"LiteLLM: off (direct)", "cost 0.06/0.059/6", 36, "cost 0.06/0.059/6"},
+		{"LiteLLM: off (direct)", "cost~ 0.66/0.022/1.98", 76, "LiteLLM: off (direct)   cost~ 0.66/0.022/1.98"},
+		{"LiteLLM: on", "cost~ 0.000123456/0.000123456/0.000123456", 36, "LiteLLM: on"},
+		{"LiteLLM: on", "cost~ 0.000123456/0.000123456/0.000123456", 41, "cost~ 0.000123456/0.000123456/0.000123456"},
+	} {
+		if got := modeLine(c.mode, c.cost, c.width); got != c.want {
+			t.Errorf("modeLine(%q, %q, %d) = %q, want %q", c.mode, c.cost, c.width, got, c.want)
+		}
+	}
+
+	// costNote, which the price is made from: every price that is missing is
+	// a dash, a model with no price at all has no note, and neither has a
+	// discovered row.
+	row := timedTableRows(ollamaPeak)[0]
+	row.Model.Cost.CachePricePerMillion, row.Model.Cost.TimePrices[0].CachePricePerMillion = nil, nil
+	if got := costNote(row); got != "cost~ 0.66/-/1.98" {
+		t.Errorf("costNote with no cached-input price = %q", got)
+	}
+	row.Discovered = true
+	if got := costNote(row); got != "" {
+		t.Errorf("costNote of a discovered row = %q, want none", got)
+	}
+	if got := costNote(tableRow{Row: catalog.Row{Model: config.Model{ID: "x", Cost: config.ModelCost{SubscriptionPrice: f64(20)}}}}); got != "" {
+		t.Errorf("costNote of a subscription-only model = %q, want none", got)
+	}
+}

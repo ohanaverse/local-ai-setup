@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"unicode/utf8"
 
@@ -56,6 +57,33 @@ const (
 	timePricedMark = "~"
 	costLegend     = "COST (~ varies by time)"
 )
+
+// costNote is a row's price in force as the launcher's mode line names it
+// when the row is highlighted: `cost 0.66/0.022/1.98`, input, cached input
+// and output per million tokens, a missing one as a dash. When the model's
+// price depends on the time the word is `cost~`: the mark comes before the
+// numbers, so nothing that shortens the line can leave the numbers without
+// it. It is "" for a row that shows no price (a discovered row) or has none
+// in force. The numbers are written short (six significant digits, no
+// padding) so that the note fits a 40-column terminal (modeLine); the COST
+// column keeps its fixed width.
+func costNote(r tableRow) string {
+	p := r.price()
+	if r.Discovered || p.Input == nil && p.Cache == nil && p.Output == nil {
+		return ""
+	}
+	short := func(v *float64) string {
+		if v == nil {
+			return "-"
+		}
+		return strconv.FormatFloat(*v, 'g', 6, 64)
+	}
+	word := "cost"
+	if r.Model.Cost.TimePriced() {
+		word += timePricedMark
+	}
+	return word + " " + short(p.Input) + "/" + short(p.Cache) + "/" + short(p.Output)
+}
 
 // costCell is a row's COST cell: the three prices in force for it
 // (tableRow.price), marked when the model's price depends on the time.
@@ -200,7 +228,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			survey.FormatPickerSegment(r.stats),
 		}
 		cols.Widths[colSurvey] = maxRunes(cols.Widths[colSurvey], cells[colSurvey])
-		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID]}
+		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r)}
 		switch r.Action() {
 		case catalog.ActionBlock:
 			it.blocked = r.BlockReason()
