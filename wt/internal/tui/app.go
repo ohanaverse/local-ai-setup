@@ -505,14 +505,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				// check is skipped when this agent×model pairing will
 				// actually route through LiteLLM (any upstream may serve
 				// the model) and when the model is not served by ollama —
-				// ollamacheck only probes the local ollama daemon. Uses the
+				// ollamacheck only asks the ollama daemon the registry
+				// names. Uses the
 				// per-model resolved route rather than the raw
 				// cfg.IsLitellm() toggle so a protocol-forced LiteLLM route
 				// (e.g. codex+ollama) isn't spuriously blocked by this
 				// local-availability check.
 				route, _ := m.cfg.ResolveRoute(highlighted.model, agents.ProtocolsFor(m.agent))
 				if !route.Litellm && ollamacheck.IsOllamaModel(highlighted.model) {
-					ok, err := ollamacheck.Check(highlighted.model)
+					ok, err := ollamacheck.Check(m.cfg, highlighted.model)
 					if err != nil {
 						m.status = "ollama check failed: " + err.Error()
 						return m, nil
