@@ -114,9 +114,10 @@ func pidGone(pid int) bool {
 }
 
 // TestMtplxStartSpawnsWaitsWarms verifies the full happy path: the exact serve
-// argv (identical to modelman's), a pidfile and log at the configured paths,
-// stages starting -> waiting-for-model -> warming, and a server that answers.
-// Matching modelman's argv/pidfile keeps the two tools interoperable.
+// argv, a pidfile and log at the configured paths, stages starting ->
+// waiting-for-model -> warming, and a server that answers. llmbench's mtplx
+// backend serves with the same argv and tracks the same pidfile, so either
+// tool can stop or find the server the other started.
 func TestMtplxStartSpawnsWaitsWarms(t *testing.T) {
 	e, cfg, port, argvFile := mtplxEnv(t, "serve", 0)
 	var stages []Stage
@@ -209,9 +210,9 @@ func TestMtplxMissingBinaryAndPortBusy(t *testing.T) {
 }
 
 // TestMtplxStopRunsMtplxStopAndConfirmsPortClosed verifies replacement stop
-// runs `mtplx stop --port N --grace-seconds 10` (modelman's command) and only
-// succeeds once the port really closed; a stop that leaves the port open
-// surfaces the command's own error text.
+// runs `mtplx stop --port N --grace-seconds 10` (the command llmbench's mtplx
+// backend runs too) and only succeeds once the port really closed; a stop
+// that leaves the port open surfaces the command's own error text.
 func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 	srv, addr := serveFree(t, chatHandler())
 	_, portStr, _ := net.SplitHostPort(addr)
@@ -243,14 +244,16 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 }
 
 // TestDefaultEnvRegistersMtplx verifies the production env wires mtplx as a
-// single-model backend with modelman's pidfile and log paths.
+// single-model backend with the pidfile and log paths llmbench's mtplx
+// backend uses (MTPLX_PIDFILE and MTPLX_LOG in its backends/mtplx.py). With
+// two paths, a server one tool started would be invisible to the other.
 func TestDefaultEnvRegistersMtplx(t *testing.T) {
 	e := defaultEnv()
 	if e.backends["mtplx"] == nil || e.backends["mtplx"].tenancy() != Exclusive {
 		t.Fatal("mtplx backend missing or not single-model")
 	}
 	if e.mtplxProc.pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.mtplxProc.logfile != "/tmp/local-ai-setup-mtplx.log" {
-		t.Errorf("mtplxProc = %+v, want modelman's paths", e.mtplxProc)
+		t.Errorf("mtplxProc = %+v, want the paths llmbench's mtplx backend uses", e.mtplxProc)
 	}
 }
 
@@ -277,7 +280,7 @@ func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
 
 // TestLogTailReadsOnlyTheTail verifies logTail returns up to the last max bytes
 // of a log, and nothing when the file is missing. The mtplx log is append-only
-// and shared with modelman, so it grows across every start; a failed start must
+// and shared with llmbench, so it grows across every start; a failed start must
 // not depend on the whole file fitting in memory to show a 512-byte tail. The
 // boundary cases below pin the behaviour at the edges: max == size must return
 // all N bytes (at equality the `>`-vs-`>=` choice is behaviourally identical, so
@@ -327,7 +330,7 @@ func TestLogTailReadsOnlyTheTail(t *testing.T) {
 // guarantee that exists to make logTail's "at most max bytes" promise true even
 // when more bytes arrive between sampling the size and reading. It matters
 // because a failed start reads this tail to explain itself, and the log is
-// shared with modelman and appended by a live subprocess — so "more arrived
+// shared with llmbench and appended by a live subprocess — so "more arrived
 // after the stat" is reachable exactly when the tail is read.
 //
 // A regular file cannot reach the clamp: when the file is longer than max the

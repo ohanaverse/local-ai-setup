@@ -204,7 +204,7 @@ func TestEncodeNamesTheTableOfAValueItCannotWrite(t *testing.T) {
 
 // TestEncodeRefusesTextThatWouldNotReadBack pins the values Encode could
 // print but no reader would give back: a year that is not four digits is not
-// TOML at all (the registry would stop loading in wt and modelman alike), a
+// TOML at all (the registry would stop loading in wt and llmbench alike), a
 // UTC offset with seconds is printed without them (another instant), and a
 // string or key that is not UTF-8 would be written with U+FFFD in place of
 // each bad byte. Each is an error, as any other value Encode cannot write is.

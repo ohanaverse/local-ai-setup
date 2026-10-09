@@ -30,7 +30,7 @@ def test_run_records_latest_even_when_restore_failed(tmp_path):
 
     def _raise(*args, **kwargs):
         raise WorkloadRunSavedButRestoreFailed(
-            f"providers failed to restore (saved to {run_dir}): llamacpp down",
+            f"providers failed to restore (saved to {run_dir}): omlx down",
             run_dir=run_dir,
             run=run,
         )
@@ -50,7 +50,7 @@ def test_run_records_latest_even_when_restore_failed(tmp_path):
             ["run", "--results-dir", str(tmp_path)],
         )
         assert result.exit_code == 1
-        assert "llamacpp down" in result.output
+        assert "omlx down" in result.output
         assert mock_save.called
         assert state.extra["benchmarks"]["last_run_dir"] == str(run_dir)
 

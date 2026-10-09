@@ -290,14 +290,12 @@ func TestResolveSecretExecMemoized(t *testing.T) {
 func TestPath(t *testing.T) {
 	// With XDG_CONFIG_HOME set
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	if got := Path(); got != "/custom/xdg/agent-wt/config.toml" {
 		t.Errorf("Path() = %q, want %q", got, "/custom/xdg/agent-wt/config.toml")
 	}
 
 	// Without XDG_CONFIG_HOME — falls back to ~/.config
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	home, _ := os.UserHomeDir()
 	want := filepath.Join(home, ".config", "agent-wt", "config.toml")
 	if got := Path(); got != want {
@@ -306,12 +304,10 @@ func TestPath(t *testing.T) {
 }
 
 // First-run experience: when no config file exists, Load must return a usable
-// default Config (not an error). The modelman-owned registry.toml must exist
-// (seeded by `modelman migrate`); with an empty registry, Load returns an
-// empty catalog.
+// default Config (not an error). registry.toml must exist (`wt model init`
+// creates it); with an empty registry, Load returns an empty catalog.
 func TestLoad_FileNotExist(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg, err := Load()
@@ -332,7 +328,6 @@ func TestLoad_FileNotExist(t *testing.T) {
 // follows.
 func TestLoad_ValidConfig(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
@@ -410,7 +405,6 @@ tags = ["code", "design"]
 // surface the problem rather than silently using defaults.
 func TestLoad_BadTOML(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`this is not toml {{{`), 0644)
@@ -794,11 +788,10 @@ func TestHasTag(t *testing.T) {
 }
 
 // Save writes config.toml atomically via temp file + rename. Providers and
-// models are modelman-owned (registry.toml) and are never persisted by wt, so
-// a Save of a config carrying providers must not write them to disk.
+// models belong to registry.toml and are never written to config.toml, so a
+// Save of a config carrying providers must not write them to disk.
 func TestSave(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg := &Config{
@@ -817,10 +810,10 @@ func TestSave(t *testing.T) {
 	if loaded.DefaultTag != "code" {
 		t.Errorf("DefaultTag = %q, want %q", loaded.DefaultTag, "code")
 	}
-	// Save trims providers/models (modelman owns registry.toml), so the
+	// Save trims providers/models (they belong to registry.toml), so the
 	// saved config.toml has no providers and Load returns an empty catalog.
 	if len(loaded.Providers) != 0 {
-		t.Errorf("Providers = %v, want 0 (providers are modelman-owned, not saved by wt)", loaded.Providers)
+		t.Errorf("Providers = %v, want 0 (providers belong to registry.toml, not config.toml)", loaded.Providers)
 	}
 }
 
@@ -907,7 +900,6 @@ func TestDeriveNative(t *testing.T) {
 // test pins the Load()-level wiring.
 func TestLoad_DerivesNativeFromRegistryAuth(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
@@ -1161,7 +1153,7 @@ func TestLitellmDirectByDefault(t *testing.T) {
 }
 
 // TestInCatalogNativeAlways asserts that native models are always in the
-// catalog, even with no modelman state at all. Native providers cannot route
+// catalog, with nothing but the row itself. Native providers cannot route
 // through LiteLLM, so hiding them would make the agent unusable.
 func TestInCatalogNativeAlways(t *testing.T) {
 	cfg := &Config{}
@@ -1172,10 +1164,10 @@ func TestInCatalogNativeAlways(t *testing.T) {
 }
 
 // TestInCatalogNonNativeAlwaysIncluded asserts that a non-native cloud model
-// is in the catalog whenever its provider resolves — modelman's per-model
-// state no longer gates inclusion (#179: configured means exposed). Before #179 a
-// cloud model with no modelman.toml state row was hidden; a regression here
-// would again make wt advertise only models someone had manually exposed.
+// is in the catalog whenever its provider resolves — no stored per-model
+// flag gates inclusion (#179: configured means exposed). Before #179 a cloud
+// model without an "exposed" flag in a state file was hidden; a regression
+// here would again make wt advertise only models someone had marked by hand.
 func TestInCatalogNonNativeAlwaysIncluded(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{{ID: "cloudprov", Location: LocationCloud}},
@@ -1198,7 +1190,6 @@ func TestInCatalogNonNativeAlwaysIncluded(t *testing.T) {
 func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, dir, "providers = []\nmodels = []\n")
 	cfgDir := Dir()
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
@@ -1221,9 +1212,9 @@ func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
 	}
 }
 
-// TestLitellmEnabledMissingURLFailsAtLaunchNotValidate: wt cannot repair
-// modelman.toml, so a bad value there must not fail Validate() (which
-// runs on every wt invocation, including `wt config`) — it must only
+// TestLitellmEnabledMissingURLFailsAtLaunchNotValidate: routing that is on
+// with no URL must not fail Validate(), which runs on every wt invocation,
+// `wt litellm set` (the command that repairs it) included. It must only
 // surface when a route is actually resolved at launch.
 func TestLitellmEnabledMissingURLFailsAtLaunchNotValidate(t *testing.T) {
 	cfg := &Config{

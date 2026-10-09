@@ -96,21 +96,38 @@ def test_credentials_are_not_read_from_this_machine(monkeypatch):
 
 
 @pytest.fixture(scope="module")
-def wt_registry_exported_in_the_shell(tmp_path_factory):
-    """WT_REGISTRY as a developer's shell would export it. Module scope, so it
-    is set before conftest's function-scoped autouse fixtures run."""
+def registry_names_exported_in_the_shell(tmp_path_factory):
+    """WT_REGISTRY and MODELMAN_REGISTRY as a developer's shell would export
+    them, both naming the same file. Module scope, so they are set before
+    conftest's function-scoped autouse fixtures run. Yields the exported path."""
+    path = tmp_path_factory.mktemp("shell") / "exported.toml"
     exported = pytest.MonkeyPatch()
-    exported.setenv("WT_REGISTRY", str(tmp_path_factory.mktemp("shell") / "exported.toml"))
-    yield
+    exported.setenv("WT_REGISTRY", str(path))
+    exported.setenv("MODELMAN_REGISTRY", str(path))
+    yield path
     exported.undo()
 
 
-def test_conftest_clears_an_inherited_wt_registry(wt_registry_exported_in_the_shell):
-    """conftest must remove a WT_REGISTRY the shell exported: it outranks the
-    scratch MODELMAN_REGISTRY conftest sets, so every test that loads the
-    registry would read the developer's real one."""
-    assert "WT_REGISTRY" not in os.environ
-    assert registry.registry_path() == Path(os.environ["MODELMAN_REGISTRY"])
+def test_conftest_replaces_an_inherited_wt_registry(registry_names_exported_in_the_shell):
+    """conftest must name its scratch registry over a WT_REGISTRY the shell
+    exported: that name outranks every other, so if the exported value
+    survived, every test that loads the registry would read the developer's
+    real one."""
+    assert os.environ["WT_REGISTRY"] != str(registry_names_exported_in_the_shell)
+    assert registry.registry_path() == Path(os.environ["WT_REGISTRY"])
+    assert registry.registry_path() != registry_names_exported_in_the_shell
+
+
+def test_conftest_clears_an_inherited_modelman_registry(
+    registry_names_exported_in_the_shell, monkeypatch
+):
+    """conftest must not let a MODELMAN_REGISTRY the shell exported survive:
+    a test that removes WT_REGISTRY would fall through to it and read the
+    developer's real registry."""
+    assert "MODELMAN_REGISTRY" not in os.environ
+    monkeypatch.delenv("WT_REGISTRY")
+    assert registry.registry_path() != registry_names_exported_in_the_shell
+    assert registry.registry_path().is_relative_to(Path.home())
 
 
 def test_default_config_paths_are_under_the_scratch_home(monkeypatch):

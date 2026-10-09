@@ -181,8 +181,8 @@ func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
 // TestStatsFamilyNoteNamesTheRepairThatWorks pins the repair in the note
 // `wt stats --family` prints when the configuration did not load. The note
 // has to agree with what every refusing command says for the same error: it
-// used to tell a user with no registry to run `modelman migrate`, right
-// after quoting an error that says `wt model init` (#291).
+// used to tell a user with no registry to run a command of the retired
+// modelman, right after quoting an error that says `wt model init` (#291).
 func TestStatsFamilyNoteNamesTheRepairThatWorks(t *testing.T) {
 	for _, c := range loadErrorCases() {
 		t.Run(c.name, func(t *testing.T) {

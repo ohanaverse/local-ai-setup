@@ -142,8 +142,10 @@ func TestNestedInlineRowsKeepTheirOwnKeyOrder(t *testing.T) {
 // TestHandWrittenFormsGetTomliWsOrder pins the forms tomli-w never writes
 // but a person does: a dotted key, a table whose parents are never declared,
 // and a table continued after another one. They must come out in the order
-// Python's tomllib reads them, or the first wt write after a hand edit would
-// differ from the first modelman write after the same edit.
+// Python's tomllib reads them: that is the order tomli-w writes a file in,
+// the one form wt's writer has (docs/contracts/registry.written.sample.toml),
+// so a hand edit must not make the next wt write lay the file out another
+// way.
 func TestHandWrittenFormsGetTomliWsOrder(t *testing.T) {
 	const src = `top.dotted = 1
 plain = 2

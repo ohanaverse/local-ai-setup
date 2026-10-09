@@ -102,7 +102,8 @@ func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 		t.Fatalf("err = %v, want a cannot-be-smoke-tested message", err)
 	}
 	// The advice must name a command that actually changes the state wt reads:
-	// after the routing-state move, `modelman litellm ...` no longer does.
+	// routing state lives in wt's config.toml, and `wt litellm ...` is what
+	// writes it. The retired `modelman litellm ...` must not come back.
 	if !strings.Contains(err.Error(), "`wt litellm status`") || strings.Contains(err.Error(), "modelman litellm") {
 		t.Fatalf("hint = %v, want `wt litellm status`", err)
 	}

@@ -975,9 +975,9 @@ func buildTestConfigWithModels(models ...config.Model) *config.Config {
 }
 
 // TestEligibleModelsIncludesUnflagged asserts that cfg.EligibleModels returns
-// every model whose provider resolves — no modelman.toml flag gates catalog
-// membership (#179: configured means exposed); a model modelman has not
-// marked ready is listed too. Before #179 an unflagged model was hidden from
+// every model whose provider resolves — no stored flag gates catalog
+// membership (#179: configured means exposed); a model nothing has marked
+// ready is listed too. Before #179 an unflagged model was hidden from
 // the picker; a regression would again make configured models invisible
 // until someone flagged them.
 func TestEligibleModelsIncludesUnflagged(t *testing.T) {

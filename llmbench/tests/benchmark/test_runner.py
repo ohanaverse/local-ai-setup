@@ -51,7 +51,7 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8080"})()
 
     def _fail_restore():
-        raise BenchmarkError("llamacpp down")
+        raise BenchmarkError("omlx down")
 
     def _fake_route(session, target, route, url, workload, pass_number):
         return TargetResult(

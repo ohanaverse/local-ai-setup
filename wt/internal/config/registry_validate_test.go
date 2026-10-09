@@ -11,12 +11,13 @@ import (
 // validation rule. A row this write did not touch may be as broken as it
 // likes — the write may be the edit or removal that repairs the file, and a
 // hand-edited bad row must not block every price refresh. A row this write
-// did touch must pass wt's typed decode and modelman's row rules, or nothing
+// did touch must pass wt's typed decode and the registry's row rules (the
+// required fields and the cost rules of registry_validate.go), or nothing
 // is written. (The rules that need other rows — a location that resolves, a
 // provider_id that names a provider — are not checked here yet.)
 func TestUpdateRegistryValidatesOnlyTheRowsItTouched(t *testing.T) {
-	// ollama/broken has no family and a negative price: modelman refuses the
-	// first, both tools the second.
+	// ollama/broken has no family and a negative price: a write that
+	// touched it would be refused on either count.
 	const withBadRow = docRegistry + `
 [[models]]
 id = "ollama/broken"
@@ -166,7 +167,7 @@ repo = 7
 			}
 		})
 	}
-	// The accepting side: every shape of cost row modelman loads must get
+	// The accepting side: every shape of cost row the schema allows must get
 	// through, or a price refresh or an edit of a good row is refused.
 	offPeak := []map[string]any{{
 		"label": "off-peak", "timezone": "UTC", "input_price_per_million": 1.5,

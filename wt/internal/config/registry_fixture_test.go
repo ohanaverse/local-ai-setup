@@ -13,7 +13,7 @@ import (
 // llmbench/tests/test_registry.py — a schema change that one reader misses
 // fails here instead of wt silently dropping a provider or a price.
 func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
 	providers, models, err := loadRegistry()
 	if err != nil {
@@ -30,10 +30,10 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	if openrouter.ID != "openrouter" || openrouter.Auth.Type != "api_key" || openrouter.Auth.SecretRef != "OPENROUTER_API_KEY" {
 		t.Errorf("openrouter provider decoded wrong: %+v", openrouter)
 	}
-	// The native provider's location must match what production writers
-	// emit (modelman's sync_agent_providers, wt's migrate.go) — a fixture
-	// pinned to a shape modelman never writes lets location-keyed logic
-	// pass CI while breaking on real registries.
+	// The native provider's location must match what the writers emit
+	// (`wt model init`'s agent rows, wt's migrate.go) — a fixture pinned to
+	// a shape no writer produces lets location-keyed logic pass CI while
+	// breaking on real registries.
 	if agy.ID != "agy" || agy.Auth.Type != "native" || agy.Location != LocationCloud {
 		t.Errorf("agy provider decoded wrong: %+v", agy)
 	}
@@ -43,11 +43,11 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("pinned-cloud provider decoded wrong: %+v", pinned)
 	}
 
-	// The mlx_lm_server provider must decode with the shape modelman's
-	// default template writes (auth.type "none", OpenAI-compatible
-	// base_url, location "local") — a fixture pinned to a shape modelman
-	// never writes lets location-keyed logic pass CI while breaking on
-	// real registries.
+	// The mlx_lm_server provider must decode with the shape `wt model
+	// init`'s default row has (auth.type "none", OpenAI-compatible
+	// base_url, location "local") — a fixture pinned to a shape no writer
+	// produces lets location-keyed logic pass CI while breaking on real
+	// registries.
 	mlx := providers[4]
 	if mlx.ID != "mlx_lm_server" || mlx.Auth.Type != "none" || mlx.Auth.BaseURL != "http://localhost:8001/v1" || mlx.Location != LocationLocal {
 		t.Errorf("mlx_lm_server provider decoded wrong: %+v", mlx)
@@ -95,7 +95,7 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 // uses a local decode struct so it keeps working before the production
 // Model.Cost field is added in the next task.
 func TestRegistryFixtureCost(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
 	path := RegistryPath()
 	data, err := os.ReadFile(path)
@@ -155,7 +155,7 @@ func TestRegistryFixtureCost(t *testing.T) {
 // fail on model resolution. The fixture (docs/contracts/registry.sample.toml)
 // is read by this test and by llmbench/tests/test_registry.py.
 func TestRegistryFixtureNativeExposure(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
 	providers, models, err := loadRegistry()
 	if err != nil {
@@ -177,11 +177,13 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 	}
 }
 
-// TestRegistryFixtureProviderProtocols pins that wt decodes the shared
-// `protocols` array the same way modelman does; ResolveRoute's direct-vs-
-// litellm decision (Task 5) depends on both languages agreeing on this.
+// TestRegistryFixtureProviderProtocols pins how wt decodes a provider's
+// `protocols` array from the fixture: the listed protocols, in order.
+// ResolveRoute's direct-vs-litellm decision reads it, so a protocol lost in
+// decoding would send that provider's models through LiteLLM when the agent
+// could dial them directly.
 func TestRegistryFixtureProviderProtocols(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
 	providers, _, err := loadRegistry()
 	if err != nil {
@@ -216,7 +218,7 @@ func equalProtocols(a, b []Protocol) bool {
 // so a model on a location=cloud provider is in the catalog even when its
 // own row omits `location`.
 func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
 	providers, models, err := loadRegistry()
 	if err != nil {
@@ -244,9 +246,12 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 
 // TestRegistryFixtureTimePrices pins the time-windowed pricing rows
 // (docs/superpowers/specs/2026-09-28-ollama-catalog-sync-design.md) that
-// modelman writes under [models.cost]. wt only decodes them today.
+// `wt cloud-sync` writes under [models.cost]. wt only decodes them today
+// (nothing applies a window yet: see TimePrice), so this pins that a registry
+// holding them still loads and that each window and price comes back as
+// written, ready for the code that will apply them.
 func TestRegistryFixtureTimePrices(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
 	_, models, err := loadRegistry()
 	if err != nil {
@@ -290,7 +295,7 @@ func TestRegistryFixtureTimePrices(t *testing.T) {
 // [[header]] windows — and a reader that choked on any of them would fail on
 // the user's real registry after the first wt write.
 func TestTypedReaderLoadsTheWrittenFixture(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.written.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.written.sample.toml")
 
 	providers, models, err := loadRegistry()
 	if err != nil {

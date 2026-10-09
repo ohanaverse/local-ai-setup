@@ -196,15 +196,14 @@ func TestRun_EmptyConfig_Launches(t *testing.T) {
 
 // TestLoadedMsgLocationErrorNamesTheRegistry pins #209. `wt config` is the one
 // command that opens on an invalid config, so the user can repair it — but a
-// mistyped location is in registry.toml, modelman's file, which this editor
-// cannot edit. The status line printed only the raw error, so the screen built
+// mistyped location is in a registry.toml row, and the repair is an edit of
+// that file. The status line printed only the raw error, so the screen built
 // for repair was the only place that did not say where the repair is; every
 // other command already names the file. It must carry the same hint, from the
 // same source, and any other config error keeps its wording with no hint (this
 // editor is where those are fixed).
 func TestLoadedMsgLocationErrorNamesTheRegistry(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "omlx", Location: "Local"}},
@@ -234,8 +233,7 @@ func TestLoadedMsgLocationErrorNamesTheRegistry(t *testing.T) {
 // the extra lines take, so the view is still no taller than the terminal
 // (Bubble Tea drops a too-tall view's TOP lines: the title and this status).
 func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "omlx", Location: "Local"}},

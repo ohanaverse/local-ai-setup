@@ -152,14 +152,14 @@ func TestQueryInvocation(t *testing.T) {
 }
 
 // TestQuerySQL pins the statement itself: one aggregate over
-// "LiteLLM_SpendLogs" grouped by model_group, the columns modelman's report
+// "LiteLLM_SpendLogs" grouped by model_group, the columns `wt stats` shows
 // summed, and a window written as zone-less UTC literals whatever zone the
 // caller's times are in. The window is (start, end]: exclusive at its start
 // and inclusive at its end, the rule usage.AllCounts buckets launches by
-// (#298). modelman's `"startTime" >= start` counted a request logged exactly
-// at the start, where the launch that sent it is not counted, and `wt stats`
-// then showed requests with 0 launches. A times-in-local-zone literal here
-// would shift the window by the machine's UTC offset.
+// (#298). An inclusive start (`"startTime" >= start`) counts a request logged
+// exactly at the start, where the launch that sent it is not counted, and
+// `wt stats` then shows requests with 0 launches. A times-in-local-zone
+// literal here would shift the window by the machine's UTC offset.
 func TestQuerySQL(t *testing.T) {
 	// A fixed zone needs no tzdata, so this never skips.
 	est := time.FixedZone("EST", -5*3600)

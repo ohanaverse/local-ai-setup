@@ -392,7 +392,8 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 					continue
 				}
 				if e.ProviderID == ollamaProvider {
-					// Single quotes: Python's repr, as format_plan prints it.
+					// Single quotes, the form the plan has always printed this name in
+					// (TestPlanIDCollisionWarns).
 					where = fmt.Sprintf("with model_name '%s'", e.ModelName)
 				} else {
 					where = "on another provider"

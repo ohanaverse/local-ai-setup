@@ -76,7 +76,8 @@ days = [
 end = "24:00"
 `
 
-// The registry the Apply tests start from, as modelman writes one: an entry
+// The registry the Apply tests start from, in the form registries on disk
+// have (tomli-w's, which wt's writer reproduces): an entry
 // to update (integer prices, a key in its cost table wt does not model, a
 // hand-added key on the row, a time_prices row of the user's), one to
 // re-tag, one off the page, and a local model that must come through
@@ -178,10 +179,10 @@ func applyCatalog(t *testing.T, catalog Catalog, pulled []string, resolved map[s
 	return done, changed
 }
 
-// TestStamp pins the pricing_updated_at format to modelman's: UTC, whole
-// seconds, a numeric +00:00 offset. Both tools write the key and modelman
-// reads it back into its model form, so a second spelling would be a second
-// format to read forever.
+// TestStamp pins the pricing_updated_at format: UTC, whole seconds, a numeric
+// +00:00 offset. Registries on disk already hold stamps in this spelling and
+// config.Model.PricingUpdated reads it back for the stale-price notice, so a
+// second spelling would be a second format to read forever.
 func TestStamp(t *testing.T) {
 	if got := Stamp(applyNow); got != applyStamp {
 		t.Errorf("Stamp = %q, want %q", got, applyStamp)
@@ -223,7 +224,7 @@ func TestCatalogApplyWritesWhatThePlanSays(t *testing.T) {
 		// The user's time_prices row byte for byte, and the off-peak row the
 		// catalog owns added after it.
 		"subscription_period = \"month\"\n\n" + userTimePrice + "\n[[models.cost.time_prices]]\nlabel = \"off-peak\"\ntimezone = \"UTC\"\ninput_price_per_million = 0.66\ncache_price_per_million = 0.022\noutput_price_per_million = 1.98\n",
-		// The new row, whole, laid out as modelman lays one out.
+		// The new row, whole, its keys in schema order.
 		"[[models]]\ncatalog_name = \"glm-5.3\"\nid = \"ollama/glm-5.3:cloud\"\nfamily = \"glm-5.3\"\nprovider_id = \"ollama\"\nmodel_name = \"glm-5.3:cloud\"\nlocation = \"cloud\"\nsource = \"curated\"\ntags = []\npricing_updated_at = \"" + applyStamp + "\"\n\n" +
 			"[models.cost]\ninput_price_per_million = 1.4\ncache_price_per_million = 0.26\noutput_price_per_million = 4.4\nsubscription_price = 100.0\nsubscription_period = \"month\"\n",
 		// The local model, byte for byte.
@@ -258,7 +259,7 @@ func TestCatalogApplyWritesWhatThePlanSays(t *testing.T) {
 		t.Errorf("re-tagged cost = %+v, want the page's 0.5/-/1.5 and the old subscription", c)
 	}
 	if CatalogNameKey != "catalog_name" || OffpeakLabel != "off-peak" {
-		t.Fatalf("CatalogNameKey = %q, OffpeakLabel = %q: both are spelled in registries modelman wrote", CatalogNameKey, OffpeakLabel)
+		t.Fatalf("CatalogNameKey = %q, OffpeakLabel = %q: both are spelled in registries already on disk", CatalogNameKey, OffpeakLabel)
 	}
 	if str(rows["ollama/deepseek-v4-pro:cloud"], CatalogNameKey) != "deepseek-v4-pro" || str(rows["ollama/deepseek-v4-pro:cloud"], "pricing_updated_at") != applyStamp {
 		t.Error("the updated row was not given its catalog name and stamp")
@@ -367,10 +368,10 @@ location = "cloud"
 
 // TestPricesApplyStampsEveryMatchedModel runs a refresh through the real
 // registry writer. It pins that every matched model is stamped, including
-// one whose price did not move, as modelman's refresh stamps every matched
-// model: a run that stamped only the changed models would leave the check it
-// just made looking older than it is. It also pins that a
-// price that did not change is not rewritten (an integer stays an integer),
+// one whose price did not move: a run that stamped only the changed models
+// would leave the check it just made looking older than it is. It also pins
+// that a price that did not change is not rewritten (an integer stays an
+// integer),
 // that a cost.time_prices row the user wrote comes through byte for byte
 // whether or not a price beside it moved (the prices flow owns no such row),
 // and that an unmatched model is not stamped.

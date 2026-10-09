@@ -26,8 +26,8 @@ var (
 	ErrProviderExists = errors.New("provider already exists")
 	// ErrRegistryTopLevel: registry.toml holds a top-level key that is not
 	// providers, families or models, or one of those is not an array of
-	// tables. The write is refused: `[[model]]` for `[[models]]` parses, reads
-	// as no models, and the Python tools refuse such a file outright (#247).
+	// tables. The write is refused: `[[model]]` for `[[models]]` parses and
+	// reads as no models, so a write on top of it would hide the typo (#247).
 	ErrRegistryTopLevel = errors.New("registry.toml has an unexpected top level")
 )
 

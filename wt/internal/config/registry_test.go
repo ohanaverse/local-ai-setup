@@ -48,40 +48,39 @@ tags = ["code"]
 // broken.
 func TestRegistryPathHonorsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	want := filepath.Join("/custom/xdg", "local-ai", "registry.toml")
 	if got := RegistryPath(); got != want {
 		t.Errorf("RegistryPath() = %q, want %q", got, want)
 	}
 }
 
-// MODELMAN_REGISTRY is an outright override in RegistryPath()'s chain
-// (WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config). When set,
-// it must win even if XDG_CONFIG_HOME is also set — without this guard a
-// developer's stale export could be shadowed by a CI XDG value, making wt
-// read the wrong registry. Locks in the override path that lets ops and
-// .envrcs pin a specific registry without touching XDG. It beats XDG only
-// because no WT_REGISTRY is set: this package's TestMain clears one inherited
-// from the developer's shell, and TestRegistryPathPrecedence pins the name
-// that outranks it.
-func TestRegistryPathHonorsModelmanRegistryOverride(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "/custom/registry.toml")
+// TestRegistryPathHonorsTheRegistryOverride pins that WT_REGISTRY names the
+// registry outright: it wins even when XDG_CONFIG_HOME is also set. A scratch
+// run, an .envrc or a CI job names one registry this way without moving the
+// rest of the config home; if XDG could shadow it, wt would read and write a
+// registry the user did not name. The whole chain, with the older
+// MODELMAN_REGISTRY name that is read after this one, is pinned by
+// TestRegistryPathPrecedence.
+func TestRegistryPathHonorsTheRegistryOverride(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "/custom/registry.toml")
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 	if got := RegistryPath(); got != "/custom/registry.toml" {
-		t.Errorf("RegistryPath() = %q, want MODELMAN_REGISTRY override", got)
+		t.Errorf("RegistryPath() = %q, want the WT_REGISTRY override", got)
 	}
 }
 
-// A MODELMAN_REGISTRY value starting with "~/" must expand to the real home
-// directory, matching modelman's Python resolver (Path.expanduser()) — a
-// literal "~" segment is never expanded by the OS or os.ReadFile, so without
-// this wt would fail to find a registry that modelman itself can read.
-func TestRegistryPathExpandsTildeInModelmanRegistryOverride(t *testing.T) {
+// TestRegistryPathExpandsTildeInTheRegistryOverride pins that a WT_REGISTRY
+// value starting with "~/" expands to the home directory, as llmbench's
+// registry_path does (Path.expanduser()). Neither the OS nor os.ReadFile
+// expands a literal "~", so without this wt would report no registry at a
+// path llmbench reads, for a value an .envrc that does not shell-expand
+// leaves as written.
+func TestRegistryPathExpandsTildeInTheRegistryOverride(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skip("no home directory available")
 	}
-	t.Setenv("MODELMAN_REGISTRY", "~/custom-registry.toml")
+	t.Setenv("WT_REGISTRY", "~/custom-registry.toml")
 	want := filepath.Join(home, "custom-registry.toml")
 	if got := RegistryPath(); got != want {
 		t.Errorf("RegistryPath() = %q, want %q", got, want)
@@ -89,9 +88,9 @@ func TestRegistryPathExpandsTildeInModelmanRegistryOverride(t *testing.T) {
 }
 
 // TestLoad_JoinsRegistry asserts the core Load() contract: config.toml's
-// wt-owned sections (default_tag, agents) are joined with modelman-owned
-// registry.toml's providers/models into one Config, so callers see a
-// single view instead of two files.
+// own sections (default_tag, agents) are joined with registry.toml's
+// providers/models into one Config, so callers see a single view instead of
+// two files.
 func TestLoad_JoinsRegistry(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -149,10 +148,10 @@ func TestLoadRegistryMissingReturnsSentinel(t *testing.T) {
 	}
 }
 
-// TestLoad_RegistryExtraFieldsIgnored asserts forward compatibility:
-// modelman may add registry fields wt doesn't know (model_dir,
-// model_info) without breaking wt's decode — unknown keys are simply
-// ignored, so the two tools can version their schemas independently.
+// TestLoad_RegistryExtraFieldsIgnored asserts forward compatibility: a
+// registry may hold keys wt's typed reader does not model (a hand edit, a
+// newer wt, another reader's field) without breaking the decode — unknown
+// keys are ignored, so one unmodelled key does not stop every wt command.
 func TestLoad_RegistryExtraFieldsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -190,9 +189,10 @@ supports_function_calling = true
 }
 
 // TestSave_OmitsProvidersAndModels pins the ownership boundary on the
-// write side: Save persists only wt-owned config.toml content (agents,
-// default_tag); providers/models live in modelman-owned registry.toml
-// and must never be rewritten by wt.
+// write side: Save persists only config.toml's own content (agents,
+// default_tag). Providers and models live in registry.toml, which wt writes
+// through UpdateRegistry alone; a copy of them in config.toml would be a
+// second, stale catalog nothing reads.
 func TestSave_OmitsProvidersAndModels(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -211,7 +211,7 @@ func TestSave_OmitsProvidersAndModels(t *testing.T) {
 	}
 	s := string(data)
 	if strings.Contains(s, "[[providers]]") || strings.Contains(s, "[[models]]") {
-		t.Errorf("Save must not persist providers/models (modelman owns registry.toml):\n%s", s)
+		t.Errorf("Save must not persist providers/models (they belong to registry.toml):\n%s", s)
 	}
 	if !strings.Contains(s, "[[agents]]") {
 		t.Errorf("Save must persist agents:\n%s", s)
@@ -246,20 +246,19 @@ func TestLoad_LegacyConfigSectionsIgnored(t *testing.T) {
 	}
 }
 
-// A leading "~" or "~/" in XDG_CONFIG_HOME must be expanded, matching
-// modelman's Path.expanduser() and the behavior already enforced for
-// MODELMAN_REGISTRY. Without this, a user (or .envrc that doesn't
-// shell-expand) sets XDG_CONFIG_HOME=~/custom-xdg and modelman reads
-// the expanded path while wt reads the literal tilde-string and
-// fails to find the registry — two tools disagreeing on the very
-// precedence rule the doc comment promises they share.
+// A leading "~" or "~/" in XDG_CONFIG_HOME must be expanded, as it is for
+// WT_REGISTRY and as llmbench's registry_path does (Path.expanduser()).
+// Without this, a user (or an .envrc that doesn't shell-expand) sets
+// XDG_CONFIG_HOME=~/custom-xdg, llmbench reads the expanded path while wt
+// reads the literal tilde-string and fails to find the registry — two tools
+// disagreeing on the very precedence rule RegistryPath's doc comment says
+// they share.
 func TestRegistryPathExpandsTildeInXDG(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skip("no home directory available")
 	}
 	t.Setenv("XDG_CONFIG_HOME", "~/custom-xdg")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	want := filepath.Join(home, "custom-xdg", "local-ai", "registry.toml")
 	if got := RegistryPath(); got != want {
 		t.Errorf("RegistryPath() = %q, want %q", got, want)
@@ -283,10 +282,10 @@ func TestExpandHomeHappyPath(t *testing.T) {
 	}
 }
 
-// A MODELMAN_REGISTRY value of the form "~username/..." is left
-// literal: Go has no portable getpwnam. Document the limitation
-// in expandHome's doc comment; the alternative (silently expanding
-// to the current user's home) would be a worse footgun.
+// A registry override (WT_REGISTRY or its alias) of the form "~username/..."
+// is left literal: Go has no portable getpwnam. expandHome's doc comment
+// records the limitation; the alternative (silently expanding to the current
+// user's home) would read the wrong user's registry without a word.
 func TestExpandHomeLeavesTildeUsernameLiteral(t *testing.T) {
 	if got, err := expandHome("~ops/shared/registry.toml"); err != nil || got != "~ops/shared/registry.toml" {
 		t.Errorf("expandHome(~ops/...) = (%q, %v), want (literal, nil)", got, err)
@@ -349,11 +348,13 @@ func TestExpandHomeExported(t *testing.T) {
 }
 
 // TestRegistryRedirected pins what counts as a registry wt was sent to by the
-// environment: MODELMAN_REGISTRY or XDG_CONFIG_HOME naming anything but the
+// environment: WT_REGISTRY or XDG_CONFIG_HOME naming anything but the
 // default ~/.config/local-ai/registry.toml. LiteLLM's config.yaml follows
 // neither variable, so the route writers use this to refuse pairing a
 // redirected registry with the default config.yaml. Spelling the default path
-// out is not a redirect.
+// out is not a redirect. The answer compares RegistryPath with the default,
+// so the older MODELMAN_REGISTRY name counts through the same call
+// (TestRegistryPathPrecedence pins that RegistryPath reads it).
 func TestRegistryRedirected(t *testing.T) {
 	home := t.TempDir()
 	def := filepath.Join(home, ".config", "local-ai", "registry.toml")
@@ -362,15 +363,15 @@ func TestRegistryRedirected(t *testing.T) {
 		want                bool
 	}{
 		{"nothing set", "", "", false},
-		{"MODELMAN_REGISTRY elsewhere", filepath.Join(home, "scratch", "registry.toml"), "", true},
+		{"WT_REGISTRY elsewhere", filepath.Join(home, "scratch", "registry.toml"), "", true},
 		{"XDG_CONFIG_HOME elsewhere", "", filepath.Join(home, "xdg"), true},
-		{"MODELMAN_REGISTRY spells the default", def, "", false},
-		{"MODELMAN_REGISTRY spells the default with a tilde", "~/.config/local-ai/registry.toml", "", false},
+		{"WT_REGISTRY spells the default", def, "", false},
+		{"WT_REGISTRY spells the default with a tilde", "~/.config/local-ai/registry.toml", "", false},
 		{"XDG_CONFIG_HOME spells the default", "", filepath.Join(home, ".config"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", home)
-			t.Setenv("MODELMAN_REGISTRY", tc.registry)
+			t.Setenv("WT_REGISTRY", tc.registry)
 			t.Setenv("XDG_CONFIG_HOME", tc.xdg)
 			if got := RegistryRedirected(); got != tc.want {
 				t.Fatalf("RegistryRedirected() = %v, want %v (registry path %s)", got, tc.want, RegistryPath())

@@ -122,8 +122,9 @@ func TestPlanUnchangedWhenPricesMatchAndNameRecorded(t *testing.T) {
 	}
 
 	// An entry with no cost table against a page row with no prices: nothing
-	// to write, so nothing changed. modelman called a missing table and an
-	// empty one different and listed this entry as an update once.
+	// to write, so nothing changed. A missing cost table and an empty one
+	// are the same here; telling them apart would list this entry as an
+	// update on every run and never write anything for it.
 	bare := PlanCatalog([]Entry{cloudEntry("free:cloud", withName("free"))}, catalogOf(CatalogModel{Name: "free"}), []string{"free:cloud"}, nil)
 	wantIDs(t, "updates (no cost, no page prices)", updateIDs(bare))
 	wantIDs(t, "unchanged (no cost, no page prices)", bare.Unchanged, "ollama/free:cloud")
@@ -135,7 +136,7 @@ func TestPlanUnchangedWhenPricesMatchAndNameRecorded(t *testing.T) {
 // TestOffpeakRowIsOllamasPublishedWindow pins the one row the catalog flow
 // writes into cost.time_prices, as it lands in registry.toml: ollama's
 // off-peak window (outside 12:00 to 18:00 UTC on weekdays, all day at
-// weekends), keys in the order modelman writes them, and a price the page
+// weekends), keys in schema order, and a price the page
 // does not list left out. The window is not parsed from the page, so this is
 // where a change to it shows.
 func TestOffpeakRowIsOllamasPublishedWindow(t *testing.T) {
@@ -341,7 +342,8 @@ func TestPlanRemovesOffPageCloudEntriesAndStrayStubs(t *testing.T) {
 // (a mislabelled hand edit). The page does not list it, so the entry goes
 // from the registry, but its tag is real weights, not a cloud stub: the plan
 // must say, before anyone approves it, that the tag stays in ollama. The
-// removal digest is unchanged by the warning, so it still equals modelman's.
+// removal digest is unchanged by the warning: it covers what is deleted, and
+// a digest approved before the warning existed still approves the same plan.
 func TestPlanWarnsWhenARemovedEntrysTagIsNotACloudTag(t *testing.T) {
 	entries := []Entry{cloudEntry("keep:cloud"), cloudEntry("qwen3:8b"), cloudEntry("gone:cloud")}
 	plan := PlanCatalog(entries, catalogOf(cm("keep")), []string{"keep:cloud", "qwen3:8b", "gone:cloud"}, nil)
@@ -377,8 +379,8 @@ func TestPlanMassRemovalGuard(t *testing.T) {
 // TestPlanIDCollisionWarns pins that an id the page would add but another
 // row already holds is left alone with a warning that says who holds it. The
 // alternative, a duplicate id, is a registry wt refuses to load. The owner's
-// tag is quoted as modelman's format_plan quotes it (Python's repr, single
-// quotes): the plan text is meant to read the same from either tool.
+// tag is printed in single quotes ('foo:cloud-old'), the fixed text of this
+// warning; the user reads it to find the row that holds the id.
 func TestPlanIDCollisionWarns(t *testing.T) {
 	squatter := Entry{ID: "ollama/x:cloud", Family: "f", ProviderID: "other", ModelName: "zzz"}
 	plan := PlanCatalog([]Entry{squatter}, catalogOf(cm("x")), nil, nil)
@@ -533,12 +535,13 @@ func TestPlanUnresolvedModelProtectsItsPulledStubAndSizedEntry(t *testing.T) {
 	wantIDs(t, "updates", updateIDs(plan), "ollama/foo:1t-cloud")
 }
 
-// TestRemovalDigestMatchesModelman pins the digest to values computed with
-// modelman's SyncPlan.removal_digest for the same removals and stray tags.
-// Until modelman is deleted a digest printed by one tool's dry run may be
-// passed to the other's --approve-removals, so the two must agree to the
-// byte; the order the plan lists its removals in must not matter.
-func TestRemovalDigestMatchesModelman(t *testing.T) {
+// TestRemovalDigestIsAFixedFormat pins the digest on fixed vectors: the
+// first 12 hex digits of the SHA-256 of the sorted removals and the sorted
+// "rm <tag>" lines. A digest printed by one run's dry run is what the user
+// passes to a later run's --approve-removals, across wt versions too, so a
+// change to the format would refuse an approval of the very plan it was
+// printed for; the order the plan lists its removals in must not matter.
+func TestRemovalDigestIsAFixedFormat(t *testing.T) {
 	cases := []struct {
 		removals, strays []string
 		want             string
@@ -560,8 +563,8 @@ func TestRemovalDigestMatchesModelman(t *testing.T) {
 
 // TestFormatPriceMatchesPythonsG pins the price format to Python's `{v:g}`
 // on values computed there. The plan's text is what the user approves and
-// what the command compares before applying, and it is the same text
-// modelman prints for the same plan.
+// what the command compares before applying, so a price that printed
+// differently from one run to the next would read as a changed plan.
 func TestFormatPriceMatchesPythonsG(t *testing.T) {
 	cases := map[float64]string{
 		1.32: "1.32", 0.044: "0.044", 15: "15", 0: "0", 0.015: "0.015", 100000: "100000",
@@ -580,9 +583,8 @@ func TestFormatPriceMatchesPythonsG(t *testing.T) {
 }
 
 // TestCatalogPlanFormat pins the whole printed plan for a run with one of
-// everything. A user approves this text, the skill reads the digest line out
-// of it, and it is the same text modelman prints for the same plan (compared
-// in scratch when this was written).
+// everything. A user approves this text and the cloud-sync skill reads the
+// digest line out of it, so a reworded line is a changed contract with both.
 func TestCatalogPlanFormat(t *testing.T) {
 	entries := []Entry{
 		cloudEntry("a:cloud", withCost(Cost{Input: f(9), TimePrices: []*tomlw.Table{offpeakRow(f(0.4), nil, nil)}})),

@@ -105,7 +105,8 @@ func runStats(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 // available: the survey table is still there, the usage table follows it
 // after a blank line with launches and spend joined per model, nothing is
 // written to stderr, and the database is asked for exactly the --window
-// ending now. This is `modelman usage report`'s replacement.
+// ending now. A join that lost either half would print launches with no
+// cost beside them, or spend for models nobody is shown launching.
 func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 	a, tmp := newTestApp(t)
 	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
@@ -375,10 +376,9 @@ func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
 
 // TestStatsCmdNotesRequestsWithNoModel verifies requests the proxy logged
 // with an empty model group are counted in a stderr note rather than shown
-// as a nameless row or dropped in silence (modelman dropped them without a
-// word). The count explains a REQUESTS total that is lower than LiteLLM's
-// own. Under --model or --family the note is not printed: the count is not
-// about the rows shown.
+// as a nameless row or dropped in silence. The count explains a REQUESTS
+// total that is lower than LiteLLM's own. Under --model or --family the note
+// is not printed: the count is not about the rows shown.
 func TestStatsCmdNotesRequestsWithNoModel(t *testing.T) {
 	for n, want := range map[int64]string{
 		1:    "wt: 1 request had no model and is not shown\n",
@@ -489,8 +489,8 @@ func TestStatsCmdFamilyFiltersOnlyTheUsageTable(t *testing.T) {
 // with each family taken from the id's provider prefix — so --family ollama
 // still selects, and one note says prefixes are what it matched (without
 // it, `--family gemma4` would print "no usage data" and no hint why).
-// modelman's report exited 1 on each of these; a report about the past
-// must not depend on today's catalog.
+// Exiting 1 on any of these would be the regression: a report about the
+// past must not depend on today's catalog.
 func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 	breakRegistry := map[string]func(path string) error{
 		"missing": os.Remove,

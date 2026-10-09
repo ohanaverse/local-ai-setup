@@ -534,19 +534,19 @@ def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monk
 
 
 def test_failed_restore_still_persists_the_sweep(tmp_path, monkeypatch):
-    """On this host llm-restore-providers can time out on llama.cpp with every
-    row's data intact; the failure must surface, but never by discarding the
-    run it happened to interrupt."""
+    """Restoring the providers after a sweep can fail (one of them does not
+    come back up in time) with every row's data intact; the failure must
+    surface, but never by discarding the run it happened to interrupt."""
     monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
     def _boom() -> None:
-        raise BenchmarkError("llamacpp did not come back up")
+        raise BenchmarkError("omlx did not come back up")
 
     monkeypatch.setattr(isolation_module, "restore_providers", _boom)
 
     suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
-    with pytest.raises(BenchmarkError, match="llamacpp did not come back up"):
+    with pytest.raises(BenchmarkError, match="omlx did not come back up"):
         run_suite(
             suite,
             _registry(),
@@ -590,15 +590,15 @@ def _cloud_suite(tmp_path: Path) -> Path:
 
 
 def test_run_suite_never_isolates_a_cloud_provider(tmp_path, monkeypatch, litellm_models_json):
-    """bin/llm-isolate-provider knows only the local backends; isolating
-    openrouter fails the helper and used to mark every cloud row ISOLATION_ERROR
-    - and a cloud row contends with nothing on this machine."""
+    """Provider isolation knows only the local backends; isolating openrouter
+    fails with "unknown provider" and used to mark every cloud row
+    ISOLATION_ERROR - and a cloud row contends with nothing on this machine."""
     isolated: list[str] = []
 
     def _isolate(pid: str) -> None:
         isolated.append(pid)
-        if pid not in ("ollama", "llamacpp", "omlx", "omlx-6bit"):
-            raise BenchmarkError(f"[llm-isolate-provider] unknown provider: {pid}")
+        if pid not in ("ollama", "omlx", "omlx-6bit", "mtplx"):
+            raise BenchmarkError(f"unknown provider: {pid}")
 
     restored: list[bool] = []
     monkeypatch.setattr(isolation_module, "isolate_provider", _isolate)

@@ -18,7 +18,7 @@ func TestRegistryPathPrecedence(t *testing.T) {
 		t.Skip("no home directory available")
 	}
 	cases := []struct {
-		name, wt, modelman, xdg, want string
+		name, wt, alias, xdg, want string
 	}{
 		{"nothing set", "", "", "", filepath.Join(home, ".config", "local-ai", "registry.toml")},
 		{"XDG_CONFIG_HOME", "", "", "/custom/xdg", "/custom/xdg/local-ai/registry.toml"},
@@ -30,7 +30,7 @@ func TestRegistryPathPrecedence(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("WT_REGISTRY", c.wt)
-			t.Setenv("MODELMAN_REGISTRY", c.modelman)
+			t.Setenv("MODELMAN_REGISTRY", c.alias)
 			t.Setenv("XDG_CONFIG_HOME", c.xdg)
 			if got := RegistryPath(); got != c.want {
 				t.Errorf("RegistryPath() = %q, want %q", got, c.want)

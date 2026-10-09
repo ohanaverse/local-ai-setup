@@ -175,7 +175,7 @@ func updateMsg(m model, msg tea.Msg) (model, tea.Cmd) {
 // AllowReplace false, streams the engine's stage into the state, and on
 // success proceeds straight to launch — bypassing the ollama availability
 // check (the model just loaded). This is the core of the start-on-select
-// flow: without it Enter would show the old modelman hint again.
+// flow: without it Enter would only show a hint to start the model by hand.
 func TestEnterOnStartRowBeginsStart(t *testing.T) {
 	requireBinary(t, "claude")
 	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")

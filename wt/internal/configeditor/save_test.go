@@ -175,8 +175,6 @@ func TestSave_ConcurrentRequests_Deduplicated(t *testing.T) {
 func TestSave_PreservesConcurrentLitellmChange(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	registryDir := tmpDir + "/local-ai"
 	if err := os.MkdirAll(registryDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -283,8 +281,7 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 // every refusing command gives for the same error (#291), and a config.toml
 // problem keeps its own wording with no hint.
 func TestSave_RegistryRowErrorNamesTheRegistry(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
@@ -314,8 +311,7 @@ func TestSave_RegistryRowErrorNamesTheRegistry(t *testing.T) {
 // config.toml one). This prevents the user being sent to `wt config` when the
 // real fix is in registry.toml.
 func TestSave_JoinedErrors_RegistryHintPreferred(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	// Config with BOTH a registry.toml problem (missing model_name) AND a
 	// config.toml problem (empty default_tag). ValidateAll joins both errors.
 	m := newModel(testTheme(), &config.Config{
@@ -343,8 +339,7 @@ func TestSave_JoinedErrors_RegistryHintPreferred(t *testing.T) {
 // when the config.toml error appears first in the joined error, the registry
 // hint is still shown. This is the exact bug fixed by RegistryFixHintFromAny.
 func TestSave_JoinedErrors_ConfigFirst_RegistryHintStillWins(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	// Same config, but we're testing that the order in the joined error
 	// doesn't matter - RegistryFixHintFromAny checks all errors.
 	m := newModel(testTheme(), &config.Config{

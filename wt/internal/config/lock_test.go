@@ -80,7 +80,6 @@ func TestWithLockCleansUpLockFile(t *testing.T) {
 func TestPatchSavePreservesConcurrentLitellmChange(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	must(t, filepath.Join(home, "local-ai", "registry.toml"), "providers = []\nmodels = []\n")
 	must(t, filepath.Join(home, "agent-wt", "config.toml"), "default_tag = \"code\"\n")
 
@@ -130,7 +129,6 @@ func TestPatchSavePreservesConcurrentLitellmChange(t *testing.T) {
 func TestUpdateLitellmPreservesConcurrentAgentChange(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	must(t, filepath.Join(home, "local-ai", "registry.toml"), "providers = []\nmodels = []\n")
 	must(t, filepath.Join(home, "agent-wt", "config.toml"), "default_tag = \"code\"\n")
 
@@ -183,7 +181,6 @@ func TestUpdateLitellmPreservesConcurrentAgentChange(t *testing.T) {
 func TestLockedApplyPreservesConcurrentLitellmChange(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	must(t, filepath.Join(home, "local-ai", "registry.toml"), "providers = []\nmodels = []\n")
 	must(t, filepath.Join(home, "agent-wt", "config.toml"), "default_tag = \"code\"\n")
 

@@ -81,9 +81,10 @@ func TestApplyIsIdempotent(t *testing.T) {
 
 // TestApplyGateRejections pins the route gate: a model whose provider is not
 // in the registry and a native provider are each reported per id without
-// blocking the valid ids in the same batch, and a local model is routed with no "ready" check at all
-// (#179 Phase B: the live inventory, not modelman's download flag, decides
-// what is routed — a stale flag must never cost a running model its route).
+// blocking the valid ids in the same batch, and a local model is routed with
+// no "ready" check at all (#179 Phase B: the live inventory, not a stored
+// "ready" flag, decides what is routed — a stale flag must never cost a
+// running model its route).
 func TestApplyGateRejections(t *testing.T) {
 	o, _, _ := opts(t, "model_list: []\n")
 	cfg := testConfig()
@@ -1269,8 +1270,8 @@ func TestSyncResolvesFailingSecretOncePerProvider(t *testing.T) {
 }
 
 // redirectedRegistry sets up the environment the guard exists for: HOME holds
-// a default-path config.yaml with one marked route, and MODELMAN_REGISTRY
-// points somewhere else. Nothing names config.yaml, so DefaultPath resolves
+// a default-path config.yaml with one marked route, and WT_REGISTRY points
+// somewhere else. Nothing names config.yaml, so DefaultPath resolves
 // to the file under HOME. It returns that path.
 func redirectedRegistry(t *testing.T) string {
 	t.Helper()
@@ -1286,8 +1287,8 @@ func redirectedRegistry(t *testing.T) string {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", home+"/scratch/registry.toml")
+	t.Setenv("WT_REGISTRY", home+"/scratch/registry.toml")
+	t.Setenv("MODELMAN_REGISTRY", "")
 	t.Setenv("WT_LITELLM_CONFIG", "")
 	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
 	return p
@@ -1297,7 +1298,7 @@ func redirectedRegistry(t *testing.T) string {
 // scratch registry onto the real proxy config. The registry follows
 // WT_REGISTRY, MODELMAN_REGISTRY and XDG_CONFIG_HOME; config.yaml follows
 // none of them. So a run that redirects only the registry (an ad-hoc
-// `modelman migrate` against a throwaway registry did exactly this)
+// command against a throwaway registry did exactly this, before the guard)
 // reconciled the developer's real config.yaml against it: every marked route
 // the scratch registry lacked was removed and the live proxy restarted. Sync,
 // its dry run and the lifecycle hooks' ApplyChange all refuse instead, and

@@ -17,8 +17,9 @@ func tableOf(t *testing.T, kv ...any) *Table {
 }
 
 // TestSetAtPutsANewKeyAtItsSchemaPosition pins where a key wt adds to a row
-// lands. A new key in the wrong place is a row modelman reorders on its next
-// save, so every wt edit would show up twice in the file's history.
+// lands. A new key in the wrong place leaves the row laid out unlike the
+// rows around it, and the same edit made on two machines could write two
+// different files.
 func TestSetAtPutsANewKeyAtItsSchemaPosition(t *testing.T) {
 	schema := []string{"id", "family", "location", "tags", "cost"}
 	cases := []struct {

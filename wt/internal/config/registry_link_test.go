@@ -15,7 +15,6 @@ func linkedRegistry(t *testing.T) (link, target string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	link = filepath.Join(home, "local-ai", "registry.toml")
 	target = filepath.Join(t.TempDir(), "dotfiles", "registry.toml")
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
@@ -222,7 +221,6 @@ func TestResolveRegistryFileWhenADirectoryAboveIsABrokenLink(t *testing.T) {
 func TestLoadRefusesARegistryUnderABrokenDirectoryLink(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	link := filepath.Join(home, "local-ai")
 	target := filepath.Join(t.TempDir(), "dotfiles", "local-ai")
 	if err := os.Symlink(target, link); err != nil {

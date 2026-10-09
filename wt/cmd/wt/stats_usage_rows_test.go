@@ -17,10 +17,10 @@ func counts(d1, d7, d30 int) usage.UsageCounts {
 	return usage.UsageCounts{OneDay: d1, SevenDay: d7, ThirtyDay: d30}
 }
 
-// TestBuildUsageRowsJoinsLaunchesAndSpend verifies the join modelman's
-// reconcile did, in one table: a model with both launches and spend, one
-// with launches only (zero spend, not missing spend), and one with spend
-// only (zero launches), sorted by model id. The three cases are the three
+// TestBuildUsageRowsJoinsLaunchesAndSpend verifies the join of wt's launch
+// counts with the proxy's spend, in one table: a model with both launches and
+// spend, one with launches only (zero spend, not missing spend), and one with
+// spend only (zero launches), sorted by model id. The three cases are the three
 // things the report exists to show — traffic through the proxy, launches
 // that bypassed it, and proxy use that did not come from wt.
 func TestBuildUsageRowsJoinsLaunchesAndSpend(t *testing.T) {
@@ -72,9 +72,10 @@ func TestBuildUsageRowsWithoutSpendData(t *testing.T) {
 
 // TestBuildUsageRowsUsesTheWindowsLaunchBucket verifies the launch count is
 // the one bucket matching --window, and that a model with no launch in that
-// window and no spend has no row. modelman showed all three buckets beside
-// a spend window of a different length; here launches and spend cover the
-// same period, so a row reading "0 launches, 5 requests" means what it says.
+// window and no spend has no row. Launches and spend cover the same period,
+// so a row reading "0 launches, 5 requests" means what it says; a launch
+// count taken from another bucket would set a week of launches beside a day
+// of spend.
 func TestBuildUsageRowsUsesTheWindowsLaunchBucket(t *testing.T) {
 	c := map[string]usage.UsageCounts{"m": counts(0, 2, 5)}
 	for _, tc := range []struct {
@@ -92,12 +93,12 @@ func TestBuildUsageRowsUsesTheWindowsLaunchBucket(t *testing.T) {
 }
 
 // TestBuildUsageRowsFamilyAndFilters verifies family resolution and both
-// filters, ported from modelman's reconcile tests: the registry's family,
-// else the id's provider prefix, else "unknown" (an empty family or prefix
-// counts as none, so every row has a family --family can name); --model and
-// --family are exact and apply to ids the registry does not know. It also pins the one
-// place wt differs from modelman on purpose: a launched model that has left
-// the registry keeps its row (modelman dropped it unless it had spend).
+// filters: the registry's family, else the id's provider prefix, else
+// "unknown" (an empty family or prefix counts as none, so every row has a
+// family --family can name); --model and --family are exact and apply to ids
+// the registry does not know. It also pins that a launched model that has
+// left the registry keeps its row, with or without spend: removing a model
+// must not erase its history from the report.
 func TestBuildUsageRowsFamilyAndFilters(t *testing.T) {
 	families := map[string]string{"ollama/gemma4:9b": "gemma4"}
 	c := map[string]usage.UsageCounts{

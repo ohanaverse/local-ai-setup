@@ -253,7 +253,7 @@ def test_run_records_the_pointer_even_when_restore_failed(tmp_path, monkeypatch)
 
     def _raise(*args, **kwargs):
         raise RunSavedButRestoreFailed(
-            f"providers failed to restore (saved to {run_dir}): llamacpp down",
+            f"providers failed to restore (saved to {run_dir}): omlx down",
             run_dir=run_dir,
             results=[],
         )
@@ -266,7 +266,7 @@ def test_run_records_the_pointer_even_when_restore_failed(tmp_path, monkeypatch)
     result = runner.invoke(agent_app, ["run", "--suite", str(suite_path)])
     assert result.exit_code == 1
     assert "Agent benchmark complete" in result.output
-    assert "llamacpp down" in result.output
+    assert "omlx down" in result.output
     from llmbench.state import load_state
 
     assert load_state().extra["benchmarks"]["agent_last_run"] == str(run_dir)

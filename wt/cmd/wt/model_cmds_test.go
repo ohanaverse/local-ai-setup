@@ -498,7 +498,7 @@ func omlxServedCfg(origin, secretRef string) *config.Config {
 // TestServedReportsWhatAKeyedOmlxHasLoaded pins the reason `wt served`
 // exists: a partly loaded omlx pool names the loaded model only to a caller
 // holding the server's key, and wt is the one that resolves the registry's
-// secret_ref. modelman asks here when its keyless probe is refused.
+// secret_ref. A script whose own keyless probe is refused asks here.
 func TestServedReportsWhatAKeyedOmlxHasLoaded(t *testing.T) {
 	srv := omlxServer(t, "sk-omlx")
 	cfg := omlxServedCfg(srv.URL, "sk-omlx")
@@ -547,10 +547,10 @@ func TestServedRefusesOllama(t *testing.T) {
 	}
 }
 
-// TestWarmSendsTheRegistryKeyToAKeyedOmlx pins `wt warm`, the step modelman
-// asks for when omlx refuses its keyless warmup (#256): the chat request
-// carries the key the registry's omlx provider names, and names the model by
-// its directory basename.
+// TestWarmSendsTheRegistryKeyToAKeyedOmlx pins `wt warm`, the step llmbench's
+// omlx backend asks for when omlx refuses its keyless warmup (#256): the chat
+// request carries the key the registry's omlx provider names, and names the
+// model by its directory basename.
 func TestWarmSendsTheRegistryKeyToAKeyedOmlx(t *testing.T) {
 	var gotAuth, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

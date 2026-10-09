@@ -194,18 +194,20 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(out)
 }
 
-// TestHasOpenRouterPricedModel pins issue #151's rule, which mirrors
-// modelman's _is_openrouter_priced: the stale-pricing notice is only worth
-// printing when some model's price comes from OpenRouter — an openrouter
-// model or a model of a non-native cloud provider. Ollama cloud models
+// TestHasOpenRouterPricedModel pins issue #151's rule: the stale-pricing
+// notice is only worth printing when some model's price comes from
+// OpenRouter — an openrouter model or a model of a non-native cloud
+// provider. Ollama cloud models
 // (location "cloud" on the local ollama provider, priced by ollama.com) and
 // native agent models never count, or users with no OpenRouter models are
 // nagged after every session about a refresh that has nothing to do. A
 // provider's explicit openrouter_priced overrides the inference in both
 // directions (a corporate gateway opts out, a local proxy opts in) but never
-// makes a native provider count — modelman applies the same order, and a
-// one-sided override would have wt nag about, or stay silent on, a refresh
-// modelman sees differently.
+// makes a native provider count. `wt cloud-sync` refreshes the models the
+// same rule selects (internal/cloudsync's predicate, held to the same
+// docs/contracts/catalog-predicates fixture), so a notice that judged
+// otherwise would nag about a refresh that changes nothing, or stay silent
+// on one that is due.
 func TestHasOpenRouterPricedModel(t *testing.T) {
 	no, yes := false, true
 	providers := []config.Provider{

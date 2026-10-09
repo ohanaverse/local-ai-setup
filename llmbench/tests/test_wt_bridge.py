@@ -98,8 +98,8 @@ _MSG_CASES = [
     # The whole output is stripped before it is split, so only a line after the
     # first can show that each line is stripped too, before its prefix is looked for.
     ("an indented later line still loses its prefix", "", "Error: a\n  wt: b\n", "a; b"),
-    # From modelman's own test_msg_cleans_wt_output: the only case with a blank
-    # line between two others, which is what `if line` is there for.
+    # The only case with a blank line between two others, which is what
+    # `if line` is there for.
     ("a blank line between two lines is dropped", "", "Error: a\n\nwt: b\n", "a; b"),
     ("an unprefixed line passes through", "", "plain failure\n", "plain failure"),
     ("a prefix is stripped only at the start of a line", "", "saw Error: x\n", "saw Error: x"),

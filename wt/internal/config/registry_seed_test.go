@@ -31,13 +31,15 @@ func seedReport(t *testing.T, env SeedEnv) (added, unseeded []string, changed bo
 	return added, unseeded, changed
 }
 
-// TestSeedWritesTheRowsModelmanWrites pins every default row byte for byte
-// against what modelman writes for the same machine (the expected rows were
-// produced by modelman's default_provider_entry and sync_agent_providers
-// through tomli-w), placed ahead of the models as modelman orders the file.
-// A base_url or name that differs would give wt and modelman two ideas of
-// the same provider for as long as both exist.
-func TestSeedWritesTheRowsModelmanWrites(t *testing.T) {
+// TestSeedWritesTheDefaultRows pins every default row byte for byte: each
+// provider's name, location, auth and base_url, its keys in schema order, the
+// rows placed ahead of the models. The expected text is what the registries
+// already on disk hold for the same machine, so a row `wt model init` seeds
+// today is the row an older registry has. A base_url that drifted would make
+// wt probe a port the provider does not serve, and a name or key order that
+// drifted would give a fresh machine a registry that differs from every
+// existing one for no reason.
+func TestSeedWritesTheDefaultRows(t *testing.T) {
 	path := scratchRegistry(t, `[[models]]
 id = "mlx_lm_server/pair"
 family = "f"
@@ -293,8 +295,6 @@ func TestSeedCreatesAMissingRegistry(t *testing.T) {
 func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	if names, providers, err := seedAgents(); names != nil || providers != nil || err != nil {
 		t.Errorf("with no config.toml: agents = %v, providers = %v, err = %v, want none and no error", names, providers, err)
 	}
@@ -407,8 +407,6 @@ base_url = "https://openrouter.ai/api/v1"
 func TestSeedMakesAFreshConfigLoad(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +474,7 @@ supported_providers = ["opencode"]
 
 // TestPyTitleMatchesPython pins the port of str.title() against Python's own
 // answers, so the display name wt gives an agent's provider row is the one
-// modelman would have given it.
+// older registries already hold for that agent.
 func TestPyTitleMatchesPython(t *testing.T) {
 	cases := map[string]string{
 		"claude": "Claude", "agy": "Agy", "opencode": "Opencode", "my-agent": "My-Agent",

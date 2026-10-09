@@ -48,7 +48,7 @@ func litellmEnv(t *testing.T, body string) string {
 }
 
 // TestLitellmSyncUsesLiveInventory pins that sync derives "running" from the
-// live inventory (never modelman's flag): a running registered model gets a
+// live inventory (never a stored flag): a running registered model gets a
 // route and an unrouted-but-stopped one keeps none.
 func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
@@ -66,8 +66,10 @@ func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 	}
 }
 
-// TestLitellmListAndProviders pins the read-only commands' JSON shapes used by
-// modelman's bridge (routed_ids) and its provider policy lookup.
+// TestLitellmListAndProviders pins the read-only commands' JSON shapes: the
+// "routed" id list and ownership rows of `list --json`, and the per-provider
+// policy of `providers --json` (cloud or not). They are what a script reads
+// to learn what the proxy serves; a renamed key breaks it.
 func TestLitellmListAndProviders(t *testing.T) {
 	litellmEnv(t, "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n")
 	var out bytes.Buffer
@@ -187,8 +189,8 @@ func TestLitellmSyncRemovesRoutesOfRefusedProvider(t *testing.T) {
 
 // TestLitellmSyncNoWarningForUnprobedProvider pins that a registered model on
 // a provider with no probe family (retired llamacpp) is left alone silently.
-// Before, it produced `provider "" probe did not succeed` in every sync —
-// text and the --json warnings modelman parses.
+// Before, it produced `provider "" probe did not succeed` in every sync, in
+// the text output and in the --json warnings array alike.
 func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
 	body := "model_list:\n  - model_name: llamacpp/m\n    litellm_params: {model: openai/local-model}\n"
 	p := litellmEnv(t, body)
@@ -428,7 +430,8 @@ func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 
 // validationOnlyApp builds an app via newApp() in a temp XDG dir whose registry
 // has a model pointing at a missing provider: Load succeeds but Validate fails
-// (the common gap `modelman sync` repairs).
+// (a row whose provider has no row; `wt model init` seeds one for a provider
+// it has a default for, any other is a hand edit of registry.toml).
 func validationOnlyApp(t *testing.T) (*app, string) {
 	t.Helper()
 	home := t.TempDir()
@@ -486,9 +489,10 @@ func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 
 // TestLitellmSyncWorksOnValidationOnlyError pins that sync gates only on a
 // config LOAD failure. A registry gap in an unrelated model (unknown
-// provider: cfgErr set, loadErr nil) must not block modelman's sync
-// (chicken-and-egg: modelman is what repairs such gaps): the running healthy
-// model is still routed, and the broken model gets no route.
+// provider: cfgErr set, loadErr nil) must not block the sync: one bad row
+// would otherwise leave every other model's route stale until the registry
+// was fixed. The running healthy model is still routed, and the broken model
+// gets no route.
 func TestLitellmSyncWorksOnValidationOnlyError(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
 	a, _ := validationOnlyApp(t)
@@ -551,7 +555,8 @@ func litellmCloudTestConfig() *config.Config {
 }
 
 // TestLitellmSyncDryRunJSON pins `wt litellm sync --dry-run --json`: the plan
-// is printed in the shape modelman parses and config.yaml is not written.
+// is printed as one JSON document (dry_run true, the plan's id lists) and
+// config.yaml is not written.
 func TestLitellmSyncDryRunJSON(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
 	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
@@ -595,12 +600,12 @@ func jsonKeySet(t *testing.T, raw []byte) []string {
 }
 
 // TestLitellmSyncDryRunJSONMatchesContract pins the `sync --dry-run --json`
-// document against the shared cross-language fixture's sync_dry_run block.
-// That block has no reader yet — modelman's wt_bridge parses only the change,
-// list, providers and status shapes, and nothing calls `wt litellm sync` — so
-// this is not guarding a live consumer. It is guarding the shared fixture
-// itself: the block is part of the documented cross-language contract, and
-// without this pin a field added to syncPlanJSON (or to its nested plan) would
+// document against the fixture's sync_dry_run block
+// (docs/contracts/litellm-cli.sample.json). No program in this repository
+// reads that block — nothing here calls `wt litellm sync --dry-run --json` —
+// so this is not guarding a live consumer. It is guarding the fixture itself:
+// the block is the documented shape of the command's output, and without
+// this pin a field added to syncPlanJSON (or to its nested plan) would
 // silently leave the fixture describing a shape wt no longer emits, for
 // whoever reads it next. A field added to syncPlanJSON must reach the fixture
 // in the same change.
@@ -836,8 +841,8 @@ func TestLitellmListTextOutput(t *testing.T) {
 	}
 }
 
-// TestLitellmListJSONRows pins list's ownership rows next to the legacy
-// "routed" id list modelman already reads.
+// TestLitellmListJSONRows pins list's ownership rows next to the older
+// "routed" id list, which stays for scripts that already read it.
 func TestLitellmListJSONRows(t *testing.T) {
 	litellmEnv(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -981,8 +986,9 @@ func TestDesiredLocalIDsPulledNeedsTrustedProbe(t *testing.T) {
 }
 
 // TestSyncRoutesMlxLMServerByProbe pins that `wt litellm sync` owns the
-// mlx_lm_server route lifecycle (#179): wt has no start backend for it and
-// modelman no longer routes it explicitly, so sync is the only route write.
+// mlx_lm_server route lifecycle (#179): wt has no start backend for it
+// (`llmbench provider isolate` starts a pairing) and nothing else writes its
+// route, so sync is the only route write.
 // An answering server makes its registered pairing desired and NOT untouched,
 // with no warning (a started pairing gets a route); a refused one makes the
 // family Down, so the pairing is neither desired nor untouched and its stale
