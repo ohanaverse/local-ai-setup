@@ -220,7 +220,8 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	// model we can't launch. The check is skipped when
 	// this agent×model pairing will actually route through LiteLLM (any
 	// upstream may serve the model) and when the model is not served by
-	// ollama at all — ollamacheck only probes the local ollama daemon. Uses
+	// ollama at all — ollamacheck only asks the ollama daemon the registry
+	// names. Uses
 	// the per-model resolved route rather than the raw cfg.IsLitellm()
 	// toggle: a protocol mismatch (e.g. codex+ollama) forces LiteLLM even
 	// when the toggle is off, and the toggle-only check spuriously blocked
@@ -230,7 +231,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	// surfaces the error properly.
 	route, _ := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
 	if !route.Litellm && ollamacheck.IsOllamaModel(m) {
-		ok, oerr := ollamacheck.Check(m)
+		ok, oerr := ollamacheck.Check(cfg, m)
 		if oerr != nil {
 			// Print the summary before returning so the user sees the same
 			// post-run line on pre-launch config errors as on a real exit.
