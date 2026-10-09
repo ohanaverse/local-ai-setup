@@ -781,10 +781,14 @@ func TestNoOllamaWarnWhenModelIsListed(t *testing.T) {
 // cannot tell: the picker stays up with the reason as its status, and nothing
 // is launched and no "not available" warning is shown. Three ways to get
 // there: `ollama list` failed (the daemon is down), the registry's ollama
-// row names no daemon to ask — where no command may run at all, since ollama
-// would fall back to its default daemon — and this package's TestMain
+// row names no daemon to ask (a path, or an address with no scheme) — where
+// no command may run at all, since ollama would fall back to its default
+// daemon — and this package's TestMain
 // default, which is what keeps a test that forgot to stub the list from
-// running the developer's ollama. The status must fit every terminal size.
+// running the developer's ollama. The status must fit every terminal size,
+// and at 80 columns and wider it must be readable through to what to do: the
+// view cuts a status line at the terminal's width, and the first wording of
+// the no-daemon reason lost its value and its remedy there.
 func TestOllamaCheckFailureStaysOnThePicker(t *testing.T) {
 	failing := func(t *testing.T) *[]string {
 		var origins []string
@@ -797,12 +801,18 @@ func TestOllamaCheckFailureStaysOnThePicker(t *testing.T) {
 	for _, tc := range []struct {
 		name, baseURL string
 		stub          func(*testing.T) *[]string
-		want          string
+		want          string // in the status
+		at80          string // on screen, uncut, at 80 columns and wider
 		calls         int
 	}{
-		{"list failed", "http://127.0.0.1:9/v1", failing, "ollama check failed: ollama list: exit status 1", 1},
-		{"base_url names no daemon", "/v1", failing, "ollama check failed: the ollama provider row's base_url names no daemon", 0},
-		{"unstubbed", "http://127.0.0.1:9/v1", nil, "ollamacheck list not stubbed in this test", 0},
+		{"list failed", "http://127.0.0.1:9/v1", failing, "ollama check failed: ollama list: exit status 1",
+			"ollama check failed: ollama list: exit status 1", 1},
+		{"base_url is a path", "/v1", failing, "ollama check failed: ollama row's base_url must be http://host:port",
+			`ollama check failed: ollama row's base_url must be http://host:port, not ""`, 0},
+		{"base_url has no scheme", "localhost:11434", failing, `must be http://host:port, not "localhost:11434"`,
+			"ollama check failed: ollama row's base_url must be http://host:port, not ", 0},
+		{"unstubbed", "http://127.0.0.1:9/v1", nil, "ollamacheck list not stubbed in this test",
+			"ollama check failed: ollama list: ollamacheck list not stubbed in this test", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := ollamaCheckPicker(t, tc.baseURL)
@@ -833,6 +843,9 @@ func TestOllamaCheckFailureStaysOnThePicker(t *testing.T) {
 					assertFits(t, tc.name, view, width, height)
 					if !strings.Contains(view, "ollama check failed") {
 						t.Errorf("%s at %dx%d: the status is not on screen:\n%s", tc.name, width, height, view)
+					}
+					if width >= 80 && !strings.Contains(view, tc.at80) {
+						t.Errorf("%s at %dx%d: the status is cut before the end of %q:\n%s", tc.name, width, height, tc.at80, view)
 					}
 				}
 			}

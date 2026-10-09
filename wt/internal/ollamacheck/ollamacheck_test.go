@@ -164,9 +164,9 @@ func TestCheckCannotTellWithoutADaemonAddress(t *testing.T) {
 	}{
 		{"no config", nil, "no ollama provider"},
 		{"no provider row", &config.Config{}, "no ollama provider"},
-		{"path only", ollamaConfig("/v1"), "names no daemon"},
-		{"no scheme", ollamaConfig("localhost:11434"), "names no daemon"},
-		{"blank", ollamaConfig("   "), "names no daemon"},
+		{"path only", ollamaConfig("/v1"), `ollama row's base_url must be http://host:port, not ""`},
+		{"no scheme", ollamaConfig("localhost:11434"), `ollama row's base_url must be http://host:port, not "localhost:11434"`},
+		{"blank", ollamaConfig("   "), "ollama row's base_url must be http://host:port, not "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			origins := stubList(t, "gemma4:9b")

@@ -39,7 +39,10 @@ func Check(cfg *config.Config, m config.Model) (bool, error) {
 	}
 	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
 	if u, err := url.Parse(origin); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return false, fmt.Errorf("the ollama provider row's base_url names no daemon (it reads as %q): set auth.base_url to http://host:port", origin)
+		// Short, with the value last: the picker shows this behind
+		// "ollama check failed: " on one status line that it cuts at the
+		// terminal's width, and what to set must survive 80 columns.
+		return false, fmt.Errorf("ollama row's base_url must be http://host:port, not %q", origin)
 	}
 	return Available(origin, m.ModelName)
 }

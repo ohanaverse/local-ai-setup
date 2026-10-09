@@ -467,7 +467,7 @@ func TestLaunchFilteredOllamaCheckCannotTell(t *testing.T) {
 	t.Run("base_url names no daemon", func(t *testing.T) {
 		origins := stubOllamaList(t, "gemma4:9b")
 		err := directOllamaLaunch(t, "/v1")
-		if err == nil || !strings.Contains(err.Error(), "ollama check failed: the ollama provider row's base_url names no daemon") {
+		if err == nil || !strings.Contains(err.Error(), `ollama check failed: ollama row's base_url must be http://host:port, not ""`) {
 			t.Errorf("err = %v, want a failed check naming the base_url", err)
 		}
 		if len(*origins) != 0 {

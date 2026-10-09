@@ -221,7 +221,8 @@
   was reported as "not available". When the registry has no ollama provider
   row, or the row's `base_url` is not an `http://host:port` address, the
   check now says so (`ollama check failed: ...`, as the picker's status or
-  the launch's error) instead of asking ollama's default daemon.
+  the launch's error; the status names what `base_url` must be within 80
+  columns) instead of asking ollama's default daemon.
 - wt's own tests no longer run the `ollama` on PATH: `go test ./...` made
   three `ollama list` calls from `internal/tui`, and
   `TestOllamaWarnShownWhenUnavailable` failed whenever that command exited

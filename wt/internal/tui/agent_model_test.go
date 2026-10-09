@@ -553,13 +553,17 @@ func TestPhaseModelEnterStaysInApp(t *testing.T) {
 	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	// Enter runs the ollama check on the highlighted model; the daemon lists
-	// nothing, so no launch follows.
+	// nothing, so the picker's own handler answers with the "not available"
+	// warning and no launch follows.
 	stubOllamaList(t)
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if _, ok := got.(model); !ok {
-		t.Errorf("Update(Enter) returned %T, want model", got)
+	gm, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update(Enter) returned %T, want model", got)
 	}
-	_ = cmd
+	if gm.phase != phaseOllamaWarn || cmd != nil {
+		t.Errorf("after Enter: phase = %d, command = %v; want the ollama warning (%d) and no command", gm.phase, cmd != nil, phaseOllamaWarn)
+	}
 }
 
 // TestNoRKeyInModelPhase asserts pressing 'r' in phaseModel is a
