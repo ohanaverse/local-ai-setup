@@ -236,6 +236,12 @@ Each choice is pinned by a test, so a reviewer who disagrees changes one place. 
 
 The directions settle the rest. Each recommended answer is what the tasks implement.
 
+> **The owner's answers, 2026-10-09 (binding).**
+>
+> 1. **(a), as built:** the highlighted model's price is shown on the `LiteLLM:` line under the table.
+> 2. **A window written with its end at or before its start runs past midnight.** This reverses the recommendation below: `22:00` to `06:00` is one window from 22:00 on the listed day to 06:00 the next day, accepted by the registry's validator and applied by the resolver. The tasks are being revised to this; until they are, Decisions and Tasks 3 and 8 still describe the old rule (such a row is not applied).
+> 3. **Yes:** the controller posts the correcting comment on #322 when slice D's PR opens, and files the follow-up issue about listed prices that move within minutes.
+
 1. **Where the current price is shown on a terminal too narrow for the COST column.** With an OpenRouter id in the table the COST column is drawn only from 111 columns (facts 34, 42), today as before. Three ways to show the price below that:
 
    - **(a) On the line that says `LiteLLM: on`, for the highlighted model (Task 5; built).** Captured at 80x24, Monday 13:00 UTC, illustrative registry:
