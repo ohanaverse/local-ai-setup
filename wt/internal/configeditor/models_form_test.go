@@ -739,11 +739,8 @@ func TestModelFormRefusesAnEditOfADuplicatedID(t *testing.T) {
 				at("the form's error = %q, want the writer's refusal unchanged: %q", f.err, refusal)
 			}
 			view := m.View()
-			assertFits(t, "refused edit of a duplicated id", view, size[0], size[1])
+			assertMessageShown(t, fmt.Sprintf("refused edit of the %s row of %s", provider, id), view, refusal, size[0], size[1])
 			assertCutFieldsAreCounted(t, "refused edit of a duplicated id", m, view)
-			if !strings.Contains(view, "[Models]") || !strings.Contains(flat(view), flat(refusal)) {
-				at("the refusal should be whole on screen under the tab bar")
-			}
 			if got := tm.text(t); got != registry {
 				at("the registry changed:\n%s", got)
 			}

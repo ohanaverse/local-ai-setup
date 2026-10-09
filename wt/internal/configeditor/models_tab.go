@@ -497,13 +497,12 @@ func (m *model) modelsView() string {
 	// terminal (a refusal that ends with the registry's path, at 40x12).
 	// Bubble Tea would drop the view's top lines: the tab bar and the start
 	// of the very status that has to be read. So the status has the screen
-	// to itself, under the tab bar, until the next key takes it down; the
-	// hints join it when there is a line left for them.
-	out := tabBar(m.theme, TabModels) + "\n" + status
-	if lipgloss.Height(out) < m.height {
-		out += "\n" + lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim)).Render(fitHints(m.width, modelsHints))
-	}
-	return lipgloss.NewStyle().MaxHeight(m.height).Render(out)
+	// to itself, under the tab bar and over the hints, until the next key
+	// takes it down. A status too tall even for that loses lines from its
+	// middle, behind a marker that counts them, never the hints or its end:
+	// the end is the path of the file to fix (tuilayout.MessageAlone).
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	return tuilayout.MessageAlone(tabBar(m.theme, TabModels), status, fitHints(m.width, modelsHints), m.width, m.height, dim)
 }
 
 // applyModels takes a probe's result: the rows replace the table, with the
