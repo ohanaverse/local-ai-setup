@@ -110,6 +110,18 @@ func selectFlows(only string, given bool, o *cloudSyncOpts) error {
 	return nil
 }
 
+// selectedFlows names the flows --only picked, in cloudSyncFlows' order.
+func selectedFlows(o cloudSyncOpts) []string {
+	picked := map[string]bool{"prices": o.prices, "catalog": o.catalog}
+	var names []string
+	for _, flow := range cloudSyncFlows {
+		if picked[flow] {
+			names = append(names, flow)
+		}
+	}
+	return names
+}
+
 func cloudSyncCmd(a *app) *cobra.Command {
 	var (
 		o    cloudSyncOpts
@@ -140,7 +152,8 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			"  0  every selected flow finished, or had nothing to do\n" +
 			"  1  a step failed in either flow, or a usage error\n" +
 			"  2  catalog changed nothing: the page, --html or `ollama list` could not\n" +
-			"     be read, or no cloud tag resolved\n" +
+			"     be read, no cloud tag resolved, or the ollama row's base_url names no\n" +
+			"     daemon\n" +
 			"  3  catalog changed nothing: the pricing page changed shape (its HTML is\n" +
 			"     saved, and the path printed)\n" +
 			"  4  catalog changed nothing: it would remove more than half the ollama\n" +
@@ -166,7 +179,9 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			// user believes was passed.
 			for _, flag := range []string{"html", "approve-removals", "force"} {
 				if cmd.Flags().Changed(flag) && !o.catalog {
-					return fmt.Errorf("--%s is for the catalog flow, which --only %s leaves out", flag, only)
+					// The flows --only selected, not the spelling it was
+					// given: this line is meant to be read back and re-run.
+					return fmt.Errorf("--%s is for the catalog flow, which --only %s leaves out", flag, strings.Join(selectedFlows(o), ", "))
 				}
 			}
 			// Only a config that could not be loaded stops this: a.cfg is

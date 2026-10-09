@@ -298,6 +298,9 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		want string
 	}{
 		{[]string{"--only", "prices", "--force"}, "--force is for the catalog flow, which --only prices leaves out"},
+		// The message names the flows --only selected, not the spelling it
+		// was given: it is meant to be read back and re-run.
+		{[]string{"--only", " prices ", "--force"}, "--force is for the catalog flow, which --only prices leaves out"},
 		{[]string{"--only", "prices", "--html", "x.html"}, "--html is for the catalog flow, which --only prices leaves out"},
 		{[]string{"--only", "prices", "--approve-removals", "abc"}, "--approve-removals is for the catalog flow, which --only prices leaves out"},
 		{[]string{"--only", "routes"}, `--only: unknown flow "routes" (valid: prices, catalog)`},
