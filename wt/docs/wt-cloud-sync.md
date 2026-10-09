@@ -57,9 +57,10 @@ ollama cloud entries, the cloud tags `ollama list` shows, and (through the
 route sync) LiteLLM's routes.
 
 - It updates prices, the off-peak row included; adds an entry for each new
-  page model and `ollama pull`s it; removes entries the page no longer lists
-  and `ollama rm`s their tags; and `ollama rm`s pulled cloud tags that have
-  no entry.
+  page model and `ollama pull`s it; pulls the tag of an existing entry that
+  `ollama list` does not show (which is how a run after a failed pull
+  retries it); removes entries the page no longer lists and `ollama rm`s
+  their tags; and `ollama rm`s pulled cloud tags that have no entry.
 - **A page name does not determine its tag.** A name that pins a size maps
   directly (`<name>:<size>` to `<name>:<size>-cloud`). A bare name is looked
   up on `https://ollama.com/library/<name>/tags`: `<name>:cloud` if ollama
@@ -67,8 +68,9 @@ route sync) LiteLLM's routes.
   registry entry's tag is already pulled is not looked up again. A model
   with no cloud tag, several, or a library page that could not be read is
   skipped with a `warning:`: nothing is added or pulled for it, and no entry
-  or pulled tag with its name is removed. An outage of ollama.com/library is
-  therefore never read as "these models are gone".
+  or pulled tag with its name is removed; an entry wt can still match to it
+  gets the page's prices. An outage of ollama.com/library is therefore never read
+  as "these models are gone".
 - **Re-tagging.** An entry under a tag ollama does not publish is replaced
   by one under the real tag; its removal line reads `(re-tagged as <new
   id>)`. The replacement is a copy of the old row (family, tags, and every
@@ -77,6 +79,16 @@ route sync) LiteLLM's routes.
 - **A new entry's family** is that of an existing ollama entry with the same
   name stem, else the stem itself. Change it afterwards with
   `wt model edit <id> --family <name>` ([wt-model.md](wt-model.md)).
+- **A new entry's subscription** price and period are the ones every
+  existing ollama cloud entry shares. If they disagree it gets none, and the
+  plan says `warning: ollama cloud entries disagree on subscription pricing;
+  new entries get none`.
+- **An id that is already taken is not added**: `warning: <id> already
+  exists …; not adding`.
+- **A price cell the parser does not recognize keeps the registry's price**
+  (`warning: <name> input: unrecognized price '<cell>'; existing price
+  kept`). Only an empty or `-` cell clears a price. A page where most cells
+  are unrecognized is exit 3 instead.
 - **Off-peak prices** are stored as the `[[models.cost.time_prices]]` row
   labelled `off-peak`: UTC, weekdays outside 12:00–18:00, all day at
   weekends. That window is ollama's published one and is written, not read
@@ -117,32 +129,41 @@ finished (exit 0). This is never an error, however the flow was asked for.
 ## What a run does, in order
 
 1. **Reads the registry and plans both flows.** Nothing is locked or
-   written. A model id that is in the registry more than once, among the
-   rows a flow would change, stops that flow here (exit 1), in a dry run
-   too: the write could never address the row.
+   written. A model id that is in the registry more than once stops a flow
+   here (exit 1), in a dry run too, because the write could never address
+   the row: for prices, on any OpenRouter-priced model, before anything is
+   fetched; for the catalog, on a row its plan re-prices, removes or copies
+   a re-tagged entry from.
 2. **Prints both plans.** `--dry-run` stops here.
 3. **Applies the catalog's gates** ([Removals need approval](#removals-need-approval)).
    A gated catalog plan is dropped; the prices plan goes on.
 4. **Asks one question** on the terminal, `Apply these changes? [y/N]`,
    covering every plan still pending. Only `y` or `yes` applies; anything
-   else prints `not applied (declined)` and exits 0. Input piped to the
-   command can never approve. `--yes` skips the question; with no terminal
-   and no `--yes` the run stops (`error: not applied: there is no terminal
-   to confirm on — rerun with --yes to apply without asking`, exit 1). A
-   plan with nothing to apply is not asked about.
+   else prints `<flow>: not applied (declined)` for each pending flow, which
+   then counts as finished (exit 0, unless another flow failed or step 3
+   refused the catalog). Input piped to the command can never approve.
+   `--yes` skips the question; with no terminal and no `--yes` the run stops
+   (`<flow>: error: not applied: there is no terminal to confirm on — rerun
+   with --yes to apply without asking` for each pending flow; exit 1, or
+   the catalog's 4 or 5 if step 3 refused it). A plan with nothing to apply
+   is not asked about.
 5. **Writes `registry.toml` once**, for both flows. Under the file's lock
    each plan is made again from the file as it then is, and a plan that no
    longer prints as it did is not applied; the other flow's still is. A
-   registry removed since the plan was printed is not created.
+   registry removed since the plan was printed is not created. Each flow
+   that was written says so: `prices: refreshed N model(s); N price(s)
+   changed`, `catalog: updated N, added N and removed N model(s)`.
 6. **Runs the catalog's `ollama pull`s, then its `ollama rm`s.** A failure
    is an `error:` line and exit 1, and the rest still run. A tag is removed
    only if it is a cloud tag, `ollama list` showed it, and no remaining
-   registry entry names it.
+   registry entry names it. Each one that worked is a line: `catalog:
+   pulled <tag>`, `catalog: removed <tag>`.
 7. **Syncs the LiteLLM routes once**, if a price or the set of models
    changed, or a tag was pulled or removed. A run that only re-stamped
    prices that were already current does not sync, so it cannot restart the
-   proxy. A sync that fails is a `routes: warning:` and never changes the
-   exit status; run `wt litellm sync`.
+   proxy. On a machine with no LiteLLM `config.yaml` there is nothing to
+   sync, and no warning. A sync that fails is a `routes: warning:` and
+   never changes the exit status; run `wt litellm sync`.
 
 The route sync is the last step. A run interrupted before it (Ctrl-C during
 a pull) leaves the routes behind the registry; the next `wt cloud-sync`
@@ -235,7 +256,8 @@ the error lines above` for 1.
   OpenRouter's prices: …; no price was changed`).
 - prices: the registry changed after the plan was printed (`no price was
   changed — run it again`).
-- either flow: a model id the plan addresses is in the registry twice.
+- either flow: a model id is in the registry twice — on any
+  OpenRouter-priced model (prices), or on a row the catalog plan addresses.
   Refused before the plan is printed.
 - either flow: no terminal to confirm on, without `--yes`.
 - either flow: the registry write was refused (`registry.toml was not
@@ -273,9 +295,11 @@ names the check that failed, and the page is saved:
 `catalog: raw HTML saved to <path>`, a new file
 `$TMPDIR/ollama-pricing-<YYYYMMDD-HHMMSS>.html`, mode 0600. A `--html` file
 that does not parse is copied there too, and its message still says `could
-not parse ollama.com/pricing`. The repair is a code change to
-`wt/internal/cloudsync/pricingpage.go`; the `cloud-sync` skill has the
-steps.
+not parse ollama.com/pricing`. If the page cannot be saved, that line
+reads `catalog: the raw HTML could not be saved: <why>` instead: fetch the
+page again yourself, or pass a saved copy with `--html`. The repair is a
+code change to `wt/internal/cloudsync/pricingpage.go`; the `cloud-sync`
+skill has the steps.
 
 **Exit 4** — `<n> of <m> ollama cloud entries would be removed — check the
 page parsed correctly, then re-run with --force. Nothing was changed for
@@ -306,9 +330,11 @@ the job.
   it shows.
 - **A failed rm.** ``catalog: error: `ollama rm <tag>` failed: …``, then
   `<tag> is left pulled; the next run lists it as a stray tag — start again
-  from --dry-run, since the removal digest may have changed`. Its entry is
-  already gone from the registry, so the same approved command would now
-  exit 5.
+  from --dry-run, since the removal digest may have changed`. When the tag
+  belonged to a removed entry, that entry is already gone from the
+  registry, so the digest is a different one and the same approved command
+  would exit 5; a stray tag's digest may be unchanged. Either way, start
+  from `--dry-run`.
 - **An `ollama rm` that answers "not found"** and names the tag counts as
   done: the tag is gone, which is what was wanted. wt matches those words
   and the tag in ollama's message; ollama's exact wording has not been
@@ -334,7 +360,10 @@ the job.
   every tool that writes the registry, comments in the file do not survive.
 - **Writes LiteLLM's `config.yaml`** only through the route sync.
 - **Changes ollama's store** through `ollama pull` and `ollama rm`.
-- It does not read or write `modelman.toml`.
+- It never writes `modelman.toml` and takes nothing for the sync from it:
+  not `price_refresh_last_run`, and no per-model key. (Like every wt
+  command, loading wt's config reads that file's legacy `[litellm]` table
+  as a fallback.)
 
 ### Against a copy of the registry
 

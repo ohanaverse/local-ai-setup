@@ -49,6 +49,11 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
 ## Steps
 
 1. **Dry run:** `wt cloud-sync --dry-run`. It changes nothing.
+   - First run `wt cloud-sync --help`. If it does not print the two flows
+     (`prices`, `catalog`), the installed `wt` predates the command: stop
+     and ask the user to run `make install` from the repo root. Do not run
+     anything else with that binary (what an older `wt` does with the word
+     `cloud-sync` has not been checked).
    - Summarize **both** plans for the user. Prices: each `id: old -> new`
      under `Price updates`. Catalog: `Price updates`, `Registry additions`
      (id and family; each also gets a route), `ollama pull`, `Registry
@@ -74,16 +79,24 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      exits 4 or 5). Nothing was changed.
 2. **Ask.** Get the user's go-ahead for the whole of both plans. List every
    registry removal and every `ollama rm` by name and get an explicit yes to
-   those in particular. If the plan removes more than half the ollama cloud
-   entries, say so now: the apply will refuse it without `--force` (exit 4),
-   and that many removals usually means the page parsed wrong, not that the
-   catalog shrank.
+   those in particular. A dry run does not flag a mass removal (more than
+   half the ollama cloud entries, re-tagged ones not counted); the apply
+   does. Estimate it: the `Registry removals` lines without `(re-tagged as
+   …)`, against the counts of `Price updates`, `Unchanged prices` and
+   `Registry removals` added together. If that looks like more than half,
+   say so now: the apply refuses it without `--force` (exit 4, whose line
+   gives the exact `<n> of <m>`), and that many removals usually means the
+   page parsed wrong, not that the catalog shrank.
 3. **Apply:** `wt cloud-sync --yes --approve-removals <digest>`, with the
    digest from step 1. Leave `--approve-removals` out if the dry run printed
    no digest. Your shell has no terminal, so the command's one question
    cannot be answered: without `--yes` it stops with `error: not applied:
    there is no terminal to confirm on — rerun with --yes to apply without
    asking` (exit 1).
+   - Success reads `prices: refreshed N model(s); N price(s) changed`,
+     `catalog: updated N, added N and removed N model(s)`, then one
+     `catalog: pulled <tag>` or `catalog: removed <tag>` per tag. Report
+     those to the user.
    - `catalog: ollama at <address>` names the daemon the pulls and removals
      go to. It is the registry's ollama provider row's address, whatever
      `OLLAMA_HOST` your shell exports.
@@ -127,8 +140,9 @@ win over 1: with 2 to 5, also read the `prices:` lines for an `error:`.
 - `prices: error: could not read OpenRouter's prices: …; no price was
   changed` — the fetch or its parse failed. Retry later.
 - `prices: error: no price was changed: …` or `catalog: error: nothing was
-  changed: model "<id>" is in the registry twice …` — a row the plan
-  addresses has a duplicated id. Refused before the plan is printed, in a
+  changed: model "<id>" is in the registry twice …` — an OpenRouter-priced
+  model (prices), or a row the catalog plan addresses, has a duplicated id.
+  Refused before the plan is printed, in a
   dry run too. Removing one of two rows that share an id is a hand edit of
   `registry.toml`, and which row to keep is the user's call: stop and ask.
 - `prices: error: the registry changed after the plan was printed; no price
@@ -184,7 +198,9 @@ The error names the check that failed and where the page was saved:
 `catalog: raw HTML saved to <path>`, a file
 `$TMPDIR/ollama-pricing-<YYYYMMDD-HHMMSS>.html`, mode 0600. (A `--html FILE`
 that does not parse is copied there too, and the message still says
-`could not parse ollama.com/pricing`.) Work from `wt/`.
+`could not parse ollama.com/pricing`.) If the line is instead `catalog:
+the raw HTML could not be saved: <why>`, there is no file: ask the user for
+a saved copy of the page and work from that. Work from `wt/`.
 
 1. Open the saved HTML and find the pricing table.
 2. Change **only** `internal/cloudsync/pricingpage.go`: `ParsePricing`, and
