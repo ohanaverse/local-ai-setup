@@ -116,9 +116,7 @@ def _stop_others(keep: str = "") -> None:
     `stop-all` verb).
 
     `keep` is matched against `occupancy_key`, not `id`, so keeping "omlx"
-    also keeps "omlx-6bit" — they are one daemon. `llamacpp` IS included
-    here even though it is outside `SUPPORTED_PROVIDER_IDS`, because bash's
-    `stop_all_local` stops it too when its plist exists.
+    also keeps "omlx-6bit" — they are one daemon.
 
     A stop that times out (or raises) is a warning on stderr, never a
     failure: bash's subshells end in `true` for exactly this reason — one
@@ -196,7 +194,7 @@ def isolate(
             started = True
             backend.warm(plan)
         else:
-            if solo and backend.respects_solo:
+            if solo:
                 # replace_own_occupant() raises immediately on a non-None
                 # stop warning rather than falling through to start()'s own
                 # port poll, which would fail ~10s later with a generic
@@ -244,10 +242,6 @@ def isolate(
 def stop(provider_id: str) -> LifecycleResult:
     """Stop exactly one local provider, leaving every other one running.
 
-    Gated on `SUPPORTED_PROVIDER_IDS`, not `BACKENDS`, so `llamacpp` is
-    rejected here even though it is a valid `BACKENDS` key — bash's `stop`
-    verb likewise has no `llamacpp` case.
-
     Stricter than `stop_all()` by design: a timed-out stop is reported as a
     real failure rather than a warning, because a caller replacing a
     single-port provider's occupant needs to know whether the port actually
@@ -255,13 +249,6 @@ def stop(provider_id: str) -> LifecycleResult:
     envelope such callers read).
     """
     if provider_id not in SUPPORTED_PROVIDER_IDS:
-        # Two distinct cases, distinguishable to the caller: a registered
-        # backend that `stop` nonetheless refuses (llamacpp), versus an id
-        # nothing knows about at all.
-        if provider_id in BACKENDS:
-            return LifecycleResult(
-                provider_id, "", "", False, f"provider not supported for stop: {provider_id}"
-            )
         return LifecycleResult(provider_id, "", "", False, f"unknown provider: {provider_id}")
     backend = BACKENDS[provider_id]
     try:
@@ -283,10 +270,7 @@ def stop_all(keep: str = "") -> LifecycleResult:
     on occupancy_key (see `_distinct_backends`). Resolving it here, rather
     than pushing that translation onto every caller, is what keeps a raw
     id like "omlx-6bit" (occupancy_key "omlx") from matching no occupancy
-    key at all and stopping the opposite of what was asked. `keep` is
-    checked against `BACKENDS`, not `SUPPORTED_PROVIDER_IDS` — llamacpp is
-    a valid id to keep even though it's retired-only, since `_stop_others`
-    tears it down too (see its docstring).
+    key at all and stopping the opposite of what was asked.
 
     An unknown `keep` id fails fast with ok=False, before any teardown
     runs — unlike a bare `_stop_others()` warning, this must not be
@@ -311,8 +295,7 @@ def _restore_litellm() -> str | None:
     """Restore the LiteLLM proxy. Not a `Backend` (it is not a model
     provider), so it rides along as one more task in `restore()`'s pool.
 
-    A missing plist is a non-fatal skip, matching bash's `restart_launchd`
-    — unlike llamacpp's START path, which fails loudly on a missing plist.
+    A missing plist is a non-fatal skip, matching bash's `restart_launchd`.
     """
     try:
         # bash: `curl -s -m 2 "$url" >/dev/null 2>&1 && return 0` — one

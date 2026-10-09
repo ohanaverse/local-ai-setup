@@ -1,7 +1,4 @@
-"""The `llmbench` command tree, and the one rule about what it imports."""
-
-import ast
-from pathlib import Path
+"""The `llmbench` command tree."""
 
 import pytest
 from typer.testing import CliRunner
@@ -39,7 +36,6 @@ def test_provider_list_names_every_backend():
     result = CliRunner().invoke(app, ["provider", "list"])
     assert result.exit_code == 0, result.output
     assert [line.split("\t")[0] for line in result.output.splitlines()] == [
-        "llamacpp",
         "mlx_lm_server",
         "mtplx",
         "ollama",
@@ -52,23 +48,3 @@ def test_there_is_no_benchmark_level():
     result = CliRunner().invoke(app, ["benchmark", "run"])
     assert result.exit_code == 2
     assert "No such command 'benchmark'" in result.output
-
-
-def test_llmbench_never_imports_modelman():
-    """llmbench outlives modelman. A module-level import would fail in this
-    venv, where modelman is not installed; a lazy one inside a function, in a
-    branch no test reaches, would pass every other test here and fail the day
-    modelman is deleted."""
-    src = Path(__file__).resolve().parents[1] / "src" / "llmbench"
-    offenders = []
-    for path in sorted(src.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                names = [node.module or ""]
-            else:
-                continue
-            if any(name.split(".")[0] == "modelman" for name in names):
-                offenders.append(f"{path.relative_to(src)}:{node.lineno}")
-    assert offenders == []

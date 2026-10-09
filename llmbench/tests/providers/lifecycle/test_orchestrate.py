@@ -330,21 +330,6 @@ def test_isolate_solo_restart_stops_only_own_occupant():
     assert result.ok is True
 
 
-def test_isolate_solo_ignored_for_llamacpp():
-    """llamacpp is the one backend whose bash start branch runs
-    `stop_all_local llamacpp` unconditionally — respects_solo=False, so even
-    solo=True must fall through to the sibling teardown."""
-    with (
-        patch.object(BACKENDS["llamacpp"], "check_available", return_value=None),
-        patch(f"{ORCH}._stop_others") as mock_stop_others,
-        patch.object(BACKENDS["llamacpp"], "start"),
-        patch.object(BACKENDS["llamacpp"], "warm"),
-    ):
-        result = orchestrate.isolate("llamacpp", "local-llama", solo=True)
-    mock_stop_others.assert_called_once_with(keep="llamacpp")
-    assert result.ok is True
-
-
 def test_isolate_solo_replace_failure_prevents_start():
     """A replace_own_occupant() failure must abort before start(): falling
     through to spawn a replacement into a port the predecessor still holds
@@ -459,16 +444,34 @@ def test_isolate_does_not_tear_down_backends_without_cleanup_on_failure():
 
 
 @pytest.mark.parametrize("provider_id", ["llamacpp", "totally-made-up"])
-def test_stop_rejects_provider_outside_supported_ids(provider_id):
-    """stop() gates on SUPPORTED_PROVIDER_IDS, not BACKENDS — llamacpp is a
-    valid BACKENDS key (stop_all still tears it down) but bash's `stop` verb
-    has no llamacpp case, so stopping it by name must be refused rather than
-    silently reviving a retired provider's control path."""
-    with patch.object(BACKENDS["llamacpp"], "stop_and_wait") as mock_stop:
-        result = orchestrate.stop(provider_id)
+def test_stop_rejects_an_id_no_backend_has(stub_stops, provider_id):
+    """stop() refuses an id that names no backend, and stops nothing. The
+    retired `llamacpp` id is one of those now: its backend is gone, so it is
+    refused like a typo instead of reviving a retired provider's control
+    path."""
+    result = orchestrate.stop(provider_id)
     assert result.ok is False
-    assert provider_id in (result.error or "")
-    mock_stop.assert_not_called()
+    assert result.error == f"unknown provider: {provider_id}"
+    for backend_id, stop_and_wait in stub_stops.items():
+        assert not stop_and_wait.called, backend_id
+
+
+def test_isolate_rejects_the_retired_llamacpp_id(stub_stops):
+    """`llmbench provider isolate llamacpp` used to start the retired
+    backend. With the backend removed it must fail before any teardown: a
+    script that still names it must not stop every other provider first."""
+    result = orchestrate.isolate("llamacpp", "local-llama")
+    assert result.ok is False
+    assert result.error == "unknown provider: llamacpp"
+    for backend_id, stop_and_wait in stub_stops.items():
+        assert not stop_and_wait.called, backend_id
+
+
+def test_every_backend_is_supported():
+    """BACKENDS and SUPPORTED_PROVIDER_IDS used to differ by the retired
+    llamacpp entry. They are one set now; a backend registered without being
+    isolable and stoppable by name would be a third state nothing handles."""
+    assert frozenset(BACKENDS) == orchestrate.SUPPORTED_PROVIDER_IDS
 
 
 def test_stop_returns_ok_on_clean_stop():
@@ -518,13 +521,11 @@ def test_stop_others_dedupes_shared_occupancy_key(stub_stops):
     assert invoked.count(True) == 1
 
 
-def test_stop_others_covers_every_other_backend_including_llamacpp(stub_stops):
-    """bash's stop_all_local has a llamacpp branch (guarded only by the
-    plist's existence), so llamacpp must be torn down here too even though
-    it is outside SUPPORTED_PROVIDER_IDS — a stale llama.cpp holding port
-    8080 and GPU/RAM would skew every benchmark that followed."""
+def test_stop_others_covers_every_other_backend(stub_stops):
+    """Every backend is torn down, not only the common ones: a provider left
+    holding its port and GPU/RAM would skew every benchmark that followed."""
     orchestrate._stop_others()
-    for provider_id in ("ollama", "mlx_lm_server", "mtplx", "llamacpp"):
+    for provider_id in ("ollama", "mlx_lm_server", "mtplx"):
         assert stub_stops[provider_id].called, provider_id
 
 
@@ -565,7 +566,7 @@ def test_stop_all_keep_excludes_by_occupancy_key(stub_stops):
     orchestrate.stop_all(keep="omlx")
     assert not stub_stops["omlx"].called
     assert not stub_stops["omlx-6bit"].called
-    assert stub_stops["llamacpp"].called
+    assert stub_stops["mtplx"].called
 
 
 def test_stop_all_keep_resolves_provider_id_to_occupancy_key(stub_stops):
@@ -590,7 +591,7 @@ def test_stop_all_rejects_unknown_keep_id_instead_of_keeping_nothing(stub_stops)
     result = orchestrate.stop_all(keep="bogus-id")
     assert result.ok is False
     assert "bogus-id" in result.error
-    for backend_id in ("ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "llamacpp"):
+    for backend_id in ("ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"):
         assert not stub_stops[backend_id].called, backend_id
 
 
@@ -602,7 +603,7 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
     from BACKENDS — no hardcoded provider list (which would drift the moment
     a backend is added). "restart" backends come back up, "stop" backends
     (never part of the standing baseline) are torn down, "skip" backends
-    (retired llamacpp, the duplicate omlx-6bit id) are not touched at all."""
+    (the duplicate omlx-6bit id) are not touched at all."""
     with (
         patch.object(BACKENDS["ollama"], "restore") as mock_ollama_restore,
         patch.object(OMLX_4BIT, "restore") as mock_omlx_restore,
@@ -611,8 +612,6 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
             BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None
         ) as mock_mlx_stop,
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None) as mock_mtplx_stop,
-        patch.object(BACKENDS["llamacpp"], "restore") as mock_llamacpp_restore,
-        patch.object(BACKENDS["llamacpp"], "stop_and_wait") as mock_llamacpp_stop,
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore()
@@ -621,8 +620,6 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
     mock_omlx6_restore.assert_not_called()
     mock_mlx_stop.assert_called_once()
     mock_mtplx_stop.assert_called_once()
-    mock_llamacpp_restore.assert_not_called()
-    mock_llamacpp_stop.assert_not_called()
     assert result.ok is True
     assert result.provider == "restore"
 
@@ -682,8 +679,7 @@ def test_restore_litellm_failure_fails_the_aggregate():
 
 def test_restore_litellm_missing_plist_is_a_non_fatal_skip(tmp_path):
     """bash's restart_launchd treats a missing plist as "not configured;
-    skipping", NOT an error — unlike llamacpp's START path, which fails
-    loudly on a missing plist. A machine with no LiteLLM installed must not
+    skipping", NOT an error. A machine with no LiteLLM installed must not
     have every benchmark end in a restore failure."""
     missing = tmp_path / "nope.plist"
     with (

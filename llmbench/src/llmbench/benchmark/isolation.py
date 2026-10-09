@@ -2,11 +2,10 @@
 
 Formerly the subprocess contract with `bin/llm-isolate-provider` /
 `bin/llm-restore-providers`; those calls are gone (issue #79) and every
-function here now drives `llmbench.providers.lifecycle` in-process. The five
-public names and their signatures are unchanged, so no caller
-(`local_control.py`, `benchmark/runner.py`, `benchmark/agent/runner.py`)
-needed edits: this layer's job is still to translate the lifecycle's
-`ok=False` envelopes into the `BenchmarkError` its callers expect.
+function here now drives `llmbench.providers.lifecycle` in-process. Its
+callers are the three benchmark runners: this layer's job is still to
+translate the lifecycle's `ok=False` envelopes into the `BenchmarkError`
+they expect.
 """
 
 from __future__ import annotations
@@ -20,8 +19,8 @@ from ..providers import lifecycle
 
 # The isolable provider set now lives with the backends that implement it
 # (llmbench/providers/lifecycle/backends/__init__.py) — re-exported here
-# under its established name so existing importers (local_control.py,
-# benchmark/agent/runner.py) are unaffected.
+# under its established name so existing importers
+# (benchmark/agent/runner.py) are unaffected.
 SUPPORTED_PROVIDER_IDS = lifecycle.SUPPORTED_PROVIDER_IDS
 
 # IsolateResult is llmbench.local_process.ProcessResult under its
@@ -89,7 +88,7 @@ def mlx_lm_server_pairing_args(
 
 
 def isolate_provider(
-    provider_id: str, *extra_args: str, env: dict[str, str] | None = None, solo: bool = False
+    provider_id: str, *extra_args: str, env: dict[str, str] | None = None
 ) -> IsolateResult:
     """Isolate one local provider: stop the others, start+warm this one.
 
@@ -100,17 +99,12 @@ def isolate_provider(
 
     `env`, when given, is the caller's own dict of LLM_ISOLATE_*_MODEL
     overrides (see `local_process.ENV_VAR_BY_PROVIDER`) — this is how
-    `modelman start` warms up a *specific* model instead of the provider's
+    the eval runner warms up a *specific* model instead of the provider's
     baked-in default. The named variable's value is extracted and passed as
     the EXPLICIT model argument (highest precedence in the backend's
     resolution order) rather than left to the backend's own os.environ
     fallback: `env` is a dict the caller built, not necessarily equal to
     this process's real environment.
-
-    `solo=True` skips stopping every OTHER local provider before starting
-    `provider_id` — used by modelman's same-provider-only local-model
-    lifecycle (local_control.py). Never passed by llmbench, which
-    still needs full exclusivity for clean measurement.
     """
     model: str | None = None
     if env:
@@ -119,26 +113,8 @@ def isolate_provider(
         var = ENV_VAR_BY_PROVIDER.get(provider_id)
         if var:
             model = env.get(var)
-    result = lifecycle.isolate(provider_id, model, extra_args=extra_args, solo=solo)
+    result = lifecycle.isolate(provider_id, model, extra_args=extra_args)
     return _require_ok(result, f"isolation failed for {provider_id}")
-
-
-def stop_all_local_providers() -> IsolateResult:
-    """Stop every local provider. Used by `modelman stop` (and by `modelman
-    start` before starting a different model) — the single place that knows
-    how to tear down whichever local provider happens to be running, without
-    modelman having to track that itself."""
-    return _require_ok(lifecycle.stop_all(), "stop-all failed")
-
-
-def stop_provider(provider_id: str) -> IsolateResult:
-    """Stop exactly one local provider, leaving every other one running.
-    Used by the same-provider-only local-model lifecycle to replace a
-    single-port provider's (omlx/omlx-6bit) occupant before starting a
-    different model on it — mlx_lm_server and mtplx never need this
-    (mlx_lm_server self-replaces inside its own start(); mtplx's replace
-    logic lives in the lifecycle's isolate())."""
-    return _require_ok(lifecycle.stop(provider_id), f"stop failed for {provider_id}")
 
 
 def restore_providers() -> None:

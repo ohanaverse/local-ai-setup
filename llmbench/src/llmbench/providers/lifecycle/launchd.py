@@ -18,7 +18,6 @@ OLLAMA_LABEL = "com.ollama.ollama"
 LITELLM_PLIST = Path.home() / "Library/LaunchAgents/local.litellm.proxy.plist"
 LITELLM_PORT = 4000
 LITELLM_HEALTH_URL = f"http://localhost:{LITELLM_PORT}/v1/models"
-LLAMACPP_PLIST = Path.home() / "Library/LaunchAgents/local.llamacpp.server.plist"
 
 
 def _run_launchctl(args: list[str]) -> bool:

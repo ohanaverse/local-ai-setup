@@ -1,7 +1,7 @@
 """Backend abstract base class and the plan it resolves down to.
 
-Every concrete backend (ollama, omlx, mtplx, mlx_lm_server, llamacpp — each
-added in a later task) subclasses `Backend`. Exact method names matter:
+Every concrete backend (ollama, omlx, mtplx, mlx_lm_server — each added in
+a later task) subclasses `Backend`. Exact method names matter:
 later tasks subclass this seeing only this file and its docstrings, not
 the discussion that produced them, so every docstring here must be
 self-sufficient.
@@ -49,9 +49,6 @@ class Backend(ABC):
       health_url: a cheap liveness-check URL for this backend.
       chat_url: the OpenAI-compatible chat-completions URL for this
         backend.
-      respects_solo: whether solo=True leaves this backend's own occupant
-        alone when it's a *different* backend being isolated. False only
-        for llamacpp (a later task).
       cleanup_on_failure: whether a failed start should tear this backend
         back down. True only for mtplx (a later task).
       restore_action: what `restore()` should do after a benchmark run
@@ -64,7 +61,6 @@ class Backend(ABC):
     default_model: str | None
     health_url: str
     chat_url: str
-    respects_solo: bool = True
     cleanup_on_failure: bool = False
     restore_action: str = "skip"
 
@@ -138,9 +134,9 @@ class Backend(ABC):
         `curl -m 2`, not a poll loop) — return immediately if already up;
         otherwise call `restart()` and poll self.health_url via
         `wait_for_port_open`, raising LifecycleError if it never comes
-        back. ollama/omlx/llamacpp's restore() bodies were otherwise
+        back. ollama's and omlx's restore() bodies were otherwise
         identical copies of this shape, differing only in how they
-        restart (`launchd.kickstart`, `omlx start`, `launchd.load`)."""
+        restart (`launchd.kickstart`, `omlx start`)."""
         try:
             urllib.request.urlopen(self.health_url, timeout=2.0)  # noqa: S310 — localhost probe
             return
