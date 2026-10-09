@@ -11,8 +11,9 @@
   ```json
   {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
   ```
+- **Survey history exists** (optional — only the survey table needs it): `~/.config/agent-wt/survey.jsonl` — the post-session survey's answers, one JSON line each, 30-day retention. **The survey is switched off** (#136), so no new answers are recorded: the survey table reports what is already in the file, and reads `no survey data` on a fresh install or once the last answers age out.
 - `wt` on PATH (`make install` from the repo root) and `psql` on PATH.
-- Everything in this guide is **read-only**: it reads `usage.jsonl` and the Postgres spend table; it mutates nothing.
+- Everything in this guide is **read-only**: it reads `usage.jsonl`, `survey.jsonl` and the Postgres spend table; it mutates nothing.
 
 ## TL;DR
 
@@ -20,7 +21,7 @@
 wt stats --window 7d
 ```
 
-Two tables for one window: the survey table, then the usage table (launches and LiteLLM spend per model). For a copy to keep, `wt stats --json` prints the same report as one JSON line; append it to a file to build a history:
+Two tables for one window: the survey table, then the usage table (launches and LiteLLM spend per model). The survey table covers the answers already in `survey.jsonl`; the survey is switched off (#136), so expect `no survey data` unless answers were recorded while it was on. For a copy to keep, `wt stats --json` prints the same report as one JSON line; append it to a file to build a history:
 
 ```bash
 wt stats --json >> ~/notes/wt-stats.jsonl
@@ -62,6 +63,9 @@ After `wt litellm on`, non-native launches route through LiteLLM, so rows with b
 
 ### 4. Where the data comes from
 
+One source per table — the survey table's first, then the usage table's two:
+
+- `~/.config/agent-wt/survey.jsonl` — the **survey table's** only source: one JSON object per answered post-session survey (agent, model, verdict, speed, quality, task). wt writes it at exit when the survey asks; the survey is switched off (#136), so it holds only older answers and thins out as they pass 30 days.
 - `~/.config/agent-wt/usage.jsonl` — one JSON object per wt TUI launch, `model_id` + `timestamp` only (no tokens, no cost, no keys). Sample line quoted in Prerequisites.
 - Postgres table `LiteLLM_SpendLogs` — LiteLLM's standard spend log (one row per proxy request: model, tokens, cost). Local Postgres allows passwordless access; the table lives in the `litellm` database, not the default `postgres` one. Probe:
 
@@ -88,7 +92,7 @@ Totals can differ at the edges of a window from a report made with the old comma
 
 ## Verification
 
-- `wt stats --window 1d` exits 0. With launches or spend in the window, the usage table's header row starts `MODEL`; with none, it prints `no usage data`.
+- `wt stats --window 1d` exits 0. With launches or spend in the window, the usage table's header row starts `MODEL`; with none, it prints `no usage data`. The survey table above it does the same: rows for the answers in the window, `no survey data` when there are none — which is the usual state while the survey is switched off.
 - The JSON form has four top-level keys:
 
   ```bash
@@ -96,7 +100,7 @@ Totals can differ at the edges of a window from a report made with the old comma
   ```
 
   Expected: `['as_of', 'survey', 'usage', 'window']`.
-- No mutations: a run only reads `usage.jsonl` and Postgres.
+- No mutations: a run only reads `survey.jsonl`, `usage.jsonl` and Postgres.
 
 ## Gotchas
 

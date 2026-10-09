@@ -9,7 +9,7 @@
 - [01-initial-setup](01-initial-setup.md) complete: LiteLLM proxy running on :4000, Ollama up, services healthy. Guides 03–08 of this set ([03-model-families](03-model-families.md) onward) continue from here.
 - `wt` on PATH (`make install` from the repo root): `wt model init`, `wt litellm sync`, `wt start` and `wt stop` do most of what follows.
 
-wt reads one file under `~/.config/local-ai/`:
+wt's registry file under `~/.config/local-ai/` is this one. It also reads the legacy `[litellm]` table of `modelman.toml` in the same directory, once, as a fallback — wt's own `config.toml` wins from then on:
 
 | File | Purpose | Env override |
 |------|---------|--------------|
