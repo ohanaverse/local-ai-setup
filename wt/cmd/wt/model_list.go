@@ -38,7 +38,9 @@ func modelListCmd(a *app) *cobra.Command {
 			"A model whose fetch or draft is malformed in the registry (not a table, or a\n" +
 			"repo or local_path that is not a string) is still listed, with that value\n" +
 			"read as absent; a line on stderr names the row and the problem, and --json\n" +
-			"has the same in each model's \"malformed\" array.",
+			"has the same in each model's \"malformed\" array. A cost.time_prices row that\n" +
+			"breaks the registry's rules (an unknown timezone, a time that is not HH:MM)\n" +
+			"is named the same way: the model picker does not apply such a row.",
 		Example:      "  wt model list\n  wt model list --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
