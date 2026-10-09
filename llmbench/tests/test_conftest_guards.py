@@ -40,7 +40,6 @@ HOME_PATHS = {
     "eval.runner.LITELLM_PLIST": eval_runner.LITELLM_PLIST,
     "eval.runner.LIVE_PI_MODELS_PATH": eval_runner.LIVE_PI_MODELS_PATH,
     "launchd.LITELLM_PLIST": launchd.LITELLM_PLIST,
-    "launchd.LLAMACPP_PLIST": launchd.LLAMACPP_PLIST,
     "runner.DEFAULT_RESULTS_DIR": workload_runner.DEFAULT_RESULTS_DIR,
     "agent.runner.DEFAULT_RESULTS_DIR": agent_runner.DEFAULT_RESULTS_DIR,
     "eval.runner.DEFAULT_RESULTS_DIR": eval_runner.DEFAULT_RESULTS_DIR,

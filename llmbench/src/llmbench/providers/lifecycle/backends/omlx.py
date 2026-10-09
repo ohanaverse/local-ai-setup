@@ -15,7 +15,7 @@ and module-level instances below.
 
 Live: registered in `backends.BACKENDS`, which `orchestrate.py` reads to
 drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
-`llmbench provider ...`, the benchmarks, and modelman's `local_control.py`.
+`llmbench provider ...` and the benchmarks.
 """
 
 from __future__ import annotations

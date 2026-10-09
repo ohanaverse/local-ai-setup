@@ -103,10 +103,11 @@ func TestParseOpenRouterRejectsAnotherShape(t *testing.T) {
 }
 
 // TestOpenRouterPricedMatchesTheContract holds this package's row-based
-// predicate to docs/contracts/catalog-predicates, the fixture that already
-// pins config.Config.OpenRouterPriced and modelman's _is_openrouter_priced.
-// If they drifted, the prices flow would refresh one set of models while the
-// stale-price notice watched another.
+// predicate to docs/contracts/catalog-predicates. The same fixture is read by
+// internal/config's TestCatalogPredicatesFixture, which pins the other
+// implementation of the rule (config.Config.OpenRouterPriced, over the typed
+// registry); if the two drifted, the prices flow would refresh one set of
+// models while the stale-price notice watched another.
 func TestOpenRouterPricedMatchesTheContract(t *testing.T) {
 	const dir = "../../../docs/contracts/"
 	data, err := os.ReadFile(dir + "catalog-predicates.sample.toml")

@@ -378,7 +378,7 @@ def test_stop_and_wait_returns_stderr_when_stop_command_fails_and_port_stays_ope
 def test_stop_and_wait_succeeds_when_stop_command_fails_but_port_already_closed():
     """Bug fix: `mtplx stop` itself exits non-zero whenever nothing is
     listening on the port (see orchestrate.py's module docstring) — the
-    exact state on a machine's first `modelman start` of an mtplx model.
+    exact state on a machine's first start of an mtplx model.
     Treating that nonzero exit alone as a hard failure (the original shape
     of this fix, before the port check was moved ahead of it) made
     replace_own_occupant() raise on a start that had nothing to replace,

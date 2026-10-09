@@ -137,8 +137,8 @@ def test_isolate_without_draft_passes_empty_extra_args():
 
 def test_isolate_forwards_solo():
     # --solo must reach orchestrate.isolate() as solo=True — this is what
-    # restricts teardown to the backend's own occupant (modelman start's
-    # same-provider-only lifecycle) instead of full exclusivity.
+    # restricts teardown to the backend's own occupant (a start beside
+    # the other providers) instead of full exclusivity.
     result = LifecycleResult(
         "ollama", "llama3.2:3b", "http://localhost:11434/v1/chat/completions", True, None
     )

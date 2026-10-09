@@ -175,8 +175,8 @@ def test_start_does_not_warm():
 
 
 def test_stop_and_wait_stops_every_loaded_model_and_returns_none_on_clean_stop():
-    """modelman may have loaded a model other than the default via
-    `modelman start`, so stop_and_wait() must stop EVERY model `ollama ps`
+    """A model other than the default may be loaded (`wt start`,
+    `ollama run`), so stop_and_wait() must stop EVERY model `ollama ps`
     reports loaded, not just DEFAULT_MODEL — this is the whole reason bash
     reads `ollama ps` live instead of stopping a baked-in name."""
     with (
