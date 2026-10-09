@@ -34,7 +34,7 @@ Full data model: [docs/superpowers/specs/2026-08-14-model-registry-data-model-de
 
 ## LiteLLM routing state (wt-owned)
 
-Whether non-native models route through the LiteLLM proxy (`Config.IsLitellm()`) or dial providers directly (`Config.IsDirect()`) is the `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` (`Config.LitellmTable`). `finalizeCfg` copies it into the runtime state; with no table, routing is off. wt reads the state from `config.toml` and nowhere else (pinned by `TestLoadNeverReadsModelmanToml`). `UpdateLitellm`, behind `wt litellm on|off|set`, persists through `PatchSave` (file written 0600 when an api_key is stored, and created when it does not exist); `LitellmConfigured()` = URL+key set.
+Whether non-native models route through the LiteLLM proxy (`Config.IsLitellm()`) or dial providers directly (`Config.IsDirect()`) is the `[litellm]` table (`enabled`/`url`/`api_key`) in wt's `config.toml` (`Config.LitellmTable`). `finalizeCfg` copies it into the runtime state; with no table, routing is off. wt reads the state from `config.toml` and nowhere else (pinned in `internal/config/litellm_state_test.go`). `UpdateLitellm`, behind `wt litellm on|off|set`, persists through `PatchSave` (file written 0600 when an api_key is stored, and created when it does not exist); `LitellmConfigured()` = URL+key set.
 
 Toggling is routing policy only — it never touches the proxy. `LitellmBaseURL()` trims trailing slashes so drivers append `/v1` (or nothing for claude) cleanly. The proxy reads `config.yaml` only at startup; see [docs/wt-agents/README.md#litellm-proxy-lifecycle](../wt-agents/README.md#litellm-proxy-lifecycle).
 
