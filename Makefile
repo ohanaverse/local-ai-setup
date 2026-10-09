@@ -11,8 +11,7 @@ SHELL_SCRIPTS := \
 	benchmarks/lib/benchmark-multi.sh \
 	wt/bin/*-wt \
 	wt/scripts/agents-smoke.sh \
-	litellm-session-logs/02_export_proxy_server_request.sh \
-	litellm-session-logs/03_capture_claude_code.sh
+	litellm-session-logs/02_export_proxy_server_request.sh
 
 lint: lint-shell check-links
 
