@@ -14,10 +14,8 @@ call the `llmbench provider` CLI over this
 (`uv run --directory llmbench llmbench provider isolate <id> <model>`, with
 `LLM_ISOLATE_*_MODEL` env overrides still honored as a fallback), and the
 benchmarks call `orchestrate.py` directly, in-process, via
-`llmbench/src/llmbench/benchmark/isolation.py`. `modelman start`/`stop` reach
-the same code through modelman's path dependency on llmbench, so run
-modelman's suite too. Paths below are relative to `llmbench/` unless they
-start with another directory; a bare `backends/...` is under
+`llmbench/src/llmbench/benchmark/isolation.py`. Paths below are relative
+to `llmbench/` unless they start with another directory; a bare `backends/...` is under
 `src/llmbench/providers/lifecycle/`. Adding a backend:
 
 1. **Add the backend module.** Create
@@ -36,10 +34,7 @@ start with another directory; a bare `backends/...` is under
    it).
 3. **Add an env var if it needs one.** If the backend resolves its model
    from a single env var (like ollama/omlx do), add it to
-   `ENV_VAR_BY_PROVIDER` in `src/llmbench/local_process.py` and, until
-   modelman is retired, to its copy in
-   `modelman/src/modelman/local_process.py`
-   (`modelman/tests/test_llmbench_reexports.py` fails if the two differ). A
+   `ENV_VAR_BY_PROVIDER` in `src/llmbench/local_process.py`. A
    backend that takes a target+draft pairing (like `mlx_lm_server`) uses
    its own two env vars defined in its own backend module instead — see
    `backends/mlx_lm_server.py`'s `TARGET_ENV_VAR`/`DRAFT_ENV_VAR`.
@@ -51,23 +46,19 @@ start with another directory; a bare `backends/...` is under
    `patch("llmbench.providers.lifecycle.backends.<id>.probe.wait_for_port_closed")`),
    not the origin module (`probe.py`, `pidproc.py`) directly. If the
    backend shells out to a binary the suite must never run, add its
-   basename to `_FAKE_BINARIES` in `tests/conftest.py` **and** in
-   `modelman/tests/conftest.py`, and to the parametrized list in
-   `tests/providers/lifecycle/test_hermeticity.py` **and** its copy,
-   `modelman/tests/test_hermeticity.py`.
+   basename to `_FAKE_BINARIES` in `tests/conftest.py` and to the
+   parametrized list in `tests/providers/lifecycle/test_hermeticity.py`.
 5. **Update the registry.** Add a provider entry to
-   `~/.config/local-ai/registry.toml` (by hand, or via `modelman sync`) and
+   `~/.config/local-ai/registry.toml` (by hand, or with `wt model init` once wt
+   seeds its row) and
    add the provider id to `DEFAULT_PROVIDER_IDS` in
    `src/llmbench/registry.py` (`LOCAL_PROVIDERS =
    set(DEFAULT_PROVIDER_IDS)` in `src/llmbench/benchmark/runner.py`) — a
    backend missing from that set is silently skipped by `llmbench run` —
-   and, until modelman is retired, in `modelman/src/modelman/registry.py`,
-   which `modelman sync` seeds provider rows from
-   (`modelman/tests/test_llmbench_reexports.py` fails if the two differ).
-   Give the id a `_DEFAULT_PROVIDER_TEMPLATES` entry in that same modelman
-   file too: `default_provider_entry()` raises `KeyError` for an id in
-   `DEFAULT_PROVIDER_IDS` with no template, which fails `modelman sync`
-   the first time it has to seed that provider's row.
+   and, if `wt model init` should seed the provider's row, add the id to
+   `defaultProviderIDs` and a row to `defaultProviderRow` in
+   `wt/internal/config/registry_seed.go` (see the `adding-a-provider`
+   skill in `wt/.claude/skills/`).
 6. **Update the drift trip-wire.** `tests/benchmark/test_isolation.py`'s
    `test_supported_provider_ids_matches_the_backends_registry_documented_list`
    hand-writes a literal copy of `SUPPORTED_PROVIDER_IDS` specifically so a
