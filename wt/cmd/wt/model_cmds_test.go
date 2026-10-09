@@ -16,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // modelCmdConfig is a minimal local-only registry shared by the start/stop
@@ -984,20 +985,28 @@ func TestStopAllFailurePrintsNoUsage(t *testing.T) {
 // TestNoHelpTextNamesModelman pins success criterion 1 of the retirement for
 // wt's own help: no command's help may send a reader to modelman, which no
 // longer exists. It walks the whole command tree, so a command added later is
-// covered too, and reads each command's long text and its usage (the short
-// line, the examples and every flag's description). The check is for the
-// lowercase tool name: the env alias names (MODELMAN_REGISTRY and the three
-// MODELMAN_LITELLM_ ones) are uppercase, are read forever, and may be named.
+// covered too. For each command it reads the short line, the long text, the
+// examples, the deprecation notice and the usage text, and then every flag's
+// description and deprecation notice one by one: the usage text alone leaves
+// out the command's own short line and every hidden flag. The check is for
+// the lowercase tool name: the env alias names (MODELMAN_REGISTRY and the
+// three MODELMAN_LITELLM_ ones) are uppercase, are read forever, and may be
+// named.
 func TestNoHelpTextNamesModelman(t *testing.T) {
 	seen := 0
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
 		seen++
-		for _, text := range []string{c.Long, c.UsageString()} {
+		for _, text := range []string{c.Short, c.Long, c.Example, c.Deprecated, c.UsageString()} {
 			if strings.Contains(text, "modelman") {
 				t.Errorf("%s: help names modelman:\n%s", c.CommandPath(), text)
 			}
 		}
+		c.Flags().VisitAll(func(f *pflag.Flag) {
+			if strings.Contains(f.Usage+f.Deprecated, "modelman") {
+				t.Errorf("%s --%s: flag help names modelman: %s", c.CommandPath(), f.Name, f.Usage)
+			}
+		})
 		for _, sub := range c.Commands() {
 			walk(sub)
 		}

@@ -685,9 +685,8 @@ func Path() string {
 // provider/model sections survive on disk; nothing reads them, and a failed
 // load is not what removes them. Returns an empty Config if config.toml does
 // not exist yet. A missing registry (ErrRegistryMissing) still returns an
-// error, but the
-// returned Config is not nil: it carries whatever config.toml already
-// parsed (Agents/DefaultTag), just with an empty model catalog, so a
+// error, but the returned Config is not nil: it carries whatever config.toml
+// already parsed (Agents/DefaultTag), just with an empty model catalog, so a
 // genuinely configured agent isn't misread as unconfigured by callers like
 // agents.IsConfigured. A malformed config.toml/registry.toml returns nil.
 func Load() (*Config, error) {
@@ -1158,7 +1157,8 @@ func LoadFixHint(err error) string {
 // The registry is read by llmbench too, so any other value —
 // a typo such as "Local", a word from some other scheme — is not interpreted:
 // reading "Local" as local would paper over a file that llmbench reads
-// differently (a location that is not exactly "local" is not local to it).
+// differently (a location that is set and is not exactly "local" is not local
+// to it).
 func (l Location) Valid() bool { return l == LocationLocal || l == LocationCloud }
 
 // ResolveLocation returns the effective location for a model.
