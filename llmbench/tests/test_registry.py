@@ -107,8 +107,11 @@ def test_read_path_does_not_fall_back_past_wt_registry(home, monkeypatch, tmp_pa
 
 def test_read_path_refuses_a_dangling_symlink(home, monkeypatch, tmp_path):
     """A link to a registry that is not there (a dotfiles checkout, an
-    unmounted volume) is refused, not fallen back from: reading the pre-XDG
-    file instead would benchmark a registry the user has replaced (#248)."""
+    unmounted volume) is refused by name, not reported as a missing file:
+    "not found" would send the user to create a registry where their link
+    already points somewhere (#248). The ~/.config file written here is the
+    one llmbench no longer reads: the error must not turn into a quiet read
+    of it either."""
     _write(home / ".config" / "local-ai" / "registry.toml")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     link = tmp_path / "xdg" / "local-ai" / "registry.toml"

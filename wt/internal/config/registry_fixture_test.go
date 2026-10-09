@@ -284,10 +284,10 @@ func TestRegistryFixtureTimePrices(t *testing.T) {
 // TestTypedReaderLoadsTheWrittenFixture pins that wt's own reader accepts a
 // registry in the form wt's writer produces: docs/contracts/
 // registry.written.sample.toml, which wt/internal/tomlw re-emits byte for
-// byte and modelman's tomli-w reproduces too. It holds what the hand-written
-// sample cannot — integer prices, an empty tags array, keys wt does not model
-// at every level below the top, [[header]] windows — and a reader that choked on any of
-// them would fail on the user's real registry after the first wt write.
+// byte. It holds what the hand-written sample cannot — integer prices, an
+// empty tags array, keys wt does not model at every level below the top,
+// [[header]] windows — and a reader that choked on any of them would fail on
+// the user's real registry after the first wt write.
 func TestTypedReaderLoadsTheWrittenFixture(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.written.sample.toml")
 
