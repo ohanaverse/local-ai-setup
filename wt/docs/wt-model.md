@@ -190,11 +190,11 @@ syncs nothing.
 
 Two things follow from an edit of a price or of a subscription field, and
 only from one. Clearing a model's last price removes its `[models.cost]`
-table with it. And a row still in modelman's old cost layout (`kind =
+table with it. And a row still in the old cost layout (`kind =
 "per_token"` with `price_per_million_tokens`, or `kind = "subscription"` with
 `price_per_period` and `period`) is moved to the current keys in the same
-write: modelman reads such a table by its old keys alone, so a new key
-beside them would be a price it ignores.
+write: a table that held both layouts would carry two prices for one
+model.
 
 An id that more than one registry row carries is refused, with nothing
 written and no sync: wt cannot tell which row you mean, and there is no flag

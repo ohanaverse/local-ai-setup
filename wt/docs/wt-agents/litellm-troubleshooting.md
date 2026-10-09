@@ -338,7 +338,7 @@ different failure mode (404 on a route the backend never implements, vs. a
 crash on a request the backend does receive).
 
 **Fix (shipped in modelman, applied & verified 2026-09-16; since 2026-09-21 the equivalent enforcement lives in wt's `internal/litellm`):**
-`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py`
+`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` (deleted with modelman; the enforcement is `wt/internal/litellm`)
 value-enforces `litellm_settings.use_chat_completions_url_for_anthropic_messages: true`
 in `~/.config/litellm/config.yaml` on every write, alongside `drop_params`.
 This is litellm's own documented escape hatch
@@ -374,7 +374,7 @@ playbook above (`ERROR: Reconnecting... 1/5` / `exceeded retry limit, last
 status: 429`).
 
 **Fix (shipped in modelman, applied & verified 2026-09-16; since 2026-09-21 the equivalent enforcement lives in wt's `internal/litellm`):**
-`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` adds
+`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` (deleted with modelman; the enforcement is `wt/internal/litellm`) adds
 `litellm_params.use_chat_completions_api: true` (presence-based, like
 `additional_drop_params`) to every model_list row whose `litellm_params.model`
 starts with `openai/`. This is LiteLLM's own per-deployment escape hatch

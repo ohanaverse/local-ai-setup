@@ -70,7 +70,7 @@ Isolate/stop/stop-all/restore for local providers (ported from bash, issue #79).
   - `gates.toml`'s `tests_dir` must name a real subdirectory, never `"."`/`""` — `task.py::load_task` rejects them because gates 6/7 compare `Path.parts` tuples and an empty tuple is a prefix of every path.
 - `benchmark/eval/` — `category.py`, `suite.py` (deliberately parallel to `agent/suite.py`, not shared), `judged_runner.py`, `evalplus_runner.py` (reports EvalPlus's "+"/hardened pass@1, not base), `runner.py` (incl. `rejudge_run` from persisted `response.txt`), `report.py`, `cli.py`.
 - **Repo-relative paths depend on this package's depth.** `benchmark/eval/cli.py` finds `../benchmarks/` through `Path(__file__).resolve().parents[5]`, and the tests reach `../benchmarks/tasks/` through `parents[4]`. Moving a module up or down a level breaks both.
-- `main.py` mounts `benchmark_app` with no name, so its commands sit at the top level. modelman mounts the same app as `benchmark`; do not add `provider` to `benchmark_app` itself, or `modelman benchmark provider` appears.
+- `main.py` mounts `benchmark_app` with no name, so its commands sit at the top level. Do not add `provider` to `benchmark_app` itself: it is mounted beside it.
 
 ## Testing patterns
 

@@ -142,14 +142,14 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
   of sweeping many pairings per benchmark session — so there is nothing to
   restore from a plist here, only the code wiring below.
 - Registry: `[[providers]] id = "mlx_lm_server"` with
-  `auth.base_url = "http://localhost:8001/v1"` (`_DEFAULT_PROVIDER_TEMPLATES`
-  in `modelman/src/modelman/registry.py`); one variant = one target+draft
+  `auth.base_url = "http://localhost:8001/v1"` (`defaultProviderRow` in
+  `wt/internal/config/registry_seed.go`); one variant = one target+draft
   pairing (`ModelEntry.fetch` = target, `ModelEntry.draft` = draft).
-- Code wiring: `DEFAULT_PROVIDER_IDS` (`modelman/src/modelman/registry.py`
-  and `llmbench/src/llmbench/registry.py`), `SUPPORTED_PROVIDER_IDS`
+- Code wiring: `defaultProviderIDs` (`wt/internal/config/registry_seed.go`)
+  and `DEFAULT_PROVIDER_IDS` (`llmbench/src/llmbench/registry.py`), `SUPPORTED_PROVIDER_IDS`
   (`llmbench/src/llmbench/providers/lifecycle/backends/__init__.py`,
   re-exported by `llmbench/src/llmbench/benchmark/isolation.py`),
-  the provider→LiteLLM mapping table (`wt/internal/litellm/policy.go`; modelman reads it via `wt litellm providers`), the
+  the provider→LiteLLM mapping table (`wt/internal/litellm/policy.go`), the
   `MlxLmServerBackend` class in
   `llmbench/src/llmbench/providers/lifecycle/backends/mlx_lm_server.py`,
   and its unconditional stop inside `orchestrate.restore()` (this provider
@@ -157,13 +157,9 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
   enough — it must always be stopped too).
 - **Local-path artifact ownership (shared with the `omlx` provider's
   `local_path` support):** a directory produced by `bin/mlx-quantize` or
-  hand-run `mlx_lm.convert`/`dwq` is user-produced, not something modelman
-  downloaded. `OMLXProvider`/`MLXLMServerProvider` never `rmtree` a
-  `local_path`-sourced entry's artifact when asked to delete it — registry/
-  state bookkeeping still runs, only the filesystem removal is skipped.
-  (The TUI that issued those deletes is disabled; a model is now removed with
+  hand-run `mlx_lm.convert`/`dwq` is user-produced. wt never deletes weights:
   `wt model rm <id>`, or `d` on its row in the Models tab of `wt config`,
-  which removes the registry entry, prints where the weights are and touches
-  no file on disk.)
+  removes the registry entry, prints where the weights are and touches no
+  file on disk.
   Cleanup of an abandoned experiment is a manual `rm -rf`.
 - Guide: [10-mlx-lm-quantization.md](../guides/10-mlx-lm-quantization.md).
