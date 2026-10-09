@@ -88,7 +88,7 @@ The spec states the end state; these are the choices it leaves open and the plac
 
 Answer these before execution starts. Each has the recommendation the tasks assume. Everything else this plan decides is in the table above and needs no answer.
 
-1. **PR #165 (`cc-session-transcripts`)** touches root `CLAUDE.md`, `Makefile`, `litellm-session-logs/CLAUDE.md` and `litellm-session-logs/session-log-sources.md`, four files PRs 1 and 3b edit. The spec says to merge or close it before Step 6. Which? Recommendation: merge it first if it is ready, otherwise close it and reopen after PR 3b; either way before PR 1. (It was still open, last updated 2026-09-26, when the inventory was taken.)
+1. **PR #165 (`cc-session-transcripts`)** touches root `CLAUDE.md`, `Makefile`, `litellm-session-logs/CLAUDE.md` and `litellm-session-logs/session-log-sources.md`, four files PRs 1 and 3b edit. The spec says to merge or close it before Step 6. Which? Recommendation: merge it first if it is ready, otherwise close it and reopen after PR 3b; either way before PR 1. (It was still open, last updated 2026-09-26, when the inventory was taken.) **Owner's answer, 2026-10-09: leave #165 open and untouched; it will be cleaned up later. Step 6 does not wait for it.** PRs 1 and 3b edit those four files as planned, and whoever brings #165 up to date later resolves the conflicts there.
 2. **Is `~/Library/LaunchAgents/local.llamacpp.server.plist` installed on any machine you benchmark on?** If yes, PR 3c makes `llmbench provider stop-all` leave it loaded (Decision 19); unload it by hand first. Recommendation: check with `ls`, and go ahead either way.
 3. **PR 6 (the test-file sweep)** is optional in the spec. Do it, or stop after PR 5? Recommendation: do it. It is what removes the last descriptions of modelman as a live tool from the Go tests, and no proof of PRs 1 to 5 depends on it.
 
@@ -2511,7 +2511,7 @@ No implementer subagent runs any of this. Before each row, re-read the issue (`g
 
 | When | Issue | Action | Comment to post |
 |---|---|---|---|
-| Before PR 1 | PR #165 | Per the owner's answer to question 1: merge, or close. | none from this plan |
+| Before PR 1 | PR #165 | Nothing: the owner said to leave it as it is (2026-10-09). Do not merge, close, rebase or comment on it. | none from this plan |
 | Before PR 3b | branch protection of `main` | If `modelman-ci` is a required status check, remove it from the list (Decision 34). | none |
 | Before PR 1 | #194, #258, #259, #266 | Verify they are closed (`gh issue view <n> --json state`). The spec closes #258 and #259 by their Step 0 fixes and #194 and #266 as obsolete; the inventory found none of them open. If #194 is open, confirm #299 is its refiled live item before closing it. | For #194 if still open: "Closed as obsolete: modelman is deleted. Its one live item, mlx_lm_server pairing identity, is #299." |
 | PR 3b merged | #267 | Close as obsolete. | "Closed as obsolete: modelman, the only caller that matched `wt stop`'s error text, is deleted in <PR 3b>, and the wording-pin test with it. `wt stop` still has no machine-readable result; reopen or refile if a script needs one." |
