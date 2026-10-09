@@ -4,13 +4,17 @@
 
 **Goal:** `wt cloud-sync` has one flow per provider, `openrouter` and `ollama`; the openrouter flow refreshes exactly the models whose `provider_id` is `openrouter` and stores a time-priced model's whole schedule (its dearest level as the model's price, each other level as a `cost.time_prices` row), the same way whatever hour it runs in; and the model picker shows, and sorts by, the price in force now for every model that has `cost.time_prices` rows, whoever wrote them.
 
-**Architecture:** Four PR slices, each of which builds, passes and is documented alone, landing in the order A, B, C, D. (A) The flows are renamed `prices` → `openrouter` and `catalog` → `ollama` everywhere a user or a reader meets them, tests included, with no aliases. (B) The provider key `openrouter_priced` is removed and both readers of the rule (`config.Config.OpenRouterPriced`, `cloudsync.OpenRouterPriced`) become `provider_id == "openrouter"`, which also makes the two flows' sets of models disjoint by construction. (C) A pure resolver, `config.ModelCost.PriceAt(at time.Time)`, ported from modelman's `price_at`, returns the three prices in force and the row that supplied them; a row the registry's own validator refuses is passed over and named (`TimePrice.Problem`, `Model.Malformed`); the picker's table reads one clock per build (`pickerNow`, a seam) and uses the resolver for its COST column, its cost sort and a price on its mode line. It lands **before** D, so the picker already applies rows (ollama's `off-peak` row, rows written by hand) on the day the openrouter flow starts to write them. (D) A pure file, `wt/internal/cloudsync/timeofday.go`, reads OpenRouter's `pricing.overrides` into price levels over the UTC week; `ParseOpenRouter` stores the dearest as the flat price and `timeofday_rows.go` writes the others as rows labelled `openrouter`; nothing in the flow reads a clock, so the plan compared under the registry lock never depends on the hour. D closes #322.
+**Architecture:** Four PR slices, each of which builds, passes and is documented alone, landing in the order A, B, C, D. (A) The flows are renamed `prices` → `openrouter` and `catalog` → `ollama` everywhere a user or a reader meets them, tests included, with no aliases. (B) The provider key `openrouter_priced` is removed and both readers of the rule (`config.Config.OpenRouterPriced`, `cloudsync.OpenRouterPriced`) become `provider_id == "openrouter"`, which also makes the two flows' sets of models disjoint by construction. (C) A pure resolver, `config.ModelCost.PriceAt(at time.Time)`, ported from modelman's `price_at`, returns the three prices in force and the row that supplied them; a window whose `end` is before its `start` runs past midnight, in the registry's validator and in the resolver alike (the owner's answer to question 2, which changes one rule of the validator); a row the validator still refuses is passed over and named (`TimePrice.Problem`, `Model.Malformed`); the picker's table reads one clock per build (`pickerNow`, a seam) and uses the resolver for its COST column, its cost sort and a price on its mode line. It lands **before** D, so the picker already applies rows (ollama's `off-peak` row, rows written by hand) on the day the openrouter flow starts to write them. (D) A pure file, `wt/internal/cloudsync/timeofday.go`, reads OpenRouter's `pricing.overrides` into price levels over the UTC week; `ParseOpenRouter` stores the dearest as the flat price and `timeofday_rows.go` writes the others as rows labelled `openrouter`; nothing in the flow reads a clock, so the plan compared under the registry lock never depends on the hour. D closes #322.
 
 **Tech Stack:** Go 1.26.7 (module root `wt/`), standard library only (`encoding/json`, `slices`, `maps`, `cmp`, `time`), `internal/tomlw` for the rows, Bubble Tea / bubbles (already dependencies) for the picker. One Perl script for the mechanical rename (Perl 5 ships with macOS). No new dependency. No Python changes.
 
 **Spec:** GitHub issue [#322](https://github.com/ohanaverse/local-ai-setup/issues/322) (`gh issue view 322 --repo ohanaverse/local-ai-setup`) as extended and overridden by the owner's directions of 2026-10-09, quoted in full in "The Owner's Directions" below. There is no separate design document: "What Was Established", "The Design and Why" and "Decisions This Plan Makes" are the design. Where the issue's text, the directions and this plan differ, the directions win over the issue, and "What Was Established" says where the issue's premises were wrong.
 
 **Verified against:** `main` at `63f63d5` (2026-10-09; `modelman/` is deleted, llmbench's llamacpp backend is gone, `wt start --json` is gone, wt no longer reads `modelman.toml`). This document's own text was executed on a clean copy of that commit (`git archive HEAD`), slice by slice in the order A, B, C, D: its 8 created files, 11 appended blocks, 99 find/replace edits and 2 commands, in the order they appear. At the end of each slice `gofmt -l .` printed nothing, and `go vet ./...`, `go test -count=1 ./...` (25 packages `ok`) and `make check` passed in `wt/`, and `bin/check-links` printed `ALL LINKS OK`. Each failing run quoted in a task was observed with that task's tests applied and its implementation not yet. Tasks 3 to 5 were also applied to `63f63d5` alone, without A and B, and passed the same checks. `make test-all` was not run (it also runs the llmbench suite, which nothing here touches). The picker of slice C was captured from a real pty at 80x24, 40x12 and 120x24 at three instants, with LiteLLM on and off, and Task 6 Step 9 was run as written; the captures are quoted in "What Was Established" (facts 34, 39 and 40). One `--dry-run` of the first revision's final binary against the live OpenRouter list and a made-up registry ran on Friday 2026-10-09 at 16:55 UTC (fact 36); the openrouter flow's code has not changed since. **If `main` has moved**, the "find" text of an edit may no longer match: re-read the file and apply the same change to what is there. Another workflow's worktree (`.worktrees/s6-6`) was changing test files and two wt docs when this was written; Task 1's rename is rule-based for that reason, and its Step 5 lists what must not remain.
+
+**Revised to the owner's answer to question 2, and verified again on `main` at `6ff501d`** (2026-10-09; #332 had renamed tests and reworded test comments since `63f63d5`). Tasks 3, 4, 6, 8 and 9 and the sections above the tasks were rewritten so that a `cost.time_prices` window whose end is before its start runs past midnight; Tasks 1 and 2 were not touched, because Task 1 was being implemented from this file at the time. The whole text was then executed again on a clean copy of `6ff501d`, slice by slice: 8 created files, 12 appended blocks, 104 find/replace edits and 2 commands, with the same checks green at the end of each slice (fact 51). One "find" text of Task 2 does not match at `6ff501d` (fact 51 names it); every one of Tasks 3 to 9 does. The validator's new tests and the resolver's were each seen to fail first for the reason their step gives, and ten mutations of the new rule were caught (fact 49). A hand-written window past midnight was captured on a pty and run through `wt model list` and `wt model edit`, beside `main`'s binary (facts 46 and 50). Not done again: Task 6 Step 9 with its own registry, and the live dry run of fact 36 (the openrouter flow's code is unchanged but for one comment and one test).
+
+**Then reviewed, and five findings applied** (2026-10-09; fact 52). What a write keeps of a hand-written row is now stated exactly (its window, whole, and its values; the bytes once the file is in wt's layout) and pinned by one more test, `TestUpdateRegistryKeepsAHandTypedWindowPastMidnight`; what a wt from before slice C does with such a row moved from the unknowns to fact 52 and into the reference page and the changelog; fact 16 has its note; and the cost of reading a start equal to its end as 24 hours is listed in full under "After This Plan". The stale "find" of Task 2 is spelled out under "PR Slices", because Task 2's own text was still not this revision's to change.
 
 ## Global Constraints
 
@@ -29,6 +33,9 @@
 - **The resolver is pure.** `config.ModelCost.PriceAt(at time.Time) config.PriceInForce` takes the instant as an argument and reads no clock and no environment (the one file it reads is the host's zone database, for a row's timezone). It never fails and never panics.
 - **A row is applied only when the registry's validator accepts it**, and the rule is per row, not per window: `TimePrice.Problem` asks `validateTimePrice` itself, so the reader and the writer cannot disagree. A row with a problem is passed over whole at every instant, is named by `Model.Malformed` (which `wt model list` prints), and does not make its model time-priced. A value of the wrong TOML type in a row fails the registry load, as anywhere else in the file; this plan does not change the loader.
 - **A row means what modelman's `price_at` said it means:** rows are tried in file order; the first whose windows hold the instant wins and supplies each price it sets; a price it does not set stays the flat one; with no such row the flat prices are in force. A window is `[start, end)` to the minute, on the listed days, on the wall clock of the row's IANA `timezone`.
+- **A window whose `end` is before its `start` runs past midnight** (the owner's answer to question 2; modelman and `main` refuse such a window). It starts at `start` on each listed day and ends at `end` on the next calendar day of the row's wall clock: `days = ["mon"]`, `22:00` to `06:00` is Monday 22:00 to Tuesday 06:00, and a window listed on `sun` runs into Monday. The resolver reads it by the clock, never by adding hours to the start: an instant is inside when the row's clock reads at or after `start` on a listed day, or before `end` on the day after one, so the window follows the zone's daylight saving time. `end = "24:00"` is the end of the listed day and never past midnight. A `start` equal to its `end` is refused, and so is `start = "24:00"`.
+- **The registry's validator changes in exactly one rule** (`validateWindow`, Task 3): the refusal `start must be before end` is gone, and `start and end must differ (a whole day is 00:00 to 24:00)` is the one refusal in its place. Everything else it refused it still refuses, and the validator and the resolver change in the same task, because the resolver applies exactly the rows the validator accepts.
+- **Neither flow writes a window that runs past midnight.** The ollama flow's `off-peak` row and the openrouter flow's rows state each day's hours under that day, up to `24:00` (decision 35). **A row a user wrote with such a window is kept by every write** (both flows' applies, `wt model edit`, a save in `wt config`): its keys, their order and their values (days, start, end, timezone, prices, unknown keys), so the window is never split at midnight or rewritten; and its bytes too, once the file is in wt's own layout. As for any entry, the first wt write lays a hand-typed file out again and drops comments (fact 52).
 - **The picker reads one clock per table build**, through the package variable `pickerNow` in `wt/internal/tui/modelrows.go` (or `tableInput.now` when a caller sets it), and prices every row of the table at that one instant. Nothing reads a clock while a screen is drawn.
 - **A price on the mode line is whole or absent.** `modeLine` is given the width the line has and never returns part of a price; the mark of a time-priced model comes before the numbers (`cost~`).
 - **LiteLLM's route is priced from the flat price only**, at every hour (`TestPricingInfoReadsOnlyTheFlatPrices`). No task changes `wt/internal/litellm/entry.go`.
@@ -49,7 +56,7 @@
 1. **OpenRouter changes the override grammar: a new condition key on a time-of-day entry, a new price key, a schedule published with a gap, a window with no completion price; or the listed provider changes and a model's schedule comes and goes.** Expected: a new price key that the model's pricing object also has at its top level is read past; in every other grammar case the model keeps the price and rows it has, is not stamped, and one warning names it and the reason; the plan text is the same in every window; nothing is half applied and nothing falls back to the top-level price. A schedule that appears or goes is an update each time, and the plan says nothing false about it. Pinned in Task 7 (`TestParseOpenRouterTimeOfDayShapes`, the 22 refusal cases and the new-price-key case; `TestPlanPricesLeavesAModelWhoseScheduleItCannotRead`; `TestPlanPricesReportsAScheduleThatComesAndGoes`).
 2. **The registry as the owner's really is today: a sync before the fix stored the dear rate (the 02:45 UTC apply in the issue), or the cheap one.** Expected after slice D: one update per time-priced model on the first sync, the same text in every window; when the dear rate was stored the line reads `1.32/0.044/3.96 -> 1.32/0.044/3.96 (openrouter …)`, `config.yaml` keeps its bytes and the proxy is not restarted; a second sync in another window changes no price and syncs no route. Pinned in Task 7 (`TestCloudSyncTimeOfDayPricesDoNotFollowTheClock`) and Task 8 (`TestPricePlanFormatShowsASchedule`, entries `or/low` and `or/high`; `TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone`, which runs the real route sync; `TestPricesApplyStoresAScheduleOnce`, the file's bytes).
 3. **The picker on the terminal the owner really has: 80 columns, a 41-character OpenRouter id in the table; and a narrower one.** At 80 columns the COST column is not drawn at all (a narrow table gives up whole columns, COST goes fifth, and with such an id it is drawn only from 111 columns: fact 42), so a fix that only changed that column would show the current price to nobody at that width. Expected: the price in force for the highlighted model is on the mode line under the table, `cost~` when it depends on the time, **whole or not at all**: at 80 and 120 columns beside the LiteLLM mode; at 40 columns beside `LiteLLM: on` when both fit in 36 columns and alone on the line when they do not, which is every price under `LiteLLM: off (direct)` and the longer prices under `LiteLLM: on`. No screen shows a price cut short or a time-priced price without its mark (the first revision did both: fact 39). The view fits at 40/80/120 by 12/24/50 with time-priced models in it; where the COST column is drawn it shows the price in force, marked, under a heading that explains the mark; a resize or a cursor move does not re-price an open picker. Pinned in Task 4 (`TestRenderTableShowsThePriceInForce`, `TestModelPickerWithTimePricedModelsFitsTheTerminal`, both pickers; `TestAnOpenPickerKeepsThePricesItOpenedWith`) and Task 5 (`TestModelPickerNamesTheHighlightedModelsPrice`, at 80x24, 40x12 and 120x50, LiteLLM on and off, the real models' longest prices); seen on a real pty (facts 34, 39, 40).
-4. **A `cost.time_prices` row someone wrote or edited by hand.** There are three kinds, and they end differently. (a) **A row that decodes and keeps the rules**, in any zone: it is applied; in a zone with daylight saving time its windows follow the wall clock, the repeated hour is in the window both times and the skipped hour at no instant (Task 3: `TestPriceAtFollowsDaylightSavingTime`, `TestPriceAtReadsAWindowInItsRowsTimezone`). (b) **A row that decodes and breaks a rule** (an overnight window written `22:00` to `06:00`, a zone that is none, `Local`, a time that is no time, a negative price): it is not applied, whole, at any instant; the picker shows the flat price and no mark; `wt model list` names the row and the rule; a readable row after it still applies; and any registry write that touches that model is refused with the same reason, which for a model of the `openrouter` provider includes every `wt cloud-sync` apply, for all models, until the row is fixed (fact 40; that refusal is `main`'s). Pinned in Task 3 (`TestPriceAtIgnoresARowItCannotRead`, `TestTimePriceProblemIsTheValidatorsRefusal`, `TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt`, `TestModelListNamesATimePricesRowThatIsNotApplied`) and Task 4 (the unmarked cell in `TestRenderTableShowsThePriceInForce`). (c) **A value of the wrong TOML type** (`windows = "always"`, a price in quotes, `days = "mon"`): the registry does not load and every wt command stops with a parse error that names the line and the key; nothing reaches the resolver or the sync (fact 41; `main`'s behaviour, kept and pinned by `TestLoadStopsOnATimePricesValueOfTheWrongType`). So `TestPlanPricesReplacesAnOpenRouterRowWhateverItHolds` (Task 8) and `TestPriceAtIgnoresARowItCannotRead` are package-level tests of rows built in memory; through the real command only rows of kinds (a) and (b) arrive. For a row labelled `openrouter` on an openrouter model that decodes but is not what the sync writes (another timezone, an added key, other windows): the plan prints, shows the row as it found it including what differs from the sync's own, and replaces it. Not covered: a row that differs from the sync's only in the TOML type of a value under a key the sync writes (an integer where the sync writes a float) is replaced on a plan line that reads the same on both sides; a flat price typed by hand as `3.96` where the sync writes `3.9600000000000004` already does that on `main`.
+4. **A `cost.time_prices` row someone wrote or edited by hand.** There are three kinds, and they end differently. (a) **A row that decodes and keeps the rules**, in any zone: it is applied; in a zone with daylight saving time its windows follow the wall clock, the repeated hour is in the window both times and the skipped hour at no instant (Task 3: `TestPriceAtFollowsDaylightSavingTime`, `TestPriceAtReadsAWindowInItsRowsTimezone`). **A night rate written `22:00` to `06:00` is such a row** (the owner's answer to question 2): one window from 22:00 on each listed day to 06:00 on the next calendar day of the row's clock, nine hours long on the night the clocks go back and seven on the night they go forward; it starts only on a listed day, so a Monday window holds Tuesday 05:00 and not Monday 05:00; and every write keeps it byte for byte, where before this plan every write to its model was refused (Task 3: `TestPriceAtAWindowPastMidnight`, `TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime`, `TestLoadAppliesAWindowPastMidnight`, `TestUpdateRegistryKeepsAWindowPastMidnightByteForByte`; Task 4: the marked cell in `TestRenderTableShowsThePriceInForce`; Task 8: `TestBothFlowsKeepAUsersWindowPastMidnight`; seen on a pty, fact 46). (b) **A row that decodes and breaks a rule** (a zone that is none, `Local`, a time that is no time such as `9:00`, a window whose start is its end, a negative price): it is not applied, whole, at any instant; the picker shows the flat price and no mark; `wt model list` names the row and the rule; a readable row after it still applies; and any registry write that touches that model is refused with the same reason, which for a model of the `openrouter` provider includes every `wt cloud-sync` apply, for all models, until the row is fixed (fact 40; that refusal is `main`'s). Pinned in Task 3 (`TestPriceAtIgnoresARowItCannotRead`, `TestTimePriceProblemIsTheValidatorsRefusal`, `TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt`, `TestModelListNamesATimePricesRowThatIsNotApplied`) and Task 4 (the unmarked cell in `TestRenderTableShowsThePriceInForce`). (c) **A value of the wrong TOML type** (`windows = "always"`, a price in quotes, `days = "mon"`): the registry does not load and every wt command stops with a parse error that names the line and the key; nothing reaches the resolver or the sync (fact 41; `main`'s behaviour, kept and pinned by `TestLoadStopsOnATimePricesValueOfTheWrongType`). So `TestPlanPricesReplacesAnOpenRouterRowWhateverItHolds` (Task 8) and `TestPriceAtIgnoresARowItCannotRead` are package-level tests of rows built in memory; through the real command only rows of kinds (a) and (b) arrive. For a row labelled `openrouter` on an openrouter model that decodes but is not what the sync writes (another timezone, an added key, other windows): the plan prints, shows the row as it found it including what differs from the sync's own, and replaces it. Not covered: a row that differs from the sync's only in the TOML type of a value under a key the sync writes (an integer where the sync writes a float) is replaced on a plan line that reads the same on both sides; a flat price typed by hand as `3.96` where the sync writes `3.9600000000000004` already does that on `main`.
 5. **What the rename and the removed key leave behind: a script or a habit that still says `--only prices`, and a registry that still carries `openrouter_priced`.** Expected: the old flow name is refused with a line that lists the valid names (exit 1, nothing fetched), never run as something else; the registry loads, the key decides nothing in either direction (a provider marked `true` is not fetched for; the openrouter provider's own models are refreshed although their row says `false`), and a registry write leaves the key where it was. Pinned in Task 1 (`TestCloudSyncFlowsAreNamedForTheirProviders`) and Task 2 (`TestCloudSyncRefreshesOnlyTheOpenRouterProvidersModels`, the contract fixture, `TestHasOpenRouterPricedModel`).
 
 ---
@@ -65,7 +72,7 @@ Given on 2026-10-09, after the first version of this plan. They are binding, and
 
 ## What Was Established
 
-Facts 1 to 28 were established by the first planning run, on `main` at `e61d989`, when the flows were still called `prices` and `catalog`; their wording is kept, and a fact this plan changes says so in a note after its table. Facts 29 to 38 were established by the revision run, on `main` at `63f63d5`, and facts 39 to 45 by the review of that revision and the run that applied it. Where facts 1 to 28 say "Task N" they mean the first version's tasks: its Task 1 is this plan's Task 7, its Task 4 is this plan's Task 8, its Tasks 2 and 5 are this plan's Task 9, and its Task 3 (two live dry runs) is this plan's Task 10 (one). In fact 20, "the Task 2 binary" is the code as it stands after this plan's Task 7 (no rows) and "the Task 5 binary" the code after this plan's Task 8 (rows), both before the rename, which is why their lines start `prices:`. Confidence is one of: **observed** (seen in bytes or in a run), **documented** (stated by the service's own docs), **inferred** (reasoned from source or from a stand-in, not seen live).
+Facts 1 to 28 were established by the first planning run, on `main` at `e61d989`, when the flows were still called `prices` and `catalog`; their wording is kept, and a fact this plan changes says so in a note after its table. Facts 29 to 38 were established by the revision run, on `main` at `63f63d5`, and facts 39 to 45 by the review of that revision and the run that applied it. Facts 46 to 51 were established on `main` at `6ff501d` by the run that revised the plan to the owner's answer to question 2 (a window may run past midnight). Where facts 1 to 28 say "Task N" they mean the first version's tasks: its Task 1 is this plan's Task 7, its Task 4 is this plan's Task 8, its Tasks 2 and 5 are this plan's Task 9, and its Task 3 (two live dry runs) is this plan's Task 10 (one). In fact 20, "the Task 2 binary" is the code as it stands after this plan's Task 7 (no rows) and "the Task 5 binary" the code after this plan's Task 8 (rows), both before the rename, which is why their lines start `prices:`. Confidence is one of: **observed** (seen in bytes or in a run), **documented** (stated by the service's own docs), **inferred** (reasoned from source or from a stand-in, not seen live).
 
 ### About OpenRouter
 
@@ -112,6 +119,7 @@ Facts 1 to 28 were established by the first planning run, on `main` at `e61d989`
 | 27 | **An update that changes only rows does not touch the routes' bytes** (review). With the flat prices already at the schedule's level, the apply prints `2 price(s) changed`, the real route sync runs, `config.yaml` is byte-identical and the restart command is not run. | `TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone` (Task 4). | observed |
 | 28 | The command prints `prices: no model could be refreshed … set openrouter_priced = false on a provider whose model names are not OpenRouter ids` whenever there are candidates and nothing matched. A registry whose only OpenRouter-priced models have a refused schedule gets that line after the new warning, and for it the advice is wrong. The same already holds for a `-1` price. | `wt/cmd/wt/cloudsync.go:297-303`, read, not run. | inferred from source |
 
+- **Fact 16 is what Task 3 changes, in one rule** (the owner's answer to question 2): `start` < `end` becomes `start` ≠ `end`, and a window whose `end` is before its `start` is one window that runs past midnight (decision 34; fact 50 is the before and after).
 - **Fact 19 is what slice C changes** (D3): `config.ModelCost.PriceAt` applies the rows and the picker shows what it returns.
 - **Fact 26 cannot happen after slice B** (D4): with the rule `provider_id == "openrouter"` no row is in both flows' scope (fact 30), so `TestBothFlowsInOneWriteSettleOnTheNextRun` and the two-run settling are gone from this plan.
 - **Fact 28 is fixed by slice B**: the line no longer names the removed key; it ends `the warnings above say why for each model`, which is right for a refused schedule too.
@@ -142,6 +150,21 @@ Facts 1 to 28 were established by the first planning run, on `main` at `e61d989`
 - **Fact 35's mode line is the first revision's** (` ~` after the numbers, appended to the mode and clipped). Its rows, their order and the COST cells stand; the line is now as fact 39 has it, and "at 40x12 the mode line was whole both times" was true only of the prices in that registry.
 - **Fact 34's width** is measured in fact 42: with such an id and a marked row the COST column is drawn from 111 columns.
 - **Fact 36's binary** is the first revision's; Tasks 7 and 8 are its openrouter flow unchanged.
+- **Fact 40's row is a valid row now.** A window on all days from `22:00` to `06:00` in New York is what the owner's answer to question 2 makes one window that runs past midnight: Task 3's validator accepts it, the resolver applies it, and the picker marks it (fact 46). What fact 40 observed is still what happens to a row that breaks a rule that is left (a time written `9:00`, an unknown timezone, a negative price): not applied, not marked, named by `wt model list`, and every write to its model refused (fact 50 has both rows side by side).
+- **Fact 16's rule is `main`'s.** Task 3 changes it in one place: an `end` before the `start` is accepted as a window past midnight, and only a `start` equal to its `end` is refused (decision 34). The line numbers it cites are `main`'s too.
+- **Fact 37's nine mutations** were of the resolver before it read a window past midnight; fact 49 adds ten of the new rule.
+
+### Established by the run that applied the owner's answer to question 2 (6ff501d)
+
+| # | Fact | Evidence | Confidence |
+|---|---|---|---|
+| 46 | **A hand-written window past midnight, on a real pty.** A scratch build of the final tree whose `pickerNow` was set from an environment variable by a build-tagged file that is not part of this plan, under `env -i` with a throwaway home; a made-up registry with one cloud provider `acme` (no `openrouter` model, no `ollama` row, every address `127.0.0.1:9`) and three models: `acme/night-owl` (flat 12.5/1.25/75; one row, `timezone = "America/New_York"`, output 10.0, all days `22:00` to `06:00`), `acme/early-bird` (output 75; one row with `start = "9:00"`) and `acme/day-shift` (1/0.1/20, no row). **Tuesday 2026-10-13 03:00 UTC, which is Monday 23:00 in New York**, at 120x24: heading `COST (~ varies by time)`, rows in the order night-owl `12.5000  1.2500 10.0000~`, day-shift ` 1.0000  0.1000 20.0000`, early-bird `------- ------- 75.0000` (no mark); mode line `LiteLLM: on   cost~ 12.5/1.25/10`, the same line at 80x24 and at 40x12. **The same Tuesday at 13:00 UTC, 09:00 in New York**, at 120x24: rows in the order day-shift, early-bird, night-owl `12.5000  1.2500 75.0000~`; mode line `LiteLLM: on   cost 1/0.1/20`. No line reached the right edge. | The four captures (`captures.txt` in this run's scratch). | observed |
+| 47 | **No Python reads a price row.** `llmbench/src/llmbench/registry.py:151-170` (`_parse_model`) reads `id`, `family`, `provider_id`, `model_name`, `location`, `fetch` and `draft`, and nothing of `cost`; `time_prices` and `windows` have no hit in `llmbench/src` or in `llmbench/tests`, and none of the four hits for the word `cost` there is a registry key (two comments, a docstring, and a stub agent's own usage record). The two contract fixtures (`docs/contracts/registry.sample.toml:119-129`, `registry.written.sample.toml:95-117`) each hold one `off-peak` row whose windows end at `12:00` or `24:00`; their readers check that the rows decode (`TestRegistryFixtureTimePrices`, `TestTypedReaderLoadsTheWrittenFixture`, `TestWrittenFixtureIsAFixedPoint`; llmbench's two fixture tests read ids). A window past midnight is the same keys with the same types, so nothing about it is a new shape to pin there. | `grep -rn -E "time_prices|windows" llmbench/src llmbench/tests` (no line) and `grep -rnw cost` over the same (four lines); the two fixture files. | observed |
+| 48 | **Every place in wt that reads or writes a window's `start` and `end`, after this plan.** Two compare them: `validateWindow` (`registry_validate.go`; the rule) and `TimePrice.holds` (`price_at.go`; the resolver), both changed in Task 3. The rest do not: `offpeakRow` (`cloudsync/catalog.go`) writes three fixed windows, none past midnight (fact 33); `sameRows` and `tomlw.Same` compare rows whole, as values; `formatCost` prints an `off-peak` row's prices and no window, and an `openrouter` row through `formatWindows` (Task 8), which prints `start-end` as the text the row holds, so a hand-edited `openrouter` row with a window past midnight prints as `mon 22:00-06:00` and is replaced like any row that is not the sync's own; `rateRow` (Task 8) writes spans of one day; `parseSchedule` (Task 7) reads OpenRouter's HHMM numbers, not registry windows. `internal/configeditor`, `internal/modeladmin`, `internal/litellm` and `internal/tui` read no window (the picker asks `PriceAt`; the model form edits the flat prices; a route carries them). | `grep -rn -E 'TimePrice|CostWindow|\.Windows|"start"|"end"|24:00' wt --include='*.go'` over the final tree, outside tests: hits in `internal/config` (5 files), `internal/cloudsync` (5), `internal/tui/modeltable.go` (`TimePriced` only) and one unrelated `"start"` in `internal/lifecycle/omlx.go`. | observed |
+| 49 | **Mutations of the new rule.** Ten, each caught, the first nine by Task 3's tests: (1) the resolver's past-midnight arm removed, which is the resolver before the answer (`TestPriceAtAWindowPastMidnight`, `…FollowsDaylightSavingTime`, `TestLoadAppliesAWindowPastMidnight`); (2) the morning half asked of the day after instead of the day before; (3) the end inside the window; (4) the start outside it; (5) the morning half read on the listed day itself; (6) a `start` equal to its `end` read as a whole day by validator and resolver; (7) **the window read as a fixed length from its start** (the hours from `start` to `end` added to the start instant), caught only by `TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime`; (8) the validator still refusing an end before the start (seven tests, among them the writer's `TestUpdateRegistryKeepsAWindowPastMidnightByteForByte` and `TestUpdateRegistryKeepsAHandTypedWindowPastMidnight`); (9) the validator accepting `start = "24:00"`; and (10), in Task 8, the old validator rule under the new test of the flows: `TestBothFlowsKeepAUsersWindowPastMidnight` fails at the first apply with `start must be before end`. | Scratch runs on the final tree's `internal/config` and `internal/cloudsync`. | observed |
+| 50 | **Before and after, through the real commands.** One scratch registry in the `acme` shape of fact 46 (two models: the night row, and a row with `start = "9:00"`), under `env -i`. **`main` (`6ff501d`):** `wt model list` prints the table and nothing else, exit 0; `wt model edit acme/night-owl --family owls` prints `wt: invalid registry entry: model "acme/night-owl": cost: time_prices[0]: windows[0]: start must be before end`, exit 1, the file unchanged; the same edit of `acme/early-bird` is refused with `… start must be HH:MM, got 9:00`, exit 1. **The final tree:** `wt model list` prints the table and one line, `acme/early-bird: cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00; wt reads it as absent (fix the entry in <registry>)`, exit 0, and no line for night-owl; `wt model edit acme/night-owl --family owls` prints `updated model: acme/night-owl`, exit 0, and the file holds `family = "owls"` with the row's `start = "22:00"` and `end = "06:00"` as they were; the edit of `acme/early-bird` is refused exactly as on `main`. | The runs (`fact50.sh` in this run's scratch). | observed |
+| 51 | **The plan's own text on `main` at `6ff501d`.** Slices A to D replayed in order on a clean copy (`git archive origin/main`): 8 created files, 12 appended blocks, 104 find/replace edits and 2 commands; at the end of each slice `gofmt -l .` empty, `go vet ./...` clean, 25 packages `ok`, `make check` passing, `bin/check-links` printing `ALL LINKS OK`. Tasks 3 to 5 replayed alone on `6ff501d` pass the same checks, so fact 45 still holds with the validator's rule changed. **One "find" text of Task 2 no longer matches**: #332 reworded the comment above `TestHasOpenRouterPricedModel` in `wt/internal/agents/price_notice_test.go` (it no longer speaks of modelman, and has two more lines). Task 2 was being implemented from this file while this revision was written and was left as it is; the replay made that one edit against the comment as it stands. Every "find" text of Tasks 3 to 9 matches at `6ff501d`. No file under `llmbench/` or `docs/contracts/` is changed by any slice. | The replays (`test-A.log` to `test-D.log`, `check-*.log` in this run's scratch); `git diff --stat` of the final tree. | observed |
+| 52 | **A row typed by hand with a window past midnight, through `main`'s binary and the final tree's** (the review of this revision; both built in scratch, under `env -i`). A scratch `acme` registry typed by hand: `acme/night-owl` with a comment line above its row and the row's window on one line, `windows = [{ days = ["mon", "sun"], start = "22:00", end = "06:00" }]  # past midnight`, and `acme/day-shift` with no row. **`main` (`6ff501d`), which is what a wt from before slice C does:** `wt model list` prints the table and no warning, exit 0, the file unchanged; `wt model edit acme/night-owl --family owls` is refused with `… windows[0]: start must be before end`, exit 1, the file unchanged; `wt model edit acme/day-shift --family days` prints `updated model: acme/day-shift`, exit 0, and the whole file is in wt's layout: both comments gone, the one-line `windows` now a `[[models.cost.time_prices.windows]]` block with `days` of `mon` and `sun`, `start = "22:00"` and `end = "06:00"`; a second edit of `acme/day-shift` changes that one line and no other. So an older wt loads such a row, keeps it when it writes another model, and refuses every write to the row's own model; since every write goes through that one validator, that includes a `wt cloud-sync` with a change for that model (not run here). **The final tree:** the same, except that the edit of `acme/night-owl` prints `updated model: acme/night-owl`, exit 0; after it the file is laid out the same way, the window one block from `22:00` to `06:00`, and a second write changes one line. So "byte for byte" is true of a row in a file wt has laid out, and of a hand-typed file what is kept is the row's keys, order and values. Pinned by `TestUpdateRegistryKeepsAHandTypedWindowPastMidnight` (Task 3 Step 1), seen to fail on `main`'s validator at its first write and to pass after Step 3; the full suite of the final tree with it added is 25 packages `ok`. | The runs and the test in the scratch of the run that applied the review (`wrap-fix/`). | observed |
 
 ### What is still unknown
 
@@ -156,7 +179,9 @@ Facts 1 to 28 were established by the first planning run, on `main` at `e61d989`
 - **The Models tab and the model form on a row that breaks a rule** were read in source (`malformedLine`, `saveErrorText`), not captured; `wt model list` and `wt model edit` were run (fact 40).
 - **The owner's own registry was not read.** Which of its models are time-priced, and at which level each is stored today, is Task 10's one dry run.
 - **A pre-existing oddity seen in the captures and not investigated:** with `wt --cwd --agent <name>` the picker keeps a `loading worktrees...` status line above the table. It is not this plan's, and nothing here touches the status.
-- `make test-all` was not run for this plan; neither was the installed `wt`.
+- **Task 6 Step 9 was not run again with its own registry** after the answer to question 2: it holds models of the `openrouter` provider and an `ollama` provider row, which the run that revised the plan was not allowed to start a `wt` against. Its two quoted screens are from before the answer and show nothing the answer changes; what the step says of `night-owl` (marked, at its night price in the New York night) comes from fact 46's captures of another registry and from `TestRenderTableShowsThePriceInForce`, not from a capture of that registry.
+- **The Models tab and the model form on a row with a window past midnight** were not captured. `Model.Malformed` returns nothing for it (`TestLoadAppliesAWindowPastMidnight`), and a write of its model goes through (`TestUpdateRegistryKeepsAWindowPastMidnightByteForByte`, `TestUpdateRegistryKeepsAHandTypedWindowPastMidnight`; `wt model edit`, facts 50 and 52).
+- `make test-all` was not run for this plan; neither was the installed `wt`, and neither was llmbench's suite (nothing under `llmbench/` or `docs/contracts/` changes: fact 47).
 
 ## The Design and Why
 
@@ -168,15 +193,18 @@ Facts 1 to 28 were established by the first planning run, on `main` at `e61d989`
 
 **Slice D, the schedule.** Unchanged in design from the first run, which the directions did not touch: `parseSchedule` paints each time-of-day entry onto a week of 10,080 minutes in list order, so a later entry wins an overlap as OpenRouter specifies and a wrapping window needs no special case; a minute left unpainted makes the schedule unusable; the painted week is read back as price levels with their spans per day, which makes the result independent of the order, grouping and wrapping of OpenRouter's entries. `mainRate` picks the level that becomes the flat price (the dearest); every other level is one row labelled `openrouter`, `timezone = "UTC"`. What changed with the directions: the rows are part of the fix, not a second PR (D2); they have a reader (D3), so their order, their windows and their per-field fallback now decide what the owner sees; and the both-flows case is gone (fact 30).
 
+**Slice D, why the flow's own rows still stop at midnight.** OpenRouter's own windows wrap, and since the owner's answer to question 2 the registry could hold a level that runs past midnight as one window. The flow still writes each day's hours under that day (decision 35), on four grounds. *Byte-stable, clock-free text:* the rows are not copies of OpenRouter's entries; they are read back from the painted week, which is what makes them independent of how OpenRouter orders, groups and wraps its list. One day at a time is the one form every equivalent list comes out as. A form with windows past midnight is not unique: deepseek's cheap level covers the whole weekend and runs on to Monday 01:00, and a level that covers several midnights running can be cut into such windows in more than one way, so the bytes and the plan line would hang on a tie-break rule that nothing else needs. *Rows already on disk:* none labelled `openrouter` exists (slice D has not shipped), and the form is the one this plan pinned and ran against the live list (facts 20 and 36); neither choice migrates anything, and the ollama flow's `off-peak` row never crossed midnight. *What a reader of `registry.toml` finds clearest:* `mon-fri 00:00-01:00 04:00-06:00 10:00-24:00` says what holds on a Monday without reading Sunday's line, which matters for rows nobody wrote by hand and somebody has to trust. *Other readers:* llmbench reads no cost at all (fact 47), and a `wt` from before slice C refuses every write to a model that carries a window past midnight (fact 50), so rows the sync writes on every OpenRouter model had better be ones any `wt` can write back. A user's own row is another matter: it is written the way its writer thinks of it, and both flows keep it byte for byte (`TestBothFlowsKeepAUsersWindowPastMidnight`).
+
 **Why the picker lands before the rows (C before D).** The first revision landed the rows first and asked that the two PRs "merge close together", because between them the picker would have shown every time-priced OpenRouter model at its dearest level at all hours: double deepseek's going price for 79% of the week. Nothing forces that order. The resolver and the picker need nothing from the sync (fact 45), and they have rows to apply on `main` today (ollama's `off-peak` row), so slice C is useful the day it lands. With C first there is no interim: the first sync that writes an `openrouter` row writes it for a picker that already reads it. The cost is in the docs only: slice C's sentences speak of ollama's row and rows written by hand, and slice D adds OpenRouter's to four of them (Task 9). `Closes #322` stays on the PR that fixes what the issue reports, which is now the last one.
 
 **Why the dearest level stays the flat price, now that the picker shows the level in force.** The flat price has two jobs left. It is the fallback when no row's window holds the instant, and for the rows this plan writes that is exactly the dearest level's hours, so the picker is right at every hour whichever level is flat. And it is what LiteLLM's route carries at every hour, where the dearest level is the one choice under which a request priced from the route is not logged below its cost (when the dearest level is the highest on every price, which holds for the three schedules published today and is pinned by a test where it does not). The first run's objection to "dearest" was that the picker showed double deepseek's going price for 79% of the week; the picker of slice C, already in place when slice D lands, removes that objection.
 
-**Slice C, the resolver.** modelman's `price_at` is ported rule for rule into `config.ModelCost.PriceAt` (fact 32), in the package that already owns `ModelCost`, `TimePrice` and the validator of the rows. It returns the three prices and the index of the row that supplied them (`-1` for the flat ones). Carried over, each with its test: the flat default, first match wins, per-field fallback, the half-open window to the minute, the row's own timezone. Dropped: "the instant must be timezone-aware", because a Go `time.Time` always is an instant. Added, because the Go function runs while a screen is drawn: it never fails, and daylight saving time is pinned on both of its days. `time.LoadLocation` is called per row per call; the rows the sync writes are all `UTC`, which Go answers without reading a file.
+**Slice C, the resolver.** modelman's `price_at` is ported rule for rule into `config.ModelCost.PriceAt` (fact 32), in the package that already owns `ModelCost`, `TimePrice` and the validator of the rows. It returns the three prices and the index of the row that supplied them (`-1` for the flat ones). Carried over, each with its test: the flat default, first match wins, per-field fallback, the half-open window to the minute, the row's own timezone. Changed, by the owner's answer to question 2: a window whose end is before its start, which modelman refused, is one window that runs past midnight. Dropped: "the instant must be timezone-aware", because a Go `time.Time` always is an instant. Added, because the Go function runs while a screen is drawn: it never fails, and daylight saving time is pinned on both of its days. `time.LoadLocation` is called per row per call; the rows the sync writes are all `UTC`, which Go answers without reading a file.
 
-**Slice C, rows written by hand.** modelman validated a row when it loaded it, so `price_at` never met a bad one. wt's loader only types a row's values; the rules (an IANA zone, `HH:MM`, `start` before `end`, no negative price) are the registry writer's, run on a row a write touches. D3 makes rows worth writing by hand, and the likeliest one, an overnight window written `22:00` to `06:00`, breaks a rule. Three ways to treat it were weighed.
+**Slice C, a window that runs past midnight.** D3 makes rows worth writing by hand, and the likeliest one is a night rate: `22:00` to `06:00`. modelman refused a window that ends before it starts, wt's validator copied the rule, and the first two versions of this plan kept it: the row was passed over and named, and the docs told its writer to split it at midnight. The owner's answer to question 2 is the other reading, "window should run past midnight". That is one rule with two homes that must not disagree, so both change in Task 3: `validateWindow` accepts an end before the start, and `TimePrice.holds` reads it. The earlier objection, that such a window's `days` are ambiguous, is settled the way a person says it: Monday night starts on Monday, so `days` are the days a window starts on, and its morning half belongs to the day before. The reading is by wall clock, not by length: an instant is in the window when the row's clock reads at or after `start` on a listed day, or before `end` on the day after a listed day. Nothing is added to a start time, so there is no 8-hour or 24-hour arithmetic to be wrong on the two nights a year a zone's clock jumps; the window ends when the clock reads `end`, and is an hour longer or shorter that night (decision 21). A `start` equal to its `end` is the one shape the answer does not settle, and it stays refused: as `[start, end)` it is empty, as a window past midnight it is a whole day, a slip of the hand is as likely as intent, and either guess can put a price on the screen for 24 hours that its writer did not mean. The refusal says how a whole day is written (decision 34), and it is one line to change.
 
-- *Read it as wrapping past midnight.* Rejected. The validator would still refuse the row, so wt would show a price from a row it refuses to write back, and every sync that touched the model would fail on it (fact 40). Relaxing the validator is a change to the registry's schema, which this plan does not otherwise touch, and a wrapped window's `days` are ambiguous (the day it starts on, or each day it touches).
+**Slice C, a row written by hand that breaks a rule.** modelman validated a row when it loaded it, so `price_at` never met a bad one. wt's loader only types a row's values; the rules (an IANA zone, `HH:MM`, a start that is not the end, no negative price) are the registry writer's, run on a row a write touches. So a row that breaks one can be in the file. Two ways to treat it were weighed.
+
 - *Pass it over in silence* (the first revision). Rejected: the picker marked the model `~` and showed the flat price for ever, and nothing said why (fact 40).
 - *Pass it over and say so* (built). The resolver asks the validator itself (`TimePrice.Problem` calls `validateTimePrice` on the typed row), so the reader applies exactly the rows the writer accepts and the two cannot drift. The rule is per row: one bad window, or one negative price, and the whole row is out, because a row applied in some of its windows only shows a price its writer did not mean, and a row price of `-1` would otherwise sort the model first and make it the default selection. `Model.Malformed`, which already carries what the loader tolerated in `fetch` and `draft`, names the row and the rule; so `wt model list` prints it (stderr and `--json`), the Models tab shows it, and the model form's refused save points at the file. A model with no row that applies is not time-priced and gets no mark.
 
@@ -188,7 +216,7 @@ A value of the wrong TOML type is not a row that breaks a rule: it fails the typ
 - *The mark is one character, after the cell.* The COST cell is three right-aligned numbers; its first character is a digit for a price of 10 or more, so the mark cannot go in front without shifting the numbers. `~` after the cell widens the column by one, only in a table that has a time-priced model, and the heading of such a table becomes `COST (~ varies by time)`, which is 23 characters in a 24-character column: it explains the mark on the screen that shows it and never widens the table. The mark says what the model is (it has rows), not what hour it is, so it is there in the dear window and in the cheap one alike: both prices will change.
 - *The price is also on the mode line, whole or not at all.* Facts 34 and 42: at 80 columns, with an OpenRouter id in the table, there is no COST column to show a current price in, and no reordering of the columns brings it back. The line under the table already says `LiteLLM: on`; it now also names the highlighted model's price, `cost~ 0.66/0.022/1.98`. It costs no line, so no frame's height changes and the fit rules are untouched. The first revision appended the price and let the footer's clip cut it, which at 40 columns showed wrong-looking prices with no mark (fact 39). `modeLine` now takes the width: mode and price when both fit; the price alone when they do not, because the mode is the same on every row and the price is what is being chosen by; the mode alone when the price cannot fit even by itself. The mark is in front of the numbers (`cost~`), where no cut can part it from them. This is the one thing in the plan the owner did not ask for in so many words; it is question 1, and Task 5 is separable.
 
-**What is deliberately not done.** The route does not follow the clock (the owner did not ask, and LiteLLM's own `off_peak_pricing` holds one off-peak rate, fact 14). `wt model list` gets no price column (it has none today, and it is not where a model is picked); what it gains is the line that names a row which is not applied. The registry's validator and loader are not changed. The floating top-level price of multi-provider models (fact 7) is untouched: it is the larger share of "the price changed between two syncs", and it is a proposed follow-up, not this plan.
+**What is deliberately not done.** The route does not follow the clock (the owner did not ask, and LiteLLM's own `off_peak_pricing` holds one off-peak rate, fact 14). `wt model list` gets no price column (it has none today, and it is not where a model is picked); what it gains is the line that names a row which is not applied. The registry's loader is not changed, and its validator in one rule only (a window may run past midnight). llmbench and the contract fixtures are not changed (fact 47). The floating top-level price of multi-provider models (fact 7) is untouched: it is the larger share of "the price changed between two syncs", and it is a proposed follow-up, not this plan.
 
 **Rejected again: warn and document only** (the issue's option 3). The stored price would still follow the clock, which the issue rules out, and a warning keyed on "has overrides" would name 82 models wrongly (fact 1).
 
@@ -212,13 +240,13 @@ Each choice is pinned by a test, so a reviewer who disagrees changes one place. 
 | 12 | An `overrides` entry is a time-of-day entry only when it has `utc_start`, `utc_end` or `utc_days`. Every other entry is ignored without a word, the 82 prompt-size tiers included. | Fact 1. | `TestParseOpenRouterTimeOfDay` (claude-haiku-5.5); `TestParseOpenRouterTimeOfDayShapes` (six ignored shapes) |
 | 13 | Windows are HHMM, half open, wrapping when the end is not after the start; no window is the whole day; no `utc_days` is every day; a later entry wins an overlap. | OpenRouter's documented rules (fact 2). | `TestParseOpenRouterTimeOfDayShapes`; `TestFetchedAtIsWhatOpenRouterSent` |
 | 14 | Refused as unusable: a gap in the week; a key on a time entry that is neither a time key, nor a documented price key, nor a key the model's pricing object has at its top level; `min_prompt_tokens` on a time entry; no prompt or no completion price; a price that is negative or not a number; a cached-input price on some windows only; one of `utc_start`/`utc_end` without the other; an HHMM or a day name that is not one. The model keeps its price, its rows and its stamp, with `warning: Could not use OpenRouter's time-of-day pricing for <id>: <reason>`. | Each leaves the price at some hour unknown; a fallback to the top-level price would bring the bug back. | `TestParseOpenRouterTimeOfDayShapes` (22 refusal cases); `TestPlanPricesLeavesAModelWhoseScheduleItCannotRead` |
-| 15 | Every level other than the flat price is one row: `label = "openrouter"`, `timezone = "UTC"`, its prices, its windows. Days with the same times share windows; a window crossing midnight is two; the end of a day is `24:00`. Rows are in price order, dearest first; windows in day then time order. | The registry's vocabulary and validator (fact 16). The label is the flow's name, which D1 makes the natural word. | `TestScheduleRows`; the file's bytes in `TestPricesApplyStoresAScheduleOnce` |
+| 15 | Every level other than the flat price is one row: `label = "openrouter"`, `timezone = "UTC"`, its prices, its windows. Days with the same times share windows; each day's hours are under that day, so a level that runs past midnight is two windows and no window of the flow's does (decision 35); the end of a day is `24:00`. Rows are in price order, dearest first; windows in day then time order. | The registry's vocabulary. The label is the flow's name, which D1 makes the natural word. | `TestScheduleRows`; the file's bytes in `TestPricesApplyStoresAScheduleOnce` |
 | 16 | The openrouter flow owns the rows labelled `openrouter` on the models it matched: it replaces them where the first one stood, adds them at the end when there was none, and removes them when the model has no schedule. Every other row is the table it was read as. | Rows resolve first match wins, so a row is not moved. | `TestPlanPricesOwnsOnlyItsOwnRows`; `TestPricesApplyStoresAScheduleOnce` |
 | 17 | A plan line prints each `openrouter` row after the flat price: ` (openrouter <in>/<cached>/<out> <days> <start>-<end> …, <days> …)`, with ` timezone="<zone>"` when the zone is not UTC and ` +keys` when the row or a window has a key the sync does not write. | Rows are compared whole, so whatever can make a row differ shows on the line. | `TestPricePlanFormatShowsASchedule`; `TestPlanPricesReplacesAnOpenRouterRowWhateverItHolds` |
 | 18 | A change to the rows alone is a price update: listed, counted in `N price(s) changed`, the routes synced. That sync leaves `config.yaml` as it was and restarts nothing. | The existing `sameCost` rule; a route is built from the flat price only. | `TestPricingInfoReadsOnlyTheFlatPrices`; `TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone` (the real route sync) |
 | 19 | The tests' "fetched at another time" bodies are made from the one saved response by a helper written from OpenRouter's guide, not from the code under test. | A second, independent reading of the window rules; no made-up prices. | `TestFetchedAtIsWhatOpenRouterSent` |
-| 20 | The resolver is `config.ModelCost.PriceAt(at) PriceInForce{Input, Cache, Output, Row}`: first matching row wins, per-field fallback to the flat price, windows half open to the minute on the row's wall clock. `Flat()` is the same shape with no row applied; `TimePriced()` is "has a row that is applied". | Fact 32, and "The Design and Why". | `TestPriceAtOffpeakBoundaries`, `…ReadsAWindowInItsRowsTimezone`, `…FollowsDaylightSavingTime`, `…FallsBackPerField`, `…FirstMatchingRowWins`, `…AnOpenRouterSchedule`, `TestFlatAndTimePriced` |
-| 21 | Daylight saving time: a window is read on the wall clock of its row's zone. The repeated hour is in the window both times; the skipped hour at no instant. | What a user who writes `timezone = "America/New_York"` means; what modelman did. | `TestPriceAtFollowsDaylightSavingTime` |
+| 20 | The resolver is `config.ModelCost.PriceAt(at) PriceInForce{Input, Cache, Output, Row}`: first matching row wins, per-field fallback to the flat price, windows half open to the minute on the row's wall clock, a window whose end is before its start running past midnight (decision 34). `Flat()` is the same shape with no row applied; `TimePriced()` is "has a row that is applied". | Fact 32, and "The Design and Why". | `TestPriceAtOffpeakBoundaries`, `…ReadsAWindowInItsRowsTimezone`, `…FollowsDaylightSavingTime`, `…FallsBackPerField`, `…FirstMatchingRowWins`, `…AnOpenRouterSchedule`, `…AWindowPastMidnight`, `TestFlatAndTimePriced` |
+| 21 | Daylight saving time: a window is read on the wall clock of its row's zone. The repeated hour is in the window both times; the skipped hour at no instant. A window that runs past midnight ends when the next calendar day's clock reads its `end`: it is not 24 hours later and not a fixed length, so Saturday `22:00` to `06:00` is nine hours on the night the clocks go back and seven on the night they go forward. | What a user who writes `timezone = "America/New_York"` means; what modelman did for a window within a day. A night rate that ended an hour off twice a year would be wrong in the zone its writer named. | `TestPriceAtFollowsDaylightSavingTime`; `TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime` (both change days, New York and Berlin; a window that starts on the change day) |
 | 22 | The picker's clock is `pickerNow` (a package variable, `time.Now`), read once per table build; `tableInput.now` overrides it. Every row of a table is priced at that one instant. A row built by hand with no instant is priced flat. | One instant per table keeps the sort consistent; the seam is how tests fix the hour. | `TestBuildRowsReadsThePickersClock` |
 | 23 | The cost sort compares the price in force (output, then input), so a time-priced model's place, and the first row, can differ from hour to hour. Ties are broken as before (7-day usage, then id), so the order at one instant is total and stable. | D3: the order is how the owner finds the cheapest model now. | `TestSortRowsUsesThePriceInForce` |
 | 24 | The table is priced when it is built: on opening the picker and when it is rebuilt after a start attempt. Not on a redraw, a resize or a cursor move. A picker open across a boundary keeps its prices and order; the docs say to reopen it. | Rows must not move under the cursor. | `TestBuildRowsReadsThePickersClock` (one reading per build); `TestAnOpenPickerKeepsThePricesItOpenedWith` (the clock crosses both boundaries under an open picker through four resizes and eight cursor moves: one reading, the same order, the same cells) |
@@ -227,19 +255,22 @@ Each choice is pinned by a test, so a reviewer who disagrees changes one place. 
 | 27 | `wt model list` and its `--json` get no price: they carry none today, so no field's meaning changes and none is added. Their one change is decision 30's: the `malformed` lines and array can now name a `cost.time_prices` row. The Models tab's table is not changed. The model form goes on showing and editing the row's own (flat) prices. | Fact 38. A form that showed the price in force would write a window's price over the flat one on save. | `TestModelFormEditsTheFlatPriceOfATimePricedModel`; `TestModelListNamesATimePricesRowThatIsNotApplied` |
 | 28 | A LiteLLM route carries the flat price at every hour. | The owner did not ask for the route to follow the clock. | `TestPricingInfoReadsOnlyTheFlatPrices` |
 | 29 | The float conversion is not changed. | Rounding would rewrite a price on every OpenRouter-priced model once. | The stored digits in `TestPricesApplyStoresAScheduleOnce` |
-| 30 | A row is applied only when the registry's validator accepts it, and the rule is per row: one window that ends before it starts (an overnight `22:00` to `06:00` is two windows), a timezone that is no IANA name, a time that is not `HH:MM`, a price below zero or not finite, and the whole row is passed over at every instant, and the rows after it are still tried. `TimePrice.Problem` is the validator's own answer for the typed row. Such a row is named: `Model.Malformed` gives `cost.time_prices[<i>]: <reason>`, which `wt model list` prints on stderr and in `--json`, and the Models tab shows. A model none of whose rows is applied is not time-priced: flat price, no mark. | Fact 40, and "The Design and Why" (three ways weighed). A wrapping window is not read as wrapping because wt refuses to write such a row back. | `TestPriceAtIgnoresARowItCannotRead` (15 rows, one of them at an instant its writer meant); `TestTimePriceProblemIsTheValidatorsRefusal` (the words, and that they are `validateTimePrice`'s); `TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt`; `TestModelListNamesATimePricesRowThatIsNotApplied` (the real listing) |
+| 30 | A row is applied only when the registry's validator accepts it, and the rule is per row: a timezone that is no IANA name, a time that is not `HH:MM` (`9:00`), a window whose start is its end, a price below zero or not finite, and the whole row is passed over at every instant, and the rows after it are still tried. `TimePrice.Problem` is the validator's own answer for the typed row. Such a row is named: `Model.Malformed` gives `cost.time_prices[<i>]: <reason>`, which `wt model list` prints on stderr and in `--json`, and the Models tab shows. A model none of whose rows is applied is not time-priced: flat price, no mark. | Fact 40, and "The Design and Why" (two ways weighed). A window that ends before it starts is not such a row: decision 34. | `TestPriceAtIgnoresARowItCannotRead` (16 rows, one of them at an instant another reading of it would hold); `TestTimePriceProblemIsTheValidatorsRefusal` (the words, and that they are `validateTimePrice`'s); `TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt`; `TestModelListNamesATimePricesRowThatIsNotApplied` (the real listing) |
 | 31 | A value of the wrong TOML type in a `cost.time_prices` row fails the registry load, for every wt command, with the parse error that names the line and the key. The loader is not taught to drop such a row. | Fact 41. It is `main`'s behaviour for a wrong type anywhere in the registry; a dropped price row would change what the picker sorts by without a word, and the parse error is exact. | `TestLoadStopsOnATimePricesValueOfTheWrongType` (four shapes) |
-| 32 | The validator is not relaxed, so a registry write that touches a model with a row that breaks a rule is refused, as on `main`: `wt model edit`, a save in `wt config`, and a `wt cloud-sync` apply with anything to write for that model (for a model of the `openrouter` provider, every apply, and the refusal stops the whole write). The docs say so where they give the rules for a hand-written row. | Fact 40. The refusal names the model, the row and the rule, and `wt model list` names it before any sync does. | The existing validator tests (not changed); the docs of Task 6 Step 1 |
+| 32 | The validator is relaxed in one rule only (decision 34), so a registry write that touches a model with a row that breaks a rule that is left is refused, as on `main`: `wt model edit`, a save in `wt config`, and a `wt cloud-sync` apply with anything to write for that model (for a model of the `openrouter` provider, every apply, and the refusal stops the whole write). The docs say so where they give the rules for a hand-written row. | Facts 40 and 50. The refusal names the model, the row and the rule, and `wt model list` names it before any sync does. | The validator's tests (Task 3 changes three rows of their tables and adds one test); the docs of Task 6 Step 1 |
 | 33 | The slices land A, B, C, D: the picker (C) before the rows (D). `Closes #322` is on D, the last PR. | "The Design and Why": no interim in which the picker shows a time-priced OpenRouter model at its dearest level all week. | Fact 45 (Tasks 3 to 5 green on `main` alone); the replay in that order |
+| 34 | **A window whose `end` is before its `start` is one valid window that runs past midnight.** It starts at `start` on each listed day and ends at `end` on the next calendar day of the row's wall clock; `days` are the days it starts on, so a window on `sun` runs into Monday and a Monday window does not hold Monday morning. The edges: `end = "24:00"` is the end of the listed day and never past midnight; `end = "00:00"` after a later start is that same midnight and holds no minute of the next day; **`start` equal to `end` is refused** with `start and end must differ (a whole day is 00:00 to 24:00)`; `start = "24:00"` is refused as before. Windows of one row may overlap (one price; nothing is checked); rows may overlap, and the first in the file wins. The validator and the resolver change together, in Task 3; the refusal `start must be before end` is gone. | The owner's answer to question 2: "window should run past midnight". `start == end` is the one case the answer leaves open: as `[start, end)` it holds no minute, as a window past midnight a whole day. The two differ by 24 hours of a price, a copied time is as likely as intent, and the whole day already has a spelling, so refusing costs its writer one line in `wt model list` and guessing can cost a day at a wrong price. | `TestPriceAtAWindowPastMidnight` (the listed day, the morning after, `sun` into Monday, `00:00` and `24:00` as ends, a zone west and one east of UTC, overlapping windows and rows); `TestLoadAppliesAWindowPastMidnight` (the real loader); the validator's tables in `TestUpdateRegistryValidatesOnlyTheRowsItTouched` (two accepted, two refused); `badRows` (`a start that is the end`, `midnight to midnight as 00:00`, `a start at 24:00`); fact 49 |
+| 35 | **The flows do not write windows past midnight, and keep a user's.** The openrouter flow goes on writing each day's hours under that day, a level that runs past midnight as one window to `24:00` and one from `00:00`; the ollama flow's `off-peak` row never crossed midnight. A row a user wrote with a window past midnight is kept by each flow's apply and by every other write that touches its model: its keys, their order and their values, the window never split or rewritten, and its bytes too once the file is in wt's own layout (the first wt write lays a hand-typed file out again and drops comments, as for any entry: fact 52). | "The Design and Why" (four grounds): the per-day form is the one form a painted week has, so the bytes and the plan text need no tie-break; no `openrouter` row is on disk yet, so nothing migrates; it reads a day at a time; and a `wt` from before slice C can still write the models the sync touches (fact 50). | `TestScheduleRows` (a wrapping window of OpenRouter's is two); `TestBothFlowsKeepAUsersWindowPastMidnight` (both flows, the file's bytes, and the resolver on the result); `TestUpdateRegistryKeepsAWindowPastMidnightByteForByte` (a patch of the model, a patch of its cost table); `TestUpdateRegistryKeepsAHandTypedWindowPastMidnight` (the row typed on one line with comments: laid out once, one window from `22:00` to `06:00`, then no byte of it changed) |
+| 36 | llmbench and the contract fixtures `docs/contracts/registry.sample.toml` and `registry.written.sample.toml` are not changed. | Fact 47: no Python reads `cost`; the fixtures pin that rows decode and round-trip, and a window past midnight is the same keys with the same types. | Nothing to pin: the final tree's diff holds no file under `llmbench/` or `docs/contracts/registry*` (fact 51) |
 
 ## Questions for the Owner
 
-The directions settle the rest. Each recommended answer is what the tasks implement.
+The directions settle the rest. All three questions are answered, and the tasks implement the answers: questions 1 and 3 as recommended, question 2 the other way.
 
 > **The owner's answers, 2026-10-09 (binding).**
 >
 > 1. **(a), as built:** the highlighted model's price is shown on the `LiteLLM:` line under the table.
-> 2. **A window written with its end at or before its start runs past midnight.** This reverses the recommendation below: `22:00` to `06:00` is one window from 22:00 on the listed day to 06:00 the next day, accepted by the registry's validator and applied by the resolver. The tasks are being revised to this; until they are, Decisions and Tasks 3 and 8 still describe the old rule (such a row is not applied).
+> 2. **"window should run past midnight".** A window written with its end before its start is one window: `22:00` to `06:00` runs from 22:00 on each listed day to 06:00 the next day, accepted by the registry's validator and applied by the resolver. This reversed the plan's recommendation, and Decisions 34 to 36 and Tasks 3, 4, 6, 8 and 9 are written to it. The one shape the answer leaves open, a start equal to its end, is refused (decision 34; question 2 below says why and where to change it).
 > 3. **Yes:** the controller posts the correcting comment on #322 when slice D's PR opens, and files the follow-up issue about listed prices that move within minutes.
 
 1. **Where the current price is shown on a terminal too narrow for the COST column.** With an OpenRouter id in the table the COST column is drawn only from 111 columns (facts 34, 42), today as before. Three ways to show the price below that:
@@ -284,7 +315,11 @@ The directions settle the rest. Each recommended answer is what the tasks implem
    ```
 
    **Recommendation: (a)**, as built, with the mark and heading as shown. For (b), Task 5's preamble lists what to leave out. (c) would be a follow-up. If you want another mark or other words than `~`, `cost~` and `COST (~ varies by time)`, they are two constants in `wt/internal/tui/modeltable.go` and one word in `costNote`.
-2. **A window you write as `22:00` to `06:00`.** The registry's rule is that a window starts before it ends, so an overnight window is two. wt does not apply a row that breaks the rule, and `wt model list` names it (decision 30). The other reading, "it wraps past midnight", would need the registry's validator relaxed too, or every write to that model would still be refused. **Recommendation: as built** (not applied, named, the docs give the two-window form).
+2. **A window you write as `22:00` to `06:00`: decided, "window should run past midnight".** It is one window, from 22:00 on each listed day to 06:00 on the next calendar day in the row's timezone. The registry's validator accepts it and the resolver applies it (decision 34, Task 3), every write keeps its window as you wrote it (`22:00` and `06:00` are never split or rewritten; as for any entry, the first write by wt lays a file typed by hand out in its own layout and drops comments; decision 35), and the reference page gives it as the example (Task 6). The plan had recommended and built the opposite (the row refused, not applied, named, and the docs telling you to split it at midnight); that reading is gone from the code, the tests and the docs. Two things the answer did not say were settled here, each in one place, and a third is a fact to know:
+
+   - **`start` equal to `end` is refused**, with `start and end must differ (a whole day is 00:00 to 24:00)`, and not read as 24 hours from that time. It could be meant as either an empty window or a whole day, and a wrong guess shows a wrong price for a day. If you want it to mean 24 hours, the code is one condition in `validateWindow` and one `case` in `TimePrice.holds`; the tests and the doc sentences that state the refusal change with it, and `00:00` to `00:00` becomes a second spelling of the whole day ("After This Plan" lists them).
+   - **A `wt` built before slice C cannot write a model that carries such a row.** It loads the row and lists the model, and refuses every write to that model with `start must be before end` (fact 52). The reference page and the changelog say so: write such a window only once the installed `wt` has this change.
+   - **`wt cloud-sync` does not write such windows itself.** OpenRouter's level that runs past midnight is still stored as two windows, one to `24:00` and one from `00:00`, so the sync's rows and plan lines are the same bytes as before your answer (decision 35 gives the four grounds). Only rows written by hand use the new form.
 3. **May the controller post the correcting comment on #322 and file the follow-up issue?** The comment (3 time-priced models, not 85; OpenRouter documents the window and top-level semantics; the other price changes are a different cause) is in Task 10. The follow-up is "the listed price of a model many providers serve moves within minutes" (fact 7: 8 of 469 models in 41 minutes, one by about 42 times in five), which a sync still reports as updates and can still restart the proxy for. **Recommendation: yes to the comment when slice D's PR is opened; file the follow-up, and do nothing about it in this plan.**
 
 ## File Structure
@@ -296,12 +331,13 @@ The directions settle the rest. Each recommended answer is what the tasks implem
 | `wt/internal/cloudsync/*.go`, `wt/internal/config/config.go`, `wt/internal/agents/price_notice*.go`, `wt/cmd/wt/main.go`, `exitcode.go` | modify (script, comments only) | 1 | "the prices flow" / "the catalog flow" in comments; the two bullets of `doc.go` |
 | `wt/docs/wt-cloud-sync.md`, `wt/.claude/skills/cloud-sync/SKILL.md`, `wt/CLAUDE.md`, `CLAUDE.md`, `wt/docs/internals/launch-flow.md`, `docs/guides/00-config-map.md`, `docs/guides/02-providers-and-models.md`, `wt/CHANGELOG.md` | modify | 1, 2, 6, 9 | The flows' names (1); the removed key (2); what the picker shows and what a hand-written row needs (6); what is stored (9) |
 | `docs/contracts/catalog-predicates.sample.toml`, `.expected.json` | modify | 2 | The one list of OpenRouter-priced models both readers are held to |
-| `wt/internal/config/config.go` | modify | 2, 3, 6, 9 | `Provider` loses `OpenRouterPriced`; `Config.OpenRouterPriced` is one comparison (2); `Model.Malformed` names a row that is not applied (3); the comment on `TimePrice` (6, 9) |
+| `wt/internal/config/config.go` | modify | 2, 3, 6, 9 | `Provider` loses `OpenRouterPriced`; `Config.OpenRouterPriced` is one comparison (2); `Model.Malformed` names a row that is not applied, and the comment on `CostWindow` says a window may run past midnight (3); the comment on `TimePrice` (6, 9) |
+| `wt/internal/config/registry_validate.go`, `registry_validate_test.go` | modify | 3 | `validateWindow`: an end before the start is a window past midnight, a start equal to the end is refused; the validator's tables; a user's window past midnight through two writes, byte for byte in wt's layout; and the same row typed by hand on one line, laid out once with its window whole |
 | `wt/internal/config/registry_doc.go` | modify | 2 | The removed key leaves the writer's key-order list |
 | `wt/internal/cloudsync/entry.go`, `openrouter.go` | modify | 2, 7, 8 | `Provider{ID}`, `OpenRouterPriced(e)`, `PlanPrices(entries, api)` (2); `APIPrice.Rates`, `.Unusable`, the schedule in `ParseOpenRouter` and `PlanPrices` (7); the rows (8) |
 | `wt/cmd/wt/cloudsync.go` | modify | 2 | The predicate's new signature; the advice line |
 | `wt/internal/agents/price_notice.go`, `price_notice_test.go`, `wt/internal/cloudsync/openrouter_test.go`, `apply_test.go`, `wt/cmd/wt/cloudsync_test.go` | modify | 2, 7, 8 | The rule's tests (2); the command run in two windows (7) and with rows (8) |
-| `wt/internal/config/price_at.go`, `price_at_test.go` | create | 3 | The resolver: `PriceInForce`, `ModelCost.PriceAt`, `.Flat`, `.TimePriced`, `TimePrice.Problem`; its tests, and the loader's two (a row that breaks a rule, a value of the wrong type) |
+| `wt/internal/config/price_at.go`, `price_at_test.go` | create | 3 | The resolver: `PriceInForce`, `ModelCost.PriceAt`, `.Flat`, `.TimePriced`, `TimePrice.Problem`, `TimePrice.holds` (a window within a day, and one past midnight); its tests, the two of a window past midnight among them, and the loader's three (a row that breaks a rule, a window past midnight, a value of the wrong type) |
 | `wt/cmd/wt/model_list.go`, `model_list_test.go` | modify (one help sentence; append) | 3 | `wt model list` names a row that is not applied |
 | `wt/internal/tui/modelrows.go`, `modeltable.go` | modify | 4, 5 | `pickerNow`, `tableRow.at`, `tableRow.price`, `tableInput.now`, the sort key, `costCell`, the heading (4); `costNote` (5) |
 | `wt/internal/tui/model_list.go`, `layout.go` | modify | 5 | `modelItem.cost`; `modeLine` and the mode line |
@@ -310,11 +346,11 @@ The directions settle the rest. Each recommended answer is what the tasks implem
 | `wt/docs/wt-model.md`, `wt/docs/internals/local-models.md`, `tui.md`, `config-and-registry.md`, `docs/guides/06-wt-agents-and-models.md` | modify | 6 (guide 06 also 9) | The COST column, the sort, the clock, the mode line; the row that is not applied |
 | `wt/internal/cloudsync/testdata/openrouter_models.json` | create | 7 | Five models of OpenRouter's public list as fetched 2026-10-09 14:06:14 UTC, cut to `id` and `pricing`: three time-priced, one tiered, one plain |
 | `wt/internal/cloudsync/timeofday.go`, `timeofday_test.go` | create | 7 | Reading a schedule: `Span`, `Rate`, `parseSchedule`, `isPriceKey`, `mainRate`; the fixture helpers and the parse and plan tests |
-| `wt/internal/cloudsync/timeofday_rows.go`, `timeofday_rows_test.go` | create | 8 | Storing a schedule: `OpenRouterLabel`, `rateRow`, `withOpenRouterRows`, `formatOpenRouterRow`, `formatWindows`, `formatDays`; row, ownership, plan-text and Apply tests |
+| `wt/internal/cloudsync/timeofday_rows.go`, `timeofday_rows_test.go` | create | 8 | Storing a schedule: `OpenRouterLabel`, `rateRow`, `withOpenRouterRows`, `formatOpenRouterRow`, `formatWindows`, `formatDays`; row, ownership, plan-text and Apply tests, and a user's window past midnight through both flows |
 | `wt/internal/cloudsync/catalog.go` | modify | 8 | `formatCost` prints the `openrouter` rows; the `OffpeakLabel` comment |
 | `wt/internal/litellm/entry_test.go` | modify (append) | 8 | A route is priced from the flat price only |
 
-Not changed by any task: `wt/internal/cloudsync/apply.go`, the registry validator (`registry_validate.go`; the resolver calls it), the registry loader, `wt/internal/litellm/entry.go`, `wt/internal/modeladmin`, `wt/internal/configeditor/*.go` outside one test, llmbench.
+Not changed by any task: `wt/internal/cloudsync/apply.go`, the registry loader, the registry validator outside the one rule of `validateWindow` (the resolver calls it), `wt/internal/litellm/entry.go`, `wt/internal/modeladmin`, `wt/internal/configeditor/*.go` outside one test, llmbench, and the contract fixtures `docs/contracts/registry.sample.toml` and `registry.written.sample.toml` (fact 47).
 
 ## PR Slices
 
@@ -322,8 +358,10 @@ Not changed by any task: `wt/internal/cloudsync/apply.go`, the registry validato
 |---|---|---|---|---|
 | A | `refactor/322-cloud-sync-flow-names` | 1 | nothing | The rename, its test, the docs, the skill, the changelog. `Refs #322`. |
 | B | `refactor/322-drop-openrouter-priced` | 2 | A merged | The key removed, the rule simplified, the fixture, the docs. `Refs #322`. |
-| C | `feat/322-picker-price-in-force` | 3, 4, 5, 6 | B merged for Task 6; nothing for 3 to 5 | The resolver and the picker: every `cost.time_prices` row is applied where a model is picked. `Refs #322`. |
+| C | `feat/322-picker-price-in-force` | 3, 4, 5, 6 | B merged for Task 6; nothing for 3 to 5 | The resolver and the picker: every `cost.time_prices` row is applied where a model is picked, and a window of a row may run past midnight (the registry's validator, one rule). `Refs #322`. |
 | D | `fix/322-cloud-sync-time-of-day-prices` | 7, 8, 9, then 10 before it merges | C merged | The fix: a time-priced model is stored as its schedule, for a picker that already shows the level in force. `Closes #322`. |
+
+**Slice B, one "find" to apply to `main`'s wording.** Task 2's Find block for the comment above `TestHasOpenRouterPricedModel` in `wt/internal/agents/price_notice_test.go` quotes the comment as it was at `63f63d5`; #332 reworded it, so at `6ff501d` that find matches nothing (fact 51; seen again in the review's replay). Apply the step's Replace block to the comment as it stands on `main`, `price_notice_test.go:197-210`: it begins `// TestHasOpenRouterPricedModel pins issue #151's rule: the stale-pricing` and ends `// on one that is due.`, directly above `func TestHasOpenRouterPricedModel`. The lines of the find after the comment (from `func TestHasOpenRouterPricedModel(t *testing.T) {` on) match as written, and the Replace block is unaffected. Task 2's text was not changed here because Task 1 was being implemented from this file.
 
 **Order: A, B, C, D, one after the other.** A, B and D edit the same files (`cmd/wt/cloudsync.go`, `cloudsync_test.go`, `internal/cloudsync/openrouter.go`, `wt-cloud-sync.md`), and each one's "find" texts are the one before's output. C's docs (Task 6) are written against B's, and D's docs (Task 9) against C's. `main` is never half renamed: A is one commit, applied by a script and checked by two greps.
 
@@ -1993,7 +2031,7 @@ Add the session's PR attribution line at the end of the body if your session is 
 
 ### Task 3: The resolver: the price in force at an instant (slice C)
 
-A pure function in `wt/internal/config`, where `ModelCost`, `TimePrice` and the validator of the rows already live. It is modelman's `price_at` (`git show e61d989:modelman/src/modelman/time_pricing.py`), ported rule for rule, test first.
+A pure function in `wt/internal/config`, where `ModelCost`, `TimePrice` and the validator of the rows already live. It is modelman's `price_at` (`git show e61d989:modelman/src/modelman/time_pricing.py`), ported rule for rule, test first, with one rule changed by the owner's answer to question 2: a window may run past midnight. That rule is the registry validator's too, so the validator changes first (Steps 1 to 4), then the resolver that asks it (Steps 5 to 9).
 
 What is carried over from modelman, and what is not:
 
@@ -2004,26 +2042,38 @@ What is carried over from modelman, and what is not:
 | A row supplies each price it sets; an omitted one falls back to the flat price (`test_price_at_per_field_fallback_to_default`) | `TestPriceAtFallsBackPerField`, with one more case: a model with rows and no flat price |
 | A window is `[start, end)` on its `days`, to the minute (`test_price_at_offpeak_boundaries`, five instants) | `TestPriceAtOffpeakBoundaries`: the same five, plus `24:00` as the end of a day and an instant written in another zone |
 | The instant is converted to the row's `timezone` (`test_price_at_non_utc_timezone`) | `TestPriceAtReadsAWindowInItsRowsTimezone`, with one more case: the day is the zone's day |
+| A window's `start` is before its `end`; a window does not run past midnight (modelman's row validation, which wt's validator copied: fact 16) | **Changed, by the owner's answer to question 2.** An `end` before the `start` is one window that runs past midnight, from `start` on each listed day to `end` on the next calendar day: `TestPriceAtAWindowPastMidnight`, `TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime`, `TestLoadAppliesAWindowPastMidnight`, and in the validator's own tests the two accepted cases, `TestUpdateRegistryKeepsAWindowPastMidnightByteForByte` and `TestUpdateRegistryKeepsAHandTypedWindowPastMidnight`. A `start` equal to the `end` is still refused, with its own words |
 | The instant must be timezone-aware (`test_price_at_rejects_naive_datetime`) | **Dropped.** A Go `time.Time` is always an instant; there is no naive value to reject |
 | Row validation and serialization (`test_window_validation`, `test_time_price_validation`, the round-trip and shape tests) | **Not ported: reused.** modelman validated a row when it loaded it, so `price_at` never met a bad one. wt's loader only types a row's values; the rules are the registry writer's (`validateTimePrice` in `wt/internal/config/registry_validate.go`, with its own tests), so a row written by hand can be in the file and break one. The resolver asks that same function (`TimePrice.Problem`) and passes over a row it refuses: `TestPriceAtIgnoresARowItCannotRead`, `TestTimePriceProblemIsTheValidatorsRefusal` |
 | (not in modelman) | `TestPriceAtFollowsDaylightSavingTime`; `TestPriceAtAnOpenRouterSchedule` (the rows Task 8 writes); the index of the row that supplied the price; a row that is not applied is named (`Model.Malformed`, `wt model list`); a value of the wrong TOML type still stops the load (`TestLoadStopsOnATimePricesValueOfTheWrongType`) |
 
-**A row written by hand, and what happens to one that breaks a rule** (decisions 30 and 31). The rules are the validator's: an IANA `timezone` (not empty, not `Local`); prices that are finite and not negative; at least one window; in each window `days` from `mon`..`sun` and `"HH:MM"` times with `start` before `end` and `end` up to `"24:00"`. A window does not wrap, so "22:00 to 06:00" is two windows. Observed on a pty before this task was rewritten: such a row (`start = "22:00"`, `end = "06:00"`, New York) loaded, was applied at no instant, and the picker still marked the model `~`, so nothing told its writer why the price never changed. Now:
+**A window that runs past midnight** (decision 34). `days = ["mon"], start = "22:00", end = "06:00"` is one window: from 22:00 on Monday to 06:00 on Tuesday, in the row's timezone. The rules, each pinned:
+
+- **An `end` before the `start` runs past midnight.** The window starts at `start` on each listed day and ends at `end` on the next calendar day. `days` names the days it starts on: a Monday window holds Tuesday 05:00 and not Monday 05:00. A window listed on `sun` runs into Monday.
+- **"The next day" is a calendar day on the row's wall clock, not 24 hours.** An instant is in the window when, in the row's zone, it is at or after `start` on a listed day, or before `end` on the day after a listed day. So Saturday `22:00` to `06:00` in New York is nine hours long on the night the clocks go back and seven on the night they go forward, and it always ends when the clock reads 06:00.
+- **`end = "24:00"` is the end of the listed day and never past midnight**, as today. `end = "00:00"` after a later `start` is the same instant reached the other way: the window runs to midnight and holds no minute of the next day.
+- **`start` equal to `end` is refused**, with `start and end must differ (a whole day is 00:00 to 24:00)`. Read as `[start, end)` it holds no minute; read as running past midnight it holds 24 hours. The two readings differ by a whole day of a price, a slip of the hand (a copied time) is as likely as intent, and the whole day already has a spelling, so wt refuses to guess, does not apply the row, and names it.
+- **`start = "24:00"` is refused**, as today (`start must be before 24:00`).
+- **Windows of one row may overlap**, each other or themselves across a midnight; they are one price, so nothing is checked. **Rows may overlap**: the first in file order whose window holds the instant wins, as before.
+- The old refusal `start must be before end` no longer exists.
+
+**A row written by hand that breaks a rule** (decisions 30 and 31). The rules are the validator's: an IANA `timezone` (not empty, not `Local`); prices that are finite and not negative; at least one window; in each window `days` from `mon`..`sun` and `"HH:MM"` times, `start` up to `"23:59"`, `end` up to `"24:00"`, and the two different. Observed on a pty before this task was first rewritten: a row the validator refused loaded, was applied at no instant, and the picker still marked the model `~`, so nothing told its writer why the price never changed. Now, for a row that breaks a rule (the examples below use a time written `9:00`, which is not `HH:MM`):
 
 - the row is passed over **whole** (one bad window is enough: the validator refuses the row, not the window);
 - a model whose every row is passed over is **not** time-priced: the picker shows its flat price with no mark;
-- `Model.Malformed()` names the row and the rule, so `wt model list` prints `<id>: cost.time_prices[0]: windows[0]: start must be before end; wt reads it as absent (fix the entry in <registry>)` on stderr and carries the phrase in `--json`'s `malformed` array, the Models tab shows it for the selected row, and the model form adds its "fix the entry" hint when a save of that row is refused (the registry writer already refuses to write a row whose cost table breaks a rule; that is `main`'s behaviour and is what a sync that touches such a model gets too);
+- `Model.Malformed()` names the row and the rule, so `wt model list` prints `<id>: cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00; wt reads it as absent (fix the entry in <registry>)` on stderr and carries the phrase in `--json`'s `malformed` array, the Models tab shows it for the selected row, and the model form adds its "fix the entry" hint when a save of that row is refused (the registry writer already refuses to write a row whose cost table breaks a rule; that is `main`'s behaviour and is what a sync that touches such a model gets too);
 - a value of the wrong TOML type (`windows = "always"`, a price in quotes) is different: the typed decode of the registry fails and **every wt command stops** with `wt: config error: parse <registry>: toml: line N (last key "models.cost.time_prices.windows"): incompatible types: … (fix that file by hand)`. That is `main`'s behaviour for a wrong type anywhere in the registry, it names the line and the key, and this plan keeps it and pins it rather than teach the loader to drop rows in silence.
 
 **Precondition:** none for the code of Tasks 3 to 5: it needs nothing from slices A and B (fact 45) and can be started from `main` at any time, in a worktree of its own. Branch: `git switch -c feat/322-picker-price-in-force main`. Before Task 6, slice B must be merged and this branch rebased onto it.
 
 **Files:**
+- Modify: `wt/internal/config/registry_validate.go` (`validateWindow`: one rule), `wt/internal/config/registry_validate_test.go` (three edits to its tables; append)
 - Create: `wt/internal/config/price_at_test.go`, `wt/internal/config/price_at.go`
-- Modify: `wt/internal/config/config.go` (`Model.Malformed`), `wt/cmd/wt/model_list.go` (the help text)
+- Modify: `wt/internal/config/config.go` (`Model.Malformed`; the comment on `CostWindow`), `wt/cmd/wt/model_list.go` (the help text)
 - Modify (tests): `wt/cmd/wt/model_list_test.go` (append)
 
 **Interfaces:**
-- Consumes (existing, `wt/internal/config`): `type ModelCost struct{ InputPricePerMillion, CachePricePerMillion, OutputPricePerMillion, SubscriptionPrice *float64; SubscriptionPeriod string; TimePrices []TimePrice }`; `type TimePrice struct{ Label, Timezone string; InputPricePerMillion, CachePricePerMillion, OutputPricePerMillion *float64; Windows []CostWindow }`; `type CostWindow struct{ Days []string; Start, End string }`; the package variables `weekDays = []string{"mon", …, "sun"}` and `priceKeys = []string{"input_price_per_million", "cache_price_per_million", "output_price_per_million"}`, and `func validateTimePrice(row *tomlw.Table) error` (`registry_validate.go`); `func (m Model) Malformed() []string` and `func Load() (*Config, error)` (`config.go`); `tomlw.NewTable()`, `(*tomlw.Table).Set(key string, v any)`. Test helper: `writeRegistry(t, dir, content string)` (`registry_test.go`). In `cmd/wt` tests: `malformedRegistry(malformed bool) string`, `runModelListOver(t, registry string, asJSON bool) (stdout, stderr, path string)`.
+- Consumes (existing, `wt/internal/config`): `type ModelCost struct{ InputPricePerMillion, CachePricePerMillion, OutputPricePerMillion, SubscriptionPrice *float64; SubscriptionPeriod string; TimePrices []TimePrice }`; `type TimePrice struct{ Label, Timezone string; InputPricePerMillion, CachePricePerMillion, OutputPricePerMillion *float64; Windows []CostWindow }`; `type CostWindow struct{ Days []string; Start, End string }`; the package variables `weekDays = []string{"mon", …, "sun"}` and `priceKeys = []string{"input_price_per_million", "cache_price_per_million", "output_price_per_million"}`, and `func validateTimePrice(row *tomlw.Table) error`, `func validateWindow(w *tomlw.Table) error` (`registry_validate.go`); `func (m Model) Malformed() []string` and `func Load() (*Config, error)` (`config.go`); `tomlw.NewTable()`, `(*tomlw.Table).Set(key string, v any)`; `UpdateRegistry`, `(*RegistryDoc).PatchModel`. Test helpers: `writeRegistry(t, dir, content string)` (`registry_test.go`); `scratchRegistry(t, content string) string`, `readFile(t, path)`, `setFamily(id, family string)`, the constant `docRegistry` (the registry writer's tests). In `cmd/wt` tests: `malformedRegistry(malformed bool) string`, `runModelListOver(t, registry string, asJSON bool) (stdout, stderr, path string)`.
 - Produces (Tasks 4 and 5 call the first four):
   - `type PriceInForce struct{ Input, Cache, Output *float64; Row int }` (`Row` is the index in `TimePrices` of the row that supplied the prices, `-1` for the flat ones)
   - `func (c ModelCost) PriceAt(at time.Time) PriceInForce`
@@ -2031,8 +2081,273 @@ What is carried over from modelman, and what is not:
   - `func (c ModelCost) TimePriced() bool` (true when at least one row is applied)
   - `func (tp TimePrice) Problem() string` (the validator's refusal of the row, `""` for a row that is applied)
   - `Model.Malformed()` also returns `cost.time_prices[<i>]: <problem>` for each row with a problem, after the fetch and draft phrases
+  - the registry rule every later task and doc relies on: a window whose `end` is before its `start` is valid and runs past midnight; the one refusal that replaces `start must be before end` is `start and end must differ (a whole day is 00:00 to 24:00)`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing tests of the validator**
+
+Three edits to the tables of `TestUpdateRegistryValidatesOnlyTheRowsItTouched` in `wt/internal/config/registry_validate_test.go`, and two new tests. Each "find" is one long line of that file.
+
+(a) The refused rows: a window that ends before it starts is no longer one of them. Its place is taken by a start that is the end, and a start at `24:00` is pinned beside it (a rule that until now had no test).
+
+Find:
+
+```go
+		{"a window that ends before it starts", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "12:00", "end": "09:00"}}}}}, nil, "start must be before end"},
+```
+
+Replace with:
+
+```go
+		{"a window that starts when it ends", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "12:00", "end": "12:00"}}}}}, nil, "start and end must differ (a whole day is 00:00 to 24:00)"},
+		{"a window that starts at 24:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "24:00", "end": "06:00"}}}}}, nil, "start must be before 24:00"},
+```
+
+(b) The same table's last row is named "a window past midnight" and is about an end after `24:00`. It keeps its rule and gets a name that is still true.
+
+Find:
+
+```go
+		{"a window past midnight", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "24:30"}}}}}, nil, "end must be HH:MM between 00:00 and 24:00"},
+```
+
+Replace with:
+
+```go
+		{"a window that ends after 24:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "24:30"}}}}}, nil, "end must be HH:MM between 00:00 and 24:00"},
+```
+
+(c) The accepted rows gain a window that runs past midnight, and one that runs to midnight written `00:00`.
+
+Find:
+
+```go
+		{"a time price", map[string]any{"cost.time_prices": offPeak}, `timezone = "UTC"`},
+```
+
+Replace with:
+
+```go
+		{"a time price", map[string]any{"cost.time_prices": offPeak}, `timezone = "UTC"`},
+		{"a window that runs past midnight", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "22:00", "end": "06:00"}}}}}, `end = "06:00"`},
+		{"a window that runs to midnight, written 00:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"sun"}, "start": "22:00", "end": "00:00"}}}}}, `end = "00:00"`},
+```
+
+(d) Append to `wt/internal/config/registry_validate_test.go` (two tests: the row in a registry wt has already laid out, where a write keeps it byte for byte, and the row typed by hand on one line, where the first write lays the file out and keeps the window whole):
+
+```go
+// TestUpdateRegistryKeepsAWindowPastMidnightByteForByte pins what a write
+// does to a cost.time_prices row a user wrote with a window that runs past
+// midnight ("22:00" to "06:00", #322): the write goes through, and the row
+// is in the file exactly as it was (the registry here is in the writer's
+// own layout, as a registry wt has written once is), when another key of
+// its model is patched and when its cost table is. Before #322 the
+// validator refused such a row, so every `wt model edit` of that model and
+// every `wt cloud-sync` with a change for it stopped with "start must be
+// before end".
+func TestUpdateRegistryKeepsAWindowPastMidnightByteForByte(t *testing.T) {
+	const nightRow = `[[models.cost.time_prices]]
+x_note = "mine"
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri",
+]
+start = "22:00"
+end = "06:00"
+
+[[models.cost.time_prices.windows]]
+days = [
+    "sat",
+]
+start = "20:00"
+end = "00:00"
+`
+	const withNight = docRegistry + `
+[[models]]
+id = "ollama/night-owl"
+family = "fam"
+provider_id = "ollama"
+model_name = "night-owl"
+
+[models.cost]
+output_price_per_million = 75.0
+
+` + nightRow
+	path := scratchRegistry(t, withNight)
+	if changed, err := UpdateRegistry(setFamily("ollama/night-owl", "owls")); err != nil || !changed {
+		t.Fatalf("a patch of the model's family: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	if changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/night-owl", map[string]any{"cost.input_price_per_million": 12.5}, nil)
+	}); err != nil || !changed {
+		t.Fatalf("a patch of the model's cost: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	want := strings.Replace(withNight, "family = \"fam\"\nprovider_id = \"ollama\"\nmodel_name = \"night-owl\"", "family = \"owls\"\nprovider_id = \"ollama\"\nmodel_name = \"night-owl\"", 1)
+	want = strings.Replace(want, "output_price_per_million = 75.0\n", "input_price_per_million = 12.5\noutput_price_per_million = 75.0\n", 1)
+	if got := readFile(t, path); got != want {
+		t.Errorf("registry.toml after the two patches:\n%s\n\nwant the two patched keys and nothing else changed:\n%s", got, want)
+	}
+}
+
+// TestUpdateRegistryKeepsAHandTypedWindowPastMidnight pins the other half:
+// a registry typed by hand, with the row's window as an inline table and
+// comments beside it, the way wt/docs/wt-cloud-sync.md writes one. The first
+// write by wt lays the whole file out in its own layout and drops the
+// comments, as it does for every entry (that is the writer's rule, not this
+// row's). What it keeps is what the row says: one window, "22:00" to
+// "06:00", never split at midnight or rewritten. From then on the row's
+// bytes do not change.
+func TestUpdateRegistryKeepsAHandTypedWindowPastMidnight(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	const typed = docRegistry + `
+[[models]]
+id = "ollama/night-owl"
+family = "fam"
+provider_id = "ollama"
+model_name = "night-owl"
+
+[models.cost]
+output_price_per_million = 75.0
+
+# my night rate
+[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+windows = [{ days = ["mon"], start = "22:00", end = "06:00" }]  # past midnight
+`
+	const laidOutRow = `[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+]
+start = "22:00"
+end = "06:00"
+`
+	path := scratchRegistry(t, typed)
+	if changed, err := UpdateRegistry(setFamily("ollama/night-owl", "owls")); err != nil || !changed {
+		t.Fatalf("the first write: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	first := readFile(t, path)
+	if !strings.HasSuffix(first, "output_price_per_million = 75.0\n\n"+laidOutRow) {
+		t.Errorf("registry.toml after the first write:\n%s\n\nwant it to end with the row in the writer's layout, its one window whole:\n%s", first, laidOutRow)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after the first write = %v", err)
+	}
+	var rows []TimePrice
+	for _, m := range cfg.Models {
+		if m.ID == "ollama/night-owl" {
+			rows = m.Cost.TimePrices
+		}
+	}
+	if len(rows) != 1 || len(rows[0].Windows) != 1 {
+		t.Fatalf("ollama/night-owl's cost.time_prices = %+v, want one row with one window", rows)
+	}
+	if w := rows[0].Windows[0]; strings.Join(w.Days, ",") != "mon" || w.Start != "22:00" || w.End != "06:00" {
+		t.Errorf("the window = %+v, want days [mon], start 22:00, end 06:00", w)
+	}
+	if changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/night-owl", map[string]any{"cost.input_price_per_million": 12.5}, nil)
+	}); err != nil || !changed {
+		t.Fatalf("the second write: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	want := strings.Replace(first, "output_price_per_million = 75.0\n", "input_price_per_million = 12.5\noutput_price_per_million = 75.0\n", 1)
+	if got := readFile(t, path); got != want {
+		t.Errorf("registry.toml after the second write:\n%s\n\nwant the one patched key and no other byte changed:\n%s", got, want)
+	}
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run (from `wt/`): `go test -count=1 ./internal/config -run 'TestUpdateRegistryValidatesOnlyTheRowsItTouched|TestUpdateRegistryKeepsAWindowPastMidnightByteForByte|TestUpdateRegistryKeepsAHandTypedWindowPastMidnight' 2>&1 | grep -v '^wt: '`
+Expected: FAIL, five times for one reason: the validator still refuses every window whose end is not after its start, in the old words.
+
+```text
+--- FAIL: TestUpdateRegistryValidatesOnlyTheRowsItTouched (0.03s)
+    --- FAIL: TestUpdateRegistryValidatesOnlyTheRowsItTouched/a_window_that_starts_when_it_ends (0.00s)
+        registry_validate_test.go:161: UpdateRegistry = (false, invalid registry entry: model "ollama/beta": cost: time_prices[0]: windows[0]: start must be before end), want ErrRegistryInvalid mentioning "start and end must differ (a whole day is 00:00 to 24:00)"
+    --- FAIL: TestUpdateRegistryValidatesOnlyTheRowsItTouched/accepted:_a_window_that_runs_past_midnight (0.00s)
+        registry_validate_test.go:204: UpdateRegistry = (false, invalid registry entry: model "ollama/beta": cost: time_prices[0]: windows[0]: start must be before end), want (true, nil)
+    --- FAIL: TestUpdateRegistryValidatesOnlyTheRowsItTouched/accepted:_a_window_that_runs_to_midnight,_written_00:00 (0.00s)
+        registry_validate_test.go:204: UpdateRegistry = (false, invalid registry entry: model "ollama/beta": cost: time_prices[0]: windows[0]: start must be before end), want (true, nil)
+--- FAIL: TestUpdateRegistryKeepsAWindowPastMidnightByteForByte (0.00s)
+    registry_validate_test.go:381: a patch of the model's family: UpdateRegistry = (false, invalid registry entry: model "ollama/night-owl": cost: time_prices[0]: windows[0]: start must be before end), want (true, nil)
+--- FAIL: TestUpdateRegistryKeepsAHandTypedWindowPastMidnight (0.00s)
+    registry_validate_test.go:437: the first write: UpdateRegistry = (false, invalid registry entry: model "ollama/night-owl": cost: time_prices[0]: windows[0]: start must be before end), want (true, nil)
+FAIL
+FAIL	github.com/ohanaverse/local-ai-setup/wt/internal/config	(time)
+FAIL
+```
+
+("a window that starts at 24:00" passes already: that rule is `main`'s.)
+
+- [ ] **Step 3: Change the validator's one rule**
+
+In `wt/internal/config/registry_validate.go`, the end of `validateWindow`.
+
+Find:
+
+```go
+	if start >= end {
+		return errors.New("start must be before end")
+	}
+```
+
+Replace with:
+
+```go
+	// An end before the start is a window that runs past midnight: from start
+	// on each listed day to end on the next calendar day (#322). An end of
+	// "24:00" is the end of the listed day, so it is never before a start.
+	// Only a start equal to the end is refused: read as [start, end) it holds
+	// no minute, read as running past midnight it holds a whole day, and a
+	// guess either way can show a price for 24 hours that its writer did not
+	// mean.
+	if start == end {
+		return errors.New("start and end must differ (a whole day is 00:00 to 24:00)")
+	}
+```
+
+Nothing else in the validator changes: `start must be before 24:00`, the `HH:MM` and `00:00 to 24:00` rules of `minutesOfDay`, the days, the timezone, the prices and the non-empty `windows` are as they were.
+
+- [ ] **Step 4: Run the tests to verify they pass, and commit**
+
+Run (from `wt/`): `gofmt -l internal && go test -count=1 ./internal/config -run 'TestUpdateRegistryValidatesOnlyTheRowsItTouched|TestUpdateRegistryKeepsAWindowPastMidnightByteForByte|TestUpdateRegistryKeepsAHandTypedWindowPastMidnight' -v 2>&1 | grep -E '^(--- |ok|FAIL)'`
+Expected (`gofmt -l` prints nothing):
+
+```text
+--- PASS: TestUpdateRegistryValidatesOnlyTheRowsItTouched (0.03s)
+--- PASS: TestUpdateRegistryKeepsAWindowPastMidnightByteForByte (0.00s)
+--- PASS: TestUpdateRegistryKeepsAHandTypedWindowPastMidnight (0.00s)
+ok  	github.com/ohanaverse/local-ai-setup/wt/internal/config	(time)
+```
+
+Run (from `wt/`): `go test -count=1 ./...`
+Expected: every package `ok` (25). No other test names the old refusal, and nothing yet reads a window: until Step 7 a window that runs past midnight is accepted by a write and applied by nothing, as every row is on `main`.
+
+From the repo root:
+
+```bash
+git add wt/internal/config/registry_validate.go wt/internal/config/registry_validate_test.go
+git commit -m "feat(wt): a cost.time_prices window whose end is before its start runs past midnight; the registry accepts it (#322)"
+```
+
+- [ ] **Step 5: Write the failing tests of the resolver**
 
 Create `wt/internal/config/price_at_test.go`:
 
@@ -2251,11 +2566,205 @@ func TestPriceAtAnOpenRouterSchedule(t *testing.T) {
 	}
 }
 
+// night is a cost table with one hand-written row of one window: output 1.0
+// from start to end on the days given, in zone.
+func night(zone string, days []string, start, end string) ModelCost {
+	return peakCost(TimePrice{Label: "night", Timezone: zone, OutputPricePerMillion: pf(1),
+		Windows: []CostWindow{{Days: days, Start: start, End: end}}})
+}
+
+// wantHeld fails unless the cost table's one row is in force at exactly the
+// instants marked true.
+func wantHeld(t *testing.T, what string, cost ModelCost, cases []struct {
+	at     time.Time
+	inside bool
+}) {
+	t.Helper()
+	for _, c := range cases {
+		if got := cost.PriceAt(c.at).Row == 0; got != c.inside {
+			t.Errorf("%s, %s: in the window = %v, want %v", what, c.at.Format("Mon 2006-01-02 15:04:05 MST"), got, c.inside)
+		}
+	}
+}
+
+// TestPriceAtAWindowPastMidnight pins what a window means when its end is
+// before its start (#322, the owner's answer: "window should run past
+// midnight"): "22:00" to "06:00" on "mon" is one window, from 22:00 on
+// Monday to 06:00 on Tuesday. It starts only on a listed day, and its
+// morning half belongs to the day it started on, so a Monday window holds
+// Tuesday 05:00 and not Monday 05:00. This is how anyone writes a night
+// rate; read as two half-windows on the listed day, or not read at all, the
+// picker would show the night price on the wrong morning or never.
+// 2026-09-28 is a Monday.
+func TestPriceAtAWindowPastMidnight(t *testing.T) {
+	type at = struct {
+		at     time.Time
+		inside bool
+	}
+	utc := func(day, hour, minute, second int) time.Time {
+		return time.Date(2026, 9, day, hour, minute, second, 0, time.UTC)
+	}
+	mon := []string{"mon"}
+	wantHeld(t, "mon 22:00 to 06:00", night("UTC", mon, "22:00", "06:00"), []at{
+		{utc(28, 21, 59, 59), false}, // Monday, before the start
+		{utc(28, 22, 0, 0), true},
+		{utc(28, 23, 59, 59), true},
+		{utc(29, 0, 0, 0), true}, // Tuesday, the morning after
+		{utc(29, 5, 59, 59), true},
+		{utc(29, 6, 0, 0), false},  // the end is not in the window
+		{utc(29, 22, 0, 0), false}, // Tuesday is not listed: nothing starts on it
+		{utc(28, 5, 0, 0), false},  // Monday morning would be Sunday's window
+	})
+	// The week wraps too: a Sunday window runs into Monday.
+	wantHeld(t, "sun 22:00 to 06:00", night("UTC", []string{"sun"}, "22:00", "06:00"), []at{
+		{utc(27, 22, 0, 0), true},  // Sunday
+		{utc(28, 5, 59, 0), true},  // Monday
+		{utc(28, 6, 0, 0), false},  // Monday
+		{utc(27, 5, 0, 0), false},  // Sunday morning would be Saturday's window
+		{utc(28, 22, 0, 0), false}, // Monday evening
+	})
+	// An end of "00:00" is midnight and no further, exactly as "24:00" is;
+	// "24:00" is the end of the listed day and never a window past midnight.
+	for _, end := range []string{"00:00", "24:00"} {
+		wantHeld(t, "mon 22:00 to "+end, night("UTC", mon, "22:00", end), []at{
+			{utc(28, 21, 59, 0), false},
+			{utc(28, 23, 59, 59), true},
+			{utc(29, 0, 0, 0), false},
+			{utc(29, 5, 0, 0), false},
+		})
+	}
+	// One minute short of a whole day: 06:00 to 05:59.
+	wantHeld(t, "mon 06:00 to 05:59", night("UTC", mon, "06:00", "05:59"), []at{
+		{utc(28, 5, 59, 0), false},
+		{utc(28, 6, 0, 0), true},
+		{utc(29, 5, 58, 59), true},
+		{utc(29, 5, 59, 0), false},
+	})
+	// The window is on the wall clock of the row's zone, and so are its two
+	// days. West of UTC: Monday 22:00 in Honolulu (UTC-10) is Tuesday 08:00
+	// UTC, and the window ends at Tuesday 16:00 UTC, all of it on UTC's
+	// Tuesday. East: Monday 22:00 in Tokyo (UTC+9) is Monday 13:00 UTC, and
+	// the window ends at Monday 21:00 UTC, all of it on UTC's Monday.
+	wantHeld(t, "Honolulu", night("Pacific/Honolulu", mon, "22:00", "06:00"), []at{
+		{utc(29, 7, 59, 0), false},
+		{utc(29, 8, 0, 0), true},
+		{utc(29, 15, 59, 0), true},
+		{utc(29, 16, 0, 0), false},
+		{utc(28, 8, 0, 0), false}, // Sunday 22:00 in Honolulu
+	})
+	wantHeld(t, "Tokyo", night("Asia/Tokyo", mon, "22:00", "06:00"), []at{
+		{utc(28, 12, 59, 0), false},
+		{utc(28, 13, 0, 0), true},
+		{utc(28, 20, 59, 0), true},
+		{utc(28, 21, 0, 0), false},
+		{utc(29, 13, 0, 0), false}, // Tuesday 22:00 in Tokyo
+	})
+
+	// The row is a row like any other: it supplies the prices it sets, and
+	// the first row whose window holds the instant wins, whichever of them
+	// runs past midnight. Two windows of one row may overlap; they are one
+	// price.
+	cost := peakCost(
+		TimePrice{Label: "night", Timezone: "UTC", OutputPricePerMillion: pf(1), Windows: []CostWindow{
+			{Days: mon, Start: "22:00", End: "06:00"},
+			{Days: []string{"tue"}, Start: "00:00", End: "03:00"},
+		}},
+		TimePrice{Label: "tuesday", Timezone: "UTC", OutputPricePerMillion: pf(2), Windows: []CostWindow{
+			{Days: []string{"tue"}, Start: "00:00", End: "24:00"},
+		}},
+	)
+	wantPrice(t, "Tuesday 02:00, in both of the night row's windows", cost.PriceAt(utc(29, 2, 0, 0)), pf(1.32), pf(0.044), pf(1), 0)
+	wantPrice(t, "Tuesday 05:00, in the night row and the Tuesday row", cost.PriceAt(utc(29, 5, 0, 0)), pf(1.32), pf(0.044), pf(1), 0)
+	wantPrice(t, "Tuesday 06:00, the night row is over", cost.PriceAt(utc(29, 6, 0, 0)), pf(1.32), pf(0.044), pf(2), 1)
+	if got := cost.TimePrices[0].Problem(); got != "" {
+		t.Errorf("a row with a window past midnight: Problem() = %q, want none", got)
+	}
+}
+
+// TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime pins the "next
+// day" of a window that runs past midnight as a calendar day on the row's
+// wall clock, not 24 hours and not a fixed length: Saturday "22:00" to
+// "06:00" ends when Sunday's clock reads 06:00. On the night a zone's clocks
+// go back that window is nine hours long, and on the night they go forward
+// seven. A reading that added eight hours to the start would end the night
+// rate an hour early in autumn and an hour late in spring, in the zone the
+// row's writer named. Pinned on both change days, west of UTC (New York:
+// 2026-03-08 and 2026-11-01) and east of it (Berlin: 2026-03-29 and
+// 2026-10-25).
+func TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime(t *testing.T) {
+	type at = struct {
+		at     time.Time
+		inside bool
+	}
+	utc := func(month time.Month, day, hour, minute int) time.Time {
+		return time.Date(2026, month, day, hour, minute, 0, 0, time.UTC)
+	}
+	sat := []string{"sat"}
+	newYork := night("America/New_York", sat, "22:00", "06:00")
+	// Clocks back: Saturday 22:00 EDT is 02:00 UTC, Sunday 06:00 EST is
+	// 11:00 UTC. Nine hours.
+	wantHeld(t, "New York, clocks back", newYork, []at{
+		{utc(11, 1, 1, 59), false},
+		{utc(11, 1, 2, 0), true},
+		{utc(11, 1, 5, 30), true},   // 01:30 EDT
+		{utc(11, 1, 6, 30), true},   // 01:30 EST, the hour again
+		{utc(11, 1, 10, 30), true},  // 05:30 EST: eight hours after the start it is not over
+		{utc(11, 1, 10, 59), true},  // 05:59 EST
+		{utc(11, 1, 11, 0), false},  // 06:00 EST
+		{utc(11, 2, 3, 0), false},   // Sunday 22:00 EST: Sunday is not listed
+		{utc(10, 31, 9, 59), false}, // Saturday 05:59 EDT would be Friday's window
+	})
+	// Clocks forward: Saturday 22:00 EST is 03:00 UTC, Sunday 06:00 EDT is
+	// 10:00 UTC. Seven hours.
+	wantHeld(t, "New York, clocks forward", newYork, []at{
+		{utc(3, 8, 2, 59), false},
+		{utc(3, 8, 3, 0), true},
+		{utc(3, 8, 6, 59), true},   // 01:59 EST
+		{utc(3, 8, 7, 0), true},    // 03:00 EDT: 02:00 never came
+		{utc(3, 8, 9, 59), true},   // 05:59 EDT
+		{utc(3, 8, 10, 0), false},  // 06:00 EDT
+		{utc(3, 8, 10, 30), false}, // eight hours after the start it is over
+	})
+	// A window that starts on the change day: Sunday 22:00 EST on
+	// 2026-11-01 is Monday 03:00 UTC, an hour later than the Sunday before.
+	sunday := night("America/New_York", []string{"sun"}, "22:00", "06:00")
+	wantHeld(t, "New York, starting on the day the clocks went back", sunday, []at{
+		{utc(11, 2, 2, 30), false},
+		{utc(11, 2, 3, 0), true},
+		{utc(11, 2, 10, 59), true},
+		{utc(11, 2, 11, 0), false},
+		{utc(10, 26, 2, 0), true}, // the Sunday before: 22:00 EDT
+	})
+	berlin := night("Europe/Berlin", sat, "22:00", "06:00")
+	// Clocks forward: Saturday 22:00 CET is 21:00 UTC, Sunday 06:00 CEST is
+	// 04:00 UTC. Seven hours.
+	wantHeld(t, "Berlin, clocks forward", berlin, []at{
+		{utc(3, 28, 20, 59), false},
+		{utc(3, 28, 21, 0), true},
+		{utc(3, 29, 0, 59), true},  // 01:59 CET
+		{utc(3, 29, 1, 0), true},   // 03:00 CEST: 02:00 never came
+		{utc(3, 29, 3, 59), true},  // 05:59 CEST
+		{utc(3, 29, 4, 0), false},  // 06:00 CEST
+		{utc(3, 29, 4, 30), false}, // eight hours after the start it is over
+	})
+	// Clocks back: Saturday 22:00 CEST is 20:00 UTC, Sunday 06:00 CET is
+	// 05:00 UTC. Nine hours.
+	wantHeld(t, "Berlin, clocks back", berlin, []at{
+		{utc(10, 24, 19, 59), false},
+		{utc(10, 24, 20, 0), true},
+		{utc(10, 25, 0, 30), true}, // 02:30 CEST
+		{utc(10, 25, 1, 30), true}, // 02:30 CET, the hour again
+		{utc(10, 25, 4, 30), true}, // 05:30 CET: eight hours after the start it is not over
+		{utc(10, 25, 4, 59), true}, // 05:59 CET
+		{utc(10, 25, 5, 0), false}, // 06:00 CET
+	})
+}
+
 // badRows are cost.time_prices rows the registry's validator refuses, each
 // with the validator's reason. The loader lets every one of them into a
 // Config (it only types the values), so they are what a hand edit can leave
-// in the file: the overnight window is the likeliest, because it is how one
-// would write "22:00 to 06:00" before learning that a window does not wrap.
+// in the file. A window that ends before it starts is not one of them: it
+// runs past midnight (TestPriceAtAWindowPastMidnight).
 func badRows() map[string]struct {
 	row  TimePrice
 	want string
@@ -2278,16 +2787,19 @@ func badRows() map[string]struct {
 		"75 minutes": {TimePrice{Timezone: "UTC", Windows: []CostWindow{{Days: []string{"mon"}, Start: "00:75", End: "24:00"}}},
 			`windows[0]: start must be HH:MM between 00:00 and 24:00, got "00:75"`},
 		"an end that is text": {TimePrice{Timezone: "UTC", Windows: []CostWindow{{Days: []string{"mon"}, Start: "00:00", End: "noon"}}}, "windows[0]: end must be HH:MM, got noon"},
-		"an empty window":     {TimePrice{Timezone: "UTC", Windows: []CostWindow{{Days: []string{"mon"}, Start: "12:30", End: "12:30"}}}, "windows[0]: start must be before end"},
-		// 22:00 to 06:00, meant as overnight. Monday 12:30 UTC is outside it
-		// however it is read; TestPriceAtIgnoresARowItCannotRead also asks at
-		// an instant its writer meant it to hold.
-		"an overnight window": {TimePrice{Timezone: "America/New_York", Windows: []CostWindow{{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}, Start: "22:00", End: "06:00"}}},
-			"windows[0]: start must be before end"},
+		// A start equal to the end: no minute read as [start, end), a whole day
+		// read as running past midnight. Refused, so neither is guessed; the
+		// test asks at 12:30 on a Monday, which the second reading would hold.
+		"a start that is the end": {TimePrice{Timezone: "UTC", Windows: []CostWindow{{Days: []string{"mon"}, Start: "12:30", End: "12:30"}}},
+			"windows[0]: start and end must differ (a whole day is 00:00 to 24:00)"},
+		"midnight to midnight as 00:00": {TimePrice{Timezone: "UTC", Windows: []CostWindow{{Days: []string{"mon"}, Start: "00:00", End: "00:00"}}},
+			"windows[0]: start and end must differ (a whole day is 00:00 to 24:00)"},
+		// "24:00" is an end, never a start, with any end after it.
+		"a start at 24:00": {TimePrice{Timezone: "UTC", Windows: []CostWindow{{Days: []string{"sun"}, Start: "24:00", End: "13:00"}}}, "windows[0]: start must be before 24:00"},
 		// One window that holds the instant beside one that is refused: the
 		// row is refused, not the window.
-		"a good window beside a bad one": {TimePrice{Timezone: "UTC", Windows: []CostWindow{always[0], {Days: []string{"mon"}, Start: "18:00", End: "13:00"}}},
-			"windows[1]: start must be before end"},
+		"a good window beside a bad one": {TimePrice{Timezone: "UTC", Windows: []CostWindow{always[0], {Days: []string{"mon"}, Start: "18:00", End: "18:00"}}},
+			"windows[1]: start and end must differ (a whole day is 00:00 to 24:00)"},
 		"a price below zero":           {TimePrice{Timezone: "UTC", Windows: always, OutputPricePerMillion: pf(-1)}, "output_price_per_million must be non-negative"},
 		"a price that is not a number": {TimePrice{Timezone: "UTC", Windows: always, CachePricePerMillion: pf(math.NaN())}, "cache_price_per_million must be finite"},
 	}
@@ -2314,10 +2826,11 @@ func TestPriceAtIgnoresARowItCannotRead(t *testing.T) {
 			t.Errorf("%s: TimePriced() = true for a model whose only row is not applied", name)
 		}
 	}
-	// The overnight row at an instant its writer meant it to hold: Monday
-	// 02:45 UTC is Sunday 22:45 in New York.
-	overnight := peakCost(badRows()["an overnight window"].row)
-	wantPrice(t, "the overnight row, Sunday 22:45 in New York", overnight.PriceAt(time.Date(2026, 9, 28, 2, 45, 0, 0, time.UTC)), pf(1.32), pf(0.044), pf(3.96), -1)
+	// The row with a start at 24:00, at an instant a reading of it as a
+	// window past midnight would hold: Monday 00:30 UTC, the morning after
+	// its Sunday.
+	late := peakCost(badRows()["a start at 24:00"].row)
+	wantPrice(t, "a start at 24:00, Monday 00:30", late.PriceAt(time.Date(2026, 9, 28, 0, 30, 0, 0, time.UTC)), pf(1.32), pf(0.044), pf(3.96), -1)
 	// A row that cannot be read does not hide a readable one after it, and
 	// the model is then time-priced.
 	cost := peakCost(TimePrice{Timezone: "Mars/Olympus", Windows: always, InputPricePerMillion: pf(0.01)},
@@ -2331,9 +2844,10 @@ func TestPriceAtIgnoresARowItCannotRead(t *testing.T) {
 // TestTimePriceProblemIsTheValidatorsRefusal pins the words Problem gives
 // for a row that is not applied. They are the registry validator's own (the
 // refusal a write of that model gets), and `wt model list` prints them, so
-// they are how a user learns why a row they wrote changes nothing: an
-// overnight window reads "start must be before end". A row either flow's
-// sync writes has no problem.
+// they are how a user learns why a row they wrote changes nothing: a time
+// written "9:00" reads "start must be HH:MM, got 9:00". A row either flow's
+// sync writes has no problem, and neither has a window that runs past
+// midnight.
 func TestTimePriceProblemIsTheValidatorsRefusal(t *testing.T) {
 	for name, c := range badRows() {
 		if got := c.row.Problem(); got != c.want {
@@ -2350,6 +2864,19 @@ func TestTimePriceProblemIsTheValidatorsRefusal(t *testing.T) {
 	}
 	if got := offpeakPrice(nil, nil, nil).Problem(); got != "" {
 		t.Errorf("a row that sets no price: Problem() = %q, want none", got)
+	}
+	for _, w := range []CostWindow{
+		{Days: []string{"mon"}, Start: "22:00", End: "06:00"},
+		{Days: []string{"sun"}, Start: "23:59", End: "00:00"},
+		{Days: []string{"mon"}, Start: "22:00", End: "24:00"},
+	} {
+		row := TimePrice{Timezone: "America/New_York", Windows: []CostWindow{w}}
+		if got := row.Problem(); got != "" {
+			t.Errorf("a window from %s to %s: Problem() = %q, want none", w.Start, w.End, got)
+		}
+		if err := validateTimePrice(row.table()); err != nil {
+			t.Errorf("a window from %s to %s: validateTimePrice = %v, want it accepted", w.Start, w.End, err)
+		}
 	}
 }
 
@@ -2389,10 +2916,10 @@ func TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, t.TempDir(), timedRegistry(`
 [[models.cost.time_prices]]
-label = "night"
+label = "office"
 timezone = "America/New_York"
 output_price_per_million = 10.0
-windows = [{ days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start = "22:00", end = "06:00" }]
+windows = [{ days = ["mon", "tue", "wed", "thu", "fri"], start = "9:00", end = "17:00" }]
 
 [[models.cost.time_prices]]
 label = "weekend"
@@ -2405,15 +2932,62 @@ windows = [{ days = ["sat", "sun"], start = "00:00", end = "24:00" }]
 		t.Fatalf("Load() = %v, want the registry to load", err)
 	}
 	m := cfg.Models[0]
-	if got, want := m.Malformed(), []string{"cost.time_prices[0]: windows[0]: start must be before end"}; !slices.Equal(got, want) {
+	if got, want := m.Malformed(), []string{"cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00"}; !slices.Equal(got, want) {
 		t.Errorf("Malformed() = %q, want %q", got, want)
 	}
-	// Monday 02:45 UTC is Sunday 22:45 in New York: inside the window as its
-	// writer meant it, and a Monday in UTC, so outside the weekend row.
-	wantPrice(t, "inside the overnight window", m.Cost.PriceAt(time.Date(2026, 9, 28, 2, 45, 0, 0, time.UTC)), pf(12.5), pf(1.25), pf(75), -1)
+	// Monday 14:00 UTC is 10:00 in New York: inside the window as its writer
+	// meant it, and a Monday, so outside the weekend row.
+	wantPrice(t, "inside the office window", m.Cost.PriceAt(time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC)), pf(12.5), pf(1.25), pf(75), -1)
 	wantPrice(t, "Saturday", m.Cost.PriceAt(time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)), pf(12.5), pf(1.25), pf(40), 1)
 	if !m.Cost.TimePriced() {
 		t.Error("TimePriced() = false, want true: the weekend row is applied")
+	}
+}
+
+// TestLoadAppliesAWindowPastMidnight pins the owner's example through the
+// real loader (#322): a row written by hand in registry.toml with one
+// window from "22:00" to "06:00" loads, is named by nothing, and is in
+// force from 22:00 on each listed day to 06:00 the next morning in the
+// row's own zone. Before #322 such a row was in the file and applied by
+// nothing, and a write that touched its model was refused.
+func TestLoadAppliesAWindowPastMidnight(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	writeRegistry(t, t.TempDir(), timedRegistry(`
+[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+windows = [{ days = ["mon", "tue", "wed", "thu", "fri"], start = "22:00", end = "06:00" }]
+`))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() = %v, want the registry to load", err)
+	}
+	m := cfg.Models[0]
+	if got := m.Malformed(); len(got) != 0 {
+		t.Errorf("Malformed() = %q, want nothing: the row keeps the rules", got)
+	}
+	if !m.Cost.TimePriced() {
+		t.Error("TimePriced() = false, want true: the night row is applied")
+	}
+	for _, c := range []struct {
+		what  string
+		at    time.Time
+		night bool
+	}{
+		{"Monday 22:45 in New York", time.Date(2026, 9, 29, 2, 45, 0, 0, time.UTC), true},
+		{"Tuesday 05:59 in New York", time.Date(2026, 9, 29, 9, 59, 0, 0, time.UTC), true},
+		{"Tuesday 06:00 in New York", time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC), false},
+		{"Saturday 05:00 in New York, the morning after Friday", time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC), true},
+		{"Saturday 22:45 in New York, not a listed day", time.Date(2026, 10, 4, 2, 45, 0, 0, time.UTC), false},
+		{"Monday 05:00 in New York, the morning after Sunday", time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC), false},
+	} {
+		if c.night {
+			wantPrice(t, c.what, m.Cost.PriceAt(c.at), pf(12.5), pf(1.25), pf(10), 0)
+		} else {
+			wantPrice(t, c.what, m.Cost.PriceAt(c.at), pf(12.5), pf(1.25), pf(75), -1)
+		}
 	}
 }
 
@@ -2461,18 +3035,19 @@ func TestFlatAndTimePriced(t *testing.T) {
 }
 ```
 
-Then append to `wt/cmd/wt/model_list_test.go` (its imports are already there). It runs the real listing over a registry file with the overnight row in it:
+Then append to `wt/cmd/wt/model_list_test.go` (its imports are already there). It runs the real listing over a registry file that holds a row which breaks a rule and a row whose window runs past midnight:
 
 ```go
 // TestModelListNamesATimePricesRowThatIsNotApplied pins where a user learns
 // that a cost.time_prices row they wrote is not in use (#322). The model
 // picker shows the price in force from those rows, and passes over a row the
-// registry's rules refuse; the likeliest is an overnight window written
-// "22:00" to "06:00", which a window cannot be. The picker then shows the
-// model's own price with no mark, as for any model with one price, so
-// without this line nothing says why the row changes nothing. The listing
-// names the row and the rule on stderr, and --json has the same phrase in
-// the model's "malformed" array.
+// registry's rules refuse: here a time written "9:00", which is not "HH:MM".
+// The picker then shows the model's own price with no mark, as for any model
+// with one price, so without this line nothing says why the row changes
+// nothing. The listing names the row and the rule on stderr, and --json has
+// the same phrase in the model's "malformed" array. A row whose window runs
+// past midnight ("22:00" to "06:00") keeps the rules and is named by
+// nothing: stderr is the one line.
 func TestModelListNamesATimePricesRowThatIsNotApplied(t *testing.T) {
 	registry := malformedRegistry(false) + `
 [[providers]]
@@ -2480,6 +3055,20 @@ id = "openrouter"
 location = "cloud"
 [providers.auth]
 type = "api_key"
+
+[[models]]
+id = "openrouter/early-bird"
+family = "bird"
+provider_id = "openrouter"
+model_name = "acme/early-bird"
+
+[models.cost]
+output_price_per_million = 75.0
+
+[[models.cost.time_prices]]
+timezone = "America/New_York"
+output_price_per_million = 10.0
+windows = [{ days = ["mon", "tue", "wed", "thu", "fri"], start = "9:00", end = "17:00" }]
 
 [[models]]
 id = "openrouter/night-owl"
@@ -2495,24 +3084,24 @@ timezone = "America/New_York"
 output_price_per_million = 10.0
 windows = [{ days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start = "22:00", end = "06:00" }]
 `
-	const problem = "cost.time_prices[0]: windows[0]: start must be before end"
+	const problem = "cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00"
 	out, errOut, path := runModelListOver(t, registry, false)
-	if want := "openrouter/night-owl: " + problem + "; wt reads it as absent (fix the entry in " + path + ")\n"; errOut != want {
+	if want := "openrouter/early-bird: " + problem + "; wt reads it as absent (fix the entry in " + path + ")\n"; errOut != want {
 		t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
 	}
-	if !strings.Contains(out, "openrouter/night-owl") || strings.Contains(out, "time_prices") {
-		t.Errorf("stdout =\n%s\nwant the table alone, the model listed", out)
+	if !strings.Contains(out, "openrouter/early-bird") || !strings.Contains(out, "openrouter/night-owl") || strings.Contains(out, "time_prices") {
+		t.Errorf("stdout =\n%s\nwant the table alone, both models listed", out)
 	}
 	out, errOut, _ = runModelListOver(t, registry, true)
-	if !strings.Contains(out, `"`+problem+`"`) || !strings.Contains(errOut, problem) {
-		t.Errorf("--json: stdout lacks the phrase in a malformed array, or stderr the line:\n%s\n%s", out, errOut)
+	if !strings.Contains(out, `"`+problem+`"`) || !strings.Contains(errOut, problem) || strings.Contains(errOut, "night-owl") {
+		t.Errorf("--json: stdout lacks the phrase in a malformed array, or stderr is not the one line:\n%s\n%s", out, errOut)
 	}
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [ ] **Step 6: Run them to verify they fail**
 
-Run (from `wt/`): `go test -count=1 ./internal/config -run 'TestPriceAt|TestFlatAndTimePriced|TestTimePriceProblem|TestLoadKeepsATimePrices|TestLoadStopsOnATimePrices'`
+Run (from `wt/`): `go test -count=1 ./internal/config -run 'TestPriceAt|TestFlatAndTimePriced|TestTimePriceProblem|TestLoadKeepsATimePrices|TestLoadAppliesAWindow|TestLoadStopsOnATimePrices'`
 Expected: the package does not build.
 
 ```text
@@ -2524,20 +3113,22 @@ FAIL	github.com/ohanaverse/local-ai-setup/wt/internal/config [build failed]
 ```
 
 Run (from `wt/`): `go test -count=1 ./cmd/wt -run TestModelListNamesATimePricesRowThatIsNotApplied 2>&1 | grep -v '^wt: migrated'`
-Expected: FAIL. The registry loads and the model is listed, and nothing names the row:
+Expected: FAIL. The registry loads and both models are listed, and nothing names the row:
 
 ```text
 --- FAIL: TestModelListNamesATimePricesRowThatIsNotApplied (0.00s)
-    model_list_test.go:678: stderr =
+    model_list_test.go:689: stderr =
         
         want
-        openrouter/night-owl: cost.time_prices[0]: windows[0]: start must be before end; wt reads it as absent (fix the entry in /…/local-ai/registry.toml)
-    model_list_test.go:685: --json: stdout lacks the phrase in a malformed array, or stderr the line:
+        openrouter/early-bird: cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00; wt reads it as absent (fix the entry in /…/local-ai/registry.toml)
+    model_list_test.go:696: --json: stdout lacks the phrase in a malformed array, or stderr is not the one line:
         …
 FAIL
 ```
 
-- [ ] **Step 3: Write the implementation**
+The two tests of a window past midnight cannot fail by themselves before `PriceAt` exists. What they catch was observed with the implementation of Step 7 in place and its past-midnight arm taken out (the resolver as it was before the owner's answer): `TestPriceAtAWindowPastMidnight`, `TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime` and `TestLoadAppliesAWindowPastMidnight` fail, and no other test does (fact 49, mutation 1).
+
+- [ ] **Step 7: Write the implementation**
 
 (a) The resolver.
 
@@ -2584,8 +3175,13 @@ func (c ModelCost) Flat() PriceInForce {
 // A window is the minutes [start, end) of the listed weekdays on the wall
 // clock of its row's IANA timezone, so it follows that zone's daylight
 // saving time: an hour the clock repeats is in the window both times, and an
-// hour it skips is in it at no instant that day. Only at's instant counts,
-// not the zone it is expressed in.
+// hour it skips is in it at no instant that day. A window whose end is
+// before its start runs past midnight: it starts at start on each listed day
+// and ends at end on the next calendar day of that wall clock ("22:00" to
+// "06:00" on "mon" is Monday 22:00 to Tuesday 06:00), so it is an hour
+// longer on the night the clocks go back and an hour shorter on the night
+// they go forward. Only at's instant counts, not the zone it is expressed
+// in.
 //
 // A row with a Problem is passed over whole, at every instant, and the rows
 // after it are still tried. PriceAt never fails: it runs while a screen is
@@ -2619,13 +3215,13 @@ func (c ModelCost) PriceAt(at time.Time) PriceInForce {
 // validator refuses it (validateTimePrice, the rule a registry write holds a
 // row to), in the validator's words, or "" for a row it accepts. The loader
 // only types a row's values, so a row written by hand can be in the file and
-// break a rule: a window that runs past midnight ("22:00" to "06:00": write
-// two windows, one to "24:00" and one from "00:00"), a timezone that is not
-// an IANA name, a time that is not "HH:MM", a price below zero. One bad
-// window is enough: the validator refuses the row, not the window, and a row
-// applied in some of its windows only would show a price its writer did not
-// mean. Model.Malformed names such a row, which is how `wt model list` and
-// the Models tab say that it is in the file and not in use.
+// break a rule: a timezone that is not an IANA name, a time that is not
+// "HH:MM" ("9:00"), a window whose start is its end, a price below zero. (A
+// window whose end is before its start breaks none: it runs past midnight.)
+// One bad window is enough: the validator refuses the row, not the window,
+// and a row applied in some of its windows only would show a price its
+// writer did not mean. Model.Malformed names such a row, which is how `wt
+// model list` and the Models tab say that it is in the file and not in use.
 func (tp TimePrice) Problem() string {
 	if err := validateTimePrice(tp.table()); err != nil {
 		return err.Error()
@@ -2673,14 +3269,28 @@ func (tp TimePrice) holds(at time.Time) bool {
 		return false
 	}
 	local := at.In(zone)
-	// time.Weekday counts from Sunday; weekDays from Monday.
+	// time.Weekday counts from Sunday; weekDays from Monday. The day before
+	// is the calendar day before on that wall clock, whatever the zone's
+	// clock did in between.
 	day := weekDays[(int(local.Weekday())+6)%7]
+	dayBefore := weekDays[(int(local.Weekday())+5)%7]
 	minute := local.Hour()*60 + local.Minute()
 	for _, w := range tp.Windows {
 		start, okStart := clockMinutes(w.Start)
 		end, okEnd := clockMinutes(w.End)
-		if okStart && okEnd && start <= minute && minute < end && slices.Contains(w.Days, day) {
-			return true
+		switch {
+		case !okStart || !okEnd || start == end:
+			// Not a window the validator accepts.
+		case start < end:
+			if start <= minute && minute < end && slices.Contains(w.Days, day) {
+				return true
+			}
+		default:
+			// The window runs past midnight: the evening of a listed day, or
+			// the morning after one.
+			if minute >= start && slices.Contains(w.Days, day) || minute < end && slices.Contains(w.Days, dayBefore) {
+				return true
+			}
 		}
 	}
 	return false
@@ -2731,8 +3341,8 @@ Replace with:
 // table", "draft.local_path is not a string" (fetch before draft, repo
 // before local_path); each reads as absent. Then each cost.time_prices row
 // the registry's validator refuses (TimePrice.Problem), by its place in the
-// file: "cost.time_prices[0]: windows[0]: start must be before end"; the
-// model picker does not apply such a row. nil for a row with nothing
+// file: "cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00";
+// the model picker does not apply such a row. nil for a row with nothing
 // malformed, and for a Model that was not read from a registry file.
 func (m Model) Malformed() []string {
 	out := append(m.Fetch.problems("fetch"), m.Draft.problems("draft")...)
@@ -2747,7 +3357,27 @@ func (m Model) Malformed() []string {
 
 Nothing else that reads `Malformed` changes, and each reader is right as it stands: `wt model list` prints `<id>: <phrases>; wt reads it as absent (fix the entry in <registry>)` and puts the phrases in `--json`'s `malformed` array (`cmd/wt/model_list.go`, `noteMalformed`); the Models tab shows them under the selected row (`internal/configeditor/models_tab.go`, `malformedLine`); and the model form adds the "fix the entry" hint to a refused save of such a row (`models_form.go`, `saveErrorText`), which is right, because the registry writer refuses to write a row whose cost table breaks a rule and no field of the form can repair a window.
 
-(c) `wt/cmd/wt/model_list.go`: the command's help says so.
+(c) `wt/internal/config/config.go`: the comment on `CostWindow` says what a window is now.
+
+Find:
+
+```go
+// CostWindow is one [start, end) span on the listed weekdays, in its
+// TimePrice's timezone. Days use "mon".."sun"; times are "HH:MM" and end
+// may be "24:00".
+```
+
+Replace with:
+
+```go
+// CostWindow is one [start, end) span in its TimePrice's timezone, starting
+// on each of the listed weekdays. Days use "mon".."sun"; times are "HH:MM"
+// and end may be "24:00". An end before the start is a window that runs past
+// midnight: from start on a listed day to end on the next calendar day. A
+// start equal to the end is refused (validateWindow).
+```
+
+(d) `wt/cmd/wt/model_list.go`: the command's help says so.
 
 Find:
 
@@ -2761,13 +3391,13 @@ Replace with:
 ```go
 			"read as absent; a line on stderr names the row and the problem, and --json\n" +
 			"has the same in each model's \"malformed\" array. A cost.time_prices row that\n" +
-			"breaks the registry's rules (a window that ends before it starts, an unknown\n" +
-			"timezone) is named the same way: the model picker does not apply such a row.",
+			"breaks the registry's rules (an unknown timezone, a time that is not HH:MM)\n" +
+			"is named the same way: the model picker does not apply such a row.",
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 8: Run the tests to verify they pass**
 
-Run (from `wt/`): `gofmt -l internal cmd && go vet ./internal/config ./cmd/wt && go test -count=1 ./internal/config -run 'TestPriceAt|TestFlatAndTimePriced|TestTimePriceProblem|TestLoadKeepsATimePrices|TestLoadStopsOnATimePrices' -v | grep -E '^(---|ok|FAIL)'`
+Run (from `wt/`): `gofmt -l internal cmd && go vet ./internal/config ./cmd/wt && go test -count=1 ./internal/config -run 'TestPriceAt|TestFlatAndTimePriced|TestTimePriceProblem|TestLoadKeepsATimePrices|TestLoadAppliesAWindow|TestLoadStopsOnATimePrices' -v | grep -E '^(---|ok|FAIL)'`
 Expected (`gofmt -l` prints nothing):
 
 ```text
@@ -2777,9 +3407,12 @@ Expected (`gofmt -l` prints nothing):
 --- PASS: TestPriceAtFallsBackPerField (0.00s)
 --- PASS: TestPriceAtFirstMatchingRowWins (0.00s)
 --- PASS: TestPriceAtAnOpenRouterSchedule (0.00s)
+--- PASS: TestPriceAtAWindowPastMidnight (0.00s)
+--- PASS: TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime (0.00s)
 --- PASS: TestPriceAtIgnoresARowItCannotRead (0.00s)
 --- PASS: TestTimePriceProblemIsTheValidatorsRefusal (0.00s)
 --- PASS: TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt (0.00s)
+--- PASS: TestLoadAppliesAWindowPastMidnight (0.00s)
 --- PASS: TestLoadStopsOnATimePricesValueOfTheWrongType (0.00s)
 --- PASS: TestFlatAndTimePriced (0.00s)
 ok  	github.com/ohanaverse/local-ai-setup/wt/internal/config	(time)
@@ -2791,15 +3424,15 @@ Expected: `ok  	github.com/ohanaverse/local-ai-setup/wt/cmd/wt	(time)` and no `-
 Run (from `wt/`): `go test -count=1 ./internal/config ./internal/modeladmin ./internal/configeditor`
 Expected: three `ok`. `Model.Malformed` has readers in all three packages, and none of their fixtures holds a row with a problem.
 
-The timezone tests read the host's zone database (`time.LoadLocation`), which macOS, wt's platform, ships; wt does not embed one (the validator's comment in `registry_validate.go` says the same of itself).
+The timezone tests read the host's zone database (`time.LoadLocation`: `America/New_York`, `Europe/Berlin`, `Asia/Tokyo`, `Pacific/Honolulu`), which macOS, wt's platform, ships; wt does not embed one (the validator's comment in `registry_validate.go` says the same of itself).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 9: Commit**
 
 From the repo root:
 
 ```bash
 git add wt/internal/config/price_at.go wt/internal/config/price_at_test.go wt/internal/config/config.go wt/cmd/wt/model_list.go wt/cmd/wt/model_list_test.go
-git commit -m "feat(wt): config.ModelCost.PriceAt resolves cost.time_prices rows at an instant; a row that breaks a rule is passed over and named (#322)"
+git commit -m "feat(wt): config.ModelCost.PriceAt resolves cost.time_prices rows at an instant, windows past midnight included; a row that breaks a rule is passed over and named (#322)"
 ```
 
 ### Task 4: The picker's COST column and cost sort use the price in force (slice C)
@@ -3092,15 +3725,29 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	if got := costCellOf(t, tbl, deepseek); got != "-~  " || strings.Contains(tbl.header, "varies") {
 		t.Errorf("rows only, outside their windows: COST = %q, header %q; want \"-~\" under a plain COST heading", got, tbl.header)
 	}
-	// A model whose only row breaks a rule (an overnight window, which a
-	// window cannot be) has one price: its flat one, with no mark, under a
-	// plain COST heading. A mark there would promise a change that never
-	// comes; `wt model list` is where the row is named.
+	// A model whose only row breaks a rule (a time written "9:00", which is
+	// not "HH:MM") has one price: its flat one, with no mark, under a plain
+	// COST heading. A mark there would promise a change that never comes;
+	// `wt model list` is where the row is named.
 	odd := timedTableRows(deepseekDear)[:1]
-	odd[0].Model.Cost.TimePrices[0].Windows = []config.CostWindow{{Days: []string{"mon"}, Start: "22:00", End: "06:00"}}
+	odd[0].Model.Cost.TimePrices[0].Windows = []config.CostWindow{{Days: []string{"mon"}, Start: "9:00", End: "17:00"}}
 	tbl = renderTable(odd, nil, "", nil, "")
 	if got := costCellOf(t, tbl, deepseek); got != " 1.3200  0.0440  3.9600" || strings.Contains(tbl.header, "~") {
 		t.Errorf("a row that is not applied: COST = %q, header %q; want the flat price unmarked under a plain COST heading", got, tbl.header)
+	}
+	// A row written by hand with a window that runs past midnight is a row
+	// like any other (#322): "22:00" to "06:00" on Sunday holds Monday 02:45
+	// UTC, so the cell is the night price, marked; at Monday 13:00 it is
+	// the flat price, marked all the same.
+	night := timedTableRows(deepseekDear)[:1]
+	night[0].Model.Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC", OutputPricePerMillion: f64(1.5),
+		Windows: []config.CostWindow{{Days: []string{"sun"}, Start: "22:00", End: "06:00"}}}}
+	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  1.5000~" {
+		t.Errorf("a window past midnight, the morning after its day: COST = %q, want the night price, marked", got)
+	}
+	night[0].at = ollamaPeak
+	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  3.9600~" {
+		t.Errorf("a window past midnight, outside it: COST = %q, want the flat price, marked", got)
 	}
 }
 ```
@@ -4073,7 +4720,9 @@ the price **in force at the moment the picker opens**:
   the model's own price is in force.
 - A window is `[start, end)` on the listed days, on the wall clock of the
   row's `timezone`, so a row in a zone with daylight saving time follows
-  it. The rows the sync writes are all UTC.
+  it. A window whose `end` is before its `start` runs past midnight, into
+  the next day ([A row you write by hand](#a-row-you-write-by-hand)). The
+  rows the sync writes are all UTC.
 - This holds for every row, whoever wrote it: the ollama flow's `off-peak`
   row (the model's own price is the peak one) and a row you wrote by hand.
 - **A price that depends on the time is marked `~`** after its three
@@ -4104,9 +4753,13 @@ A row needs a `timezone` (an IANA name such as `America/New_York`; not
 empty, not `Local`) and `windows`. The prices it sets (`input_`, `cache_`
 and `output_price_per_million`, none below zero) replace the model's own
 while one of its windows holds the instant. Each window has `days` (from
-`mon` to `sun`) and `start` and `end` as `"HH:MM"`, with `start` before
-`end`; `"24:00"` is the end of a day. **A window does not run past
-midnight**: 22:00 to 06:00 is two windows (illustrative):
+`mon` to `sun`) and `start` and `end` as `"HH:MM"`; `"24:00"` is the end of
+a day.
+
+**A window may run past midnight.** When `end` is before `start`, the
+window starts at `start` on each listed day and ends at `end` on the next
+day: `22:00` to `06:00` on `mon` is Monday 22:00 to Tuesday 06:00
+(illustrative):
 
 ```toml
 [[models.cost.time_prices]]
@@ -4114,21 +4767,34 @@ label = "night"
 timezone = "America/New_York"
 output_price_per_million = 10.0
 windows = [
-    { days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start = "22:00", end = "24:00" },
-    { days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start = "00:00", end = "06:00" },
+    { days = ["mon", "tue", "wed", "thu", "fri"], start = "22:00", end = "06:00" },
 ]
 ```
+
+`days` are the days a window starts on, so this row holds Saturday 05:00
+(Friday's night) and not Monday 05:00 (Sunday is not listed). The next day
+is a calendar day on the row's own clock: on a night the zone's clocks
+change, the window is an hour longer or shorter and still ends when the
+clock reads 06:00. `start` and `end` must differ; a whole day is `00:00`
+to `24:00`. The rows the sync writes never run past midnight (each day's
+hours are under that day), and the sync keeps a row of yours that does, as
+the one window you wrote. (As for any entry, the first write by wt lays a
+file typed by hand out again in its own layout and drops comments.) A wt
+built before this change still loads a row with such a window but refuses
+to write its model (`start must be before end`), so write one only once
+the installed wt has this change.
 
 A row that breaks one of these rules is still loaded, and it is **not
 applied**, whole, at any hour: the picker shows the model's own price, and
 no `~` unless another row of the model applies. `wt model list` names the
-row and the rule on stderr, `<id>: cost.time_prices[0]: windows[0]: start
-must be before end; wt reads it as absent (fix the entry in <registry>)`,
-and the Models tab of `wt config` shows the same under the selected model.
-wt also refuses to write that model's entry until the row is fixed: `wt
-model edit`, a save in `wt config`, or a `wt cloud-sync` with a change for
-that model stops with `invalid registry entry: model "<id>": cost:
-time_prices[0]: windows[0]: start must be before end`.
+row and the rule on stderr; for a time written `9:00`, which is not
+`HH:MM`: `<id>: cost.time_prices[0]: windows[0]: start must be HH:MM, got
+9:00; wt reads it as absent (fix the entry in <registry>)`. The Models tab
+of `wt config` shows the same under the selected model. wt also refuses to
+write that model's entry until the row is fixed: `wt model edit`, a save
+in `wt config`, or a `wt cloud-sync` with a change for that model stops
+with `invalid registry entry: model "<id>": cost: time_prices[0]:
+windows[0]: start must be HH:MM, got 9:00`.
 
 A value of the wrong TOML type is another matter. `windows = "always"`, or a
 price in quotes, makes the registry unreadable, and every wt command stops
@@ -4154,11 +4820,13 @@ A `cost.time_prices` row that breaks the registry's rules is named the same
 way, after the `fetch` and `draft` phrases of its model:
 
 ```text
-openrouter/mine: cost.time_prices[0]: windows[0]: start must be before end; wt reads it as absent (fix the entry in /Users/you/.config/local-ai/registry.toml)
+openrouter/mine: cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00; wt reads it as absent (fix the entry in /Users/you/.config/local-ai/registry.toml)
 ```
 
 The model picker does not apply such a row
-([wt-cloud-sync.md](wt-cloud-sync.md#a-row-you-write-by-hand) has the rules).
+([wt-cloud-sync.md](wt-cloud-sync.md#a-row-you-write-by-hand) has the rules;
+a window whose `end` is before its `start` breaks none, it runs past
+midnight).
 
 `--json` always has everything: `registry` (the file), `models` (each with
 ````
@@ -4174,7 +4842,7 @@ Replace with:
 ```markdown
 the row has no path, or reads `missing` when its weights are there. A
 `cost.time_prices` row that breaks a rule is on that line too
-(`cost.time_prices[0]: windows[0]: start must be before end; read as
+(`cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00; read as
 absent`): the model picker does not apply it.
 ```
 
@@ -4191,7 +4859,7 @@ Replace with:
   The form adds `(fix the entry in <registry path>)` only for such a row,
   where no field can repair what is wrong. A row with a `cost.time_prices`
   row that breaks a rule is refused the same way (`… cost: time_prices[0]:
-  windows[0]: start must be before end`), with the same hint.
+  windows[0]: start must be HH:MM, got 9:00`), with the same hint.
 ```
 
 - [ ] **Step 2: `docs/guides/06-wt-agents-and-models.md`**
@@ -4286,14 +4954,26 @@ Replace with:
   current price, a time-priced model's place in the list, and so the first
   row, can differ from one hour to the next. The price is read when the
   picker opens, not while it is open. A row that breaks the registry's
-  rules (a window written past midnight, such as 22:00 to 06:00; an unknown
-  timezone; a negative price) is not applied, and `wt model list` now names
-  it on stderr and in `--json`'s `malformed` array, as it does a malformed
-  `fetch`. Not changed: LiteLLM's route, and any spend computed from it,
-  uses the model's own price at every hour; `wt model list` and `wt
-  config`'s Models tab show no price, and the model form edits the model's
-  own price. Reference: `docs/wt-cloud-sync.md` ("The price the picker
+  rules (an unknown timezone; a time that is not `HH:MM`; a negative
+  price) is not applied, and `wt model list` now names it on stderr and in
+  `--json`'s `malformed` array, as it does a malformed `fetch`. Not
+  changed: LiteLLM's route, and any spend computed from it, uses the
+  model's own price at every hour; `wt model list` and `wt config`'s
+  Models tab show no price, and the model form edits the model's own
+  price. Reference: `docs/wt-cloud-sync.md` ("The price the picker
   shows").
+- A window of a `cost.time_prices` row may run past midnight. With its
+  `end` before its `start` (`start = "22:00"`, `end = "06:00"`) it is one
+  window, from `start` on each listed day to `end` on the next day, on the
+  clock of the row's timezone; the picker applies it. The registry used to
+  refuse such a row (`start must be before end`), so a model that carried
+  one could not be edited or re-priced until the window was split in two.
+  A window whose `start` equals its `end` is still refused (`start and end
+  must differ`; a whole day is `00:00` to `24:00`). A wt built before this
+  change still loads a row with a window past midnight but refuses to
+  write its model (`start must be before end`), so write one only once the
+  installed wt has this change. Reference: `docs/wt-cloud-sync.md` ("A row
+  you write by hand").
 - **Breaking:** the provider key `openrouter_priced` is no longer read, and
 ```
 
@@ -4333,7 +5013,7 @@ Find:
 Replace with:
 
 ```markdown
-After them it names each `cost.time_prices` row the registry's validator refuses, `cost.time_prices[<i>]: <the validator's reason>` (`TimePrice.Problem`, which asks `validateTimePrice` about the typed row): the loader types such a row's values and checks no rule, `ModelCost.PriceAt` passes it over whole, and this is where its writer learns why it changes nothing. (A value of the wrong TOML type in a row is not tolerated: it fails the typed decode and the load, `TestLoadStopsOnATimePricesValueOfTheWrongType`.) `modeladmin.Row.Malformed` carries them, for the Models tab to show.
+After them it names each `cost.time_prices` row the registry's validator refuses, `cost.time_prices[<i>]: <the validator's reason>` (`TimePrice.Problem`, which asks `validateTimePrice` about the typed row): the loader types such a row's values and checks no rule, `ModelCost.PriceAt` passes it over whole, and this is where its writer learns why it changes nothing. A window whose `end` is before its `start` is not refused: it runs past midnight, from `start` on each listed day to `end` on the next calendar day of the row's wall clock (`validateWindow` accepts it and `TimePrice.holds` reads it; the one refusal left of the old "start must be before end" is a `start` equal to its `end`). (A value of the wrong TOML type in a row is not tolerated: it fails the typed decode and the load, `TestLoadStopsOnATimePricesValueOfTheWrongType`.) `modeladmin.Row.Malformed` carries them, for the Models tab to show.
 ```
 
 (c) `wt/CLAUDE.md`, the bullet that begins "**A malformed `fetch` or `draft` reads as absent and never fails the load**" (one long line; the find text is its end).
@@ -4347,7 +5027,7 @@ the Models tab says so for the selected row (`Row.Malformed`), and the writer's 
 Replace with:
 
 ```markdown
-the Models tab says so for the selected row (`Row.Malformed`), and the writer's touched-row check names it. `Model.Malformed()` also names a `cost.time_prices` row the validator refuses (`TimePrice.Problem`: a window past midnight, an unknown timezone, a negative price); such a row loads, `ModelCost.PriceAt` never applies it, and a model with no other row is not `TimePriced`. Keep `Problem` asking `validateTimePrice` itself, so the reader and the writer cannot come to disagree about a rule.
+the Models tab says so for the selected row (`Row.Malformed`), and the writer's touched-row check names it. `Model.Malformed()` also names a `cost.time_prices` row the validator refuses (`TimePrice.Problem`: an unknown timezone, a time that is not `HH:MM`, a window whose start is its end, a negative price); such a row loads, `ModelCost.PriceAt` never applies it, and a model with no other row is not `TimePriced`. Keep `Problem` asking `validateTimePrice` itself, so the reader and the writer cannot come to disagree about a rule. One rule has two homes and they change together: a window whose `end` is before its `start` runs past midnight, which `validateWindow` accepts and `TimePrice.holds` reads by wall clock (at or after `start` on a listed day, or before `end` on the day after one; never start plus a number of hours, which is wrong on the two nights a year a zone's clock jumps: `TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime`).
 ```
 
 - [ ] **Step 7: Verify the slice**
@@ -4364,6 +5044,9 @@ Expected: it ends without an error. (Not run while writing this plan.)
 Run (from the repo root): `grep -rn "Nothing applies time prices\|applied by nothing" wt docs/guides | grep -v "docs/superpowers"`
 Expected: no output (the sentences the resolver made untrue are gone).
 
+Run (from the repo root): `grep -rn "start must be before end" wt docs/guides`
+Expected: two lines, `wt/CHANGELOG.md` and `wt/docs/internals/config-and-registry.md`, each saying what the registry used to answer. No `.go` file is among them: no code and no message still gives the rule.
+
 - [ ] **Step 8: Commit**
 
 From the repo root:
@@ -4375,7 +5058,7 @@ git commit -m "docs(wt): the model picker shows the price in force; where, how i
 
 - [ ] **Step 9 (the controller): look at the real screens**
 
-A unit test of a view has passed here before while the real 80-column screen cut the line (#209), so the pickers are looked at on a pty before the PR. Nothing real is read: the registry and the config below are made up, the home is a temp directory, and the "agent" is a stub that is never started (do not press Enter). The registry holds two OpenRouter models with `openrouter` rows written as slice D will write them (this slice applies any row, whoever wrote it), an ollama cloud model with its `off-peak` row, a model with one price, and `openrouter/acme--night-owl`, whose one row is an overnight window that breaks the rule.
+A unit test of a view has passed here before while the real 80-column screen cut the line (#209), so the pickers are looked at on a pty before the PR. Nothing real is read: the registry and the config below are made up, the home is a temp directory, and the "agent" is a stub that is never started (do not press Enter). The registry holds two OpenRouter models with `openrouter` rows written as slice D will write them (this slice applies any row, whoever wrote it), an ollama cloud model with its `off-peak` row, a model with one price, and `openrouter/acme--night-owl`, whose one row was written by hand: one window that runs past midnight, `22:00` to `06:00` in New York.
 
 Save the pty driver as `/tmp/wt-drive.py`. It answers the two terminal queries a Bubble Tea program waits for, keeps a small screen model, and prints the last screen:
 
@@ -4748,7 +5431,7 @@ shot 80x24 --wait 5
 rm -rf "$P"
 ```
 
-**`wt model list` runs first, on purpose, each time the home is new or its `config.toml` was rewritten.** The first wt command in such a home prints a one-time line, `wt: migrated config to native-provider alignment (…)`, which is longer than 80 columns; if a shot is that first command the line lands on the pty before the picker and the driver reports `a line reached past the right edge: True` for a screen that fits. (Seen while this step was written: on every first shot in a fresh home and on the first after `config.toml` was replaced, and on no other.) The listing spends the notice, and it is also the check of the unapplied row. Its expected output:
+**`wt model list` runs first, on purpose, each time the home is new or its `config.toml` was rewritten.** The first wt command in such a home prints a one-time line, `wt: migrated config to native-provider alignment (…)`, which is longer than 80 columns; if a shot is that first command the line lands on the pty before the picker and the driver reports `a line reached past the right edge: True` for a screen that fits. (Seen while this step was written: on every first shot in a fresh home and on the first after `config.toml` was replaced, and on no other.) The listing spends the notice. It prints no line under the table: every row in this registry keeps the rules, `night-owl`'s window past midnight included (a row that breaks one would be named there; that is pinned by `TestModelListNamesATimePricesRowThatIsNotApplied` and was seen on a scratch registry, fact 50). Its expected output:
 
 ```text
 wt: migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)
@@ -4758,7 +5441,6 @@ ollama/glm-5.3:cloud                       glm       cloud  ok                  
 openrouter/z-ai--glm-5.2                   glm       cloud  ok                  -  -
 openrouter/tencent--hy3                    hy        cloud  ok                  -  -
 openrouter/acme--night-owl                 owl       cloud  ok                  -  -
-openrouter/acme--night-owl: cost.time_prices[0]: windows[0]: start must be before end; wt reads it as absent (fix the entry in <P>/home/.config/local-ai/registry.toml)
 ```
 
 The prices on the screen depend on the hour the command runs in, which is the point. The price named on the mode line is the highlighted row's: the first row, and after `down` the second.
@@ -4771,7 +5453,9 @@ The prices on the screen depend on the hour the command runs in, which is the po
 | any other time before 16:00 | `cost~ 0.132/0.033/0.528` | `cost~ 0.66/0.022/1.98` | `cost~ 0.25/0.025/1` | hy3, ollama, deepseek |
 | any other time from 16:00 | `cost~ 0.0825/0.020625/0.33` | `cost~ 0.66/0.022/1.98` | `cost~ 0.25/0.025/1` | hy3, ollama, deepseek |
 
-`openrouter/z-ai--glm-5.2` (`cost 0.06/0.059/6`) and `openrouter/acme--night-owl` (`cost 12.5/1.25/75`, no `~`: its row is not applied) are the fourth and fifth rows at every hour.
+`openrouter/z-ai--glm-5.2` (`cost 0.06/0.059/6`) and `openrouter/acme--night-owl` are the fourth and fifth rows at every hour. `night-owl` is `cost~ 12.5/1.25/10` from 22:00 to 06:00 in New York (02:00 to 10:00 UTC while New York is on daylight time, 03:00 to 11:00 UTC when it is not) and `cost~ 12.5/1.25/75` outside it: its output price is above `glm-5.2`'s either way.
+
+These two screens were captured before the owner's answer to question 2, when `night-owl`'s row was not applied. Neither shows a price of that model (it is the fifth row, and the mode line names the first), so they stand as captured; this registry was not captured again afterwards. A window past midnight was captured on a pty with another made-up registry (fact 46): `12.5000  1.2500 10.0000~` and `cost~ 12.5/1.25/10` inside the window, `12.5000  1.2500 75.0000~` outside it.
 
 Expected at 80x24 on a Monday at 13:00 UTC, as it was captured for this plan (fact 39; the line `loading worktrees...` is a status wt leaves with `--cwd`, not this plan's):
 
@@ -4824,8 +5508,8 @@ and at 40x12 on a Monday at 17:00 UTC, with LiteLLM on. `LiteLLM: on` and this p
 Check, for each shot:
 
 - the last line says `False`;
-- *(mode line)* a line names the highlighted row's price, whole: three numbers, with `cost~` for the three time-priced models and `cost` for the other two, as the table gives them for the hour. At 80 and 120 columns it follows the LiteLLM mode. At 40 columns it follows `LiteLLM: on` only when both fit in 36 columns (`LiteLLM: on   cost~ 0.66/0.022/1.98` does; hy3's price does not), and stands alone otherwise, as it does for every model once LiteLLM is off. No shot shows a price cut short;
-- at 80 columns there is no COST column, and at 120 there is one, headed `COST (~ varies by time)`, with `~` after the cells of hy3, deepseek and the ollama model and none after `glm-5.2`'s or `night-owl`'s (` 12.5000  1.2500 75.0000`);
+- *(mode line)* a line names the highlighted row's price, whole: three numbers, with `cost~` for the four time-priced models (`night-owl` among them, at its night price or its own) and `cost` for `glm-5.2`, as the table and the paragraph under it give them for the hour. At 80 and 120 columns it follows the LiteLLM mode. At 40 columns it follows `LiteLLM: on` only when both fit in 36 columns (`LiteLLM: on   cost~ 0.66/0.022/1.98` does; hy3's price does not), and stands alone otherwise, as it does for every model once LiteLLM is off. No shot shows a price cut short;
+- at 80 columns there is no COST column, and at 120 there is one, headed `COST (~ varies by time)`, with `~` after the cells of hy3, deepseek, the ollama model and `night-owl` (`12.5000  1.2500 75.0000~`, or `12.5000  1.2500 10.0000~` in the New York night) and none after `glm-5.2`'s;
 - the order of the rows is the one the table gives for the hour.
 
 If a shot shows only `wt: agent "pi" is not installed`, the stub is not on the `PATH` the command was given.
@@ -4840,7 +5524,8 @@ Refs #322 (the next PR closes it). Third of four PRs (plan: docs/superpowers/pla
 `cost.time_prices` rows had a writer and no reader. This PR adds the reader and uses it where a model is picked. It lands before the PR that makes `wt cloud-sync` store OpenRouter's schedules as rows, so that the picker applies those rows from the first sync that writes them.
 
 - `config.ModelCost.PriceAt(at)` is the resolver modelman had (`price_at`) and the migration to wt left unported: the first row whose timezone and windows hold the instant wins and supplies each price it sets; a price it does not set, and every price when no row matches, is the model's own. It is pure (the clock is an argument) and follows a row's zone through daylight saving time.
-- A row that breaks one of the registry's rules (a window written past midnight, such as 22:00 to 06:00; an unknown timezone; a negative price) is not applied, whole, and its model is not marked. The rule is the registry writer's own validator, asked by the resolver, so the two cannot disagree. `wt model list` names such a row on stderr and in `--json`'s `malformed` array, and the Models tab shows it. A value of the wrong TOML type still fails the registry load, as anywhere else in the file (pinned).
+- A window may run past midnight: with its `end` before its `start` (`22:00` to `06:00`) it is one window from `start` on each listed day to `end` on the next day, on the wall clock of the row's timezone, so it follows daylight saving time (pinned on both change days in New York and in Berlin). The registry's validator used to refuse such a row on every write; it now accepts it, and refuses only a `start` equal to its `end`.
+- A row that breaks one of the registry's rules (an unknown timezone; a time that is not `HH:MM`; a negative price) is not applied, whole, and its model is not marked. The rule is the registry writer's own validator, asked by the resolver, so the two cannot disagree. `wt model list` names such a row on stderr and in `--json`'s `malformed` array, and the Models tab shows it. A value of the wrong TOML type still fails the registry load, as anywhere else in the file (pinned).
 - The picker's COST column shows, and its cost sort uses, the price in force when the table is built. That goes for ollama's `off-peak` rows, for rows written by hand, and for the `openrouter` rows the next PR stores. Such a price is marked `~`, under the heading `COST (~ varies by time)`.
 - The line under the launcher's table names the highlighted model's price (`LiteLLM: on   cost~ 0.66/0.022/1.98`), and costs no line. A table with an OpenRouter-length id has no COST column at 80 columns, and none at 40; this line is where the price is then. The price is on it whole or not at all: where the mode and the price do not fit together (40 columns, for most prices) the price takes the line.
 - The price is read once per table build, so rows do not move under the cursor at a window boundary (pinned across resizes and cursor moves).
@@ -4850,7 +5535,7 @@ Looked at on a real pty at 80x24, 40x12 and 120x24, with LiteLLM on and off: RES
 EOF
 ```
 
-Before running it, replace `RESULT` with what Step 9 showed and when (for example: "Friday 17:10 UTC: the price whole at every size, alone on its line at 40 columns; hy3 first at its after-16:00 price; night-owl unmarked"). Add the session's PR attribution line at the end of the body if your session is told to add one.
+Before running it, replace `RESULT` with what Step 9 showed and when (for example: "Friday 17:10 UTC: the price whole at every size, alone on its line at 40 columns; hy3 first at its after-16:00 price; night-owl marked, at its own price"). Add the session's PR attribution line at the end of the body if your session is told to add one.
 
 ---
 
@@ -6053,12 +6738,12 @@ git commit -m "fix(wt): cloud-sync prices a time-of-day model from its schedule,
 ### Task 8: Store the other levels as the flow's own rows, and show them in the plan (slice D)
 
 **Files:**
-- Create: `wt/internal/cloudsync/timeofday_rows_test.go`, `wt/internal/cloudsync/timeofday_rows.go`
+- Create: `wt/internal/cloudsync/timeofday_rows_test.go` (its last test runs both flows over a row a user wrote with a window past midnight), `wt/internal/cloudsync/timeofday_rows.go`
 - Modify: `wt/cmd/wt/cloudsync_test.go` (two edits to Task 7's test; append), `wt/internal/litellm/entry_test.go` (append), `wt/internal/cloudsync/openrouter.go` (`PlanPrices`: one line and its comment), `wt/internal/cloudsync/catalog.go` (`formatCost`; the `OffpeakLabel` comment)
 
 **Interfaces:**
 - Consumes from Task 7: `type Rate struct{ Input, Cache, Output *float64; Spans [7][]Span }`, `type Span struct{ Start, End int }`, `APIPrice.Rates []Rate`, the test helpers `fixtureFetched`, `fetchedAt`, `headline`, `pm`, `one`, and in `cmd/wt` the constant `timeOfDayRegistry` and the test `TestCloudSyncTimeOfDayPricesDoNotFollowTheClock`. From Task 2: `PlanPrices(entries, api)`, `TestTheTwoFlowsNeverShareAModel`.
-- Consumes (existing): `Cost.TimePrices []*tomlw.Table`; `str(t *tomlw.Table, key string) string`; `number(t *tomlw.Table, key string) *float64`; `formatPrice(*float64) string`; `tomlw.NewTable()`, `(*tomlw.Table).Set/Get/Keys`; test helpers `timeRow(label, day string) *tomlw.Table`, `labels([]*tomlw.Table) []string`, `wantIDs`, `cloudEntry`, `withCost`, `cm`, `withOffpeak`, `catalogOf`, `scratchRegistry(t, content string) string`, `userTimePrice`; in `cmd/wt`: `realRouteSync(t)`, `syncRoutesAfterWrite`, `probeInventory`, `localmodels.OnDiskSnapshotForTest`, `stubCloudFetch`, `runCS`, `mustRead`, the `cloudSyncNow` seam; in `internal/litellm`: `pricingInfo(c config.ModelCost) []kv`.
+- Consumes (existing): `Cost.TimePrices []*tomlw.Table`; `str(t *tomlw.Table, key string) string`; `number(t *tomlw.Table, key string) *float64`; `formatPrice(*float64) string`; `tomlw.NewTable()`, `(*tomlw.Table).Set/Get/Keys`; test helpers `timeRow(label, day string) *tomlw.Table`, `labels([]*tomlw.Table) []string`, `wantIDs`, `cloudEntry`, `withCost`, `cm`, `withOffpeak`, `catalogOf`, `scratchRegistry(t, content string) string`, `userTimePrice`, `applyCatalog(t, catalog, pulled, resolved) (CatalogApplied, bool)`; from Task 3: the validator accepts a window whose `end` is before its `start`, and `config.ModelCost.PriceAt`, `Model.Malformed`; in `cmd/wt`: `realRouteSync(t)`, `syncRoutesAfterWrite`, `probeInventory`, `localmodels.OnDiskSnapshotForTest`, `stubCloudFetch`, `runCS`, `mustRead`, the `cloudSyncNow` seam; in `internal/litellm`: `pricingInfo(c config.ModelCost) []kv`.
 - Produces:
   - `const OpenRouterLabel = "openrouter"`
   - `func rateRow(r Rate) *tomlw.Table`
@@ -6257,10 +6942,15 @@ func scheduleRows(t *testing.T, pricing string) []*tomlw.Table {
 
 // TestScheduleRows pins how a schedule is written as cost.time_prices rows,
 // in the registry's own vocabulary, which is not OpenRouter's: UTC, days as
-// mon..sun, times as "HH:MM", the end of the day as "24:00", and no window
-// that ends before it starts (the registry refuses one), so a window that
-// wraps past midnight is two. A row that the registry's loader refused would
-// make every launch fail until it was removed by hand.
+// mon..sun, times as "HH:MM", the end of the day as "24:00", and each day's
+// hours under that day, so a window of OpenRouter's that wraps past midnight
+// is two. The registry would hold it as one (a window may run past midnight,
+// #322), but the rows are read back from the week minute by minute, not
+// copied from OpenRouter's list, and one day at a time is the one form every
+// list that prices the week the same way comes out as: the same bytes and
+// the same plan text whatever order, grouping or wrapping OpenRouter
+// publishes. A row that the registry's loader refused would make every
+// launch fail until it was removed by hand.
 func TestScheduleRows(t *testing.T) {
 	// OpenRouter's own example of a wrapping window: 16:30 to 00:30 UTC.
 	rows := scheduleRows(t, `{"prompt": "0.00000014", "completion": "0.00000021", "overrides": [
@@ -6763,6 +7453,143 @@ output_price_per_million = 6.0
 		t.Errorf("config.Load after the applies: %v", err)
 	}
 }
+
+// nightTimePrice is a cost.time_prices row a user wrote with a window that
+// runs past midnight, in the layout registries on disk have.
+const nightTimePrice = `[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 0.25
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri",
+]
+start = "22:00"
+end = "06:00"
+`
+
+// TestBothFlowsKeepAUsersWindowPastMidnight pins that a row a user wrote
+// with a window that runs past midnight ("22:00" to "06:00", which the
+// registry accepts since #322) comes through an apply of each flow byte for
+// byte, on a model that flow changes and writes its own row to. The flows'
+// own rows never hold such a window (each day's hours are written under
+// that day), but neither flow reads the windows of a row it does not own,
+// and the registry's validator, which checks every row of a model a write
+// touches, accepts it. Before #322 both applies here were refused with
+// "start must be before end", so one hand-written night rate stopped every
+// price refresh. The picker then applies the user's row and the flow's row
+// side by side, first match first.
+func TestBothFlowsKeepAUsersWindowPastMidnight(t *testing.T) {
+	path := scratchRegistry(t, `[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "OPENROUTER_API_KEY"
+
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "openrouter/tencent--hy3"
+family = "hy"
+provider_id = "openrouter"
+model_name = "tencent/hy3"
+location = "cloud"
+
+[models.cost]
+input_price_per_million = 9.0
+
+`+nightTimePrice+`
+[[models]]
+id = "ollama/glm-5.3:cloud"
+family = "glm"
+provider_id = "ollama"
+model_name = "glm-5.3:cloud"
+location = "cloud"
+source = "curated"
+tags = []
+
+[models.cost]
+input_price_per_million = 9.0
+
+`+nightTimePrice)
+
+	at := time.Date(2026, 10, 9, 2, 45, 0, 0, time.UTC)
+	var prices PricesApplied
+	if _, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
+		var err error
+		prices, err = PlanPrices(Entries(d.Models()), apiOf(t, fetchedAt(t, at))).Apply(d, at)
+		return err
+	}); err != nil {
+		t.Fatalf("the openrouter flow's apply: %v", err)
+	}
+	if prices != (PricesApplied{Stamped: 1, Changed: 1}) {
+		t.Errorf("the openrouter flow applied %+v, want 1 stamped, 1 changed", prices)
+	}
+	catalog := catalogOf(withOffpeak(cm("glm-5.3", 1.4, 0.26, 4.4), f(0.7), f(0.13), f(2.2)))
+	done, changed := applyCatalog(t, catalog, []string{"glm-5.3:cloud"}, map[string]string{"glm-5.3": "glm-5.3:cloud"})
+	if !changed || done.Updated != 1 {
+		t.Errorf("the ollama flow applied %+v (changed %v), want 1 updated", done, changed)
+	}
+
+	text := readFile(t, path)
+	if got := strings.Count(text, nightTimePrice); got != 2 {
+		t.Errorf("the user's night row is in the file %d times byte for byte, want 2 (once per model):\n%s", got, text)
+	}
+	// Each flow's own row follows the user's, on its own model.
+	for _, own := range []string{
+		nightTimePrice + "\n[[models.cost.time_prices]]\nlabel = \"openrouter\"\ntimezone = \"UTC\"\ninput_price_per_million = 0.0825\n",
+		nightTimePrice + "\n[[models.cost.time_prices]]\nlabel = \"off-peak\"\ntimezone = \"UTC\"\ninput_price_per_million = 0.7\n",
+	} {
+		if !strings.Contains(text, own) {
+			t.Errorf("registry.toml lacks:\n%s\n\nfile:\n%s", own, text)
+		}
+	}
+
+	// What was written loads, and the resolver applies both rows of the
+	// openrouter model: the user's in the New York night, the flow's from
+	// 16:00 UTC, the flat (dearest) price otherwise.
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load after the applies: %v", err)
+	}
+	for _, m := range cfg.Models {
+		if got := m.Malformed(); len(got) != 0 {
+			t.Errorf("%s: Malformed() = %q, want nothing", m.ID, got)
+		}
+		if m.ID != "openrouter/tencent--hy3" {
+			continue
+		}
+		for _, c := range []struct {
+			what string
+			at   time.Time
+			row  int
+			out  float64
+		}{
+			{"Monday 23:00 in New York", time.Date(2026, 10, 13, 3, 0, 0, 0, time.UTC), 0, 0.25},
+			{"Tuesday 05:59 in New York", time.Date(2026, 10, 13, 9, 59, 0, 0, time.UTC), 0, 0.25},
+			{"Tuesday 06:00 in New York", time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC), -1, 0.5279999999999999},
+			{"Tuesday 17:00 UTC", time.Date(2026, 10, 13, 17, 0, 0, 0, time.UTC), 1, 0.33},
+		} {
+			if got := m.Cost.PriceAt(c.at); got.Row != c.row || got.Output == nil || *got.Output != c.out {
+				t.Errorf("%s: output %v from row %d, want %v from row %d", c.what, got.Output, got.Row, c.out, c.row)
+			}
+		}
+	}
+}
 ```
 
 - [ ] **Step 4: Run them to verify they fail**
@@ -6806,6 +7633,10 @@ var registryDays = []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 // rateRow is one price level as a time_prices row, keys in schema order.
 // Days with the same times share their windows, and a day's windows are in
 // time order, so the row does not depend on the order of OpenRouter's list.
+// Each day's hours are written under that day: no window of the row runs
+// past midnight, though the registry accepts one (#322). A level that covers
+// several midnights running (a weekend into Monday morning) has no one way
+// to be cut into such windows, and this form has exactly one.
 func rateRow(r Rate) *tomlw.Table {
 	row := tomlw.NewTable()
 	row.Set("label", OpenRouterLabel)
@@ -7042,7 +7873,7 @@ Replace with:
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run (from `wt/`): `gofmt -l internal cmd && go vet ./internal/cloudsync ./cmd/wt && go test -count=1 -v ./internal/cloudsync -run 'TestScheduleRows|TestPlanPricesOwnsOnlyItsOwnRows|TestPricePlanFormatShowsASchedule|TestPlanPricesReplacesAnOpenRouterRowWhateverItHolds|TestPricesApplyStoresAScheduleOnce' | grep -E '^(---|ok|FAIL)'`
+Run (from `wt/`): `gofmt -l internal cmd && go vet ./internal/cloudsync ./cmd/wt && go test -count=1 -v ./internal/cloudsync -run 'TestScheduleRows|TestPlanPricesOwnsOnlyItsOwnRows|TestPricePlanFormatShowsASchedule|TestPlanPricesReplacesAnOpenRouterRowWhateverItHolds|TestPricesApplyStoresAScheduleOnce|TestBothFlowsKeepAUsersWindowPastMidnight' | grep -E '^(---|ok|FAIL)'`
 Expected:
 
 ```text
@@ -7051,8 +7882,11 @@ Expected:
 --- PASS: TestPricePlanFormatShowsASchedule (0.00s)
 --- PASS: TestPlanPricesReplacesAnOpenRouterRowWhateverItHolds (0.00s)
 --- PASS: TestPricesApplyStoresAScheduleOnce (0.00s)
+--- PASS: TestBothFlowsKeepAUsersWindowPastMidnight (0.00s)
 ok  	github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync	(time)
 ```
+
+`TestBothFlowsKeepAUsersWindowPastMidnight` is the one test of this file that would build and pass before Step 5 if it stood alone: it tests what the flows must not do to a row that is not theirs, on Task 3's validator. Observed with that validator's rule put back to `start >= end`: it fails at the first apply with `the openrouter flow's apply: invalid registry entry: model "openrouter/tencent--hy3": cost: time_prices[0]: windows[0]: start must be before end`, which is what every sync of such a model answered before #322.
 
 Run: `go test -count=1 ./cmd/wt -run 'TestCloudSyncTimeOfDayPricesDoNotFollowTheClock|TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone' -v | grep -E '^(---|ok|FAIL)'`
 Expected:
@@ -7156,11 +7990,13 @@ Replace with:
   **The dearest level** of that schedule, the one with the highest output
   price, is stored as the model's price, and **each cheaper level is a
   `[[models.cost.time_prices]]` row labelled `openrouter`**: its prices,
-  `timezone = "UTC"`, and the windows it applies in. A window that crosses
-  midnight is written as two, and the end of a day as `24:00`. So for as
-  long as OpenRouter publishes the same schedule the plan and the registry
-  are the same whenever the sync runs, and a second run in another window
-  reports no update for the model.
+  `timezone = "UTC"`, and the windows it applies in. The sync writes each
+  day's hours under that day: a level that runs past midnight is two
+  windows, one to `24:00` and one from `00:00`. (A row you write by hand
+  may use one window that runs past midnight; the sync's own never do.)
+  So for as long as OpenRouter publishes the same schedule the plan and
+  the registry are the same whenever the sync runs, and a second run in
+  another window reports no update for the model.
 - **The plan line shows the schedule**: the price, then each stored level
   with its windows, for example (illustrative) `<id>: 0.5/0.05/2 ->
   1/0.1/4 (openrouter 0.5/0.05/2 mon-fri 00:00-08:00 20:00-24:00, sat-sun
@@ -7587,6 +8423,7 @@ The owner's directions:
 | D1: openrouter "just refresh the prices for cloud models that are configured"; ollama "sync the cloud models locally with those at ollama.com" and "refresh prices for all cloud models" | The openrouter flow after Task 2 (the models of the `openrouter` provider) and Tasks 7 and 8; the ollama flow is what `catalog` already did, unchanged but for its name (Task 1) |
 | D2: the openrouter flow stores each time-priced model's schedule as `cost.time_prices` rows | Tasks 7 and 8, one PR; decisions 9 to 19 |
 | D3: the picker shows the price in force now, for OpenRouter's rows, ollama's `off-peak` rows and hand-written rows | Tasks 3 to 5, landing before the rows (decision 33); decisions 20 to 26, and 30 to 32 for a hand-written row that breaks a rule or has a value of the wrong type |
+| The answer to question 2: "window should run past midnight" | Task 3: the validator's one rule and the resolver, changed together and pinned on both daylight-saving change days west and east of UTC; decision 34 (the edge cases), 35 (the flows' own rows stay one day at a time; a user's row survives every write), 36 (llmbench and the fixtures). Task 4 (the cell), Task 6 (the reference page, the changelog, the two notes for maintainers), Task 8 (`TestBothFlowsKeepAUsersWindowPastMidnight`), Task 9 (one sentence). Facts 46 to 52 |
 | D3: each other place that shows a price, decided | Decision 27 and fact 38: `wt model list` and its `--json` (no price; they gain only the name of a row that is not applied), the Models tab (no price), the model form (the flat price it edits, pinned) |
 | D3: the route cost stays the flat price, and that is stated | Decision 28; `TestPricingInfoReadsOnlyTheFlatPrices`; Tasks 6 and 9 (the page, the changelog) |
 | D4: `openrouter_priced` removed; the rule is `provider_id == "openrouter"`; every reader traced; a registry that still carries the key | Task 2; decisions 4 to 7; facts 29 and 31 |
@@ -7600,7 +8437,7 @@ What the directions left this plan to settle:
 | How a time-dependent price is marked without breaking the fit rules | Decisions 25 and 26 (`~` after the COST cell, `cost~` on the mode line, a price never cut); `TestModelPickerWithTimePricedModelsFitsTheTerminal`, `TestModelPickerNamesTheHighlightedModelsPrice`; question 1 |
 | Sort stability | Decisions 22 and 23 |
 | What clock the picker uses and how tests inject it | Decision 22 (`pickerNow`, `tableInput.now`) |
-| DST and IANA timezones for user-written rows | Decision 21; fact 33 (ollama's rows are UTC); decisions 30 to 32 and question 2 for a row that breaks a rule |
+| DST and IANA timezones for user-written rows | Decision 21; fact 33 (ollama's rows are UTC); decision 34 and `TestPriceAtAWindowPastMidnightFollowsDaylightSavingTime` for a window that runs past midnight; decisions 30 to 32 for a row that breaks a rule |
 | A window boundary while the picker is open | Decision 24 (re-resolved on open only); `TestAnOpenPickerKeepsThePricesItOpenedWith` |
 | Both flows writing rows on one model in one write | Decision 8; fact 30: impossible, proved by rule and by test; the workaround and its test are deleted |
 
@@ -7622,7 +8459,7 @@ This plan's own requirements:
 |---|---|
 | Tests never touch the network: a saved OpenRouter response and a fixed clock | Task 7 Step 1 (the fixture); `cloudFetch` and `cloudSyncNow` stubbed in Tasks 1, 2, 7 and 8; `pickerNow` and `tableInput.now` in Tasks 4 and 5 |
 | The same registry and response planned at two clock times give byte-identical plan text and an empty second apply | `TestCloudSyncTimeOfDayPricesDoNotFollowTheClock` |
-| Rows other writers own are byte-identical after an apply | `TestPricesApplyStoresAScheduleOnce` (the whole file compared; the user's row twice and an `off-peak` row) |
+| Rows other writers own are byte-identical after an apply | `TestPricesApplyStoresAScheduleOnce` (the whole file compared; the user's row twice and an `off-peak` row); `TestBothFlowsKeepAUsersWindowPastMidnight` (a user's row with a window past midnight, through each flow's apply); `TestUpdateRegistryKeepsAWindowPastMidnightByteForByte` (through a patch of its model). These are registries in wt's own layout; a row typed by hand keeps its values and its one window through the first write, which lays the file out (`TestUpdateRegistryKeepsAHandTypedWindowPastMidnight`, fact 52) |
 | Every wt screen fits 40/80/120 by 12/24/50 | `TestModelPickerWithTimePricedModelsFitsTheTerminal` (both pickers, two instants); `TestModelPickerNamesTheHighlightedModelsPrice`; the existing `TestEveryListPhaseFitsTheTerminal`; Task 6 Step 9 on a pty |
 | Each slice builds, passes and is documented alone | "PR Slices"; the last steps of Tasks 1, 2, 6 and 9 |
 | A live check is one `--dry-run` from a copy of the registry, with the owner's OK | Task 10 |
@@ -7632,7 +8469,8 @@ This plan's own requirements:
 
 - The follow-up issue about listed prices that move within minutes (question 3), if the owner has it filed.
 - A price column that survives at 80 columns (question 1, option (c)): a narrower cell, such as the output price alone. Not asked for, not planned.
-- Reading a window that ends before it starts as one that runs past midnight (question 2) would be a change to the registry's validator first, and to every reader of the rows after it.
+- A window whose `start` equals its `end` is refused (decision 34). If the owner would rather have it mean 24 hours from that time, the code is one condition in `validateWindow` and one `case` in `TimePrice.holds`. Everything that states the refusal changes with it (`grep -rn -e 'must differ' -e 'start is its end' -e 'equal to the end' wt` finds all of them but the note in `config-and-registry.md`): the row `a window that starts when it ends` of `TestUpdateRegistryValidatesOnlyTheRowsItTouched`; three rows of `badRows` (`a start that is the end` and `midnight to midnight as 00:00` move to `TestPriceAtAWindowPastMidnight`, and `a good window beside a bad one`, whose bad window is `18:00` to `18:00`, needs another bad window); the comments on `CostWindow`, in `validateWindow` and above `TimePrice.Problem`, and the validator's message; and the sentences in `wt/docs/wt-cloud-sync.md`, `wt/CHANGELOG.md`, `wt/docs/internals/config-and-registry.md` and `wt/CLAUDE.md`. `00:00` to `00:00` would then be a second spelling of the whole day, beside `00:00` to `24:00`.
+- The openrouter flow could write a level that covers one midnight as one window (decision 35 keeps it as two). It would need a rule for a level that covers several midnights running, and it would make the rows unwritable by a wt from before this plan. Not asked for, not planned.
 - If spend should follow the clock one day: LiteLLM 1.103.1's `model_info.off_peak_pricing` holds one standard rate and one off-peak rate with UTC windows (fact 14), so a two-level schedule in UTC rows would carry over and a three-level one would not. Its first step is one real codex request to learn whether any spend is route-priced at all (fact 11). Not asked for, not planned.
 - A price column in `wt model list`, or a line in the Models tab's detail block, would use `config.ModelCost.PriceAt` and `Flat` as the picker does; a JSON form would carry both, under new keys.
 - The `loading worktrees...` status that `wt --cwd --agent <name>` leaves above the picker (seen in the captures) is worth its own look.
