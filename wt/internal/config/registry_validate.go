@@ -328,8 +328,15 @@ func validateWindow(w *tomlw.Table) error {
 	if start >= 24*60 {
 		return errors.New("start must be before 24:00")
 	}
-	if start >= end {
-		return errors.New("start must be before end")
+	// An end before the start is a window that runs past midnight: from start
+	// on each listed day to end on the next calendar day (#322). An end of
+	// "24:00" is the end of the listed day, so it is never before a start.
+	// Only a start equal to the end is refused: read as [start, end) it holds
+	// no minute, read as running past midnight it holds a whole day, and a
+	// guess either way can show a price for 24 hours that its writer did not
+	// mean.
+	if start == end {
+		return errors.New("start and end must differ (a whole day is 00:00 to 24:00)")
 	}
 	return nil
 }

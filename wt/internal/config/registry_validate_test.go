@@ -144,11 +144,12 @@ repo = 7
 		{"a time price with no zone", map[string]any{"cost.time_prices": []map[string]any{{"windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "01:00"}}}}}, nil, `timezone "" is not a known IANA timezone`},
 		{"a time price with no windows", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC"}}}, nil, "windows must be a non-empty array of tables"},
 		{"a window on an unknown day", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"funday"}, "start": "00:00", "end": "01:00"}}}}}, nil, "days must be drawn from"},
-		{"a window that ends before it starts", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "12:00", "end": "09:00"}}}}}, nil, "start must be before end"},
+		{"a window that starts when it ends", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "12:00", "end": "12:00"}}}}}, nil, "start and end must differ (a whole day is 00:00 to 24:00)"},
+		{"a window that starts at 24:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "24:00", "end": "06:00"}}}}}, nil, "start must be before 24:00"},
 		{"a window time that is not HH:MM", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "9am", "end": "12:00"}}}}}, nil, "start must be HH:MM"},
 		{"a location that is neither local nor cloud", map[string]any{"location": "mars"}, nil, `has location "mars"; expected "local" or "cloud"`},
 		{"a provider with no row", map[string]any{"provider_id": "nope"}, nil, `provider_id "nope" names no provider row`},
-		{"a window past midnight", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "24:30"}}}}}, nil, "end must be HH:MM between 00:00 and 24:00"},
+		{"a window that ends after 24:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "00:00", "end": "24:30"}}}}}, nil, "end must be HH:MM between 00:00 and 24:00"},
 	}
 	for _, c := range invalid {
 		t.Run(c.name, func(t *testing.T) {
@@ -183,6 +184,8 @@ repo = 7
 		{"a period with no price", map[string]any{"cost.subscription_period": "year"}, `subscription_period = "year"`},
 		{"an empty cost table", map[string]any{"cost": map[string]any{}}, "[models.cost]"},
 		{"a time price", map[string]any{"cost.time_prices": offPeak}, `timezone = "UTC"`},
+		{"a window that runs past midnight", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "22:00", "end": "06:00"}}}}}, `end = "06:00"`},
+		{"a window that runs to midnight, written 00:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"sun"}, "start": "22:00", "end": "00:00"}}}}}, `end = "00:00"`},
 		{"the legacy free kind", map[string]any{"cost.kind": "free"}, `kind = "free"`},
 		{"a legacy per-token price", map[string]any{"cost.kind": "per_token", "cost.price_per_million_tokens": 2.5}, "price_per_million_tokens = 2.5"},
 		{"a legacy subscription", map[string]any{"cost.kind": "subscription", "cost.price_per_period": 20, "cost.period": "year"}, `period = "year"`},
@@ -326,4 +329,140 @@ model_name = "old"
 			t.Fatalf("UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
 		}
 	})
+}
+
+// TestUpdateRegistryKeepsAWindowPastMidnightByteForByte pins what a write
+// does to a cost.time_prices row a user wrote with a window that runs past
+// midnight ("22:00" to "06:00", #322): the write goes through, and the row
+// is in the file exactly as it was (the registry here is in the writer's
+// own layout, as a registry wt has written once is), when another key of
+// its model is patched and when its cost table is. Before #322 the
+// validator refused such a row, so every `wt model edit` of that model and
+// every `wt cloud-sync` with a change for it stopped with "start must be
+// before end".
+func TestUpdateRegistryKeepsAWindowPastMidnightByteForByte(t *testing.T) {
+	const nightRow = `[[models.cost.time_prices]]
+x_note = "mine"
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri",
+]
+start = "22:00"
+end = "06:00"
+
+[[models.cost.time_prices.windows]]
+days = [
+    "sat",
+]
+start = "20:00"
+end = "00:00"
+`
+	const withNight = docRegistry + `
+[[models]]
+id = "ollama/night-owl"
+family = "fam"
+provider_id = "ollama"
+model_name = "night-owl"
+
+[models.cost]
+output_price_per_million = 75.0
+
+` + nightRow
+	path := scratchRegistry(t, withNight)
+	if changed, err := UpdateRegistry(setFamily("ollama/night-owl", "owls")); err != nil || !changed {
+		t.Fatalf("a patch of the model's family: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	if changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/night-owl", map[string]any{"cost.input_price_per_million": 12.5}, nil)
+	}); err != nil || !changed {
+		t.Fatalf("a patch of the model's cost: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	want := strings.Replace(withNight, "family = \"fam\"\nprovider_id = \"ollama\"\nmodel_name = \"night-owl\"", "family = \"owls\"\nprovider_id = \"ollama\"\nmodel_name = \"night-owl\"", 1)
+	want = strings.Replace(want, "output_price_per_million = 75.0\n", "input_price_per_million = 12.5\noutput_price_per_million = 75.0\n", 1)
+	if got := readFile(t, path); got != want {
+		t.Errorf("registry.toml after the two patches:\n%s\n\nwant the two patched keys and nothing else changed:\n%s", got, want)
+	}
+}
+
+// TestUpdateRegistryKeepsAHandTypedWindowPastMidnight pins the other half:
+// a registry typed by hand, with the row's window as an inline table and
+// comments beside it, the way wt/docs/wt-cloud-sync.md writes one. The first
+// write by wt lays the whole file out in its own layout and drops the
+// comments, as it does for every entry (that is the writer's rule, not this
+// row's). What it keeps is what the row says: one window, "22:00" to
+// "06:00", never split at midnight or rewritten. From then on the row's
+// bytes do not change.
+func TestUpdateRegistryKeepsAHandTypedWindowPastMidnight(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	const typed = docRegistry + `
+[[models]]
+id = "ollama/night-owl"
+family = "fam"
+provider_id = "ollama"
+model_name = "night-owl"
+
+[models.cost]
+output_price_per_million = 75.0
+
+# my night rate
+[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+windows = [{ days = ["mon"], start = "22:00", end = "06:00" }]  # past midnight
+`
+	const laidOutRow = `[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+]
+start = "22:00"
+end = "06:00"
+`
+	path := scratchRegistry(t, typed)
+	if changed, err := UpdateRegistry(setFamily("ollama/night-owl", "owls")); err != nil || !changed {
+		t.Fatalf("the first write: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	first := readFile(t, path)
+	if !strings.HasSuffix(first, "output_price_per_million = 75.0\n\n"+laidOutRow) {
+		t.Errorf("registry.toml after the first write:\n%s\n\nwant it to end with the row in the writer's layout, its one window whole:\n%s", first, laidOutRow)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after the first write = %v", err)
+	}
+	var rows []TimePrice
+	for _, m := range cfg.Models {
+		if m.ID == "ollama/night-owl" {
+			rows = m.Cost.TimePrices
+		}
+	}
+	if len(rows) != 1 || len(rows[0].Windows) != 1 {
+		t.Fatalf("ollama/night-owl's cost.time_prices = %+v, want one row with one window", rows)
+	}
+	if w := rows[0].Windows[0]; strings.Join(w.Days, ",") != "mon" || w.Start != "22:00" || w.End != "06:00" {
+		t.Errorf("the window = %+v, want days [mon], start 22:00, end 06:00", w)
+	}
+	if changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/night-owl", map[string]any{"cost.input_price_per_million": 12.5}, nil)
+	}); err != nil || !changed {
+		t.Fatalf("the second write: UpdateRegistry = (%v, %v), want (true, nil)", changed, err)
+	}
+	want := strings.Replace(first, "output_price_per_million = 75.0\n", "input_price_per_million = 12.5\noutput_price_per_million = 75.0\n", 1)
+	if got := readFile(t, path); got != want {
+		t.Errorf("registry.toml after the second write:\n%s\n\nwant the one patched key and no other byte changed:\n%s", got, want)
+	}
 }
