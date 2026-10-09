@@ -173,9 +173,9 @@
 - **Breaking:** `wt cloud-sync`'s two flows are named for the provider each
   one syncs: `prices` is now `openrouter` and `catalog` is now `ollama`.
   The names changed everywhere they appear: `--only openrouter`, `--only
-  ollama`, the prefix of every output line (`openrouter:`, `ollama:`), the
-  last error line (`wt: cloud-sync: the ollama flow changed nothing: …`) and
-  `--help`. There are no aliases: `--only prices` and `--only catalog` are
+  ollama`, each flow's output lines (`openrouter:`, `ollama:`; the route
+  sync's `routes:` lines keep their prefix), the last error line (`wt:
+  cloud-sync: the ollama flow changed nothing: …`) and `--help`. There are no aliases: `--only prices` and `--only catalog` are
   unknown flows (exit 1, `--only: unknown flow "prices" (valid: openrouter,
   ollama)`), so a script that names one stops instead of running something
   else. Two lines were reworded with the rename: `ollama: ollama at
