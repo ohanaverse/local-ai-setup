@@ -324,11 +324,10 @@ local_path = "/models/alpha"
 // document and handed back whole, because `wt model rm` never deletes weights
 // and has to print where they are from the row it just removed. It also pins
 // what a removal or an unset leaves behind: `models = []` after the last row
-// goes, and the empty table after a table's last key is unset. That is the
-// form registries on disk already have (tomli-w's), and the one
-// docs/contracts/registry.written.sample.toml fixes for wt's writer;
-// dropping either would make a remove-then-add leave a file that differs
-// from one that never had the row.
+// goes, and the empty table after a table's last key is unset. That is
+// tomli-w's form for an emptied list and an emptied table, the form
+// registries on disk already hold after such an edit; a writer that dropped
+// the key instead would give the same registry a second spelling.
 func TestRemoveModelReturnsTheRow(t *testing.T) {
 	doc := parseDoc(t, docRegistry)
 	row, err := doc.RemoveModel("ollama/alpha")
@@ -472,8 +471,10 @@ base_url = "http://localhost:8003/v1"
 // TestOperationsCreateOnlyTheKnownTopLevelKeys pins "wt never adds a
 // top-level key" from the other side: on an empty registry the operations
 // create `providers` and `models`, at their places, and nothing else. A new
-// top-level key is a file wt's own reader refuses (ErrRegistryTopLevel,
-// #247): the next wt command would stop on the registry wt just wrote.
+// top-level key is a file wt's own writer refuses to touch again
+// (ErrRegistryTopLevel, #247): every later registry write (`wt model
+// init|add|edit|rm`, `wt cloud-sync`) would stop on the registry wt just
+// wrote, while the typed reader went on loading it without a word.
 func TestOperationsCreateOnlyTheKnownTopLevelKeys(t *testing.T) {
 	doc := parseDoc(t, "")
 	if err := doc.AddModel(map[string]any{"id": "ollama/a", "family": "f", "provider_id": "ollama", "model_name": "a"}); err != nil {

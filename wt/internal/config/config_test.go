@@ -1213,9 +1213,9 @@ func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
 }
 
 // TestLitellmEnabledMissingURLFailsAtLaunchNotValidate: routing that is on
-// with no URL must not fail Validate(), which runs on every wt invocation —
-// `wt config` and `wt litellm set`, the commands that repair it, included.
-// It must only surface when a route is actually resolved at launch.
+// with no URL must not fail Validate(), which runs on every wt invocation,
+// `wt litellm set` (the command that repairs it) included. It must only
+// surface when a route is actually resolved at launch.
 func TestLitellmEnabledMissingURLFailsAtLaunchNotValidate(t *testing.T) {
 	cfg := &Config{
 		DefaultTag: "code",

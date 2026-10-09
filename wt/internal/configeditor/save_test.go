@@ -175,7 +175,6 @@ func TestSave_ConcurrentRequests_Deduplicated(t *testing.T) {
 func TestSave_PreservesConcurrentLitellmChange(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("WT_REGISTRY", "")
 	registryDir := tmpDir + "/local-ai"
 	if err := os.MkdirAll(registryDir, 0o755); err != nil {
 		t.Fatal(err)

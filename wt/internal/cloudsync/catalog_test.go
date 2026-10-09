@@ -379,8 +379,8 @@ func TestPlanMassRemovalGuard(t *testing.T) {
 // TestPlanIDCollisionWarns pins that an id the page would add but another
 // row already holds is left alone with a warning that says who holds it. The
 // alternative, a duplicate id, is a registry wt refuses to load. The owner's
-// tag is quoted as every name in the plan's warnings is (pyRepr, single
-// quotes), so a tag with a space or a quote in it still reads as one tag.
+// tag is printed in single quotes ('foo:cloud-old'), the fixed text of this
+// warning; the user reads it to find the row that holds the id.
 func TestPlanIDCollisionWarns(t *testing.T) {
 	squatter := Entry{ID: "ollama/x:cloud", Family: "f", ProviderID: "other", ModelName: "zzz"}
 	plan := PlanCatalog([]Entry{squatter}, catalogOf(cm("x")), nil, nil)

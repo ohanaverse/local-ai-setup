@@ -295,7 +295,6 @@ func TestSeedCreatesAMissingRegistry(t *testing.T) {
 func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("WT_REGISTRY", "")
 	if names, providers, err := seedAgents(); names != nil || providers != nil || err != nil {
 		t.Errorf("with no config.toml: agents = %v, providers = %v, err = %v, want none and no error", names, providers, err)
 	}
@@ -408,7 +407,6 @@ base_url = "https://openrouter.ai/api/v1"
 func TestSeedMakesAFreshConfigLoad(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("WT_REGISTRY", "")
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		t.Fatal(err)
 	}

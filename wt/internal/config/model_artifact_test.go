@@ -118,7 +118,6 @@ repo = "org/second"
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("WT_REGISTRY", "")
 			writeRegistry(t, t.TempDir(), head+c.body+"\n"+tail)
 			cfg, err := Load()
 			if err != nil {
@@ -211,7 +210,6 @@ repo = "org/second"
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("WT_REGISTRY", "")
 			writeRegistry(t, t.TempDir(), head+c.body+"\n"+tail)
 			cfg, err := Load()
 			if err != nil {

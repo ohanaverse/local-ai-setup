@@ -126,7 +126,6 @@ func newTabMachine(t *testing.T, content string) *tabMachine {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("WT_REGISTRY", "")
 	path := filepath.Join(home, "local-ai", "registry.toml")
 	if content != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

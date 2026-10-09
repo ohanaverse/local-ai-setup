@@ -11,7 +11,9 @@ import (
 // WT_REGISTRY or MODELMAN_REGISTRY exported in the developer's shell, which
 // outranks XDG_CONFIG_HOME and would otherwise send every test that redirects
 // through XDG alone to the developer's real registry. It is also why those
-// tests clear neither name themselves.
+// tests need not clear either name themselves. Two clears remain on purpose:
+// litellmStateEnv clears both names, and TestModelDecodesFetchAndDraft clears
+// WT_REGISTRY to undo its own set.
 func TestMain(m *testing.M) {
 	_, cleanup := IsolateConfigHomeForTest()
 	code := m.Run()

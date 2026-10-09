@@ -16,7 +16,6 @@ func scratchRegistry(t *testing.T, content string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("WT_REGISTRY", "")
 	path := filepath.Join(home, "local-ai", "registry.toml")
 	if content != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -289,7 +288,6 @@ func TestUpdateRegistryRefusesADanglingSymlink(t *testing.T) {
 func TestUpdateRegistryRefusesARegistryUnderABrokenDirectoryLink(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("WT_REGISTRY", "")
 	link := filepath.Join(home, "local-ai")
 	target := filepath.Join(t.TempDir(), "dotfiles", "local-ai")
 	if err := os.Symlink(target, link); err != nil {

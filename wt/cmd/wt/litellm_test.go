@@ -430,7 +430,8 @@ func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 
 // validationOnlyApp builds an app via newApp() in a temp XDG dir whose registry
 // has a model pointing at a missing provider: Load succeeds but Validate fails
-// (the common gap `wt model init` repairs, by seeding the provider row).
+// (a row whose provider has no row; `wt model init` seeds one for a provider
+// it has a default for, any other is a hand edit of registry.toml).
 func validationOnlyApp(t *testing.T) (*app, string) {
 	t.Helper()
 	home := t.TempDir()
