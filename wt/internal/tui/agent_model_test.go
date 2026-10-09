@@ -552,6 +552,9 @@ func TestPhaseModelEnterStaysInApp(t *testing.T) {
 	// shift the cursor and make this test order-dependent.
 	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	// Enter runs the ollama check on the highlighted model; the daemon lists
+	// nothing, so no launch follows.
+	stubOllamaList(t)
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if _, ok := got.(model); !ok {
 		t.Errorf("Update(Enter) returned %T, want model", got)
@@ -704,8 +707,8 @@ func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 // TestEnterInModelPhaseDoesNotRecordBeforeLaunch asserts that pressing Enter
 // alone does NOT write rotation state. Recording must happen only when the
 // launch actually commits (launchAndRecord), so a launch that never runs —
-// here the ollama availability warning fires, since the test model has no
-// ModelName so no ollama model matches — must not advance the rotation.
+// here the ollama availability warning fires, since the stubbed daemon lists
+// no model — must not advance the rotation.
 // This is the regression guard for the "rotation advances on cancelled
 // launches" bug: without it, a user who cancels the ollama warning (or hits
 // an ollama-check error) would silently skip a model
@@ -721,7 +724,11 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
 	}
 
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	stubOllamaList(t)
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if phase := got.(model).phase; phase != phaseOllamaWarn {
+		t.Fatalf("precondition: phase = %d, want the ollama warning", phase)
+	}
 
 	// The launch did not commit (the ollama warning gates it), so no
 	// rotation state must have been written.

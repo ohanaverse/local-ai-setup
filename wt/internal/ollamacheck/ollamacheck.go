@@ -3,10 +3,13 @@ package ollamacheck
 
 import (
 	"fmt"
+	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // IsOllamaModel returns true if the model is from the ollama provider.
@@ -15,35 +18,75 @@ func IsOllamaModel(m config.Model) bool {
 }
 
 // Check reports whether m is locally available. Non-ollama models are always
-// available (true, nil); ollama models are checked against `ollama list`.
-func Check(m config.Model) (bool, error) {
+// available (true, nil); ollama models are checked against `ollama list`,
+// asked of the daemon the registry's ollama provider row names
+// (localmodels.FamilyOrigin, the address `wt stop`, `wt model add` and
+// `wt cloud-sync` pin the CLI to as well) and not of whichever daemon the
+// shell's OLLAMA_HOST names.
+//
+// An error means the check could not tell, and no command was run: cfg has
+// no ollama provider row, or the row's base_url names no daemon ("/v1", a
+// blank, no scheme). ollama reads an empty or unusable OLLAMA_HOST as its
+// default daemon, so asking anyway would answer from a daemon the registry
+// does not describe. (A row with no base_url at all has wt's documented
+// default, which is an address.)
+func Check(cfg *config.Config, m config.Model) (bool, error) {
 	if !IsOllamaModel(m) {
 		return true, nil
 	}
-	return Available(m.ModelName)
+	if cfg == nil || cfg.ProviderByID(m.ProviderID) == nil {
+		return false, fmt.Errorf("no %s provider in the registry, so no daemon to ask", m.ProviderID)
+	}
+	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
+	if u, err := url.Parse(origin); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false, fmt.Errorf("the ollama provider row's base_url names no daemon (it reads as %q): set auth.base_url to http://host:port", origin)
+	}
+	return Available(origin, m.ModelName)
 }
 
-// Available checks whether modelName appears in `ollama list` output.
+// Available checks whether modelName appears in the `ollama list` output of
+// the daemon at origin.
 // Returns false with a nil error when ollama is not installed.
 // Returns an error when `ollama list` exits non-zero.
-//
-// Deliberately self-contained (no internal/registry import): this is a
-// runtime availability probe, not model discovery (internal/localmodels does
-// that).
-func Available(modelName string) (bool, error) {
-	if _, err := exec.LookPath("ollama"); err != nil {
+func Available(origin, modelName string) (bool, error) {
+	names, installed, err := list(origin)
+	if !installed {
 		return false, nil // ollama not installed — nothing is available
 	}
-	out, err := exec.Command("ollama", "list").Output()
 	if err != nil {
 		return false, fmt.Errorf("ollama list: %w", err)
 	}
-	for _, name := range parseOllamaNames(string(out)) {
+	for _, name := range names {
 		if name == modelName {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// list returns the model names `ollama list` prints for the daemon at
+// origin, and whether there is an ollama command to run at all. A seam: a
+// test of anything that reaches Check swaps it with StubListForTest, and the
+// TestMain of each package whose tests can reach it (cmd/wt, internal/tui)
+// makes it fail, so no test runs the developer's ollama.
+var list = realList
+
+// realList pins the CLI to origin with OLLAMA_HOST, as `wt cloud-sync`
+// (cmd/wt/cloudsync_ollama.go) and `wt stop` (internal/lifecycle/ollama.go)
+// do: an OLLAMA_HOST inherited from the shell that pointed elsewhere would
+// list a daemon the registry does not describe.
+func realList(origin string) (names []string, installed bool, err error) {
+	bin, err := exec.LookPath("ollama")
+	if err != nil {
+		return nil, false, nil
+	}
+	cmd := exec.Command(bin, "list")
+	cmd.Env = append(os.Environ(), "OLLAMA_HOST="+origin)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, true, err
+	}
+	return parseOllamaNames(string(out)), true, nil
 }
 
 // parseOllamaNames extracts the NAME column from `ollama list`/`ollama ps`

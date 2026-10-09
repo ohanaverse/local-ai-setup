@@ -18,6 +18,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
@@ -392,6 +393,93 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered in litellm mode: %v", err)
 	}
+}
+
+// stubOllamaList makes the pre-launch ollama check see an installed ollama
+// whose daemon lists names, for the duration of a test, and returns where
+// the origin of each `ollama list` it would have run is recorded.
+func stubOllamaList(t *testing.T, names ...string) *[]string {
+	t.Helper()
+	var origins []string
+	t.Cleanup(ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+		origins = append(origins, origin)
+		return names, true, nil
+	}))
+	return &origins
+}
+
+// directOllamaLaunch launches claude on a running ollama model whose route is
+// direct (LiteLLM off), with the ollama provider row at baseURL, and returns
+// launchFiltered's error. The agent is a script that exits 0.
+func directOllamaLaunch(t *testing.T, baseURL string) error {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal,
+			Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat},
+			Auth:      config.AuthConfig{Type: "none", BaseURL: baseURL}}},
+		Models: []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", ModelName: "gemma4:9b", Tags: []string{"code"}}},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", Artifact: "gemma4:9b", ModelName: "gemma4:9b", Registered: true, Running: true},
+		},
+	})
+	return launchFiltered("claude", t.TempDir(), cfg, false, "", "", "", false, nil, nil, nil)
+}
+
+// TestLaunchFilteredOllamaCheckAsksTheRegistrysDaemon pins the non-TUI
+// launch's ollama check on a direct route: it asks the daemon the registry's
+// ollama provider row names, launches when that daemon lists the model, and
+// refuses with the `ollama pull` hint when it does not. Before #317 the
+// check ran whatever `ollama` was on PATH against the shell's OLLAMA_HOST,
+// and no test in this package reached it.
+func TestLaunchFilteredOllamaCheckAsksTheRegistrysDaemon(t *testing.T) {
+	origins := stubOllamaList(t, "gemma4:9b")
+	if err := directOllamaLaunch(t, "http://127.0.0.1:9/v1"); err != nil {
+		t.Fatalf("launch of a model the daemon lists: %v", err)
+	}
+	if len(*origins) != 1 || (*origins)[0] != "http://127.0.0.1:9" {
+		t.Errorf("ollama list was pinned to %v, want [http://127.0.0.1:9]", *origins)
+	}
+
+	stubOllamaList(t, "some-other-model")
+	err := directOllamaLaunch(t, "http://127.0.0.1:9/v1")
+	if err == nil || !strings.Contains(err.Error(), "ollama pull gemma4:9b") {
+		t.Errorf("launch of a model the daemon does not list: err = %v, want the `ollama pull` hint", err)
+	}
+}
+
+// TestLaunchFilteredOllamaCheckCannotTell pins the launch that is refused
+// because the check could not answer, with the reason in the error: the
+// registry's ollama row names no daemon (no command is run, since ollama
+// would fall back to its default daemon), and TestMain's default, which is
+// what keeps an unstubbed test from running the developer's ollama.
+func TestLaunchFilteredOllamaCheckCannotTell(t *testing.T) {
+	t.Run("base_url names no daemon", func(t *testing.T) {
+		origins := stubOllamaList(t, "gemma4:9b")
+		err := directOllamaLaunch(t, "/v1")
+		if err == nil || !strings.Contains(err.Error(), "ollama check failed: the ollama provider row's base_url names no daemon") {
+			t.Errorf("err = %v, want a failed check naming the base_url", err)
+		}
+		if len(*origins) != 0 {
+			t.Errorf("ollama list was run against %v; want no command", *origins)
+		}
+	})
+	t.Run("unstubbed", func(t *testing.T) {
+		err := directOllamaLaunch(t, "http://127.0.0.1:9/v1")
+		if err == nil || !strings.Contains(err.Error(), "ollamacheck list not stubbed in this test") {
+			t.Errorf("err = %v, want a not-stubbed failure", err)
+		}
+	})
 }
 
 // TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm verifies that

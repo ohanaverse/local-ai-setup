@@ -123,7 +123,7 @@ wt rotate code    # print the model after the last launch within the "code" tag 
 
 ### Ollama availability check
 
-Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`. In the TUI, if the model is missing, you can proceed anyway or cancel. (The "skip to next model" choice was removed when the `r` key was removed; use `up`/`down` to pick a different model.) In non-TUI mode (`-w` or `--cwd`), a missing model causes an error with a pull suggestion.
+Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`, asked of the ollama address in `registry.toml` (not the shell's `OLLAMA_HOST`). In the TUI, if the model is missing, you can proceed anyway or cancel. (The "skip to next model" choice was removed when the `r` key was removed; use `up`/`down` to pick a different model.) In non-TUI mode (`-w` or `--cwd`), a missing model causes an error with a pull suggestion.
 
 ## Copilot-specific: Ollama passthrough
 

@@ -213,6 +213,21 @@
 
 ### Fixed
 
+- The check wt makes before launching an ollama model directly (not through
+  LiteLLM) now runs `ollama list` against the ollama address in
+  `registry.toml`, as `wt stop`, `wt model add` and `wt cloud-sync` already
+  did. It used to ask whichever daemon the shell's `OLLAMA_HOST` named, so
+  with that variable pointing elsewhere a model the registry's daemon has
+  was reported as "not available". When the registry has no ollama provider
+  row, or the row's `base_url` is not an `http://host:port` address, the
+  check now says so (`ollama check failed: ...`, as the picker's status or
+  the launch's error) instead of asking ollama's default daemon.
+- wt's own tests no longer run the `ollama` on PATH: `go test ./...` made
+  three `ollama list` calls from `internal/tui`, and
+  `TestOllamaWarnShownWhenUnavailable` failed whenever that command exited
+  non-zero. The lookup and the list are a seam
+  (`ollamacheck.StubListForTest`) that `internal/tui` and `cmd/wt` fail
+  closed (#317).
 - `wt litellm sync` on a registry with one model id on two rows (which every
   launch refuses, and sync does not) routes the id from the row of the
   provider that is serving it. It used to take the first row with the id for

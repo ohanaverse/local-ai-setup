@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -703,35 +705,138 @@ func TestBranchWorktreeCreatedErrorReturnsToList(t *testing.T) {
 // (TestViewModelPhase was rewritten in agent_model_test.go using the
 // new picker-based View.)
 
-// TestOllamaWarnShownWhenUnavailable asserts that when the current model is an
-// unavailable ollama model, the TUI transitions to phaseOllamaWarn.
-func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
-	// Isolate usage (seam) and rotation (XDG) state: phaseModelWithList
-	// reads both via config.Dir(), so without isolation the fixture's cursor
-	// and counts depend on the host's real state files.
-	tempStateDir(t)
-	stubUsageStore(t)
-	cfg := &config.Config{
+// ollamaCheckConfig is a registry with one direct-route ollama model for the
+// claude agent, whose ollama provider row has the given base_url.
+func ollamaCheckConfig(baseURL string) *config.Config {
+	return &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: baseURL}}},
 		Models: []config.Model{
 			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
-	m := phaseModelWithList(t, cfg, "claude", "code")
-	m.selectedPath = "/repo"
+}
 
-	// Simulate pressing enter — this should trigger the ollama check.
-	// The model name is guaranteed not to exist, so it will be unavailable.
+// ollamaCheckPicker is the model picker on ollamaCheckConfig's one model,
+// with usage (seam) and rotation (XDG) state isolated: phaseModelWithList
+// reads both via config.Dir(), so without isolation the fixture's cursor and
+// counts depend on the host's real state files.
+func ollamaCheckPicker(t *testing.T, baseURL string) model {
+	t.Helper()
+	tempStateDir(t)
+	stubUsageStore(t)
+	m := phaseModelWithList(t, ollamaCheckConfig(baseURL), "claude", "code")
+	m.selectedPath = "/repo"
+	return m
+}
+
+// TestOllamaWarnShownWhenUnavailable asserts that when the highlighted model
+// is an ollama model its daemon does not list, Enter moves to phaseOllamaWarn
+// — and that the daemon asked is the one the registry's ollama provider row
+// names. The list is stubbed (#317): the test used to pass only because the
+// developer's own ollama happened not to have the model, and failed whenever
+// `ollama list` exited non-zero there.
+func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
+	m := ollamaCheckPicker(t, "http://127.0.0.1:9/v1")
+	origins := stubOllamaList(t, "some-other-model")
+
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := newM.(model)
 
 	if mm.phase != phaseOllamaWarn {
-		t.Fatalf("expected phaseOllamaWarn, got %d", mm.phase)
+		t.Fatalf("expected phaseOllamaWarn, got %d (status %q)", mm.phase, mm.status)
 	}
 	if !strings.Contains(mm.ollamaWarnModel.Title, "test-model-xyz-not-real") {
 		t.Fatalf("expected title to contain model name, got %q", mm.ollamaWarnModel.Title)
+	}
+	if len(*origins) != 1 || (*origins)[0] != "http://127.0.0.1:9" {
+		t.Errorf("ollama list was pinned to %v, want [http://127.0.0.1:9], the registry row's daemon", *origins)
+	}
+}
+
+// TestNoOllamaWarnWhenModelIsListed is the mirror of
+// TestOllamaWarnShownWhenUnavailable: the daemon lists the model, so Enter
+// shows no warning and goes on to the launch of that model. Without it the
+// "available" answer of the check had no test in this package.
+func TestNoOllamaWarnWhenModelIsListed(t *testing.T) {
+	m := ollamaCheckPicker(t, "http://127.0.0.1:9/v1")
+	stubOllamaList(t, "some-other-model", "test-model-xyz-not-real")
+
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := newM.(model)
+
+	if mm.phase == phaseOllamaWarn {
+		t.Fatal("expected no ollama warn for a model the daemon lists")
+	}
+	if strings.Contains(mm.status, "ollama check failed") {
+		t.Errorf("status = %q, want no failed check", mm.status)
+	}
+	if mm.launchModel.ID != "ollama/test-model-xyz-not-real" {
+		t.Errorf("launchModel = %q, want the highlighted model on its way to launch", mm.launchModel.ID)
+	}
+}
+
+// TestOllamaCheckFailureStaysOnThePicker pins what Enter does when the check
+// cannot tell: the picker stays up with the reason as its status, and nothing
+// is launched and no "not available" warning is shown. Three ways to get
+// there: `ollama list` failed (the daemon is down), the registry's ollama
+// row names no daemon to ask — where no command may run at all, since ollama
+// would fall back to its default daemon — and this package's TestMain
+// default, which is what keeps a test that forgot to stub the list from
+// running the developer's ollama. The status must fit every terminal size.
+func TestOllamaCheckFailureStaysOnThePicker(t *testing.T) {
+	failing := func(t *testing.T) *[]string {
+		var origins []string
+		t.Cleanup(ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+			origins = append(origins, origin)
+			return nil, true, errors.New("exit status 1")
+		}))
+		return &origins
+	}
+	for _, tc := range []struct {
+		name, baseURL string
+		stub          func(*testing.T) *[]string
+		want          string
+		calls         int
+	}{
+		{"list failed", "http://127.0.0.1:9/v1", failing, "ollama check failed: ollama list: exit status 1", 1},
+		{"base_url names no daemon", "/v1", failing, "ollama check failed: the ollama provider row's base_url names no daemon", 0},
+		{"unstubbed", "http://127.0.0.1:9/v1", nil, "ollamacheck list not stubbed in this test", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := ollamaCheckPicker(t, tc.baseURL)
+			origins := &[]string{}
+			if tc.stub != nil {
+				origins = tc.stub(t)
+			}
+
+			newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			mm := newM.(model)
+
+			if mm.phase != phaseModel {
+				t.Errorf("phase = %d, want the model picker", mm.phase)
+			}
+			if !strings.Contains(mm.status, tc.want) {
+				t.Errorf("status = %q, want it to contain %q", mm.status, tc.want)
+			}
+			if cmd != nil || mm.launchModel.ID != "" {
+				t.Errorf("a launch was begun (cmd %v, launchModel %q); want none", cmd != nil, mm.launchModel.ID)
+			}
+			if len(*origins) != tc.calls {
+				t.Errorf("ollama list ran %d times (%v), want %d", len(*origins), *origins, tc.calls)
+			}
+			for _, width := range layoutWidths {
+				for _, height := range layoutHeights {
+					sized := resized(t, mm, width, height)
+					view := sized.View()
+					assertFits(t, tc.name, view, width, height)
+					if !strings.Contains(view, "ollama check failed") {
+						t.Errorf("%s at %dx%d: the status is not on screen:\n%s", tc.name, width, height, view)
+					}
+				}
+			}
+		})
 	}
 }
 
