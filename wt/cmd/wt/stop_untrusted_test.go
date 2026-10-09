@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
@@ -369,10 +370,17 @@ func TestStopSaysNothingRunningOnlyWhenThatIsKnown(t *testing.T) {
 // offered and the families it could not read.
 func stubPicker(t *testing.T, offered bool, unknown ...string) {
 	t.Helper()
+	stubPickerLoading(t, offered, nil, unknown...)
+}
+
+// stubPickerLoading is stubPicker for a picker that also reports what the
+// pidfiles behind refused ports said.
+func stubPickerLoading(t *testing.T, offered bool, loading map[string]lifecycle.Loading, unknown ...string) {
+	t.Helper()
 	oldTTY, oldPick := stdinTTY, stopPickerAll
 	t.Cleanup(func() { stdinTTY, stopPickerAll = oldTTY, oldPick })
 	stdinTTY = func() bool { return true }
-	stopPickerAll = func(*config.Config) (bool, []string) { return offered, unknown }
+	stopPickerAll = func(*config.Config) (bool, []string, map[string]lifecycle.Loading) { return offered, unknown, loading }
 }
 
 // TestStopPickerWithNothingToOfferSaysWhatItCouldNotRead verifies bare `wt

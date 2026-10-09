@@ -2,13 +2,18 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // startChild starts a harmless child of this test in its own session, as wt
@@ -107,6 +112,20 @@ func TestRealProcessTableDescribesAChild(t *testing.T) {
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
+	// On its way out the child is exiting, then a zombie, then gone: never
+	// an error, which a stop waiting for it would report as a failure.
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		_, found, err := realDescribeProc(pid)
+		if err != nil {
+			t.Fatalf("describe(dying child) = %v, want no error at any point of its exit", err)
+		}
+		if !found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the killed child is still in the process table")
+		}
+	}
 	waitReaped(t, done)
 	if _, found, err := realDescribeProc(pid); found || err != nil {
 		t.Errorf("describe(reaped child) = found %v err %v, want not found", found, err)
@@ -116,6 +135,25 @@ func TestRealProcessTableDescribesAChild(t *testing.T) {
 	info, found, err = realDescribeProc(spaced)
 	if err != nil || !found || len(info.argv) != 4 || info.argv[3] != "an arg with spaces" {
 		t.Errorf("argv = %q (found %v err %v), want four tokens, the last with its spaces", info.argv, found, err)
+	}
+}
+
+// TestProcArgvTreatsNoArgumentsAsExiting verifies what the real process-table
+// read makes of kern.procargs2's answer: EINVAL for a pid the kernel just
+// listed is a process being taken apart (exiting, no argv, no error), any
+// other failure is an error, and a buffer is parsed. A dying mtplx spends a
+// quarter of a second and more in that state; read as an error, it made
+// `wt stop mtplx` print "failed" over a server that had stopped.
+func TestProcArgvTreatsNoArgumentsAsExiting(t *testing.T) {
+	if argv, exiting, err := procArgv(nil, unix.EINVAL); argv != nil || !exiting || err != nil {
+		t.Errorf("EINVAL: argv %q exiting %v err %v, want exiting and no error", argv, exiting, err)
+	}
+	if _, exiting, err := procArgv(nil, unix.EPERM); exiting || !errors.Is(err, unix.EPERM) {
+		t.Errorf("EPERM: exiting %v err %v, want the error", exiting, err)
+	}
+	raw := append(binary.NativeEndian.AppendUint32(nil, 2), "/bin/sleep\x00\x00\x00sleep\x0060\x00HOME=/x\x00"...)
+	if argv, exiting, err := procArgv(raw, nil); err != nil || exiting || !slices.Equal(argv, []string{"sleep", "60"}) {
+		t.Errorf("buffer: argv %q exiting %v err %v, want [sleep 60]", argv, exiting, err)
 	}
 }
 

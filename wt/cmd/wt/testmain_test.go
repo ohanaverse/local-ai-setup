@@ -61,7 +61,7 @@ func TestMain(m *testing.M) {
 	stopProvider = func(context.Context, *config.Config, string) error {
 		return errors.New("stopProvider not stubbed in this test")
 	}
-	stopPickerAll = func(*config.Config) (bool, []string) { return false, nil }
+	stopPickerAll = func(*config.Config) (bool, []string, map[string]lifecycle.Loading) { return false, nil, nil }
 	// No test may read the developer's mtplx pidfile or signal one of their
 	// processes: the stop of a loading server is refused here, and the
 	// engine's own process seams are closed beneath it for a test that

@@ -97,28 +97,59 @@ wt stop --all                    # stop every running local model, then the omlx
     `--all` stop it by the pid in the pidfile wt wrote when it started the
     server, and print `Stopping mtplx (still loading, pid N)... done`. wt
     never acts on the pid alone, since a pid can be reused. It signals the
-    process only when all of this holds: the process is alive; the current
+    process only when all of this holds: the pidfile is a regular file the
+    current user owns (it is in `/tmp`; a symlink or another user's file
+    reads as no pidfile); the process is alive; the current
     user owns it; its arguments are those of the mtplx server on this
     provider's port (`mtplx serve ... --port <port>`, or the
     `python -m mtplx.server.openai ... --port <port>` it turns into, compared
     argument by argument); and, when wt recorded the server's start time —
     `wt start` writes it beside the pidfile — the process started at that
     time. A pidfile from an older wt or from llmbench holds only the pid, and
-    is judged by the first three. wt sends SIGTERM, waits up to 10 seconds,
+    is judged by the others. wt sends SIGTERM, waits up to 10 seconds,
     checks again that the pid is still the same process, and only then sends
-    SIGKILL. The stop is `done` once the process is gone; if wt cannot
-    confirm that, it prints `failed` and exits 1.
+    SIGKILL. A process that is already exiting when the 10 seconds end — a
+    server this size takes a moment to give its memory back — gets no
+    SIGKILL, only up to 6 more seconds. The stop is `done` once the process
+    is gone; if wt cannot confirm that, it prints `failed` and exits 1.
+    Ctrl+C during the wait ends the command with `cancelled` and exit 1. The
+    server already has the signal and normally exits a moment later, so the
+    error says
+    `cancelled — mtplx (pid N) was sent SIGTERM and wt did not wait for it to exit; run "wt stop mtplx" again to confirm`.
+    wt did not see it go: the pidfile is left, and a second `wt stop mtplx`
+    either finds nothing running or stops what is still there.
     When the pidfile names a live process that fails a check, wt signals
     nothing: it prints that nothing is running, then what it found
     (`wt: the mtplx pidfile names pid N, which is not an mtplx server on port 8003 — left alone`),
     and exits 0. When it cannot read the process table at all it exits 1
-    with `cannot tell whether mtplx is still loading`. A pidfile that is
+    with `cannot tell whether mtplx is still loading` — as the last line of
+    `--all`, after everything else was stopped, ending
+    `nothing was stopped there`. A pidfile that is
     missing, unreadable or names a dead pid is "nothing running"; wt does
     not delete it.
     `wt stop <provider>/<name>` for an mtplx model during a load stops
     nothing — wt does not know which model the loading process holds — and
     fails with
-    `model "<id>" is not running — mtplx is still loading (pid N); "wt stop mtplx" stops it`.
+    `model "<id>" is not running — mtplx is still loading (pid N); "wt stop mtplx" stops it`
+    (or with `cannot tell whether mtplx is still loading` when wt could not
+    read the process table).
+    Limits:
+    - Only a server wt or llmbench started has a pidfile. An mtplx started by
+      hand is invisible while it loads: `wt stop mtplx` and `--all` print
+      that nothing is running and exit 0. End that process by hand.
+    - Starting mtplx again while one is still loading — a second `wt start`,
+      `wt start --replace`, the picker — sees an empty port and starts a
+      second server, whose pid replaces the first in the pidfile. wt then
+      finds only the newer one, and the first has to be ended by hand. Run
+      `wt stop mtplx` before starting another.
+    - The check and the signal are two steps. A pid that exits and is
+      reused between them — a few microseconds — would get the signal. With
+      the start time wt records, the process checked is known to be the one
+      wt started; a pidfile holding only a pid (an older wt's, llmbench's)
+      has the command line alone to go on.
+    - The command-line rule is the one mtplx 2.12.0 has. If a later mtplx
+      renames its server module, wt prints the `left alone` note above and
+      stops nothing: end the process by hand, and report it.
   - ollama's models are stopped one by one and its daemon is left up, so
     when ollama's probe gives no usable answer (and its port does not
     refuse) there is nothing wt can stop: `wt stop ollama` fails with
@@ -157,7 +188,13 @@ wt stop --all                    # stop every running local model, then the omlx
   none, and it ends `nothing was stopped`. When the picker does have models
   to list, it prints one line after it for a provider it could not read
   (`wt: could not tell what is running on mtplx — ...`): the list is then
-  not everything that may be running.
+  not everything that may be running. The picker lists running models, so
+  it has no row for an mtplx that is still loading and stops none; wt names
+  it instead, in place of `no running local models` or after the picker:
+  `wt: mtplx is still loading (pid N) — "wt stop mtplx" or "wt stop --all" stops it`.
+  The other two things a pidfile can name are reported as `wt stop mtplx`
+  reports them: the `left alone` note, and exit 1 with
+  `cannot tell whether mtplx is still loading`.
 
 ### In-use confirmation
 

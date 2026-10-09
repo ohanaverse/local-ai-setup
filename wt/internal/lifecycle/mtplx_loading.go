@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,6 +64,46 @@ func StopLoading(ctx context.Context, cfg *config.Config, providerID string, pid
 	return nil
 }
 
+// StopInterruptedError is StopLoading ended by its context (Ctrl+C) while it
+// waited for a process it had already signalled. The server has the signal
+// and, unless it ignores it, exits a moment later: the caller must not report
+// it as "not stopped". wt did not see it go, so the pidfile, the start record
+// and the family's routes are as they were.
+type StopInterruptedError struct {
+	PID    int
+	Signal string // "SIGTERM" or "SIGKILL": the last signal sent
+	Err    error  // the context's error
+}
+
+func (e *StopInterruptedError) Error() string {
+	return fmt.Sprintf("%v — %s was sent to mtplx (pid %d) and wt did not wait for it to exit", e.Err, e.Signal, e.PID)
+}
+
+func (e *StopInterruptedError) Unwrap() error { return e.Err }
+
+// readOwnFile reads path only when it is a regular file that uid owns; ok is
+// false for anything else. The pidfile and the start record live in /tmp,
+// where another local user can create either one while it is absent. A file
+// this user did not write names nothing wt may signal, so it reads as no file
+// at all. The check is made on the open descriptor, and a symlink is not
+// followed, so the file checked is the file read.
+func readOwnFile(path string, uid int) (b []byte, ok bool) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	if st, isStat := fi.Sys().(*syscall.Stat_t); !isStat || int(st.Uid) != uid {
+		return nil, false
+	}
+	b, err = io.ReadAll(io.LimitReader(f, 4096))
+	return b, err == nil
+}
+
 // startRecord is what wt writes beside the pidfile when it spawns the server.
 // The pidfile itself stays a bare pid, the format llmbench's backend reads and
 // writes on the same path; the record binds that pid to one process by its
@@ -110,10 +151,11 @@ func writeFileAtomic(path string, b []byte) error {
 
 // recordedStart is the start time wt recorded for pid, "" when there is no
 // record of that pid (an older wt's pidfile, llmbench's, or another start's
-// record left behind).
+// record left behind) or the record is not this user's own file
+// (readOwnFile): the record is what allows a signal to a whole process group.
 func (e *env) recordedStart(pid int) string {
-	b, err := os.ReadFile(e.mtplxProc.startfile())
-	if err != nil {
+	b, ok := readOwnFile(e.mtplxProc.startfile(), os.Getuid())
+	if !ok {
 		return ""
 	}
 	var r startRecord
@@ -152,13 +194,14 @@ func notMtplxServer(info procInfo, port int, wantStart string) string {
 }
 
 // loadingMtplx reads the pidfile and decides what it names. In order: the
-// file must hold one pid greater than 1 that is not wt itself; the process
-// table must have a live (not zombie) process for it; and that process must
-// pass notMtplxServer. It changes nothing: a stale pidfile is left where it
-// is, as `wt start` leaves it.
+// file must be this user's own regular file (readOwnFile) and hold one pid
+// greater than 1 that is not wt itself; the process table must have a live
+// process for it — not a zombie, and not one already exiting; and that process
+// must pass notMtplxServer. It changes nothing: a stale pidfile is left where
+// it is, as `wt start` leaves it.
 func (e *env) loadingMtplx(cfg *config.Config) (mtplxIdent, Loading) {
-	b, err := os.ReadFile(e.mtplxProc.pidfile)
-	if err != nil {
+	b, ok := readOwnFile(e.mtplxProc.pidfile, os.Getuid())
+	if !ok {
 		return mtplxIdent{}, Loading{}
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
@@ -169,7 +212,7 @@ func (e *env) loadingMtplx(cfg *config.Config) (mtplxIdent, Loading) {
 	if err != nil {
 		return mtplxIdent{}, Loading{Err: fmt.Errorf("the mtplx pidfile names pid %d and wt could not inspect it: %w", pid, err)}
 	}
-	if !found || info.zombie {
+	if !found || info.zombie || info.exiting {
 		return mtplxIdent{}, Loading{}
 	}
 	_, _, port := mtplxEndpoint(cfg)
@@ -182,9 +225,10 @@ func (e *env) loadingMtplx(cfg *config.Config) (mtplxIdent, Loading) {
 
 // stopLoadingMtplx is StopLoading's injectable core. SIGTERM, a wait of the
 // grace `mtplx stop` is given, then — only if the process table still shows
-// the same process, still an mtplx server — SIGKILL and a second wait. Every
-// outcome but "confirmed gone" is an error, and the pidfile is removed only
-// on that one.
+// the same process, still an mtplx server — SIGKILL and a second wait. A
+// process that is already exiting when the grace ends (the kernel is still
+// freeing its memory) gets the second wait and no SIGKILL. Every outcome but
+// "confirmed gone" is an error, and the pidfile is removed only on that one.
 func (e *env) stopLoadingMtplx(ctx context.Context, cfg *config.Config, pid int) error {
 	id, l := e.loadingMtplx(cfg)
 	if l.Err != nil {
@@ -200,7 +244,7 @@ func (e *env) stopLoadingMtplx(ctx context.Context, cfg *config.Config, pid int)
 	if err := e.signal(target, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("stopping mtplx (pid %d): %w", pid, err)
 	}
-	gone, err := e.waitGone(ctx, id, e.stopGrace)
+	gone, err := e.waitGone(ctx, id, e.stopGrace, "SIGTERM")
 	if err != nil {
 		return err
 	}
@@ -210,27 +254,33 @@ func (e *env) stopLoadingMtplx(ctx context.Context, cfg *config.Config, pid int)
 			return fmt.Errorf("cannot confirm mtplx (pid %d) stopped: %w", pid, err)
 		}
 		if found && !info.zombie && info.start == id.start {
-			_, _, port := mtplxEndpoint(cfg)
-			if why := notMtplxServer(info, port, id.start); why != "" {
-				return fmt.Errorf("pid %d outlived SIGTERM and is now a process %s — not killed", pid, why)
+			sent := "SIGTERM"
+			if !info.exiting {
+				_, _, port := mtplxEndpoint(cfg)
+				if why := notMtplxServer(info, port, id.start); why != "" {
+					return fmt.Errorf("pid %d outlived SIGTERM and is now a process %s — not killed", pid, why)
+				}
+				target = pid
+				if id.group && info.pgid == pid {
+					target = -pid
+				}
+				if err := e.signal(target, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+					return fmt.Errorf("killing mtplx (pid %d): %w", pid, err)
+				}
+				sent = "SIGKILL"
 			}
-			target = pid
-			if id.group && info.pgid == pid {
-				target = -pid
-			}
-			if err := e.signal(target, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				return fmt.Errorf("killing mtplx (pid %d): %w", pid, err)
-			}
-			if gone, err = e.waitGone(ctx, id, e.stopTimeout); err != nil {
+			if gone, err = e.waitGone(ctx, id, e.stopTimeout, sent); err != nil {
 				return err
-			} else if !gone {
+			} else if !gone && sent == "SIGKILL" {
 				return fmt.Errorf("mtplx (pid %d) is still running after SIGKILL", pid)
+			} else if !gone {
+				return fmt.Errorf("mtplx (pid %d) has not finished exiting after SIGTERM — not killed: wt could no longer verify it", pid)
 			}
 		}
 	}
 	// Confirmed gone. Remove the pidfile as a failed start's cleanup does —
 	// unless a new start has put its own pid there since.
-	if b, err := os.ReadFile(e.mtplxProc.pidfile); err == nil && strings.TrimSpace(string(b)) == strconv.Itoa(pid) {
+	if b, ok := readOwnFile(e.mtplxProc.pidfile, os.Getuid()); ok && strings.TrimSpace(string(b)) == strconv.Itoa(pid) {
 		_ = os.Remove(e.mtplxProc.pidfile)
 	}
 	if e.recordedStart(pid) != "" {
@@ -241,9 +291,11 @@ func (e *env) stopLoadingMtplx(ctx context.Context, cfg *config.Config, pid int)
 
 // waitGone polls the process table until id's process is gone — no such pid,
 // a zombie, or a pid that now belongs to a process with another start time —
-// or the wait is over. A process table that stops answering is an error, not
-// "gone"; so is ctx ending.
-func (e *env) waitGone(ctx context.Context, id mtplxIdent, wait time.Duration) (bool, error) {
+// or the wait is over. A process that is exiting is still there. A process
+// table that stops answering is an error, not "gone"; so is ctx ending, which
+// is reported as a *StopInterruptedError naming sent, the signal the process
+// already has.
+func (e *env) waitGone(ctx context.Context, id mtplxIdent, wait time.Duration, sent string) (bool, error) {
 	deadline := time.Now().Add(wait)
 	for {
 		info, found, err := e.describe(id.pid)
@@ -258,7 +310,7 @@ func (e *env) waitGone(ctx context.Context, id mtplxIdent, wait time.Duration) (
 		}
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, &StopInterruptedError{PID: id.pid, Signal: sent, Err: ctx.Err()}
 		case <-time.After(e.pollInterval / 10):
 		}
 	}

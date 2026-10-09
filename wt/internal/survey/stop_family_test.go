@@ -2,7 +2,10 @@ package survey
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -158,9 +161,33 @@ func TestStopPickerReportsFamiliesItCouldNotRead(t *testing.T) {
 		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
 	}}
 	var out bytes.Buffer
-	offered, unknown := runStopPickerWith(strings.NewReader(""), &out, &config.Config{}, h.deps(), Options{IncludeInUse: true})
-	if offered || strings.Join(unknown, ",") != "mtplx" || out.Len() != 0 {
-		t.Fatalf("offered = %v unknown = %v out = %q, want nothing offered, mtplx unknown, no output", offered, unknown, out.String())
+	offered, unknown, loading := runStopPickerWith(strings.NewReader(""), &out, &config.Config{}, h.deps(), Options{IncludeInUse: true})
+	if offered || strings.Join(unknown, ",") != "mtplx" || out.Len() != 0 || len(loading) != 0 {
+		t.Fatalf("offered = %v unknown = %v loading = %v out = %q, want nothing offered, mtplx unknown, nothing loading, no output", offered, unknown, loading, out.String())
+	}
+}
+
+// TestStopPickerReportsWhatIsStillLoading verifies the picker hands back what
+// the pidfile behind a refused port said, for the family it said it about
+// and no other. An mtplx that is still loading serves no model, so the picker
+// has no row for it; bare `wt stop` printed "no running local models" over a
+// process reading tens of gigabytes, and needs this to say otherwise.
+func TestStopPickerReportsWhatIsStillLoading(t *testing.T) {
+	h := &stopHarness{
+		snap: localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusUnreachable, "omlx": localmodels.StatusUnreachable},
+			Down:      map[string]bool{"mtplx": true, "omlx": true},
+		},
+		loading: map[string]lifecycle.Loading{"mtplx": {PID: 4242}},
+	}
+	cfg := &config.Config{Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal}, {ID: "omlx", Location: config.LocationLocal}}}
+	var out bytes.Buffer
+	offered, unknown, loading := runStopPickerWith(strings.NewReader(""), &out, cfg, h.deps(), Options{IncludeInUse: true})
+	if offered || len(unknown) != 0 || out.Len() != 0 {
+		t.Errorf("offered = %v unknown = %v out = %q, want nothing offered, nothing unknown, no output", offered, unknown, out.String())
+	}
+	if len(loading) != 1 || loading["mtplx"] != (lifecycle.Loading{PID: 4242}) {
+		t.Errorf("loading = %+v, want only mtplx, pid 4242", loading)
 	}
 }
 
@@ -237,5 +264,33 @@ func TestStopStateReadsThePidfileOnlyBehindARefusedPort(t *testing.T) {
 				t.Errorf("pidfile read for %v, want %v", h.loadingAsked, wantAsked)
 			}
 		})
+	}
+}
+
+// TestProcessSeamsAreClosedInThisPackage pins what TestMain arms: the mtplx
+// pidfile is a scratch path and the process-table read fails, even with a
+// live pid in that pidfile. A test here that reaches the production stop
+// state (ReadStopState, PickerWith) would otherwise read the developer's
+// mtplx pidfile and inspect their processes; this is the test that fails when
+// lifecycle.IsolateProcessesForTest() is dropped from TestMain.
+func TestProcessSeamsAreClosedInThisPackage(t *testing.T) {
+	pidfile := os.Getenv("WT_MTPLX_PIDFILE")
+	if pidfile == "" || strings.HasPrefix(pidfile, "/tmp/local-ai-setup") || strings.HasPrefix(pidfile, "/private/tmp/local-ai-setup") {
+		t.Fatalf("WT_MTPLX_PIDFILE = %q, want a scratch path: TestMain no longer isolates the mtplx pidfile", pidfile)
+	}
+	cfg := &config.Config{Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal}}}
+	if l := lifecycle.LoadingServer(cfg, "mtplx"); l != (lifecycle.Loading{}) {
+		t.Errorf("LoadingServer = %+v, want nothing: no pidfile exists at the scratch path", l)
+	}
+	dir := filepath.Dir(pidfile)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(os.Getppid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if l := lifecycle.LoadingServer(cfg, "mtplx"); l.Err == nil || !strings.Contains(l.Err.Error(), "not stubbed") {
+		t.Errorf("LoadingServer over a live pid = %+v, want the process seam's refusal", l)
 	}
 }

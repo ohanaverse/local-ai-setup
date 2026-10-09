@@ -234,10 +234,19 @@
   table cannot be read the commands exit 1 with
   `cannot tell whether mtplx is still loading`. wt sends SIGTERM, waits 10
   seconds, checks the process is still the same one, and only then sends
-  SIGKILL; a stop it cannot confirm prints `failed` and exits 1. A port that
-  refuses with no such process behind it is still "nothing running".
+  SIGKILL; a process that is already exiting by then (a large server takes
+  a moment to free its memory) is waited for and not killed. A stop it
+  cannot confirm prints `failed` and exits 1. Ctrl+C during the wait prints
+  `cancelled` and says the server was already sent SIGTERM, instead of
+  `mtplx was not stopped`. A port that
+  refuses with no such process behind it is still "nothing running", and so
+  is a pidfile that is a symlink or that another user owns.
   `wt stop <mtplx model>` during a load stops nothing and names
-  `wt stop mtplx`.
+  `wt stop mtplx`. Bare `wt stop` has no picker row for a loading mtplx and
+  stops none: it prints
+  `wt: mtplx is still loading (pid N) — "wt stop mtplx" or "wt stop --all" stops it`
+  where it used to print `wt: no running local models`. An mtplx started by
+  hand has no pidfile and is still not seen while it loads.
 - `wt stop omlx`, `wt stop --all` and the mtplx stop above ask the in-use
   question whenever a live wt session uses any model of the provider they are
   about to stop as a whole, counted across the provider and not from the

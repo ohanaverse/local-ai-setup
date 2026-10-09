@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
 // Tests for the mtplx that is still loading (#308): its port refuses, so the
@@ -48,6 +49,10 @@ type procTable struct {
 	describe error // every describe fails with it
 	signals  []string
 	onSignal func(pt *procTable, pid int, sig syscall.Signal)
+	// onDescribe runs before each read, so a test can change the table as
+	// time passes or by how often it was read.
+	onDescribe func(pt *procTable)
+	signalErr  error // what signal returns, after recording and onSignal
 }
 
 func (pt *procTable) env(t *testing.T) *env {
@@ -58,6 +63,9 @@ func (pt *procTable) env(t *testing.T) *env {
 	e.stopGrace = 60 * time.Millisecond
 	e.stopTimeout = 60 * time.Millisecond
 	e.describe = func(pid int) (procInfo, bool, error) {
+		if pt.onDescribe != nil {
+			pt.onDescribe(pt)
+		}
 		if pt.describe != nil {
 			return procInfo{}, false, pt.describe
 		}
@@ -69,7 +77,7 @@ func (pt *procTable) env(t *testing.T) *env {
 		if pt.onSignal != nil {
 			pt.onSignal(pt, pid, sig)
 		}
-		return nil
+		return pt.signalErr
 	}
 	return e
 }
@@ -110,6 +118,8 @@ func TestIsMtplxServerMatchesOnlyTheServerWtSpawns(t *testing.T) {
 		"mtplx as argv[0]":          {wrapperArgv(8003)[1:], true},
 		"daemon":                    {daemonArgv(8003), true},
 		"daemon without -P":         {[]string{"python3", "-m", "mtplx.server.openai", "--port", "8003"}, true},
+		"framework Python daemon":   {[]string{"/opt/homebrew/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python", "-m", "mtplx.server.openai", "--port", "8003"}, true},
+		"framework Python wrapper":  {[]string{"/x/Python.app/Contents/MacOS/Python", "/b/mtplx", "serve", "--port", "8003"}, true},
 		"another port":              {wrapperArgv(8004), false},
 		"daemon on another port":    {daemonArgv(18003), false},
 		"port as one token":         {[]string{"/bin/sh", "/b/mtplx", "serve", "--port=8003"}, false},
@@ -134,6 +144,10 @@ func TestIsMtplxServerMatchesOnlyTheServerWtSpawns(t *testing.T) {
 // alive, the current user's, an mtplx server on this port, and — when wt
 // recorded a start time — the process that started then. A pidfile an older
 // wt (or llmbench) wrote holds only the pid and is judged by the command line.
+// The process group is wt's to signal only when wt recorded the start and the
+// pid still leads the group. A pidfile or record that is a symlink is not
+// this user's own file and reads as absent — both live in /tmp, where another
+// user can plant one — and a process that is already exiting is not a server.
 // Nothing here may signal: the read is what `wt stop` asks its question on.
 func TestLoadingMtplxNeverRestsOnThePidAlone(t *testing.T) {
 	const pid = 4242
@@ -142,9 +156,15 @@ func TestLoadingMtplxNeverRestsOnThePidAlone(t *testing.T) {
 	otherUser.uid = os.Getuid() + 1
 	zombie := live
 	zombie.zombie = true
+	inAnothersGroup := live
+	inAnothersGroup.pgid = 77
+	exiting := mine(pid, "100.5", nil)
+	exiting.exiting = true
 	cases := []struct {
 		name            string
 		pidfile, record string // "" = no such file
+		linkPidfile     bool   // the pidfile is a symlink to a file with that content
+		linkRecord      bool   // so is the record
 		procs           map[int]procInfo
 		describe        error
 		wantPID         int
@@ -171,6 +191,11 @@ func TestLoadingMtplxNeverRestsOnThePidAlone(t *testing.T) {
 		{name: "recorded start differs: the pid was recycled", pidfile: "4242", record: `{"pid":4242,"started":"99.0"}`, procs: map[int]procInfo{pid: live}, wantStray: "did not start when the server wt started did"},
 		{name: "record of another pid is ignored", pidfile: "4242", record: `{"pid":7,"started":"99.0"}`, procs: map[int]procInfo{pid: live}, wantPID: pid},
 		{name: "garbage record is ignored", pidfile: "4242", record: `{"pid":`, procs: map[int]procInfo{pid: live}, wantPID: pid},
+		{name: "recorded, but the pid does not lead its group", pidfile: "4242", record: `{"pid":4242,"started":"100.5"}`, procs: map[int]procInfo{pid: inAnothersGroup}, wantPID: pid},
+		{name: "exiting", pidfile: "4242", record: `{"pid":4242,"started":"100.5"}`, procs: map[int]procInfo{pid: exiting}},
+		{name: "the pidfile is a symlink", pidfile: "4242", linkPidfile: true, procs: map[int]procInfo{pid: live}},
+		{name: "the record is a symlink: no group", pidfile: "4242", record: `{"pid":4242,"started":"100.5"}`, linkRecord: true, procs: map[int]procInfo{pid: live}, wantPID: pid},
+		{name: "the record is a symlink: its start time is not read", pidfile: "4242", record: `{"pid":4242,"started":"99.0"}`, linkRecord: true, procs: map[int]procInfo{pid: live}, wantPID: pid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,6 +206,12 @@ func TestLoadingMtplxNeverRestsOnThePidAlone(t *testing.T) {
 			}
 			if tc.record != "" {
 				writeStartRecord(t, e, tc.record)
+			}
+			if tc.linkPidfile {
+				symlinked(t, e.mtplxProc.pidfile)
+			}
+			if tc.linkRecord {
+				symlinked(t, e.mtplxProc.startfile())
 			}
 			id, l := e.loadingMtplx(loadCfg())
 			if l.PID != tc.wantPID || id.pid != tc.wantPID || id.group != tc.wantGroup {
@@ -196,11 +227,51 @@ func TestLoadingMtplxNeverRestsOnThePidAlone(t *testing.T) {
 				t.Errorf("signals = %v, want none: reading the state signals nothing", pt.signals)
 			}
 			if tc.pidfile != "" {
-				if _, err := os.Stat(e.mtplxProc.pidfile); err != nil {
+				if _, err := os.Lstat(e.mtplxProc.pidfile); err != nil {
 					t.Errorf("the pidfile was removed by a read (%v): wt start does not prune it, and neither does this", err)
 				}
 			}
 		})
+	}
+}
+
+// symlinked moves the file at path aside and leaves a symlink to it at path.
+func symlinked(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Rename(path, path+".target"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path+".target", path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReadOwnFileReadsOnlyThisUsersRegularFile verifies the read behind the
+// pidfile and the start record: a regular file the given user owns is read;
+// one another user owns, a symlink (even to such a file), a directory and a
+// missing path are all "no file". Both files live in the shared /tmp, where
+// another local user can create either while it is absent, and the record is
+// what lets wt signal a whole process group.
+func TestReadOwnFileReadsOnlyThisUsersRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	own := filepath.Join(dir, "own")
+	if err := os.WriteFile(own, []byte("4242"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if b, ok := readOwnFile(own, os.Getuid()); !ok || string(b) != "4242" {
+		t.Errorf("own file = %q, %v; want it read", b, ok)
+	}
+	if _, ok := readOwnFile(own, os.Getuid()+1); ok {
+		t.Error("a file another user owns was read")
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(own, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"symlink": link, "directory": dir, "missing": filepath.Join(dir, "none")} {
+		if _, ok := readOwnFile(path, os.Getuid()); ok {
+			t.Errorf("%s was read as this user's file", name)
+		}
 	}
 }
 
@@ -228,17 +299,28 @@ func filesLeft(e *env) (pidfile, record bool) {
 // server (it is recorded as wt's own start), to the pid alone when it is not
 // — a pidfile from an older wt or from llmbench says nothing about who made
 // the group — and, once the process is gone, the pidfile and the start record
-// removed. No SIGKILL follows a server that went on SIGTERM.
+// removed. A recorded server that no longer leads its own group is signalled
+// alone too: the group is then somebody else's. No SIGKILL follows a server
+// that went on SIGTERM, and a SIGTERM that finds the process already gone
+// (ESRCH) is a stop, not a failure.
 func TestStopLoadingMtplxTerminatesTheVerifiedServer(t *testing.T) {
 	for name, tc := range map[string]struct {
 		recorded bool
+		pgid     int
+		sigErr   error
 		want     string
 	}{
-		"started by this wt: its group": {true, "-4242:15"},
-		"pid-only pidfile: the pid":     {false, "4242:15"},
+		"started by this wt: its group":           {true, 4242, nil, "-4242:15"},
+		"pid-only pidfile: the pid":               {false, 4242, nil, "4242:15"},
+		"recorded, not the group's leader: alone": {true, 77, nil, "4242:15"},
+		"gone before the signal landed":           {true, 4242, syscall.ESRCH, "-4242:15"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			pt, e := loadingEnv(t, tc.recorded)
+			info := pt.procs[4242]
+			info.pgid = tc.pgid
+			pt.procs[4242] = info
+			pt.signalErr = tc.sigErr
 			pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) { delete(pt.procs, 4242) }
 			if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
 				t.Fatal(err)
@@ -275,6 +357,36 @@ func TestStopLoadingMtplxKillsOnlyTheSameProcess(t *testing.T) {
 		}
 		if pidfile, _ := filesLeft(e); pidfile {
 			t.Error("pidfile left after a confirmed kill")
+		}
+	})
+	t.Run("left its group during the grace: only the pid is killed", func(t *testing.T) {
+		pt, e := loadingEnv(t, true)
+		pt.onSignal = func(pt *procTable, _ int, sig syscall.Signal) {
+			if sig == syscall.SIGKILL {
+				delete(pt.procs, 4242)
+				return
+			}
+			info := pt.procs[4242]
+			info.pgid = 77
+			pt.procs[4242] = info
+		}
+		if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(pt.signals, []string{"-4242:15", "4242:9"}) {
+			t.Errorf("signals = %v, want SIGTERM to the group, then SIGKILL to the pid alone", pt.signals)
+		}
+	})
+	t.Run("gone before the kill landed: stopped", func(t *testing.T) {
+		pt, e := loadingEnv(t, true)
+		pt.onSignal = func(pt *procTable, _ int, sig syscall.Signal) {
+			if sig == syscall.SIGKILL {
+				delete(pt.procs, 4242)
+				pt.signalErr = syscall.ESRCH
+			}
+		}
+		if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+			t.Fatalf("err = %v, want nil: ESRCH from the kill means the process is gone", err)
 		}
 	})
 	t.Run("the pid was recycled during the grace: gone, no kill", func(t *testing.T) {
@@ -336,6 +448,32 @@ func TestStopLoadingMtplxNeverReportsAServerItLeftUp(t *testing.T) {
 			t.Errorf("signals = %v, want no SIGKILL sent blind", pt.signals)
 		}
 	})
+	t.Run("process table unreadable when the grace ends", func(t *testing.T) {
+		// The read that fails is the one made before SIGKILL, after the
+		// wait saw the process still there: with no grace, the second read
+		// after the signal.
+		pt, e := loadingEnv(t, true)
+		e.stopGrace = 0
+		reads := -1
+		pt.onSignal = func(*procTable, int, syscall.Signal) { reads = 0 }
+		pt.onDescribe = func(pt *procTable) {
+			if reads >= 0 {
+				if reads++; reads == 2 {
+					pt.describe = errors.New("sysctl: boom")
+				}
+			}
+		}
+		err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+		if err == nil || !strings.Contains(err.Error(), "cannot confirm mtplx (pid 4242) stopped") {
+			t.Fatalf("err = %v, want cannot-confirm: an unread process is not a stopped one", err)
+		}
+		if !slices.Equal(pt.signals, []string{"-4242:15"}) {
+			t.Errorf("signals = %v, want no SIGKILL sent blind", pt.signals)
+		}
+		if pidfile, record := filesLeft(e); !pidfile || !record {
+			t.Errorf("pidfile left = %v, record left = %v, want both kept", pidfile, record)
+		}
+	})
 	t.Run("signal refused", func(t *testing.T) {
 		pt, e := loadingEnv(t, true)
 		e.signal = func(int, syscall.Signal) error { return syscall.EPERM }
@@ -384,20 +522,217 @@ func TestStopLoadingMtplxSignalsNothingItDidNotJustVerify(t *testing.T) {
 	}
 }
 
-// TestStopLoadingMtplxCancelledSendsNoKill verifies Ctrl+C during the grace
-// ends the stop with the context's error and no SIGKILL: `wt stop` prints
-// "cancelled" for it, and the server keeps the SIGTERM it already has.
+// TestStopLoadingMtplxCancelledSendsNoKill verifies Ctrl+C during a wait
+// ends the stop with no further signal and an error that says what the
+// server already has: a *StopInterruptedError naming the pid and the last
+// signal sent, wrapping the context's error. `wt stop` prints "cancelled" for
+// it and must not say the server "was not stopped" — it has SIGTERM and, in
+// the normal case, exits a moment later.
 func TestStopLoadingMtplxCancelledSendsNoKill(t *testing.T) {
-	pt, e := loadingEnv(t, true)
-	e.stopGrace = 10 * time.Second
-	ctx, cancel := context.WithCancel(context.Background())
-	pt.onSignal = func(*procTable, int, syscall.Signal) { cancel() }
-	err := e.stopLoadingMtplx(ctx, loadCfg(), 4242)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
+	for name, tc := range map[string]struct {
+		cancelOn syscall.Signal
+		grace    time.Duration
+		signals  []string
+		sent     string
+	}{
+		"during the grace":        {syscall.SIGTERM, 10 * time.Second, []string{"-4242:15"}, "SIGTERM"},
+		"after the kill was sent": {syscall.SIGKILL, 20 * time.Millisecond, []string{"-4242:15", "-4242:9"}, "SIGKILL"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pt, e := loadingEnv(t, true)
+			e.stopGrace, e.stopTimeout = tc.grace, 10*time.Second
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			pt.onSignal = func(_ *procTable, _ int, sig syscall.Signal) {
+				if sig == tc.cancelOn {
+					cancel()
+				}
+			}
+			err := e.stopLoadingMtplx(ctx, loadCfg(), 4242)
+			var interrupted *StopInterruptedError
+			if !errors.Is(err, context.Canceled) || !errors.As(err, &interrupted) {
+				t.Fatalf("err = %v, want a *StopInterruptedError wrapping context.Canceled", err)
+			}
+			if interrupted.PID != 4242 || interrupted.Signal != tc.sent {
+				t.Errorf("interrupted = %+v, want pid 4242 and %s", interrupted, tc.sent)
+			}
+			if want := tc.sent + " was sent to mtplx (pid 4242) and wt did not wait for it to exit"; !strings.Contains(err.Error(), want) {
+				t.Errorf("err = %q, want it to say %q", err, want)
+			}
+			if !slices.Equal(pt.signals, tc.signals) {
+				t.Errorf("signals = %v, want %v", pt.signals, tc.signals)
+			}
+			if pidfile, record := filesLeft(e); !pidfile || !record {
+				t.Errorf("pidfile left = %v, record left = %v, want both kept: wt did not see the server go", pidfile, record)
+			}
+		})
 	}
-	if !slices.Equal(pt.signals, []string{"-4242:15"}) {
-		t.Errorf("signals = %v, want SIGTERM only", pt.signals)
+}
+
+// TestStopLoadingMtplxWaitsOutAProcessThatIsExiting verifies the stop of a
+// server the size mtplx is. After SIGTERM such a process stays in the process
+// table with no arguments to read while the kernel frees its memory — about a
+// quarter of a second at 28 GB, longer for a bigger model. That is a process
+// on its way out: wt keeps waiting, sends no SIGKILL, and reports the stop
+// done when the process is gone, also when the exit outlasts the grace. wt
+// used to give up reading it after 200 ms and print "failed" over a server
+// that had stopped. One that never finishes exiting is an error, still with
+// no SIGKILL: wt can no longer verify what the pid is.
+func TestStopLoadingMtplxWaitsOutAProcessThatIsExiting(t *testing.T) {
+	for name, tc := range map[string]struct {
+		exitsAfter time.Duration // 0 = never
+		secondWait time.Duration
+		wantErr    string
+	}{
+		"gone within the grace":         {5 * time.Millisecond, 5 * time.Second, ""},
+		"gone only after the grace":     {150 * time.Millisecond, 5 * time.Second, ""},
+		"never finishes: no kill, fail": {0, 60 * time.Millisecond, "has not finished exiting after SIGTERM"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pt, e := loadingEnv(t, true)
+			e.stopGrace, e.stopTimeout = 60*time.Millisecond, tc.secondWait
+			var goneAt time.Time
+			pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) {
+				info := pt.procs[4242]
+				info.exiting, info.argv = true, nil
+				pt.procs[4242] = info
+				if tc.exitsAfter > 0 {
+					goneAt = time.Now().Add(tc.exitsAfter)
+				}
+			}
+			pt.onDescribe = func(pt *procTable) {
+				if !goneAt.IsZero() && time.Now().After(goneAt) {
+					delete(pt.procs, 4242)
+				}
+			}
+			err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+			if (tc.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			if !slices.Equal(pt.signals, []string{"-4242:15"}) {
+				t.Errorf("signals = %v, want one SIGTERM and no SIGKILL", pt.signals)
+			}
+			if pidfile, record := filesLeft(e); pidfile != (err != nil) || record != (err != nil) {
+				t.Errorf("pidfile left = %v, record left = %v after err = %v; want them removed exactly when the stop is confirmed", pidfile, record, err)
+			}
+		})
+	}
+}
+
+// TestStopLoadingMtplxLeavesANewerStartsPidfile verifies the cleanup after a
+// confirmed stop removes the pidfile only while it still names the process
+// that was stopped. A `wt start` that began while the stop waited has written
+// its own pid there, and deleting that file would leave the new server with
+// nothing a later `wt stop` could find it by.
+func TestStopLoadingMtplxLeavesANewerStartsPidfile(t *testing.T) {
+	pt, e := loadingEnv(t, true)
+	pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) {
+		delete(pt.procs, 4242)
+		writePidfile(t, e, "5000")
+	}
+	if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(e.mtplxProc.pidfile); string(b) != "5000" {
+		t.Errorf("pidfile = %q, want the newer start's pid 5000 left in place", b)
+	}
+}
+
+// stubProcessSeams points the production env at a fake process table and a
+// pidfile under t.TempDir() for one test, so the exported LoadingServer and
+// StopLoading can be run whole. It returns the table and the pidfile's path.
+func stubProcessSeams(t *testing.T) (*procTable, string) {
+	t.Helper()
+	pt := &procTable{procs: map[int]procInfo{4242: mine(4242, "100.5", daemonArgv(loadPort))}}
+	fake := pt.env(t)
+	oldDescribe, oldSignal := describeProc, signalProc
+	describeProc, signalProc = fake.describe, fake.signal
+	t.Cleanup(func() { describeProc, signalProc = oldDescribe, oldSignal })
+	t.Setenv(mtplxPidfileEnv, fake.mtplxProc.pidfile)
+	writePidfile(t, fake, "4242")
+	return pt, fake.mtplxProc.pidfile
+}
+
+// TestLoadingStopIsMtplxOnly verifies the pidfile answers for mtplx and for
+// nothing else: with a verified mtplx loading, LoadingServer reports it for
+// mtplx and reports nothing for omlx or ollama, and StopLoading for another
+// provider is refused as unsupported with no signal. Without the two guards
+// a refused omlx or ollama would be handed mtplx's pid, and `wt stop omlx`
+// could end the mtplx server.
+func TestLoadingStopIsMtplxOnly(t *testing.T) {
+	pt, _ := stubProcessSeams(t)
+	if l := LoadingServer(loadCfg(), "mtplx"); l.PID != 4242 {
+		t.Fatalf("LoadingServer(mtplx) = %+v, want pid 4242: the fixture is wrong", l)
+	}
+	for _, id := range []string{"omlx", "omlx-6bit", "ollama"} {
+		if l := LoadingServer(loadCfg(), id); l != (Loading{}) {
+			t.Errorf("LoadingServer(%s) = %+v, want nothing: only mtplx has a pidfile", id, l)
+		}
+		var unsupported *UnsupportedError
+		if err := StopLoading(context.Background(), loadCfg(), id, 4242); !errors.As(err, &unsupported) {
+			t.Errorf("StopLoading(%s) = %v, want *UnsupportedError", id, err)
+		}
+	}
+	if len(pt.signals) != 0 {
+		t.Errorf("signals = %v, want none", pt.signals)
+	}
+}
+
+// TestStopLoadingRemovesTheFamilysRoutesOnlyAfterAConfirmedStop verifies
+// StopLoading does what Stop does once the server is gone — every mtplx route
+// leaves config.yaml — and writes no route when the stop was not confirmed. A
+// route left behind sends requests to a port nothing listens on; one removed
+// over a server that is still up hides a running model from the proxy.
+func TestStopLoadingRemovesTheFamilysRoutesOnlyAfterAConfirmedStop(t *testing.T) {
+	t.Run("not confirmed: no route write", func(t *testing.T) {
+		pt, _ := stubProcessSeams(t)
+		calls, _ := stubRoutes(t, litellm.Result{}, nil)
+		pt.signalErr = syscall.EPERM
+		if err := StopLoading(context.Background(), loadCfg(), "mtplx", 4242); !errors.Is(err, syscall.EPERM) {
+			t.Fatalf("err = %v, want EPERM", err)
+		}
+		if len(*calls) != 0 {
+			t.Errorf("route writes = %+v, want none", *calls)
+		}
+	})
+	t.Run("confirmed: the family's routes go", func(t *testing.T) {
+		pt, pidfile := stubProcessSeams(t)
+		calls, _ := stubRoutes(t, litellm.Result{}, nil)
+		pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) { delete(pt.procs, 4242) }
+		if err := StopLoading(context.Background(), loadCfg(), "mtplx", 4242); err != nil {
+			t.Fatal(err)
+		}
+		if len(*calls) != 1 || !slices.Equal((*calls)[0].families, []string{"mtplx"}) || len((*calls)[0].add) != 0 {
+			t.Errorf("route writes = %+v, want one removal of the mtplx family", *calls)
+		}
+		if !slices.Equal(pt.signals, []string{"4242:15"}) {
+			t.Errorf("signals = %v, want SIGTERM to the pid", pt.signals)
+		}
+		if _, err := os.Stat(pidfile); !os.IsNotExist(err) {
+			t.Errorf("pidfile after a confirmed stop: stat err = %v, want it removed", err)
+		}
+	})
+}
+
+// TestMtplxStartThatFailsLeavesNoPidfileAndNoRecord verifies a start that
+// fails after the server was spawned removes both files it wrote: the pidfile
+// and the start record beside it. A record left behind would be found by the
+// next server to get that pid, and would vouch for a start wt never made.
+func TestMtplxStartThatFailsLeavesNoPidfileAndNoRecord(t *testing.T) {
+	e, cfg, _, _ := mtplxEnv(t, "die", 0)
+	recorded := false
+	e.describe = func(pid int) (procInfo, bool, error) {
+		recorded = true
+		return procInfo{start: "1700000000.25"}, true, nil
+	}
+	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err == nil {
+		t.Fatal("start of a server that dies while loading succeeded")
+	}
+	if !recorded {
+		t.Fatal("the start never recorded the server: the fixture proves nothing")
+	}
+	if pidfile, record := filesLeft(e); pidfile || record {
+		t.Errorf("pidfile left = %v, start record left = %v, want neither after a failed start", pidfile, record)
 	}
 }
 

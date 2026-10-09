@@ -189,7 +189,10 @@ func TestStopNoArgNeedsTTYAndOpensPicker(t *testing.T) {
 	oldTTY, oldPick := stdinTTY, stopPickerAll
 	t.Cleanup(func() { stdinTTY, stopPickerAll = oldTTY, oldPick })
 	opened, offer := false, true
-	stopPickerAll = func(*config.Config) (bool, []string) { opened = true; return offer, nil }
+	stopPickerAll = func(*config.Config) (bool, []string, map[string]lifecycle.Loading) {
+		opened = true
+		return offer, nil, nil
+	}
 
 	oldState := stopState
 	t.Cleanup(func() { stopState = oldState })

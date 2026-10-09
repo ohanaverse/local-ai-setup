@@ -15,6 +15,12 @@ type procInfo struct {
 	uid    int
 	pgid   int
 	zombie bool
+	// exiting: the process is in the table and has no arguments to give —
+	// the kernel is taking it apart after a fatal signal, which for a server
+	// holding tens of gigabytes takes a noticeable part of a second, before it
+	// becomes a zombie or disappears. argv is then nil, so such a process is
+	// never identified as anything and never signalled.
+	exiting bool
 	// start is the process's start time, in a form that is only ever compared
 	// for equality. It survives exec, so it is the same before and after
 	// `mtplx serve` replaces itself with its daemon.
@@ -82,6 +88,9 @@ func IsolateProcessesForTest() {
 //     that loads the weights: python with `-m mtplx.server.openai` after
 //     nothing but interpreter options.
 //
+// The interpreter's name is compared without regard to case: a macOS
+// framework Python re-execs into `.../Python.app/Contents/MacOS/Python`.
+//
 // Either must be followed by `--port` and this port as two separate
 // arguments. Positions and whole arguments are compared, never substrings, so
 // a command that only mentions the words — `vim mtplx serve --port 8003` — is
@@ -92,7 +101,7 @@ func isMtplxServer(argv []string, port int) bool {
 		rest = 2
 	} else if len(argv) >= 3 {
 		interp := filepath.Base(argv[0])
-		python := strings.HasPrefix(interp, "python")
+		python := strings.HasPrefix(strings.ToLower(interp), "python")
 		if (python || interp == "sh" || interp == "bash") && filepath.Base(argv[1]) == "mtplx" && argv[2] == "serve" {
 			rest = 3
 		} else if python {

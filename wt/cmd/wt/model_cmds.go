@@ -34,9 +34,10 @@ var (
 	stopState   = survey.ReadStopState
 	stopEntries = survey.StopEntries
 	// stopPickerAll runs the in-use-inclusive picker and reports whether it had
-	// anything to offer and which families it could not read, so `wt stop`
-	// needs no inventory probe of its own.
-	stopPickerAll = func(cfg *config.Config) (bool, []string) {
+	// anything to offer, which families it could not read and what the
+	// pidfiles behind refused ports said, so `wt stop` needs no inventory
+	// probe of its own.
+	stopPickerAll = func(cfg *config.Config) (bool, []string, map[string]lifecycle.Loading) {
 		return survey.PickerWith(os.Stdin, os.Stdout, cfg, survey.Options{IncludeInUse: true})
 	}
 	confirmStop = promptStop
@@ -71,7 +72,9 @@ func stopCmd(a *app) *cobra.Command {
 		Long: "Stop a running local model (<provider>/<name>) or every running model of a\n" +
 			"provider (ollama, omlx, omlx-6bit, mtplx). With no argument, shows the\n" +
 			"stop picker (requires a TTY), which also lists models other wt sessions\n" +
-			"are using, marked with their session count.\n\n" +
+			"are using, marked with their session count. The picker lists running\n" +
+			"models, so it has no row for an mtplx that is still loading: wt says so\n" +
+			"and names \"wt stop mtplx\" and --all, which stop it.\n\n" +
 			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
 			"models up; \"wt stop omlx\" stops the service.\n\n" +
 			"--all stops every running local model on every provider at once, then the\n" +
@@ -202,16 +205,19 @@ func haltImpact(fs survey.FamilyState) (sessions int, users []string, blind bool
 // errLoadingUnknown is the error of a stop that found a live pid in a
 // provider's pidfile behind a refused port and could not read the process
 // table to say what it is: neither "nothing running" nor something wt may
-// signal.
-func errLoadingUnknown(provider string, err error) error {
-	return fmt.Errorf("cannot tell whether %s is still loading: %w — nothing was stopped", provider, err)
+// signal. hint ends it with what the command did, as errCannotTell's does: a
+// command that stopped other things must not say nothing was stopped.
+func errLoadingUnknown(provider string, err error, hint string) error {
+	return fmt.Errorf("cannot tell whether %s is still loading: %w%s", provider, err, hint)
 }
 
-// pidfileFindings is what the pidfiles behind refused ports name besides a
-// verified server, one entry per family in provider order: a note for a live
-// process that is not the server (left alone), an error for a process table
-// wt could not read.
-func pidfileFindings(cfg *config.Config, st survey.StopState) (notes []string, errs []error) {
+// pidfileFindings is what the pidfiles behind refused ports name
+// (survey.StopState.Loading), one entry per family in provider order: an
+// error for a process table wt could not read (ending in hint), a note for a
+// live process that is not the server (left alone) and — only for a caller
+// that does not stop it, pickerNote — one for a verified server still loading,
+// naming the commands that do.
+func pidfileFindings(cfg *config.Config, loading map[string]lifecycle.Loading, hint string, pickerNote bool) (notes []string, errs []error) {
 	seen := map[string]bool{}
 	for _, id := range stoppableProviders(cfg) {
 		fam := localmodels.Family(id)
@@ -219,11 +225,13 @@ func pidfileFindings(cfg *config.Config, st survey.StopState) (notes []string, e
 			continue
 		}
 		seen[fam] = true
-		switch l := st.Families[fam].Loading; {
+		switch l := loading[fam]; {
 		case l.Err != nil:
-			errs = append(errs, errLoadingUnknown(id, l.Err))
+			errs = append(errs, errLoadingUnknown(id, l.Err, hint))
 		case l.Stray != "":
 			notes = append(notes, l.Stray)
+		case l.PID > 0 && pickerNote:
+			notes = append(notes, fmt.Sprintf("%s is still loading (pid %d) — %q or \"wt stop --all\" stops it", id, l.PID, "wt stop "+id))
 		}
 	}
 	return notes, errs
@@ -335,7 +343,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	}
 	// What a pidfile behind a refused port names that wt will not signal:
 	// said once everything else is, so it is the last thing on the screen.
-	notes, unknown := pidfileFindings(cfg, st)
+	notes, unknown := pidfileFindings(cfg, st.Loading(), " — nothing was stopped there", false)
 	failures = append(failures, unknown...)
 	defer func() {
 		for _, n := range notes {
@@ -382,7 +390,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 		}
 		cancelled, err := haltProvider(ctx, out, cfg, id, st.Families[localmodels.Family(id)].Loading.PID)
 		if cancelled {
-			failures = append(failures, notHalted(halts[i:]))
+			failures = append(failures, haltCancelled(err, halts[i:]))
 			break
 		}
 		if err != nil {
@@ -429,6 +437,26 @@ func notHalted(ids []string) error {
 	return fmt.Errorf("%w — %s was not stopped", survey.ErrStopCancelled, strings.Join(ids, ", "))
 }
 
+// haltCancelled is the error of a halt of ids[0] that Ctrl+C ended (err is
+// what the halt returned), with ids[1:] the halts that were to follow. A
+// loading server wt had already signalled is not "not stopped": it has the
+// signal and, unless it ignores it, exits a moment later
+// (*lifecycle.StopInterruptedError). The error says that and how to check;
+// the servers after it were not touched, and are named as notHalted names
+// them.
+func haltCancelled(err error, ids []string) error {
+	var sent *lifecycle.StopInterruptedError
+	if !errors.As(err, &sent) {
+		return notHalted(ids)
+	}
+	id := ids[0]
+	signalled := fmt.Errorf("%w — %s (pid %d) was sent %s and wt did not wait for it to exit; run \"wt stop %s\" again to confirm", survey.ErrStopCancelled, id, sent.PID, sent.Signal, id)
+	if len(ids) == 1 {
+		return signalled
+	}
+	return errors.Join(signalled, notHalted(ids[1:]))
+}
+
 // stoppableProviders lists, sorted, the configured provider ids wt can stop.
 // The bare-provider check and its error message both read it, so they cannot
 // disagree about what is valid.
@@ -467,8 +495,20 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	if arg == "" {
 		// The picker takes the one inventory snapshot itself and reports whether
 		// it had anything to offer, so nothing is probed twice.
-		offered, unknown := stopPickerAll(cfg)
+		offered, unknown, loading := stopPickerAll(cfg)
 		hint := unreadHint(cfg, unknown)
+		// What the picker cannot list: a server still loading has no port
+		// and no model row (#308). It is named here, never stopped — the
+		// picker stops only what the user picked.
+		loadHint := " — nothing was stopped"
+		if offered {
+			loadHint = ""
+		}
+		notes, errs := pidfileFindings(cfg, loading, loadHint, true)
+		stillLoading := false
+		for _, l := range loading {
+			stillLoading = stillLoading || l.PID > 0
+		}
 		switch {
 		case offered && len(unknown) > 0:
 			// The list was not everything that may be running.
@@ -480,11 +520,14 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			if hint == "" {
 				hint = " — nothing was stopped"
 			}
-			return errCannotTell(unknown, hint)
-		default:
+			errs = append([]error{errCannotTell(unknown, hint)}, errs...)
+		case len(errs) == 0 && !stillLoading:
 			fmt.Fprintln(out, "wt: no running local models")
 		}
-		return nil
+		for _, n := range notes {
+			fmt.Fprintf(out, "wt: %s\n", n)
+		}
+		return errors.Join(errs...)
 	}
 	st := stopState(cfg)
 	cands := st.Candidates
@@ -504,8 +547,13 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 				// loading holds, so a model id stops nothing there; the
 				// provider does.
 				prov := cfg.Models[i].ProviderID
-				if pid := st.Families[localmodels.Family(prov)].Loading.PID; pid > 0 {
-					return fmt.Errorf("model %q is not running — %s is still loading (pid %d); \"wt stop %s\" stops it", arg, prov, pid, prov)
+				switch l := st.Families[localmodels.Family(prov)].Loading; {
+				case l.PID > 0:
+					return fmt.Errorf("model %q is not running — %s is still loading (pid %d); \"wt stop %s\" stops it", arg, prov, l.PID, prov)
+				case l.Err != nil:
+					// Not known to be "not running": the pidfile names a
+					// live pid wt could not inspect.
+					return errLoadingUnknown(prov, l.Err, " — nothing was stopped")
 				}
 				return fmt.Errorf("model %q is not running", arg)
 			}
@@ -529,7 +577,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 				return errCannotTell([]string{arg}, " — nothing was stopped")
 			}
 			if fs.Loading.Err != nil {
-				return errLoadingUnknown(arg, fs.Loading.Err)
+				return errLoadingUnknown(arg, fs.Loading.Err, " — nothing was stopped")
 			}
 			fmt.Fprintf(out, "wt: nothing running on %s\n", arg)
 			if fs.Loading.Stray != "" {
@@ -576,7 +624,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		defer cancel()
 		cancelled, err := haltProvider(ctx, out, cfg, arg, loadingPID)
 		if cancelled {
-			return notHalted([]string{arg})
+			return haltCancelled(err, []string{arg})
 		}
 		return err
 	}

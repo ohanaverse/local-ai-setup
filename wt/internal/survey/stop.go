@@ -86,12 +86,13 @@ type Options struct{ IncludeInUse bool }
 
 // PickerWith is Picker with options; same silent-when-not-a-TTY behavior. It
 // reports whether the picker had any model to offer (false when stdin is not a
-// TTY) and the provider families whose probe gave no usable answer
-// (StopState.Unknown), so a caller like `wt stop` can say "nothing running"
+// TTY), the provider families whose probe gave no usable answer
+// (StopState.Unknown) and what the pidfiles behind refused ports said
+// (StopState.Loading), so a caller like `wt stop` can say "nothing running"
 // only when that is known, without probing the inventory a second time.
-func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) (offered bool, unknown []string) {
+func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) (offered bool, unknown []string, loading map[string]lifecycle.Loading) {
 	if !stdinTTY() {
-		return false, nil
+		return false, nil, nil
 	}
 	return runStopPickerWith(r, w, cfg, defaultStopDeps(), opts)
 }
@@ -153,6 +154,20 @@ func (s StopState) Unknown() []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// Loading returns, by family, what a pidfile behind a refused port said
+// (FamilyState.Loading) for the families where it said anything: a server
+// still loading, a live process that is not one, or a process table wt could
+// not read. None of them is a candidate, so the picker cannot list them.
+func (s StopState) Loading() map[string]lifecycle.Loading {
+	out := map[string]lifecycle.Loading{}
+	for fam, fs := range s.Families {
+		if fs.Loading != (lifecycle.Loading{}) {
+			out[fam] = fs.Loading
+		}
+	}
 	return out
 }
 
@@ -305,12 +320,13 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 }
 
 // runStopPickerWith runs the picker and reports whether it had any model to
-// offer, and the families it could not read (StopState.Unknown).
-func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) (bool, []string) {
+// offer, the families it could not read (StopState.Unknown) and what it
+// cannot list because no port answers for it (StopState.Loading).
+func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) (bool, []string, map[string]lifecycle.Loading) {
 	var offered []localmodels.Entry
 	var labels []string
 	st := stopState(cfg, d)
-	unknown := st.Unknown()
+	unknown, loading := st.Unknown(), st.Loading()
 	for _, c := range st.Candidates {
 		if !opts.IncludeInUse && c.Sessions > 0 {
 			continue
@@ -327,7 +343,7 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 		labels = append(labels, label)
 	}
 	if len(offered) == 0 {
-		return false, unknown
+		return false, unknown, loading
 	}
 	header := exitFlowHeader
 	if opts.IncludeInUse {
@@ -361,17 +377,17 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	case selected = <-answer:
 	case <-ctx.Done():
 		fmt.Fprintln(w, "\ncancelled")
-		return true, unknown
+		return true, unknown, loading
 	}
 	if len(selected) == 0 {
-		return true, unknown
+		return true, unknown, loading
 	}
 	entries := make([]localmodels.Entry, 0, len(selected))
 	for _, i := range selected {
 		entries = append(entries, offered[i])
 	}
 	_ = stopEntries(ctx, w, cfg, d, entries)
-	return true, unknown
+	return true, unknown, loading
 }
 
 // ErrStopCancelled is what a stop loop returns when Ctrl+C or SIGTERM ended it
