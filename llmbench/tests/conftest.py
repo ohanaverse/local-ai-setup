@@ -126,8 +126,9 @@ def _no_real_config(monkeypatch, tmp_path):
     """Keep the registry and the latest-run pointers off the developer's real
     config home. A test that needs either sets the variable itself and wins."""
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    # Both registry names: WT_REGISTRY outranks MODELMAN_REGISTRY, so one
-    # inherited from the developer's shell would beat the scratch path below.
-    monkeypatch.delenv("WT_REGISTRY", raising=False)
-    monkeypatch.setenv("MODELMAN_REGISTRY", str(tmp_path / "no-registry.toml"))
+    # WT_REGISTRY outranks everything, so naming the scratch path through it
+    # beats whatever the developer's shell exports. The alias is cleared too:
+    # a test that removes WT_REGISTRY must not fall through to an inherited one.
+    monkeypatch.setenv("WT_REGISTRY", str(tmp_path / "no-registry.toml"))
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
     monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "no-latest.toml"))

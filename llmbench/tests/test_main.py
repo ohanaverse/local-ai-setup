@@ -8,7 +8,8 @@ from llmbench.main import app
 
 def test_benchmark_commands_sit_at_the_top_level():
     """`llmbench run`, not `llmbench benchmark run`: the tool is the
-    benchmark, so the extra word modelman needed is gone."""
+    benchmark, so its commands need no group word in front of them. A script
+    or a guide that says `llmbench list-workloads` must keep working."""
     result = CliRunner().invoke(app, ["list-workloads"])
     assert result.exit_code == 0, result.output
     assert result.output.split() == ["chat", "code", "long", "short"]

@@ -306,12 +306,12 @@ def test_summary_lists_error_reasons():
             judge=None,
             composite=None,
             closing_message="",
-            error="failed to isolate ollama: llamacpp did not come back up",
+            error="failed to isolate ollama: omlx did not come back up",
         ),
     ]
     md = render_summary("run1", reports)
     assert "## Errors" in md
-    assert "llamacpp did not come back up" in md
+    assert "omlx did not come back up" in md
 
 
 def test_summary_omits_errors_section_when_clean():
