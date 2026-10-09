@@ -16,9 +16,9 @@ from llmbench.registry import (
 
 FIXTURE = Path(__file__).resolve().parents[2] / "docs" / "contracts" / "registry.sample.toml"
 
-# One registry in the exact form wt (and, until it is retired, modelman's
-# tomli-w) writes it; it holds no comments, so its purpose is recorded in its
-# readers. wt asserts it re-emits these bytes (wt/internal/tomlw/fixture_test.go).
+# One registry in the exact form wt writes it; it holds no comments, so its
+# purpose is recorded in its readers. wt asserts it re-emits these bytes
+# (wt/internal/tomlw/fixture_test.go).
 WRITTEN_FIXTURE = FIXTURE.with_name("registry.written.sample.toml")
 
 MINIMAL = """\
@@ -51,9 +51,9 @@ def _write(path: Path, text: str = MINIMAL) -> Path:
 
 def test_registry_path_precedence(home, monkeypatch, tmp_path):
     """WT_REGISTRY > MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config: the
-    precedence wt and modelman use, so the three tools never read three
-    different files. With WT_REGISTRY ignored here, a benchmark run against a
-    scratch registry would isolate and measure the real one's models."""
+    precedence wt uses, so the two tools never read two files. With
+    WT_REGISTRY ignored here, a benchmark run against a scratch registry
+    would isolate and measure the real one's models."""
     assert registry_path() == home / ".config" / "local-ai" / "registry.toml"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert registry_path() == tmp_path / "xdg" / "local-ai" / "registry.toml"
@@ -66,19 +66,22 @@ def test_registry_path_precedence(home, monkeypatch, tmp_path):
     assert registry_path() == tmp_path / "named.toml"
 
 
-def test_read_path_falls_back_to_the_pre_xdg_registry(home, monkeypatch, tmp_path):
-    """A registry created before XDG_CONFIG_HOME was set still lives in
-    ~/.config. modelman reads it there, so llmbench must too: otherwise
-    `modelman start <mtplx model>` (which loads the registry through
-    llmbench's mtplx backend) reports "no registry" on a machine modelman's
-    own commands read fine."""
-    legacy = _write(home / ".config" / "local-ai" / "registry.toml")
+def test_read_path_has_no_second_place_to_look(home, monkeypatch, tmp_path):
+    """With XDG_CONFIG_HOME set, the registry is under it and nowhere else.
+    llmbench used to fall back to a pre-XDG ~/.config registry, to agree with
+    modelman. wt never did, so with modelman gone the fallback would have
+    llmbench benchmark a registry wt cannot see. The error names the path
+    that was looked at."""
+    _write(home / ".config" / "local-ai" / "registry.toml")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    assert registry_read_path() == legacy
-    assert [m.id for m in load_registry().models] == ["ollama/a"]
+    with pytest.raises(
+        RegistryError, match="Registry file not found: .*xdg/local-ai/registry.toml"
+    ):
+        registry_read_path()
 
     canonical = _write(tmp_path / "xdg" / "local-ai" / "registry.toml")
     assert registry_read_path() == canonical
+    assert [m.id for m in load_registry().models] == ["ollama/a"]
 
 
 def test_read_path_does_not_fall_back_past_a_named_registry(home, monkeypatch, tmp_path):
@@ -115,23 +118,9 @@ def test_read_path_refuses_a_dangling_symlink(home, monkeypatch, tmp_path):
         registry_read_path()
 
 
-def test_read_path_refuses_a_dangling_legacy_symlink(home, monkeypatch, tmp_path):
-    """The same refusal for the file being fallen back to. XDG_CONFIG_HOME is
-    set and holds no registry, and the pre-XDG path is a link to nothing:
-    modelman names the link, so llmbench must not say "not found" about the
-    XDG path and send the user looking in the wrong directory."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    link = home / ".config" / "local-ai" / "registry.toml"
-    link.parent.mkdir(parents=True)
-    os.symlink(tmp_path / "gone.toml", link)
-    with pytest.raises(RegistryError, match="is a symlink to .*gone.toml, which does not exist"):
-        registry_read_path()
-
-
 def test_load_registry_tolerates_unknown_top_level_keys(tmp_path):
     """llmbench never writes the registry, so a top-level table it does not
-    know costs it nothing — unlike modelman, whose save would drop it (#247).
-    A registry wt has extended must still benchmark."""
+    know costs it nothing. A registry wt has extended must still benchmark."""
     path = _write(tmp_path / "registry.toml", MINIMAL + '\n[future]\nkey = "v"\n')
     assert [m.id for m in load_registry(path).models] == ["ollama/a"]
 
@@ -162,9 +151,9 @@ def test_load_registry_names_a_row_missing_a_required_field(tmp_path):
 
 
 def test_load_registry_reads_the_shared_contract_fixture():
-    """docs/contracts/registry.sample.toml is the schema wt's Go decoder and
-    modelman's loader are pinned to. llmbench reads the same file, so a
-    schema change that breaks a benchmark fails here in the same PR."""
+    """docs/contracts/registry.sample.toml is the schema wt's Go decoder is
+    pinned to. llmbench reads the same file, so a schema change that breaks
+    a benchmark fails here in the same PR."""
     registry = load_registry(FIXTURE)
 
     # Membership, not the whole list: a row a later step adds to the fixture

@@ -119,11 +119,10 @@ def test_resolve_no_model_in_registry_raises():
 
 
 def test_resolve_uses_positional_extra_args_over_registry():
-    """Regression test: local_control.py forwards mtplx's desired model
-    through extra_args, not the `model` param — isolate_provider() only
-    ever populates `model` from an env-var lookup, and mtplx is
-    deliberately excluded from that mapping (test_local_control.py's
-    test_start_mtplx_isolates_without_env_var). Before this fix, resolve()
+    """Regression test: a caller forwards mtplx's desired model through
+    extra_args, not the `model` param — isolate_provider() only ever
+    populates `model` from an env-var lookup, and mtplx is deliberately
+    excluded from that mapping. Before this fix, resolve()
     silently ignored extra_args and fell back to registry auto-detection,
     which raised "registry holds N mtplx models" as soon as a second mtplx
     model was registered — even though the caller DID specify which one to

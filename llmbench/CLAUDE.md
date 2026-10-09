@@ -21,10 +21,6 @@ User guides: `../docs/guides/05-benchmarks.md` (throughput and isolation), `../d
 
 ## Monorepo context
 
-- **modelman depends on llmbench** (an editable path dependency) until modelman is retired: `modelman start`/`stop` call `llmbench.benchmark.isolation` and `llmbench.providers.lifecycle` in-process, and `modelman benchmark` / `modelman provider` are these same Typer apps mounted under modelman's names. A change here runs in modelman too, which is why `modelman-ci` also triggers on `llmbench/**`. Never import modelman from llmbench.
-- `modelman.local_process.ProcessResult` and `modelman.wt_bridge`'s `WtBridgeError`, `WtNotFoundError` and `WtBridgeTimeoutError` are re-exports of llmbench's classes. Keep those four names importable from `llmbench.local_process` and `llmbench.wt_bridge`.
-- Five constants exist in both packages until modelman is retired: `DEFAULT_PROVIDER_IDS` (`registry.py`), `ENV_VAR_BY_PROVIDER` (`local_process.py`), `MTPLX_PORT` (`providers/mtplx.py`), the `omlx-6bit` alias (`providers/registry.py`) and `WARM_TIMEOUT` (`wt_bridge.py`). Change both copies together; `../modelman/tests/test_llmbench_reexports.py` fails if a pair differs.
-- llmbench imports nothing from modelman, a function-local import included: `tests/test_main.py::test_llmbench_never_imports_modelman` parses every module for one.
 - The bash scripts under `../benchmarks/` call `uv run --directory llmbench llmbench provider ...` (`../benchmarks/lib/benchmark-common.sh`).
 - `wt` owns LiteLLM routing and the omlx key. llmbench's one call into wt is `wt warm <provider> <model>` (`wt_bridge.py`), which the omlx backend uses when a keyed omlx refuses the keyless warmup (#256).
 
@@ -48,7 +44,7 @@ The suite runs in about 15 seconds and is safe to run while agents use the local
 | OpenRouter key | `OPENROUTER_API_KEY`, else the LiteLLM LaunchAgent plist | |
 | LiteLLM url and key | `~/.pi/agent/models.json` | |
 
-- `registry.py` is a reader for the fields the benchmarks use (model `id`, `family`, `provider_id`, `model_name`, `location`, `fetch`, `draft`; provider `id`, `location`). It accepts unknown top-level keys, because it never writes. **`registry_read_path()` must resolve the same file as modelman's `_registry_read_path()`** (the pre-XDG fallback and the dangling-symlink refusal included) until modelman is retired; `../modelman/tests/test_registry_path_parity.py` pins it.
+- `registry.py` is a reader for the fields the benchmarks use (model `id`, `family`, `provider_id`, `model_name`, `location`, `fetch`, `draft`; provider `id`, `location`). It accepts unknown top-level keys, because it never writes. `registry_read_path()` reads the file `registry_path()` names and nowhere else (a dangling symlink there is refused, not treated as absent).
 - `state.py` holds the four pointers (`last_run`, `last_run_dir`, `agent_last_run`, `eval_last_run`). While `latest.toml` does not exist it reads them from the `[benchmarks]` table of modelman.toml (`MODELMAN_STATE`, then `XDG_CONFIG_HOME`); the first save writes `latest.toml` and the old table is not read again. A corrupt `latest.toml` reads as no pointers, and from either file only those four keys with string values are kept.
 - Renamed variables keep their old names as aliases, read second (`_env.py::env_first`): `LLMBENCH_WORKLOAD` (`MODELMAN_BENCHMARK_WORKLOAD`), `LLMBENCH_AGENT_DEBUG` (`MODELMAN_AGENT_DEBUG`). The `LLM_ISOLATE_*` names are unchanged.
 
@@ -60,7 +56,7 @@ Isolate/stop/stop-all/restore for local providers (ported from bash, issue #79).
 
 - `stop_all()`'s `keep` takes a **provider id** (like `isolate()`/`stop()`), resolved internally to its `occupancy_key` — `--keep omlx-6bit` keeps both omlx variants — and an unknown id returns `ok=False` before any teardown.
 - `isolate(..., solo=True)` (`provider isolate --solo`) restricts teardown to the backend's own occupant. The benchmarks never pass it; it is how an mlx_lm_server pairing is started beside other models.
-- The mtplx backend loads the registry itself to resolve its model name, which is why the registry path rule above matters to `modelman start <mtplx model>`.
+- The mtplx backend loads the registry itself to resolve its model name.
 - Adding a backend: the `adding-a-benchmark-backend` skill (`../.claude/skills/adding-a-benchmark-backend/SKILL.md`). Artifacts and the retired llamacpp backend: `../docs/reference/provider-artifacts.md`.
 
 ### Benchmark subsystem (`src/llmbench/benchmark/`)
@@ -75,7 +71,7 @@ Isolate/stop/stop-all/restore for local providers (ported from bash, issue #79).
 ## Testing patterns
 
 - **`tests/conftest.py` points `HOME` at a scratch directory before llmbench is imported.** The package computes its machine-level paths from `Path.home()` at import time and binds several as default arguments, so this is the only redirect that reaches all of them: the LaunchAgent plist, `~/.pi/agent/models.json`, the results directory, the pointer file. `tests/test_conftest_guards.py` fails if a path escapes. Do not import llmbench from a pytest plugin or a `-p` module: conftest raises a usage error when it finds llmbench already imported.
-- **Autouse guards** in the same file: `subprocess.run` is wrapped so `launchctl`, `omlx`, `mtplx`, `ollama`, `wt` and `mlx_lm.*` never execute (everything else, such as git, runs for real); `urlopen` raises; `os.kill` is a no-op; the registry, the pointer file and modelman.toml are redirected into `tmp_path`. `tests/providers/lifecycle/test_hermeticity.py` pins the allow-list (modelman keeps a copy, `../modelman/tests/test_hermeticity.py`, for the wrapper in its own conftest).
+- **Autouse guards** in the same file: `subprocess.run` is wrapped so `launchctl`, `omlx`, `mtplx`, `ollama`, `wt` and `mlx_lm.*` never execute (everything else, such as git, runs for real); `urlopen` raises; `os.kill` is a no-op; the registry, the pointer file and modelman.toml are redirected into `tmp_path`. `tests/providers/lifecycle/test_hermeticity.py` pins the allow-list.
 - **Backend tests patch the name as imported into the backend module** (`patch("llmbench.providers.lifecycle.backends.mtplx.subprocess.run")`, `...backends.mtplx.probe.wait_for_port_closed`, `...backends.mtplx._PROC`), never the origin module.
 - CLI tests use `typer.testing.CliRunner` against `llmbench.main.app` (`["run", ...]`, `["provider", ...]`) or a sub-app directly (`agent_app`, `eval_app`).
 - Tests mirror modules: `tests/benchmark/` (incl. `test_routes.py`, `test_judge_core.py`), `tests/benchmark/agent/` (plus `fixtures/`), `tests/benchmark/eval/` (plus `test_rejudge.py`), `tests/providers/lifecycle/`. `tests/benchmark/agent/fixtures/tasks/` holds task bundles whose files are named `test_*.py` on purpose; `collect_ignore` keeps pytest out of them.

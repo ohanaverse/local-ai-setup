@@ -1,8 +1,8 @@
 """Read-only view of registry.toml: the fields the benchmarks read, no more.
 
-wt owns the file; modelman still writes it until it is retired. llmbench
-never writes it, so this reader keeps no unknown keys, parses no prices and
-accepts a top-level table it does not know.
+wt owns and writes the file. llmbench never writes it, so this reader keeps
+no unknown keys, parses no prices and accepts a top-level table it does not
+know.
 """
 
 from __future__ import annotations
@@ -95,8 +95,8 @@ def is_model_local(
 
 
 # The variables that name registry.toml outright, in precedence order.
-# WT_REGISTRY is the name wt, modelman and llmbench share; MODELMAN_REGISTRY is
-# the older name, kept as an alias.
+# WT_REGISTRY is the name wt and llmbench share; MODELMAN_REGISTRY is the older
+# name, kept as an alias.
 _REGISTRY_ENV_NAMES = ("WT_REGISTRY", "MODELMAN_REGISTRY")
 
 
@@ -113,8 +113,7 @@ def registry_path() -> Path:
     """Where the registry lives: WT_REGISTRY > MODELMAN_REGISTRY >
     XDG_CONFIG_HOME > ~/.config.
 
-    The same precedence as wt's config.RegistryPath and modelman's
-    _default_registry_path."""
+    The same precedence as wt's config.RegistryPath."""
     override = _registry_override()
     if override:
         return Path(override).expanduser()
@@ -130,24 +129,14 @@ def _refuse_dangling_symlink(path: Path) -> None:
 
 
 def registry_read_path(path: Path | None = None) -> Path:
-    """The file load_registry reads. Not always registry_path(): a registry
-    created before XDG_CONFIG_HOME was set is still read from ~/.config.
-
-    Must resolve the file modelman's `_registry_read_path` does until modelman
-    is retired: `modelman start <mtplx model>` loads the registry through
-    both (modelman/tests/test_registry_path_parity.py holds them together).
-    """
+    """The file load_registry reads: `path`, or registry_path(). A dangling
+    symlink is refused (#248); a file that is not there is an error naming
+    it. The same file wt's config.RegistryPath names: there is no second
+    place to look."""
     wanted = Path(path) if path else registry_path()
     _refuse_dangling_symlink(wanted)
     if wanted.exists():
         return wanted
-    # Not past WT_REGISTRY, MODELMAN_REGISTRY or an explicit path: those name
-    # the file outright, and a missing one is missing.
-    legacy = Path("~/.config/local-ai/registry.toml").expanduser()
-    if path is None and not _registry_override() and wanted != legacy:
-        _refuse_dangling_symlink(legacy)
-        if legacy.exists():
-            return legacy
     raise RegistryError(f"Registry file not found: {wanted}")
 
 
