@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -49,42 +48,6 @@ func TestStartOnALoadingModelWaitsInsteadOfSayingAlreadyRunning(t *testing.T) {
 	}
 	if got := out.String(); strings.Contains(got, "already running") || !strings.Contains(got, "wt: omlx/c is running") {
 		t.Errorf("out = %q, want the is-running line once the load is done, not already-running", got)
-	}
-}
-
-// TestStartJSONOnALoadingModelPlansNothingAndWaits pins #259 for the form
-// modelman drives. The dry run used to answer "running", so `modelman start`
-// reported a model as started while it was still loading. It now answers
-// "fits" with nothing to unload — the load is already admitted, so the pool's
-// other model is not named — and the real start runs the engine, which waits,
-// and answers "started".
-func TestStartJSONOnALoadingModelPlansNothingAndWaits(t *testing.T) {
-	cfg := loadingFixture(t)
-	started := stubLifecycleStart(t, nil)
-	stubEnsureRoute(t)
-
-	var plan bytes.Buffer
-	if err := runStartJSON(&plan, cfg, "omlx/c", true, false); err != nil {
-		t.Fatal(err)
-	}
-	var p startPlanJSON
-	if err := json.Unmarshal(plan.Bytes(), &p); err != nil {
-		t.Fatalf("plan %q is not JSON: %v", plan.String(), err)
-	}
-	if p.Status != "fits" || len(p.WouldUnload) != 0 || len(*started) != 0 {
-		t.Errorf("plan = %+v, engine calls = %d; want fits, nothing to unload, nothing started", p, len(*started))
-	}
-
-	var out bytes.Buffer
-	if err := runStartJSON(&out, cfg, "omlx/c", false, false); err != nil {
-		t.Fatalf("start without --replace = %v, want it to join the load unasked", err)
-	}
-	var r startResultJSON
-	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
-		t.Fatalf("result %q is not JSON: %v", out.String(), err)
-	}
-	if r.Status != "started" || len(*started) != 1 {
-		t.Errorf("result = %+v, engine calls = %d; want started after one engine call", r, len(*started))
 	}
 }
 

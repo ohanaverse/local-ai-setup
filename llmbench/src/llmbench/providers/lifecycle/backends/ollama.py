@@ -4,7 +4,7 @@ arm, `start_ollama()`, `stop_ollama_and_wait()`, and
 
 Live: registered in `backends.BACKENDS`, which `orchestrate.py` reads to
 drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
-`llmbench provider ...`, the benchmarks, and modelman's `local_control.py`.
+`llmbench provider ...` and the benchmarks.
 """
 
 from __future__ import annotations
@@ -80,8 +80,8 @@ class OllamaBackend(Backend):
 
     def stop_and_wait(self) -> str | None:
         # Stop EVERY model `ollama ps` reports loaded (not just the default
-        # model — modelman may have loaded something else via `modelman
-        # start`), matching bash's `stop_ollama_and_wait`.
+        # model — something else may have been loaded, with `wt start` or
+        # `ollama run`), matching bash's `stop_ollama_and_wait`.
         for name in _loaded_model_names():
             subprocess.run(["ollama", "stop", name], capture_output=True, check=False)
         # `ollama stop` unloads the model but leaves the daemon (port 11434)

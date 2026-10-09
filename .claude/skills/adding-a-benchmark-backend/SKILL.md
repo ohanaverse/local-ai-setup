@@ -26,12 +26,10 @@ to `llmbench/` unless they start with another directory; a bare `backends/...` i
    `default_model`, `health_url`, and `restore_action` ("restart", "stop",
    or "skip"; see `backends/base.py`'s docstring for what each means).
 2. **Register it.** Add the module's singleton instance to `BACKENDS` in
-   `backends/__init__.py`, and — if it's a fully-supported (not
-   retired-only) backend — add its id to `SUPPORTED_PROVIDER_IDS` in the
-   same file. This is the one place both `llmbench provider isolate` and
-   the benchmarks check isolability from
-   (`llmbench.benchmark.isolation.SUPPORTED_PROVIDER_IDS` just re-exports
-   it).
+   `backends/__init__.py`. `SUPPORTED_PROVIDER_IDS`, in the same file, is
+   derived from `BACKENDS`: a registered backend is isolable and stoppable
+   by name, by `llmbench provider isolate` and by the benchmarks alike
+   (`llmbench.benchmark.isolation.SUPPORTED_PROVIDER_IDS` re-exports it).
 3. **Add an env var if it needs one.** If the backend resolves its model
    from a single env var (like ollama/omlx do), add it to
    `ENV_VAR_BY_PROVIDER` in `src/llmbench/local_process.py`. A
@@ -61,11 +59,10 @@ to `llmbench/` unless they start with another directory; a bare `backends/...` i
    skill in `wt/.claude/skills/`).
 6. **Update the drift trip-wire.** `tests/benchmark/test_isolation.py`'s
    `test_supported_provider_ids_matches_the_backends_registry_documented_list`
-   hand-writes a literal copy of `SUPPORTED_PROVIDER_IDS` specifically so a
-   backend added to `BACKENDS` without an isolability decision fails a
-   test instead of silently running unisolated — update that literal
-   alongside `backends/__init__.py`'s constant. `tests/test_main.py`'s
-   `test_provider_list_names_every_backend` lists every backend id too.
+   hand-writes a literal copy of the backend ids, so that registering a
+   backend is written down in two places — update that literal.
+   `tests/test_main.py`'s `test_provider_list_names_every_backend` lists
+   every backend id too.
 7. **Wire up the benchmark scripts.** Add entries to `DIRECT_URLS`,
    `DIRECT_MODELS`, `LITELLM_MODELS`, and `ISOLATE_ID` (the associative
    array mapping the script's own backend key to the `llmbench provider`

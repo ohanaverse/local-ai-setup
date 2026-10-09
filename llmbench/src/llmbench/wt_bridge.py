@@ -1,9 +1,7 @@
 """Subprocess bridge to wt: `wt warm`, the one wt call llmbench makes (#256).
 
 wt resolves the registry's secret_ref, which an omlx with an API key wants
-before it loads a model. modelman's own bridge (`modelman/wt_bridge.py`, the
-`wt litellm ...`, `wt start` and `wt stop` calls) re-exports the exception
-classes below, so one `except WtBridgeError` catches a failure from either.
+before it loads a model.
 """
 
 from __future__ import annotations

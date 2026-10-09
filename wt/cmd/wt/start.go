@@ -16,7 +16,16 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 )
+
+// sessionCounts is the number of live wt sessions using each model id. A test
+// seam; production sweeps dead sessions first, as the stop picker does.
+var sessionCounts = func(ids []string) map[string]int {
+	store := refcount.NewStore()
+	_ = store.Sweep()
+	return store.Counts(ids)
+}
 
 // startModel is a test seam: production runs the non-TUI start driver. Tests
 // stub it so no test starts a real model process.

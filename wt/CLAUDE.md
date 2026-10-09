@@ -200,9 +200,9 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md) before cha
 
 ## Lifecycle (`internal/lifecycle`)
 
-The start/stop engine: `Start`, `Stop`, `StopModelDeferred` + `SettleRoutes`, `Evictions`; backends ollama (`Shared`), omlx (`Pool`: loads beside, `/unload` per model), mtplx (`Exclusive`). Used by the TUI start flow, `startForLaunch`, `wt start`, and `wt smoke`.
+The start/stop engine: `Start`, `Stop`, `StopModelDeferred` + `SettleRoutes`; backends ollama (`Shared`), omlx (`Pool`: loads beside, `/unload` per model), mtplx (`Exclusive`). Used by the TUI start flow, `startForLaunch`, `wt start`, and `wt smoke`.
 
-- **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`, `Occupants` lists them): an `Exclusive` occupant (mtplx) to be replaced, or the `Pool` victims (omlx) `Evictions` predicts omlx will unload (`poolAdmissionMarginPct` margin, 15% of the ceiling; `reconcilePool` handles what omlx unloaded anyway, on failure too); undeterminable occupancy is `*OccupancyUnknownError`, never assumed empty.
+- **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`, `Occupants` lists them): an `Exclusive` occupant (mtplx) to be replaced, or the `Pool` victims (omlx) the eviction plan (`evictions.go`) predicts omlx will unload (`poolAdmissionMarginPct` margin, 15% of the ceiling; `reconcilePool` handles what omlx unloaded anyway, on failure too); undeterminable occupancy is `*OccupancyUnknownError`, never assumed empty.
 - **Route hook** (`routes.go`): a start/stop wt performs updates `config.yaml` through `internal/litellm`. A launch of an already-running model gets the Add-only launch-time check, `lifecycle.EnsureModelRoute` (#192), which never fails a launch.
 - **Call `WaitPendingRoutes()` on every process exit and before handing a model to an agent**: the `config.yaml` write is synchronous, the proxy restart and readiness wait are async.
 - **The restart goroutine runs on `context.WithoutCancel(ctx)` on purpose** — callers cancel as soon as the hook returns. Pinned by `TestRouteRestartSurvivesCallerCancelAfterReturn`.
@@ -331,7 +331,6 @@ claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files
 wt start [<id>] / wt stop [<id>|<provider>|--all]   # local-model lifecycle (routes follow automatically)
 wt served <provider> [--json]        # ids an omlx/mtplx/mlx_lm_server server is serving now
-wt start <id> --plan --json          # dry run: what a start would unload (status running|fits|would_unload|unknown); changes nothing
 wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; llmbench's omlx backend calls it)
 wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
 wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)

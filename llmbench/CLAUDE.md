@@ -52,12 +52,12 @@ The suite runs in about 15 seconds and is safe to run while agents use the local
 
 ### Provider lifecycle (`src/llmbench/providers/lifecycle/`)
 
-Isolate/stop/stop-all/restore for local providers (ported from bash, issue #79). `orchestrate.py` holds the operations; `backends/` has one backend per provider, registered in `backends/__init__.py`'s `BACKENDS`, with `SUPPORTED_PROVIDER_IDS` (`ollama`, `omlx`, `omlx-6bit`, `mlx_lm_server`, `mtplx`) excluding the retired-only `llamacpp`. mtplx and mlx_lm_server subclass `PidfileTrackedBackend` (`backends/base.py`); `pidproc.py`'s `PidfileProcess` is the spawn/stop/log-tail primitive; `probe.py`/`launchd.py`/`binaries.py` are shared primitives; `envelope.py` holds the two types every lifecycle module returns or raises (`LifecycleResult`, the `--json` envelope, and `LifecycleError`); `cli.py` is `llmbench provider ...`. `src/llmbench/local_process.py` is the neutral home for process/probe types shared with `benchmark/isolation.py` (living under either package would make the other's import backwards).
+Isolate/stop/stop-all/restore for local providers (ported from bash, issue #79). `orchestrate.py` holds the operations; `backends/` has one backend per provider, registered in `backends/__init__.py`'s `BACKENDS`, and `SUPPORTED_PROVIDER_IDS` holds the same ids (`ollama`, `omlx`, `omlx-6bit`, `mlx_lm_server`, `mtplx`). mtplx and mlx_lm_server subclass `PidfileTrackedBackend` (`backends/base.py`); `pidproc.py`'s `PidfileProcess` is the spawn/stop/log-tail primitive; `probe.py`/`launchd.py`/`binaries.py` are shared primitives; `envelope.py` holds the two types every lifecycle module returns or raises (`LifecycleResult`, the `--json` envelope, and `LifecycleError`); `cli.py` is `llmbench provider ...`. `src/llmbench/local_process.py` is the neutral home for process/probe types shared with `benchmark/isolation.py` (living under either package would make the other's import backwards).
 
 - `stop_all()`'s `keep` takes a **provider id** (like `isolate()`/`stop()`), resolved internally to its `occupancy_key` — `--keep omlx-6bit` keeps both omlx variants — and an unknown id returns `ok=False` before any teardown.
 - `isolate(..., solo=True)` (`provider isolate --solo`) restricts teardown to the backend's own occupant. The benchmarks never pass it; it is how an mlx_lm_server pairing is started beside other models.
 - The mtplx backend loads the registry itself to resolve its model name.
-- Adding a backend: the `adding-a-benchmark-backend` skill (`../.claude/skills/adding-a-benchmark-backend/SKILL.md`). Artifacts and the retired llamacpp backend: `../docs/reference/provider-artifacts.md`.
+- Adding a backend: the `adding-a-benchmark-backend` skill (`../.claude/skills/adding-a-benchmark-backend/SKILL.md`). Artifacts and the retired llamacpp provider: `../docs/reference/provider-artifacts.md`.
 
 ### Benchmark subsystem (`src/llmbench/benchmark/`)
 

@@ -14,22 +14,14 @@ import (
 // fit and then evicted.
 const poolAdmissionMarginPct = 15
 
-// Evictions reports the running models that starting t is expected to
-// displace: an Exclusive server's one occupant, nobody on a Shared server, and
-// on a Pool the models the plan says omlx would unload to make room. known is
-// false when the snapshot's probe for the family cannot be trusted — a caller
-// acting on "nobody" there would displace a model it never saw. A family whose
-// server refused the connection is the exception: that is known, and empty.
-// So is a target that is itself mid-load: it displaces nobody new.
-func Evictions(t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, known bool) {
-	family := localmodels.Family(t.ProviderID)
-	b := backendsByFamily[family]
-	if b == nil {
-		return nil, true
-	}
-	return evictions(b.tenancy(), family, t, snap)
-}
-
+// evictions reports the running models that starting t is expected to
+// displace on a server of tenancy ten: an Exclusive server's one occupant,
+// nobody on a Shared server, and on a Pool the models the plan says omlx would
+// unload to make room. The second result is false when the snapshot's probe
+// for the family cannot be trusted — a caller acting on "nobody" there would
+// displace a model it never saw. A family whose server refused the connection
+// is the exception: that is known, and empty. So is a target that is itself
+// mid-load: it displaces nobody new.
 func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) ([]localmodels.Entry, bool) {
 	if ten != Exclusive && ten != Pool {
 		return nil, true
@@ -37,7 +29,8 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 	// A refused connection positively means nothing is serving, so the family
 	// is known to be empty: a cold start displaces nobody. It is checked
 	// before the trust rule because the snapshot marks such a family Partial
-	// too, and "unknown" there would refuse every scripted cold start.
+	// too. The engine re-probes such a server before it acts
+	// (resolveEvictions).
 	if snap.Down[family] {
 		return nil, true
 	}

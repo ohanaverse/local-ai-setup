@@ -6,7 +6,6 @@ Start or stop local models directly, without launching an agent.
 wt start                         # pick from every local model (needs a TTY)
 wt start ollama/qwen3.8:27b-mlx  # start one model, no TTY needed
 wt start <model> --replace       # replace or unload a running model without asking
-wt start <model> --plan --json   # what a start would unload; changes nothing
 wt stop                          # pick from running models (needs a TTY)
 wt stop ollama/qwen3.8:27b-mlx   # stop one model
 wt stop ollama                   # stop every running model of a provider
@@ -116,9 +115,12 @@ recently used when a load does not fit.
   are routed. When the model fits, nothing is asked.
 - When it does not fit, wt names the models omlx is expected to unload, each
   with its live wt session count, and asks (default No); `--replace` skips
-  the question. Declining changes nothing. If wt cannot size the pool (omlx's
-  status endpoint refused, or its memory limit is off) it names every other
-  loaded model.
+  the question. Declining changes nothing. With no TTY wt cannot ask: the
+  start exits 1 with the question followed by
+  `— rerun with --replace to confirm`, and changes nothing (the same holds
+  for a start that would replace the mtplx model). If wt cannot size the pool
+  (omlx's status endpoint refused, or its memory limit is off) it names every
+  other loaded model.
 - The prediction is an estimate: omlx starts unloading below its ceiling
   (at 85% of it by default) and does not report where, so wt keeps 15% of
   the ceiling free when it predicts. If omlx unloads a model wt did not name, wt
@@ -144,8 +146,7 @@ recently used when a load does not fit.
   - It cannot see **which** models are loaded while the pool is partly loaded
     (some loaded, some not), which is the usual state once the pool holds
     more than one model. Those models do not read as running in the picker,
-    `wt served` (which exits 1), `wt stop`, or `wt start --plan` (which
-    answers `unknown`).
+    `wt served` (which exits 1), or `wt stop`.
   - A second start therefore normally asks "cannot tell whether omlx is
     already serving a model"; `--replace` skips the question. The prompt
     names models only when every model in the pool is loaded. wt cannot
@@ -168,33 +169,6 @@ recently used when a load does not fit.
   possibly evict another, with no prompt. The routes are corrected by
   `wt litellm sync`; launching a model through wt also writes that model's
   own route if it is missing.
-
-### `--plan` and `--json`
-
-`wt start <id> --json` is the form scripts use. It never prompts.
-`--plan` (needs `--json`) reports what a start would unload and changes
-nothing. `status` is `running`, `fits`, `would_unload` or `unknown` (wt
-could not tell what would be unloaded); `would_unload` is empty for every
-status but `would_unload`.
-
-A model omlx is still loading reports `fits` with an empty `would_unload`.
-Starting it waits for the load and prints `started`.
-
-```json
-{"id": "omlx/B", "status": "would_unload",
- "would_unload": [{"id": "omlx/A", "sessions": 1}]}
-```
-
-Without `--plan`, a start that would unload a model, or whose plan is
-`unknown`, and has no `--replace` exits 1 with that plan on stdout. With `--replace` it starts, then prints
-`status` `started` or `already_running` and what omlx unloaded:
-
-```json
-{"id": "omlx/B", "status": "started", "unloaded": ["omlx/A"]}
-```
-
-A start that fails exits 1 with the message on stderr and nothing on stdout.
-Both shapes are pinned by `docs/contracts/wt-start-cli.sample.json`.
 
 ## Selection screens
 

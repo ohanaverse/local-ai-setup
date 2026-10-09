@@ -34,7 +34,7 @@ uv run llmbench agent run --suite ../benchmarks/suites/smoke.toml
 uv run llmbench agent show --latest
 ```
 
-That run exits 1 *after* finishing: the sweep is complete and persisted, and only putting the local backends back failed (here, a `local.llamacpp.server` LaunchAgent pointing at a GGUF that no longer exists — this specific failure mode can no longer happen today, since llamacpp is retired-only with `restore_action="skip"` and `llmbench provider restore` never touches it; see [provider-artifacts.md](../reference/provider-artifacts.md)). The error names the directory that survived, and `--latest` still resolves to it — a failed restore never costs you the data. See Step 4 for what the run scored.
+That run exits 1 *after* finishing: the sweep is complete and persisted, and only putting the local backends back failed (here, a `local.llamacpp.server` LaunchAgent pointing at a GGUF that no longer exists — this specific failure mode can no longer happen today, since llama.cpp is retired and llmbench has no backend for it, so `llmbench provider restore` never touches it; see [provider-artifacts.md](../reference/provider-artifacts.md)). The error names the directory that survived, and `--latest` still resolves to it — a failed restore never costs you the data. See Step 4 for what the run scored.
 
 ## Steps
 

@@ -5,12 +5,11 @@ This CLI replaced the `bin/llm-isolate-provider` and
 `bin/llm-restore-providers` bash helpers (issue #79); both scripts are
 deleted, and the benchmark scripts under `benchmarks/` now call these
 commands via `uv run --directory llmbench llmbench provider ...`.
-In-process callers (`llmbench.benchmark.isolation`, `local_control.py`)
-skip this layer entirely and call `orchestrate.py` directly.
+In-process callers (`llmbench.benchmark.isolation`) skip this layer
+entirely and call `orchestrate.py` directly.
 
-Follows the same sub-app pattern as `llmbench.benchmark.cli.benchmark_app`
-and `modelman.usage.cli.usage_app`: one `typer.Typer()` per concern,
-mounted onto `main.py`'s root `app`.
+Follows the same sub-app pattern as `llmbench.benchmark.cli.benchmark_app`:
+one `typer.Typer()` per concern, mounted onto `main.py`'s root `app`.
 
 `lifecycle` is imported as a module object (not `from .orchestrate import
 isolate, ...`) so tests can patch `llmbench.providers.lifecycle.isolate`
@@ -164,19 +163,17 @@ def restore_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
 
 @provider_app.command("list")
 def list_cmd() -> None:
-    """Print every known lifecycle provider id, its port/URL, default
-    model, and env var, marking which are in SUPPORTED_PROVIDER_IDS vs.
-    retired-only (present in BACKENDS but not SUPPORTED_PROVIDER_IDS)."""
+    """Print every lifecycle provider id with its occupancy key (when it
+    shares another id's server), health URL, default model and env var."""
     for provider_id in sorted(lifecycle.BACKENDS):
         backend = lifecycle.BACKENDS[provider_id]
-        status = "supported" if provider_id in lifecycle.SUPPORTED_PROVIDER_IDS else "retired-only"
         occupancy = (
-            "" if backend.occupancy_key == provider_id else f" occupancy={backend.occupancy_key}"
+            "" if backend.occupancy_key == provider_id else f"occupancy={backend.occupancy_key} "
         )
         default_model = backend.default_model or "none"
         env_var = backend.env_var or "none"
         typer.echo(
-            f"{provider_id}\t[{status}]{occupancy} health={backend.health_url} "
+            f"{provider_id}\t{occupancy}health={backend.health_url} "
             f"default_model={default_model} env_var={env_var}"
         )
 

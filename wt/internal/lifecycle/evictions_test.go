@@ -7,6 +7,15 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
+// Evictions is the tests' way to ask the eviction plan by provider id, the
+// way the engine does: TenancyOf looks the family's tenancy up from
+// backendsByFamily (the single source of truth) and evictions reads the plan.
+// It reports the running models that starting t is expected to displace; see
+// evictions for what that is and when known is false.
+func Evictions(t Target, snap localmodels.Snapshot) (victims []localmodels.Entry, known bool) {
+	return evictions(TenancyOf(t.ProviderID), localmodels.Family(t.ProviderID), t, snap)
+}
+
 func ids(es []localmodels.Entry) []string {
 	var out []string
 	for _, e := range es {
@@ -94,9 +103,8 @@ func TestEvictionsByTenancy(t *testing.T) {
 		t.Errorf("untrusted probe: %v known=%v, want none and unknown", ids(v), known)
 	}
 	// A refused connection is a positive answer: nothing is serving, so a cold
-	// start displaces nobody. Reading it as "unknown" made `wt start <id>
-	// --plan --json` answer unknown, and a scripted start fail, whenever the
-	// server was simply not running.
+	// start displaces nobody. The plan calls that known and empty; the engine
+	// still re-probes before it acts.
 	for _, tc := range []struct {
 		ten    Tenancy
 		family string

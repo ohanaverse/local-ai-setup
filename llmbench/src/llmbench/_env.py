@@ -1,4 +1,5 @@
-"""Environment variables that were renamed when llmbench left modelman."""
+"""Environment variables llmbench reads under two names: its own, and an
+older one kept as an alias."""
 
 from __future__ import annotations
 
