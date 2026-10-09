@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
@@ -122,6 +123,31 @@ func TestAvailableReportsAFailedList(t *testing.T) {
 	}
 }
 
+// TestAvailableStopsAListThatNeverAnswers pins that a hung `ollama list` is
+// an error in bounded time, not a hang. Check runs on the TUI's update
+// goroutine, so an unbounded wait freezes the launcher; the daemon may be
+// remote (the point of pinning the check to the registry's address, #317),
+// and a host that accepts the connection and never answers is exactly the
+// case a TCP connection does not fail on its own.
+func TestAvailableStopsAListThatNeverAnswers(t *testing.T) {
+	dir := t.TempDir()
+	// `exec` so the script does not leave a child holding the output pipe:
+	// the timeout is what is under test, not the wait-delay that bounds such
+	// a child.
+	if err := os.WriteFile(filepath.Join(dir, "ollama"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatalf("creating a hung fake ollama: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+"/bin")
+	old := listTimeout
+	listTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { listTimeout = old })
+
+	ok, err := Available("http://127.0.0.1:9", "gemma4:9b")
+	if ok || err == nil || !strings.Contains(err.Error(), "timed out after") {
+		t.Errorf("Available = %v, %v; want false and a timed-out `ollama list`", ok, err)
+	}
+}
+
 // TestCheckAsksTheRegistrysDaemon pins which daemon Check asks: the one the
 // registry's ollama provider row names (its base_url without /v1), as
 // `wt stop`, `wt model add` and `wt cloud-sync` do — and the default address
@@ -166,7 +192,7 @@ func TestCheckCannotTellWithoutADaemonAddress(t *testing.T) {
 		{"no provider row", &config.Config{}, "no ollama provider"},
 		{"path only", ollamaConfig("/v1"), `ollama row's base_url must be http://host:port, not ""`},
 		{"no scheme", ollamaConfig("localhost:11434"), `ollama row's base_url must be http://host:port, not "localhost:11434"`},
-		{"blank", ollamaConfig("   "), "ollama row's base_url must be http://host:port, not "},
+		{"blank", ollamaConfig("   "), `ollama row's base_url must be http://host:port, not "   "`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			origins := stubList(t, "gemma4:9b")

@@ -2,11 +2,13 @@
 package ollamacheck
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -24,12 +26,13 @@ func IsOllamaModel(m config.Model) bool {
 // `wt cloud-sync` pin the CLI to as well) and not of whichever daemon the
 // shell's OLLAMA_HOST names.
 //
-// An error means the check could not tell, and no command was run: cfg has
-// no ollama provider row, or the row's base_url names no daemon ("/v1", a
-// blank, no scheme). ollama reads an empty or unusable OLLAMA_HOST as its
-// default daemon, so asking anyway would answer from a daemon the registry
-// does not describe. (A row with no base_url at all has wt's documented
-// default, which is an address.)
+// An error means the check could not tell. One way is Available's own
+// `ollama list` failure — the command ran and exited non-zero. The others
+// run no command at all: cfg has no ollama provider row, or the row's
+// base_url names no daemon ("/v1", whitespace, no scheme). ollama reads an
+// empty or unusable OLLAMA_HOST as its default daemon, so asking anyway would
+// answer from a daemon the registry does not describe. (A row with no
+// base_url at all has wt's documented default, which is an address.)
 func Check(cfg *config.Config, m config.Model) (bool, error) {
 	if !IsOllamaModel(m) {
 		return true, nil
@@ -74,6 +77,17 @@ func Available(origin, modelName string) (bool, error) {
 // makes it fail, so no test runs the developer's ollama.
 var list = realList
 
+// How long `ollama list` may take before wt stops it: the same limit cmd/wt's
+// catalog flow gives the same command (ollamaListTimeout), because the
+// address is the registry's and may be a remote daemon. Check runs on the
+// TUI's update goroutine, so a daemon that accepts the connection and then
+// never answers would otherwise freeze the launcher for good. A var so a test
+// can lower it; listWaitDelay bounds what the limit leaves open, exactly as
+// ollamaWaitDelay does for the catalog flow's commands.
+var listTimeout = 30 * time.Second
+
+const listWaitDelay = 5 * time.Second
+
 // realList pins the CLI to origin with OLLAMA_HOST, as `wt cloud-sync`
 // (cmd/wt/cloudsync_ollama.go) and `wt stop` (internal/lifecycle/ollama.go)
 // do: an OLLAMA_HOST inherited from the shell that pointed elsewhere would
@@ -83,10 +97,16 @@ func realList(origin string) (names []string, installed bool, err error) {
 	if err != nil {
 		return nil, false, nil
 	}
-	cmd := exec.Command(bin, "list")
+	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "list")
+	cmd.WaitDelay = listWaitDelay
 	cmd.Env = append(os.Environ(), "OLLAMA_HOST="+origin)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, true, fmt.Errorf("timed out after %s (wt's own limit)", listTimeout)
+		}
 		return nil, true, err
 	}
 	return parseOllamaNames(string(out)), true, nil
