@@ -78,7 +78,7 @@ func (omlxBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, mo
 
 // Warm loads modelName into providerID's server, which must already be
 // running: one keyed warmup request, nothing started, stopped or routed. It
-// exists for modelman, whose own warmup is keyless and resolves no
+// exists for llmbench, whose own warmup is keyless and resolves no
 // secret_ref — so it is omlx only, the one local server that can want a key.
 func Warm(ctx context.Context, cfg *config.Config, providerID, modelName string) error {
 	return warm(ctx, defaultEnv(), cfg, providerID, modelName)

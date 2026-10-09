@@ -1,6 +1,6 @@
 // wt litellm — the primitives that manage LiteLLM's config.yaml and the proxy.
-// wt owns this since the 2026-09-21 ownership move; modelman shells out to
-// these commands (see docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md).
+// wt owns this since the 2026-09-21 ownership move: nothing else writes
+// config.yaml (see docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md).
 package main
 
 import (

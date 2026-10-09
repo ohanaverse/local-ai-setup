@@ -40,7 +40,7 @@ func runRecheck(o Options) (fresh []string, ok bool) {
 //   - Ctx     — bounds the config.yaml lock wait; nil means no bound.
 //
 // There is no ready gate (#179 Phase B): a local model is routed because the
-// live inventory found it, never because modelman flagged it downloaded.
+// live inventory found it, never because of a stored flag.
 type Options struct {
 	Path    string
 	Restart func() []string
@@ -479,8 +479,8 @@ func applyTo(f *File, add []plannedAdd, remove []plannedRemove, ollamaBase strin
 		// names every registry local model of the family, routed or not;
 		// recording each as "unrouted" made the Result claim routes were
 		// removed that never existed (#195). Sync's removals come from the
-		// rows themselves, so its report — what `wt litellm sync` prints
-		// and modelman reads — never held one.
+		// rows themselves, so its report — what `wt litellm sync` prints —
+		// never held one.
 		if removed {
 			out = append(out, Outcome{ID: r.id, Action: "unrouted"})
 		}
@@ -983,8 +983,8 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 }
 
 // Providers maps each LiteLLM-mapped provider id to whether it is a cloud
-// provider. modelman reads this through `wt litellm providers` instead of
-// keeping its own copy of the policy table.
+// provider. `wt litellm providers` prints this, so a reader of the policy
+// table needs no copy of its own.
 func Providers() map[string]bool {
 	out := make(map[string]bool, len(policies))
 	for id, p := range policies {

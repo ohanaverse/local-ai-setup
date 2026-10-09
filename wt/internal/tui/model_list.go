@@ -127,8 +127,7 @@ func (m modelItem) Title() string {
 func (m modelItem) Description() string { return "" }
 
 // formatPerToken returns per-token costs as three space-delimited values,
-// e.g. " 0.1234  0.2345  0.3456", matching modelman's COST column
-// (_format_per_token in modelman/src/modelman/screens/models.py). Each price
+// e.g. " 0.1234  0.2345  0.3456": the COST column's format. Each price
 // is right-aligned to a 2-digit (leading-space-padded) integer part plus 4
 // decimal places, so prices over $10/million don't break column alignment.
 // A missing individual price renders as a 7-dash placeholder ("-------"),

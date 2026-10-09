@@ -25,16 +25,17 @@ type APIPrice struct {
 }
 
 // perMillion converts one per-token price. OpenRouter sends decimal strings;
-// a JSON number is accepted too. The arithmetic is modelman's
-// (float(value) * 1_000_000), so both tools write the same digits.
+// a JSON number is accepted too. The arithmetic is float(value) * 1_000_000,
+// one float64 multiplication, so the same price always writes the same
+// digits.
 //
 // skipped is true for a value that was sent and is not a price: negative,
 // not finite, or text that does not parse as a number ("soon", "", a number
 // too large to hold). JSON null, a missing key and any other JSON type are
 // "not reported" (nil, false). The difference matters to PlanPrices: an
 // input or output price that was not reported is cleared, and one that was
-// skipped leaves the model alone with a warning. modelman read unparsable
-// text as not reported, and so cleared the registry's price without a word.
+// skipped leaves the model alone with a warning. Unparsable text read as
+// not reported would clear the registry's price without a word.
 func perMillion(v any) (price *float64, skipped bool) {
 	var text string
 	switch x := v.(type) {
@@ -142,7 +143,7 @@ type PriceChange struct {
 	Before *Cost
 	After  Cost
 	// Changed is false when the prices already match. The model is still
-	// stamped, as modelman's refresh stamps every matched model.
+	// stamped: every matched model is.
 	Changed bool
 }
 
@@ -176,8 +177,8 @@ func PlanPrices(entries []Entry, providers []Provider, api map[string]APIPrice) 
 			continue
 		}
 		if len(price.Skipped) > 0 {
-			// modelman refused the whole entry here too: a model whose price
-			// "varies" has no per-token price to record.
+			// The whole entry is refused: a model whose price "varies" has
+			// no per-token price to record.
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf("Could not use OpenRouter's pricing for %s: its %s price is negative or not a number",
 				e.ID, strings.Join(price.Skipped, " and ")))
 			continue

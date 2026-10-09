@@ -124,11 +124,11 @@ func modelAddCmd(a *app) *cobra.Command {
 
 // absDotRelative makes one side of a pairing that is spelled relative to the
 // working directory (".", "..", "./x", "../x") the absolute path it names
-// from here. The registry is shared: llmbench and modelman each resolve a
-// relative local_path against their own working directory — llmbench's is
-// llmbench/ under `uv run --directory llmbench` — so a row holding "./x"
-// would name a different directory for each of them, and the start command
-// wt prints would fail when run the documented way. A side spelled any other
+// from here. The registry is shared: llmbench resolves a relative local_path
+// against its own working directory — llmbench/ under
+// `uv run --directory llmbench` — so a row holding "./x" would name a
+// different directory there than it did here, and the start command wt
+// prints would fail when run the documented way. A side spelled any other
 // way ("/x", "~/x", a repo id) is returned as it was typed.
 func absDotRelative(side string) (string, error) {
 	s := strings.TrimSpace(side)

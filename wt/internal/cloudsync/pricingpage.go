@@ -26,8 +26,8 @@ var (
 	// with one ASCII space. ASCII `\s` is therefore all that remains to match.
 	offpeakSuffix = regexp.MustCompile(`(?i)\s*\(\s*off[\s-]*peak\s*\)\s*$`)
 	// [0-9], not Python's Unicode `\d`: strconv.ParseFloat reads ASCII digits
-	// only, so `$٣`, which modelman's float() reads as 3, warns here and keeps
-	// the old price instead.
+	// only, so a price in any other digits (`$٣`) warns here and keeps the old
+	// price.
 	priceCell = regexp.MustCompile(`^\$\s*([0-9]+(?:\.[0-9]+)?)$`)
 	// What an ollama model name looks like once the off-peak suffix is gone.
 	// A cell that does not match (spaces, parentheses, a footnote mark) means
@@ -86,9 +86,10 @@ func isSpace(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f
 
 // pyRepr quotes s as Python's repr does for the text this package prints:
 // single quotes, or double ones when the text holds a single quote and no
-// double, with the quote it picked and any backslash escaped. modelman writes
-// its warnings with `{cell!r}` and a plan is meant to read the same from
-// either tool.
+// double, with the quote it picked and any backslash escaped. It is how a
+// cell is quoted in this package's warnings and errors, so one that holds a
+// quote or a backslash still reads as one cell (pinned by the cases in
+// pricingpage_test.go).
 func pyRepr(s string) string {
 	quote := byte('\'')
 	if strings.Contains(s, "'") && !strings.Contains(s, `"`) {
@@ -110,7 +111,8 @@ func pyRepr(s string) string {
 }
 
 // pyReprList formats a list of strings as Python's repr of a list of strings,
-// which is how modelman prints the header rows and the orphan rows it names.
+// which is how a message prints the header rows and the orphan rows it names
+// (pinned by the cases in pricingpage_test.go).
 func pyReprList(items []string) string {
 	parts := make([]string, len(items))
 	for i, item := range items {
@@ -119,7 +121,7 @@ func pyReprList(items []string) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
-// pyReprListOfLists is pyReprList one level deeper, for modelman's list of
+// pyReprListOfLists is pyReprList one level deeper, for a message's list of
 // header rows.
 func pyReprListOfLists(rows [][]string) string {
 	parts := make([]string, len(rows))
@@ -130,10 +132,10 @@ func pyReprListOfLists(rows [][]string) string {
 }
 
 // collectTables returns every <table> as a list of rows, each row a list of
-// cell texts with runs of whitespace folded to one space. It is the port of
-// modelman's _TableCollector, quirks included, so the two read a page the
-// same way: a <tr> or <td> that opens while one is open replaces it, and a
-// row lands in the innermost open table.
+// cell texts with runs of whitespace folded to one space. Its reading of a
+// malformed page is fixed, quirks included (pinned by the cases in
+// pricingpage_test.go): a <tr> or <td> that opens while one is open replaces
+// it, and a row lands in the innermost open table.
 //
 // It reads tokens, not a tree. html.Parse would move and close tags the way a
 // browser does, and the checks in ParsePricing are about the page as written.

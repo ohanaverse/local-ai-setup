@@ -99,7 +99,7 @@ func planAdd(req AddRequest) (addPlan, error) {
 		return addPlan{}, err
 	}
 	if _, ok := set["tags"]; !ok {
-		set["tags"] = []string{} // every row modelman writes has the key
+		set["tags"] = []string{} // every row has the key
 	}
 	if len(req.ModelInfo) > 0 {
 		set["model_info"] = req.ModelInfo
@@ -197,7 +197,7 @@ func Add(req AddRequest, env config.SeedEnv) (AddResult, error) {
 
 // PairingName is the model_name of an mlx_lm_server pairing, and with the
 // provider in front its id: the last path segment of the target and of the
-// draft, as modelman's form named one (Qwen3.8-27B+draft-Qwen3.8-4B). It
+// draft, named as <target>+draft-<draft> (Qwen3.8-27B+draft-Qwen3.8-4B). It
 // says what the pairing is wherever a model id is shown.
 func PairingName(target, draft string) string {
 	return lastSegment(target) + "+draft-" + lastSegment(draft)
@@ -356,10 +356,10 @@ func describe(err error, providerID string) error {
 // message (config.ErrModelAmbiguous): there is no flag to choose a row.
 //
 // Two things about the row's cost table follow from an edit of a price or of
-// a subscription field, and only from one: a table still in modelman's old
-// layout is moved to the current one (legacyCost), and a table the edit
-// emptied goes with its last key, so a model whose prices were all cleared
-// reads like one that never had any.
+// a subscription field, and only from one: a table still in the old cost
+// layout (cost.kind) is moved to the current one (legacyCost), and a table
+// the edit emptied goes with its last key, so a model whose prices were all
+// cleared reads like one that never had any.
 func Edit(id string, f Fields) (changed bool, err error) {
 	given, givenUnset, err := f.patch()
 	if err != nil {
@@ -415,15 +415,14 @@ func Edit(id string, f Fields) (changed bool, err error) {
 	return changed, nil
 }
 
-// legacyCost moves a cost table in modelman's old layout (cost.kind, with
-// the price under price_per_million_tokens or price_per_period and the
-// period under period) to the current one, as modelman's own loader reads it:
-// a per-token price is the input and the output price, a subscription's
-// price and period take their current names. It adds the carried values to
-// set — never over a key this edit sets or clears — and returns the old keys
-// to delete. modelman reads a table that has `kind` by its old keys alone, so
-// a current key written beside them would be a price wt shows and modelman
-// ignores. Nothing for a table that is not in the old layout.
+// legacyCost moves a cost table in the old cost layout (cost.kind, with the
+// price under price_per_million_tokens or price_per_period and the period
+// under period) to the current one: a per-token price is the input and the
+// output price, a subscription's price and period take their current names.
+// It adds the carried values to set — never over a key this edit sets or
+// clears — and returns the old keys to delete. The old keys go because a
+// table holding both layouts would state its price twice, and the two could
+// disagree. Nothing for a table that is not in the old layout.
 func legacyCost(cost *tomlw.Table, set map[string]any, unset []string) []string {
 	kind, isLegacy := cost.Get("kind")
 	if !isLegacy {

@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/spf13/cobra"
 )
 
 // modelCmdConfig is a minimal local-only registry shared by the start/stop
@@ -977,5 +978,32 @@ func TestStopAllFailurePrintsNoUsage(t *testing.T) {
 	got, err = run("--all", "ollama")
 	if err == nil || !strings.Contains(got, "Usage:") {
 		t.Errorf("err = %v out = %q, want the usage text for an argument mistake", err, got)
+	}
+}
+
+// TestNoHelpTextNamesModelman pins success criterion 1 of the retirement for
+// wt's own help: no command's help may send a reader to modelman, which no
+// longer exists. It walks the whole command tree, so a command added later is
+// covered too, and reads each command's long text and its usage (the short
+// line, the examples and every flag's description). The check is for the
+// lowercase tool name: the env alias names (MODELMAN_REGISTRY and the three
+// MODELMAN_LITELLM_ ones) are uppercase, are read forever, and may be named.
+func TestNoHelpTextNamesModelman(t *testing.T) {
+	seen := 0
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		seen++
+		for _, text := range []string{c.Long, c.UsageString()} {
+			if strings.Contains(text, "modelman") {
+				t.Errorf("%s: help names modelman:\n%s", c.CommandPath(), text)
+			}
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(rootCmd())
+	if seen < 20 {
+		t.Fatalf("walked %d commands, want the whole tree (wt has more than 20)", seen)
 	}
 }

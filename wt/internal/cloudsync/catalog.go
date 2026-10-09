@@ -80,9 +80,10 @@ func (p *CatalogPlan) MassRemoval() bool {
 // applies deletions only under the digest a reviewed dry run printed, so a
 // page that changed since cannot delete a model nobody saw.
 //
-// The value is byte-identical to modelman's SyncPlan.removal_digest for the
-// same plan: the first 12 hex digits of the SHA-256 of the sorted removals
-// followed by the sorted "rm <tag>" lines, joined with newlines.
+// The digest is a fixed format, because a printed digest approves the same
+// plan on a later run (the vectors are in catalog_test.go): the first 12 hex
+// digits of the SHA-256 of the sorted removals followed by the sorted
+// "rm <tag>" lines, joined with newlines.
 func (p *CatalogPlan) RemovalDigest() string {
 	items := slices.Clone(p.Removals)
 	sort.Strings(items)
@@ -172,8 +173,8 @@ func merged(page PriceTriple, oldInput, oldCache, oldOutput *float64) (input, ca
 
 // offpeakRow is ollama's published off-peak window as a time_prices row:
 // outside 12:00 to 18:00 UTC on weekdays, and all day at weekends. The keys
-// are in the order modelman writes them. The window is not parsed from the
-// page; if ollama changes it, change it here.
+// are in schema order. The window is not parsed from the page; if ollama
+// changes it, change it here.
 func offpeakRow(input, cache, output *float64) *tomlw.Table {
 	window := func(start, end string, days ...string) *tomlw.Table {
 		w := tomlw.NewTable()
@@ -472,10 +473,9 @@ func formatCost(c *Cost) string {
 	return text
 }
 
-// Format prints the plan, one section per kind of change, in the words
-// modelman's format_plan uses. The command prints it for review, and compares
-// it with the re-plan made under the registry lock: two plans that print the
-// same are the same plan.
+// Format prints the plan, one section per kind of change. It is the text the
+// command prints for review, and compares with the re-plan made under the
+// registry lock: two plans that print the same are the same plan.
 func (p *CatalogPlan) Format() string {
 	lines := []string{fmt.Sprintf("ollama.com/pricing: %d models (prices are input/cached/output per million tokens)", p.CatalogSize)}
 	lines = append(lines, fmt.Sprintf("Price updates (%d):", len(p.Updates)))

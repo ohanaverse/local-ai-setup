@@ -15,9 +15,7 @@
 // more than once. cmd/wt/cloudsync.go owns the fetches, the ollama CLI, the
 // confirmation and the exit codes.
 //
-// It is the Go port of modelman's pricing.py, ollama_catalog.py and the
-// writing half of time_pricing.py. ParsePricing is the only code that knows
-// the pricing page's HTML shape: when ollama changes the page,
-// `wt cloud-sync` exits 3 and saves the raw HTML, and the repair is there
-// and in testdata/ollama_pricing.html.
+// ParsePricing is the only code that knows the pricing page's HTML shape:
+// when ollama changes the page, `wt cloud-sync` exits 3 and saves the raw
+// HTML, and the repair is there and in testdata/ollama_pricing.html.
 package cloudsync

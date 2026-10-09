@@ -328,7 +328,7 @@ func rootCmd() *cobra.Command {
 
 			// Launch paths require a valid config. The `wt config` subcommand
 			// bypasses this so it can repair a broken config.toml. A missing
-			// modelman registry is tolerated for every agent (issue #147): a
+			// registry is tolerated for every agent (issue #147): a
 			// command agent has no model layer, and a model-driven agent with
 			// no config.toml entry falls back to a bare passthrough launch
 			// (see agents.IsConfigured and runLaunchPath, below). Anything

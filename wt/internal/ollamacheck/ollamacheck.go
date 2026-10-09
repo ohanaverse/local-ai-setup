@@ -28,7 +28,8 @@ func Check(m config.Model) (bool, error) {
 // Returns an error when `ollama list` exits non-zero.
 //
 // Deliberately self-contained (no internal/registry import): this is a
-// runtime availability probe, not model discovery — modelman owns discovery.
+// runtime availability probe, not model discovery (internal/localmodels does
+// that).
 func Available(modelName string) (bool, error) {
 	if _, err := exec.LookPath("ollama"); err != nil {
 		return false, nil // ollama not installed — nothing is available
