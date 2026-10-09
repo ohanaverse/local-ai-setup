@@ -49,7 +49,10 @@ the one that deleted the backend
 What that changes on a machine: `llmbench provider list` has no `llamacpp`
 row, `llmbench provider isolate llamacpp` and `llmbench provider stop llamacpp`
 say `unknown provider: llamacpp` and stop nothing, and
-`LLM_ISOLATE_LLAMACPP_MODEL` is read by nothing. `llmbench provider stop-all`
+`LLM_ISOLATE_LLAMACPP_MODEL` is read by nothing.
+`llmbench provider stop-all --keep llamacpp` exits 1 with
+`unknown provider for --keep: llamacpp` and stops nothing; it used to be
+accepted. `llmbench provider stop-all`
 (and the teardown `isolate` runs first) no longer unloads the LaunchAgent; if
 the plist is installed, `launchctl unload` it by hand:
 `launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist`.
@@ -106,6 +109,19 @@ the plist is installed, `launchctl unload` it by hand:
      (`tests/benchmark/test_isolation.py`, `tests/test_main.py`) and to
      `DEFAULT_PROVIDER_IDS` (`llmbench/src/llmbench/registry.py`) if the
      benchmarks should treat its models as local targets
+   - correct the tests that pin the retired state, which fail once the
+     backend is registered again. In
+     `llmbench/tests/providers/lifecycle/test_orchestrate.py`: drop `llamacpp`
+     from the ids of `test_stop_rejects_an_id_no_backend_has`, delete
+     `test_isolate_rejects_the_retired_llamacpp_id`, and patch
+     `BACKENDS["llamacpp"].restore` in every test that calls
+     `orchestrate.restore()` (the two that assert `result.ok is True` fail
+     without it; the others pass only after the restore's wait times out).
+     In the restored `test_llamacpp.py`: delete
+     `test_llamacpp_registered_in_backends_but_not_supported_ids` and
+     `test_llamacpp_does_not_respect_solo`, and update the two tests that
+     rely on `restore_action == "skip"` (`test_llamacpp_is_never_restored`,
+     `test_restore_no_ops_while_restore_action_is_skip`)
    - add `llamacpp` to `defaultProviderIDs` in
      `wt/internal/config/registry_seed.go` if wt should seed its row. wt has
      no lifecycle backend for it and never had: `wt start` cannot start it

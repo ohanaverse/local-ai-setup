@@ -119,11 +119,10 @@ def test_restore_providers_failure_raises():
 def test_supported_provider_ids_matches_the_backends_registry_documented_list():
     """llmbench/providers/lifecycle/backends/__init__.py owns
     SUPPORTED_PROVIDER_IDS (this module re-exports it); the frozenset below
-    is a deliberate hand-written COPY of that documented set, not a
-    reference to it, so a backend added to BACKENDS without a decision about
-    isolability is caught here rather than silently running unisolated. Every
-    registered backend is in it. Any change to the supported set must update this
-    literal and backends/__init__.py's constant together (issue #79
+    is a deliberate hand-written COPY of the backend ids, not a reference
+    to them, so that registering a backend is written down in two places.
+    Every registered backend is in it: the constant is frozenset(BACKENDS).
+    Registering or removing a backend must update this literal (issue #79
     retired the old bash helper's own "Supported:" header comment, which
     used to need the same update)."""
     assert (
