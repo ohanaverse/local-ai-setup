@@ -7,8 +7,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,10 +22,29 @@ import (
 )
 
 // saveFailedHTML keeps a page ParsePricing refused, so the parser can be
-// repaired against exactly what ollama served.
+// repaired against exactly what ollama served. The file is always a new one,
+// mode 0600: its name is predictable and TMPDIR may be shared, so whatever
+// already has that name (a page saved in the same second, a planted link) is
+// removed, never written into or through.
 func saveFailedHTML(page string, now time.Time) (string, error) {
 	path := filepath.Join(os.TempDir(), "ollama-pricing-"+now.Format("20060102-150405")+".html")
-	return path, os.WriteFile(path, []byte(page), 0o600)
+	create := func() (*os.File, error) {
+		return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	}
+	f, err := create()
+	if errors.Is(err, os.ErrExist) {
+		if err = os.Remove(path); err == nil {
+			f, err = create()
+		}
+	}
+	if err != nil {
+		return path, err
+	}
+	if _, err := f.WriteString(page); err != nil {
+		f.Close()
+		return path, err
+	}
+	return path, f.Close()
 }
 
 // catalogRun is the catalog flow between its plan and its apply: everything
@@ -80,6 +101,15 @@ func planCatalogFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Con
 		fmt.Fprintln(out, "catalog: no ollama provider in the registry; nothing to mirror")
 		return nil
 	}
+	// Every ollama command is pinned to this address, and ollama reads an
+	// empty or unusable OLLAMA_HOST as its default daemon: a base_url that
+	// names no daemon ("/v1", a blank, no scheme) would send the pulls and
+	// removals somewhere the registry does not say, in silence. (A row with
+	// no base_url at all has wt's documented default, which is an address.)
+	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
+	if u, err := url.Parse(origin); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return stop(2, "the ollama provider row's base_url names no daemon (it reads as %q): set auth.base_url to http://host:port; nothing was changed", origin)
+	}
 
 	var page string
 	if o.htmlFile != "" {
@@ -105,12 +135,15 @@ func planCatalogFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Con
 		return stop(3, "could not parse ollama.com/pricing: %v\ncatalog: %s — the parser to update is wt/internal/cloudsync/pricingpage.go; nothing was changed", err, where)
 	}
 
-	run := &catalogRun{catalog: catalog}
-	run.origin, _ = localmodels.FamilyOrigin(cfg, "ollama")
+	run := &catalogRun{catalog: catalog, origin: origin}
 	// Without it, what to pull and what to rm is unknowable: refuse instead
 	// of mirroring half the plan.
 	if run.tags, err = ollamaTags(ctx, run.origin); err != nil {
-		return stop(2, "could not run `ollama list` against %s (is the ollama daemon up?): %v; nothing was changed", run.origin, err)
+		hint := " (is the ollama daemon up?)"
+		if errors.Is(err, errOllamaNotInstalled) {
+			hint = ""
+		}
+		return stop(2, "could not run `ollama list` against %s%s: %v; nothing was changed", run.origin, hint, err)
 	}
 	names := make([]string, len(catalog.Models))
 	for i, m := range catalog.Models {
@@ -189,11 +222,20 @@ func catalogGate(errOut io.Writer, c *catalogRun, o cloudSyncOpts, res *cloudSyn
 // the rest still run. A tag whose `ollama rm` failed is by now a stray (its
 // entry is gone from the registry), which the next run removes; that run's
 // removals are not this run's, so the failure line says a new digest is
-// needed.
+// needed. A tag whose pull failed has its entry in the registry all the
+// same, unrouted until the tag is there; the next run plans that pull again,
+// and a pull needs no digest.
+//
+// The daemon is named once, first: it is where the pulls and removals land,
+// and no other line of a run that works says so.
 func runOllamaWork(ctx context.Context, out, errOut io.Writer, origin string, done cloudsync.CatalogApplied, res *cloudSyncOutcome) {
+	if len(done.Pulls)+len(done.Removes) > 0 {
+		fmt.Fprintf(out, "catalog: ollama at %s\n", origin)
+	}
 	for _, tag := range done.Pulls {
 		if err := ollamaPull(ctx, origin, tag); err != nil {
 			fmt.Fprintf(errOut, "catalog: error: %v\n", err)
+			fmt.Fprintf(errOut, "catalog:   %s is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n", tag)
 			res.failed = true
 			continue
 		}

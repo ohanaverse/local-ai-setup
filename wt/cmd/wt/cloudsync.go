@@ -145,7 +145,8 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			"     saved, and the path printed)\n" +
 			"  4  catalog changed nothing: it would remove more than half the ollama\n" +
 			"     cloud entries, and --force was not given\n" +
-			"  5  catalog changed nothing: its removals were not approved\n" +
+			"  5  catalog changed nothing: its removals were not approved, or the\n" +
+			"     registry changed after its plan was printed\n" +
 			"2 to 5 are about the catalog flow only and win over 1; the prices flow may\n" +
 			"have been applied in the same run.",
 		Example: "  wt cloud-sync --dry-run\n" +
@@ -187,7 +188,7 @@ func cloudSyncCmd(a *app) *cobra.Command {
 	cmd.Flags().StringVar(&only, "only", "", "Run only these flows: a comma list of "+strings.Join(cloudSyncFlows, ", ")+" (default: all)")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "Print the plans and change nothing")
 	cmd.Flags().BoolVar(&o.yes, "yes", false, "Apply without asking (removals still need --approve-removals)")
-	cmd.Flags().StringVar(&o.htmlFile, "html", "", "catalog: parse this saved pricing page instead of fetching it")
+	cmd.Flags().StringVar(&o.htmlFile, "html", "", "catalog: parse this saved pricing page instead of fetching it (cloud tags are still looked up on ollama.com/library)")
 	cmd.Flags().StringVar(&o.approve, "approve-removals", "", "catalog, with --yes: the removal digest a reviewed --dry-run printed")
 	cmd.Flags().BoolVar(&o.force, "force", false, "catalog: apply even if more than half the ollama cloud entries would be removed")
 	return cmd
@@ -199,6 +200,10 @@ type cloudSyncOutcome struct {
 	failed bool
 	// catalogCode is 2 to 5 when the catalog flow changed nothing, else 0.
 	catalogCode int
+	// catalogWhy, when set, is the reason given for catalogCode in place of
+	// catalogCodeMeaning's: exit 5 is also a plan that was approved and then
+	// found changed under the registry lock.
+	catalogWhy string
 }
 
 var catalogCodeMeaning = map[int]string{
@@ -213,7 +218,11 @@ var catalogCodeMeaning = map[int]string{
 func (r *cloudSyncOutcome) err() error {
 	switch {
 	case r.catalogCode != 0:
-		return &exitCodeError{code: r.catalogCode, err: fmt.Errorf("cloud-sync: the catalog flow changed nothing: %s", catalogCodeMeaning[r.catalogCode])}
+		why := r.catalogWhy
+		if why == "" {
+			why = catalogCodeMeaning[r.catalogCode]
+		}
+		return &exitCodeError{code: r.catalogCode, err: fmt.Errorf("cloud-sync: the catalog flow changed nothing: %s", why)}
 	case r.failed:
 		return &exitCodeError{code: 1, err: errors.New("cloud-sync: a step failed; see the error lines above")}
 	}
@@ -397,7 +406,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 	if catalog != nil {
 		if applied.catalogStale {
 			fmt.Fprintln(errOut, "catalog: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again")
-			res.catalogCode = 5
+			res.catalogCode, res.catalogWhy = 5, errPlanChanged.Error()
 		} else {
 			fmt.Fprintf(out, "catalog: updated %d, added %d and removed %d model(s)\n", applied.catalog.Updated, applied.catalog.Added, applied.catalog.Removed)
 			runOllamaWork(ctx, out, errOut, catalog.origin, applied.catalog, &res)

@@ -141,6 +141,7 @@ func TestCloudSyncCatalogApplyUnderTheApprovedDigest(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q\nstdout:\n%s", code, stderr, stdout)
 	}
 	wantTail := "catalog: updated 1, added 4 and removed 1 model(s)\n" +
+		"catalog: ollama at " + testOllamaOrigin + "\n" +
 		"catalog: pulled glm-5.3:cloud\ncatalog: pulled gemma4:cloud\ncatalog: pulled kimi-k3:1t-cloud\ncatalog: pulled gpt-oss:120b-cloud\n" +
 		"catalog: removed retired:cloud\ncatalog: removed stray:cloud\n" +
 		"routes: ollama/glm-5.3:cloud: routed\n"
@@ -251,6 +252,14 @@ tags = []
 				registry = cloudSyncRegistry
 			}
 			path, cfg := cloudSyncHome(t, registry)
+			saved := filepath.Join(os.TempDir(), "ollama-pricing-20261007-090000.html")
+			if tc.code == 3 {
+				// A file of that name from a run in the same second, readable
+				// by others: the page saved over it must still be private.
+				if err := os.WriteFile(saved, []byte("an earlier page"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			stubCloudFetch(t, tc.pages)
 			ollama := stubOllama(t, catalogPulled...)
 			if tc.listFail != "" {
@@ -276,9 +285,11 @@ tags = []
 				t.Errorf("the refused run changed something: ollama %q, syncs %d", ollama.changes(), *synced)
 			}
 			if tc.code == 3 {
-				saved := filepath.Join(os.TempDir(), "ollama-pricing-20261007-090000.html")
 				if got := mustRead(t, saved); got != tc.pages[cloudsync.PricingURL] {
 					t.Errorf("the saved page is not the page that was served: %q", got)
+				}
+				if info, err := os.Stat(saved); err != nil || info.Mode().Perm() != 0o600 {
+					t.Errorf("the saved page: mode %v, err %v; want 0600", info.Mode().Perm(), err)
 				}
 			}
 		})
@@ -410,10 +421,16 @@ location = "cloud"
 		}
 	})
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true})
+	_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{catalog: true})
 	want := "catalog: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again\n"
 	if code != 5 || stderr != want {
 		t.Errorf("exit %d, stderr %q\nwant exit 5, stderr %q", code, stderr, want)
+	}
+	// The last line, the one a caller that reads only it goes by, gives this
+	// reason and not "removals not approved": the user approved, and the
+	// plan printed here removed what it said.
+	if want := "cloud-sync: the catalog flow changed nothing: the registry changed after the plan was printed"; final != want {
+		t.Errorf("the command's error = %q, want %q", final, want)
 	}
 	if mustRead(t, path) != raced || len(ollama.changes()) != 0 || *synced != 0 {
 		t.Errorf("the refused run changed something: ollama %q, syncs %d", ollama.changes(), *synced)
@@ -443,7 +460,9 @@ location = "cloud"
 // step, not less; the next run redoes only what is still missing. A tag that
 // is already gone ("not found") is not a failure. A tag whose rm failed is
 // named as left behind, with the way back in: a new dry run, because the
-// digest that approved this run may not be the next run's.
+// digest that approved this run may not be the next run's. A tag whose pull
+// failed is named too, with what that leaves (an entry in the registry that
+// is not routed) and that running the command again retries it.
 func TestCloudSyncCatalogOllamaFailuresExit1AndTheRestStillRuns(t *testing.T) {
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	stubCloudFetch(t, catalogPages())
@@ -456,6 +475,7 @@ func TestCloudSyncCatalogOllamaFailuresExit1AndTheRestStillRuns(t *testing.T) {
 
 	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true})
 	wantErr := "catalog: error: `ollama pull gemma4:cloud` failed: Error: pull model manifest: 401 unauthorized\n" +
+		"catalog:   gemma4:cloud is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n" +
 		"catalog: error: `ollama rm stray:cloud` failed: Error: permission denied\n" +
 		"catalog:   stray:cloud is left pulled; the next run lists it as a stray tag — start again from --dry-run, since the removal digest may have changed\n"
 	if code != 1 || stderr != wantErr {
@@ -1008,5 +1028,84 @@ func TestCloudSyncCatalogReadsASavedPage(t *testing.T) {
 		if url == cloudsync.PricingURL {
 			t.Error("--html still fetched ollama.com/pricing")
 		}
+	}
+}
+
+// TestSaveFailedHTMLNeverWritesThroughALink pins that the refused page is
+// saved as a new file. Its name is predictable and TMPDIR may be a shared
+// /tmp, so a link planted under that name must not send the page into the
+// file it points at.
+func TestSaveFailedHTMLNeverWritesThroughALink(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(os.TempDir(), "ollama-pricing-20261007-090000.html")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := saveFailedHTML("<html>the page</html>", cloudSyncClock)
+	if err != nil || saved != link {
+		t.Fatalf("saveFailedHTML = (%q, %v), want %q", saved, err, link)
+	}
+	if got := mustRead(t, victim); got != "mine" {
+		t.Errorf("the linked-to file was overwritten: %q", got)
+	}
+	info, err := os.Lstat(saved)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || mustRead(t, saved) != "<html>the page</html>" {
+		t.Errorf("the saved page: mode %v, err %v; want a regular 0600 file holding the page", info.Mode(), err)
+	}
+}
+
+// TestCloudSyncCatalogRefusesABaseURLThatNamesNoDaemon pins the pin itself.
+// Every ollama command is run with OLLAMA_HOST set from the ollama provider
+// row's base_url, and ollama reads an empty or unusable OLLAMA_HOST as its
+// default daemon: a hand-edited base_url such as "/v1" would send the pulls
+// and removals to a daemon the registry does not name, with nothing said.
+// Such a row stops the catalog flow before it fetches or runs anything
+// (exit 2), dry run included.
+func TestCloudSyncCatalogRefusesABaseURLThatNamesNoDaemon(t *testing.T) {
+	for _, base := range []string{"/v1", "/", " ", "not a url", "127.0.0.1:11999", "ftp://127.0.0.1:11434"} {
+		for name, o := range map[string]cloudSyncOpts{"dry run": {dryRun: true}, "--yes": {yes: true, approve: "000000000000"}} {
+			t.Run(base+" "+name, func(t *testing.T) {
+				registry := strings.Replace(cloudSyncRegistry, `base_url = "http://127.0.0.1:11434"`, `base_url = "`+base+`"`, 1)
+				path, cfg := cloudSyncHome(t, registry)
+				fetches := stubCloudFetch(t, catalogPages())
+				ollama := stubOllama(t, catalogPulled...)
+				synced := stubRouteSync(t, "")
+				o.catalog = true
+
+				stdout, stderr, final, code := runCSFinal(t, cfg, o)
+				if code != 2 || stdout != "" || final != "cloud-sync: the catalog flow changed nothing: an input could not be read" ||
+					!strings.HasPrefix(stderr, "catalog: error: the ollama provider row's base_url names no daemon") ||
+					!strings.HasSuffix(stderr, "set auth.base_url to http://host:port; nothing was changed\n") || strings.Count(stderr, "\n") != 1 {
+					t.Errorf("exit %d, final %q\nstdout: %q\nstderr: %q", code, final, stdout, stderr)
+				}
+				if len(fetches.all()) != 0 || len(ollama.calls) != 0 || *synced != 0 || mustRead(t, path) != registry {
+					t.Errorf("the refused run did something: fetched %v, ollama %q, syncs %d", fetches.all(), ollama.calls, *synced)
+				}
+			})
+		}
+	}
+}
+
+// TestCloudSyncCatalogSaysWhenOllamaIsNotInstalled pins the wording when
+// there is no ollama command at all. It runs the real exec path with an empty
+// PATH, so nothing can be run. The line must not ask whether the daemon is
+// up: that sends the user to start a daemon when what is missing is the
+// program.
+func TestCloudSyncCatalogSaysWhenOllamaIsNotInstalled(t *testing.T) {
+	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
+	stubCloudFetch(t, catalogPages())
+	old := ollamaCLI
+	ollamaCLI = realOllamaCLI
+	t.Cleanup(func() { ollamaCLI = old })
+	t.Setenv("PATH", t.TempDir())
+
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{catalog: true, dryRun: true})
+	want := "catalog: error: could not run `ollama list` against " + testOllamaOrigin + ": the ollama command is not installed (not on PATH); nothing was changed\n"
+	if code != 2 || stderr != want {
+		t.Errorf("exit %d, stderr %q\nwant exit 2, stderr %q", code, stderr, want)
 	}
 }

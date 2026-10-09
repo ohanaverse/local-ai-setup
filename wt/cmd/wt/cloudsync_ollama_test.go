@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The ollama provider row of cloudSyncRegistry names this address, and every
@@ -143,5 +144,112 @@ func TestRealOllamaCLIPinsTheDaemon(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if _, _, err := realOllamaCLI(context.Background(), "http://127.0.0.1:11999", "list"); err == nil || err.Error() != "the ollama command is not installed (not on PATH)" {
 		t.Errorf("with no ollama on PATH: err = %v", err)
+	}
+}
+
+// TestOllamaFailureIsOneCleanLine pins how a failed ollama command is worded.
+// `ollama pull` writes its progress, cursor escapes included, to stderr before
+// its `Error:` line, and wt prints the failure after a `catalog: error:`
+// prefix: handed the whole of stderr, every line after the first would lose
+// the prefix a reader (or the cloud-sync skill) finds errors by, and the
+// escapes would reach the terminal. One line comes back: the last one that
+// says anything, which is where ollama puts its error.
+func TestOllamaFailureIsOneCleanLine(t *testing.T) {
+	ollama := stubOllama(t)
+	progress := "pulling manifest \n\x1b[?25lpulling manifest \r\x1b[1G\x1b[K"
+	ollama.fail["pull glm-5.3:cloud"] = progress + "Error: pull model manifest: file does not exist\n\n"
+	ollama.fail["rm stuck:cloud"] = "Warning: something\nError: permission denied\n"
+	ollama.fail["rm quiet:cloud"] = "\x1b[?25h\n \n"
+	ollama.fail["list"] = "Warning: something\r\nError: could not connect to ollama server\r\n"
+	ctx := context.Background()
+	if err := ollamaPull(ctx, testOllamaOrigin, "glm-5.3:cloud"); err == nil || err.Error() != "`ollama pull glm-5.3:cloud` failed: Error: pull model manifest: file does not exist" {
+		t.Errorf("pull: err = %q", err)
+	}
+	if err := ollamaRemove(ctx, testOllamaOrigin, "stuck:cloud"); err == nil || err.Error() != "`ollama rm stuck:cloud` failed: Error: permission denied" {
+		t.Errorf("rm: err = %q", err)
+	}
+	// Nothing readable on stderr: why the command failed stands in.
+	if err := ollamaRemove(ctx, testOllamaOrigin, "quiet:cloud"); err == nil || err.Error() != "`ollama rm quiet:cloud` failed: exit status 1" {
+		t.Errorf("rm with only escapes on stderr: err = %q", err)
+	}
+	if _, err := ollamaTags(ctx, testOllamaOrigin); err == nil || err.Error() != "Error: could not connect to ollama server" {
+		t.Errorf("list: err = %q", err)
+	}
+}
+
+// TestOllamaRemoveNotFoundMustNameTheTag pins how narrowly "already gone" is
+// read. Only ollama's own answer for a missing model, which names the tag,
+// counts; any other failure that happens to contain "not found" (an HTTP 404
+// page from something that is not ollama on that address) is an error.
+// Otherwise wt would print "removed <tag>" and exit 0 for a tag that is
+// still pulled.
+func TestOllamaRemoveNotFoundMustNameTheTag(t *testing.T) {
+	ollama := stubOllama(t)
+	ollama.fail["rm gone:cloud"] = "pulling\nError: model 'gone:cloud' not found\n"
+	ollama.fail["rm Mixed:cloud"] = "Error: Model 'mixed:cloud' Not Found"
+	ollama.fail["rm kept:cloud"] = "Error: 404 page not found"
+	ollama.fail["rm other:cloud"] = "Error: model 'different:cloud' not found"
+	ctx := context.Background()
+	for _, tag := range []string{"gone:cloud", "Mixed:cloud"} {
+		if err := ollamaRemove(ctx, testOllamaOrigin, tag); err != nil {
+			t.Errorf("rm %s, which ollama says is not there: err = %v, want none", tag, err)
+		}
+	}
+	if err := ollamaRemove(ctx, testOllamaOrigin, "kept:cloud"); err == nil || err.Error() != "`ollama rm kept:cloud` failed: Error: 404 page not found" {
+		t.Errorf("rm answered by a 404 page: err = %v, want a failure", err)
+	}
+	if err := ollamaRemove(ctx, testOllamaOrigin, "other:cloud"); err == nil {
+		t.Error("rm answered with another model's not-found was read as done")
+	}
+}
+
+// TestOllamaTimeoutIsSaidAsOne pins the wording when wt's own limit stops an
+// ollama command. The killed process reports "signal: killed" (or whatever
+// progress it had printed), which reads as a crash; the user has to be told
+// it was a timeout, and how long wt waited, to know that trying again is
+// reasonable. A tag whose rm timed out is never read as removed, whatever
+// was on stderr by then.
+func TestOllamaTimeoutIsSaidAsOne(t *testing.T) {
+	old := ollamaCLI
+	t.Cleanup(func() { ollamaCLI = old })
+	ollamaCLI = func(ctx context.Context, _ string, args ...string) (string, string, error) {
+		<-ctx.Done()
+		return "", "pulling manifest \nError: model '" + args[len(args)-1] + "' not found\n", errors.New("signal: killed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := ollamaPull(ctx, testOllamaOrigin, "slow:cloud"); err == nil || err.Error() != "`ollama pull slow:cloud` timed out after 10m (wt's own limit)" {
+		t.Errorf("pull: err = %q", err)
+	}
+	if err := ollamaRemove(ctx, testOllamaOrigin, "slow:cloud"); err == nil || err.Error() != "`ollama rm slow:cloud` timed out after 1m (wt's own limit)" {
+		t.Errorf("rm: err = %q", err)
+	}
+	if _, err := ollamaTags(ctx, testOllamaOrigin); err == nil || err.Error() != "timed out after 30s (wt's own limit)" {
+		t.Errorf("list: err = %q", err)
+	}
+}
+
+// TestRealOllamaCLITimeoutIsNotHeldByAChild pins that wt's time limit holds
+// when `ollama` on PATH is a wrapper script: the limit kills the script, but
+// the command it started lives on holding the output pipes, and waiting for
+// those to close would keep `wt cloud-sync` hung for as long as that child
+// lives, with the registry already written and the routes not yet synced.
+// The stand-in here is a shell script whose child sleeps; nothing real runs.
+func TestRealOllamaCLITimeoutIsNotHeldByAChild(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ollama"), []byte("#!/bin/sh\n/bin/sleep 4\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	oldDelay := ollamaWaitDelay
+	ollamaWaitDelay = 300 * time.Millisecond
+	t.Cleanup(func() { ollamaWaitDelay = oldDelay })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err := realOllamaCLI(ctx, "http://127.0.0.1:11999", "pull", "x:cloud")
+	if took := time.Since(start); err == nil || took > 2*time.Second {
+		t.Errorf("realOllamaCLI returned after %s with err = %v; want an error within the limit plus the wait delay", took.Round(10*time.Millisecond), err)
 	}
 }
