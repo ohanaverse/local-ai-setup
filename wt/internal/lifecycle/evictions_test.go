@@ -112,8 +112,8 @@ func TestEvictionsByTenancy(t *testing.T) {
 		t.Errorf("untrusted probe: %v known=%v, want none and unknown", ids(v), known)
 	}
 	// A refused connection is a positive answer: nothing is serving, so a cold
-	// start displaces nobody. Reading it as "unknown" made a start that does
-	// not name --replace fail, whenever the server was simply not running.
+	// start displaces nobody. The plan calls that known and empty; the engine
+	// still re-probes before it acts.
 	for _, tc := range []struct {
 		ten    Tenancy
 		family string

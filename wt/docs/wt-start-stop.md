@@ -115,9 +115,12 @@ recently used when a load does not fit.
   are routed. When the model fits, nothing is asked.
 - When it does not fit, wt names the models omlx is expected to unload, each
   with its live wt session count, and asks (default No); `--replace` skips
-  the question. Declining changes nothing. If wt cannot size the pool (omlx's
-  status endpoint refused, or its memory limit is off) it names every other
-  loaded model.
+  the question. Declining changes nothing. With no TTY wt cannot ask: the
+  start exits 1 with the question followed by
+  `— rerun with --replace to confirm`, and changes nothing (the same holds
+  for a start that would replace the mtplx model). If wt cannot size the pool
+  (omlx's status endpoint refused, or its memory limit is off) it names every
+  other loaded model.
 - The prediction is an estimate: omlx starts unloading below its ceiling
   (at 85% of it by default) and does not report where, so wt keeps 15% of
   the ceiling free when it predicts. If omlx unloads a model wt did not name, wt

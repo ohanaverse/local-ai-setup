@@ -29,7 +29,8 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 	// A refused connection positively means nothing is serving, so the family
 	// is known to be empty: a cold start displaces nobody. It is checked
 	// before the trust rule because the snapshot marks such a family Partial
-	// too, and "unknown" there would refuse every scripted cold start.
+	// too. The engine re-probes such a server before it acts
+	// (resolveEvictions).
 	if snap.Down[family] {
 		return nil, true
 	}
