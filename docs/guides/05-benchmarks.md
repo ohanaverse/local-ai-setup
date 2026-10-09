@@ -2,7 +2,7 @@
 
 > Use this to: benchmark local models the one safe way — isolate a provider so it has Apple Silicon GPU/RAM to itself, run `llmbench`, restore the stack, and read the results.
 >
-> Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
 
 ## Prerequisites
 
