@@ -18,7 +18,7 @@ Two invariants this module owns:
 
 2. **Never a traceback.** Every public function returns a `LifecycleResult`
    envelope; nothing here raises past its own boundary. Callers
-   (`llmbench.benchmark.isolation`, `local_control.py`) branch on `ok`.
+   (`llmbench.benchmark.isolation`, `cli.py`) branch on `ok`.
 """
 
 from __future__ import annotations
@@ -143,9 +143,9 @@ def isolate(
     """Stop every other local provider and start the requested one.
 
     `solo=True` restricts teardown to this backend's OWN occupant, leaving
-    sibling providers alone — modelman's same-provider-only local-model
-    lifecycle (`local_control.py`). Never passed by `llmbench`,
-    which still needs full exclusivity for clean measurement.
+    sibling providers alone — what `llmbench provider isolate --solo` asks
+    for: starting a pairing beside other models. The benchmarks never pass
+    it; they need full exclusivity for clean measurement.
 
     Phases, in this order for every backend:
       1. RESOLVE — look the backend up, check availability, resolve the

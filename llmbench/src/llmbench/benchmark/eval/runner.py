@@ -108,7 +108,7 @@ def _row_isolation_spec(
     """(extra_args, env) for isolating `row`'s provider with the ROW'S model
     loaded, or None when the row needs no isolation at all.
 
-    Mirrors `modelman start`'s in-process pattern (local_control.py):
+    A backend takes its model through one of two channels:
     mlx_lm_server/mtplx take positional model args, ollama/omlx name their
     model through the LLM_ISOLATE_*_MODEL env dict — isolate_provider's only
     channel for them, since their backends' resolve() reads extra_args as
@@ -703,7 +703,7 @@ def _reconstruct_category_result(
     say (i.e. post-rejudge for anything rejudge_run just rewrote).
 
     Well-formed JSON whose shape no longer matches the dataclass (a
-    hand-edited judge.json, or a file written by a newer/older modelman
+    hand-edited judge.json, or a file written by a newer or older llmbench
     with different fields) is tolerated the same way malformed JSON is —
     a stderr warning and a skip — per _load_json_artifact's documented
     contract that one corrupted artifact must not crash the whole

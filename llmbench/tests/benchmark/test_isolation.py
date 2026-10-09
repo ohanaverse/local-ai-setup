@@ -72,7 +72,7 @@ def test_isolate_provider_forwards_extra_args():
 
 
 def test_isolate_provider_env_override_becomes_the_explicit_model():
-    """`modelman start` passes env={LLM_ISOLATE_OLLAMA_MODEL: name} so the
+    """The eval runner passes env={LLM_ISOLATE_OLLAMA_MODEL: name} so the
     requested model is warmed instead of the provider's baked-in default.
     That value must be extracted and passed as the EXPLICIT model argument
     (top of the backend's precedence chain): `env` is a dict the caller

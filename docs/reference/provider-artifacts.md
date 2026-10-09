@@ -31,23 +31,35 @@ because its pinned GGUF had been deleted:
 `~/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_M.gguf`
 (~90k "failed to load model" lines in `~/.llamacpp.err.log`). Removed on the
 host: both plists, both log files, and the Homebrew formula. Disabled in the
-repo: the `llamacpp` entries in the benchmark scripts, `SUPPORTED_PROVIDER_IDS`
-(`llmbench/src/llmbench/benchmark/isolation.py`), `DEFAULT_PROVIDER_IDS`
-(`modelman/src/modelman/registry.py` and `llmbench/src/llmbench/registry.py`),
-and the two litellm rows. **Kept:** the
-provider implementation `modelman/src/modelman/providers/llamacpp.py` (marked
-UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
-`llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py` — present in
-`BACKENDS` but excluded from `SUPPORTED_PROVIDER_IDS`, with
-`restore_action = "skip"` (so `llmbench provider restore` never touches it).
+repo on that day: the `llamacpp` entries in the benchmark scripts,
+`SUPPORTED_PROVIDER_IDS`, `DEFAULT_PROVIDER_IDS`
+(`llmbench/src/llmbench/registry.py`; wt's `defaultProviderIDs` in
+`wt/internal/config/registry_seed.go` never listed it), and the two litellm
+rows.
 
-> **Update (issue #79):** the bash isolation helpers this section originally
+**Removed from the repo** in the modelman retirement (Step 6): modelman's
+`providers/llamacpp.py` with modelman itself, and llmbench's
+`backends/llamacpp.py` (the `LlamaCppBackend`, with its test). Both are in git
+history; the last commit that has them is the parent of the commit that
+deleted `modelman/`
+(`git log --diff-filter=D --format=%H -1 -- modelman/pyproject.toml`) and of
+the one that deleted the backend
+(`git log --diff-filter=D --format=%H -1 -- llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py`).
+
+What that changes on a machine: `llmbench provider list` has no `llamacpp`
+row, `llmbench provider isolate llamacpp` and `llmbench provider stop llamacpp`
+say `unknown provider: llamacpp` and stop nothing, and
+`LLM_ISOLATE_LLAMACPP_MODEL` is read by nothing. `llmbench provider stop-all`
+(and the teardown `isolate` runs first) no longer unloads the LaunchAgent; if
+the plist is installed, `launchctl unload` it by hand:
+`launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist`.
+
+> **History (issue #79):** the bash isolation helpers this section originally
 > pointed at (`bin/llm-isolate-provider`'s `llamacpp` case branch,
 > `bin/llm-restore-providers`' `restart_launchd` line) were deleted when
-> provider isolation was ported to Python. The re-enable steps below are
-> updated for the current architecture — re-enabling llamacpp no longer means
-> uncommenting bash, it means flipping two settings in
-> `backends/__init__.py` (see step 7).
+> provider isolation was ported to Python. The Python backend that replaced
+> them is the one removed above, so re-enabling llamacpp starts with restoring
+> that module from git history (see step 7).
 
 ### To re-enable llama.cpp
 
@@ -70,34 +82,39 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
    `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
 6. Re-add the registry block from
    [`artifacts/registry/llamacpp-provider.toml`](artifacts/registry/llamacpp-provider.toml)
-   to `~/.config/local-ai/registry.toml` (with modelman not running).
-7. Re-enable the code wiring (each was removed 2026-09-07 — see git history
-   of this repo for the exact diffs):
-   - `llamacpp` back in `DEFAULT_PROVIDER_IDS` (`modelman/src/modelman/registry.py`
-     and `llmbench/src/llmbench/registry.py`)
-   - `"llamacpp"` back into `SUPPORTED_PROVIDER_IDS`
-     (`llmbench/src/llmbench/providers/lifecycle/backends/__init__.py`) — this
-     is the one place both `llmbench provider isolate llamacpp` and
-     `llmbench` check isolability from (`llmbench.benchmark.
-     isolation.SUPPORTED_PROVIDER_IDS` just re-exports it)
+   to `~/.config/local-ai/registry.toml`.
+7. Re-enable the code wiring (see git history of this repo for the exact
+   diffs):
+   - restore `llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py`
+     and its test
+     (`llmbench/tests/providers/lifecycle/backends/test_llamacpp.py`) from git
+     history: `git show <that commit>^:<path> > <path>`, with the commit the
+     second `git log` command above prints
+   - register it in
+     `llmbench/src/llmbench/providers/lifecycle/backends/__init__.py`
+     (`from .llamacpp import LLAMACPP`, `BACKENDS[LLAMACPP.id] = LLAMACPP`);
+     `SUPPORTED_PROVIDER_IDS` is derived from `BACKENDS`, so that also makes
+     it isolable and stoppable by name. The restored module sets
+     `respects_solo`, an attribute `Backend` no longer has and nothing reads:
+     delete that line
+   - restore `LLAMACPP_PLIST` in
+     `llmbench/src/llmbench/providers/lifecycle/launchd.py` and its entry in
+     `llmbench/tests/test_conftest_guards.py`
+   - set the backend's `restore_action` to `"restart"` (it was `"skip"` when
+     removed) so `llmbench provider restore` restarts the LaunchAgent again
+   - add its id to the literal lists the tests keep
+     (`tests/benchmark/test_isolation.py`, `tests/test_main.py`) and to
+     `DEFAULT_PROVIDER_IDS` (`llmbench/src/llmbench/registry.py`) if the
+     benchmarks should treat its models as local targets
+   - add `llamacpp` to `defaultProviderIDs` in
+     `wt/internal/config/registry_seed.go` if wt should seed its row. wt has
+     no lifecycle backend for it and never had: `wt start` cannot start it
    - `llama_cpp` entries back in `benchmarks/qwen3.8-benchmark` and
      `benchmarks/ornith-1.5-benchmark` (`DIRECT_URLS`, `DIRECT_MODELS`,
      `LITELLM_MODELS`, `ISOLATE_ID`, `display_key`,
-     `ensure_all_local_started`, backend loops — issue #79 rewrote these
-     scripts to call `llmbench provider isolate`/`restore` via `uv run`
-     instead of shelling out to `bin/llm-isolate-provider`/`bin/llm-
-     restore-providers`, but `ISOLATE_ID` and `DIRECT_MODELS` still exist,
-     now holding the `llmbench provider` CLI's provider ids; see
+     `ensure_all_local_started`, backend loops; `ISOLATE_ID` and
+     `DIRECT_MODELS` hold the `llmbench provider` CLI's provider ids — see
      `benchmarks/lib/benchmark-common.sh`)
-   - flip `LlamaCppBackend.restore_action` from `"skip"` to `"restart"`
-     (`llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py`) so
-     `llmbench provider restore` restarts the LaunchAgent again. This is a
-     one-field change on purpose: `LlamaCppBackend.restore()` is already
-     implemented and tested (health probe → `launchctl load -w` → wait for
-     port 8080, raising if it never answers), and is gated on
-     `restore_action == "restart"`, so flipping the field is all that is
-     needed — no method to write.
-   - remove the UNUSED marker from `modelman/src/modelman/providers/llamacpp.py`
    - drop the retirement notes from `docs/guides/` and root `CLAUDE.md`
 
 ## LiteLLM — active

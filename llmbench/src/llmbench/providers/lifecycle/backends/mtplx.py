@@ -53,7 +53,7 @@ class MtplxBackend(PidfileTrackedBackend):
 
     def resolve(self, model: str | None, extra_args: tuple[str, ...]) -> StartPlan:
         """The MTPLX repo id to serve: the explicit `model`, else the first
-        positional `extra_args` entry (how local_control.py forwards it —
+        positional `extra_args` entry (how the runners forward it —
         isolate_provider() only ever populates `model` from an env-var
         lookup, and mtplx is deliberately excluded from that mapping), else
         the single mtplx model in the registry. With no explicit model and
@@ -147,7 +147,7 @@ class MtplxBackend(PidfileTrackedBackend):
         only after a clean exit — `mtplx stop` itself exits non-zero
         whenever nothing is listening on the port (see orchestrate.py's
         module docstring), which is exactly the state on a machine's first
-        `modelman start` of an mtplx model. Short-circuiting on that exit
+        start of an mtplx model. Short-circuiting on that exit
         code alone (the original shape of this fix) treated "nothing to
         stop" as a hard failure and made `replace_own_occupant()` raise on
         a start that had nothing to replace. Checking the port first makes

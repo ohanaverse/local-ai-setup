@@ -5,12 +5,11 @@ This CLI replaced the `bin/llm-isolate-provider` and
 `bin/llm-restore-providers` bash helpers (issue #79); both scripts are
 deleted, and the benchmark scripts under `benchmarks/` now call these
 commands via `uv run --directory llmbench llmbench provider ...`.
-In-process callers (`llmbench.benchmark.isolation`, `local_control.py`)
-skip this layer entirely and call `orchestrate.py` directly.
+In-process callers (`llmbench.benchmark.isolation`) skip this layer
+entirely and call `orchestrate.py` directly.
 
-Follows the same sub-app pattern as `llmbench.benchmark.cli.benchmark_app`
-and `modelman.usage.cli.usage_app`: one `typer.Typer()` per concern,
-mounted onto `main.py`'s root `app`.
+Follows the same sub-app pattern as `llmbench.benchmark.cli.benchmark_app`:
+one `typer.Typer()` per concern, mounted onto `main.py`'s root `app`.
 
 `lifecycle` is imported as a module object (not `from .orchestrate import
 isolate, ...`) so tests can patch `llmbench.providers.lifecycle.isolate`

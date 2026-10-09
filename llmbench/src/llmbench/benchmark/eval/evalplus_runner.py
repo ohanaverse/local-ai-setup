@@ -110,8 +110,8 @@ def _evalplus_executable() -> str:
     running interpreter, else the bare name (PATH lookup).
 
     Under `uv run` the venv's bin/ is on PATH so the bare name resolves, but
-    a console script started by its own path (the installed `modelman` shim,
-    which mounts these commands) runs without the venv's bin/ on PATH — the
+    a console script started by its own path (an installed `llmbench` entry
+    point) runs without the venv's bin/ on PATH — the
     script sits next to sys.executable regardless."""
     sibling = Path(sys.executable).parent / EVALPLUS_SCRIPT
     return str(sibling) if sibling.is_file() else EVALPLUS_SCRIPT

@@ -53,7 +53,7 @@ def _plan(model: str = "some/model", url: str = MTPLX_DIRECT_URL) -> StartPlan:
 
 def test_isolate_unknown_provider_returns_error_envelope_not_raise():
     """An unknown provider id must come back as an ok=False envelope, never
-    a raise: every caller (benchmark isolation, local_control) branches on
+    a raise: every caller (benchmark isolation, the CLI) branches on
     `ok`, and a traceback here would escape as an unhandled crash instead of
     a reported isolation failure."""
     with patch(f"{ORCH}._stop_others") as mock_stop_others:
@@ -210,7 +210,7 @@ def test_isolate_already_serving_warms_without_restarting():
 
 def test_isolate_already_serving_solo_leaves_siblings_alone():
     """solo=True on the keep path must skip _stop_others entirely: starting
-    a model modelman already has loaded must not tear down an unrelated
+    a model that is already loaded must not tear down an unrelated
     provider running alongside it."""
     plan = _plan()
     with (
@@ -401,8 +401,7 @@ def test_isolate_tears_down_wedged_server_on_warmup_failure():
 def test_isolate_tears_down_a_half_started_server_when_wait_ready_fails():
     """A half-started isolate (process spawned, model load failed) must stop
     the server it spawned. Otherwise the orphan holds its port and GPU/RAM
-    while local_control clears the running flag on failure, so nothing ever
-    tears it down — exactly the one-local-model invariant isolation
+    and nothing ever tears it down — exactly the one-local-model invariant isolation
     exists to enforce."""
     plan = _plan()
     with (
@@ -551,8 +550,8 @@ def test_stop_others_warns_but_never_raises_on_a_stuck_provider(stub_stops):
 
 def test_stop_all_always_reports_ok(stub_stops):
     """stop_all's own warnings never fail the call (bash's `stop-all` verb
-    prints ok:true unconditionally) — `modelman stop --all` must not error
-    out because one provider was slow to let go."""
+    prints ok:true unconditionally) — `llmbench provider stop-all` must not
+    error out because one provider was slow to let go."""
     stub_stops["ollama"].return_value = "ollama still has models loaded"
     result = orchestrate.stop_all()
     assert result.ok is True
