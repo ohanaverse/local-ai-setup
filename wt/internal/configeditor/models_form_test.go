@@ -783,7 +783,7 @@ func TestModelFormRefusesAnEditOfADuplicatedID(t *testing.T) {
 // stays on the field the user was editing (Tags, which is not what is wrong),
 // nothing is written and no route sync is owed. wt reads such a fetch as
 // absent, so the form opens; writing the row back would bless a file
-// modelman's loader crashes on, and an error pinned on the Tags field would
+// llmbench's loader crashes on, and an error pinned on the Tags field would
 // send the user to fix the wrong thing. The repair is in the file.
 func TestModelFormRefusesAnEditOfARowWithAMalformedFetch(t *testing.T) {
 	for _, size := range tabSizes {

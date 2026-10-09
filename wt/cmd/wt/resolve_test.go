@@ -137,7 +137,7 @@ func TestResolveModelRunningLocalModelIsLaunchable(t *testing.T) {
 // TestResolveModelPinOnIdleLocalStartsIt verifies -M pinning a configured
 // local model that is not running starts it through the driver and returns
 // the model, so `wt -A pi -M omlx/qwen3.8` works without a separate
-// `modelman start`. It must NOT pass replace: a plain pin never opts into
+// `wt start`. It must NOT pass replace: a plain pin never opts into
 // stopping a running model.
 func TestResolveModelPinOnIdleLocalStartsIt(t *testing.T) {
 	allowReplace = false

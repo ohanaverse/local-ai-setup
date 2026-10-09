@@ -181,8 +181,8 @@ func TestParsePricingUnknownCellWarns(t *testing.T) {
 	if zz.Name != "zz" || zz.Prices.Input != nil || zz.Prices.Unknown != (Unknown{Input: true}) {
 		t.Errorf("zz = %+v, want no input price, marked unknown", zz)
 	}
-	// Single quotes: modelman prints the cell with Python's repr (`{cell!r}`),
-	// and the two tools' plans are meant to read the same.
+	// Single quotes: a warning quotes the cell as Python's repr does
+	// (pyRepr), the fixed form of this package's messages.
 	if want := []string{`zz input: unrecognized price 'Free'; existing price kept`}; !reflect.DeepEqual(catalog.Warnings, want) {
 		t.Errorf("warnings = %q, want %q", catalog.Warnings, want)
 	}
@@ -190,8 +190,8 @@ func TestParsePricingUnknownCellWarns(t *testing.T) {
 
 // TestPyReprMatchesPythonsRepr pins the two branches of the quoting a plan's
 // warnings carry: a cell whose text holds an apostrophe is the one case
-// Python's repr switches to double quotes, and a plan that quoted it the
-// other way would read differently from modelman's for the same page.
+// Python's repr switches to double quotes, and a cell quoted the other way
+// would no longer read as one cell: the apostrophe would end it early.
 func TestPyReprMatchesPythonsRepr(t *testing.T) {
 	for in, want := range map[string]string{
 		"Free":            "'Free'",
@@ -208,12 +208,13 @@ func TestPyReprMatchesPythonsRepr(t *testing.T) {
 	}
 }
 
-// TestCollectTablesReadsMarkupAsModelmanDid pins the tokenizer against the
-// outputs of modelman's HTMLParser-based collector on the same inputs (the
-// expected values were produced by running that collector). The two tools
-// share one fixture and, until modelman is deleted, one registry: a page one
-// of them reads differently is a page they would sync differently.
-func TestCollectTablesReadsMarkupAsModelmanDid(t *testing.T) {
+// TestCollectTablesReadsMarkupAsPinned pins the tokenizer on the markup a
+// hand-written one most easily reads wrong (script text, comments, and the
+// cases below). The expected values are what Python's HTMLParser collects
+// from the same inputs, and they are the fixed reading of the pricing page:
+// a tokenizer that read one of these differently would find different cells
+// in the same page, and `wt cloud-sync` would write different prices from it.
+func TestCollectTablesReadsMarkupAsPinned(t *testing.T) {
 	cases := []struct {
 		name, html string
 		want       [][][]string

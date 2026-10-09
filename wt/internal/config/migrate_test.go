@@ -12,8 +12,8 @@ import (
 
 // loadConfigFile reads and decodes config.toml directly (bypassing Load's
 // registry join) so migration tests can assert the raw migration output — the
-// providers/models Migrate seeds are for `modelman migrate` to import, not
-// for wt's Load to read.
+// providers/models Migrate seeds stay in config.toml and Load never returns
+// them: the catalog it joins in comes from registry.toml.
 func loadConfigFile(t *testing.T, dir string) *Config {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "agent-wt", "config.toml"))
@@ -164,7 +164,6 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 `
 	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -179,8 +178,8 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 		t.Fatalf("config.toml not written: %v", err)
 	}
 
-	// Read the migrated config.toml directly (providers/models are for
-	// modelman to import; wt's Load joins them from registry.toml).
+	// Read the migrated config.toml directly: Load would return
+	// registry.toml's providers/models, not the ones Migrate seeded here.
 	cfg := loadConfigFile(t, tmp)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -248,7 +247,6 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 func TestMigrate_NoLegacyFile(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -273,7 +271,6 @@ func TestMigrate_AgySeedingIsIdempotent(t *testing.T) {
 	`
 	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -333,7 +330,6 @@ func TestMigrateConfigSchema(t *testing.T) {
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	writeCfg := func(t *testing.T, body string) {
 		t.Helper()

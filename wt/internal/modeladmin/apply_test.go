@@ -10,7 +10,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
-// baseRegistry is a registry in the form wt and modelman write it: an ollama
+// baseRegistry is a registry in the form wt writes it (tomli-w's): an ollama
 // and an openrouter provider, and one model with keys wt does not model.
 const baseRegistry = `[[providers]]
 id = "ollama"
@@ -96,11 +96,11 @@ func ptr(s string) *string { return &s }
 // TestDeriveID pins the ids `wt model add` gives: a local model gets the id
 // wt already routes and keeps history under for that artifact (so
 // registering a model that is on disk does not rename it), and a cloud model
-// gets modelman's spelling, "/" in the name as "--", so ids agree across the
-// two tools while both exist. The last case is the one place the two differ:
-// modelman's form kept a native provider's model name as it was, and wt
-// writes "--" there as for any cloud provider, so a derived cloud id always
-// has one "/".
+// gets the provider and the name with each "/" in the name spelled "--", the
+// spelling the cloud ids in registries and in the launch history already
+// have: a different one would split a model's history under two ids. The
+// last case pins that a native provider's model gets "--" too, as for any
+// cloud provider, so a derived cloud id always has one "/".
 func TestDeriveID(t *testing.T) {
 	cases := []struct{ provider, name, want string }{
 		{"ollama", "gemma4:9b", "ollama/gemma4:9b"},
@@ -122,11 +122,12 @@ func TestDeriveID(t *testing.T) {
 	}
 }
 
-// TestAddWritesOneRowInModelmansLayout verifies an add appends exactly the
-// row asked for, with its keys where modelman writes them, and leaves every
-// other byte of the file alone. A row laid out differently would be moved by
-// modelman's next save, and a rewritten neighbour is a lost hand edit.
-func TestAddWritesOneRowInModelmansLayout(t *testing.T) {
+// TestAddWritesOneRowInSchemaOrder verifies an add appends exactly the row
+// asked for, with its keys in schema order, and leaves every other byte of
+// the file alone. A row laid out differently would read unlike the rows
+// around it and be rearranged by the next edit of it, and a rewritten
+// neighbour is a lost hand edit.
+func TestAddWritesOneRowInSchemaOrder(t *testing.T) {
 	path := scratchRegistry(t, baseRegistry)
 	res, err := Add(AddRequest{
 		ProviderID: "openrouter", ModelName: "qwen/qwen3.8-27b",
@@ -402,10 +403,10 @@ tags = []
 }
 
 // TestEditMovesALegacyCostTable verifies an edit of a price on a row still in
-// modelman's old cost layout (cost.kind) moves the whole table to the current
-// one: modelman reads a table that has `kind` by its old keys only, so a
-// current key written beside them is a price wt shows and modelman ignores.
-// An edit that touches no price leaves the old layout exactly as it was.
+// the old cost layout (cost.kind) moves the whole table to the current one:
+// a table holding both layouts would state its price twice, and the two
+// could disagree. An edit that touches no price leaves the old layout exactly
+// as it was.
 func TestEditMovesALegacyCostTable(t *testing.T) {
 	providers := baseRegistry[:strings.Index(baseRegistry, "[[models]]")]
 	row := func(cost string) string {
@@ -626,7 +627,7 @@ func TestADuplicatedIDDoesNotBlockTheOtherRows(t *testing.T) {
 }
 
 // TestAddAPairing verifies `wt model add mlx_lm_server <target> --draft
-// <draft>` writes the row modelman's form wrote: an id and a model_name that
+// <draft>` writes a pairing row: an id and a model_name that
 // spell the pairing, the target under fetch and the draft under draft — each
 // a repo, or a local_path when it is spelled like a path — and the
 // mlx_lm_server provider row seeded beside it. llmbench reads fetch and draft

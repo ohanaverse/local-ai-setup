@@ -16,7 +16,6 @@ import (
 func TestLoadModelExposureAcrossNativeLocalCloud(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	writeRegistry(t, dir, `
 [[providers]]
@@ -56,8 +55,9 @@ location = "cloud"
 tags = ["code"]
 `)
 
-	// modelman's leftover [model_state] flags, on disk: they must change
-	// nothing here (see the test comment above).
+	// A modelman.toml left on disk by the retired modelman, with its
+	// [model_state] flags: wt reads nothing from that file, so the flags
+	// must change nothing here (see the test comment above).
 	must(t, filepath.Join(dir, "local-ai/modelman.toml"), `
 [model_state]
 
@@ -113,7 +113,6 @@ ready = false
 func TestInCatalogPredicate(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	writeRegistry(t, dir, `
 [[providers]]
@@ -182,9 +181,9 @@ model_name = "cloud-inherited"
 tags = ["code"]
 `)
 
-	// modelman's leftover [model_state] flags, on disk: the table says
-	// exposed/ready for each of these ids, and none of it may reach the
-	// predicate.
+	// A modelman.toml left on disk by the retired modelman: its
+	// [model_state] table says exposed/ready for each of these ids, and
+	// none of it may reach the predicate.
 	must(t, filepath.Join(dir, "local-ai/modelman.toml"), `
 [model_state]
 

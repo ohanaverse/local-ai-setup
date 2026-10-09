@@ -27,7 +27,7 @@ func gitInit(t *testing.T, dir string) {
 	}
 }
 
-// writeEmptyRegistry writes a minimal modelman-owned registry.toml (no
+// writeEmptyRegistry writes a minimal registry.toml (no
 // providers/models) under $home/.config/local-ai/ so config.Load succeeds.
 // wt fail-closes without this file; tests that exercise the launch path need
 // it even when they don't care about specific models.
@@ -280,12 +280,12 @@ func claudeStateDir(t *testing.T, home, workdir string) string {
 }
 
 // TestConfigErrorHintNamesTheFileToFix pins the hint on a config error. A
-// mistyped location is a registry problem, and registry.toml is modelman's
-// file: `wt config` edits wt's own config.toml and cannot repair it, so
-// telling the user to run it sent them to the wrong place (#200). Every other
-// config error keeps the existing hint.
+// mistyped location is a registry problem, and registry.toml is not the
+// file `wt config` saves: it writes wt's own config.toml and cannot repair a
+// registry row, so telling the user to run it sent them to the wrong place
+// (#200). Every other config error keeps the existing hint.
 func TestConfigErrorHintNamesTheFileToFix(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "omlx", Location: "Local"}},
@@ -344,8 +344,8 @@ func TestConfigErrorForABrokenRegistryLink(t *testing.T) {
 
 // TestConfigErrorForAMissingRegistryNamesModelInit pins the whole line a
 // user reads when there is no registry: where it was looked for and the one
-// command that creates it, named once. It used to name `modelman migrate`, a
-// legacy import in a tool that is being retired, and to say it twice.
+// command that creates it, named once. It used to name a command that no
+// longer exists, and to say it twice.
 func TestConfigErrorForAMissingRegistryNamesModelInit(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)

@@ -9,7 +9,7 @@ import (
 
 // pairingRegistry is tabRegistry plus an mlx_lm_server provider and one
 // target+draft pairing, as `wt model add mlx_lm_server … --draft …` writes it
-// (provider rows before model rows, the order wt and modelman write).
+// (provider rows before model rows, the order wt writes).
 var pairingRegistry = strings.Replace(tabRegistry, "[[models]]", `[[providers]]
 id = "mlx_lm_server"
 name = "mlx-lm server (target+draft)"

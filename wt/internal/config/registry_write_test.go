@@ -17,7 +17,6 @@ func scratchRegistry(t *testing.T, content string) string {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	path := filepath.Join(home, "local-ai", "registry.toml")
 	if content != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -89,7 +88,8 @@ func TestUpdateRegistryWritesAPatch(t *testing.T) {
 // row already has — on the row with integer prices, an empty tags array and a
 // model_info table — writes nothing, so the bytes and the modification time
 // are untouched. A no-op that rewrote the file would make every `wt model
-// init` look like a change to modelman's stale-snapshot guard.
+// init` look like a change to whatever watches it: an open editor would
+// report the file changed on disk, and a dotfiles repository a new diff.
 func TestUpdateRegistryNoOpLeavesTheFileByteIdentical(t *testing.T) {
 	fixture := readFile(t, "../../../docs/contracts/registry.written.sample.toml")
 	path := scratchRegistry(t, fixture)
@@ -148,7 +148,7 @@ func TestUpdateRegistryNoOpOnARowWithNoTagsKey(t *testing.T) {
 // registry a person formatted: comments, their own layout. wt cannot emit
 // that form, so the rule is that it does not have to — a write that changes
 // nothing leaves the file alone, and only the first real change lays it out
-// in tomli-w's form (as every modelman save always has).
+// in tomli-w's form, the one form wt writes.
 func TestUpdateRegistryNoOpKeepsAHandFormattedFile(t *testing.T) {
 	const hand = `# my models
 [[providers]]
@@ -181,9 +181,9 @@ tags = ["code"]
 }
 
 // TestUpdateRegistryCreatesAMissingRegistry pins the first-run case: no
-// file, no directory. A successful apply creates both, private (0600, like
-// the file modelman creates), even when it adds nothing — which is how `wt
-// model init` leaves a registry behind on a machine with nothing installed.
+// file, no directory. A successful apply creates both, the file private
+// (0600), even when it adds nothing — which is how `wt model init` leaves a
+// registry behind on a machine with nothing installed.
 func TestUpdateRegistryCreatesAMissingRegistry(t *testing.T) {
 	path := scratchRegistry(t, "")
 	changed, err := UpdateRegistry(func(*RegistryDoc) error { return nil })
@@ -290,7 +290,6 @@ func TestUpdateRegistryRefusesARegistryUnderABrokenDirectoryLink(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	link := filepath.Join(home, "local-ai")
 	target := filepath.Join(t.TempDir(), "dotfiles", "local-ai")
 	if err := os.Symlink(target, link); err != nil {
@@ -376,9 +375,10 @@ func TestUpdateRegistryReturnsApplysErrorAndWritesNothing(t *testing.T) {
 	}
 }
 
-// otherWriter plays modelman saving the registry in the window between wt
-// encoding its write and replacing the file: it rewrites the file the first
-// `times` times the seam fires, appending a model each time.
+// otherWriter plays another program (an editor) saving the registry in the
+// window between wt encoding its write and replacing the file: it rewrites
+// the file the first `times` times the seam fires, appending a model each
+// time.
 func otherWriter(t *testing.T, path string, times int) *int {
 	t.Helper()
 	fired := 0
@@ -398,10 +398,10 @@ func otherWriter(t *testing.T, path string, times int) *int {
 }
 
 // TestUpdateRegistryRetriesWhenTheFileChangesUnderIt pins the re-check that
-// covers the writer wt cannot lock out: modelman takes no cross-process lock,
-// so it can save between wt's read and wt's rename. wt must then start over
-// on the new file, so both edits survive — wt's blind rename would have
-// reverted modelman's.
+// covers the writer wt cannot lock out: an editor takes no lock on
+// registry.toml, so a hand edit can be saved between wt's read and wt's
+// rename. wt must then start over on the new file, so both edits survive —
+// wt's blind rename would have reverted the hand edit.
 func TestUpdateRegistryRetriesWhenTheFileChangesUnderIt(t *testing.T) {
 	path := scratchRegistry(t, docRegistry)
 	fired := otherWriter(t, path, 1)
@@ -482,7 +482,6 @@ func TestUpdateRegistrySerializesConcurrentWriters(t *testing.T) {
 // the route sync a command runs afterwards, in internal/litellm.
 func TestUpdateRegistryWritesARedirectedRegistry(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("MODELMAN_REGISTRY", "")
 	t.Setenv("WT_LITELLM_CONFIG", "")
 	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
 	path := filepath.Join(t.TempDir(), "scratch", "registry.toml")

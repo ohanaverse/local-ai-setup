@@ -103,12 +103,13 @@ func TestPatchModelChangesOnlyTheNamedKeys(t *testing.T) {
 	}
 }
 
-// TestPatchModelPutsNewKeysWhereModelmanWould pins where a key that was not
-// there lands: at its schema position, with a table created on the way, and
-// an unmodelled key ahead of the schema keys. modelman rewrites rows in this
-// order on every save, so anything else would be moved back by modelman and
-// show up as a second diff.
-func TestPatchModelPutsNewKeysWhereModelmanWould(t *testing.T) {
+// TestPatchModelPutsNewKeysAtTheirSchemaPosition pins where a key that was
+// not there lands: at its schema position, with a table created on the way,
+// and an unmodelled key ahead of the schema keys. The rows of a registry on
+// disk already have their keys in this order, so a key placed anywhere else
+// leaves the edited row laid out unlike its neighbours, and the same edit
+// made on two machines could write two different files.
+func TestPatchModelPutsNewKeysAtTheirSchemaPosition(t *testing.T) {
 	doc := parseDoc(t, docRegistry)
 	err := doc.PatchModel("ollama/beta", map[string]any{
 		"tags":                          []string{"design"},
@@ -214,7 +215,7 @@ func TestPatchModelRefusals(t *testing.T) {
 }
 
 // TestAddModelAppendsARowInSchemaOrder pins AddModel: the row goes last, its
-// keys in modelman's order whatever order the Go map had, and a second row
+// keys in schema order whatever order the Go map had, and a second row
 // with the same id is ErrModelExists rather than a silent duplicate (which
 // wt's own Validate then refuses to load).
 func TestAddModelAppendsARowInSchemaOrder(t *testing.T) {
@@ -322,10 +323,12 @@ local_path = "/models/alpha"
 // TestRemoveModelReturnsTheRow pins RemoveModel: the row is gone from the
 // document and handed back whole, because `wt model rm` never deletes weights
 // and has to print where they are from the row it just removed. It also pins
-// what a removal or an unset leaves behind, which must be what modelman
-// writes: `models = []` after the last row goes, and the empty table after a
-// table's last key is unset. Dropping either would make wt's write differ
-// from a modelman save of the same registry.
+// what a removal or an unset leaves behind: `models = []` after the last row
+// goes, and the empty table after a table's last key is unset. That is the
+// form registries on disk already have (tomli-w's), and the one
+// docs/contracts/registry.written.sample.toml fixes for wt's writer;
+// dropping either would make a remove-then-add leave a file that differs
+// from one that never had the row.
 func TestRemoveModelReturnsTheRow(t *testing.T) {
 	doc := parseDoc(t, docRegistry)
 	row, err := doc.RemoveModel("ollama/alpha")
@@ -347,9 +350,9 @@ func TestRemoveModelReturnsTheRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := docText(t, doc); !strings.Contains(got, "models = []\n") {
-		t.Errorf("removing the last model should leave `models = []`, as modelman writes it:\n%s", got)
+		t.Errorf("removing the last model should leave `models = []`:\n%s", got)
 	}
-	// A table whose last key is unset stays, empty, as modelman writes it.
+	// A table whose last key is unset stays, empty.
 	emptied := parseDoc(t, docRegistry)
 	if err := emptied.PatchModel("ollama/alpha", nil, []string{"model_info.supports_vision", "model_info.max_input_tokens"}); err != nil {
 		t.Fatal(err)
@@ -435,7 +438,7 @@ end = "24:00"
 }
 
 // TestAddProviderAppendsARow pins the seeding operation: a provider row in
-// modelman's key order, appended, with a duplicate id refused.
+// schema key order, appended, with a duplicate id refused.
 func TestAddProviderAppendsARow(t *testing.T) {
 	doc := parseDoc(t, docRegistry)
 	row := map[string]any{
@@ -469,7 +472,8 @@ base_url = "http://localhost:8003/v1"
 // TestOperationsCreateOnlyTheKnownTopLevelKeys pins "wt never adds a
 // top-level key" from the other side: on an empty registry the operations
 // create `providers` and `models`, at their places, and nothing else. A new
-// top-level key is a file modelman refuses to load (#247).
+// top-level key is a file wt's own reader refuses (ErrRegistryTopLevel,
+// #247): the next wt command would stop on the registry wt just wrote.
 func TestOperationsCreateOnlyTheKnownTopLevelKeys(t *testing.T) {
 	doc := parseDoc(t, "")
 	if err := doc.AddModel(map[string]any{"id": "ollama/a", "family": "f", "provider_id": "ollama", "model_name": "a"}); err != nil {

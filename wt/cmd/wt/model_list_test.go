@@ -359,7 +359,6 @@ func TestModelListListsARowWithAMalformedFetch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	if err := os.MkdirAll(filepath.Join(home, "local-ai"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +505,6 @@ func runModelListOver(t *testing.T, registry string, asJSON bool) (stdout, stder
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	path = filepath.Join(home, "local-ai", "registry.toml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)

@@ -93,7 +93,7 @@ func byModelID(s Snapshot, id string) (Entry, bool) {
 
 // TestInventoryOllamaDiscoveredAndRunning verifies pulled-but-unregistered
 // ollama models are listed with DiscoveredModelID ids, and that RUNNING comes
-// from /api/ps (loaded set) — not from anything modelman flags.
+// from /api/ps (loaded set) — not from any stored flag.
 func TestInventoryOllamaDiscoveredAndRunning(t *testing.T) {
 	srv := ollamaServer(t, []string{"gemma4:9b", "qwen3:8b"}, []string{"qwen3:8b"})
 	cfg := &config.Config{Providers: []config.Provider{localProvider("ollama", srv.URL, "")}}

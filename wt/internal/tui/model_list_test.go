@@ -74,10 +74,11 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 }
 
 // TestModelItemLinePricingAfterUsageCounts verifies the COST cell renders
-// per-token pricing as " 0.1000  0.0500  0.2000" (matching modelman's COST
-// formatting), that an unpriced row gets the "-" placeholder instead, and that
-// the COST column sits before the 1D/7D/30D usage cells in both header and row
-// (the table's column order; the old line put pricing after the counts).
+// per-token pricing as " 0.1000  0.0500  0.2000" (input, cache, output, each
+// seven wide with four decimals), that an unpriced row gets the "-"
+// placeholder instead, and that the COST column sits before the 1D/7D/30D
+// usage cells in both header and row (the table's column order; the old line
+// put pricing after the counts).
 func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	in := 0.10
@@ -140,9 +141,9 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 // TestModelItemLinePartialPerTokenPricing verifies that when a model has
 // input and output per-token prices but no cache price, the COST cell
 // renders a 7-dash placeholder for the missing cache slot:
-// " 0.5000 -------  1.0000" (matching modelman's COST column formatting;
-// the extra space before "1.0000" is the leading-space padding of its
-// single-digit integer part).
+// " 0.5000 -------  1.0000" (the three price slots keep their width, so the
+// output price stays in its column; the extra space before "1.0000" is the
+// leading-space padding of its single-digit integer part).
 func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	in := 0.50

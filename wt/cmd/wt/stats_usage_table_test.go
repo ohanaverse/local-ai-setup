@@ -174,9 +174,10 @@ func TestVisibleIDEscapesInvisibleCharacters(t *testing.T) {
 	}
 }
 
-// TestFormatCount pins the thousands separators modelman's report used
-// ("{:,}"), at each digit-count edge. Token counts reach nine digits in a
-// 30-day window, and an unseparated 123456789 is not readable at a glance.
+// TestFormatCount pins the usage table's thousands separators (a comma
+// every three digits), at each digit-count edge. Token counts reach nine
+// digits in a 30-day window, and an unseparated 123456789 is not readable at
+// a glance.
 func TestFormatCount(t *testing.T) {
 	for n, want := range map[int64]string{
 		0: "0", 7: "7", 999: "999", 1000: "1,000", 12345: "12,345", 123456: "123,456",

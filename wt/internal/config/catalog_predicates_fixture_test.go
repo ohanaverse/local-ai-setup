@@ -17,7 +17,7 @@ type predicateExpectations struct {
 
 func loadPredicateFixture(t *testing.T) (*Config, predicateExpectations) {
 	t.Helper()
-	t.Setenv("MODELMAN_REGISTRY", predicatesDir+"catalog-predicates.sample.toml")
+	t.Setenv("WT_REGISTRY", predicatesDir+"catalog-predicates.sample.toml")
 	providers, models, err := loadRegistry()
 	if err != nil {
 		t.Fatalf("loadRegistry: %v", err)

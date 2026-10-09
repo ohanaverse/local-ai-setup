@@ -428,7 +428,7 @@ func TestBuildAgentListAdapter(t *testing.T) {
 // An agent with no config.toml entry but a real binary on PATH is marked
 // passthrough (launchable directly, no model) rather than blocked with a
 // "not configured" issue — the fix for issue #147 (a fresh machine with no
-// modelman/wt configuration must still be able to launch a real agent).
+// wt configuration must still be able to launch a real agent).
 func TestBuildAgentListMarksInstalledUnconfiguredAsPassthrough(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{

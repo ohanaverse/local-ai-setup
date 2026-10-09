@@ -16,8 +16,7 @@ import (
 // the pairing hint names the target and the draft; decoded as empty, the hint
 // would tell the user to start a pairing with no target.
 func TestModelDecodesFetchAndDraft(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 	_, models, err := loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +49,7 @@ repo = "org/base"
 local_path = "~/models/mine-4bit"
 files = ["a", "b"]
 `)
-	t.Setenv("MODELMAN_REGISTRY", "")
+	t.Setenv("WT_REGISTRY", "")
 	_, models, err = loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +119,6 @@ repo = "org/second"
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("WT_REGISTRY", "")
-			t.Setenv("MODELMAN_REGISTRY", "")
 			writeRegistry(t, t.TempDir(), head+c.body+"\n"+tail)
 			cfg, err := Load()
 			if err != nil {
@@ -214,7 +212,6 @@ repo = "org/second"
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("WT_REGISTRY", "")
-			t.Setenv("MODELMAN_REGISTRY", "")
 			writeRegistry(t, t.TempDir(), head+c.body+"\n"+tail)
 			cfg, err := Load()
 			if err != nil {
@@ -244,7 +241,7 @@ repo = "org/second"
 // fetch or draft stays in memory: neither the TOML encoder (wt's config.toml
 // writers encode a Config) nor encoding/json prints it. It describes how a
 // value was written, not a value, and a key for it in a file would be read
-// back by modelman as registry data it does not know.
+// back later as data: a setting nobody set, in a file a person edits.
 func TestMalformedRecordIsNeverSerialised(t *testing.T) {
 	m := Model{
 		ID: "omlx/x", Family: "q", ProviderID: "omlx", ModelName: "x",

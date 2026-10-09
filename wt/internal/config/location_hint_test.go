@@ -12,7 +12,7 @@ import (
 // is in registry.toml; the hint names that file, wrapped or not. Any other
 // error has no registry hint, so callers keep their own wording for it.
 func TestRegistryFixHint(t *testing.T) {
-	t.Setenv("MODELMAN_REGISTRY", "/tmp/somewhere/registry.toml")
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	cfg := &Config{DefaultTag: "code", Providers: []Provider{{ID: "omlx", Location: "Local"}}}
 	err := cfg.Validate()
 	if !errors.Is(err, ErrLocation) {
@@ -38,9 +38,9 @@ func TestRegistryFixHint(t *testing.T) {
 // falls back to the literal path. The hint should still show the literal path
 // so the user sees something actionable, even if it's not fully expanded.
 func TestRegistryFixHint_ExpandHomeFailure(t *testing.T) {
-	// Unset HOME and set MODELMAN_REGISTRY to a tilde path
+	// Unset HOME and set WT_REGISTRY to a tilde path
 	t.Setenv("HOME", "")
-	t.Setenv("MODELMAN_REGISTRY", "~/custom/registry.toml")
+	t.Setenv("WT_REGISTRY", "~/custom/registry.toml")
 
 	cfg := &Config{DefaultTag: "code", Providers: []Provider{{ID: "omlx", Location: "Local"}}}
 	err := cfg.Validate()

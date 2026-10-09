@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// TestRestartCommandPrecedence pins env precedence (WT_ over legacy
-// MODELMAN_, then the launchctl fallback) so an existing modelman user's
-// exported restart command keeps working after the move.
+// TestRestartCommandPrecedence pins env precedence (WT_LITELLM_RESTART_CMD
+// over its permanent alias MODELMAN_LITELLM_RESTART_CMD, then the launchctl
+// fallback), so a shell profile that still exports the older name keeps
+// restarting the proxy the way its owner chose.
 func TestRestartCommandPrecedence(t *testing.T) {
 	t.Setenv("WT_LITELLM_RESTART_CMD", "")
 	t.Setenv("MODELMAN_LITELLM_RESTART_CMD", "")

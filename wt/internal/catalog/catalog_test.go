@@ -277,9 +277,8 @@ func TestRowActionRules(t *testing.T) {
 // TestBlockReasonNamesTheFix verifies the status text for a blocked row names
 // what to do: for an mlx_lm_server pairing, the llmbench command that starts
 // it beside the other models, with the row's own target and draft; for any
-// other provider wt has no engine for, that provider's own tool. No reason
-// names modelman, which is being retired. It is "" for rows that are not
-// blocked.
+// other provider wt has no engine for, that provider's own tool. It is ""
+// for rows that are not blocked.
 func TestBlockReasonNamesTheFix(t *testing.T) {
 	mlx := Row{Location: config.LocationLocal, Status: StatusOK, Model: config.Model{
 		ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server",

@@ -46,14 +46,14 @@ func dbConfig(t *testing.T, body string) string {
 // TestDatabaseURLPrecedence pins the lookup order the spec fixes:
 // WT_LITELLM_DATABASE_URL, then the legacy MODELMAN_LITELLM_DATABASE_URL,
 // then general_settings.database_url in config.yaml. The legacy name is a
-// permanent alias, so a shell profile written for `modelman usage report`
-// must keep working; and the WT_ name must win so it can override both.
+// permanent alias, so a shell profile that still exports it must keep
+// working with `wt stats`; and the WT_ name must win so it can override both.
 func TestDatabaseURLPrecedence(t *testing.T) {
 	const fromFile = "general_settings:\n  database_url: postgresql://file/db\n"
 	cases := []struct {
-		name         string
-		wt, modelman string
-		want         string
+		name      string
+		wt, alias string
+		want      string
 	}{
 		{"file only", "", "", "postgresql://file/db"},
 		{"legacy env beats the file", "", "postgresql://legacy/db", "postgresql://legacy/db"},
@@ -63,7 +63,7 @@ func TestDatabaseURLPrecedence(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dbConfig(t, fromFile)
 			t.Setenv("WT_LITELLM_DATABASE_URL", c.wt)
-			t.Setenv("MODELMAN_LITELLM_DATABASE_URL", c.modelman)
+			t.Setenv("MODELMAN_LITELLM_DATABASE_URL", c.alias)
 			got, err := DatabaseURL()
 			if err != nil || got != c.want {
 				t.Fatalf("DatabaseURL() = %q, %v; want %q", got, err, c.want)
@@ -74,8 +74,9 @@ func TestDatabaseURLPrecedence(t *testing.T) {
 
 // TestDatabaseURLEnvNeedsNoConfigFile verifies a connection string from the
 // environment is returned without config.yaml being opened at all: the file
-// here is missing, and in a second run unparseable. modelman behaves the
-// same, and a machine whose proxy config lives elsewhere depends on it.
+// here is missing, and in a second run unparseable. A machine whose proxy
+// config lives elsewhere depends on it: the variable is its only way to
+// name the database.
 func TestDatabaseURLEnvNeedsNoConfigFile(t *testing.T) {
 	for _, body := range []string{"", "general_settings: [unclosed\n"} {
 		dbConfig(t, body)

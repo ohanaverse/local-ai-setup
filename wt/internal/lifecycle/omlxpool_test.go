@@ -306,10 +306,9 @@ func TestStartOnPoolReportsAnUnpredictedEviction(t *testing.T) {
 // one after it comes from /health and the list, because status failed once.
 // The list names an aliased model by its alias, so the still-loaded sibling is
 // not found in it by directory name. Reading that as "omlx unloaded it" removed
-// the route of a model that was still serving, restarted the proxy, and told
-// modelman to clear its running flag: every session on it got "Invalid model
-// name". A fallback reading names too little to prove an eviction, so it must
-// change nothing.
+// the route of a model that was still serving and restarted the proxy: every
+// session on it got "Invalid model name". A fallback reading names too
+// little to prove an eviction, so it must change nothing.
 func TestStartOnPoolKeepsRoutesWhenTheReadingAfterTheLoadIsTheFallback(t *testing.T) {
 	out := captureRoutes(t)
 	sizes := map[string]int64{"A": 20, "B": 20}

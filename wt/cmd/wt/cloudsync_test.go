@@ -626,7 +626,6 @@ func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
 		}
 		t.Setenv("HOME", home)
 		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("MODELMAN_REGISTRY", "")
 		t.Setenv("WT_REGISTRY", registry)
 		t.Setenv("WT_LITELLM_CONFIG", "")
 		t.Setenv("MODELMAN_LITELLM_CONFIG", "")

@@ -172,7 +172,6 @@ func TestBuildFilteredCmdCommandAgentUsesWorktree(t *testing.T) {
 func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Recorder script: write its real CWD (via pwd) to an output file passed
@@ -351,7 +350,6 @@ func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {
 func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Install a fake claude binary so launchFiltered can execute without
@@ -407,7 +405,6 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	binDir := t.TempDir()
@@ -463,7 +460,6 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -511,7 +507,6 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 func TestLaunchFilteredRotationAdvances(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Install a fake claude binary so launchFiltered can execute without
@@ -565,7 +560,6 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	binDir := t.TempDir()
@@ -618,7 +612,6 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	binDir := t.TempDir()
@@ -658,7 +651,6 @@ func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 func TestLaunchFilteredRecordsUsageForAgent(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	binDir := t.TempDir()
@@ -708,7 +700,6 @@ func TestCommandAgentDoesNotRecordRefcount(t *testing.T) {
 	}
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	cfg := &config.Config{
@@ -740,7 +731,6 @@ func TestCommandAgentDoesNotRecordRefcount(t *testing.T) {
 func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -1723,7 +1713,6 @@ func TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError(t *testing.T) {
 func TestLaunchFilteredEnsuresRouteForRunningLocalModel(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -1766,7 +1755,6 @@ func TestLaunchFilteredEnsuresRouteForRunningLocalModel(t *testing.T) {
 func TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -1811,7 +1799,6 @@ func TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm(t *testing.T) {
 func TestLaunchFilteredSkipsEnsureOnDirectRoute(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -1873,7 +1860,6 @@ func relativeArgFixture(t *testing.T) (launch, other string, notes *bytes.Buffer
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	notes = &bytes.Buffer{}
 	oldDir, oldOut := shellDir, osStderr
@@ -1969,7 +1955,6 @@ func agentSessionFixture(t *testing.T) (launch string, cfg *config.Config, args 
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
-	t.Setenv("MODELMAN_REGISTRY", "")
 	oldDir := shellDir
 	shellDir = func() (string, error) { return launch, nil }
 	t.Cleanup(func() { shellDir = oldDir })

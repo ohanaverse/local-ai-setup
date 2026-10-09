@@ -345,7 +345,7 @@ func TestOmlxStartWithWrongKeySaysTheKeyWasRefused(t *testing.T) {
 }
 
 // TestWarmLoadsAModelIntoARunningOmlx covers the engine behind `wt warm`,
-// which modelman calls when its own keyless warmup is refused: the request
+// which llmbench calls when its own keyless warmup is refused: the request
 // names the directory basename and carries the registry's key; nothing is
 // started or stopped. Any provider but omlx is refused — the others take no
 // key, so their callers have nothing to ask wt for.
