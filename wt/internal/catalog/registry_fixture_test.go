@@ -14,14 +14,14 @@ import (
 )
 
 // TestRegistryFixtureLocalOverlays pins the shared contract fixture's #179
-// Phase B rows (docs/contracts/registry.sample.toml, also parsed by
-// modelman's tests/contracts/test_registry_fixture.py) against a real
+// Phase B rows (docs/contracts/registry.sample.toml, read by this test and by
+// llmbench/tests/test_registry.py) against a real
 // inventory round — a fake ollama daemon, a temp mtplx model directory, and
 // failing /v1/models probes, never a real server. The "--"-style overlay matches its
 // on-disk artifact through model_name, the provider/model_name-style one
 // matches as before, and the overlay that is not on disk gets no row though
-// both languages still parse it. A one-sided change to how overlays match
-// fails here and in modelman's fixture test.
+// the registry still parses. A change to how overlays match fails here: a
+// registered model would lose its row in the picker, or gain a second one.
 func TestRegistryFixtureLocalOverlays(t *testing.T) {
 	var reg struct {
 		Providers []config.Provider `toml:"providers"`

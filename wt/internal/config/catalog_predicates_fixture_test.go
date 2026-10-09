@@ -36,9 +36,9 @@ func loadPredicateFixture(t *testing.T) (*Config, predicateExpectations) {
 }
 
 // TestCatalogPredicatesFixture pins InCatalog and OpenRouterPriced to the
-// shared contract (#179, #180). modelman asserts the same openrouter_priced
-// list against pricing._is_openrouter_priced, so a one-sided rule change —
-// e.g. a new excluded provider kind in Python only — fails both CI jobs
+// contract fixture (#179, #180), which this test reads. internal/cloudsync
+// asserts the same openrouter_priced list over registry rows, so a rule
+// change in one reader only — e.g. a new excluded provider kind — fails
 // instead of silently making wt nag about refreshes with nothing to refresh.
 func TestCatalogPredicatesFixture(t *testing.T) {
 	cfg, want := loadPredicateFixture(t)

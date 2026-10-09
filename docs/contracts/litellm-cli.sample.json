@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared fixture for cross-language contract tests of `wt litellm ... --json`. Read by wt/cmd/wt/litellm_test.go (Go) and modelman/tests/contracts/test_litellm_cli_fixture.py (Python). A schema change on either side fails both CI jobs in the same PR.",
+  "_comment": "Fixture for the shapes `wt litellm ... --json` prints. Read by wt/cmd/wt/litellm_test.go.",
   "list": {
     "routed": ["ollama/gemma:9b", "openrouter/x/y"],
     "rows": [

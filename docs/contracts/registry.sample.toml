@@ -1,5 +1,5 @@
 # Shared fixture for cross-language contract tests. Exercises every schema
-# variant modelman writes and wt reads: all three provider auth types
+# variant wt writes and reads: all three provider auth types
 # (none, api_key, native), full per-token + subscription pricing, model_info,
 # a per-model location override, and a free model. Since #179 Phase B it also
 # pins local overlay matching: a local registry entry is an overlay matched to
@@ -21,13 +21,13 @@
 #   - wt/internal/config/registry_fixture_test.go (Go)
 #   - wt/internal/catalog/registry_fixture_test.go (Go)
 #   - wt/cmd/wt/litellm_test.go (Go)
-#   - modelman/tests/contracts/test_registry_fixture.py (Python)
+#   - wt/internal/config/model_artifact_test.go (Go)
 #   - llmbench/tests/test_registry.py (Python; reads id/family/provider_id/
 #     model_name/location/fetch/draft only)
 #
 # The point of this file is that changing a field here without updating
 # every test listed above should make each of their CI jobs (wt-ci,
-# modelman-ci, llmbench-ci) fail in the same PR.
+# llmbench-ci) fail in the same PR.
 
 [[providers]]
 id = "ollama"
@@ -65,9 +65,10 @@ base_url = "https://pinned-cloud.example/v1"
 secret_ref = "PINNED_CLOUD_API_KEY"
 
 # mlx_lm_server: a local target+draft speculative-decoding pairing served by
-# mlx_lm.server --draft-model. Mirrors the default template modelman writes
-# (registry.py _DEFAULT_PROVIDER_TEMPLATES) — auth.type "none" with the
-# OpenAI-compatible base_url, no model_dir (the default template omits it).
+# mlx_lm.server --draft-model. Mirrors the default row wt seeds
+# (defaultProviderRow, wt/internal/config/registry_seed.go) — auth.type
+# "none" with the OpenAI-compatible base_url, no model_dir (the default row
+# omits it).
 [[providers]]
 id = "mlx_lm_server"
 name = "mlx-lm server (target+draft)"
@@ -146,7 +147,7 @@ tags = ["code"]
 
 # mlx_lm_server pairing: a target+draft speculative-decoding pair. The
 # `fetch` names the target repo and `draft` the draft repo — the shape
-# modelman writes for mlx_lm_server models. wt decodes the provider/model
+# written for mlx_lm_server models. wt decodes the provider/model
 # rows, and reads `repo` and `local_path` of fetch and of draft to show them
 # and to name the pairing in a hint; it writes the two tables only when
 # `wt model add mlx_lm_server <target> --draft <draft>` registers a pairing,
@@ -172,8 +173,8 @@ provider_id = "mtplx"
 model_name = "org/contract-fixture-dashed"
 tags = ["code"]
 
-# Local overlay that is not on disk: still a valid registry entry (modelman
-# lists it as downloadable), but wt's catalog has no row for it.
+# Local overlay that is not on disk: still a valid registry entry, but wt's
+# catalog has no row for it.
 [[models]]
 id = "ollama/contract-fixture:absent"
 family = "contract-fixture"

@@ -9,7 +9,7 @@
 #
 # The mlx_lm.* console-script shims (mlx_lm.server, mlx_lm.convert, ...) are
 # not on PATH anywhere on this machine, and mlx-lm is not a declared
-# dependency of this repo (no mention in modelman/pyproject.toml or
+# dependency of this repo (no mention in llmbench/pyproject.toml or
 # elsewhere) — the only real, working copies live inside the versioned omlx
 # Homebrew keg, built against that keg's own pinned Python/mlx versions.
 # Nothing else on the system is guaranteed to work, so we don't fall back to

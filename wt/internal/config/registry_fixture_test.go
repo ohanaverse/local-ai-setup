@@ -8,11 +8,10 @@ import (
 )
 
 // TestLoadRegistryMatchesSharedFixture guards wt's registry.toml decoding
-// against the schema modelman actually writes. The fixture at
-// docs/contracts/registry.sample.toml is also read by modelman's
-// tests/contracts/test_registry_fixture.py — if a schema change isn't
-// reflected in both tests, both CI jobs fail in the same PR instead of
-// drifting silently.
+// against every schema variant the registry holds. The fixture at
+// docs/contracts/registry.sample.toml is read by this test and by
+// llmbench/tests/test_registry.py — a schema change that one reader misses
+// fails here instead of wt silently dropping a provider or a price.
 func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
@@ -150,9 +149,10 @@ func TestRegistryFixtureCost(t *testing.T) {
 	}
 }
 
-// TestRegistryFixtureNativeExposure pins the cross-language rule that a
-// native model is always in the catalog even without a model_state row. The same
-// fixture file is read by modelman's contract test.
+// TestRegistryFixtureNativeExposure pins the rule that a native model is
+// always in the catalog even without a model_state row. The fixture
+// (docs/contracts/registry.sample.toml) is read by this test and by
+// llmbench/tests/test_registry.py.
 func TestRegistryFixtureNativeExposure(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 

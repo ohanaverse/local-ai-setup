@@ -665,8 +665,9 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 // its discovered id, written marked) and a per-id error — so the action names
 // are pinned where Sync assigns them, not restated by hand. The injected restart hook fails with
 // restart.go's warning text, so the fixture also carries a non-empty
-// warnings array for modelman to parse. modelman parses this shape with
-// parse_change_result (modelman/tests/contracts/test_litellm_cli_fixture.py).
+// warnings array. The fixture (docs/contracts/litellm-cli.sample.json) is
+// read by this test: a script that parses `wt litellm sync --json` breaks if
+// a key or an action name changes.
 func TestLitellmSyncJSONMatchesContract(t *testing.T) {
 	p := litellmEnv(t, `model_list:
   - model_name: openrouter/old

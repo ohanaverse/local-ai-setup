@@ -8,10 +8,9 @@ import (
 // writtenFixture is the writer's contract fixture at the monorepo root: one
 // registry in the exact form tomli-w gives it. It holds no comments, because
 // tomli-w writes none, so what it is for is recorded here and in its readers:
-// modelman/tests/contracts/test_registry_written_fixture.py asserts tomli_w
-// reproduces the same bytes, and llmbench/tests/test_registry.py and
-// internal/config's TestTypedReaderLoadsTheWrittenFixture assert their readers
-// load them.
+// TestWrittenFixtureIsAFixedPoint below asserts wt's writer reproduces the
+// same bytes, and llmbench/tests/test_registry.py and internal/config's
+// TestTypedReaderLoadsTheWrittenFixture assert their readers load them.
 const writtenFixture = "../../../docs/contracts/registry.written.sample.toml"
 
 // TestWrittenFixtureIsAFixedPoint is the Go half of the writer contract:

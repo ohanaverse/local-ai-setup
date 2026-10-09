@@ -206,7 +206,7 @@ ls /Users/keith/.config/local-ai/benchmarks/
 
 ## Going deeper
 
-- Benchmark CLI design (isolation contract, workload spec, results shape): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-09-05-modelman-benchmark-design.md`
+- Benchmark CLI design (isolation contract, workload spec, results shape): `~/github/ohanaverse/local-ai-setup/docs/superpowers/modelman/specs/2026-09-05-modelman-benchmark-design.md`
 - Provider lifecycle CLI + orchestration, stop/start/warmup per backend: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/providers/lifecycle/` (`cli.py` the `llmbench provider` commands, `orchestrate.py` isolate/stop/stop-all/restore, `backends/` one module per provider), and `/Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
 - Legacy benchmark docs + archived numbers: `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
 - llmbench source: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` in-process lifecycle adapter)

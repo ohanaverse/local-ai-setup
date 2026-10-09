@@ -18,10 +18,9 @@ type omlxDirsCase struct {
 
 // TestScanOmlxModelsMatchesSharedFixture builds each tree in
 // docs/contracts/omlx-model-dirs.sample.json under a temp dir and checks that
-// scanOmlxModels lists the expected names. modelman's omlx_model_dirs is
-// tested against the same file (modelman/tests/contracts), so the two scans
-// cannot drift apart; a regression here means wt lists a model omlx does not
-// serve (or hides one it does), and the picker offers a start that fails.
+// scanOmlxModels lists the expected names. The fixture is read by this test;
+// a regression here means wt lists a model omlx does not serve (or hides one
+// it does), and the picker offers a start that fails.
 func TestScanOmlxModelsMatchesSharedFixture(t *testing.T) {
 	raw, err := os.ReadFile("../../../docs/contracts/omlx-model-dirs.sample.json")
 	if err != nil {

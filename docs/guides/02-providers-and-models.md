@@ -325,6 +325,6 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 ## Going deeper
 
 - Family concepts and per-provider variants: [03-model-families](03-model-families.md) (next in this set)
-- TUI screens and apply-queue design (history — the TUI is disabled): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-26-modelman-tui-design.md`
-- Routing design — configured is routed, the ownership marker, `wt litellm sync`: `~/github/ohanaverse/local-ai-setup/docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md` (it supersedes the original per-model expose design, `modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`, kept as history)
-- Model-dir sync/reconcile design (sync semantics): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-28-modelman-sync-modeldir-reconcile-design.md`
+- TUI screens and apply-queue design (history — the TUI is disabled): `~/github/ohanaverse/local-ai-setup/docs/superpowers/modelman/specs/2026-08-26-modelman-tui-design.md`
+- Routing design — configured is routed, the ownership marker, `wt litellm sync`: `~/github/ohanaverse/local-ai-setup/docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md` (it supersedes the original per-model expose design, `docs/superpowers/modelman/specs/2026-08-28-modelman-litellm-exposure-design.md`, kept as history)
+- Model-dir sync/reconcile design (sync semantics): `~/github/ohanaverse/local-ai-setup/docs/superpowers/modelman/specs/2026-08-28-modelman-sync-modeldir-reconcile-design.md`

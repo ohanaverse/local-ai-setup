@@ -1,6 +1,5 @@
-# Shared fixture for cross-language contract tests of modelman.toml —
-# the per-machine mutable state file modelman writes and wt reads
-# read-only. wt reads only one thing here: the `[litellm]` table below (a
+# Fixture for modelman.toml, the state file modelman wrote, of which wt
+# reads one table. wt reads only one thing here: the `[litellm]` table below (a
 # legacy fallback — the routing table is wt-owned in wt's config.toml). It
 # no longer reads `price_refresh_last_run`: its stale-pricing notice takes
 # its date from the `pricing_updated_at` stamps in registry.toml. wt reads
@@ -10,10 +9,8 @@
 #
 # Read by:
 #   - wt/internal/config/modelman_fixture_test.go (Go)
-#   - modelman/tests/contracts/test_modelman_fixture.py (Python)
 #
-# The point of this file is that a schema change on either side (e.g.
-# modelman moving model_state) makes both CI jobs fail in the same PR.
+# It goes when wt stops reading the file.
 #
 # Exposure (#179): what is configured in registry.toml is exposed, so
 # modelman no longer has an `exposed` flag — it ignores `exposed` /
