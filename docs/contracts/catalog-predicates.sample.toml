@@ -1,13 +1,10 @@
-# Cross-language contract for the catalog / pricing / routing predicates
-# (#179, #180). Each model exercises one branch; the expected id lists live in
+# Contract for the catalog / pricing / routing predicates (#179, #180). Each
+# model exercises one branch; the expected id lists live in
 # catalog-predicates.expected.json, read by:
 #   - wt/internal/config/catalog_predicates_fixture_test.go  (in_catalog, openrouter_priced)
 #   - wt/internal/litellm/catalog_predicates_fixture_test.go (routable_cloud)
-#   - modelman/tests/contracts/test_catalog_predicates_fixture.py (openrouter_priced)
-# A one-sided change to a predicate fails the job that asserts it, and the fixture
-# is shared: openrouter_priced is pinned from both jobs, while in_catalog and
-# routable_cloud are so far read by the Go job only — a one-sided change to those
-# two currently fails one CI job, not both, until the Python side grows them.
+#   - wt/internal/cloudsync/openrouter_test.go (openrouter_priced, over registry rows)
+# Go only.
 
 [[providers]]
 id = "openrouter"
@@ -56,8 +53,9 @@ base_url = "https://litellm.corp.example"
 secret_ref = "exec:/usr/local/bin/corp-credential-helper.sh"
 
 # The override in the other direction: a local provider marked
-# openrouter_priced = true (a local proxy serving OpenRouter ids). Both sides
-# must honor true as well as false, or they disagree about this model.
+# openrouter_priced = true (a local proxy serving OpenRouter ids). Both readers
+# (the typed config and the cloud-sync rows) must honor true as well as false,
+# or they disagree about this model.
 [[providers]]
 id = "local-gateway"
 name = "Local gateway"

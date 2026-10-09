@@ -1,17 +1,18 @@
 #!/bin/bash
 # check-config-dirs-untouched — fail if the real config directories exist.
 #
-# CI runs this right after a test suite (llmbench-ci, modelman-ci, wt-ci), before any
+# CI runs this right after a test suite (llmbench-ci, wt-ci), before any
 # later step could create the directories for its own reasons. No test may
 # create them: a fresh runner has none, so finding one means a test wrote
 # under the home directory instead of a temp one — on a developer's machine
 # that same test rewrites live state (wt's rotation.state and usage.jsonl
 # were being overwritten by every `go test` until #221).
 #
-# Both tools put agent-wt and local-ai under XDG_CONFIG_HOME when it is set,
-# so that base is checked too when it is not ~/.config.
+# wt puts agent-wt and local-ai under XDG_CONFIG_HOME when it is set (llmbench
+# writes under ~/.config/local-ai whatever it is), so that base is checked too
+# when it is not ~/.config.
 #
-# Only meaningful on a machine that has never run wt or modelman — on a
+# Only meaningful on a machine that has never run wt or llmbench — on a
 # developer's machine the directories exist and this always fails.
 #
 # Usage:

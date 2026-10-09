@@ -384,7 +384,7 @@ Exit code for `sync` (and `sync --dry-run`) is 0 when every desired row could be
 
 - Admin UI in depth — Postgres/Redis/Prisma setup, plist template, troubleshooting: [`../reference/litellm-admin-ui-setup.md`](../reference/litellm-admin-ui-setup.md)
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
-- Route ownership and reconciliation design (current, #179): `docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md`; wt-owned LiteLLM management: `docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md` (the original per-model expose design, `modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`, is historical — #179 removed that flag and its commands)
+- Route ownership and reconciliation design (current, #179): `docs/superpowers/specs/2026-10-02-configured-is-exposed-design.md`; wt-owned LiteLLM management: `docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md` (the original per-model expose design, `docs/superpowers/modelman/specs/2026-08-28-modelman-litellm-exposure-design.md`, is historical — #179 removed that flag and its commands)
 - Source of the writer/policies: `wt/internal/litellm/` (`policy.go`, `entry.go`, `configfile.go`, `restart.go`, `service.go`) and `wt/cmd/wt/litellm.go`
 - Benchmarks through the proxy: [05-benchmarks](05-benchmarks.md)
 - When :4000 misbehaves: [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md)

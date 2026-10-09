@@ -9,9 +9,9 @@ import (
 
 // TestRegistryPathPrecedence pins which file is the registry: WT_REGISTRY,
 // then MODELMAN_REGISTRY, then $XDG_CONFIG_HOME/local-ai, then ~/.config.
-// modelman (test_registry.py) and llmbench (test_registry.py) pin the same
-// order. If wt alone resolved a different file, a scratch run would have
-// modelman saving one registry while wt read another.
+// llmbench (tests/test_registry.py) pins the same order. If wt alone
+// resolved a different file, a scratch run would have llmbench benchmarking
+// one registry while wt wrote another.
 func TestRegistryPathPrecedence(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

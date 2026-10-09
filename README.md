@@ -7,7 +7,6 @@ components — fresh install starts at
 | Component | Role |
 |---|---|
 | Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
-| `modelman/` | model registry CLI (its TUI is disabled; being retired into `wt`) — download state, usage. Cloud prices and the ollama cloud catalog are refreshed with `wt cloud-sync` (modelman's `refresh-prices` and `ollama-catalog sync` still work until it is deleted). Models are managed with `wt model` (the Models tab of `wt config`) and `wt model add\|edit\|rm\|list`: `docs/guides/02-providers-and-models.md` |
 | `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
@@ -78,13 +77,12 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ├── docs/
 │   ├── guides/         # user playbooks — index above
 │   ├── reference/      # backend-specific guides
-│   ├── contracts/      # cross-language config-format fixtures (read by wt Go + modelman and llmbench Python tests)
+│   ├── contracts/      # cross-language config-format fixtures (read by wt Go and llmbench Python tests)
 │   ├── archive/        # superseded docs
 │   └── superpowers/    # plans + specs
-├── modelman/           # model registry CLI, TUI disabled (Python/uv) — has its own CLAUDE.md
 ├── llmbench/           # benchmarks + provider isolation (Python/uv) — has its own CLAUDE.md
 ├── wt/                 # worktree agent launcher (Go) — has its own CLAUDE.md
-├── .github/workflows/ # CI: shell-ci, wt-ci, modelman-ci, llmbench-ci
+├── .github/workflows/ # CI: shell-ci, wt-ci, llmbench-ci
 ├── CLAUDE.md           # agent entry point
 ├── Makefile            # make lint (shellcheck), make check-links, make test-all
 └── README.md           # this file — index only
@@ -100,7 +98,7 @@ All three model-management consolidation sub-projects are merged (shared model
 registry, benchmark tooling, usage/spend tracking). The cross-component drift signal
 is now automatic: the shared-format fixtures in
 [docs/contracts/](docs/contracts) are read by contract tests on both sides
-(`wt` Go tests, `modelman` Python tests), replacing the hand-maintained
+(`wt` Go tests, `llmbench` Python tests), replacing the hand-maintained
 cross-component tracker doc.
 
 Follow-up items from the guide-set review: [issues.md](issues.md).

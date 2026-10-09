@@ -8,11 +8,10 @@ import (
 )
 
 // TestLoadRegistryMatchesSharedFixture guards wt's registry.toml decoding
-// against the schema modelman actually writes. The fixture at
-// docs/contracts/registry.sample.toml is also read by modelman's
-// tests/contracts/test_registry_fixture.py — if a schema change isn't
-// reflected in both tests, both CI jobs fail in the same PR instead of
-// drifting silently.
+// against every schema variant the registry holds. The fixture at
+// docs/contracts/registry.sample.toml is read by this test and by
+// llmbench/tests/test_registry.py — a schema change that one reader misses
+// fails here instead of wt silently dropping a provider or a price.
 func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
@@ -150,9 +149,11 @@ func TestRegistryFixtureCost(t *testing.T) {
 	}
 }
 
-// TestRegistryFixtureNativeExposure pins the cross-language rule that a
-// native model is always in the catalog even without a model_state row. The same
-// fixture file is read by modelman's contract test.
+// TestRegistryFixtureNativeExposure pins the rule that a native model is
+// always in the catalog, with no stored flag to say so. If it were not, a
+// native agent's own model would drop out of its picker and a launch would
+// fail on model resolution. The fixture (docs/contracts/registry.sample.toml)
+// is read by this test and by llmbench/tests/test_registry.py.
 func TestRegistryFixtureNativeExposure(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
@@ -284,10 +285,10 @@ func TestRegistryFixtureTimePrices(t *testing.T) {
 // TestTypedReaderLoadsTheWrittenFixture pins that wt's own reader accepts a
 // registry in the form wt's writer produces: docs/contracts/
 // registry.written.sample.toml, which wt/internal/tomlw re-emits byte for
-// byte and modelman's tomli-w reproduces too. It holds what the hand-written
-// sample cannot — integer prices, an empty tags array, keys wt does not model
-// at every level below the top, [[header]] windows — and a reader that choked on any of
-// them would fail on the user's real registry after the first wt write.
+// byte. It holds what the hand-written sample cannot — integer prices, an
+// empty tags array, keys wt does not model at every level below the top,
+// [[header]] windows — and a reader that choked on any of them would fail on
+// the user's real registry after the first wt write.
 func TestTypedReaderLoadsTheWrittenFixture(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.written.sample.toml")
 

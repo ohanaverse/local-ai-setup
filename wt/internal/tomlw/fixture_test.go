@@ -8,17 +8,17 @@ import (
 // writtenFixture is the writer's contract fixture at the monorepo root: one
 // registry in the exact form tomli-w gives it. It holds no comments, because
 // tomli-w writes none, so what it is for is recorded here and in its readers:
-// modelman/tests/contracts/test_registry_written_fixture.py asserts tomli_w
-// reproduces the same bytes, and llmbench/tests/test_registry.py and
-// internal/config's TestTypedReaderLoadsTheWrittenFixture assert their readers
-// load them.
+// TestWrittenFixtureIsAFixedPoint below asserts wt's writer reproduces the
+// same bytes, and llmbench/tests/test_registry.py and internal/config's
+// TestTypedReaderLoadsTheWrittenFixture assert their readers load them.
 const writtenFixture = "../../../docs/contracts/registry.written.sample.toml"
 
-// TestWrittenFixtureIsAFixedPoint is the Go half of the writer contract:
-// decoding the fixture and encoding it again reproduces every byte. modelman
-// asserts the same of tomli-w on the same file, so the two writers are proved
-// to agree without either CI job running the other language. If this fails,
-// a wt write that changes nothing would still rewrite the user's registry.
+// TestWrittenFixtureIsAFixedPoint is the writer contract: decoding the
+// fixture and encoding it again reproduces every byte. The fixture was
+// generated with tomli-w 1.2.0, so this also pins that wt's writer keeps that
+// layout; no test runs tomli-w against the file any more, so regenerate it
+// only with tomli_w.dumps. If this fails, a wt write that changes nothing
+// would still rewrite the user's registry.
 func TestWrittenFixtureIsAFixedPoint(t *testing.T) {
 	want, err := os.ReadFile(writtenFixture)
 	if err != nil {

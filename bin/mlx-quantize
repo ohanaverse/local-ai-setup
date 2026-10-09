@@ -8,7 +8,7 @@
 # versioned omlx Homebrew keg (see lib/mlx-lm-resolve.sh). All flags after
 # the subcommand are forwarded verbatim to the resolved binary; this script
 # never reimplements or validates mlx-lm's own flag surface, which would
-# only drift out of sync with upstream. modelman deliberately does not run
+# only drift out of sync with upstream. wt deliberately does not run
 # these tools itself ("register-only") — this script plus a hand-written
 # registry.toml entry is the whole workflow.
 #

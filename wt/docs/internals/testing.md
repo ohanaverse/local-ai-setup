@@ -34,4 +34,4 @@ go vet ./...                         # static analysis
 make check                           # shellcheck + shfmt check + go-format-check (gofmt -l gate wt-ci runs); `make format` writes both
 ```
 
-From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint + modelman + wt build/vet/test).
+From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint + llmbench + wt build/vet/test).

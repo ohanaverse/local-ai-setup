@@ -47,8 +47,8 @@ func wantTriple(t *testing.T, what string, got PriceTriple, in, cache, out *floa
 	}
 }
 
-// TestParsePricingFixture reads a saved copy of ollama.com/pricing, the same
-// file modelman's test reads, and pins what both tools take from it: the
+// TestParsePricingFixture reads a saved copy of ollama.com/pricing, the page
+// as it was no later than 2026-10-01, and pins what wt takes from it: the
 // model count, base and off-peak prices, a "-" cell as no price, and no
 // off-peak row passing as a model. If this fails after the page was replaced
 // by a newer copy, the expected values are what to update; if it fails with

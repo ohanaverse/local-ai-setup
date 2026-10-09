@@ -10,12 +10,10 @@ import (
 )
 
 // TestDiscoveredModelIDMatchesContractFixture pins wt's id for an on-disk
-// model with no registry entry against the fixture modelman's
-// tests/contracts/test_discovered_ids_fixture.py reads too (#195). Each side
-// used to pin the format with its own literals, so the two could drift apart
-// with both suites green — and they must agree: modelman's running flag and
-// `modelman stop <id>` name the route wt wrote, and an omlx-6bit artifact is
-// "omlx/…" (the family), never "omlx-6bit/…".
+// model with no registry entry against docs/contracts/discovered-ids.sample.json,
+// which this test reads (#195). The id must not change: the LiteLLM route wt
+// writes and wt's usage and survey history key on it, and an omlx-6bit
+// artifact is "omlx/…" (the family), never "omlx-6bit/…".
 func TestDiscoveredModelIDMatchesContractFixture(t *testing.T) {
 	raw, err := os.ReadFile("../../../docs/contracts/discovered-ids.sample.json")
 	if err != nil {

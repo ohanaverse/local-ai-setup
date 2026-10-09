@@ -8,11 +8,10 @@ import (
 	"time"
 )
 
-// TestEventFieldsMatchSharedFixture guards the JSON contract between wt's
-// usage.jsonl writer and modelman's reader (modelman/src/modelman/usage/wt_state.py).
-// The fixture at docs/contracts/usage.sample.jsonl is read by both this test
-// and modelman's tests/contracts/test_wt_state_fixture.py — if either side
-// renames model_id/timestamp, both fail in the same PR.
+// TestEventFieldsMatchSharedFixture guards the JSON shape of a usage.jsonl
+// line. The fixture at docs/contracts/usage.sample.jsonl is read by this
+// test: a rename of model_id or timestamp would leave every line already on
+// disk unreadable, and wt's usage history and `wt stats` would come up empty.
 func TestEventFieldsMatchSharedFixture(t *testing.T) {
 	f, err := os.Open("../../../docs/contracts/usage.sample.jsonl")
 	if err != nil {
