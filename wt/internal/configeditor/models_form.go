@@ -498,9 +498,9 @@ var modelFormHints = []string{
 
 // modelFormPairingHints say where an mlx_lm_server pairing is added, fullest
 // first: the add form's Provider choice does not offer one (a pairing is two
-// artifacts, and the form has one name field), and a user who added pairings
-// in modelman's form would otherwise find the provider missing and nothing
-// that says where it went.
+// artifacts, and the form has one name field), and a user looking for the
+// provider there would otherwise find it missing and nothing that says how a
+// pairing is added.
 var modelFormPairingHints = []string{
 	"a pairing: wt model add mlx_lm_server <target> --draft <draft>",
 	"wt model add mlx_lm_server T --draft D",

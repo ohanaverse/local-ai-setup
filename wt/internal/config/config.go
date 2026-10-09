@@ -42,7 +42,7 @@ const OllamaBaseURL = "http://localhost:11434"
 // ── LiteLLM routing state (wt-owned) ─────────────────────
 
 // UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
-// wt's config.toml. wt owns this state (moved from modelman.toml 2026-09-21).
+// wt's config.toml. wt owns this state.
 //
 // It persists through PatchSave rather than a whole-file Save of c: c may be
 // a long-lived process's stale in-memory snapshot (issue #143 — a `wt
@@ -260,7 +260,7 @@ type Provider struct {
 	// though they appear on a non-native cloud provider (e.g. a corporate
 	// LiteLLM gateway). true = they are, even though the provider is not a
 	// cloud one. A native provider is never OpenRouter-priced, whatever this
-	// says. Mirrors modelman's ProviderEntry.openrouter_priced.
+	// says.
 	OpenRouterPriced *bool `toml:"openrouter_priced,omitempty"`
 }
 
@@ -447,10 +447,10 @@ type CostWindow struct {
 }
 
 // TimePrice is a time-windowed override of a ModelCost's flat (default)
-// per-token prices, written by modelman (e.g. ollama off-peak pricing).
-// Decode-only in wt for now: the first row whose window contains an
-// instant wins, per field, falling back to the flat prices — see
-// modelman's time_pricing.price_at for the reference implementation.
+// per-token prices. The rows are written by `wt cloud-sync`'s catalog flow
+// (ollama's off-peak pricing) and applied by nothing: wt decodes them and
+// shows the flat prices. What a row means: the first row whose window
+// contains an instant wins, per field, falling back to the flat prices.
 type TimePrice struct {
 	Label                 string       `toml:"label,omitempty"`
 	Timezone              string       `toml:"timezone"`
@@ -496,7 +496,7 @@ type Model struct {
 	Fetch ModelArtifact `toml:"fetch,omitempty"`
 	Draft ModelArtifact `toml:"draft,omitempty"`
 	// PricingUpdatedAt is the registry's pricing_updated_at, as written:
-	// the string `wt cloud-sync` and modelman stamp, or a TOML date-time a
+	// the string `wt cloud-sync` stamps, or a TOML date-time a
 	// hand edit left. It is `any` so that neither spelling can fail the
 	// load; read it through PricingUpdated.
 	PricingUpdatedAt any  `toml:"pricing_updated_at,omitempty"`
@@ -568,11 +568,10 @@ var artifactFields = []struct {
 // A value that is not a table reads as an empty artifact, and a repo or
 // local_path that is not a string reads as absent while the other key is
 // still read. An empty table is an empty artifact, and any other key (files,
-// quantizations, one neither tool models) is ignored. What was tolerated is
+// quantizations, one wt does not model) is ignored. What was tolerated is
 // recorded in Malformed, which `wt model list` prints (Model.Malformed); every
 // other command stays quiet. The registry writer names a malformed value too:
-// validateArtifact refuses a row it touches. modelman is stricter than this
-// on one point — its loader crashes on a fetch or draft that is not a table.
+// validateArtifact refuses a row it touches.
 func (a *ModelArtifact) UnmarshalTOML(v any) error {
 	*a = ModelArtifact{}
 	table, isTable := v.(map[string]any)
@@ -643,10 +642,7 @@ type Config struct {
 	migratedLitellm bool          `toml:"-"`
 	litellm         LitellmState  `toml:"-"` // runtime copy of LitellmTable (or the legacy fallback)
 	// wt decides which local models are running from the live inventory
-	// (internal/localmodels), never from modelman's per-model `running` flag.
-	// The flag-parsing fields that used to live here were removed when the
-	// last caller (internal/localgate) was deleted; modelman still owns the
-	// key, wt simply does not read it. See
+	// (internal/localmodels), never from a stored flag. See
 	// docs/superpowers/specs/2026-09-20-wt-live-resolution-design.md.
 }
 
@@ -658,7 +654,7 @@ func Dir() string {
 
 // baseConfigHome returns the XDG base config directory honoring
 // XDG_CONFIG_HOME (with a leading "~" or "~/" expanded via expandHome,
-// matching Python's Path.expanduser() used by modelman). Falls back to
+// matching Python's Path.expanduser(), which llmbench uses). Falls back to
 // ~/.config when XDG_CONFIG_HOME is unset. Shared by Dir() and
 // RegistryPath() so the two agree on the XDG precedence rule.
 func baseConfigHome() string {
@@ -686,11 +682,11 @@ func Path() string {
 // the shared registry.toml (Providers + Models) into one in-memory
 // Config. The registry is checked before any schema-migration save so a
 // missing registry fails closed before wt rewrites config.toml: legacy
-// provider/model sections must survive on disk for `modelman migrate` to
-// import them. Returns an empty Config if config.toml does not exist yet. A
-// missing registry (ErrRegistryMissing) still returns an error, but the
-// returned Config is not nil: it carries whatever config.toml already
-// parsed (Agents/DefaultTag), just with an empty model catalog, so a
+// provider/model sections survive on disk; nothing reads them, and a failed
+// load is not what removes them. Returns an empty Config if config.toml does
+// not exist yet. A missing registry (ErrRegistryMissing) still returns an
+// error, but the returned Config is not nil: it carries whatever config.toml
+// already parsed (Agents/DefaultTag), just with an empty model catalog, so a
 // genuinely configured agent isn't misread as unconfigured by callers like
 // agents.IsConfigured. A malformed config.toml/registry.toml returns nil.
 func Load() (*Config, error) {
@@ -999,16 +995,16 @@ func (c *Config) InCatalog(m Model) bool {
 // OpenRouterPriced reports whether m's price comes from OpenRouter — what
 // `wt cloud-sync`'s prices flow refreshes: an openrouter model, or a model of a
 // non-native cloud provider. Keyed on the provider's location, not the
-// model's, so ollama cloud models don't count. Mirrors modelman's
-// pricing._is_openrouter_priced; both are pinned by
+// model's, so ollama cloud models don't count. Pinned by
 // docs/contracts/catalog-predicates.sample.toml.
 //
 // A provider's explicit openrouter_priced in the registry overrides the
 // inferred result in both directions, after the native check: false is for a
 // non-native cloud provider that routes through a corporate LiteLLM gateway
-// rather than OpenRouter, true puts a provider's models in. modelman honors
-// both values, so honoring only false here would have the two disagree about
-// a provider marked true.
+// rather than OpenRouter, true puts a provider's models in. Both values are
+// honored, as cloudsync.OpenRouterPriced honors them: honoring only false
+// here would have the stale-price notice and the refresh disagree about a
+// provider marked true.
 func (c *Config) OpenRouterPriced(m Model) bool {
 	if m.Native {
 		return false
@@ -1158,10 +1154,11 @@ func LoadFixHint(err error) string {
 }
 
 // Valid reports whether l is one of the two locations the registry defines.
-// The registry is shared with modelman, so any other value —
+// The registry is read by llmbench too, so any other value —
 // a typo such as "Local", a word from some other scheme — is not interpreted:
-// reading "Local" as local would paper over a file that modelman itself reads
-// differently (anything that is not exactly "local" is not local to it).
+// reading "Local" as local would paper over a file that llmbench reads
+// differently (a location that is set and is not exactly "local" is not local
+// to it).
 func (l Location) Valid() bool { return l == LocationLocal || l == LocationCloud }
 
 // ResolveLocation returns the effective location for a model.

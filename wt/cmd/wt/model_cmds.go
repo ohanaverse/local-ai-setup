@@ -473,8 +473,8 @@ func warmCmd(a *app) *cobra.Command {
 			"last segment is that name. When the server has an API key, wt sends the one\n" +
 			"the registry's omlx provider names (auth.secret_ref).\n\n" +
 			"Nothing is started, stopped or routed: this is the warmup step of `wt start`\n" +
-			"by itself, which `modelman start` asks for when omlx refuses its keyless\n" +
-			"request. To start a model, use `wt start`.",
+			"by itself, which llmbench's omlx backend asks for when omlx refuses its\n" +
+			"keyless request. To start a model, use `wt start`.",
 		Example: "  wt warm omlx Qwen3.8-27B-4bit",
 		Args:    cobra.ExactArgs(2),
 		// A server that refuses or never loads the model is the expected

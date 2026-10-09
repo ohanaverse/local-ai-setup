@@ -10,7 +10,7 @@ import (
 )
 
 // ErrRegistryBusy is returned by UpdateRegistry when registry.toml changed
-// under it on every attempt: another program (modelman, an editor) kept
+// under it on every attempt: another program (an editor) kept
 // writing the file. Nothing was written; running the command again is safe.
 var ErrRegistryBusy = errors.New("registry.toml kept changing while wt was writing it")
 
@@ -59,7 +59,7 @@ var registryBeforeRename = func() {}
 // changed reports whether the file was written. A registry that did not
 // exist is created by any apply that succeeds, even one that adds nothing.
 // The first write that does change something lays the whole file out in
-// tomli-w's form, which drops comments — as every modelman save always has.
+// tomli-w's form, which drops comments.
 //
 // UpdateRegistry never touches LiteLLM's config.yaml and does not ask whether
 // the registry is redirected: a write to a redirected registry succeeds, and

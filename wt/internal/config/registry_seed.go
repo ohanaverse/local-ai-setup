@@ -48,8 +48,8 @@ func DefaultSeedEnv() SeedEnv {
 // only once the registry loads, so on a fresh machine it has not run yet. A
 // registry seeded from the file as written would then fail validation on the
 // very next run. A missing or unreadable config.toml names nothing — seeding
-// tolerates an absent wt setup, as modelman's sync_agent_providers does — and
-// an unreadable one is also returned as err, for the caller to report.
+// tolerates an absent wt setup — and an unreadable one is also returned as
+// err, for the caller to report.
 // Nothing is written: the migration is applied to this read only.
 func seedAgents() (names, providers []string, err error) {
 	cfg, exists, err := readConfigFile()
@@ -69,7 +69,7 @@ func seedAgents() (names, providers []string, err error) {
 }
 
 // defaultProviderIDs are the local providers with a default row, in the
-// order the rows are added (modelman's DEFAULT_PROVIDER_IDS).
+// order the rows are added.
 var defaultProviderIDs = []string{"ollama", "omlx", "mlx_lm_server", "mtplx"}
 
 // installedProviderCommands maps a default provider to the command whose
@@ -78,10 +78,9 @@ var defaultProviderIDs = []string{"ollama", "omlx", "mlx_lm_server", "mtplx"}
 // references it or an agent that lists it.
 var installedProviderCommands = map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx"}
 
-// defaultProviderRow is the row modelman writes for a default provider
-// (registry.py's _DEFAULT_PROVIDER_TEMPLATES through _provider_to_dict, which
-// leaves `protocols` out when it is just ["openai-chat"], the default both
-// tools assume). A fresh map on every call.
+// defaultProviderRow is the default row for a provider. It leaves
+// `protocols` out when it is just ["openai-chat"], the default a reader
+// assumes (Provider.EffectiveProtocols). A fresh map on every call.
 func defaultProviderRow(id string) map[string]any {
 	switch id {
 	case "ollama":
@@ -147,11 +146,11 @@ func cloudProviderRow(id string) map[string]any {
 }
 
 // SeedRegistryDefaults adds the provider rows a working registry needs and
-// reports the ids it added, in the order it added them. It is the Go port of
-// modelman's default-provider logic (sync.py's _ensure_provider_entries and
-// registry.py's sync_agent_providers) plus one trigger modelman lacks, and
-// the one seeding implementation in wt. It only ever appends rows: a row
-// that exists is never edited.
+// reports the ids it added, in the order it added them. It is the
+// default-provider rule (a model references the provider, or its command is
+// installed) plus one trigger, a provider a configured agent lists, and the
+// one seeding implementation in wt. It only ever appends rows: a row that
+// exists is never edited.
 //
 //   - A default local provider (ollama, omlx, mlx_lm_server, mtplx) gets its
 //     default row when a model references it, when an agent lists it, or —
@@ -260,10 +259,11 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string
 	return added, unseeded, nil
 }
 
-// pyTitle is Python's str.title(), which modelman names an agent's provider
-// row with: a letter that follows a letter is lowercased, any other letter is
-// uppercased ("claude" -> "Claude", "my-agent" -> "My-Agent", "gpt4o" ->
-// "Gpt4O"). Ported so a row wt seeds is the row modelman would have seeded.
+// pyTitle is Python's str.title(), the casing the name of an agent's
+// provider row has in older registries: a letter that follows a letter is
+// lowercased, any other letter is uppercased ("claude" -> "Claude",
+// "my-agent" -> "My-Agent", "gpt4o" -> "Gpt4O"). Kept so a row seeded today
+// reads like one seeded before.
 func pyTitle(s string) string {
 	var b strings.Builder
 	afterLetter := false

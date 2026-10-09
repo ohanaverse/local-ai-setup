@@ -7,8 +7,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
-// Stamp formats a pricing_updated_at value the way modelman writes it: UTC,
-// to the second, with a numeric offset.
+// Stamp formats a pricing_updated_at value in the format wt stamps: UTC, to
+// the second, with a numeric offset.
 func Stamp(now time.Time) string { return now.UTC().Format("2006-01-02T15:04:05+00:00") }
 
 // costPatch is the PatchModel arguments that take a row's cost table from
@@ -185,14 +185,13 @@ type PricesApplied struct {
 }
 
 // Apply writes the plan's prices to doc and stamps every matched model with
-// now, changed or not, as modelman's refresh does: pricing_updated_at records
-// when each row's prices were last checked, and wt's stale-price notice reads
-// the newest stamp among the OpenRouter-priced models
-// (agents.LastPriceRefresh), so a refresh that found every price current must
-// still leave its mark. A price that did not change is not rewritten
-// (config.RegistryDoc.PatchModel skips a value that is already there), so an
-// integer stays an integer. Like CatalogPlan.Apply it is safe inside
-// config.UpdateRegistry.
+// now, changed or not: pricing_updated_at records when each row's prices were
+// last checked, and wt's stale-price notice reads the newest stamp among the
+// OpenRouter-priced models (agents.LastPriceRefresh), so a refresh that found
+// every price current must still leave its mark. A price that did not change
+// is not rewritten (config.RegistryDoc.PatchModel skips a value that is
+// already there), so an integer stays an integer. Like CatalogPlan.Apply it is
+// safe inside config.UpdateRegistry.
 func (p *PricePlan) Apply(doc *config.RegistryDoc, now time.Time) (PricesApplied, error) {
 	var done PricesApplied
 	stamp := Stamp(now)

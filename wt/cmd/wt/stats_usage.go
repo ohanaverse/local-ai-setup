@@ -34,11 +34,10 @@ type usageRow struct {
 }
 
 // familyFor is a model's family: the registry's, else the id's provider
-// prefix (the part before the first "/"), else "unknown". The order is
-// modelman's (usage/reconcile.py _family_for), so a model that has left the
-// registry still answers to --family. Unlike modelman, an empty registry
-// family or an empty prefix ("/x") falls through to the next rule: no row
-// gets a family --family cannot name.
+// prefix (the part before the first "/"), else "unknown". The prefix rule is
+// there so a model that has left the registry still answers to --family. An
+// empty registry family or an empty prefix ("/x") is not an error: it falls
+// through to the next rule, so no row gets a family --family cannot name.
 func familyFor(id string, families map[string]string) string {
 	if f, ok := families[id]; ok && f != "" {
 		return f

@@ -31,12 +31,11 @@ var (
 	ErrRegistryTopLevel = errors.New("registry.toml has an unexpected top level")
 )
 
-// The keys of each kind of registry table, in the order modelman writes them
-// (registry.py's _provider_to_dict, _model_to_dict, _cost_to_dict and
-// time_pricing.py's time_price_to_dict). A key wt adds to a row goes at its
-// place in these lists, so a row wt edits looks like one modelman wrote and
-// modelman's next save does not move it. They order keys; they are not a list
-// of what a row may hold.
+// The keys of each kind of registry table, in schema order: the order the
+// rows of a registry on disk already have them in. A key wt adds to a row
+// goes at its place in these lists, so a row wt edits keeps a stable layout
+// and reads like the rows around it. They order keys; they are not a list of
+// what a row may hold.
 var (
 	registryTopLevelKeys = []string{"providers", "families", "models"}
 
@@ -462,8 +461,8 @@ func setPath(row *tomlw.Table, schemas map[string][]string, key string, value an
 }
 
 // unsetPath deletes the dotted key from row and reports whether it was
-// there. A table left empty by the delete stays: modelman writes an empty
-// [models.cost] too, and removing it is the caller's to ask for.
+// there. A table left empty by the delete is kept: an empty [models.cost]
+// is a valid row, and removing it is the caller's to ask for.
 func unsetPath(row *tomlw.Table, key string) (bool, error) {
 	parts, err := splitKey(key)
 	if err != nil {
@@ -529,8 +528,8 @@ func orderedValue(v any, schemas map[string][]string, path string) (any, error) 
 }
 
 // orderedTable builds the table at path from m: the keys the schema does not
-// list first, sorted (where modelman writes the keys it does not model), then
-// the schema's keys in schema order.
+// list first, sorted (unmodelled keys go before the modelled ones, as
+// tomlw.Table.SetAt places one), then the schema's keys in schema order.
 func orderedTable(m map[string]any, schemas map[string][]string, path string) (*tomlw.Table, error) {
 	schema := schemas[path]
 	var unknown []string

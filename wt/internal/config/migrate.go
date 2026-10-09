@@ -188,10 +188,10 @@ func Migrate() (bool, error) {
 }
 
 // saveFull writes the complete cfg — including Providers/Models — to the
-// config path. Only the legacy models.conf migration uses it: the
-// provider/model sections it seeds must survive on disk so `modelman
-// migrate` can import them into registry.toml. Regular saves use Save,
-// which persists wt-owned fields only.
+// config path. Only the legacy models.conf migration uses it. The
+// provider/model sections it seeds stay on disk; nothing reads them back
+// (the registry is registry.toml). Regular saves use Save, which persists
+// wt-owned fields only.
 func saveFull(cfg *Config) error {
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {

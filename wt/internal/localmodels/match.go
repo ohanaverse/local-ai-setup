@@ -1,7 +1,7 @@
 // Package localmodels inventories local models: what is pulled or on disk
 // (registered or not) and what is serving right now. Discovery is HTTP and
 // filesystem only — wt never shells out for it — and running-state is a live
-// probe, never modelman's per-model running flag.
+// probe, never a stored flag.
 package localmodels
 
 import (

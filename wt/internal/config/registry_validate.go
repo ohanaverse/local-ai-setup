@@ -14,9 +14,9 @@ import (
 )
 
 // ErrRegistryInvalid is returned by UpdateRegistry when a row the write
-// touched would not load: in wt's own typed reader, or in modelman's, whose
-// required-field and cost rules are ported here because modelman still reads
-// the file wt writes. Nothing is written.
+// touched is a row that would not load in wt's own typed reader, or that
+// breaks the required-field and cost rules below (wt's registry schema).
+// Nothing is written.
 var ErrRegistryInvalid = errors.New("invalid registry entry")
 
 // validateTouched checks the rows this write changed or added, and only
@@ -74,8 +74,8 @@ func (d *RegistryDoc) validateModelRefs(row *tomlw.Table) error {
 	return nil
 }
 
-// validateProviderRow is modelman's _parse_provider (an id, and an auth table
-// with a type) plus wt's typed decode.
+// validateProviderRow requires an id, and an auth table with a type, then
+// runs wt's typed decode.
 func validateProviderRow(row *tomlw.Table) error {
 	if err := requireStrings(row, "id"); err != nil {
 		return err
@@ -93,8 +93,9 @@ func validateProviderRow(row *tomlw.Table) error {
 	}{})
 }
 
-// validateModelRow is modelman's _parse_model and _parse_cost plus wt's
-// typed decode and its one rule of its own, a non-empty model_name.
+// validateModelRow requires a non-empty id, family, provider_id and
+// model_name, a cost that passes validateCost and a well-formed fetch and
+// draft, then runs wt's typed decode.
 func validateModelRow(row *tomlw.Table) error {
 	if err := requireStrings(row, "id", "family", "provider_id", "model_name"); err != nil {
 		return err
@@ -125,9 +126,9 @@ func validateModelRow(row *tomlw.Table) error {
 
 // validateArtifact checks a fetch or draft value against the shape wt reads
 // (artifactFields): a table whose repo and local_path, when present, are
-// strings. modelman reads the two with dict methods, so anything but a table
-// crashes its load rather than reports. An empty table and keys wt does not
-// model pass, as they load.
+// strings. Anything else reads as absent on load
+// (ModelArtifact.UnmarshalTOML), so a write is where it is refused by name.
+// An empty table and keys wt does not model pass, as they load.
 func validateArtifact(key string, v any) error {
 	table, isTable := v.(*tomlw.Table)
 	if !isTable {
@@ -143,10 +144,9 @@ func validateArtifact(key string, v any) error {
 	return nil
 }
 
-// requireStrings checks that each key is a non-empty string. modelman only
-// requires the keys to be present; an empty id or model_name is wt's own
-// validation error (Config.validate), and an empty family or provider_id
-// names nothing.
+// requireStrings checks that each key is a non-empty string, not only
+// present: an empty id or model_name is wt's own validation error
+// (Config.validate), and an empty family or provider_id names nothing.
 func requireStrings(row *tomlw.Table, keys ...string) error {
 	for _, k := range keys {
 		v, ok := row.Get(k)
@@ -184,13 +184,14 @@ var (
 	hhmm                = regexp.MustCompile(`^([0-9]{2}):([0-9]{2})$`)
 )
 
-// validateCost ports modelman's cost rules (registry.py _parse_cost and
-// _validate_cost, time_pricing.py parse_time_prices).
+// validateCost holds a cost table to the registry schema's cost rules: the
+// legacy cost.kind shape or the current prices and subscription, and the
+// time_prices rows.
 func validateCost(cost *tomlw.Table) error {
 	if kind, ok := cost.Get("kind"); ok {
-		// The legacy shape, which modelman still migrates on load. It reads
-		// the price and the period under their old names, and holds them to
-		// the same rules as the new ones.
+		// The legacy `cost.kind` shape, validated and left alone. The price
+		// and the period are under their old names, and are held to the
+		// same rules as the new ones.
 		s, _ := kind.(string)
 		if !slices.Contains(legacyCostKinds, s) {
 			return fmt.Errorf("kind must be free/per_token/subscription, got %v", kind)
@@ -276,8 +277,8 @@ func checkPrice(t *tomlw.Table, key string) error {
 func validateTimePrice(row *tomlw.Table) error {
 	tz, _ := row.Get("timezone")
 	name, _ := tz.(string)
-	// time.LoadLocation accepts "" (UTC) and "Local"; Python's ZoneInfo, which
-	// modelman validates with, accepts neither.
+	// time.LoadLocation accepts "" (UTC) and "Local"; neither is an IANA
+	// zone name, and "Local" would mean a different zone on each host.
 	if name == "" || name == "Local" {
 		return fmt.Errorf("timezone %q is not a known IANA timezone", name)
 	}

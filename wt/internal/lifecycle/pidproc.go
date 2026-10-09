@@ -11,7 +11,7 @@ import (
 )
 
 // pidProcess is a pidfile-tracked background process: wt spawns it, records its
-// pid where modelman also records it, and keeps the log.
+// pid where llmbench also records it, and keeps the log.
 type pidProcess struct{ name, pidfile, logfile string }
 
 // spawned is a live child started by pidProcess.spawn.
@@ -85,7 +85,7 @@ func (s *spawned) kill() {
 
 // logTail returns up to the last max bytes of the log ("" when unreadable). It
 // seeks from the end instead of reading the file: the log is append-only and
-// shared with modelman, so it grows without bound, and a failed start must not
+// shared with llmbench, so it grows without bound, and a failed start must not
 // read all of it to show a 512-byte tail. The value it returns is then clamped to
 // at most max bytes, because the subprocess may append between the stat and the
 // read — without the clamp the returned string can exceed max and the guarantee

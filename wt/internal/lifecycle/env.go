@@ -1,6 +1,6 @@
-// Package lifecycle starts local models (ollama, omlx, mtplx): the Go port of
-// modelman's start/stop/warmup lifecycle. It never writes modelman-owned state
-// and never replaces a running model without being told to (Options.AllowReplace).
+// Package lifecycle is the start/stop/warmup lifecycle of local models
+// (ollama, omlx, mtplx). It never replaces a running model without being told
+// to (Options.AllowReplace).
 package lifecycle
 
 import (

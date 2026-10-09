@@ -44,7 +44,7 @@ func showError(err error) error {
 }
 
 // ollamaCapabilityKeys maps a capability `ollama show` lists to the
-// model_info key LiteLLM reads (modelman's ollama_caps.py).
+// model_info key LiteLLM reads.
 var ollamaCapabilityKeys = map[string]string{
 	"tools":  "supports_function_calling",
 	"vision": "supports_vision",

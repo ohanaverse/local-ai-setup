@@ -1,11 +1,10 @@
 // Package tomlw is wt's writer for registry.toml: an ordered TOML document
 // and an emitter that reproduces tomli-w's layout byte for byte.
 //
-// modelman writes registry.toml with tomli-w, and until modelman is retired
-// both tools write the same file. Decode keeps every table's keys in document
-// order, and Encode lays the document out as tomli_w.dumps does, so a wt
-// write that changes nothing leaves the file byte-identical and a wt write
-// that changes one row is a one-row diff.
+// A registry.toml on disk is in tomli-w's layout, and wt keeps it. Decode
+// keeps every table's keys in document order, and Encode lays the document
+// out as tomli_w.dumps does, so a wt write that changes nothing leaves the
+// file byte-identical and a wt write that changes one row is a one-row diff.
 //
 // The stock BurntSushi encoder is not used: it sorts keys, which rewrites
 // every line, and it formats local date and time values in UTC, which moves a
@@ -79,8 +78,8 @@ func (t *Table) put(k string, v any) {
 // table in the order they are written. A new key goes after the nearest
 // earlier schema key the table has, or failing that before the nearest later
 // one. A key schema does not list goes before the first schema key the table
-// has, after any other unlisted keys: that is where modelman writes the keys
-// it does not model.
+// has, after any other unlisted keys: that is where unlisted keys go, so a
+// table that already holds some keeps them together.
 func (t *Table) SetAt(k string, v any, schema []string) {
 	if _, ok := t.vals[k]; ok {
 		t.vals[k] = v

@@ -15,8 +15,10 @@ const (
 	maxLineLength = 100
 )
 
-// Encode lays root out as tomli_w.dumps does (tomli-w 1.2.0, the version
-// modelman pins): in each table the plain values first, in key order, then
+// Encode lays root out as tomli_w.dumps does (tomli-w 1.2.0; the layout is
+// the one registry.toml already has on disk, kept so a write changes only the
+// lines it means to and the fixture registry.written.sample.toml stays
+// byte-stable): in each table the plain values first, in key order, then
 // the sub-tables; an array of tables as one inline row per table when every
 // row fits in 100 characters, else as [[header]] tables; every other array
 // one item per line with a trailing comma; floats and datetimes as Python

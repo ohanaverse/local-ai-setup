@@ -138,8 +138,8 @@ func (f Fields) patch() (set map[string]any, unset []string, err error) {
 }
 
 // ParsePrice reads a price a user typed: empty is "no price" (given false);
-// otherwise a finite number that is not negative. modelman's rule
-// (screens/forms.py _parse_price), with the field named as the flag is.
+// otherwise a finite number that is not negative. An error names the field
+// as the flag is spelled.
 func ParsePrice(field, text string) (price float64, given bool, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -170,13 +170,12 @@ func checkSubscription(hasPrice bool, period string) error {
 // DeriveID is the id `wt model add` gives a model when --id does not. A model
 // of a local provider gets config.DiscoveredModelID: the id wt already lists,
 // routes and keeps history under for that artifact, so registering a model
-// that is on disk does not change its id. Any other provider gets modelman's
-// rule for a cloud gateway, the provider and the name with each "/" in the
-// name spelled "--", so ids agree across the two tools and existing history
-// keeps matching. One case differs from modelman: its form kept the name of
-// a native provider's model (auth.type "native": an agent's own provider
-// row, such as claude) as it was, slashes and all. wt writes "--" there too,
-// so that every derived cloud id has one "/"; --id gives any other spelling.
+// that is on disk does not change its id. Any other provider gets the rule
+// for a cloud id, the provider and the name with each "/" in the name
+// spelled "--", kept so ids and existing history keep matching. That
+// includes a native provider's model (auth.type "native": an agent's own
+// provider row, such as claude): wt writes "--" there too, so that every
+// derived cloud id has one "/"; --id gives any other spelling.
 func DeriveID(providerID, modelName string) string {
 	if localmodels.Family(providerID) != "" {
 		return config.DiscoveredModelID(providerID, modelName)

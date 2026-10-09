@@ -1,6 +1,6 @@
 // Package litellm owns wt's management of LiteLLM's config.yaml: which
 // registry models have a model_list route, how each row is built, and
-// restarting the proxy after a change. It ports modelman's litellm.py.
+// restarting the proxy after a change.
 package litellm
 
 // Policy describes how one registry provider maps onto a LiteLLM row.
@@ -23,7 +23,7 @@ type Policy struct {
 }
 
 // policies is the single source of truth for provider exposure rules
-// (modelman consults it through `wt litellm providers`). Native providers
+// (`wt litellm providers` prints it). Native providers
 // are deliberately absent: they never route through LiteLLM.
 var policies = map[string]Policy{
 	"ollama": {Prefix: "ollama_chat/"},

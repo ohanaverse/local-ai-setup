@@ -16,15 +16,15 @@ import (
 var ErrRegistryMissing = errors.New("model registry not found")
 
 // registryEnvNames are the variables that name registry.toml outright, in
-// precedence order. WT_REGISTRY is the name wt, llmbench and modelman share;
+// precedence order. WT_REGISTRY is the name wt and llmbench share;
 // MODELMAN_REGISTRY is the older name, kept as an alias.
 var registryEnvNames = []string{"WT_REGISTRY", "MODELMAN_REGISTRY"}
 
 // RegistryPath returns the registry.toml location: WT_REGISTRY, then
 // MODELMAN_REGISTRY, then $XDG_CONFIG_HOME/local-ai/registry.toml, then
-// ~/.config/local-ai/registry.toml. modelman's _default_registry_path and
-// llmbench's registry_path use the same precedence, so the three tools agree
-// on which file is the registry; each has a test of it.
+// ~/.config/local-ai/registry.toml. llmbench's registry_path uses the same
+// precedence, so the two tools agree on which file is the registry; each has
+// a test of it.
 func RegistryPath() string {
 	// A named registry is the only branch with a side effect: it writes to
 	// stderr on expandHome failure. Acceptable because the path-resolution
@@ -58,10 +58,9 @@ func ModelmanPath() string {
 }
 
 // expandHome expands a leading "~" or "~/" in path to the user's home
-// directory, matching Python's Path.expanduser() semantics used by
-// modelman's _default_registry_path so WT_REGISTRY and MODELMAN_REGISTRY
-// behave the same in both tools. Paths that don't start with "~" are returned
-// unchanged.
+// directory, matching Python's Path.expanduser() as llmbench's registry_path
+// does, so WT_REGISTRY and MODELMAN_REGISTRY behave the same in both tools.
+// Paths that don't start with "~" are returned unchanged.
 //
 // "~username/..." forms are NOT expanded: Go has no portable equivalent
 // of Python's pwd.getpwnam. Returning the literal keeps the failure mode
