@@ -205,3 +205,27 @@ func (s *StoreImpl) Counts(modelIDs []string) map[string]int {
 	}
 	return out
 }
+
+// Live returns the live-session count of every model id in the state file,
+// whatever the id: a session launched on a discovered model carries an id no
+// registry lists, so a caller that must not miss one (the family-wide in-use
+// count `wt stop` asks about before halting a provider) cannot name its ids
+// up front as Counts requires. Like Counts it is a pure read; sweep first.
+func (s *StoreImpl) Live() map[string]int {
+	out := map[string]int{}
+	f, err := os.Open(s.path())
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var e entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil || e.ModelID == "" {
+			continue
+		}
+		out[e.ModelID]++
+	}
+	return out
+}

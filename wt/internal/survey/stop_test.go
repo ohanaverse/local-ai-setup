@@ -54,6 +54,7 @@ func (h *stopHarness) deps() stopDeps {
 			}
 			return out
 		},
+		live: func() map[string]int { return h.counts },
 		stop: func(ctx context.Context, _ *config.Config, en localmodels.Entry) (bool, error) {
 			if h.ctxSeen == nil {
 				h.ctxSeen = ctx

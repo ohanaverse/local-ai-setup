@@ -53,14 +53,14 @@ func TestMain(m *testing.M) {
 	releaseSession = func() {}
 	runStopPicker = func(*config.Config) {}
 	// `wt stop` seams: no test may probe live servers or stop a real model.
-	stopCandidates = func(*config.Config) []survey.Candidate { return nil }
+	stopState = func(*config.Config) survey.StopState { return survey.StopState{} }
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
 		return errors.New("stopEntries not stubbed in this test")
 	}
 	stopProvider = func(context.Context, *config.Config, string) error {
 		return errors.New("stopProvider not stubbed in this test")
 	}
-	stopPickerAll = func(*config.Config) bool { return false }
+	stopPickerAll = func(*config.Config) (bool, []string) { return false, nil }
 	// No test may read the developer's refcount file for session counts.
 	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	confirmStop = func(string) (bool, error) { return false, nil }

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -43,18 +44,38 @@ func cand(provider, id, name string, sessions int) survey.Candidate {
 	}
 }
 
-// stubStop swaps the stop seams for one test: candidates is what is "running",
-// and the returned slice records every entry passed to the stop loop.
+// stubStop swaps the stop seams for one test: candidates is what is "running"
+// under trusted probes, and the returned slice records every entry passed to
+// the stop loop. The family-wide session counts are the candidates' own, as
+// the real read gives for a pool whose sessions are all on running models.
 func stubStop(t *testing.T, cands []survey.Candidate) *[]localmodels.Entry {
 	t.Helper()
+	fams := map[string]survey.FamilyState{}
+	for _, c := range cands {
+		if c.Sessions == 0 || lifecycle.TenancyOf(c.Entry.ProviderID) != lifecycle.Pool {
+			continue
+		}
+		fam := localmodels.Family(c.Entry.ProviderID)
+		fs := fams[fam]
+		fs.Sessions += c.Sessions
+		fs.Users = append(fs.Users, c.Entry.ModelID)
+		fams[fam] = fs
+	}
+	return stubStopState(t, survey.StopState{Candidates: cands, Families: fams})
+}
+
+// stubStopState is stubStop for a test that sets the provider families' own
+// state: an untrusted or refused probe, or sessions no candidate carries.
+func stubStopState(t *testing.T, st survey.StopState) *[]localmodels.Entry {
+	t.Helper()
 	var stopped []localmodels.Entry
-	oc, oe := stopCandidates, stopEntries
-	stopCandidates = func(*config.Config) []survey.Candidate { return cands }
+	oldState, oldEntries := stopState, stopEntries
+	stopState = func(*config.Config) survey.StopState { return st }
 	stopEntries = func(_ io.Writer, _ *config.Config, es []localmodels.Entry) error {
 		stopped = append(stopped, es...)
 		return nil
 	}
-	t.Cleanup(func() { stopCandidates, stopEntries = oc, oe })
+	t.Cleanup(func() { stopState, stopEntries = oldState, oldEntries })
 	return &stopped
 }
 
@@ -162,19 +183,19 @@ func TestStopFailurePropagates(t *testing.T) {
 // TestStopNoArgNeedsTTYAndOpensPicker verifies `wt stop` with no argument
 // errors without a TTY, opens the in-use-inclusive picker (screen 2) when a TTY
 // is present, and says so when the picker reports nothing to offer. It also
-// pins that this path never probes the inventory itself (stopCandidates) — the
+// pins that this path never probes the inventory itself (stopState) — the
 // picker owns the single snapshot, so nothing is probed twice.
 func TestStopNoArgNeedsTTYAndOpensPicker(t *testing.T) {
 	oldTTY, oldPick := stdinTTY, stopPickerAll
 	t.Cleanup(func() { stdinTTY, stopPickerAll = oldTTY, oldPick })
 	opened, offer := false, true
-	stopPickerAll = func(*config.Config) bool { opened = true; return offer }
+	stopPickerAll = func(*config.Config) (bool, []string) { opened = true; return offer, nil }
 
-	oldCands := stopCandidates
-	t.Cleanup(func() { stopCandidates = oldCands })
-	stopCandidates = func(*config.Config) []survey.Candidate {
+	oldState := stopState
+	t.Cleanup(func() { stopState = oldState })
+	stopState = func(*config.Config) survey.StopState {
 		t.Fatal("no-arg wt stop probed the inventory outside the picker")
-		return nil
+		return survey.StopState{}
 	}
 
 	stdinTTY = func() bool { return false }
@@ -277,18 +298,18 @@ func TestStartInvalidArgErrors(t *testing.T) {
 }
 
 // TestStopUnknownProviderErrorsBeforeProbe verifies a typo'd provider is
-// rejected before the live inventory probe (the stopCandidates seam), so a bad
+// rejected before the live inventory probe (the stopState seam), so a bad
 // argument costs nothing.
 func TestStopUnknownProviderErrorsBeforeProbe(t *testing.T) {
-	old := stopCandidates
-	t.Cleanup(func() { stopCandidates = old })
+	old := stopState
+	t.Cleanup(func() { stopState = old })
 	called := false
-	stopCandidates = func(*config.Config) []survey.Candidate { called = true; return nil }
+	stopState = func(*config.Config) survey.StopState { called = true; return survey.StopState{} }
 	if err := runStop(io.Discard, &config.Config{}, "bogus", false); err == nil || !strings.Contains(err.Error(), "unknown provider") {
 		t.Fatalf("err = %v, want unknown provider", err)
 	}
 	if called {
-		t.Fatal("stopCandidates was probed before provider validation")
+		t.Fatal("stopState was probed before provider validation")
 	}
 }
 
@@ -796,9 +817,9 @@ func TestStopAllCancelledHaltReportsCancelled(t *testing.T) {
 // two at once bounce the proxy under each other.
 func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
 	var events []string
-	oldCands, oldEntries, oldHalt, oldWait := stopCandidates, stopEntries, stopProvider, waitPendingRoutes
+	oldState, oldEntries, oldHalt, oldWait := stopState, stopEntries, stopProvider, waitPendingRoutes
 	t.Cleanup(func() {
-		stopCandidates, stopEntries, stopProvider, waitPendingRoutes = oldCands, oldEntries, oldHalt, oldWait
+		stopState, stopEntries, stopProvider, waitPendingRoutes = oldState, oldEntries, oldHalt, oldWait
 	})
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
 		events = append(events, "models")
@@ -810,8 +831,8 @@ func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
 	}
 	waitPendingRoutes = func() { events = append(events, "wait") }
 
-	stopCandidates = func(*config.Config) []survey.Candidate {
-		return []survey.Candidate{cand("mtplx", "mtplx/c", "c", 0)}
+	stopState = func(*config.Config) survey.StopState {
+		return survey.StopState{Candidates: []survey.Candidate{cand("mtplx", "mtplx/c", "c", 0)}}
 	}
 	if err := runStopAll(io.Discard, modelCmdConfig(), false); err != nil {
 		t.Fatal(err)
@@ -821,7 +842,7 @@ func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
 	}
 
 	events = nil
-	stopCandidates = func(*config.Config) []survey.Candidate { return nil }
+	stopState = func(*config.Config) survey.StopState { return survey.StopState{} }
 	if err := runStopAll(io.Discard, modelCmdConfig(), false); err != nil {
 		t.Fatal(err)
 	}

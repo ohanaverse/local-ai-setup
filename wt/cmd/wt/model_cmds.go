@@ -28,11 +28,15 @@ import (
 // Test seams: production talks to the live inventory/providers; cmd/wt's
 // TestMain stubs all four.
 var (
-	stopCandidates = survey.StopCandidates
-	stopEntries    = survey.StopEntries
+	// stopState is one inventory round and one read of the live sessions: the
+	// stop candidates, and per provider family what its probe said and how
+	// many live wt sessions use it.
+	stopState   = survey.ReadStopState
+	stopEntries = survey.StopEntries
 	// stopPickerAll runs the in-use-inclusive picker and reports whether it had
-	// anything to offer, so `wt stop` needs no inventory probe of its own.
-	stopPickerAll = func(cfg *config.Config) bool {
+	// anything to offer and which families it could not read, so `wt stop`
+	// needs no inventory probe of its own.
+	stopPickerAll = func(cfg *config.Config) (bool, []string) {
 		return survey.PickerWith(os.Stdin, os.Stdout, cfg, survey.Options{IncludeInUse: true})
 	}
 	confirmStop = promptStop
@@ -127,7 +131,7 @@ func poolProviders(cfg *config.Config) []string {
 // model loop that was cancelled leaves the pool services alone, and a
 // cancelled halt is not followed by another.
 func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
-	cands := stopCandidates(cfg)
+	cands := stopState(cfg).Candidates
 	if inUse, users := stopImpact(cands); inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s); stop them all?", inUse, strings.Join(users, ", ")))
 		if err != nil {
@@ -250,12 +254,12 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		}
 		// The picker takes the one inventory snapshot itself and reports whether
 		// it had anything to offer, so nothing is probed twice.
-		if !stopPickerAll(cfg) {
+		if offered, _ := stopPickerAll(cfg); !offered {
 			fmt.Fprintln(out, "wt: no running local models")
 		}
 		return nil
 	}
-	cands := stopCandidates(cfg)
+	cands := stopState(cfg).Candidates
 
 	var targets []survey.Candidate
 	if strings.Contains(arg, "/") {

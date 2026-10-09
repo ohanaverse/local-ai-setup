@@ -224,3 +224,30 @@ func seedRefcountFile(t *testing.T, dir string, entries ...entry) {
 		t.Fatalf("seed refcount file: %v", err)
 	}
 }
+
+// TestLiveReportsEveryRecordedModel verifies Live counts the sessions of every
+// model id in the state file without being told the ids, an id no registry
+// lists included, and drops the entries Sweep finds dead. `wt stop omlx` asks
+// before halting a service live sessions use; a session on a discovered model
+// has an id Counts' caller cannot name, and it would be halted unasked.
+func TestLiveReportsEveryRecordedModel(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	if got := store.Live(); len(got) != 0 {
+		t.Fatalf("Live with no state file = %v, want empty", got)
+	}
+	for pid, id := range map[int]string{111: "omlx/registered", 112: "omlx/Discovered-4bit", 113: "omlx/registered", 999: "mtplx/dead"} {
+		if err := store.Record(pid, id); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	old := pidAlive
+	defer func() { pidAlive = old }()
+	pidAlive = func(pid int) bool { return pid != 999 }
+	if err := store.Sweep(); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	got := store.Live()
+	if len(got) != 2 || got["omlx/registered"] != 2 || got["omlx/Discovered-4bit"] != 1 {
+		t.Fatalf("Live = %v, want omlx/registered:2 omlx/Discovered-4bit:1 and no swept entry", got)
+	}
+}

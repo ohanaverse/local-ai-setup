@@ -95,3 +95,69 @@ func TestStopPickerAliasRowsShareUsage(t *testing.T) {
 		t.Fatalf("stops = %v, want only ollama|other (both qwen aliases are in use)", h.stops)
 	}
 }
+
+// TestStopStateCountsSessionsFamilyWide verifies the stop state counts the
+// live wt sessions of a provider family from every live refcount entry, not
+// from the candidates: a model that is not running, an omlx-6bit row, and a
+// discovered model no registry lists all count under their family, while a
+// cloud model of the same provider and another family's sessions do not. The
+// halt of a whole provider asks about these sessions; counted per candidate,
+// a family whose probe was not trusted had none and was halted unasked (#307).
+func TestStopStateCountsSessionsFamilyWide(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal}, {ID: "omlx", Location: config.LocationLocal},
+			{ID: "omlx-6bit", Location: config.LocationLocal}, {ID: "mtplx", Location: config.LocationLocal},
+		},
+		Models: []config.Model{
+			{ID: "omlx/c", ProviderID: "omlx", ModelName: "c"},
+			{ID: "six/renamed", ProviderID: "omlx-6bit", ModelName: "d-6bit"},
+			{ID: "ollama/cloudy", ProviderID: "ollama", ModelName: "cloudy", Location: config.LocationCloud},
+		},
+	}
+	h := &stopHarness{
+		snap: localmodels.Snapshot{
+			// Nothing reads as running: omlx's probe was not trusted.
+			Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/c", ModelName: "c"}},
+			Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial, "mtplx": localmodels.StatusPartial, "ollama": localmodels.StatusOK},
+			Down:      map[string]bool{"mtplx": true},
+		},
+		counts: map[string]int{"omlx/c": 2, "six/renamed": 1, "omlx/Discovered-4bit": 1, "ollama/cloudy": 4, "mtplx/m": 1, "claude/opus": 3},
+	}
+	st := stopState(cfg, h.deps())
+	if len(st.Candidates) != 0 {
+		t.Fatalf("Candidates = %v, want none from an untrusted probe", st.Candidates)
+	}
+	omlx := st.Families["omlx"]
+	if omlx.Sessions != 4 || strings.Join(omlx.Users, ",") != "omlx/Discovered-4bit,omlx/c,six/renamed" {
+		t.Errorf("omlx = %+v, want 4 sessions on the three omlx ids, sorted", omlx)
+	}
+	if !omlx.Untrusted || omlx.Down {
+		t.Errorf("omlx = %+v, want untrusted and not down", omlx)
+	}
+	if m := st.Families["mtplx"]; !m.Untrusted || !m.Down || m.Sessions != 1 {
+		t.Errorf("mtplx = %+v, want untrusted, down, 1 session", m)
+	}
+	if o := st.Families["ollama"]; o.Untrusted || o.Down || o.Sessions != 0 {
+		t.Errorf("ollama = %+v, want trusted, up, and no session from a cloud model", o)
+	}
+	if got := strings.Join(st.Unknown(), ","); got != "omlx" {
+		t.Errorf("Unknown = %q, want omlx alone: a refused port is known to serve nothing", got)
+	}
+}
+
+// TestStopPickerReportsFamiliesItCouldNotRead verifies the picker hands back
+// the families whose probe gave no usable answer when it has nothing to offer.
+// `wt stop` prints "no running local models" from that result, and it may say
+// so only when that is known.
+func TestStopPickerReportsFamiliesItCouldNotRead(t *testing.T) {
+	h := &stopHarness{snap: localmodels.Snapshot{
+		Entries:   []localmodels.Entry{runningEntry("mtplx", "mtplx/m", "m")},
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
+	}}
+	var out bytes.Buffer
+	offered, unknown := runStopPickerWith(strings.NewReader(""), &out, &config.Config{}, h.deps(), Options{IncludeInUse: true})
+	if offered || strings.Join(unknown, ",") != "mtplx" || out.Len() != 0 {
+		t.Fatalf("offered = %v unknown = %v out = %q, want nothing offered, mtplx unknown, no output", offered, unknown, out.String())
+	}
+}
