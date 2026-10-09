@@ -87,11 +87,15 @@ func TestMain(m *testing.M) {
 	syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
 		return "syncRoutesAfterWrite not stubbed in this test"
 	}
-	// `wt cloud-sync` seams: no test may fetch a public page or open the
-	// terminal to ask. Tests use stubCloudFetch and stubConfirm
-	// (cloudsync_test.go).
+	// `wt cloud-sync` seams: no test may fetch a public page, run the
+	// developer's ollama (a pull or an rm there changes their machine), or
+	// open the terminal to ask. Tests use stubCloudFetch and stubConfirm
+	// (cloudsync_test.go) and stubOllama (cloudsync_ollama_test.go).
 	cloudFetch = func(_ context.Context, url string) ([]byte, error) {
 		return nil, errors.New("cloudFetch not stubbed in this test: " + url)
+	}
+	ollamaCLI = func(_ context.Context, _ string, args ...string) (string, string, error) {
+		return "", "", errors.New("ollamaCLI not stubbed in this test: ollama " + strings.Join(args, " "))
 	}
 	confirmCloudSync = func(string) (bool, error) {
 		return false, errors.New("confirmCloudSync not stubbed in this test")
