@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -54,14 +55,23 @@ func TestMain(m *testing.M) {
 	releaseSession = func() {}
 	runStopPicker = func(*config.Config) {}
 	// `wt stop` seams: no test may probe live servers or stop a real model.
-	stopCandidates = func(*config.Config) []survey.Candidate { return nil }
+	stopState = func(*config.Config) survey.StopState { return survey.StopState{} }
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
 		return errors.New("stopEntries not stubbed in this test")
 	}
 	stopProvider = func(context.Context, *config.Config, string) error {
 		return errors.New("stopProvider not stubbed in this test")
 	}
-	stopPickerAll = func(*config.Config) bool { return false }
+	stopPickerAll = func(*config.Config) (bool, []string, map[string]lifecycle.Loading) { return false, nil, nil }
+	// No test may read the developer's mtplx pidfile or signal one of their
+	// processes: the stop of a loading server is refused here, and the
+	// engine's own process seams are closed beneath it for a test that
+	// swaps the real stop state back in (liveStopState). Tests call
+	// stubStopLoading.
+	stopLoading = func(_ context.Context, _ *config.Config, id string, pid int) error {
+		return fmt.Errorf("stopLoading not stubbed in this test (%s, pid %d)", id, pid)
+	}
+	lifecycle.IsolateProcessesForTest()
 	// No test may read the developer's refcount file for session counts.
 	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	confirmStop = func(string) (bool, error) { return false, nil }

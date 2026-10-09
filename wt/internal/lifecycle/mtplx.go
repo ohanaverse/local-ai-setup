@@ -53,6 +53,9 @@ func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Tar
 	if serr != nil {
 		return serr
 	}
+	// What a later `wt stop` identifies this process by while its port is
+	// still closed (mtplx_loading.go).
+	e.recordStart(sp.cmd.Process.Pid)
 	defer func() {
 		if err != nil {
 			sp.kill() // never leave a half-started server holding the port

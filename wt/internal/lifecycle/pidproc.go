@@ -71,7 +71,8 @@ func (s *spawned) exited() (bool, error) {
 	}
 }
 
-// kill stops the process (SIGTERM, then SIGKILL after 5s) and removes the pidfile.
+// kill stops the process (SIGTERM, then SIGKILL after 5s) and removes the
+// pidfile and the start record beside it.
 func (s *spawned) kill() {
 	_ = s.cmd.Process.Signal(syscall.SIGTERM)
 	select {
@@ -81,6 +82,7 @@ func (s *spawned) kill() {
 		<-s.done
 	}
 	_ = os.Remove(s.p.pidfile)
+	_ = os.Remove(s.p.startfile())
 }
 
 // logTail returns up to the last max bytes of the log ("" when unreadable). It

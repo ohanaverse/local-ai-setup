@@ -213,6 +213,70 @@
 
 ### Fixed
 
+- `wt stop --all` and `wt stop mtplx` stop mtplx unless its port refuses the
+  connection, also when wt cannot tell what it has loaded — a server that
+  answered with an error, with nothing loaded, or not at all within the
+  probe's 2 seconds. They used to print `wt: no running local models` /
+  `wt: nothing running on mtplx` and exit 0 with the server still up (#308).
+  A stop that leaves the port answering prints `failed` and exits 1.
+- `wt stop --all` and `wt stop mtplx` stop an mtplx that is still loading
+  (#308). mtplx reads its weights before it opens its port, so a load in
+  progress refuses the connection and both commands reported nothing running
+  and exited 0. They now read the pidfile wt writes when it starts mtplx and
+  stop the process it names — `Stopping mtplx (still loading, pid N)... done`
+  — after the in-use question when a live wt session is on mtplx
+  (`mtplx is still loading (pid N) and is in use by ...; stop anyway?`). The
+  pid alone is never enough: the process must be alive, the current user's,
+  an mtplx server on the provider's port by its exact arguments, and, when
+  wt recorded its start time (a new file beside the pidfile, written by
+  `wt start` from now on), the process that started then. Anything else is
+  left alone, with a line saying what the pidfile names; if the process
+  table cannot be read the commands exit 1 with
+  `cannot tell whether mtplx is still loading`. wt sends SIGTERM, waits 10
+  seconds, checks the process is still the same one, and only then sends
+  SIGKILL; a process that is already exiting by then (a large server takes
+  a moment to free its memory) is waited for and not killed. A stop it
+  cannot confirm prints `failed` and exits 1. Ctrl+C during the wait prints
+  `cancelled` and says the server was already sent SIGTERM, instead of
+  `mtplx was not stopped`. A port that
+  refuses with no such process behind it is still "nothing running", and so
+  is a pidfile that is a symlink or that another user owns.
+  `wt stop <mtplx model>` during a load stops nothing and names
+  `wt stop mtplx`; a pidfile naming a process wt could not verify, or one
+  that is not an mtplx server, puts that line in the error in place of the
+  bare "is not running". Bare `wt stop` has no picker row for a loading
+  mtplx and stops none: it prints
+  `wt: mtplx is still loading (pid N) — "wt stop mtplx" or "wt stop --all" stops it`
+  where it used to print `wt: no running local models`. An mtplx started by
+  hand has no pidfile and is still not seen while it loads.
+- `wt stop omlx`, `wt stop --all` and the mtplx stop above ask the in-use
+  question whenever a live wt session uses any model of the provider they are
+  about to stop as a whole, counted across the provider and not from the
+  models wt could see running. With omlx's probe untrusted (an omlx that
+  wants its API key with no `auth.secret_ref` on the registry's omlx row and
+  a partly loaded pool, or a `/health` that did not answer in time), or with
+  the session on a model that was not loaded or has no registry entry, the
+  service was halted under the other terminal's session with no question
+  (#307). When wt could not tell what the provider has loaded the question
+  says so (`..., and wt could not tell what it has loaded; stop anyway?`).
+- `wt: nothing running on <provider>` and `wt: no running local models` are
+  printed only when that is known. When ollama's probe gives no usable answer
+  and its port does not refuse, `wt stop ollama` and `wt stop --all` exit 1
+  with `cannot tell what is running on ollama` (`--all` after stopping
+  everything else), and bare `wt stop` with nothing to list exits 1 naming
+  the provider it could not read. `wt stop <model>` of such a provider exits 1
+  the same way, instead of reporting the model not running: a model id stops
+  nothing there, and the model may be loaded. Each used to report nothing
+  running and exit 0. When the picker does list models, bare `wt stop` adds
+  a line naming a provider it could not read (`wt: could not tell what is
+  running on mtplx — "wt stop mtplx" or "wt stop --all" stops mtplx`); the
+  command it names is given only for mtplx and omlx, since no command stops
+  an ollama wt cannot read. None of these failures prints the usage text:
+  `wt stop` now shows it only for an argument mistake, as `wt stop --all`
+  already did.
+- `wt stop --all` waits for the LiteLLM proxy restart one halted provider
+  started before it halts the next (mtplx, then omlx), as it already did
+  between the model stops and the first halt.
 - `wt config`, Models tab: a refusal too long for a short terminal even with
   the screen to itself (a registry path of 160 characters or more at 40x12)
   no longer ends, unmarked, wherever the terminal does — which first dropped
