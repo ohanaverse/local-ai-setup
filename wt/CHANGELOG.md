@@ -226,6 +226,16 @@
 
 ### Fixed
 
+- `wt cloud-sync`'s mass-removal refusal (exit 4) prints the count its gate
+  uses. `<n> of <m> ollama cloud entries would be removed` printed the
+  number of removal lines, a re-tagged entry included, while the gate that
+  decides the refusal leaves re-tagged entries out, since they come straight
+  back under another tag: a plan with two entries gone and one re-tagged
+  read `3 of 3`. It now reads `2 of 3 ollama cloud entries would be removed
+  (re-tagged entries are not counted)`; the clause is printed only when the
+  plan re-tags something, where `<n>` is smaller than the count heading the
+  plan's removal list. Which plans are refused, the printed plan and the
+  removal digest are unchanged (#320).
 - `wt stop --all` and `wt stop mtplx` stop mtplx unless its port refuses the
   connection, also when wt cannot tell what it has loaded — a server that
   answered with an error, with nothing loaded, or not at all within the
