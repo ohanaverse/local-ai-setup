@@ -645,17 +645,16 @@ const modelFormErrorHint = "press a key to go back to the form"
 // rows it has the screen to itself, under the tab bar, and the next key
 // brings the fields back (updateModelForm): a form squeezed to a field or two
 // round it, with no row for a marker, would hide the others unannounced.
+// The hint that says so is always the last line: an error too tall even for
+// that (a long registry path) loses lines from its middle, behind a marker
+// that counts them, and keeps the end of the path (tuilayout.MessageAlone).
 func (m *model) modelFormView() string {
 	f := m.models.form
 	width := max(m.width, 1)
 	l := m.modelFormLayout()
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	if l.errorAlone {
-		out := tabBar(m.theme, TabModels) + "\n" + l.errBlock
-		if lipgloss.Height(out) < m.height {
-			out += "\n" + dim.Render(tuilayout.Clip(modelFormErrorHint, width))
-		}
-		return lipgloss.NewStyle().MaxHeight(m.height).Render(out)
+		return tuilayout.MessageAlone(tabBar(m.theme, TabModels), l.errBlock, modelFormErrorHint, width, m.height, dim)
 	}
 	first, count, above, below := formWindow(f.cursor, mfCount, l.room)
 	var fields []formField
