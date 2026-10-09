@@ -988,7 +988,9 @@ func TestStopAllFailurePrintsNoUsage(t *testing.T) {
 // covered too. For each command it reads the short line, the long text, the
 // examples, the deprecation notice and the usage text, and then every flag's
 // description and deprecation notice one by one: the usage text alone leaves
-// out the command's own short line and every hidden flag. The check is for
+// out the command's own short line and every hidden flag. The flags of a
+// parent that a subcommand inherits (root's persistent ones) are read at the
+// parent, where they are declared. The check is for
 // the lowercase tool name: the env alias names (MODELMAN_REGISTRY and the
 // three MODELMAN_LITELLM_ ones) are uppercase, are read forever, and may be
 // named.
@@ -1002,11 +1004,19 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 				t.Errorf("%s: help names modelman:\n%s", c.CommandPath(), text)
 			}
 		}
-		c.Flags().VisitAll(func(f *pflag.Flag) {
+		checkFlags := func(f *pflag.Flag) {
 			if strings.Contains(f.Usage+f.Deprecated, "modelman") {
 				t.Errorf("%s --%s: flag help names modelman: %s", c.CommandPath(), f.Name, f.Usage)
 			}
-		})
+		}
+		// c.Flags() takes in the parent's persistent flags only when they are
+		// merged for it — a side effect of resolving the usage template the
+		// text loop above happened to trigger, not anything it promised.
+		// Reading the command's own flags, local and persistent, directly
+		// keeps the coverage from depending on that rendering; a flag both
+		// sets hold after a merge may then be named twice, as two failures.
+		c.Flags().VisitAll(checkFlags)
+		c.PersistentFlags().VisitAll(checkFlags)
 		for _, sub := range c.Commands() {
 			walk(sub)
 		}
