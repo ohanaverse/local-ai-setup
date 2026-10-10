@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
@@ -282,10 +281,10 @@ func validateTimePrice(row *tomlw.Table) error {
 	if name == "" || name == "Local" {
 		return fmt.Errorf("timezone %q is not a known IANA timezone", name)
 	}
-	// Known limit: LoadLocation reads the host's zone database and wt does not
+	// Known limit: loadZone reads the host's zone database and wt does not
 	// embed one (time/tzdata), so on a host without it every zone but UTC is
 	// refused here. macOS, wt's platform, ships one.
-	if _, err := time.LoadLocation(name); err != nil {
+	if _, err := loadZone(name); err != nil {
 		return fmt.Errorf("timezone %q is not a known IANA timezone", name)
 	}
 	for _, k := range priceKeys {

@@ -679,3 +679,54 @@ func TestFlatAndTimePriced(t *testing.T) {
 	// UTC, inside the off-peak window): PriceAt has no "no clock" value.
 	wantPrice(t, "the zero time", timed.PriceAt(time.Time{}), pf(0.66), pf(0.022), pf(1.98), 0)
 }
+
+// TestAZoneIsReadFromDiskOnce pins that a timezone's file is read from the
+// host's zone database once for the life of the process, however many times
+// a row in that zone is checked or priced. Go keeps no zone but UTC in
+// memory, and the model picker checks and prices every row of its table,
+// more than once each, on the goroutine that also handles keys: read per
+// call, a registry of 200 models with rows in America/New_York took a third
+// of a second to open. A zone that is not in the database is asked for again
+// each time, so a name that is no zone is still refused and still named.
+func TestAZoneIsReadFromDiskOnce(t *testing.T) {
+	reads := map[string]int{}
+	real := zoneLoad
+	zoneLoad = func(name string) (*time.Location, error) {
+		reads[name]++
+		return real(name)
+	}
+	zoneCache.Clear()
+	t.Cleanup(func() { zoneLoad = real; zoneCache.Clear() })
+
+	cost := night("America/New_York", []string{"mon"}, "22:00", "06:00")
+	cost.TimePrices = append(cost.TimePrices, night("Europe/Berlin", []string{"tue"}, "01:00", "02:00").TimePrices...)
+	inside := time.Date(2026, 9, 29, 2, 30, 0, 0, time.UTC) // Monday 22:30 in New York
+	for range 50 {
+		if got := cost.PriceAt(inside); got.Row != 0 {
+			t.Fatalf("PriceAt: row %d, want row 0 (Monday 22:30 in New York)", got.Row)
+		}
+		if !cost.TimePriced() {
+			t.Fatal("TimePriced: false for a cost with two readable rows")
+		}
+		if problem := cost.TimePrices[1].Problem(); problem != "" {
+			t.Fatalf("Problem: %q for a readable row", problem)
+		}
+	}
+	for _, zone := range []string{"America/New_York", "Europe/Berlin"} {
+		if reads[zone] != 1 {
+			t.Errorf("%s was read from the zone database %d times, want once", zone, reads[zone])
+		}
+	}
+
+	// A name that is no zone is not remembered as one: it is refused on
+	// every call, in the validator's words.
+	bad := TimePrice{Timezone: "Mars/Olympus", Windows: []CostWindow{{Days: []string{"mon"}, Start: "01:00", End: "02:00"}}}
+	for range 3 {
+		if got, want := bad.Problem(), `timezone "Mars/Olympus" is not a known IANA timezone`; got != want {
+			t.Errorf("Problem: %q, want %q", got, want)
+		}
+	}
+	if reads["Mars/Olympus"] != 3 {
+		t.Errorf("an unknown zone was looked up %d times in 3 checks, want 3", reads["Mars/Olympus"])
+	}
+}

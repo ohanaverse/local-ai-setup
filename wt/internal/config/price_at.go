@@ -2,6 +2,7 @@ package config
 
 import (
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
@@ -127,7 +128,7 @@ func (tp TimePrice) holds(at time.Time) bool {
 	if tp.Timezone == "" || tp.Timezone == "Local" {
 		return false
 	}
-	zone, err := time.LoadLocation(tp.Timezone)
+	zone, err := loadZone(tp.Timezone)
 	if err != nil {
 		return false
 	}
@@ -157,6 +158,34 @@ func (tp TimePrice) holds(at time.Time) bool {
 		}
 	}
 	return false
+}
+
+// zoneLoad reads one zone from the host's zone database. A test replaces it
+// to count the reads.
+var zoneLoad = time.LoadLocation
+
+// zoneCache holds each zone loadZone has read, by its IANA name (string to
+// *time.Location).
+var zoneCache sync.Map
+
+// loadZone is the zone with the IANA name given, read from the host's zone
+// database the first time it is asked for and from memory after that.
+// time.LoadLocation keeps no zone but UTC, so it reads a file on every call,
+// and both callers (the registry's validator and TimePrice.holds) run for
+// every row of a model table while the picker is built, on the goroutine
+// that handles keys. A name the database does not have is not kept: it is
+// looked up, and refused, each time. A zone is kept for the life of the
+// process, so a zone database replaced while wt runs is not read again.
+func loadZone(name string) (*time.Location, error) {
+	if zone, ok := zoneCache.Load(name); ok {
+		return zone.(*time.Location), nil
+	}
+	zone, err := zoneLoad(name)
+	if err != nil {
+		return nil, err
+	}
+	zoneCache.Store(name, zone)
+	return zone, nil
 }
 
 // clockMinutes reads "HH:MM", from "00:00" to "24:00", as minutes of the
