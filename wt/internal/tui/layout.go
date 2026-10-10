@@ -127,8 +127,17 @@ func (m *model) modelFrames() []listFrame {
 			// A launch/config/ollama error set on the model phase must be
 			// visible; phaseModelView previously dropped m.status, making a failed
 			// launch look like "nothing happens" when Enter was pressed.
+			//
+			// It is wrapped to the columns the picker has, never cut at the
+			// edge: a status is a sentence that ends in its reason — why a
+			// route was not written, whether wt saw an eviction coming — and
+			// the engine's lines after a start are wider than 80 columns
+			// (#275; #209 was the same cut, on the agent picker). The lines
+			// it takes are taken from the margin, the header and the footer
+			// in that order, like any status; one too tall even for the
+			// sparest layout has the screen to itself (statusAlone).
 			if m.status != "" {
-				body = clip(ErrorStyle(m.theme).Render(m.status), inner) + "\n\n" + body
+				body = clip(ErrorStyle(m.theme).Render(tuilayout.WrapText(m.status, inner)), inner) + "\n\n" + body
 			}
 			return pad.Render(body)
 		}

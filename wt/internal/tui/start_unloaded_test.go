@@ -33,8 +33,8 @@ func unloadingStart(err error, ids ...string) func(int, context.Context, lifecyc
 // the failure: a model another session was using was gone and nothing said so.
 // The status now carries the engine's line for every unloaded model, ahead of
 // the failure, and the same lines are kept for the real terminal with the
-// failure under them (#275): the status cuts a long line at the terminal's
-// edge and the next key replaces it, so it cannot be the only record.
+// failure under them (#275): the next key replaces the status, so it cannot
+// be the only record.
 func TestFailedStartShowsWhatOmlxUnloaded(t *testing.T) {
 	stubRouteNotes(t)
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")

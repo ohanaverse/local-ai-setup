@@ -454,9 +454,9 @@ func statusNote(out string) string {
 	return strings.Join(lines, "\n")
 }
 
-// withNote puts note on lines of its own above status. The view cuts each
-// line of the status at the terminal's width, so on one line a note naming two
-// models left no room for the failure after it.
+// withNote puts note on lines of its own above status: the note is the
+// engine's lines, one each, and the status is what became of the start or of
+// the launch after it.
 func withNote(note, status string) string {
 	if note == "" {
 		return status
@@ -474,10 +474,10 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	back := func(status string) (model, tea.Cmd) {
 		m.status = withNote(note, status)
 		if msg.out != "" {
-			// The status cuts each line at the terminal's edge, and the next
-			// key or launch replaces it. The real terminal keeps the lines
-			// whole, with what became of the start under them, the way
-			// `wt start` would have printed it.
+			// The next key or launch replaces the status, and one too tall
+			// for the terminal is cut in its middle (statusAlone). The real
+			// terminal keeps the lines whole, with what became of the start
+			// under them, the way `wt start` would have printed it.
 			m.recordRouteNotes(msg.out + "wt: " + status + "\n")
 		}
 		m.phase = phaseModel

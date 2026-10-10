@@ -323,6 +323,16 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if m.phase == phaseRouting {
 			return m.handleRouteKey(msg)
 		}
+		// A status that has the screen to itself (statusAlone) is taken down
+		// by the next key, which does nothing else: the table was not on
+		// screen, so no key can have been meant for it. ctrl+c still quits.
+		if m.phase == phaseModel && m.statusAlone() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.status = ""
+			return m, nil
+		}
 		// Model picker wrap-around: bubble/list does not wrap by default.
 		// Skip while the filter input is active (or has just been opened,
 		// which resets the cursor to index 0 via GoToStart) so "j"/"k"
