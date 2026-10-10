@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,15 @@ type APIPrice struct {
 	// or text that is not a number at all. A model with any is not
 	// refreshed.
 	Skipped []string
+	// Rates are the other price levels of a model OpenRouter prices by time
+	// of day, dearest first, each with the times of the UTC week it applies.
+	// For such a model Input, Cache and Output are the level mainRate picks
+	// (the dearest) and not the top-level prices, which are those of the
+	// window in force when the list was fetched. Nil for every other model.
+	Rates []Rate
+	// Unusable says why a model's time-of-day entries could not be read; a
+	// model with one is not refreshed. "" otherwise.
+	Unusable string
 }
 
 // perMillion converts one per-token price. OpenRouter sends decimal strings;
@@ -104,6 +114,23 @@ func ParseOpenRouter(body []byte) (map[string]APIPrice, error) {
 				p.Skipped = append(p.Skipped, f.key)
 			}
 		}
+		rates, unusable := parseSchedule(pricing)
+		p.Unusable = unusable
+		if len(rates) > 0 {
+			// The schedule supplies these prices, so the top-level ones are
+			// not read, not even to refuse them.
+			main, supplied := rates[mainRate(rates)], []string{"prompt", "completion"}
+			p.Input, p.Output = main.Input, main.Output
+			if main.Cache != nil {
+				p.Cache, supplied = main.Cache, append(supplied, "input_cache_read")
+			}
+			if p.Skipped = slices.DeleteFunc(p.Skipped, func(key string) bool { return slices.Contains(supplied, key) }); len(p.Skipped) == 0 {
+				p.Skipped = nil
+			}
+			if rest := slices.Delete(rates, mainRate(rates), mainRate(rates)+1); len(rest) > 0 {
+				p.Rates = rest
+			}
+		}
 		out[id] = p
 	}
 	return out, nil
@@ -153,6 +180,11 @@ func (p *PricePlan) HasWork() bool { return len(p.Matched) > 0 }
 // the refresh measures. The cache price is overwritten only when the API
 // reported one (it usually does not), and the subscription and time_prices
 // are never touched, so a refresh never clears a price set by hand.
+//
+// It reads no clock, and api is a function of the response alone, a model
+// priced by time of day included (parseSchedule): the same registry and
+// response give the same plan at any hour. The command relies on that when
+// it plans again under the registry lock and compares the text.
 func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 	plan := &PricePlan{}
 	for _, e := range entries {
@@ -163,6 +195,14 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 		price, ok := api[e.ModelName]
 		if !ok {
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s)", e.ID, e.ModelName))
+			continue
+		}
+		if price.Unusable != "" {
+			// Its top-level price is that of the window in force now. Stored,
+			// it would change with the hour the sync runs in. This is tested
+			// before Skipped, which is about those top-level prices: the
+			// warning must not depend on the hour either.
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("Could not use OpenRouter's time-of-day pricing for %s: %s", e.ID, price.Unusable))
 			continue
 		}
 		if len(price.Skipped) > 0 {

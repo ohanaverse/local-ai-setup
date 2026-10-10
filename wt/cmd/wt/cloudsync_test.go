@@ -909,3 +909,128 @@ func TestCloudSyncRefusedPlanDoesNotCreateARegistry(t *testing.T) {
 		t.Error("the refused run synced the routes")
 	}
 }
+
+// timeOfDayRegistry holds two models OpenRouter prices by time of day, as a
+// sync before #322 was fixed left them: deepseek at the price of the window
+// that sync ran in (the cheap one), hy3 not yet priced.
+const timeOfDayRegistry = `[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "WT_TEST_OPENROUTER_KEY"
+
+[[models]]
+id = "openrouter/deepseek--deepseek-v4-pro-0813"
+family = "deepseek"
+provider_id = "openrouter"
+model_name = "deepseek/deepseek-v4-pro-0813"
+location = "cloud"
+source = "curated"
+tags = []
+
+[models.cost]
+input_price_per_million = 0.66
+cache_price_per_million = 0.022
+output_price_per_million = 1.9800000000000002
+
+[[models]]
+id = "openrouter/tencent--hy3"
+family = "hy"
+provider_id = "openrouter"
+model_name = "tencent/hy3"
+location = "cloud"
+source = "curated"
+tags = []
+`
+
+// TestCloudSyncTimeOfDayPricesDoNotFollowTheClock is #322 end to end, on a
+// saved OpenRouter response and a fixed clock. The same registry is planned
+// from the list as OpenRouter serves it in deepseek's cheap window and in its
+// dear one, at two clock times: the two dry runs print the same bytes. After
+// one apply, a run on the other window's list finds no price to update,
+// stamps the models and does not sync the routes — before the fix it
+// reported an update each time the clock had crossed a window, and each one
+// rewrote LiteLLM's config and could restart the proxy under running agents.
+func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
+	// The fixture was fetched on a Friday at 14:06 UTC, in deepseek's cheap
+	// window. In its dear window OpenRouter serves the same list with that
+	// model's three top-level prices doubled, and nothing else different.
+	raw, err := os.ReadFile("../../internal/cloudsync/testdata/openrouter_models.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cheap := string(raw)
+	const cheapTop = `"id": "deepseek/deepseek-v4-pro-0813", "pricing": {"prompt": "0.00000066", "completion": "0.00000198", "input_cache_read": "0.000000022",`
+	const dearTop = `"id": "deepseek/deepseek-v4-pro-0813", "pricing": {"prompt": "0.00000132", "completion": "0.00000396", "input_cache_read": "0.000000044",`
+	if strings.Count(cheap, cheapTop) != 1 {
+		t.Fatal("the fixture does not hold deepseek's top-level prices as this test expects them")
+	}
+	dear := strings.Replace(cheap, cheapTop, dearTop, 1)
+
+	path, _ := cloudSyncHome(t, timeOfDayRegistry)
+	synced := stubRouteSync(t, "")
+	run := func(body string, now time.Time, o cloudSyncOpts) string {
+		t.Helper()
+		stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
+		cloudSyncNow = func() time.Time { return now }
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		o.openrouter = true
+		stdout, stderr, code := runCS(t, cfg, o)
+		if stderr != "" || code != 0 {
+			t.Fatalf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
+		}
+		return stdout
+	}
+	inCheapWindow := time.Date(2026, 10, 9, 14, 6, 0, 0, time.UTC)
+	inDearWindow := time.Date(2026, 10, 12, 2, 45, 0, 0, time.UTC)
+
+	const plan = "openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+		"openrouter: Price updates (2):\n" +
+		"openrouter:   openrouter/deepseek--deepseek-v4-pro-0813: 0.66/0.022/1.98 -> 1.32/0.044/3.96\n" +
+		"openrouter:   openrouter/tencent--hy3: no cost -> 0.132/0.033/0.528\n" +
+		"openrouter: Unchanged prices: 0\n"
+	if got := run(cheap, inCheapWindow, cloudSyncOpts{dryRun: true}); got != plan {
+		t.Errorf("dry run in the cheap window:\n%s\nwant:\n%s", got, plan)
+	}
+	if got := run(dear, inDearWindow, cloudSyncOpts{dryRun: true}); got != plan {
+		t.Errorf("dry run in the dear window:\n%s\nwant the same plan:\n%s", got, plan)
+	}
+	if mustRead(t, path) != timeOfDayRegistry || *synced != 0 {
+		t.Fatal("a dry run changed the registry or synced the routes")
+	}
+
+	if got := run(cheap, inCheapWindow, cloudSyncOpts{yes: true}); !strings.HasSuffix(got, "openrouter: refreshed 2 model(s); 2 price(s) changed\n") || *synced != 1 {
+		t.Fatalf("the apply printed %q and synced %d time(s), want 2 prices changed and one sync", got, *synced)
+	}
+	applied := mustRead(t, path)
+	for _, want := range []string{
+		"input_price_per_million = 1.32\ncache_price_per_million = 0.044\noutput_price_per_million = 3.9600000000000004\n\n[[models]]\n",
+		"pricing_updated_at = \"2026-10-09T14:06:00+00:00\"",
+	} {
+		if !strings.Contains(applied, want) {
+			t.Errorf("registry.toml after the apply lacks:\n%s\n\nfile:\n%s", want, applied)
+		}
+	}
+
+	const settled = "openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+		"openrouter: Price updates (0):\n" +
+		"openrouter: Unchanged prices: 2\n"
+	if got := run(dear, inDearWindow, cloudSyncOpts{dryRun: true}); got != settled {
+		t.Errorf("dry run in the dear window after the apply:\n%s\nwant:\n%s", got, settled)
+	}
+	if got := run(dear, inDearWindow, cloudSyncOpts{yes: true}); got != settled+"openrouter: refreshed 2 model(s); 0 price(s) changed\n" {
+		t.Errorf("apply in the dear window after the first apply:\n%s", got)
+	}
+	if *synced != 1 {
+		t.Errorf("the routes were synced %d time(s) in all, want once: the second apply changed no price", *synced)
+	}
+	if got, want := mustRead(t, path), strings.ReplaceAll(applied, "2026-10-09T14:06:00+00:00", "2026-10-12T02:45:00+00:00"); got != want {
+		t.Errorf("registry.toml after the second apply:\n%s\nwant the first apply's file with the new stamp and nothing else:\n%s", got, want)
+	}
+}
