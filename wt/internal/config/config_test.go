@@ -27,6 +27,46 @@ func TestBaseOriginTrimsV1Suffix(t *testing.T) {
 	}
 }
 
+// TestProviderOriginGivesMtplxThePortWtServesItOn pins the one rule about a
+// base_url with no port (#348). For the mtplx provider on this machine over
+// http it means the port `wt start` serves mtplx on, because that is where
+// the server wt started is: read as written it is port 80, and wt then
+// started a server on 8003 and looked for it on 80. Nothing else moves: a
+// url that names a port; an https url or another host, where the scheme's
+// own port is what the user wrote and wt could not have started the server;
+// and every other provider, which wt never hands a port to.
+func TestProviderOriginGivesMtplxThePortWtServesItOn(t *testing.T) {
+	for _, c := range []struct{ id, baseURL, want string }{
+		{"mtplx", "http://127.0.0.1/v1", "http://127.0.0.1:8003"},
+		{"mtplx", "http://127.0.0.1", "http://127.0.0.1:8003"},
+		{"mtplx", "http://localhost/v1/", "http://localhost:8003"},
+		{"mtplx", "http://LOCALHOST", "http://LOCALHOST:8003"},
+		{"mtplx", "http://127.0.0.2/v1", "http://127.0.0.2:8003"},
+		{"mtplx", "http://[::1]/v1", "http://[::1]:8003"},
+		// A port that is named is the port.
+		{"mtplx", "http://127.0.0.1:9123/v1", "http://127.0.0.1:9123"},
+		{"mtplx", "http://localhost:80", "http://localhost:80"},
+		// Not a server wt could have started: as written.
+		{"mtplx", "https://localhost/v1", "https://localhost"},
+		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example"},
+		{"mtplx", "http://10.0.0.5/v1", "http://10.0.0.5"},
+		{"mtplx", "http://mtplx.example", "http://mtplx.example"},
+		{"mtplx", "", ""},
+		{"mtplx", "127.0.0.1", "127.0.0.1"},
+		// wt hands these servers no port.
+		{"omlx", "http://127.0.0.1/v1", "http://127.0.0.1"},
+		{"omlx-6bit", "http://localhost", "http://localhost"},
+		{"ollama", "http://127.0.0.1", "http://127.0.0.1"},
+		{"mlx_lm_server", "http://localhost/v1", "http://localhost"},
+		{"openrouter", "https://openrouter.ai/api/v1", "https://openrouter.ai/api"},
+	} {
+		p := Provider{ID: c.id, Auth: AuthConfig{Type: "none", BaseURL: c.baseURL}}
+		if got := p.Origin(); got != c.want {
+			t.Errorf("%s %q: Origin() = %q, want %q", c.id, c.baseURL, got, c.want)
+		}
+	}
+}
+
 // TestResolveSecret pins every secret_ref form: os.environ/NAME and bare
 // NAME env lookups (never error, empty on a miss), a literal value used
 // verbatim, and the exec: form that runs a command and returns its trimmed
@@ -994,6 +1034,25 @@ func TestResolveRouteDirectUsesProviderBaseURL(t *testing.T) {
 	}
 	if route.ModelRef != "z-ai/glm-4.6" {
 		t.Errorf("ModelRef = %q, want bare ModelName in direct mode", route.ModelRef)
+	}
+}
+
+// TestResolveRouteDirectDialsMtplxWhereWtServesIt verifies a direct route
+// reads the provider's address as wt's own probes do (#348): with an mtplx
+// base_url that names no port the agent is pointed at the port `wt start`
+// served the model on. Pointed at the url as written it dials port 80 and
+// the launch of a model wt has just started fails to connect.
+func TestResolveRouteDirectDialsMtplxWhereWtServesIt(t *testing.T) {
+	cfg := &Config{Providers: []Provider{{
+		ID: "mtplx", Protocols: []Protocol{ProtocolOpenAIChat},
+		Auth: AuthConfig{Type: "none", BaseURL: "http://127.0.0.1/v1"},
+	}}}
+	route, err := cfg.ResolveRoute(Model{ID: "mtplx/Y--Q35", ModelName: "Y/Q35", ProviderID: "mtplx"}, []Protocol{ProtocolOpenAIChat})
+	if err != nil {
+		t.Fatalf("ResolveRoute: %v", err)
+	}
+	if route.BaseOrigin != "http://127.0.0.1:8003" || route.Litellm {
+		t.Errorf("route = %+v, want a direct route to http://127.0.0.1:8003", route)
 	}
 }
 

@@ -68,7 +68,14 @@ func helperMtplx() {
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
 	})
-	l, err := net.Listen("tcp", opt["host"]+":"+opt["port"])
+	addr := opt["host"] + ":" + opt["port"]
+	// A test of the port wt serves mtplx on by default must not bind it: the
+	// helper then listens here, and the test's transport stands it on the
+	// port it was told (servedAt).
+	if a := os.Getenv("LIFECYCLE_HELPER_LISTEN"); a != "" {
+		addr = a
+	}
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

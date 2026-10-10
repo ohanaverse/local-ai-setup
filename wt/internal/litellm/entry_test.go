@@ -113,7 +113,11 @@ func TestBuildEntryLocalRows(t *testing.T) {
 // openai/ provider appends only /chat/completions to api_base, so an
 // OpenAI-compatible local server's row must dial <origin>/v1 whichever form
 // the registry stores (the seeded omlx base_url is the bare origin). Ollama's
-// ollama_chat/ rows keep the bare origin.
+// ollama_chat/ rows keep the bare origin. The origin is the one wt's own
+// probes use (config.Provider.Origin, #348): an mtplx base_url on this machine
+// that names no port routes to the port `wt start` serves mtplx on, or the
+// proxy would be sent to port 80 for a model wt has just started on 8003;
+// every other url with no port is written as it is.
 func TestBuildEntryOpenAICompatAPIBaseEndsInV1(t *testing.T) {
 	cases := []struct {
 		provider, baseURL, want string
@@ -125,6 +129,11 @@ func TestBuildEntryOpenAICompatAPIBaseEndsInV1(t *testing.T) {
 		{"omlx-6bit", "http://localhost:8000", "http://localhost:8000/v1"},
 		{"mlx_lm_server", "http://localhost:8001", "http://localhost:8001/v1"},
 		{"mtplx", "http://127.0.0.1:8003", "http://127.0.0.1:8003/v1"},
+		{"mtplx", "http://127.0.0.1/v1", "http://127.0.0.1:8003/v1"},
+		{"mtplx", "http://localhost", "http://localhost:8003/v1"},
+		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example/v1"},
+		{"omlx", "http://localhost/v1", "http://localhost/v1"},
+		{"mlx_lm_server", "http://localhost", "http://localhost/v1"},
 		{"ollama", "http://localhost:11434/", "http://localhost:11434/"},
 	}
 	for _, c := range cases {

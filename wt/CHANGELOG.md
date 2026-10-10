@@ -300,6 +300,26 @@
 
 ### Fixed
 
+- `wt start` of an mtplx model no longer fails when the registry's mtplx
+  `base_url` names no port (#348). With `base_url = "http://127.0.0.1/v1"`
+  wt started mtplx on its default port, 8003, waited for it there, and then
+  looked for it on port 80, the url as written: every start ended in
+  `<id> is not running: it started, and was stopped while wt updated the
+  LiteLLM routes (mtplx no longer answers at http://127.0.0.1)`, exit 1,
+  with the model serving and its route removed. The same reading was behind
+  every other use of that address: `wt model list` and the pickers showed a
+  serving model as not running, `wt stop` and `wt served mtplx` found
+  nothing, a start did not see the model it was about to replace, the
+  LiteLLM route's `api_base` and a direct launch pointed at port 80, and
+  `wt litellm sync` removed the family's routes as if the server were down.
+  An `http` url for the mtplx provider on this machine (`localhost`,
+  `127.0.0.1`, `[::1]`) with no port now means 8003 everywhere, the port
+  `wt start` serves mtplx on. Nothing else changes: a `base_url` that names
+  a port is that port; an mtplx url that is `https` or names another host,
+  and every omlx, ollama and mlx_lm_server url, is read as written (no port
+  meaning the scheme's own), because wt passes those servers no port. A
+  registry whose mtplx `base_url` names its port, as the row `wt model init`
+  writes does, is unaffected.
 - A failed start is printed once (#344). `wt start`, `wt smoke` and a launch
   whose `-M` pin had to be started printed the whole message twice, as
   `Error: failed to start ...` and again as `wt: failed to start ...`, each

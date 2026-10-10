@@ -23,6 +23,9 @@ wt stop --all                    # stop every running local model, then the omlx
   stderr, Ctrl+C cancels). If mtplx (one model per process) is
   occupied wt asks before replacing the running model; `--replace` skips the
   question. omlx is different, see below.
+  mtplx is served on the port of the mtplx provider's `base_url` in the
+  registry, and on 8003 when that names none (`http://127.0.0.1/v1`): wt
+  then looks for the server on 8003 too, and routes to it there.
   Once the model is up and the LiteLLM proxy has picked up its route, wt
   asks the provider's server once whether the model is still there, and only
   then prints `wt: <id> is running`. A model that something stopped in the

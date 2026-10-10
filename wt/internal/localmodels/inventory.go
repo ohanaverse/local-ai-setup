@@ -357,7 +357,10 @@ func familyProviderID(cfg *config.Config, family string) string {
 // registry (the first provider row of the family with an auth.base_url) rather
 // than the default port. The inventory probe and internal/lifecycle's
 // start/stop flows both resolve origins through it, so they always describe
-// the same server.
+// the same server. The registry's value is read through config.Provider.Origin,
+// as a route's api_base and a direct route are: for an mtplx base_url with no
+// port on this machine that is the port `wt start` serves it on, not port 80
+// (#348).
 func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistry bool) {
 	def := ""
 	switch family {
@@ -372,17 +375,24 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 	}
 	for _, id := range familyProviderIDs(family) {
 		if p := cfg.ProviderByID(id); p != nil && p.Auth.BaseURL != "" {
-			return config.BaseOrigin(p.Auth.BaseURL), true
+			return p.Origin(), true
 		}
 	}
 	return def, false
 }
 
 // FamilyOriginPort is FamilyOrigin with the URL's port resolved, for callers
-// that must hand a numeric port to a command line as well as dial the origin.
-// When the origin carries no port the family default is applied to the origin
-// itself, not only to the returned number, so the two can never describe
-// different servers.
+// that must hand a numeric port to a command line as well as dial the origin
+// (mtplx's start and stop). The origin it returns is FamilyOrigin's whenever
+// that names a port, which for mtplx on this machine it always does.
+//
+// When the origin carries no port — an mtplx base_url that is https or names
+// another host, or a family other than mtplx — the family default is applied
+// to the origin itself, not only to the returned number, so the two never
+// describe different servers. That origin is then not FamilyOrigin's, which
+// keeps the url's implicit port: wt serves mtplx on 127.0.0.1 only, so a
+// start against such a url was never one that could work, and what it dials
+// is left as it was rather than moved onto a port the user did not write.
 func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
 	origin, _ := FamilyOrigin(cfg, family)
 	u, err := url.Parse(origin)
@@ -413,7 +423,7 @@ func defaultPortFor(family string) (int, bool) {
 	case "omlx":
 		return 8000, true
 	case "mtplx":
-		return 8003, true
+		return config.MtplxPort, true
 	case "mlx_lm_server":
 		return 8001, true
 	}

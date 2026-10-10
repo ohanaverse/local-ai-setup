@@ -5,10 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -145,7 +148,7 @@ func (c *Config) providerByID(id string) (Provider, bool) {
 
 // ResolveRoute resolves the Route for launching model m. In direct mode it
 // dials the model's own provider (auth.base_url, resolved through
-// BaseOrigin, and auth.secret_ref resolved through ResolveSecret), using
+// Provider.Origin, and auth.secret_ref resolved through ResolveSecret), using
 // the provider-side model name (m.ModelName). In litellm mode it routes
 // through the configured LiteLLM gateway using the full registry id.
 // ResolveRoute resolves the Route for launching model m for an agent that
@@ -227,7 +230,7 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 		protocol = common[0]
 	}
 	return Route{
-		BaseOrigin: BaseOrigin(provider.Auth.BaseURL),
+		BaseOrigin: provider.Origin(),
 		APIKey:     apiKey,
 		ModelRef:   m.ModelName,
 		Display:    m.ModelName,
@@ -280,6 +283,54 @@ func BaseOrigin(url string) string {
 	trimmed := strings.TrimRight(url, "/")
 	trimmed = strings.TrimSuffix(trimmed, "/v1")
 	return strings.TrimRight(trimmed, "/")
+}
+
+// MtplxPort is the port wt serves mtplx on when the registry's mtplx
+// base_url names none. mtplx is the one local server wt hands a port to
+// (`mtplx serve --port`, `mtplx stop --port`); omlx and ollama listen where
+// their own configuration says, and wt cannot start an mlx_lm_server.
+const MtplxPort = 8003
+
+// Origin is the address wt reaches provider p at: BaseOrigin of its
+// auth.base_url, with the port filled in where the url names none and wt is
+// what decides the port. That is one case only: the mtplx provider, an http
+// url, a loopback host. `wt start` spawns `mtplx serve --port MtplxPort
+// --host 127.0.0.1` for such a url, so that is where the server is, and a
+// url read as written would mean port 80: the start succeeded and every
+// probe after it found nothing there (#348).
+//
+// Every reader of the provider's address goes through here — the probes
+// (localmodels.FamilyOrigin), a direct route (ResolveRoute, pi's models.json)
+// and a LiteLLM route's api_base — so they name one server.
+//
+// Everything else is left as written, and a url with no port keeps its
+// scheme's own (80, 443): a url that names a port; an https url or a host
+// that is not this machine, which wt could not have started and where the
+// implicit port is what the user wrote; and every other provider — wt never
+// tells omlx or ollama a port (they listen where their own settings say), so
+// there the address wt probes, the one a start waits on and the route's
+// api_base already agree, and a default port would be a guess.
+func (p Provider) Origin() string {
+	origin := BaseOrigin(p.Auth.BaseURL)
+	if p.ID != "mtplx" {
+		return origin
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "http" || u.Port() != "" || !isLoopbackHost(u.Hostname()) {
+		return origin
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(MtplxPort))
+	return u.String()
+}
+
+// isLoopbackHost reports whether host names this machine: "localhost", or an
+// address in 127.0.0.0/8 or ::1.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ResolveSecret resolves a secret_ref-style value. Three forms:
