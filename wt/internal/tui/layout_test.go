@@ -244,14 +244,20 @@ func TestModelPickerShortTerminalGivesUpTheHeaderFirst(t *testing.T) {
 	}
 
 	// 8 lines with a status: not even that fits (2 + 7). The table keeps its
-	// floor and the view runs one line over, which costs the top line.
+	// floor, and the view would run one line over, which costs the top line:
+	// the status. So the status has the screen, with the hint that says how
+	// to get the table back (statusAlone), and the next key takes it down.
 	m = resized(t, m, 80, 8)
 	view = m.View()
-	if m.models.Height() != 7 || lipgloss.Height(view) != 9 {
-		t.Errorf("8 lines: list height = %d, view = %d lines; want the table's floor, 7, under the 2-line status", m.models.Height(), lipgloss.Height(view))
+	assertFits(t, "status, 8 lines", view, 80, 8)
+	if m.models.Height() != 7 || !strings.Contains(view, layoutStatus) || !strings.Contains(view, aloneHint) || strings.Contains(view, "RUNNING") {
+		t.Errorf("8 lines with a status: list height = %d, view = %q; want the table's floor, 7, and the status alone with its hint", m.models.Height(), view)
 	}
-	if !strings.Contains(view, "omlx/qwen3.8") {
-		t.Errorf("8 lines: view = %q, want a table row still rendered", view)
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	view = m.View()
+	assertFits(t, "8 lines, after a key", view, 80, 8)
+	if m.status != "" || !strings.Contains(view, "omlx/qwen3.8") {
+		t.Errorf("8 lines, after a key: status = %q, view = %q; want the status gone and the table back", m.status, view)
 	}
 }
 

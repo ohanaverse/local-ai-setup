@@ -242,15 +242,31 @@ recently used when a load does not fit.
   removes that model's route and prints
   `wt: omlx unloaded <id> to make room (not predicted)`. A load omlx refuses
   as too large fails with omlx's own explanation of what holds the memory.
-- The full-screen `wt` picker hides that stderr line, so the picker reports
-  the unloaded models itself, without the `(not predicted)` marker: after a
-  start that fails or is cancelled the status shows
-  `omlx unloaded <id> to make room` on the line above the failure, and after
-  a start that succeeds `wt: omlx unloaded <id> to make room` is printed
-  above the agent's output. If the agent then fails to launch, the picker's
-  status shows the same note on the line above `launch failed`. The engine
-  still writes its own line to stderr, so `wt 2>log` records each unloaded
-  model there as well.
+- The full-screen `wt` picker cannot show stderr, so it takes every line a
+  start prints and shows them itself, in the same words: what omlx unloaded
+  (with `(not predicted)`), `LiteLLM route not updated: …` when `config.yaml`
+  could not be written, and the warnings of the proxy restart. After a start
+  that succeeds they are printed above the agent's output; if the agent then
+  fails to launch, the picker's status shows them above `launch failed`.
+  After a start that fails or is cancelled the status shows them above the
+  failure, wrapped to the terminal's width and never cut, and the same lines
+  are printed, with the failure under them, when wt exits or above the next
+  agent launched from that picker. A status too tall to share the terminal
+  with the table has the screen to itself until the next key. The agent is
+  still launched after a start that could not write the route: the picker
+  tries the route once more first (the launch-time check every launch gets),
+  and when that fails too the lines above the agent's output are where to
+  find why it answers `Invalid model name`. Once a start has reached
+  `updating LiteLLM routes` the model is loaded and there is nothing left to
+  cancel: esc does nothing there, and ctrl+c quits wt without launching the
+  agent. On a terminal too narrow for the start screen's one line, the stage
+  is on a line of its own under the model id. After a start that
+  fails or is cancelled having already displaced a model, the start screen
+  stays up until the proxy has restarted (`updating LiteLLM routes`), so
+  those warnings are in the status. Quitting wt during a start (ctrl+c
+  twice) prints what the start had printed once the screen is restored.
+  Nothing a start prints is written to stderr while the picker is up, and
+  `wt 2>log` records each line once.
 - `wt stop <omlx model>` unloads that one model. The service and the other
   models stay up, even when it was the last one.
 - `wt stop omlx` (or `omlx-6bit`) halts the service and every model in it.

@@ -92,7 +92,7 @@ type model struct {
 	initialAgent string       // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
 	pinnedModel  string       // model from --model flag; "" = no model pinned (model picker is shown)
 	launchModel  config.Model // the model being launched, captured when the launch began (the routing phase finishes an Update later)
-	startNote    string       // what the start that led to this launch made omlx unload (unloadedNote, #258); launchSelected, or proceedToLaunch when it has no row to launch, takes it once and puts it ahead of the failure
+	startNote    string       // what the engine printed during the start that led to this launch (statusNote, #258, #275); launchSelected, or proceedToLaunch when it has no row to launch, takes it once and puts it ahead of the failure
 
 	// filter inputs (PR 3b): -T/--tags and -F/--family values from the CLI;
 	// forwarded to the model screen so the picker can pre-filter the catalog.
@@ -322,6 +322,16 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// the cursor, pop a screen or quit by accident. Only ctrl+c gets out.
 		if m.phase == phaseRouting {
 			return m.handleRouteKey(msg)
+		}
+		// A status that has the screen to itself (statusAlone) is taken down
+		// by the next key, which does nothing else: the table was not on
+		// screen, so no key can have been meant for it. ctrl+c still quits.
+		if m.phase == phaseModel && m.statusAlone() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.status = ""
+			return m, nil
 		}
 		// Model picker wrap-around: bubble/list does not wrap by default.
 		// Skip while the filter input is active (or has just been opened,
@@ -1085,10 +1095,11 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	m.status = ""
 	// A launch row is a model that was already running, and wt may not be
 	// what started it, so its LiteLLM route may not exist yet. A row this
-	// flow just started (start is still set: the table is not rebuilt in
-	// between) had its route written by the start hook, and finishStart has
-	// already waited for the proxy.
-	if highlighted.start || m.cfg == nil {
+	// flow just started is checked too (#275): its start writes the route,
+	// but a start whose route write failed still succeeds, and the check is
+	// what tries again before the agent meets "Invalid model name". With the
+	// route in place it changes nothing and waits for nothing.
+	if m.cfg == nil {
 		return m.launchSelected()
 	}
 	// Only a launch that goes through LiteLLM needs the route: a direct or
@@ -1328,6 +1339,14 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 		pendingRouteNotes += fm.routing.settle()
 	}
 	flushRouteNotes(w)
+	// A start that was still running when wt quit (ctrl+c twice on the start
+	// screen) never reported, so what the engine had printed is still in its
+	// buffer: print it, and let whatever the engine and its proxy restart
+	// print from here on go straight to the terminal. main() waits for that
+	// restart before the process exits.
+	if fm, ok := final.(model); ok && fm.start != nil && fm.start.out != nil {
+		fm.start.out.release(w)
+	}
 }
 
 // printPendingSummaryAndSurvey runs the TUI's post-exit flow once the

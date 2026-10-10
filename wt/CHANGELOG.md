@@ -288,6 +288,28 @@
 
 ### Fixed
 
+- The model picker shows what a start printed. A start from the picker ran
+  with nowhere to print but stderr, which the full-screen picker hides: a
+  model started while `config.yaml` could not be written launched its agent
+  into `Invalid model name` with the line that explains it,
+  `LiteLLM route not updated: …`, lost, as were the proxy restart's
+  warnings and the `(not predicted)` on a model omlx unloaded. The picker
+  now takes every line the start prints: above the agent's output after a
+  start that succeeds, and on the status above the failure, and again on
+  the terminal when wt exits, after one that fails or is cancelled. The
+  picker's status is wrapped to the terminal's width instead of cut at its
+  edge, and one too tall for the terminal has the screen to itself until the
+  next key. A row the picker just started now gets the launch-time route
+  check like any other, so a route the start could not write is tried once
+  more before the agent launches; when it still cannot be written the agent
+  is launched as before, with the lines that say why above its output.
+  After a failed or cancelled start that had already unloaded a model, the
+  start screen now stays up until the proxy has restarted. Once a start
+  shows `updating LiteLLM routes` it can no longer be cancelled (the model
+  is loaded): esc does nothing there and ctrl+c quits wt, where an esc used
+  to end in `cancelled` with the model running. Quitting during a start
+  prints what it had printed. On a terminal too narrow for the start
+  screen's line the stage is on a line of its own instead of cut off (#275).
 - `wt cloud-sync` no longer stores, for a model OpenRouter prices by time of
   day, whichever price was in force when the sync ran (#322). Such a model
   used to flip between its rates from one sync to the next, each flip

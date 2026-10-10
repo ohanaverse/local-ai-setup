@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -40,9 +41,14 @@ const (
 type Options struct {
 	AllowReplace bool
 	Progress     func(Stage)
-	// OnUnloaded (optional) receives each model a Pool start unloaded to make
-	// room, whether or not the start then succeeded.
-	OnUnloaded func(localmodels.Entry)
+	// Out (optional) receives every line the start prints, in place of
+	// stderr: what a Pool start unloaded, a route that could not be written,
+	// and the warnings of the proxy restart. nil leaves them on stderr. It
+	// is for a caller that owns the screen (the model picker's alt screen
+	// hides stderr). Writes are serialised (routesOutMu), but the restart's
+	// warnings are written by a goroutine that outlives Start, so the text
+	// is complete only once WaitPendingRoutes has returned.
+	Out io.Writer
 }
 
 // OccupiedError means starting the target would displace running models and
@@ -255,7 +261,14 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 // as StageRouting so callers stop rendering the engine's last stage while the
 // proxy is bounced.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
-	e := defaultEnv()
+	return startWith(ctx, defaultEnv(), cfg, t, opts)
+}
+
+// startWith is Start on a given env. Everything the start prints goes through
+// routePrintf with this context, the asynchronous restart included, so the
+// one line below is what sends all of it to opts.Out.
+func startWith(ctx context.Context, e *env, cfg *config.Config, t Target, opts Options) error {
+	ctx = withRouteOutput(ctx, opts.Out)
 	if err := start(ctx, e, cfg, t, opts); err != nil {
 		if e.restartOwed {
 			// A stopped occupant's or an evicted model's route was already
@@ -326,7 +339,7 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 		planned = before
 	}
 	err := b.start(ctx, e, cfg, t, report)
-	e.reconcilePool(ctx, cfg, before, planned, opts)
+	e.reconcilePool(ctx, cfg, before, planned)
 	return err
 }
 
@@ -344,7 +357,7 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 // of a model that is serving. So a pool that cannot be read now, or that
 // answers only through the fallback, changes nothing: `wt litellm sync`
 // reconciles the routes.
-func (e *env) reconcilePool(ctx context.Context, cfg *config.Config, before, planned []localmodels.Entry, opts Options) {
+func (e *env) reconcilePool(ctx context.Context, cfg *config.Config, before, planned []localmodels.Entry) {
 	if len(before) == 0 {
 		return
 	}
@@ -369,9 +382,6 @@ func (e *env) reconcilePool(ctx context.Context, cfg *config.Config, before, pla
 		routePrintf(ctx, "wt: omlx unloaded %s to make room%s\n", en.ModelID, note)
 		if e.onOccupantStopped != nil && e.onOccupantStopped(ctx, cfg, en) {
 			e.restartOwed = true
-		}
-		if opts.OnUnloaded != nil {
-			opts.OnUnloaded(en)
 		}
 	}
 }
