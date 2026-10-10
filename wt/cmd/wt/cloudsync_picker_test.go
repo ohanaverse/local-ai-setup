@@ -89,15 +89,17 @@ tags = []
 // this one is OpenRouter's own example of a window that ends after it, 16:30
 // to 00:30 UTC, and it is limited to weekdays, so its half past midnight
 // falls on Monday to Friday mornings (the day of the minute itself) and not
-// on Saturday's. The first entry prices the whole week higher than any
-// other and every later entry lies over it, so it is in force at no minute:
-// a reader that let the first entry win, or that took the dearest price in
-// the list for the model's own, would show it. And the price at the top is
-// the cheap window's, as in a list fetched at night.
+// on Saturday's. The first entry is a time-of-day entry for all seven days
+// at a price higher than any other, and every later entry lies over it, so
+// it is in force at no minute: a reader that let the first entry win, or
+// that took the dearest price in the list for the model's own, would show
+// it. And the price at the top is the cheap window's, as in a list fetched
+// at night.
 const madeUpListing = `{"id": "example/night-owl", "pricing": {
 	"prompt": "0.000001", "completion": "0.000002", "input_cache_read": "0.0000001",
 	"overrides": [
-		{"prompt": "0.000009", "completion": "0.000009", "input_cache_read": "0.0000009"},
+		{"utc_days": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+			"prompt": "0.000009", "completion": "0.000009", "input_cache_read": "0.0000009"},
 		{"utc_days": ["monday", "tuesday", "wednesday", "thursday", "friday"], "utc_start": 30, "utc_end": 1630,
 			"prompt": "0.000002", "completion": "0.000004", "input_cache_read": "0.0000002"},
 		{"utc_days": ["monday", "tuesday", "wednesday", "thursday", "friday"], "utc_start": 1630, "utc_end": 30,
