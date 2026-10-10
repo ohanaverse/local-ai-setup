@@ -52,8 +52,8 @@ func TestPriceNoticeShowsTheLocalDate(t *testing.T) {
 
 // TestLastPriceRefresh pins where the date comes from now that nothing
 // stores it: the newest pricing_updated_at among OpenRouter-priced models
-// only. An ollama cloud model's stamp must not count (the catalog flow
-// writes those, and a catalog-only run would silence a notice about prices
+// only. An ollama cloud model's stamp must not count (the ollama flow
+// writes those, and an ollama-only run would silence a notice about prices
 // it never refreshed), a model without a stamp or with a mistyped one is
 // skipped, not fatal, and with no usable stamp the answer is "never". A
 // stamp more than a day ahead of the clock is a typo and is skipped too:
@@ -119,12 +119,10 @@ func TestLastPriceRefresh(t *testing.T) {
 // actually prints. A registry with no OpenRouter-priced model gets no line
 // at all, however old its other stamps are: `wt cloud-sync` would have
 // nothing to refresh there, and a reminder the user cannot act on is noise
-// after every session. "OpenRouter-priced" is the registry's rule, not the
-// presence of an `openrouter` provider row: a model that another provider
-// marks openrouter_priced is reminded about, and an openrouter row with no
-// model is not.
+// after every session. "OpenRouter-priced" is a model whose provider_id is
+// "openrouter": an openrouter provider row with no model under it is not
+// reminded about, and neither is another cloud provider's model.
 func TestPrintPriceNoticeSpeaksOnlyAboutOpenRouterPrices(t *testing.T) {
-	yes := true
 	fresh := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	ollamaCloud := config.Model{ID: "ollama/glm:cloud", ProviderID: "ollama", Location: config.LocationCloud, PricingUpdatedAt: "2020-01-01T00:00:00+00:00"}
 	native := config.Model{ID: "claude/native", ProviderID: "claude", Native: true}
@@ -152,9 +150,15 @@ func TestPrintPriceNoticeSpeaksOnlyAboutOpenRouterPrices(t *testing.T) {
 			never,
 		},
 		{
-			"no openrouter provider row, but a provider marked openrouter_priced",
-			[]config.Provider{{ID: "gateway", Location: config.LocationLocal, OpenRouterPriced: &yes}},
+			"another cloud provider's model, never stamped",
+			[]config.Provider{{ID: "gateway", Location: config.LocationCloud}},
 			[]config.Model{{ID: "gateway/x", ProviderID: "gateway"}},
+			"",
+		},
+		{
+			"an openrouter model with no openrouter provider row",
+			nil,
+			[]config.Model{{ID: "openrouter/x", ProviderID: "openrouter"}},
 			never,
 		},
 		{
@@ -194,30 +198,19 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(out)
 }
 
-// TestHasOpenRouterPricedModel pins issue #151's rule: the stale-pricing
+// TestHasOpenRouterPricedModel pins the rule the stale-pricing notice and
+// `wt cloud-sync`'s openrouter flow share (#151, simplified in #322): the
 // notice is only worth printing when some model's price comes from
-// OpenRouter — an openrouter model or a model of a non-native cloud
-// provider. Ollama cloud models
-// (location "cloud" on the local ollama provider, priced by ollama.com) and
-// native agent models never count, or users with no OpenRouter models are
-// nagged after every session about a refresh that has nothing to do. A
-// provider's explicit openrouter_priced overrides the inference in both
-// directions (a corporate gateway opts out, a local proxy opts in) but never
-// makes a native provider count. `wt cloud-sync` refreshes the models the
-// same rule selects (internal/cloudsync's predicate, held to the same
-// docs/contracts/catalog-predicates fixture), so a notice that judged
-// otherwise would nag about a refresh that changes nothing, or stay silent
-// on one that is due.
+// OpenRouter, which is a model whose provider_id is "openrouter". Ollama
+// cloud models (priced by ollama.com), native agent models and the models of
+// any other cloud provider never count, or users with no OpenRouter models
+// are nagged after every session about a refresh that has nothing to do.
 func TestHasOpenRouterPricedModel(t *testing.T) {
-	no, yes := false, true
 	providers := []config.Provider{
 		{ID: "ollama", Location: config.LocationLocal},
 		{ID: "openrouter", Location: config.LocationCloud},
 		{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
 		{ID: "acme", Location: config.LocationCloud},
-		{ID: "corp", Location: config.LocationCloud, OpenRouterPriced: &no},
-		{ID: "gateway", Location: config.LocationLocal, OpenRouterPriced: &yes},
-		{ID: "agent", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}, OpenRouterPriced: &yes},
 	}
 	ollamaCloud := config.Model{ID: "ollama/glm:cloud", ProviderID: "ollama", Location: config.LocationCloud}
 	native := config.Model{ID: "claude/native", ProviderID: "claude", Native: true}
@@ -230,10 +223,8 @@ func TestHasOpenRouterPricedModel(t *testing.T) {
 		{"nil config", nil, nil, false},
 		{"ollama cloud and native only", &config.Config{}, []config.Model{ollamaCloud, native}, false},
 		{"openrouter model", &config.Config{}, []config.Model{ollamaCloud, {ID: "openrouter/x", ProviderID: "openrouter"}}, true},
-		{"non-native cloud provider", &config.Config{}, []config.Model{{ID: "acme/x", ProviderID: "acme"}}, true},
-		{"cloud provider marked openrouter_priced = false", &config.Config{}, []config.Model{{ID: "corp/x", ProviderID: "corp"}}, false},
-		{"local provider marked openrouter_priced = true", &config.Config{}, []config.Model{{ID: "gateway/x", ProviderID: "gateway"}}, true},
-		{"native provider marked openrouter_priced = true", &config.Config{}, []config.Model{{ID: "agent/x", ProviderID: "agent"}}, false},
+		{"another cloud provider, not native", &config.Config{}, []config.Model{{ID: "acme/x", ProviderID: "acme"}}, false},
+		{"an openrouter model whose provider row is missing", &config.Config{}, []config.Model{{ID: "openrouter/x", ProviderID: "openrouter"}}, true},
 	}
 	for _, tc := range cases {
 		if tc.cfg != nil {

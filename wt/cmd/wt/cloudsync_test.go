@@ -244,23 +244,23 @@ func TestRealCloudFetch(t *testing.T) {
 // every flow because of it.
 func TestSelectFlows(t *testing.T) {
 	cases := []struct {
-		only            string
-		given           bool
-		prices, catalog bool
-		wantErr         string
+		only               string
+		given              bool
+		openrouter, ollama bool
+		wantErr            string
 	}{
 		{"", false, true, true, ""},
-		{"prices", true, true, false, ""},
-		{" prices ", true, true, false, ""},
-		{"prices,prices", true, true, false, ""},
-		{"catalog", true, false, true, ""},
-		{" catalog , prices ", true, true, true, ""},
-		{"price", true, false, false, `--only: unknown flow "price" (valid: prices, catalog)`},
-		{"prices,", true, true, false, `--only: unknown flow "" (valid: prices, catalog)`},
+		{"openrouter", true, true, false, ""},
+		{" openrouter ", true, true, false, ""},
+		{"openrouter,openrouter", true, true, false, ""},
+		{"ollama", true, false, true, ""},
+		{" ollama , openrouter ", true, true, true, ""},
+		{"price", true, false, false, `--only: unknown flow "price" (valid: openrouter, ollama)`},
+		{"openrouter,", true, true, false, `--only: unknown flow "" (valid: openrouter, ollama)`},
 		// The flag given with nothing in it, as from `--only "$FLOWS"` with
 		// the variable unset, is not the flag left out.
-		{"", true, false, false, `--only: no flow named (valid: prices, catalog)`},
-		{"  ", true, false, false, `--only: no flow named (valid: prices, catalog)`},
+		{"", true, false, false, `--only: no flow named (valid: openrouter, ollama)`},
+		{"  ", true, false, false, `--only: no flow named (valid: openrouter, ollama)`},
 	}
 	for _, tc := range cases {
 		var o cloudSyncOpts
@@ -271,14 +271,14 @@ func TestSelectFlows(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || o.prices != tc.prices || o.catalog != tc.catalog {
-			t.Errorf("selectFlows(%q, given %v) = prices %v, catalog %v, err %v", tc.only, tc.given, o.prices, o.catalog, err)
+		if err != nil || o.openrouter != tc.openrouter || o.ollama != tc.ollama {
+			t.Errorf("selectFlows(%q, given %v) = openrouter %v, ollama %v, err %v", tc.only, tc.given, o.openrouter, o.ollama, err)
 		}
 	}
 }
 
 // TestCloudSyncCommandRefusals pins what the command refuses before it does
-// anything: a catalog-only flag with the catalog flow left out (the flag
+// anything: an ollama-only flag with the ollama flow left out (the flag
 // would be silently ignored, and --force or a digest ignored is a user
 // believing a gate was passed), an unknown flow, --only with no flow in it, a
 // stray argument, and a config that could not be loaded, which gets the same
@@ -297,15 +297,15 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--only", "prices", "--force"}, "--force is for the catalog flow, which --only prices leaves out"},
+		{[]string{"--only", "openrouter", "--force"}, "--force is for the ollama flow, which --only openrouter leaves out"},
 		// The message names the flows --only selected, not the spelling it
 		// was given: it is meant to be read back and re-run.
-		{[]string{"--only", " prices ", "--force"}, "--force is for the catalog flow, which --only prices leaves out"},
-		{[]string{"--only", "prices", "--html", "x.html"}, "--html is for the catalog flow, which --only prices leaves out"},
-		{[]string{"--only", "prices", "--approve-removals", "abc"}, "--approve-removals is for the catalog flow, which --only prices leaves out"},
-		{[]string{"--only", "routes"}, `--only: unknown flow "routes" (valid: prices, catalog)`},
-		{[]string{"--only", "", "--dry-run"}, `--only: no flow named (valid: prices, catalog)`},
-		{[]string{"--only=", "--dry-run"}, `--only: no flow named (valid: prices, catalog)`},
+		{[]string{"--only", " openrouter ", "--force"}, "--force is for the ollama flow, which --only openrouter leaves out"},
+		{[]string{"--only", "openrouter", "--html", "x.html"}, "--html is for the ollama flow, which --only openrouter leaves out"},
+		{[]string{"--only", "openrouter", "--approve-removals", "abc"}, "--approve-removals is for the ollama flow, which --only openrouter leaves out"},
+		{[]string{"--only", "routes"}, `--only: unknown flow "routes" (valid: openrouter, ollama)`},
+		{[]string{"--only", "", "--dry-run"}, `--only: no flow named (valid: openrouter, ollama)`},
+		{[]string{"--only=", "--dry-run"}, `--only: no flow named (valid: openrouter, ollama)`},
 		{[]string{"extra"}, `unknown command "extra" for "cloud-sync"`},
 	} {
 		err := run(ok, tc.args...)
@@ -321,20 +321,20 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 	}
 }
 
-// TestCloudSyncPricesDryRun pins the dry run of the prices flow: the plan as
-// `id: old -> new` under the prices: prefix, and nothing else — the registry
+// TestCloudSyncOpenRouterDryRun pins the dry run of the openrouter flow: the plan as
+// `id: old -> new` under the openrouter: prefix, and nothing else — the registry
 // byte-identical, no lock file beside it, no question asked, no route sync.
-func TestCloudSyncPricesDryRun(t *testing.T) {
+func TestCloudSyncOpenRouterDryRun(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 	asked := stubConfirm(t, true, nil, nil)
 	synced := stubRouteSync(t, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, dryRun: true})
-	want := "prices: openrouter.ai: 1 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
-		"prices: Price updates (1):\n" +
-		"prices:   openrouter/vendor--gpt: 2.5/-/10 -> 3/-/15\n" +
-		"prices: Unchanged prices: 0\n"
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	want := "openrouter: openrouter.ai: 1 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+		"openrouter: Price updates (1):\n" +
+		"openrouter:   openrouter/vendor--gpt: 2.5/-/10 -> 3/-/15\n" +
+		"openrouter: Unchanged prices: 0\n"
 	if stdout != want || stderr != "" || code != 0 {
 		t.Errorf("stdout = %q\nstderr = %q, exit %d\nwant stdout %q, no stderr, exit 0", stdout, stderr, code, want)
 	}
@@ -352,18 +352,18 @@ func TestCloudSyncPricesDryRun(t *testing.T) {
 	}
 }
 
-// TestCloudSyncPricesApply pins the prices flow end to end with --yes: the
+// TestCloudSyncOpenRouterApply pins the openrouter flow end to end with --yes: the
 // new prices and the stamp are in registry.toml, the result line says how
 // many moved, the routes are synced exactly once (LiteLLM gets a route's
 // prices only through a sync, #179), and nothing was asked.
-func TestCloudSyncPricesApply(t *testing.T) {
+func TestCloudSyncOpenRouterApply(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 	asked := stubConfirm(t, false, nil, nil)
 	synced := stubRouteSync(t, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
-	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "prices: refreshed 1 model(s); 1 price(s) changed\n") {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\n") {
 		t.Fatalf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
 	}
 	if *asked != 0 || *synced != 1 {
@@ -386,8 +386,8 @@ func TestCloudSyncStampOnlyRunSkipsTheRouteSync(t *testing.T) {
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
 	synced := stubRouteSync(t, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
-	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "prices: Unchanged prices: 1\nprices: refreshed 1 model(s); 0 price(s) changed\n") {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: Unchanged prices: 1\nopenrouter: refreshed 1 model(s); 0 price(s) changed\n") {
 		t.Fatalf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
 	}
 	if *synced != 0 {
@@ -408,12 +408,12 @@ func TestCloudSyncStampOnlyRunSkipsTheRouteSync(t *testing.T) {
 	}
 }
 
-// TestCloudSyncPricesFailuresExit1 pins the prices flow's failures: a fetch
+// TestCloudSyncOpenRouterFailuresExit1 pins the openrouter flow's failures: a fetch
 // that fails, and an answer that is not the model list. Each is one error
-// line under the prices: prefix, exit 1, and the registry untouched — never
+// line under the openrouter: prefix, exit 1, and the registry untouched — never
 // a run of "no OpenRouter match" warnings for every model. The command's own
 // error, the last line main prints, points back at those lines.
-func TestCloudSyncPricesFailuresExit1(t *testing.T) {
+func TestCloudSyncOpenRouterFailuresExit1(t *testing.T) {
 	for name, pages := range map[string]map[string]string{
 		"could not read OpenRouter's prices: HTTP 404":                                {},
 		"could not read OpenRouter's prices: OpenRouter response missing 'data' list": {cloudsync.OpenRouterModelsURL: `{"error": "rate limited"}`},
@@ -421,8 +421,8 @@ func TestCloudSyncPricesFailuresExit1(t *testing.T) {
 		path, cfg := cloudSyncHome(t, cloudSyncRegistry)
 		stubCloudFetch(t, pages)
 		synced := stubRouteSync(t, "")
-		stdout, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{prices: true, yes: true})
-		if want := "prices: error: " + name + "; no price was changed\n"; stderr != want || stdout != "" || code != 1 {
+		stdout, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		if want := "openrouter: error: " + name + "; no price was changed\n"; stderr != want || stdout != "" || code != 1 {
 			t.Errorf("stdout = %q, stderr = %q, exit %d\nwant stderr %q and exit 1", stdout, stderr, code, want)
 		}
 		if want := "cloud-sync: a step failed; see the error lines above"; final != want {
@@ -435,15 +435,15 @@ func TestCloudSyncPricesFailuresExit1(t *testing.T) {
 }
 
 // TestCloudSyncWithNoOpenRouterModelFetchesNothing pins the registry that
-// has only ollama models: the prices flow says there is nothing to refresh
+// has only ollama models: the openrouter flow says there is nothing to refresh
 // and makes no request (#151: nothing to fetch, nothing to warn about).
 func TestCloudSyncWithNoOpenRouterModelFetchesNothing(t *testing.T) {
 	registry := cloudSyncRegistry[:strings.Index(cloudSyncRegistry, "[[models]]\nid = \"openrouter/vendor--gpt\"")] +
 		cloudSyncRegistry[strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\""):]
 	path, cfg := cloudSyncHome(t, registry)
 	got := stubCloudFetch(t, nil)
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
-	if stdout != "prices: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || code != 0 {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	if stdout != "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || code != 0 {
 		t.Errorf("stdout = %q, stderr = %q, exit %d", stdout, stderr, code)
 	}
 	if len(got.all()) != 0 || mustRead(t, path) != registry {
@@ -463,14 +463,14 @@ func TestCloudSyncAsksOnceAndTakesNoForAnAnswer(t *testing.T) {
 	synced := stubRouteSync(t, "")
 
 	asked := stubConfirm(t, false, nil, nil)
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true})
-	if *asked != 1 || code != 0 || stderr != "" || !strings.HasSuffix(stdout, "prices: not applied (declined)\n") {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	if *asked != 1 || code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: not applied (declined)\n") {
 		t.Errorf("declined: asked %d, exit %d, stdout %q, stderr %q", *asked, code, stdout, stderr)
 	}
 
 	noTerminal(t)
-	_, stderr, code = runCS(t, cfg, cloudSyncOpts{prices: true})
-	if want := "prices: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n"; stderr != want || code != 1 {
+	_, stderr, code = runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	if want := "openrouter: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n"; stderr != want || code != 1 {
 		t.Errorf("no terminal: stderr = %q, exit %d; want %q and exit 1", stderr, code, want)
 	}
 	if mustRead(t, path) != cloudSyncRegistry || *synced != 0 {
@@ -482,8 +482,8 @@ func TestCloudSyncAsksOnceAndTakesNoForAnAnswer(t *testing.T) {
 	// the stale-price notice that prices are fresh when none was read.
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: `{"data": []}`})
 	asked = stubConfirm(t, true, nil, nil)
-	stdout, _, code = runCS(t, cfg, cloudSyncOpts{prices: true})
-	if *asked != 0 || code != 0 || !strings.Contains(stdout, "prices: warning: No OpenRouter match for openrouter/vendor--gpt (vendor/gpt)\n") {
+	stdout, _, code = runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	if *asked != 0 || code != 0 || !strings.Contains(stdout, "openrouter: warning: No OpenRouter match for openrouter/vendor--gpt (vendor/gpt)\n") {
 		t.Errorf("a plan that matches no model: asked %d time(s), exit %d; want no question, exit 0 and the no-match warning\n%s", *asked, code, stdout)
 	}
 	if mustRead(t, path) != cloudSyncRegistry || *synced != 0 {
@@ -534,7 +534,7 @@ func TestPromptCloudSyncAsksOnTheTerminalAndDefaultsToNo(t *testing.T) {
 // TestCloudSyncPrefixesTheRouteSyncsLines pins how the route sync's own
 // output reaches the user: its stdout lines and its stderr lines (a model
 // that could not be routed) under routes:, like its warning. An unprefixed
-// "<id>: …" between prices: and catalog: lines reads as a third flow, or as
+// "<id>: …" between openrouter: and ollama: lines reads as a third flow, or as
 // part of the one above it.
 func TestCloudSyncPrefixesTheRouteSyncsLines(t *testing.T) {
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
@@ -547,8 +547,8 @@ func TestCloudSyncPrefixesTheRouteSyncsLines(t *testing.T) {
 	}
 	t.Cleanup(func() { syncRoutesAfterWrite = old })
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
-	if code != 0 || !strings.HasSuffix(stdout, "prices: refreshed 1 model(s); 1 price(s) changed\nroutes: openrouter/vendor--gpt: routed\n") {
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	if code != 0 || !strings.HasSuffix(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\nroutes: openrouter/vendor--gpt: routed\n") {
 		t.Errorf("exit %d (a sync that warns does not fail the run); stdout:\n%s", code, stdout)
 	}
 	want := "routes: openrouter/other: secret_ref \"X\" resolved empty\n" +
@@ -558,12 +558,12 @@ func TestCloudSyncPrefixesTheRouteSyncsLines(t *testing.T) {
 	}
 }
 
-// TestCloudSyncPricesRefusesWhenTheRegistryChangedAfterThePlan pins the
+// TestCloudSyncOpenRouterRefusesWhenTheRegistryChangedAfterThePlan pins the
 // re-plan under the registry lock: when the registry changes between the
 // printed plan and the write (here, while the user reads the question), what
 // would now be applied is not what was approved, so nothing is applied and
 // the run says to run it again. The other writer's change survives.
-func TestCloudSyncPricesRefusesWhenTheRegistryChangedAfterThePlan(t *testing.T) {
+func TestCloudSyncOpenRouterRefusesWhenTheRegistryChangedAfterThePlan(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 	synced := stubRouteSync(t, "")
@@ -574,8 +574,8 @@ func TestCloudSyncPricesRefusesWhenTheRegistryChangedAfterThePlan(t *testing.T) 
 		}
 	})
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true})
-	if want := "prices: error: the registry changed after the plan was printed; no price was changed — run it again\n"; stderr != want || code != 1 {
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	if want := "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"; stderr != want || code != 1 {
 		t.Errorf("stderr = %q, exit %d; want %q and exit 1", stderr, code, want)
 	}
 	if mustRead(t, path) != raced || *synced != 0 {
@@ -595,8 +595,8 @@ func TestCloudSyncReportsARefusedRegistryWrite(t *testing.T) {
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 	synced := stubRouteSync(t, "")
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
-	want := "prices: error: registry.toml was not changed: invalid registry entry: model \"openrouter/vendor--gpt\": family is required\n"
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	want := "openrouter: error: registry.toml was not changed: invalid registry entry: model \"openrouter/vendor--gpt\": family is required\n"
 	if stderr != want || code != 1 {
 		t.Errorf("stderr = %q, exit %d\nwant %q and exit 1", stderr, code, want)
 	}
@@ -644,7 +644,7 @@ func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
 
 	t.Run("config.yaml not named: registry written, routes refused, exit 0", func(t *testing.T) {
 		registry, defaultYAML, cfg := setup(t)
-		_, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
+		_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
 		if code != 0 {
 			t.Fatalf("exit %d; the registry write succeeded, so the command must too. stderr: %s", code, stderr)
 		}
@@ -668,7 +668,7 @@ func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("WT_LITELLM_CONFIG", named)
-		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
+		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
 		if code != 0 || stderr != "" {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
 		}
@@ -699,9 +699,9 @@ func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testin
 	registry := cloudSyncRegistry[:strings.Index(cloudSyncRegistry, "[[models]]\nid = \"openrouter/vendor--gpt\"")] +
 		cloudSyncRegistry[strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\""):]
 	for name, o := range map[string]cloudSyncOpts{
-		"plain":     {prices: true},
-		"--dry-run": {prices: true, dryRun: true},
-		"--yes":     {prices: true, yes: true},
+		"plain":     {openrouter: true},
+		"--dry-run": {openrouter: true, dryRun: true},
+		"--yes":     {openrouter: true, yes: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path, cfg := cloudSyncHome(t, registry)
@@ -710,7 +710,7 @@ func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testin
 			synced := stubRouteSync(t, "")
 
 			stdout, stderr, final, code := runCSFinal(t, cfg, o)
-			if stdout != "prices: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || final != "" || code != 0 {
+			if stdout != "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || final != "" || code != 0 {
 				t.Errorf("stdout = %q, stderr = %q, error %q, exit %d; want the one skip line and exit 0", stdout, stderr, final, code)
 			}
 			if urls := got.all(); len(urls) != 0 {
@@ -729,21 +729,21 @@ func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testin
 	}
 }
 
-// TestCloudSyncJudgesOpenRouterPricingByTheModelsNotTheProviderRow pins what
-// "OpenRouter-priced" means to the skip: the rule config.Config.OpenRouterPriced
-// applies to each model, not whether a provider row is called openrouter. A
-// registry with no openrouter row whose provider says openrouter_priced = true
-// is refreshed, and one whose only cloud provider says openrouter_priced =
-// false (a corporate gateway, #302) is skipped without a request. Judged by
-// the row's name, the first would never be refreshed and the second would be
-// fetched for and warned about on every run.
-func TestCloudSyncJudgesOpenRouterPricingByTheModelsNotTheProviderRow(t *testing.T) {
-	registry := func(priced string) string {
-		return `[[providers]]
+// TestCloudSyncRefreshesOnlyTheOpenRouterProvidersModels pins who the
+// openrouter flow refreshes: the models whose provider_id is "openrouter",
+// and no other. The provider key openrouter_priced, which until #322 could
+// put another provider's models in or take them out, is no longer read. A
+// registry that still carries it must go on working: it loads, the key
+// decides nothing either way (a cloud gateway marked true is not fetched
+// for, and the openrouter provider's own models are refreshed although their
+// row says false), nothing is printed about the key, and a write leaves it
+// in the file, because wt never deletes a key it does not model.
+func TestCloudSyncRefreshesOnlyTheOpenRouterProvidersModels(t *testing.T) {
+	const relay = `[[providers]]
 id = "relay"
 name = "Relay"
 location = "cloud"
-openrouter_priced = ` + priced + `
+openrouter_priced = true
 
 [providers.auth]
 type = "api_key"
@@ -758,42 +758,58 @@ location = "cloud"
 source = "curated"
 tags = []
 `
-	}
 
-	t.Run("openrouter_priced = true with no openrouter row: refreshed", func(t *testing.T) {
-		text := registry("true")
-		path, cfg := cloudSyncHome(t, text)
-		if len(cfg.Models) != 1 || !cfg.OpenRouterPriced(cfg.Models[0]) {
-			t.Fatalf("config.OpenRouterPriced is false for the fixture's model (%d models); the fixture no longer says what this test needs", len(cfg.Models))
+	t.Run("another cloud provider's model, marked true: not refreshed", func(t *testing.T) {
+		path, cfg := cloudSyncHome(t, relay)
+		if len(cfg.Models) != 1 || cfg.OpenRouterPriced(cfg.Models[0]) {
+			t.Fatalf("config.OpenRouterPriced is true for a model of provider relay (%d models)", len(cfg.Models))
 		}
 		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 		synced := stubRouteSync(t, "")
-		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
-		if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "prices:   relay/vendor--gpt: no cost -> 3/-/15\nprices: Unchanged prices: 0\nprices: refreshed 1 model(s); 1 price(s) changed\n") {
-			t.Errorf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
+		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		if stdout != "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || code != 0 {
+			t.Errorf("stdout = %q, stderr = %q, exit %d", stdout, stderr, code)
+		}
+		if len(got.all()) != 0 || *synced != 0 || mustRead(t, path) != relay {
+			t.Errorf("fetched %v, synced %d time(s) or changed the registry; want none of them", got.all(), *synced)
+		}
+	})
+
+	t.Run("the openrouter provider's model, marked false: refreshed, and the key kept", func(t *testing.T) {
+		text := strings.Replace(cloudSyncRegistry, "id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\n",
+			"id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\nopenrouter_priced = false\n", 1) + "\n" + relay
+		if strings.Count(text, "openrouter_priced = ") != 2 {
+			t.Fatal("the fixture does not carry the key on both provider rows")
+		}
+		path, cfg := cloudSyncHome(t, text)
+		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+		synced := stubRouteSync(t, "")
+		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		const want = "openrouter: openrouter.ai: 1 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+			"openrouter: Price updates (1):\n" +
+			"openrouter:   openrouter/vendor--gpt: 2.5/-/10 -> 3/-/15\n" +
+			"openrouter: Unchanged prices: 0\n" +
+			"openrouter: refreshed 1 model(s); 1 price(s) changed\n"
+		if stdout != want || stderr != "" || code != 0 {
+			t.Errorf("stdout = %q\nstderr = %q, exit %d\nwant stdout %q", stdout, stderr, code, want)
 		}
 		if urls := got.all(); !reflect.DeepEqual(urls, []string{cloudsync.OpenRouterModelsURL}) || *synced != 1 {
 			t.Errorf("fetched %v, synced %d time(s); want one request and one sync", urls, *synced)
 		}
-		if !strings.Contains(mustRead(t, path), "pricing_updated_at = \""+cloudSyncStamp+"\"") {
-			t.Error("the refreshed model was not stamped")
+		after := mustRead(t, path)
+		for _, kept := range []string{
+			"id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\nopenrouter_priced = false\n",
+			"id = \"relay\"\nname = \"Relay\"\nlocation = \"cloud\"\nopenrouter_priced = true\n",
+		} {
+			if !strings.Contains(after, kept) {
+				t.Errorf("the write did not keep a provider row as it was:\n%s\nfile:\n%s", kept, after)
+			}
 		}
-	})
-
-	t.Run("openrouter_priced = false on the only cloud provider: skipped", func(t *testing.T) {
-		text := registry("false")
-		path, cfg := cloudSyncHome(t, text)
-		if len(cfg.Models) != 1 || cfg.OpenRouterPriced(cfg.Models[0]) {
-			t.Fatalf("config.OpenRouterPriced is true for the fixture's model (%d models); the fixture no longer says what this test needs", len(cfg.Models))
+		if strings.Contains(after, "id = \"relay/vendor--gpt\"\nfamily = \"gpt\"\nprovider_id = \"relay\"\nmodel_name = \"vendor/gpt\"\nlocation = \"cloud\"\nsource = \"curated\"\ntags = []\npricing_updated_at") {
+			t.Error("the relay model was stamped: it is not the openrouter flow's")
 		}
-		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-		synced := stubRouteSync(t, "")
-		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true, yes: true})
-		if stdout != "prices: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || code != 0 {
-			t.Errorf("stdout = %q, stderr = %q, exit %d", stdout, stderr, code)
-		}
-		if len(got.all()) != 0 || *synced != 0 || mustRead(t, path) != text {
-			t.Errorf("fetched %v, synced %d time(s) or changed the registry; want none of them", got.all(), *synced)
+		if _, err := config.Load(); err != nil {
+			t.Errorf("config.Load after the write: %v", err)
 		}
 	})
 }
@@ -803,21 +819,22 @@ tags = []
 // of them: a model it does not list, or one it prices "-1" (a router model).
 // Such a run stamps nothing, so wt's stale-pricing notice goes on naming `wt
 // cloud-sync` after every launch; without this line nothing says that
-// running it again will not help, or what will (openrouter_priced = false).
-// A run that matched a model does not print it.
+// running it again will not help, or where to look (the warnings, each of
+// which names a model and what is wrong with it). A run that matched a model
+// does not print it.
 func TestCloudSyncSaysWhenNoModelCouldBeRefreshed(t *testing.T) {
-	const line = "prices: no model could be refreshed, so nothing is stamped and wt's stale-pricing notice is not cleared; " +
-		"set openrouter_priced = false on a provider whose model names are not OpenRouter ids\n"
+	const line = "openrouter: no model could be refreshed, so nothing is stamped and wt's stale-pricing notice is not cleared; " +
+		"the warnings above say why for each model\n"
 	for name, body := range map[string]string{
 		"OpenRouter does not list the model": `{"data": []}`,
 		"OpenRouter prices the model at -1":  `{"data": [{"id": "vendor/gpt", "pricing": {"prompt": "-1", "completion": "-1"}}]}`,
 	} {
-		for _, o := range []cloudSyncOpts{{prices: true, dryRun: true}, {prices: true, yes: true}} {
+		for _, o := range []cloudSyncOpts{{openrouter: true, dryRun: true}, {openrouter: true, yes: true}} {
 			path, cfg := cloudSyncHome(t, cloudSyncRegistry)
 			stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
 			synced := stubRouteSync(t, "")
 			stdout, stderr, code := runCS(t, cfg, o)
-			if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "\n"+line) || !strings.Contains(stdout, "prices: warning: ") {
+			if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "\n"+line) || !strings.Contains(stdout, "openrouter: warning: ") {
 				t.Errorf("%s (%+v): exit %d, stderr %q, stdout:\n%s\nwant exit 0, the model's warning, and last the line\n%s", name, o, code, stderr, stdout, line)
 			}
 			if mustRead(t, path) != cloudSyncRegistry || *synced != 0 {
@@ -828,7 +845,7 @@ func TestCloudSyncSaysWhenNoModelCouldBeRefreshed(t *testing.T) {
 
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	if stdout, _, _ := runCS(t, cfg, cloudSyncOpts{prices: true, dryRun: true}); strings.Contains(stdout, "no model could be refreshed") {
+	if stdout, _, _ := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true}); strings.Contains(stdout, "no model could be refreshed") {
 		t.Errorf("a run that matched a model says none could be refreshed:\n%s", stdout)
 	}
 }
@@ -844,9 +861,9 @@ func TestCloudSyncRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 	end := strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\"")
 	registry := cloudSyncRegistry[:end] + cloudSyncRegistry[start:end] + cloudSyncRegistry[end:]
 	for name, o := range map[string]cloudSyncOpts{
-		"--dry-run": {prices: true, dryRun: true},
-		"plain":     {prices: true},
-		"--yes":     {prices: true, yes: true},
+		"--dry-run": {openrouter: true, dryRun: true},
+		"plain":     {openrouter: true},
+		"--yes":     {openrouter: true, yes: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path, cfg := cloudSyncHome(t, registry)
@@ -854,7 +871,7 @@ func TestCloudSyncRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 			asked := stubConfirm(t, true, nil, nil)
 			synced := stubRouteSync(t, "")
 			stdout, stderr, code := runCS(t, cfg, o)
-			want := "prices: error: no price was changed: model \"openrouter/vendor--gpt\" is in the registry twice (providers openrouter, openrouter); " +
+			want := "openrouter: error: no price was changed: model \"openrouter/vendor--gpt\" is in the registry twice (providers openrouter, openrouter); " +
 				"wt cannot tell which one you mean — fix the entry in " + path + "\n"
 			if stderr != want || stdout != "" || code != 1 {
 				t.Errorf("stdout = %q\nstderr = %q, exit %d\nwant no plan, stderr %q and exit 1", stdout, stderr, code, want)
@@ -881,8 +898,8 @@ func TestCloudSyncRefusedPlanDoesNotCreateARegistry(t *testing.T) {
 		}
 	})
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{prices: true})
-	if want := "prices: error: the registry changed after the plan was printed; no price was changed — run it again\n"; stderr != want || code != 1 {
+	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	if want := "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"; stderr != want || code != 1 {
 		t.Errorf("stderr = %q, exit %d; want %q and exit 1", stderr, code, want)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

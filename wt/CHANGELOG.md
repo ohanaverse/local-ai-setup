@@ -4,20 +4,20 @@
 
 ### Added
 
-- `wt cloud-sync` gains its second flow, `catalog`, replacing
+- `wt cloud-sync` gains its second flow, `ollama`, replacing
   `modelman ollama-catalog sync` (which still works): it mirrors
   <https://ollama.com/pricing> into the registry's ollama cloud entries
   (prices, off-peak included), into ollama (`ollama pull` for new cloud
   models, `ollama rm` for retired ones, both pinned to the registry's ollama
   address) and, through one route sync, into LiteLLM. Both flows run unless
-  `--only prices` or `--only catalog` picks one, and neither stops the
+  `--only openrouter` or `--only ollama` picks one, and neither stops the
   other. `--yes` never deletes on its own: a plan that removes anything
   needs `--approve-removals` with the digest a dry run printed (the same
   digest modelman prints), and a plan that removes more than half the cloud
   entries needs `--force` as well. `--html FILE` reads a saved pricing page
   instead of fetching it (cloud tags are still looked up on
-  ollama.com/library); a catalog flag together with `--only prices` is a
-  usage error. Exit codes 2 to 5 say why the catalog flow changed nothing
+  ollama.com/library); an ollama-flow flag together with `--only openrouter` is a
+  usage error. Exit codes 2 to 5 say why the ollama flow changed nothing
   (inputs unreadable, page shape changed with its HTML saved, mass removal
   refused, removals not approved or the registry changed after the plan was
   printed); every other wt command still exits 1 on an error. A failed
@@ -28,7 +28,7 @@
   flow before anything is fetched (exit 2), since ollama would otherwise
   fall back to its default daemon. A registry with no `ollama` provider row has no catalog to
   mirror: the flow prints one line and is skipped with exit 0, also when it
-  was asked for by name (`--only catalog` or one of its flags), so with
+  was asked for by name (`--only ollama` or one of its flags), so with
   neither an ollama row nor an OpenRouter-priced model the command fetches,
   asks and writes nothing. An ollama cloud entry the plan would change or
   remove whose id is in the registry twice is refused before the plan, in a
@@ -40,7 +40,7 @@
   `cloud-sync` skill (`.claude/skills/cloud-sync/`) is the same command as a
   procedure for an agent, including the parser repair after an exit 3; it
   replaces modelman's `ollama-catalog` skill, which moved here.
-- `wt cloud-sync [--only prices] [--dry-run] [--yes]` refreshes the per-token
+- `wt cloud-sync [--only openrouter] [--dry-run] [--yes]` refreshes the per-token
   prices of the registry's OpenRouter-priced models from OpenRouter's public
   model list, replacing `modelman refresh-prices` (which still works). It
   prints its plan as `id: old -> new` first; `--dry-run` stops there, and
@@ -170,6 +170,37 @@
 
 ### Changed
 
+- **Breaking:** the provider key `openrouter_priced` is no longer read, and
+  the rule it overrode is simpler: a model takes its price from OpenRouter
+  when its `provider_id` is `openrouter`, and never otherwise. That one rule
+  decides what `wt cloud-sync`'s openrouter flow refreshes and what the
+  stale-pricing notice watches. Until now a model of any cloud provider that
+  is not an agent's native one counted too, and the key could put a
+  provider's models in (`true`) or take them out (`false`); it dates from
+  when ollama's cloud models had no published prices. A registry that still
+  has the key loads as before, nothing warns about it, and wt keeps the key
+  when it writes the file; it just decides nothing. So a model under a cloud
+  provider other than `openrouter` (a gateway that serves OpenRouter ids,
+  say) is no longer refreshed, and no longer watched by the notice, whether
+  the key was `true` or was never set. It keeps the price it has. To have
+  it refreshed, register the model under the `openrouter` provider; to keep
+  it where it is, set its price yourself with `wt model edit <id>
+  --input-price … --output-price …`. The line a run prints when no model
+  could be refreshed no longer names the key: it ends `the warnings above
+  say why for each model`. Reference: `docs/wt-cloud-sync.md`.
+- **Breaking:** `wt cloud-sync`'s two flows are named for the provider each
+  one syncs: `prices` is now `openrouter` and `catalog` is now `ollama`.
+  The names changed everywhere they appear: `--only openrouter`, `--only
+  ollama`, each flow's output lines (`openrouter:`, `ollama:`; the route
+  sync's `routes:` lines keep their prefix), the last error line (`wt:
+  cloud-sync: the ollama flow changed nothing: …`) and `--help`. There are no aliases: `--only prices` and `--only catalog` are
+  unknown flows (exit 1, `--only: unknown flow "prices" (valid: openrouter,
+  ollama)`), so a script that names one stops instead of running something
+  else. Two lines were reworded with the rename: `ollama: ollama at
+  <address>` read badly and is now `ollama: daemon at <address>`, and the
+  refusal both gates print ends `Nothing was changed by the ollama flow.`
+  where it said `Nothing was changed for the catalog.` What each flow does
+  has not changed. Reference: `docs/wt-cloud-sync.md`.
 - **Breaking:** wt no longer reads `~/.config/local-ai/modelman.toml`. Its
   `[litellm]` table was a fallback for routing state (on/off, proxy URL, API
   key); wt has kept that state in its own `~/.config/agent-wt/config.toml`
@@ -196,8 +227,7 @@
   and name `modelman refresh-prices`. wt no longer reads that key. Either
   tool's refresh still clears the notice for a registry in which it matches
   at least one model, since both stamp the models they match; when a refresh
-  matches none, `wt cloud-sync` says that the notice stays and how to stop it
-  (`openrouter_priced = false`).
+  matches none, `wt cloud-sync` says that the notice stays.
 - omlx is handled as the multi-model pool it is (#213). `wt start` loads an
   omlx model beside the ones already loaded instead of stopping the service
   first, and asks only when the model does not fit, naming what omlx is

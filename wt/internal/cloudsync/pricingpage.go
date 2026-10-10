@@ -12,7 +12,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-// PricingURL is the page the catalog flow mirrors.
+// PricingURL is the page the ollama flow mirrors.
 const PricingURL = "https://ollama.com/pricing"
 
 // MinRows is the fewest model rows a page may hold and still be believed. A

@@ -8,9 +8,11 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
-// OpenRouterModelsURL is the public model list the prices flow reads.
+// OpenRouterModelsURL is the public model list the openrouter flow reads.
 const OpenRouterModelsURL = "https://openrouter.ai/api/v1/models"
 
 // APIPrice is what OpenRouter publishes for one model, per million tokens.
@@ -107,34 +109,21 @@ func ParseOpenRouter(body []byte) (map[string]APIPrice, error) {
 	return out, nil
 }
 
-// OpenRouterPriced reports whether e takes its price from OpenRouter: an
-// openrouter model, or a model of a non-native cloud provider. It is
-// config.Config.OpenRouterPriced over registry rows, keyed on the provider's
-// location and not the model's, so an ollama cloud model (priced by
-// ollama.com) does not count. A provider's openrouter_priced key overrides
-// the inference in both directions, after the native check (#302): false
-// takes a gateway whose model names are not OpenRouter ids out of the
-// refresh, true puts a provider in. Both are pinned by
-// docs/contracts/catalog-predicates.sample.toml.
-func OpenRouterPriced(e Entry, providers []Provider) bool {
-	var p *Provider
-	for i := range providers {
-		if providers[i].ID == e.ProviderID {
-			p = &providers[i]
-			break
-		}
-	}
-	if p != nil && p.AuthType == "native" {
-		return false
-	}
-	if p != nil && p.OpenRouterPriced != nil {
-		return *p.OpenRouterPriced
-	}
-	if e.ProviderID == "openrouter" {
-		return true
-	}
-	return p != nil && p.Location == "cloud"
-}
+// OpenRouterProvider is the provider_id of the models the openrouter flow
+// refreshes. config owns the value, so the openrouter flow and
+// config.Config.OpenRouterPriced are two readers of one rule, not two rules.
+const OpenRouterProvider = config.OpenRouterProvider
+
+// OpenRouterPriced reports whether e takes its price from OpenRouter: a
+// model whose provider_id is "openrouter", and no other. It is
+// config.Config.OpenRouterPriced over registry rows, and both are pinned by
+// docs/contracts/catalog-predicates.sample.toml. A provider row's
+// openrouter_priced key, which overrode this until #322, is not read.
+//
+// The ollama flow addresses only rows whose provider_id is "ollama"
+// (isOllamaCloud, findEntry), so no row is ever in both flows' scope:
+// TestTheTwoFlowsNeverShareAModel.
+func OpenRouterPriced(e Entry) bool { return e.ProviderID == OpenRouterProvider }
 
 // PriceChange is one registry model OpenRouter has a price for.
 type PriceChange struct {
@@ -164,10 +153,10 @@ func (p *PricePlan) HasWork() bool { return len(p.Matched) > 0 }
 // the refresh measures. The cache price is overwritten only when the API
 // reported one (it usually does not), and the subscription and time_prices
 // are never touched, so a refresh never clears a price set by hand.
-func PlanPrices(entries []Entry, providers []Provider, api map[string]APIPrice) *PricePlan {
+func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 	plan := &PricePlan{}
 	for _, e := range entries {
-		if !OpenRouterPriced(e, providers) {
+		if !OpenRouterPriced(e) {
 			continue
 		}
 		plan.Candidates++

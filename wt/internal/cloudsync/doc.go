@@ -1,9 +1,9 @@
 // Package cloudsync is the pure core of `wt cloud-sync`: it turns what two
 // public services publish into changes to registry.toml.
 //
-//   - Prices: OpenRouter's model list (ParseOpenRouter, PlanPrices) refreshes
+//   - The openrouter flow: OpenRouter's model list (ParseOpenRouter, PlanPrices) refreshes
 //     the per-token prices of the registry's OpenRouter-priced models.
-//   - Catalog: ollama.com/pricing (ParsePricing), each model's cloud tag
+//   - The ollama flow: ollama.com/pricing (ParsePricing), each model's cloud tag
 //     (ResolveCloudTags) and the plan that makes the registry's ollama cloud
 //     entries mirror the page (PlanCatalog), with its two safety gates: the
 //     mass-removal guard and the removal digest.

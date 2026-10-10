@@ -263,14 +263,6 @@ type Provider struct {
 	// ModelDir is the registry's model_dir (e.g. "~/.omlx/models"): where a
 	// filesystem-backed provider keeps its models. Read-only; not expanded.
 	ModelDir string `toml:"model_dir,omitempty"`
-	// OpenRouterPriced, when set, overrides the inferred value for the
-	// OpenRouterPriced model predicate. nil = infer from location/auth (the
-	// default). false = this provider's models are not OpenRouter-priced even
-	// though they appear on a non-native cloud provider (e.g. a corporate
-	// LiteLLM gateway). true = they are, even though the provider is not a
-	// cloud one. A native provider is never OpenRouter-priced, whatever this
-	// says.
-	OpenRouterPriced *bool `toml:"openrouter_priced,omitempty"`
 }
 
 // EffectiveProtocols returns the provider's declared protocols, defaulting
@@ -458,7 +450,7 @@ type CostWindow struct {
 }
 
 // TimePrice is a time-windowed override of a ModelCost's flat (default)
-// per-token prices. The rows are written by `wt cloud-sync`'s catalog flow
+// per-token prices. The rows are written by `wt cloud-sync`'s ollama flow
 // (ollama's off-peak pricing) and applied by nothing: wt decodes them and
 // shows the flat prices. What a row means: the first row whose window
 // contains an instant wins, per field, falling back to the flat prices.
@@ -971,34 +963,25 @@ func (c *Config) InCatalog(m Model) bool {
 	return err == nil
 }
 
-// OpenRouterPriced reports whether m's price comes from OpenRouter — what
-// `wt cloud-sync`'s prices flow refreshes: an openrouter model, or a model of a
-// non-native cloud provider. Keyed on the provider's location, not the
-// model's, so ollama cloud models don't count. Pinned by
-// docs/contracts/catalog-predicates.sample.toml.
+// OpenRouterProvider is the provider_id whose models take their price from
+// OpenRouter — the whole OpenRouterPriced rule. cloudsync aliases it, so the
+// rule's two readers (over the typed config and over registry rows) cannot
+// name different ids.
+const OpenRouterProvider = "openrouter"
+
+// OpenRouterPriced reports whether m's price comes from OpenRouter, which is
+// what `wt cloud-sync`'s openrouter flow refreshes and what the stale-pricing
+// notice watches: a model whose provider_id is "openrouter", and no other.
+// cloudsync.OpenRouterPriced is the same rule over registry rows; both are
+// pinned by docs/contracts/catalog-predicates.sample.toml.
 //
-// A provider's explicit openrouter_priced in the registry overrides the
-// inferred result in both directions, after the native check: false is for a
-// non-native cloud provider that routes through a corporate LiteLLM gateway
-// rather than OpenRouter, true puts a provider's models in. Both values are
-// honored, as cloudsync.OpenRouterPriced honors them: honoring only false
-// here would have the stale-price notice and the refresh disagree about a
-// provider marked true.
+// Until #322 a model of any non-native cloud provider counted too, and a
+// provider's openrouter_priced key overrode the result. The key dates from
+// when ollama's cloud models had no published prices; it is no longer read.
+// A registry that still has it loads (the decoder ignores a key Provider
+// does not model) and a write keeps it.
 func (c *Config) OpenRouterPriced(m Model) bool {
-	if m.Native {
-		return false
-	}
-	p := c.ProviderByID(m.ProviderID)
-	if p != nil && p.Auth.Type == "native" {
-		return false
-	}
-	if p != nil && p.OpenRouterPriced != nil {
-		return *p.OpenRouterPriced
-	}
-	if m.ProviderID == "openrouter" {
-		return true
-	}
-	return p != nil && p.Location == LocationCloud
+	return m.ProviderID == OpenRouterProvider
 }
 
 // AgentSupportsProvider reports whether the named agent lists providerID in

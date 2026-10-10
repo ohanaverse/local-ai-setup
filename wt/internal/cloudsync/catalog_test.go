@@ -133,7 +133,7 @@ func TestPlanUnchangedWhenPricesMatchAndNameRecorded(t *testing.T) {
 	}
 }
 
-// TestOffpeakRowIsOllamasPublishedWindow pins the one row the catalog flow
+// TestOffpeakRowIsOllamasPublishedWindow pins the one row the ollama flow
 // writes into cost.time_prices, as it lands in registry.toml: ollama's
 // off-peak window (outside 12:00 to 18:00 UTC on weekdays, all day at
 // weekends), keys in schema order, and a price the page
@@ -187,7 +187,7 @@ end = "24:00"
 	}
 }
 
-// TestPlanOffpeakSetReplaceRemoveKeepsOtherRows pins that the catalog flow
+// TestPlanOffpeakSetReplaceRemoveKeepsOtherRows pins that the ollama flow
 // owns exactly one time_prices row, the one labelled off-peak: it is set when
 // the page has off-peak prices and removed when it does not, and a row the
 // user wrote under another label survives both.
