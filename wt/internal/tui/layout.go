@@ -28,9 +28,10 @@ func clip(s string, width int) string { return tuilayout.Clip(s, width) }
 // at the terminal's edge with no sign of the cut, and a price cut there
 // reads as another price (0.33 as 0). So when the two do not fit the width
 // together the price takes the line and the mode gives way (at 40 columns:
-// always under "LiteLLM: off (direct)", and under "LiteLLM: on" for a price
-// with many digits); when the price does not fit even alone, the line is
-// the mode, as for a row with no price.
+// under "LiteLLM: off (direct)" for every price longer than 12 characters,
+// which is all but the shortest, and under "LiteLLM: on" for a price with
+// many digits); when the price does not fit even alone, the line is the
+// mode, as for a row with no price.
 func modeLine(mode, cost string, width int) string {
 	switch {
 	case cost == "":

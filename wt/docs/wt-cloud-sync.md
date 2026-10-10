@@ -428,9 +428,9 @@ the price **in force at the moment the picker opens**:
   the LiteLLM mode: `LiteLLM: on   cost~ 0.66/0.022/1.98` (input, cached
   input and output per million tokens; `cost~` when the price depends on
   the time; illustrative). The COST column is not always drawn: a narrow
-  table gives up whole columns, and one with a long model id in it (40
-  characters, say) has no COST column at 80 columns. This line is there
-  when the column is not. The price on it is whole or absent, never cut
+  table gives up whole columns, and one with a model id longer than about
+  15 characters in it, which is most tables, has no COST column at 80
+  columns. This line is there when the column is not. The price on it is whole or absent, never cut
   short: on a terminal too narrow for the mode and the price together (at
   40 columns, a price with many digits under `LiteLLM: on` and all but the
   shortest under `LiteLLM: off (direct)`) the price takes the line and the

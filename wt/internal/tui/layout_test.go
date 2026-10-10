@@ -1096,6 +1096,11 @@ func TestModelPickerNamesTheHighlightedModelsPrice(t *testing.T) {
 		{"LiteLLM: on", "cost~ 1.32/0.044/3.96", 34, "cost~ 1.32/0.044/3.96"},
 		{"LiteLLM: on", "cost~ 0.0825/0.020625/0.33", 36, "cost~ 0.0825/0.020625/0.33"},
 		{"LiteLLM: off (direct)", "cost 0.06/0.059/6", 36, "cost 0.06/0.059/6"},
+		// Under "LiteLLM: off (direct)" the 36 columns of a 40-column
+		// terminal hold a price of 12 characters beside the mode, and no
+		// longer one: the mode gives way from 13.
+		{"LiteLLM: off (direct)", "cost 4/0.4/8", 36, "LiteLLM: off (direct)   cost 4/0.4/8"},
+		{"LiteLLM: off (direct)", "cost 4/0.45/8", 36, "cost 4/0.45/8"},
 		{"LiteLLM: off (direct)", "cost~ 0.66/0.022/1.98", 76, "LiteLLM: off (direct)   cost~ 0.66/0.022/1.98"},
 		{"LiteLLM: on", "cost~ 0.000123456/0.000123456/0.000123456", 36, "LiteLLM: on"},
 		{"LiteLLM: on", "cost~ 0.000123456/0.000123456/0.000123456", 41, "cost~ 0.000123456/0.000123456/0.000123456"},
