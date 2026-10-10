@@ -71,26 +71,35 @@ func isOpenRouterRow(row *tomlw.Table) bool { return str(row, "label") == OpenRo
 // With no rates the flow's rows are dropped: the model no longer has a
 // schedule. Every other row is kept, in place; when there is nothing to
 // replace and nothing to add, existing itself is returned.
+//
+// It is returned too when the flow's rows already are, one for one and in
+// order, the rows for rates, wherever they stand: a file edited by hand can
+// hold another label's row between two of the flow's, and gathering them
+// would move that row for a plan line that reads the same on both sides (a
+// row of another label is not printed).
 func withOpenRouterRows(existing []*tomlw.Table, rates []Rate) []*tomlw.Table {
 	at := -1
-	var rows []*tomlw.Table
+	var rows, own, want []*tomlw.Table
 	for _, row := range existing {
 		if !isOpenRouterRow(row) {
 			rows = append(rows, row)
-		} else if at < 0 {
+			continue
+		}
+		own = append(own, row)
+		if at < 0 {
 			at = len(rows)
 		}
 	}
+	for _, r := range rates {
+		want = append(want, rateRow(r))
+	}
+	if sameRows(own, want) {
+		return existing
+	}
 	if at < 0 {
-		if len(rates) == 0 {
-			return existing
-		}
 		at = len(rows)
 	}
-	for i, r := range rates {
-		rows = slices.Insert(rows, at+i, rateRow(r))
-	}
-	return rows
+	return slices.Insert(rows, at, want...)
 }
 
 // rowKeys and windowKeys are the keys the sync writes on one of its rows and

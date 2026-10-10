@@ -239,28 +239,76 @@ func TestPlanPricesReplacesAnOpenRouterRowWhateverItHolds(t *testing.T) {
 	}
 
 	// The sync's own row, edited: another timezone on one model, a note on
-	// a window of another. Each is a fresh copy of what the sync writes.
+	// a window of another, a note on the row itself of a third (its windows
+	// untouched, so the row's own keys are what is looked at). Each is a
+	// fresh copy of what the sync writes.
 	synced := func() *Cost {
 		return &PlanPrices([]Entry{{ID: "or/hy3", ProviderID: "openrouter", ModelName: "tencent/hy3", Location: "cloud"}}, api).Matched[0].After
 	}
-	zoned, noted := synced(), synced()
+	zoned, noted, tagged := synced(), synced(), synced()
 	zoned.TimePrices[0].Set("timezone", "America/New_York")
+	tagged.TimePrices[0].Set("note", "mine")
 	windows, _ := noted.TimePrices[0].Get("windows")
 	windows.([]any)[0].(*tomlw.Table).Set("note", "mine")
 	plan = PlanPrices([]Entry{
 		{ID: "or/zoned", ProviderID: "openrouter", ModelName: "tencent/hy3", Location: "cloud", Cost: zoned},
 		{ID: "or/noted", ProviderID: "openrouter", ModelName: "tencent/hy3", Location: "cloud", Cost: noted},
+		{ID: "or/tagged", ProviderID: "openrouter", ModelName: "tencent/hy3", Location: "cloud", Cost: tagged},
 		{ID: "or/synced", ProviderID: "openrouter", ModelName: "tencent/hy3", Location: "cloud", Cost: synced()},
 	}, api)
 	const row = "0.132/0.033/0.528 (openrouter 0.0825/0.020625/0.33 mon-sun 16:00-24:00)"
 	want = strings.Join([]string{
-		"Price updates (2):",
+		"Price updates (3):",
 		"  or/zoned: 0.132/0.033/0.528 (openrouter 0.0825/0.020625/0.33 timezone=\"America/New_York\" mon-sun 16:00-24:00) -> " + row,
 		"  or/noted: 0.132/0.033/0.528 (openrouter 0.0825/0.020625/0.33 mon-sun 16:00-24:00 +keys) -> " + row,
+		"  or/tagged: 0.132/0.033/0.528 (openrouter 0.0825/0.020625/0.33 mon-sun 16:00-24:00 +keys) -> " + row,
 		"Unchanged prices: 1",
 	}, "\n")
 	if !strings.HasSuffix(plan.Format(), want) {
 		t.Errorf("Format() =\n%s\n\nwant it to end\n%s", plan.Format(), want)
+	}
+}
+
+// TestPlanPricesLeavesItsRowsWhereAUserPutThem pins the plan for a model with
+// two rows of the flow's and a row of the user's between them, which only a
+// hand-reordered file holds. When the flow's rows already say what OpenRouter
+// publishes there is nothing to write: gathering them at the first one's
+// place would move the user's row behind a row it was put ahead of (rows
+// resolve first match wins), on a plan line that prints the same text on
+// both sides of its arrow, since a row of another label is not printed. When
+// the schedule has changed, the rows are replaced where the first one stood,
+// and the line shows the change.
+func TestPlanPricesLeavesItsRowsWhereAUserPutThem(t *testing.T) {
+	const three = `{"prompt": "0.000002", "completion": "0.000004", "overrides": [
+		{"utc_start": 0, "utc_end": 0, "prompt": "0.000001", "completion": "0.000002"},
+		{"utc_start": 800, "utc_end": 2000, "prompt": "0.000003", "completion": "0.000006"},
+		{"utc_start": 1200, "utc_end": 1400, "prompt": "0.000002", "completion": "0.000004"}
+	]}`
+	own := scheduleRows(t, three)
+	if len(own) != 2 {
+		t.Fatalf("rows = %d, want 2", len(own))
+	}
+	mine := timeRow("mine", "sun")
+	stored := []*tomlw.Table{own[0], mine, own[1]}
+	plan := PlanPrices([]Entry{orEntry("m", &Cost{Input: f(3), Output: f(6), TimePrices: stored})}, apiOf(t, one(three)))
+	if len(plan.Matched) != 1 {
+		t.Fatalf("plan = %s", plan.Format())
+	}
+	if plan.Matched[0].Changed {
+		t.Errorf("rows that already hold the schedule are an update:\n%s", plan.Format())
+	}
+	if got := plan.Matched[0].After.TimePrices; len(got) != 3 || got[0] != own[0] || got[1] != mine || got[2] != own[1] {
+		t.Errorf("rows after = %v, want the three tables in the order they were read", labels(got))
+	}
+
+	// The schedule moved: the flow's rows are replaced, gathered where the
+	// first stood, and both sides of the line differ.
+	moved := strings.Replace(three, `"utc_end": 1400`, `"utc_end": 1500`, 1)
+	plan = PlanPrices([]Entry{orEntry("m", &Cost{Input: f(3), Output: f(6), TimePrices: stored})}, apiOf(t, one(moved)))
+	wantIDs(t, "rows after the schedule moved", labels(plan.Matched[0].After.TimePrices), "openrouter", "openrouter", "mine")
+	if want := "  openrouter/m: 3/-/6 (openrouter 2/-/4 mon-sun 12:00-14:00) (openrouter 1/-/2 mon-sun 00:00-08:00 20:00-24:00) -> " +
+		"3/-/6 (openrouter 2/-/4 mon-sun 12:00-15:00) (openrouter 1/-/2 mon-sun 00:00-08:00 20:00-24:00)"; !strings.Contains(plan.Format(), want) {
+		t.Errorf("Format() =\n%s\n\nwant the line\n%s", plan.Format(), want)
 	}
 }
 
