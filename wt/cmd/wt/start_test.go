@@ -632,9 +632,6 @@ func TestStartForLaunchHandsTheEngineTheRowsModelID(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { lifecycleStart = old })
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() {}
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
 
 	row := startTestRow()
 	if err := startForLaunch(&config.Config{}, row, false); err != nil {

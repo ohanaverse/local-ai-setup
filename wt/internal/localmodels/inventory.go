@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -47,10 +46,15 @@ const probeTimeout = 2 * time.Second
 const (
 	defaultOmlxOrigin  = "http://localhost:8000"
 	defaultMlxLMOrigin = "http://localhost:8001"
-	defaultMtplxOrigin = "http://localhost:8003"
 	defaultOmlxDir     = "~/.omlx/models"
 	defaultMtplxDir    = "~/.mtplx/models"
 )
+
+// defaultMtplxOrigin is where wt looks for mtplx when the registry has no
+// mtplx base_url. Its port is config.MtplxPort, the one a start serves mtplx
+// on and config.Provider.Origin gives a url with no port, so the three cannot
+// come to name different ports.
+var defaultMtplxOrigin = "http://localhost:" + strconv.Itoa(config.MtplxPort)
 
 // ModelDir is the expanded model directory the probe scans for a family: the
 // first of the family's provider rows that names a model_dir, else the family
@@ -383,39 +387,29 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 
 // FamilyOriginPort is FamilyOrigin with the URL's port resolved, for callers
 // that must hand a numeric port to a command line as well as dial the origin
-// (mtplx's start and stop). The origin it returns is FamilyOrigin's whenever
-// that names a port, which it does for the default of every family and for
-// mtplx on this machine.
+// (mtplx's start and stop). The origin it returns is always FamilyOrigin's,
+// so it cannot be a second reading of a provider's address (#348).
 //
-// An origin with no port has one answer, and only for mtplx: an mtplx
-// base_url that is https or names a host config.Provider.Origin does not
-// take for this machine gets config.MtplxPort, applied to the origin itself
-// and not only to the returned number, so the two never describe different
-// servers. That origin is then not FamilyOrigin's, which keeps the url's
-// implicit port: wt serves mtplx on 127.0.0.1 only, so a start against such
-// a url works only where the host is this machine under a name Origin does
-// not recognise (an /etc/hosts alias), and what it dials is left as it was
-// rather than moved onto a port the user did not write. For every other
-// family it is an error: wt hands those servers no port, so a port put on
-// the origin here would be an address nothing else reads (#348).
+// FamilyOrigin names a port for the default of every family and for an mtplx
+// url on an address wt serves mtplx on (config.Provider.Origin). An origin
+// with no port is an error: for mtplx it is a url wt cannot serve at, which
+// a start refuses, and wt hands the other families no port, so one added
+// here would be an address nothing else reads.
 func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
 	origin, _ := FamilyOrigin(cfg, family)
 	u, err := url.Parse(origin)
 	if err != nil {
 		return "", 0, fmt.Errorf("origin %q: %w", origin, err)
 	}
-	if p := u.Port(); p != "" {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return "", 0, fmt.Errorf("origin %q: bad port %q", origin, p)
-		}
-		return origin, n, nil
+	p := u.Port()
+	if p == "" {
+		return "", 0, fmt.Errorf("origin %q names no port", origin)
 	}
-	if family != "mtplx" {
-		return "", 0, fmt.Errorf("origin %q has no port, and wt does not choose the port of family %q", origin, family)
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		return "", 0, fmt.Errorf("origin %q: bad port %q", origin, p)
 	}
-	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(config.MtplxPort))
-	return u.String(), config.MtplxPort, nil
+	return origin, n, nil
 }
 
 // refused reports whether err is a refused TCP connection: the port has no

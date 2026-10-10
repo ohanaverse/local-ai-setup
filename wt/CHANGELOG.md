@@ -316,13 +316,31 @@
   LiteLLM route's `api_base` and a direct launch pointed at port 80, and
   `wt litellm sync` removed the family's routes as if the server were down.
   An `http` url for the mtplx provider on this machine (`localhost`,
-  `127.0.0.1`, `[::1]`, or `0.0.0.0`) with no port now means 8003 everywhere,
+  `127.0.0.1`, or `0.0.0.0`) with no port now means 8003 everywhere,
   the port `wt start` serves mtplx on. **If such a url really meant port 80**
   (an mtplx you run yourself on 80, or something on 80 in front of it),
   write the port: `base_url = "http://127.0.0.1:80/v1"`. Until you do, wt
   looks on 8003, shows the model as not running and drops its route on the
   next sync. A host name that only resolves to this machine (an `/etc/hosts`
   alias) is not recognised, so that url has to name its port too.
+- `wt start` of an mtplx model now refuses a `base_url` with no port that wt
+  cannot serve mtplx at, and starts nothing (#348): a host that is not
+  `localhost`, `127.0.0.1` or `0.0.0.0` (an `/etc/hosts` alias, another
+  machine, `[::1]`, `127.0.0.2`), or an `https` url. wt runs mtplx on
+  `127.0.0.1`, and used to start it on port 8003 for such a url anyway while
+  everything else read the url as written: under an alias the start exited 1
+  with the server left running where wt never looked, and for another host
+  or `[::1]` it waited the whole load timeout on an address the server was
+  not at. The message names the url; write the port in it
+  (`base_url = "http://mybox:8003/v1"`) or use `http://127.0.0.1`.
+- A LiteLLM route for an OpenAI-compatible server on `0.0.0.0`, `[::]`,
+  `localhost.` or any `127.x` address now gets `use_chat_completions_api:
+  true`, as one on `localhost`, `127.0.0.1` or `[::1]` already did. wt wrote
+  the route for an mtplx `base_url` spelled that way without it, so a codex
+  launch sent `/v1/responses` to a server that has only
+  `/v1/chat/completions`: a 404, then 429s from the router's cooldown. A
+  hand-written `openai/` row in `config.yaml` on one of those addresses
+  gains the setting on wt's next route write.
   Nothing else changes: a `base_url` that names
   a port is that port; an mtplx url that is `https` or names another host,
   and every omlx, ollama and mlx_lm_server url, is read as written (no port

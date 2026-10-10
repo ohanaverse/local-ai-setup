@@ -41,8 +41,6 @@ func TestProviderOriginGivesMtplxThePortWtServesItOn(t *testing.T) {
 		{"mtplx", "http://127.0.0.1", "http://127.0.0.1:8003"},
 		{"mtplx", "http://localhost/v1/", "http://localhost:8003"},
 		{"mtplx", "http://LOCALHOST", "http://LOCALHOST:8003"},
-		{"mtplx", "http://127.0.0.2/v1", "http://127.0.0.2:8003"},
-		{"mtplx", "http://[::1]/v1", "http://[::1]:8003"},
 		// Other spellings of this machine: a dial of the unspecified address
 		// reaches the server on 127.0.0.1, and "localhost." is localhost.
 		{"mtplx", "http://0.0.0.0/v1", "http://0.0.0.0:8003"},
@@ -58,6 +56,10 @@ func TestProviderOriginGivesMtplxThePortWtServesItOn(t *testing.T) {
 		{"mtplx", "http://10.0.0.5/v1", "http://10.0.0.5"},
 		{"mtplx", "http://mtplx.example", "http://mtplx.example"},
 		{"mtplx", "http://localhost.example", "http://localhost.example"},
+		// This machine, but not where a server on 127.0.0.1 answers: wt did
+		// not start what is there, so no port is put on it.
+		{"mtplx", "http://[::1]/v1", "http://[::1]"},
+		{"mtplx", "http://127.0.0.2/v1", "http://127.0.0.2"},
 		{"mtplx", "", ""},
 		{"mtplx", "127.0.0.1", "127.0.0.1"},
 		// wt hands these servers no port.

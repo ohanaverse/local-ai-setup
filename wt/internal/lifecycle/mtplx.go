@@ -18,18 +18,31 @@ type mtplxBackend struct{}
 
 func (mtplxBackend) tenancy() Tenancy { return Exclusive }
 
-// mtplxEndpoint returns the origin, /v1/models URL and port for the family.
-// All three come from one resolution so the port passed to `mtplx serve` cannot
-// differ from the port the wait polls.
-func mtplxEndpoint(cfg *config.Config) (origin, modelsURL string, port int) {
-	origin, port, err := localmodels.FamilyOriginPort(cfg, "mtplx")
+// mtplxStartEndpoint returns the origin, /v1/models URL and port a start
+// serves mtplx at. All three come from one resolution so the port passed to
+// `mtplx serve` cannot differ from the port the wait polls. A registry origin
+// with no port, or one that does not parse, is a *MtplxAddressError: the
+// server a start would spawn is not at that address.
+func mtplxStartEndpoint(cfg *config.Config) (origin, modelsURL string, port int, err error) {
+	origin, port, err = localmodels.FamilyOriginPort(cfg, "mtplx")
 	if err != nil {
-		// FamilyOriginPort only fails on an unparseable registry origin. Fall back
-		// through the same resolver with no registry rather than to a local
-		// constant, so the port still has exactly one source.
-		origin, port, _ = localmodels.FamilyOriginPort(&config.Config{}, "mtplx")
+		asRead, _ := localmodels.FamilyOrigin(cfg, "mtplx")
+		return "", "", 0, &MtplxAddressError{Origin: asRead}
 	}
-	return origin, origin + "/v1/models", port
+	return origin, origin + "/v1/models", port, nil
+}
+
+// mtplxEndpoint is mtplxStartEndpoint for a stop and for identifying the
+// server's process, which have no url to refuse: for a registry origin a
+// start refuses they look where wt serves mtplx when the registry says
+// nothing. The fallback goes through the same resolver with no registry
+// rather than to a local constant, so the port still has exactly one source.
+func mtplxEndpoint(cfg *config.Config) (origin, modelsURL string, port int) {
+	origin, modelsURL, port, err := mtplxStartEndpoint(cfg)
+	if err != nil {
+		origin, modelsURL, port, _ = mtplxStartEndpoint(&config.Config{})
+	}
+	return origin, modelsURL, port
 }
 
 func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) (err error) {
@@ -37,7 +50,10 @@ func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Tar
 	if lerr != nil {
 		return &BinaryMissingError{Binary: "mtplx"}
 	}
-	origin, models, port := mtplxEndpoint(cfg)
+	origin, models, port, aerr := mtplxStartEndpoint(cfg)
+	if aerr != nil {
+		return aerr
+	}
 	report(StageStarting)
 	closed, cerr := e.portClosedWithin(ctx, models, e.prebindTimeout)
 	if cerr != nil {

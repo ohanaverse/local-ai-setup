@@ -477,6 +477,41 @@ func TestIsLoopbackHandlesSchemelessHost(t *testing.T) {
 	}
 }
 
+// TestIsLoopbackReadsAHostAsProviderOriginDoes pins that the route settings
+// and config.Provider.Origin share one reading of "this machine" (#348).
+// Origin takes an mtplx base_url on 0.0.0.0 or "localhost." for the server wt
+// starts and routes it to port 8003. With a narrower list of its own here,
+// that route was written without use_chat_completions_api, and codex's
+// /v1/responses call went straight to a server that has only
+// /v1/chat/completions: a 404, then 429s from the router's cooldown.
+func TestIsLoopbackReadsAHostAsProviderOriginDoes(t *testing.T) {
+	for _, base := range []string{
+		"http://127.0.0.1/v1", "http://localhost", "http://LOCALHOST", "http://localhost./v1",
+		"http://0.0.0.0/v1", "http://[::]/v1",
+	} {
+		p := config.Provider{ID: "mtplx", Auth: config.AuthConfig{Type: "none", BaseURL: base}}
+		apiBase := p.Origin() + "/v1"
+		if !strings.Contains(apiBase, ":8003/") {
+			t.Fatalf("%q: api_base = %q, want the port wt serves mtplx on (the case this test is about)", base, apiBase)
+		}
+		if !isLoopback(&yaml.Node{Kind: yaml.ScalarNode, Value: apiBase}) {
+			t.Errorf("isLoopback(%q) = false for a base_url Origin takes for this machine (%q)", apiBase, base)
+		}
+	}
+	// This machine, though not an address wt serves mtplx on: a server the
+	// user runs there is still a local one.
+	for _, apiBase := range []string{"http://[::1]:8003/v1", "http://127.0.0.2:8003/v1"} {
+		if !isLoopback(&yaml.Node{Kind: yaml.ScalarNode, Value: apiBase}) {
+			t.Errorf("isLoopback(%q) = false, want true: this machine", apiBase)
+		}
+	}
+	for _, apiBase := range []string{"http://10.0.0.5:8003/v1", "https://mtplx.example/v1", "http://localhost.example:8003/v1"} {
+		if isLoopback(&yaml.Node{Kind: yaml.ScalarNode, Value: apiBase}) {
+			t.Errorf("isLoopback(%q) = true, want false: not this machine", apiBase)
+		}
+	}
+}
+
 // TestWithLockHonorsContext pins that a caller with a bounded context is not
 // trapped by a contended lock: flock has no timeout, so without the
 // non-blocking retry the lifecycle route hook's settling bounce (15s) could

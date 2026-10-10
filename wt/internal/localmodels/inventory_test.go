@@ -812,7 +812,7 @@ func TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot(t *testing.T) {
 // port nothing listens on. Families wt hands no port to keep the url as it
 // is written: there the start and the probes already asked the same address.
 func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
-	for _, base := range []string{"http://127.0.0.1/v1", "http://localhost", "http://[::1]/v1/", "http://0.0.0.0/v1", "http://localhost./v1", "http://127.0.0.1:9123/v1"} {
+	for _, base := range []string{"http://127.0.0.1/v1", "http://localhost", "http://0.0.0.0/v1", "http://localhost./v1", "http://127.0.0.1:9123/v1"} {
 		cfg := &config.Config{Providers: []config.Provider{localProvider("mtplx", base, "")}}
 		probe, fromRegistry := FamilyOrigin(cfg, "mtplx")
 		start, port, err := FamilyOriginPort(cfg, "mtplx")
@@ -835,6 +835,8 @@ func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
 	for _, c := range []struct{ id, base, want string }{
 		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example"},
 		{"mtplx", "http://10.0.0.5/v1", "http://10.0.0.5"},
+		{"mtplx", "http://mybox/v1", "http://mybox"},
+		{"mtplx", "http://[::1]/v1", "http://[::1]"},
 		{"omlx", "http://127.0.0.1/v1", "http://127.0.0.1"},
 		{"ollama", "http://127.0.0.1", "http://127.0.0.1"},
 		{"mlx_lm_server", "http://localhost/v1", "http://localhost"},
@@ -842,6 +844,11 @@ func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
 		cfg := &config.Config{Providers: []config.Provider{localProvider(c.id, c.base, "")}}
 		if got, _ := FamilyOrigin(cfg, familyOf(c.id)); got != c.want {
 			t.Errorf("%s %q: FamilyOrigin = %q, want %q (as written)", c.id, c.base, got, c.want)
+		}
+		// No port on the probes' origin is no port for a start either: a
+		// second reading that added one is what #348 was.
+		if origin, port, err := FamilyOriginPort(cfg, familyOf(c.id)); err == nil {
+			t.Errorf("%s %q: FamilyOriginPort = %q, %d; want an error, FamilyOrigin names no port", c.id, c.base, origin, port)
 		}
 	}
 }

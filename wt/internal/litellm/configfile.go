@@ -110,8 +110,6 @@ var wtParamKeys = map[string]bool{"model": true, "api_base": true, "api_key": tr
 // every ollama_chat/ model, including ones that would have handled it fine.
 var droppedOllamaChatParams = []string{"reasoning_effort", "frequency_penalty", "presence_penalty"}
 
-var loopbackHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
-
 // File is an open, editable LiteLLM config.yaml.
 type File struct {
 	path   string
@@ -453,7 +451,9 @@ func isLoopback(n *yaml.Node) bool {
 			return false
 		}
 	}
-	return loopbackHosts[strings.ToLower(u.Hostname())]
+	// config.IsLoopbackHost, the reading config.Provider.Origin goes by: a
+	// row whose api_base wt wrote for a local server is a local row here too.
+	return config.IsLoopbackHost(u.Hostname())
 }
 
 // mergeDepth bounds how many "<<" merges mergedGet follows from one mapping. A

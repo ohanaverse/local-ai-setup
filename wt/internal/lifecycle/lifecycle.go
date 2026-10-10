@@ -92,6 +92,18 @@ func (e *PortBusyError) Error() string {
 	return fmt.Sprintf("port %d is in use by another process — stop it before starting this model", e.Port)
 }
 
+// MtplxAddressError means the registry's mtplx base_url gives a start no
+// address: it names no port and is not a url wt puts its own on, or it does
+// not parse. wt serves mtplx on 127.0.0.1 and gives a url with no port its
+// port only where that server answers (config.Provider.Origin); a server
+// spawned for any other url would not be the one at that address, so nothing
+// is spawned. Origin is the address as wt reads it.
+type MtplxAddressError struct{ Origin string }
+
+func (e *MtplxAddressError) Error() string {
+	return fmt.Sprintf("the registry's mtplx base_url (%s) names no port, and wt serves mtplx on 127.0.0.1 — name the port mtplx listens on in the base_url, or use http://127.0.0.1", e.Origin)
+}
+
 // OccupancyUnknownError means the provider's live state could not be
 // determined: its server accepted a connection but did not give a usable
 // answer, so starting could replace a model that is still running. Nothing was

@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -130,14 +131,13 @@ func TestOccupantOfAnMtplxWithoutAPortIsSeen(t *testing.T) {
 //
 // What the address is: the url as written (BaseOrigin), except an mtplx url
 // on this machine with no port, which is the port wt serves mtplx on. An
-// mtplx url that is https or names another host is not here: wt serves mtplx
-// on 127.0.0.1 only, so no start against one can work, and its start side is
-// left as it was (localmodels.FamilyOriginPort).
+// mtplx url with no port that is https or names a host the server wt starts
+// does not answer on is not here: it has no start side, a start refuses it
+// (TestMtplxStartRefusesABaseURLWithNoPortItCannotServe).
 func TestStartProbeAndRouteAgreeOnAProvidersAddress(t *testing.T) {
 	for _, c := range []struct{ provider, baseURL, want string }{
 		{"mtplx", "http://127.0.0.1/v1", "http://" + mtplxServeHost},
 		{"mtplx", "http://localhost", "http://localhost:" + strconv.Itoa(config.MtplxPort)},
-		{"mtplx", "http://[::1]/v1", "http://[::1]:" + strconv.Itoa(config.MtplxPort)},
 		{"mtplx", "http://0.0.0.0/v1", "http://0.0.0.0:" + strconv.Itoa(config.MtplxPort)},
 		{"mtplx", "http://localhost./v1", "http://localhost.:" + strconv.Itoa(config.MtplxPort)},
 		{"mtplx", "http://127.0.0.1:9123/v1", "http://127.0.0.1:9123"},
@@ -201,6 +201,43 @@ func TestStartProbeAndRouteAgreeOnAProvidersAddress(t *testing.T) {
 			}
 			if route.Litellm || route.BaseOrigin != c.want {
 				t.Errorf("direct route = %+v, want origin %q", route, c.want)
+			}
+		})
+	}
+}
+
+// TestMtplxStartRefusesABaseURLWithNoPortItCannotServe verifies a start
+// spawns nothing for an mtplx base_url that names no port and is not one wt
+// gives a port to. wt serves mtplx on 127.0.0.1, so 8003 is put on a url only
+// where that server answers. For any other url with no port the start used to
+// put 8003 on it for itself alone, while the probes and the route read it as
+// written: under an /etc/hosts alias the server came up, the check after the
+// start asked port 80, and the start exited 1 with the server left running
+// where the inventory never looks; for a remote host or [::1] wt spawned a
+// local server and waited the whole load timeout on an address it is not at.
+func TestMtplxStartRefusesABaseURLWithNoPortItCannotServe(t *testing.T) {
+	for _, base := range []string{
+		"http://mybox/v1", "http://10.0.0.5/v1", "https://localhost/v1",
+		"http://[::1]/v1", "http://127.0.0.2/v1",
+	} {
+		t.Run(base, func(t *testing.T) {
+			e, _, _, argvFile := mtplxEnv(t, "serve", 0)
+			network := &servedAt{}
+			network.on(e)
+			cfg := provCfg("mtplx", base)
+			err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+			var addr *MtplxAddressError
+			if !errors.As(err, &addr) {
+				t.Fatalf("start = %v, want *MtplxAddressError", err)
+			}
+			if want := config.BaseOrigin(base); addr.Origin != want {
+				t.Errorf("the error names %q, want the registry's address %q", addr.Origin, want)
+			}
+			if _, statErr := os.Stat(argvFile); statErr == nil {
+				t.Error("mtplx was spawned for a url wt cannot serve it at")
+			}
+			if got := network.asked(); len(got) != 0 {
+				t.Errorf("the refused start asked %v, want nothing asked", got)
 			}
 		})
 	}

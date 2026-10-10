@@ -294,10 +294,10 @@ const MtplxPort = 8003
 // Origin is the address wt reaches provider p at: BaseOrigin of its
 // auth.base_url, with the port filled in where the url names none and wt is
 // what decides the port. That is one case only: the mtplx provider, an http
-// url, a host that is this machine (isLoopbackHost). `wt start` spawns `mtplx
-// serve --port MtplxPort --host 127.0.0.1` for such a url, so that is where
-// the server is, and a url read as written would mean port 80: the start
-// succeeded and every probe after it found nothing there (#348).
+// url, a host the server wt starts answers on (servesMtplxAt). `wt start`
+// spawns `mtplx serve --port MtplxPort --host 127.0.0.1` for such a url, so
+// that is where the server is, and a url read as written would mean port 80:
+// the start succeeded and every probe after it found nothing there (#348).
 //
 // Every reader of the provider's address goes through here — the probes
 // (localmodels.FamilyOrigin), a direct route (ResolveRoute, pi's models.json)
@@ -305,10 +305,12 @@ const MtplxPort = 8003
 //
 // Everything else is left as written, and a url with no port keeps its
 // scheme's own (80, 443): a url that names a port; an https url or a host
-// that is not this machine, which wt could not have started and where the
-// implicit port is what the user wrote (a name that only resolves to this
-// machine, an /etc/hosts alias, is such a host: nothing here resolves names,
-// so that url has to name its port); and every other provider — wt never
+// wt's server does not answer on, which wt could not have started and where
+// the implicit port is what the user wrote (a name that only resolves to
+// this machine, an /etc/hosts alias, is such a host: nothing here resolves
+// names, so that url has to name its port; so are ::1 and 127.0.0.2, this
+// machine but not 127.0.0.1). `wt start` refuses an mtplx url left with no
+// port (lifecycle.MtplxAddressError); and every other provider — wt never
 // tells omlx or ollama a port (they listen where their own settings say), so
 // there the address wt probes, the one a start waits on and the route's
 // api_base already agree, and a default port would be a guess.
@@ -318,20 +320,42 @@ func (p Provider) Origin() string {
 		return origin
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "http" || u.Port() != "" || !isLoopbackHost(u.Hostname()) {
+	if err != nil || u.Scheme != "http" || u.Port() != "" || !servesMtplxAt(u.Hostname()) {
 		return origin
 	}
 	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(MtplxPort))
 	return u.String()
 }
 
-// isLoopbackHost reports whether host is a spelling of this machine that
-// reaches a server listening on 127.0.0.1: "localhost" (with or without the
-// root's trailing dot), an address in 127.0.0.0/8 or ::1, or the unspecified
-// address (0.0.0.0, ::), which a dial treats as the local host. It goes by
-// the text alone: a name that resolves here is not recognised.
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+// isLocalhostName reports whether host is "localhost", with or without the
+// root's trailing dot.
+func isLocalhostName(host string) bool {
+	return strings.EqualFold(strings.TrimSuffix(host, "."), "localhost")
+}
+
+// servesMtplxAt reports whether a connection to host reaches the server
+// `wt start` runs with `--host 127.0.0.1`: "localhost", 127.0.0.1 itself, or
+// the unspecified address (0.0.0.0, ::), which a dial treats as the local
+// host. It is narrower than IsLoopbackHost: ::1 and the rest of 127.0.0.0/8
+// are this machine, and a server bound to 127.0.0.1 does not answer there.
+func servesMtplxAt(host string) bool {
+	if isLocalhostName(host) {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.Equal(net.IPv4(127, 0, 0, 1)) || ip.IsUnspecified())
+}
+
+// IsLoopbackHost reports whether host is a spelling of this machine:
+// "localhost" (with or without the root's trailing dot), an address in
+// 127.0.0.0/8 or ::1, or the unspecified address (0.0.0.0, ::), which a dial
+// treats as the local host. It goes by the text alone: a name that resolves
+// here is not recognised. It is the one answer to "is this host this
+// machine": internal/litellm asks it for the settings a local server's route
+// needs, and every host Origin gives a port to (servesMtplxAt) is one, so a
+// url Origin takes for a local mtplx gets a route written as a local one.
+func IsLoopbackHost(host string) bool {
+	if isLocalhostName(host) {
 		return true
 	}
 	ip := net.ParseIP(host)
