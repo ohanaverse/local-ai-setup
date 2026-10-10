@@ -3,7 +3,7 @@
 ## Docs
 - User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance, agent benchmarks, MLX quantization, capability eval). Read `docs/guides/00-config-map.md` first for config-file ownership.
 - `./issues.md` — follow-ups from the 2026-08-29 guide-set review (items 1–5 FIXED, kept as a historical record), plus one open, deferred item: #6, `piCompat` full-pointer replacement in `wt/internal/agents/pi_models.go`.
-- Package-level context: `llmbench/CLAUDE.md` (Python benchmarks + provider isolation) and `wt/CLAUDE.md` (Go worktree launcher) contain per-package commands, architecture, and gotchas.
+- Package-level context: `llmbench/CLAUDE.md` (Python benchmarks + provider isolation), `wt/CLAUDE.md` (Go worktree launcher) and `litellm-session-logs/CLAUDE.md` (session-log pipeline) contain per-package commands, architecture, and gotchas.
 
 ## Commands
 - `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (3 local backends — ollama/omlx/mtplx — + OpenRouter)
@@ -14,7 +14,7 @@
 - `uv run --directory llmbench llmbench eval run --suite <path>` — cross-category capability benchmark (reasoning/planning/coding/code_review/doc_summary, single-turn, judged + EvalPlus); see `docs/guides/11-capability-eval-benchmark.md`
 - `uv run --directory llmbench llmbench provider isolate <ollama|omlx|omlx-6bit|mtplx>` — stop others, start+warmup one (for the benchmarks; llama.cpp was retired on 2026-09-07 and its backend removed — see `docs/reference/provider-artifacts.md`)
 - `uv run --directory llmbench llmbench provider isolate mlx_lm_server <target> --draft <draft>` — isolate a target+draft speculative-decoding pairing on port 8001; no default pairing exists, target/draft must always be passed (positional `target` + `--draft`, or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`)
-- `uv run --directory llmbench llmbench provider restore` — bring all providers back up after a benchmark
+- `uv run --directory llmbench llmbench provider restore` — after a benchmark: start ollama, omlx and the LiteLLM proxy when they are not answering, and stop mtplx and mlx_lm_server
 - `uv run --directory llmbench llmbench provider stop <provider>` — stop one provider (e.g. `mtplx`, ~28GB resident); `wt smoke --json` (or non-TTY stdin) skips its exit stop prompt, so the server is left running
 - `wt cloud-sync [--only openrouter,ollama] [--dry-run] [--yes --approve-removals DIGEST] [--force] [--html FILE]` — refresh OpenRouter prices and mirror ollama.com/pricing (cloud models, prices incl. off-peak, pulls and removals) into `registry.toml`, ollama and the LiteLLM routes; a flow whose provider the registry does not use is skipped (exit 0), and exit codes 2–5 say why the ollama flow changed nothing. Start with `--dry-run`; see the `cloud-sync` skill in `wt/.claude/skills/` and `wt/docs/wt-cloud-sync.md`.
 - `bin/mlx-quantize <convert|dynamic-quant|dwq> --model <repo-or-path> [--mlx-path <out-dir>]` — thin wrapper around the omlx-bundled mlx_lm quantization tools; see `docs/guides/10-mlx-lm-quantization.md`

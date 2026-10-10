@@ -103,12 +103,13 @@ defaulted (it always comes from `-A` or the agent+command picker).
 
 | Flag | Description |
 |------|-------------|
-| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. The agent+command picker still appears when `-A` is omitted, and the model picker still appears when `-M` is omitted. |
+| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. |
 | `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. The agent is never defaulted: when `-A` is omitted the agent+command picker is always shown. Supplying `-A` skips the picker. |
-| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). Errors if not in the eligible list. Skips the model picker. Without `-A`, the agent+command picker is shown first, then the pin is validated against the chosen agent. |
+| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). A pinned local model that is not running is started first. Errors if the model is not in the eligible list or its row is blocked. Skips the model picker. Without `-A`, the agent+command picker is shown first, then the pin is validated against the chosen agent. |
+| `--replace` | With `-M`, start the model even if it means stopping a running one. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
-| `--cwd` | Launch in the current directory; skip the worktree picker. The agent+command picker still appears when `-A` is omitted, and the model picker still appears when `-M` is omitted. |
+| `--cwd` | Launch in the current directory; skip the worktree picker. The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. |
 | `--yolo` | Skip permission prompts (agent-specific). |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 
@@ -117,15 +118,23 @@ picker, then the model picker (for agents). Multiple eligible models
 rotate on successive launches via a single global rotation state file. Each picker is
 skipped only when its selection is already resolved: `-W`/`--cwd` skip the
 worktree picker, `-A` skips the agent+command picker, and `-M` skips the
-model picker. So `-W foo -A pi` (no `-M`) still shows the model picker, and
+model picker. With `-W` or `--cwd` and `-A` but no `-M`, wt launches
+directly when exactly one model is launchable for the agent (a cloud model,
+or a local model already running), whatever stopped or blocked models the
+agent also has. So `-W foo -A pi` (no `-M`) shows the model picker only when
+several models, or none, are launchable. When the worktree picker or the
+agent+command picker was shown, the model picker is skipped only when its
+table holds a single row and that row is launchable: one launchable model
+beside a stopped local model or a blocked row still shows the picker.
 `-W foo -M claude/opus` (no `-A`) shows the agent+command picker first and
 then validates the pin against the chosen agent.
 
-The agent+command picker lists every registered agent and command. Agents
-that cannot launch carry an inline indication — "not configured" (missing
-from `config.toml`) or "not installed" (no binary on PATH) — and selecting
-one is blocked with a clear error rather than advancing to a model screen
-that can never succeed.
+The agent+command picker lists every registered agent and command. An
+agent with no binary on PATH is marked "not installed", and selecting it is
+blocked with a clear error rather than advancing to a model screen that can
+never succeed. An installed agent with no `config.toml` entry is marked
+"not configured — launches directly with no model" and launches bare,
+without the model layer; it is refused only when `-M` is also given.
 
 ### Arguments after `--`
 
@@ -237,7 +246,9 @@ line.
   bare Enter (or `q`/`esc`) stops nothing. A line it cannot read stops
   nothing and asks again. Anything left running can be stopped later with
   `wt stop`. It is silent
-  when nothing qualifies, when stdin is not a TTY, and for command agents.
+  when nothing qualifies, when stdin is not a TTY, for command agents, and
+  after a native-model session (a native launch runs no local server of its
+  own).
   wt releases its own refcount entry first, or the model this session just
   used would always count as in use.
   Its stops run on a context of their own, cancelled by Ctrl+C or SIGTERM:

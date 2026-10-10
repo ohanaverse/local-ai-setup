@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
+- **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this: it stops every other local provider, and unloads every loaded ollama model when the target is not ollama. An ollama model that is already loaded survives `isolate ollama` (see Gotchas).
 - Models routed through LiteLLM per [04-litellm-config](04-litellm-config.md). **`llmbench run` has no default target set**: name models with `--model` (or a family with `--family`), or it exits 2 with `name models (--model) or pass --family`. A named model must sit on a local provider (`LOCAL_PROVIDERS`: ollama, omlx, mlx_lm_server, mtplx) — OpenRouter models are never picked, and `--family` also skips cloud-located models such as ollama `:cloud` stubs, which only an explicit `--model` selects (`discover_targets`, `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/benchmark/runner.py`). To see the ids a `--family` run could pick:
 
   ```bash
@@ -16,7 +16,7 @@
   (one id per line, still subject to the `--family` filter and to the model still being in `registry.toml`.)
 - Backends healthy: the three-port block in Verification answers (oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`). llama.cpp was retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).
 - llmbench runnable from its directory (`uv run llmbench …` from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench`; llmbench is not installed globally). Provider lifecycle CLI callable the same way:
-  `uv run llmbench provider isolate <ollama|omlx|omlx-6bit>` and `uv run llmbench provider restore` from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench` (or `uv run --directory llmbench llmbench provider ...` from the repo root — that's how the `benchmarks/` scripts invoke it).
+  `uv run llmbench provider isolate <ollama|omlx|omlx-6bit|mtplx>` (or `isolate mlx_lm_server <target> --draft <draft>`) and `uv run llmbench provider restore` from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench` (or `uv run --directory llmbench llmbench provider ...` from the repo root — that's how the `benchmarks/` scripts invoke it).
 
 ## TL;DR
 
@@ -44,7 +44,7 @@ Artifacts land in `/Users/keith/.config/local-ai/benchmarks/<run-id>/` (`summary
 
 ### 1. Isolate one provider
 
-`llmbench provider isolate` stops every *other* local provider, then starts + warms the target (warmup = one `max_tokens: 1` chat request, retried up to 90 attempts until the server answers). It's the CLI over `src/llmbench/providers/lifecycle/orchestrate.py`; per-provider start/stop/warmup logic lives in one `Backend` subclass per provider under `src/llmbench/providers/lifecycle/backends/` — this is an in-process port of the old `bin/llm-isolate-provider`/`bin/llm-restore-providers` bash scripts (issue #79; both deleted). Safe read-only probes, verified live from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench`:
+`llmbench provider isolate` stops every *other* local provider, then starts + warms the target (warmup = one `max_tokens: 1` chat request, retried about once a second until the server answers or a wall-clock deadline passes: 600 s for ollama, oMLX and mlx_lm_server, 120 s for mtplx). It's the CLI over `src/llmbench/providers/lifecycle/orchestrate.py`; per-provider start/stop/warmup logic lives in one `Backend` subclass per provider under `src/llmbench/providers/lifecycle/backends/` — this is an in-process port of the old `bin/llm-isolate-provider`/`bin/llm-restore-providers` bash scripts (issue #79; both deleted). Safe read-only probes, verified live from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench`:
 
 ```bash
 uv run llmbench provider isolate            # no arg
@@ -68,17 +68,19 @@ error: unknown provider: notaprovider
 ```
 (exit 1; the unknown-arg and no-arg paths exit before any service is touched.)
 
-Per-argument behavior (from `backends/ollama.py` and `backends/omlx.py`; unchanged from the bash version this replaced). The warmup models are code defaults — they need not be pulled or registered on your machine; override them as described below:
+Per-argument behavior (from the modules under `backends/`). Every argument stops all the *other* local providers, each by its own mechanism: oMLX with `omlx stop`, ollama with `ollama stop` for every model `ollama ps` lists (then a poll until none is loaded), mtplx with `mtplx stop --port 8003 --grace-seconds 10`, mlx_lm_server by signalling the process in its pidfile. The ollama and oMLX warmup models are code defaults — they need not be pulled or registered on your machine; override them as described below:
 
 | Arg | Stops | Starts + warms (model) | Serves on |
 |-----|-------|------------------------|-----------|
-| `ollama` | oMLX (`omlx stop`) | ollama daemon via `launchctl kickstart` if down; warmup default `ornith-1.5:35b` (`DEFAULT_MODEL`, `backends/ollama.py`) | `http://localhost:11434/v1/chat/completions` |
-| `omlx` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup default Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`, `DEFAULT_4BIT_MODEL` in `backends/omlx.py`) | `http://localhost:8000/v1/chat/completions` |
-| `omlx-6bit` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup default Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`, `DEFAULT_6BIT_MODEL` in `backends/omlx.py`) | `http://localhost:8000/v1/chat/completions` |
+| `ollama` | oMLX, mtplx, mlx_lm_server | ollama daemon via `launchctl kickstart` if down; warmup default `ornith-1.5:35b` (`DEFAULT_MODEL`, `backends/ollama.py`) | `http://localhost:11434/v1/chat/completions` |
+| `omlx` | ollama models, mtplx, mlx_lm_server | `omlx start`; warmup default Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`, `DEFAULT_4BIT_MODEL` in `backends/omlx.py`) | `http://localhost:8000/v1/chat/completions` |
+| `omlx-6bit` | ollama models, mtplx, mlx_lm_server | `omlx start`; warmup default Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`, `DEFAULT_6BIT_MODEL` in `backends/omlx.py`) | `http://localhost:8000/v1/chat/completions` |
+| `mtplx` | ollama models, oMLX, mlx_lm_server | `mtplx serve` as a background process; no default model: the positional model, else the single mtplx model in the registry, else it refuses (`backends/mtplx.py`) | `http://localhost:8003/v1/chat/completions` |
+| `mlx_lm_server` | ollama models, oMLX, mtplx | `mlx_lm.server --draft-model` as a background process; no default pairing: positional target plus `--draft` (or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`), else it refuses before stopping anything (`backends/mlx_lm_server.py`) | `http://localhost:8001/v1/chat/completions` |
 
 Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL` — this still works (the CLI deliberately keeps the env-var fallback for compatibility with the old bash helpers), but the **now-preferred** form is the explicit positional argument: `uv run llmbench provider isolate ollama <model>` (or `--json` for the machine-readable envelope). With `--json`, it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — the same 5-key contract the bash script produced — which is what llmbench's own benchmark adapter reads in-process (`src/llmbench/benchmark/isolation.py`) without going through the CLI at all.
 
-`uv run llmbench provider restore` restarts all three services in parallel (ollama, oMLX, LiteLLM), skips any already answering its health URL, and exits 1 if any fails to come back; on success it prints `restored providers` (or the JSON envelope with `--json`).
+`uv run llmbench provider restore` restarts ollama, oMLX and LiteLLM in parallel, skipping any already answering its health URL, and stops mtplx and mlx_lm_server, which are never part of the standing baseline — a model either of them was serving is torn down. It exits 1 if a restarted service fails to come back; on success it prints `restored providers` (or the JSON envelope with `--json`).
 
 ### 2. Run `llmbench`
 
@@ -139,14 +141,14 @@ Latest-run pointer: after a run, `cli.py` writes `last_run` / `last_run_dir` int
 
 ### 5. Legacy scripts (superseded — kept for history)
 
-`qwen3.8-benchmark*` / `ornith-1.5-benchmark*` bash scripts (also installed in `~/.local/bin/`) predate the benchmark CLI. One-liners, usage from the script headers:
+`qwen3.8-benchmark*` / `ornith-1.5-benchmark*` bash scripts predate the benchmark CLI. They are not installed on PATH, so run them by path (`./qwen3.8-benchmark` from `benchmarks/`); each finds the `lib/` directory it sources relative to its own location, whatever the working directory. One-liners, usage from the script headers:
 
 <!-- UNVERIFIED — each script stops/starts live services around every backend. -->
 ```bash
 # from: /Users/keith/github/ohanaverse/local-ai-setup/benchmarks
 ./qwen3.8-benchmark              # single pass, 200 max_tokens (arg 2 = custom prompt)
 ./qwen3.8-benchmark-multi 5 200 30    # 5 passes, 200 max_tokens, 30 s cooldown; one file per pass, no aggregation
-./ornith-1.5-benchmark           # single pass, four Ornith-1.5-35B variants
+./ornith-1.5-benchmark           # single pass, three Ornith-1.5-35B variants (ollama, omlx 4-bit, omlx 6-bit)
 ./ornith-1.5-benchmark-multi 3   # 3 passes (PASSES [max_tokens] [cooldown])
 ```
 
@@ -161,7 +163,7 @@ Reference docs: `benchmarks/qwen3.8-benchmark.md`, `benchmarks/ornith-1.5-benchm
 
 ## Verification
 
-Backends back after a restore — four-port block (consistent with guides 01/04; verified live on 2026-08-29):
+Backends back after a restore — three-port block (consistent with guides 01/04; verified live on 2026-08-29):
 
 ```bash
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
@@ -194,12 +196,13 @@ ls /Users/keith/.config/local-ai/benchmarks/
 ## Gotchas
 
 - **Isolation is mandatory.** Local models share Apple Silicon GPU/RAM; a second loaded model skews every number in the run (this repo's `CLAUDE.md`). llmbench enforces it internally — each target is isolated through `src/llmbench/providers/lifecycle/orchestrate.py` (called in-process, not via a subprocess or PATH lookup — issue #79) before its requests, and the whole stack is restored in a `finally` (`src/llmbench/benchmark/isolation.py`).
-- **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service.
-- **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `uv run llmbench provider isolate omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. llmbench always passes the provider id (`omlx`, never `omlx-6bit`), so an oMLX 6-bit target would be warmed as 4-bit — this bites only if your registry has an oMLX 6-bit model as a benchmark target; keep it in mind for future backends.
-- **The isolate command only stops the *named* ollama model.** `ollama stop` targets the code default `ornith-1.5:35b` (`DEFAULT_MODEL` in `backends/ollama.py`; override with `LLM_ISOLATE_OLLAMA_MODEL`); a different ollama model you left loaded earlier survives isolation and will still fight for GPU/RAM. Unload it by hand or override the env var.
-- **Fixed warmup model for `ollama` isolation.** `uv run llmbench provider isolate ollama` warms a FIXED model (`LLM_ISOLATE_OLLAMA_MODEL`, code default `ornith-1.5:35b` set in `backends/ollama.py`), not the benchmark target — benchmarking any other ollama model requires `export LLM_ISOLATE_OLLAMA_MODEL=<target-model>` before `llmbench run` (this also makes the `ollama stop`/poll path correct when isolating other backends). Two resident models = GPU/RAM contention = garbage timings.
+- **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service; mtplx: `mtplx stop --port 8003 --grace-seconds 10` ends its serve process; mlx_lm_server: the process in its pidfile is signalled.
+- **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `uv run llmbench provider isolate omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. `llmbench run` passes the registry row's own `provider_id` to isolation and, for oMLX, no model name: a row under provider `omlx-6bit` is warmed with the 6-bit default, a row under `omlx` with the 4-bit default. So a 6-bit model registered under provider `omlx` is warmed as 4-bit, and any oMLX target other than the two defaults is warmed as a default — set `LLM_ISOLATE_OMLX_4BIT_MODEL` / `LLM_ISOLATE_OMLX_6BIT_MODEL` to the target before `llmbench run`.
+- **Isolating another backend unloads every ollama model.** The ollama stop runs `ollama stop` for each model `ollama ps` lists and polls until none is loaded (`stop_and_wait` in `backends/ollama.py`); `LLM_ISOLATE_OLLAMA_MODEL` plays no part in stopping.
+- **`isolate ollama` does not unload ollama models.** ollama is the kept backend, so its stop never runs: a model already loaded stays loaded beside the warmed one. Check `ollama ps` and run `ollama stop <model>` for each leftover before isolating ollama.
+- **Fixed warmup model for `ollama` isolation.** `uv run llmbench provider isolate ollama` warms a FIXED model (`LLM_ISOLATE_OLLAMA_MODEL`, code default `ornith-1.5:35b` set in `backends/ollama.py`), not the benchmark target — benchmarking any other ollama model requires `export LLM_ISOLATE_OLLAMA_MODEL=<target-model>` before `llmbench run`. Two resident models = GPU/RAM contention = garbage timings.
 - **`--run-id` ignores `--results-dir`** — it reads `/Users/keith/.config/local-ai/benchmarks/<run-id>/summary.md` only.
-- **Shebang split.** `benchmarks/*` scripts use Homebrew bash (`#!/opt/homebrew/bin/bash`); `bin/*` (now just `check-links` and `mlx-quantize`) uses `#!/bin/bash` (`check-links` is Python, `#!/usr/bin/env python3`). Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style).
+- **Shebang split.** `benchmarks/*` scripts use Homebrew bash (`#!/opt/homebrew/bin/bash`); the `bin/*` bash helpers (`mlx-quantize`, `check-config-dirs-untouched`) use `#!/bin/bash`; `check-links` and `extract-claude-skills` are Python (`#!/usr/bin/env python3`). Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style).
 - **Two result homes.** Legacy script output goes to `/tmp/<script>-<timestamp>.md` and should be archived into `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/results/`; llmbench runs write under `/Users/keith/.config/local-ai/benchmarks/<run-id>/` — not inside this repo.
 - **OpenRouter rows are N/A without an API key** (legacy scripts read `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`).
 - **Run llmbench from the repo.** llmbench is not installed globally. Always run it with `uv run llmbench …` from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench`.

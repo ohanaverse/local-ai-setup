@@ -58,7 +58,7 @@ Interactive behaviors (key feel) are not driven here — see the UNVERIFIED note
 Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the agent screen). Phases in `internal/tui/app.go`: worktree list → agent/command picker (only when no `-A` was supplied) → agent+model screen → launch.
 
 - **Worktree picker:** scroll with `j`/`k` (or arrows), `/` to filter, `n` or selecting `+ New worktree…` to create a branch, `enter` to select, `q` or `esc` to quit.
-- **Agent+model screen header** shows the agent and the active tag slot (`internal/tui/model_list.go`):
+- **Agent+model screen header** shows the agent and the active tag slot (`internal/tui/layout.go`):
 
   ```
   agent : claude
@@ -167,7 +167,7 @@ registry entry — matching LiteLLM's `model_list` entries.
   ```
 
   Output is a single model id — e.g. `ollama/kimi-k2.7-code:cloud` (example; yours depends on your registry and last launch) — i.e. "the model after the last-launched one, walking the global list filtered to tag `code`". It prints only; it never writes state.
-- `rotation.state` is written by the TUI **launch** path (`Rotation.Record()`), which also appends to `usage.jsonl` (§8). A cancelled ollama warning and `esc` leave rotation untouched.
+- `rotation.state` is written by every model **launch**, through the picker or not (`Rotation.RecordFor()`), which also appends to `usage.jsonl` (§8). A cancelled ollama warning and `esc` leave rotation untouched.
 
 ### 6. `wt config`
 
@@ -201,13 +201,13 @@ Available Commands:
 
 ### 8. Launch records
 
-Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Record()` → `usage.Store.Record()`). Example record (`tail -1 ~/.config/agent-wt/usage.jsonl` shows your latest; the id will differ):
+Every model launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.RecordFor()` → `usage.Store.RecordFor()`). Example record (`tail -1 ~/.config/agent-wt/usage.jsonl` shows your latest; the id will differ):
 
 ```json
-{"model_id":"ollama/glm-5.3-flash:cloud","timestamp":"2026-08-29T18:33:05.297099Z"}
+{"model_id":"ollama/glm-5.3-flash:cloud","agent":"claude","timestamp":"2026-08-29T18:33:05.297099Z"}
 ```
 
-The picker reads per-model (and per-agent-pair) 1d/7d/30d counts from this file at query time via `Store.Counts` / `CountsForAgent` — no schema change, and existing history stays valid. See `internal/usage`.
+The picker reads per-model (and per-agent-pair) 1d/7d/30d counts from this file at query time via `Store.Counts` / `CountsForAgent`. A line without an `agent` field counts per model only, and each write drops lines older than 30 days. See `internal/usage`.
 
 ### 9. Local-model launch profiles (pi + little-coder)
 
@@ -282,7 +282,7 @@ Model pin dry explanation (no agent launch required): suppose `ollama/qwen3.8:27
 - **Stale PATH binary:** `/Users/keith/.local/bin/wt` (2026-08-27) reads its model catalog from `config.toml`, missing registry-only models; rebuild with the Prerequisites command. After a rebuild, expect `wt rotate code`'s pair-check behavior to change until tags exist in the registry (also flagged in [03-model-families](03-model-families.md)).
 - **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `/Users/keith/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
 - **`-W` is the real flag.** The `-w` short form was removed and now errors with `-w is removed; use -W or --worktree`.
-- **`rotation.state` is written by launches only** (`Record()`); the `wt rotate <tag>` probe and `esc`/canceled prompts never touch it. One global slot — per-tag/agent state files are legacy migration inputs.
+- **`rotation.state` is written by model launches only** (`RecordFor()`); the `wt rotate <tag>` probe and `esc`/canceled prompts never touch it. One global slot — per-tag/agent state files are legacy migration inputs.
 
 ## Going deeper
 

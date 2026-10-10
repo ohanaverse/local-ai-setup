@@ -47,20 +47,20 @@ The `opencode-wt` launcher does not manage credentials — it relies on the user
 
 ## Model selection
 
-OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects ollama models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable:
+OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects non-native models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable. The JSON declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) and points `model` and `small_model` at it. On a direct route (shown for the default ollama provider row):
 ```json
-{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"http://localhost:11434/v1","apiKey":""},"models":{"<model>":{"name":"<model>"}}}}}
+{"model":"agent-wt/<model>","small_model":"agent-wt/<model>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:11434/v1","apiKey":""},"models":{"<model>":{"name":"<model>"}}}}}
 ```
 
-OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher constructs the literal `ollama/` prefix from the **bare** provider-specific name (`config.Model.ModelName`), not from `config.Model.ID`. Using `m.ID` here would produce `ollama/ollama/<model>` (a double prefix) because the registry already prefixes IDs with the provider id. This is the symmetric trap to the one in `claude-wt`/`codex-wt`/`copilot-wt`, where the launcher must NOT add a prefix.
+OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher prefixes its own provider id, `agent-wt/`, to the model name. On a direct route that name is the **bare** provider-specific name (`config.Model.ModelName`), not `config.Model.ID`: the registry id already carries the registry provider id (`ollama/<model>`), which the provider's endpoint would not recognize. OpenCode splits a model ref on the first slash, so `agent-wt/<model>` selects the wt provider and the rest reaches the endpoint verbatim.
 
-The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`) with a `/v1` suffix. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.ollama.options.baseURL`).
+The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row) with a `/v1` suffix, and `apiKey` is that provider's resolved `secret_ref` (empty when it has none). `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.agent-wt.options.baseURL`).
 
-The builtin `ollama` provider resolves model ids against OpenCode's own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. The explicit `models` map registers the bare name so OpenCode accepts it; this is the same catalog-bypass the LiteLLM route uses (below), just on the builtin provider instead of a custom one.
+OpenCode's builtin providers resolve model ids against its own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. A custom provider with an explicit `models` map registers the bare name so OpenCode accepts it. The LiteLLM route (below) uses the same `agent-wt` provider; only the base URL, key and model id differ.
 
 ### LiteLLM routing
 
-When LiteLLM routing is enabled (`wt litellm status`), the inline config declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
+When LiteLLM routing is enabled (`wt litellm status`), the same `agent-wt` provider is pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
 
 ```json
 {"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:4000/v1","apiKey":"<litellm.api_key>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}

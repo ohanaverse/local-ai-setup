@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - **LiteLLM proxy running with Postgres spend logging** — the stack from [01-initial-setup](01-initial-setup.md) / [04-litellm-config](04-litellm-config.md). Spend rows land in the Postgres `LiteLLM_SpendLogs` table; without it the REQUESTS, PROMPT, COMPLETION and SPEND columns have nothing to read (launch counts still work).
-- **wt launch history exists**: `~/.config/agent-wt/usage.jsonl` — wt appends one JSON line per TUI launch (guide 06 §8). Example line (captured 2026-08-29 — your model ids will differ):
+- **wt launch history exists**: `~/.config/agent-wt/usage.jsonl` — wt appends one JSON line per model launch, from the picker or not (guide 06 §8). Example line (captured 2026-08-29 — your model ids will differ, and a current line also carries an `agent` field):
   ```json
   {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
   ```
@@ -66,7 +66,7 @@ After `wt litellm on`, non-native launches route through LiteLLM, so rows with b
 One source per table — the survey table's first, then the usage table's two:
 
 - `~/.config/agent-wt/survey.jsonl` — the **survey table's** only source: one JSON object per answered post-session survey (agent, model, verdict, speed, quality, task). wt writes it at exit when the survey asks; the survey is switched off (#136), so it holds only older answers and thins out as they pass 30 days.
-- `~/.config/agent-wt/usage.jsonl` — one JSON object per wt TUI launch, `model_id` + `timestamp` only (no tokens, no cost, no keys). Sample line quoted in Prerequisites.
+- `~/.config/agent-wt/usage.jsonl` — one JSON object per wt model launch: `model_id`, `agent` and `timestamp` (no tokens, no cost, no keys). Each write drops lines older than 30 days; a line written before the `agent` field existed has none. Sample line quoted in Prerequisites.
 - Postgres table `LiteLLM_SpendLogs` — LiteLLM's standard spend log (one row per proxy request: model, tokens, cost). Local Postgres allows passwordless access; the table lives in the `litellm` database, not the default `postgres` one. Probe:
 
   ```bash
@@ -86,7 +86,7 @@ Without `psql`, a reachable database or a configured URL, the launch counts stil
 - **An arbitrary `--days N`.** The windows are `1d`, `7d` and `30d`.
 - **Markdown output.** `wt stats` prints a plain table, or one JSON document with `--json`.
 - **The Reconciliation sections.** Read them off the table (Step 2).
-- **The "Last wt launch" line.** `cat ~/.config/agent-wt/rotation.state` shows it: one global slot, the last TUI launch and nothing more (guide 06).
+- **The "Last wt launch" line.** `cat ~/.config/agent-wt/rotation.state` shows it: one global slot, the last model launch and nothing more (guide 06).
 
 Totals can differ at the edges of a window from a report made with the old command: wt compares the proxy's timestamps as UTC, and leaves out a request logged exactly at the start of the window, as it leaves out a launch at that instant.
 
@@ -105,8 +105,8 @@ Totals can differ at the edges of a window from a report made with the old comma
 ## Gotchas
 
 - **Only LiteLLM-routed traffic produces spend.** Native and direct launches (ollama cloud, oMLX `:8000`) never appear in LiteLLM spend: they are rows with launches and `0` requests. Expect many if most of your launches are native.
-- **`rotation.state` is the *last* TUI launch, nothing more** — one global slot; `esc`/canceled prompts never touch it. It is not a usage summary (guide 06), and `wt stats` does not print it.
-- **Point-in-time snapshot.** Every launch appends to `usage.jsonl` and LiteLLM logs to Postgres asynchronously — rerun tomorrow (or in a minute) and the numbers shift. There is no live/budget dashboard here.
+- **`rotation.state` is the *last* model launch, nothing more** — one global slot; `esc`/canceled prompts never touch it. It is not a usage summary (guide 06), and `wt stats` does not print it.
+- **Point-in-time snapshot.** Every model launch appends to `usage.jsonl` and LiteLLM logs to Postgres asynchronously — rerun tomorrow (or in a minute) and the numbers shift. There is no live/budget dashboard here.
 
 ## Going deeper
 

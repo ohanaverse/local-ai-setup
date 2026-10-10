@@ -88,7 +88,8 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 └── README.md           # this file — index only
 ```
 
-> LiteLLM proxy config and the five LaunchAgent plists live outside the repo
+> LiteLLM proxy config and the four LaunchAgent plists (LiteLLM, Redis,
+> Postgres and the optional oMLX one) live outside the repo
 > (`~/.config/litellm/config.yaml`, `~/Library/LaunchAgents/*.plist`) — who
 > owns what: [00-config-map.md](docs/guides/00-config-map.md).
 

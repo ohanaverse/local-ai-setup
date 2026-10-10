@@ -11,7 +11,7 @@ Design rationale: `docs/superpowers/specs/2026-09-17-capability-eval-benchmark-d
 - Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, llmbench runnable via `uv run` — the provider lifecycle runs in-process in `llmbench eval`, no isolation helpers on PATH needed).
 - A working LiteLLM apiKey seeded into `~/.pi/agent/models.json` for any `route = "litellm"` row or judge — same requirement as [09-agent-benchmarks](09-agent-benchmarks.md).
 - `OPENROUTER_API_KEY` available if the suite's `[judge]` or any row uses `route = "openrouter"`.
-- `uv sync --extra eval` from `llmbench/` — the `coding` category needs EvalPlus, which is not installed by plain `make install`. `evalplus_runner` invokes the installed `evalplus.evaluate` console script by bare name, resolved on `PATH` from inside `uv run`'s own venv — so it must be resolvable there, which `uv sync --extra eval` guarantees (not `uvx`, which would bypass the extra entirely).
+- `uv sync --extra eval` from `llmbench/` — the `coding` category needs EvalPlus, which is not installed by plain `make install`. `evalplus_runner` runs the `evalplus.evaluate` console script that sits next to the running interpreter (the venv's `bin/`), and falls back to a bare-name `PATH` lookup only when no such file exists — `uv sync --extra eval` puts it there (not `uvx`, which would bypass the extra entirely).
 
 ## TL;DR
 

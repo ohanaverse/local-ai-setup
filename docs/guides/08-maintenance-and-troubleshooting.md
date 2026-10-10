@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`; **`homebrew.mxcl.omlx.plist` is optional since the 2026-09-30 rebuild** — wt's and llmbench's lifecycle backends run `omlx start` on demand, and the rebuild omits it; `brew services start omlx` restores it if you want oMLX always-on) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
-- This repo checked out — `llmbench` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `llmbench/`, and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
+- This repo checked out — `llmbench` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `llmbench/`.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
 
 ## TL;DR
@@ -99,7 +99,7 @@ Per-backend reference — commands and log paths verified against the live plist
 | Postgres 5432 | `pg_isready -h localhost` | `brew services restart postgresql@16` | `/opt/homebrew/var/log/postgresql@16.log` |
 | Redis 6379 | `redis-cli ping` | `brew services restart redis` | `/opt/homebrew/var/log/redis.log` |
 
-Whole stack in one shot (post-download, post-upgrade): `~/.local/bin/llm-restart` restarts all four providers with per-service health checks; scoped variants take a service name (e.g. `llm-restart litellm`) — guide 01 §7.
+Whole stack in one shot (post-download, post-upgrade): `uv run --directory llmbench llmbench provider restore` (from the repo root) starts ollama, oMLX and the LiteLLM proxy when they are not answering, and stops mtplx and mlx_lm_server. It leaves a service that already answers alone, so to bounce one use its restart command from the table above.
 
 ### 2. "Model missing from LiteLLM" — ordered debug flow
 
@@ -406,7 +406,7 @@ uv run llmbench provider restore
 restored providers
 ```
 
-(`--json` instead prints the `{"provider": "restore", "model": "", "direct_url": "", "ok": ..., "error": ...}` envelope.) It restarts all three providers in parallel, skips the ones already answering, and exits 1 if any fails to come back.
+(`--json` instead prints the `{"provider": "restore", "model": "", "direct_url": "", "ok": ..., "error": ...}` envelope.) It restarts ollama, omlx and the LiteLLM proxy in parallel, skips the ones already answering, and exits 1 if any fails to come back. It also stops a running mtplx model and a running mlx_lm_server pairing: neither is part of the standing baseline, and a stop that fails is only a warning.
 
 **Isolation residue fingerprint:** after a benchmark (or a hard-killed run), the two local backend ports answer — `4000(litellm):401` still answers, :11434 always answers 200 (the ollama daemon stays up; `ollama ps` is header-only unless an ollama isolation loaded a model), and the isolated target is whichever of :11434/:8000 is alive; only the non-isolated one goes dark. For an `ollama` isolation: :11434 answers with a loaded row in `ollama ps` (that's the residue) while :8000 refuses — the healthy stack's `ollama ps` prints the bare header only (run live, 2026-08-29). For an `omlx` isolation: :8000 answers while `ollama ps` is header-only. Cure: `uv run llmbench provider restore`, then re-run the TL;DR block.
 

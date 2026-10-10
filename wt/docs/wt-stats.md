@@ -290,9 +290,15 @@ To keep a history, append one line per run: `wt stats --json >> ~/notes/wt-stats
 
 ## Where the survey data comes from
 
-Every model-driven agent launch (TUI or non-TUI) prompts up to four
-questions immediately after the agent exits, before the stop picker and the
-summary line:
+The survey is switched off (`survey.Enabled = false` in
+`internal/survey/prompt.go`, #136): wt asks nothing after a launch, records
+nothing, and prints no after-survey stats block. The rest of this section
+describes the survey that produced the recorded answers, which is what a
+launch does when that value is `true`.
+
+With the survey on, every model-driven agent launch (TUI or non-TUI) prompts
+up to four questions immediately after the agent exits, before the stop
+picker and the summary line:
 
 1. **Did it work?** `[y]es / [n]o / [s]kip (Enter=skip)` — `n` records a
    failure and stops the rating questions; `s`/Enter records a skip and
@@ -305,10 +311,10 @@ summary line:
 The prompt is silent (no output at all) when stdin is not a TTY, when the
 launch had no model (command agents like `shell`), or when the model is
 native (`config.Model.Native` — a native launch never touches a surveyed,
-priced model, issue #116). There is no config toggle to disable it —
-every-exit with a one-keypress skip is the intended trade-off.
+priced model, issue #116). No config key turns the survey on or off; the
+only switch is `survey.Enabled` in the source.
 
-The same accumulated stats `wt stats` reports are printed for the current
-model (all agents) and the current agent×model combo, at the 1d/7d/30d
-windows — after the stop picker and the summary line, so the interactive
-prompts cannot scroll them away.
+After a recorded answer, the same accumulated stats `wt stats` reports are
+printed for the current model (all agents) and the current agent×model
+combo, at the 1d/7d/30d windows — after the stop picker and the summary
+line, so the interactive prompts cannot scroll them away.

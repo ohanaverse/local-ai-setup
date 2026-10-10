@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`llmbench` is a Python 3.13 CLI (Typer) that benchmarks local LLM models and owns the provider isolation a clean measurement needs. It was carved out of modelman (design: `../docs/superpowers/specs/2026-10-06-modelman-retirement-design.md`, Step 1) and imports nothing from it. It reads `registry.toml` and never writes it.
+`llmbench` is a Python 3.13 CLI (Typer) that benchmarks local LLM models and owns the provider isolation a clean measurement needs. It reads `registry.toml` and never writes it. (Its origin in the retired modelman tool: `../docs/superpowers/specs/2026-10-06-modelman-retirement-design.md`.)
 
 CLI (`src/llmbench/main.py`):
 

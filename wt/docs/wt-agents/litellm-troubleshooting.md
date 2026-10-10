@@ -377,7 +377,8 @@ status: 429`).
 `ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` (deleted with modelman; the enforcement is `wt/internal/litellm`) adds
 `litellm_params.use_chat_completions_api: true` (presence-based, like
 `additional_drop_params`) to every model_list row whose `litellm_params.model`
-starts with `openai/`. This is LiteLLM's own per-deployment escape hatch
+starts with `openai/` and whose `api_base` is a loopback address; an
+`openai/` row pointing at a remote endpoint is left untouched. This is LiteLLM's own per-deployment escape hatch
 (`litellm/types/router.py`'s `LiteLLM_Params.use_chat_completions_api`,
 consumed in `litellm/responses/main.py`) that bridges a Responses API call
 into a chat/completions call before dispatch — unlike
