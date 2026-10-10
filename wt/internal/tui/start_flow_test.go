@@ -1587,28 +1587,91 @@ func TestLaunchOfNativeRowSkipsEnsureRoute(t *testing.T) {
 	}
 }
 
-// TestLaunchAfterStartSkipsEnsureRoute pins that a row wt just started is not
-// checked again: the start hook wrote its route, and finishStart already
-// waited for the proxy. The only wait recorded is finishStart's, and the
-// routing phase is never entered.
-func TestLaunchAfterStartSkipsEnsureRoute(t *testing.T) {
+// startThenLaunch is a start from the picker that succeeds, on a model whose
+// launch goes through LiteLLM, up to the Update that handles its result. The
+// agent is one no driver knows, so a launch that is attempted fails visibly.
+func startThenLaunch(t *testing.T, startOutput string) model {
+	t.Helper()
 	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
 	m.cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
-	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	stubStartModel(t, printingStart(nil, startOutput))
 	m.agent = "not-a-real-agent"
-	stub := stubEnsureRoute(t)
-
 	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
 	next, _ := updateMsg(got, recvStart(t, got))
+	return next
+}
 
-	if joined := strings.Join(stub.events, ","); joined != "wait" {
-		t.Fatalf("events = %q, want only finishStart's wait", joined)
+// TestLaunchAfterStartChecksTheRouteLikeAnyLaunch pins that a row wt just
+// started gets the launch-time route check every other launch gets (#275).
+// It used to be skipped, on the ground that the start had written the route:
+// but a start whose route write failed still succeeds, and the agent was then
+// launched into "Invalid model name" with nothing having tried again. With
+// the route in place the check changes nothing and the launch follows in the
+// same Update, with no routing screen.
+func TestLaunchAfterStartChecksTheRouteLikeAnyLaunch(t *testing.T) {
+	stub := stubEnsureRoute(t)
+	stub.changed = false
+	stubRouteNotes(t)
+	next := startThenLaunch(t, "")
+
+	if joined := strings.Join(stub.events, ","); joined != "wait,ensure:ollama/gemma4:9b" {
+		t.Fatalf("events = %q, want the start's wait and then the route check", joined)
 	}
 	if next.phase == phaseRouting {
-		t.Fatalf("phase = %v, want no routing phase", next.phase)
+		t.Fatalf("phase = %v, want no routing phase: the route was there", next.phase)
 	}
 	if !strings.Contains(next.status, "launch failed") {
 		t.Fatalf("status = %q, want the launch to have been attempted", next.status)
+	}
+}
+
+// TestLaunchAfterStartWritesTheRouteTheStartCouldNot is the case the check is
+// for: the start succeeded and printed that it could not write the route (a
+// config.yaml lock another wt held, say). The check writes it, the routing
+// screen covers the proxy restart, and the launch follows — onto a route
+// that exists. The start's line is still in the notes for the terminal.
+func TestLaunchAfterStartWritesTheRouteTheStartCouldNot(t *testing.T) {
+	const line = "wt: LiteLLM route for ollama/gemma4:9b not updated: config.yaml is locked by another wt\n"
+	stub := stubEnsureRoute(t) // changed: the route was missing and is written now
+	stubRouteNotes(t)
+	routing := startThenLaunch(t, line)
+
+	if routing.phase != phaseRouting || routing.routing == nil || routing.routing.modelID != "ollama/gemma4:9b" {
+		t.Fatalf("phase = %v routing = %+v, want the routing screen for the started model", routing.phase, routing.routing)
+	}
+	if strings.Contains(routing.status, "launch failed") {
+		t.Fatalf("status = %q: the launch was attempted before the route was there", routing.status)
+	}
+	next, _ := updateMsg(routing, routeDoneMsg{id: routing.routing.id, notes: routing.routing.settle()})
+	if joined := strings.Join(stub.events, ","); joined != "wait,ensure:ollama/gemma4:9b,wait" {
+		t.Fatalf("events = %q, want the start's wait, the check, and the wait for the restart the check began", joined)
+	}
+	if !strings.HasPrefix(pendingRouteNotes, line) {
+		t.Errorf("route notes = %q, want them to begin with the start's line", pendingRouteNotes)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted after the route was written", next.status)
+	}
+}
+
+// TestLaunchAfterStartStillLaunchesWhenTheRouteCannotBeWritten pins what the
+// check does not do: refuse. A route that cannot be written the second time
+// either (a config.yaml wt may not write) leaves the launch to go ahead, as
+// it does for every launch (#192), with both attempts' lines in the notes
+// that are printed above the agent's output — which is where the user finds
+// why the agent says "Invalid model name".
+func TestLaunchAfterStartStillLaunchesWhenTheRouteCannotBeWritten(t *testing.T) {
+	const line = "wt: LiteLLM route for ollama/gemma4:9b not updated: open /scratch/config.yaml: permission denied\n"
+	stub := stubEnsureRoute(t)
+	stub.changed, stub.ensureOutput = false, line
+	stubRouteNotes(t)
+	next := startThenLaunch(t, line)
+
+	if pendingRouteNotes != line+line {
+		t.Errorf("route notes = %q, want the start's line and the check's", pendingRouteNotes)
+	}
+	if next.phase == phaseRouting || !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("phase = %v status = %q, want the launch attempted", next.phase, next.status)
 	}
 }
 

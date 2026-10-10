@@ -1085,10 +1085,11 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	m.status = ""
 	// A launch row is a model that was already running, and wt may not be
 	// what started it, so its LiteLLM route may not exist yet. A row this
-	// flow just started (start is still set: the table is not rebuilt in
-	// between) had its route written by the start hook, and finishStart has
-	// already waited for the proxy.
-	if highlighted.start || m.cfg == nil {
+	// flow just started is checked too (#275): its start writes the route,
+	// but a start whose route write failed still succeeds, and the check is
+	// what tries again before the agent meets "Invalid model name". With the
+	// route in place it changes nothing and waits for nothing.
+	if m.cfg == nil {
 		return m.launchSelected()
 	}
 	// Only a launch that goes through LiteLLM needs the route: a direct or
