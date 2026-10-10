@@ -139,32 +139,43 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 }
 
 // TestShellPassthrough_StillWorks guards against an over-tightened Args
-// validator regressing shell-wt. `wt --agent shell ls -la` (the form the
-// shell-wt shim produces) must NOT be rejected by the new guard.
+// validator or removed-subcommand guard regressing shell-wt: `wt --agent
+// shell npm test` (the form the shell-wt shim produces for `shell-wt npm
+// test`) must reach the launch with every positional as the command, in
+// order. If it stops earlier, every shell-wt command given without `--`
+// fails. (TestCommandAgentWithoutModelLaunchesDirectly covers the
+// one-word command; this one is the command with arguments.)
+//
+// The command has no flag-like argument on purpose: `ls -la` without `--`
+// is refused by the flag parser before RunE runs, so it would never reach
+// the guard this test is about. The launch itself is stubbed, so nothing
+// is executed.
 func TestShellPassthrough_StillWorks(t *testing.T) {
-	// We only need to assert the new guard does not fire for "ls" — the
-	// rest of the launch path will fail in this unit test environment
-	// (no TTY, no config) but that's after the guard.
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
+	t.Chdir(t.TempDir())
+	withCleanConfigEnv(t, t.TempDir())
+	var gotAgent string
+	var gotArgs []string
+	launched := false
+	prev := launchFiltered
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+		launched, gotAgent, gotArgs = true, agent, extraArgs
+		return nil
 	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Cleanup(func() { launchFiltered = prev })
+
 	var buf bytes.Buffer
 	root := rootCmd()
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"--agent", "shell", "ls", "-la"})
-	err := root.Execute()
-	if err == nil {
-		// Tolerated: would mean a full launch path ran (won't in this env).
-		return
+	root.SetArgs([]string{"--agent", "shell", "npm", "test"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("shell passthrough without `--` was refused: %v", err)
 	}
-	if strings.Contains(err.Error(), "is removed") {
-		t.Fatalf("shell passthrough was incorrectly rejected as removed subcommand: %v", err)
+	if !launched {
+		t.Fatalf("the launch was never reached (output: %q)", buf.String())
+	}
+	if gotAgent != "shell" || len(gotArgs) != 2 || gotArgs[0] != "npm" || gotArgs[1] != "test" {
+		t.Errorf("launched agent %q with args %q, want shell with [npm test]", gotAgent, gotArgs)
 	}
 }
 
