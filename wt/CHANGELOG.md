@@ -329,6 +329,8 @@
   price from one sync to the next, because OpenRouter lists the price of
   one of them and that price moves
   ([#337](https://github.com/ohanaverse/local-ai-setup/issues/337)).
+  That is left as it is, since wt stores what is listed, and is described
+  in `docs/wt-cloud-sync.md` ("A listed price that moves between syncs").
   Reference: `docs/wt-cloud-sync.md` ("A model OpenRouter prices by time of
   day").
 - `wt cloud-sync`'s mass-removal refusal (exit 4) prints the count its gate
