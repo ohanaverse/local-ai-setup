@@ -160,4 +160,4 @@ ls -t /tmp/ornith-1.5-benchmark-*.md | head -1
 - **qwen3.8 benchmark**: [`qwen3.8-benchmark.md`](./qwen3.8-benchmark.md) — the original benchmark this mirrors.
 - **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/archive/Local%20AI%20Setup%202026-08-25.md)
 - **Service management**: `uv run --directory llmbench llmbench provider restore` (from the repo root)
-- **LiteLLM config**: `~/.config/litellm/config.yaml` — includes the Ornith entries.
+- **LiteLLM config**: `~/.config/litellm/config.yaml` — the routes wt manages (an Ornith row exists while its model is pulled or running); read them with `wt litellm list`.

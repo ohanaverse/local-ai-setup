@@ -63,7 +63,7 @@ For new model variants or providers:
    - Both `for backend in` loops (direct rows and LiteLLM rows)
 
    The script has no start/stop/warmup code of its own: `isolate_one` in `lib/benchmark-common.sh` calls `llmbench provider isolate`. A new provider also needs a `Backend` registered in `llmbench/src/llmbench/providers/lifecycle/backends/` (see the `adding-a-benchmark-backend` skill).
-2. Add the model to `~/.config/litellm/config.yaml` first
+2. Give the model a LiteLLM route: register it (`wt model add`) and run `wt litellm sync` while it is running, or start it through wt. Don't hand-add the row to `~/.config/litellm/config.yaml` — wt builds the managed rows from `registry.toml` plus live probes ([docs/guides/00-config-map.md](../docs/guides/00-config-map.md))
 3. Run a smoke test with `./qwen3.8-benchmark 30` (small max_tokens for speed)
 4. Update the main benchmark doc with the new numbers
 
@@ -71,4 +71,4 @@ For new model variants or providers:
 
 - **[docs/Local AI Setup 2026-08-25.md](../docs/archive/Local%20AI%20Setup%202026-08-25.md)** — Main setup doc covering LiteLLM, Ollama, oMLX, llama.cpp, OpenRouter configuration, auto-start, and restart scripts.
 - **Service management**: `uv run --directory llmbench llmbench provider restore` (from the repo root) — brings ollama, oMLX and LiteLLM back up and stops mtplx and mlx_lm_server. The benchmark scripts run it themselves at start.
-- **LiteLLM config**: `~/.config/litellm/config.yaml` — the four model entries.
+- **LiteLLM config**: `~/.config/litellm/config.yaml` — the routes wt manages; read them with `wt litellm list`.

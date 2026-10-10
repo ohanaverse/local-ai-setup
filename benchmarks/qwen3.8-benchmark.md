@@ -262,11 +262,11 @@ fi
 
 ### 7. Service-restart side effect
 
-**Symptom**: After `llm-restart ollama`, Ollama sometimes briefly shows exit code `-15` in `launchctl list`.
+**Symptom**: After the ollama backend kickstarts the daemon (`launchctl kickstart -k gui/$(id -u)/com.ollama.ollama`), Ollama sometimes briefly shows exit code `-15` in `launchctl list`.
 
-**Cause**: The `launchctl kickstart -k` sends SIGTERM, then `KeepAlive=true` in Ollama's plist respawns it. The `-15` is captured between the SIGTERM and the respawn.
+**Cause**: `kickstart -k` sends SIGTERM and launchd respawns the daemon; the `-15` is captured between the two. The middle column reads `-15` the same way right after a `kickstart -k` of any launchd service ([08-maintenance-and-troubleshooting](../docs/guides/08-maintenance-and-troubleshooting.md) Gotchas — `0` and `-15` are the only healthy readings).
 
-**Fix**: Not a bug — just wait a moment for the respawn, or use `llm-restart` which has built-in verification. The fix in `llm-restart` was to detect Ollama via `launchctl list | grep com.ollama.ollama` instead of `brew services` (Ollama is auto-managed by macOS, not brew services on this machine).
+**Fix**: Not a bug — just wait a moment for the respawn. The ollama backend kickstarts only when `http://localhost:11434/api/tags` does not answer within 2 s, and the warmup that follows waits for the daemon to serve. Ollama has no LaunchAgent plist on this machine — the daemon belongs to the Ollama.app login item — so `launchctl list | grep com.ollama.ollama` is how to look at it, never `brew services`.
 
 ---
 
@@ -302,14 +302,14 @@ To add another model (e.g., a different qwen3.8 quantization):
 1. Edit `benchmarks/qwen3.8-benchmark`
 2. Add an entry to the `DIRECT_URLS`, `DIRECT_MODELS` and `LITELLM_MODELS` associative arrays
 3. Add the key to `ISOLATE_ID` (the `llmbench provider` id that isolates it) and to both `for backend in` loops
-4. Add the model to `~/.config/litellm/config.yaml` first (the LiteLLM proxy won't know about it otherwise)
+4. Give the model a LiteLLM route: register it (`wt model add`) and run `wt litellm sync` while it is running, or start it through wt. Don't hand-add the row to `~/.config/litellm/config.yaml` — wt builds the managed rows from `registry.toml` plus live probes ([00-config-map](../docs/guides/00-config-map.md))
 
 For a totally new provider (say, vLLM), add it to:
 - `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS`
 - `ISOLATE_ID` and both `for backend in` loops
 - llmbench: a `Backend` with the provider's start/stop/warmup in `llmbench/src/llmbench/providers/lifecycle/backends/`, registered in `BACKENDS` (see the `adding-a-benchmark-backend` skill). The script has no service-management code of its own; `isolate_one` calls `llmbench provider isolate`.
 
-For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the script and a matching `openrouter/<slug>` entry to `~/.config/litellm/config.yaml`. The OpenRouter loop tests each model both directly and via LiteLLM automatically.
+For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the script and register the model (`wt model add`): wt routes every configured cloud model, so the next `wt litellm sync` (or `wt start`) writes its `openrouter/<slug>` row — don't hand-add it to `~/.config/litellm/config.yaml`. The OpenRouter loop tests each model both directly and via LiteLLM automatically.
 
 ---
 
@@ -317,4 +317,4 @@ For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the
 
 - **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/archive/Local%20AI%20Setup%202026-08-25.md) — covers LiteLLM, Ollama, oMLX, llama.cpp, OpenRouter setup and auto-start
 - **Service management**: `uv run --directory llmbench llmbench provider restore` (from the repo root) — brings ollama, oMLX and LiteLLM back up
-- **LiteLLM config**: `~/.config/litellm/config.yaml` — the four model entries
+- **LiteLLM config**: `~/.config/litellm/config.yaml` — the routes wt manages; read them with `wt litellm list`
