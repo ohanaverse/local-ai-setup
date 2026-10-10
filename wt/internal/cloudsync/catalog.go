@@ -182,6 +182,20 @@ func merged(page PriceTriple, oldInput, oldCache, oldOutput *float64) (input, ca
 	return input, cache, output
 }
 
+// setRowPrices sets a time_prices row's three price keys, in schema order,
+// skipping those the row does not carry. Both writers of a row, offpeakRow
+// and rateRow, share it, so the key order has one home.
+func setRowPrices(row *tomlw.Table, input, cache, output *float64) {
+	for _, kv := range []struct {
+		key string
+		v   *float64
+	}{{"input_price_per_million", input}, {"cache_price_per_million", cache}, {"output_price_per_million", output}} {
+		if kv.v != nil {
+			row.Set(kv.key, *kv.v)
+		}
+	}
+}
+
 // offpeakRow is ollama's published off-peak window as a time_prices row:
 // outside 12:00 to 18:00 UTC on weekdays, and all day at weekends. The keys
 // are in schema order. The window is not parsed from the page; if ollama
@@ -201,14 +215,7 @@ func offpeakRow(input, cache, output *float64) *tomlw.Table {
 	row := tomlw.NewTable()
 	row.Set("label", OffpeakLabel)
 	row.Set("timezone", "UTC")
-	for _, kv := range []struct {
-		key string
-		v   *float64
-	}{{"input_price_per_million", input}, {"cache_price_per_million", cache}, {"output_price_per_million", output}} {
-		if kv.v != nil {
-			row.Set(kv.key, *kv.v)
-		}
-	}
+	setRowPrices(row, input, cache, output)
 	row.Set("windows", []any{
 		window("00:00", "12:00", "mon", "tue", "wed", "thu", "fri"),
 		window("18:00", "24:00", "mon", "tue", "wed", "thu", "fri"),
@@ -221,8 +228,10 @@ func isOffpeak(row *tomlw.Table) bool { return str(row, "label") == OffpeakLabel
 
 // withCatalogPrices is existing with the page's prices for cm. The off-peak
 // row is replaced where it stands: time_prices resolve first match wins, so
-// moving it would change which row wins an overlapping window. Every other
-// row, the subscription and any key this package does not read are kept.
+// moving it would change which row wins an overlapping window. An off-peak
+// row beyond the first is kept as it stands: only the row the flow calls its
+// own is written. Every other row, the subscription and any key this package
+// does not read are kept.
 func withCatalogPrices(existing *Cost, cm CatalogModel) Cost {
 	var base Cost
 	if existing != nil {
@@ -235,6 +244,8 @@ func withCatalogPrices(existing *Cost, cm CatalogModel) Cost {
 			rows = append(rows, row)
 		} else if old == nil {
 			at, old = i, row
+		} else {
+			rows = append(rows, row)
 		}
 	}
 	if cm.Offpeak != nil {
@@ -479,7 +490,6 @@ func formatCost(c *Cost) string {
 		if isOffpeak(row) {
 			text += fmt.Sprintf(" (off-peak %s/%s/%s)", formatPrice(number(row, "input_price_per_million")),
 				formatPrice(number(row, "cache_price_per_million")), formatPrice(number(row, "output_price_per_million")))
-			break
 		}
 	}
 	for _, row := range c.TimePrices {

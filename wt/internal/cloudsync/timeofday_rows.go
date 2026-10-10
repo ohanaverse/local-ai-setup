@@ -29,14 +29,7 @@ func rateRow(r Rate) *tomlw.Table {
 	row := tomlw.NewTable()
 	row.Set("label", OpenRouterLabel)
 	row.Set("timezone", "UTC")
-	for _, kv := range []struct {
-		key string
-		v   *float64
-	}{{"input_price_per_million", r.Input}, {"cache_price_per_million", r.Cache}, {"output_price_per_million", r.Output}} {
-		if kv.v != nil {
-			row.Set(kv.key, *kv.v)
-		}
-	}
+	setRowPrices(row, r.Input, r.Cache, r.Output)
 	var windows []any
 	done := [daysPerWeek]bool{}
 	for d := range daysPerWeek {
@@ -140,11 +133,12 @@ func formatOpenRouterRow(row *tomlw.Table) string {
 // formatWindows prints a row's windows for a plan line: `mon-fri 00:00-01:00
 // 04:00-06:00, sat-sun 00:00-24:00`. It prints whatever the row holds, so a
 // change to the windows always changes the plan's text; `?` stands for a
-// windows value that is not a list and for an entry that is not a table.
+// windows value that is missing or not a list, and for an entry that is not
+// a table.
 func formatWindows(row *tomlw.Table) string {
-	raw, has := row.Get("windows")
+	raw, _ := row.Get("windows")
 	list, isList := raw.([]any)
-	if has && !isList {
+	if !isList {
 		return "?"
 	}
 	var groups []string

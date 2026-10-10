@@ -179,8 +179,9 @@ func (p *PricePlan) HasWork() bool { return len(p.Matched) > 0 }
 // model_name. Input and output prices are always overwritten: they are what
 // the refresh measures. The cache price is overwritten only when the API
 // reported one (it usually does not). The subscription is never touched,
-// and of the time_prices rows only the flow's own (OpenRouterLabel), so a
-// refresh never clears a price set by hand.
+// and of the time_prices rows only the flow's own (OpenRouterLabel): those
+// are replaced or dropped wholesale, ones written by hand under that label
+// included, and a row under any other label is never touched.
 //
 // It reads no clock, and api is a function of the response alone, a model
 // priced by time of day included (parseSchedule): the same registry and
