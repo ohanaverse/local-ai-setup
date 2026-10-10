@@ -31,15 +31,28 @@ model is matched on its `model_name`. A model of any other provider is never
 fetched for, changed or warned about, whatever its name is.
 
 - Input and output prices always take OpenRouter's value. The cache price is
-  replaced only when OpenRouter reports one. A subscription price and any
-  `time_prices` row are never touched.
+  replaced only when OpenRouter reports one. A subscription price is never
+  touched, and neither is a `time_prices` row, except the rows labelled
+  `openrouter` on these models, which are this flow's own.
+- **A model OpenRouter prices by time of day is stored as its whole
+  schedule**, the same way whatever hour the sync runs in: its dearest
+  level as the model's price, each other level as a `time_prices` row
+  labelled `openrouter`. See [A model OpenRouter prices by time of
+  day](#a-model-openrouter-prices-by-time-of-day).
+- **A price that depends on the size of the prompt** (an entry of
+  `pricing.overrides` with `min_prompt_tokens` and no time key) is not a
+  schedule. It is ignored without a word: the model's listed price is
+  stored, and the price for larger prompts is not stored anywhere.
 - Every matched model is stamped (`pricing_updated_at`), whether or not its
   price moved.
 - A model OpenRouter does not list (`warning: No OpenRouter match for …`),
   lists with no price (`warning: No pricing data for …`), or lists with a
   price that is negative or not a number (`warning: Could not use
   OpenRouter's pricing for …`; OpenRouter gives `-1` for a price that
-  varies) is left exactly as it is, and is not stamped.
+  varies) is left exactly as it is, and is not stamped. So is a model whose
+  time-of-day pricing wt cannot read with certainty (`warning: Could not
+  use OpenRouter's time-of-day pricing for <id>: <reason>`; the reasons are
+  listed [below](#a-schedule-wt-cannot-read)).
 - When there are OpenRouter-priced models and not one could be matched, the
   run says so: `openrouter: no model could be refreshed, so nothing is stamped
   and wt's stale-pricing notice is not cleared; the warnings above say why
@@ -59,6 +72,163 @@ fetched for, changed or warned about, whatever its name is.
   OpenRouter. To keep it where it is, set its price yourself:
   `wt model edit <id> --input-price … --output-price …`
   ([wt-model.md](wt-model.md)).
+
+#### A model OpenRouter prices by time of day
+
+OpenRouter prices a few of its models by the hour and the weekday, in UTC.
+For such a model the price at the top of its entry in OpenRouter's list is
+the one in force at the moment the list is fetched, so it differs from one
+fetch to the next. wt does not read it. Until #322 it did: the stored price
+was that of whichever window the sync ran in, and it flipped between syncs,
+each flip reported as a price update and written to LiteLLM's routes.
+
+- **What is read.** The model's time-of-day entries: the entries of
+  `pricing.overrides` that have `utc_start`, `utc_end` or `utc_days`. They
+  give the price of every window of the week in every response.
+  `utc_start` and `utc_end` are clock numbers in UTC (`1630` is 16:30); a
+  window holds its start and not its end, and runs past midnight when its
+  end is not after its start; `utc_days` names the UTC weekdays it applies
+  on, every day when absent; where two entries overlap, the later one in
+  the list wins. Nothing in the flow reads a clock, so for one registry and
+  one published schedule the plan is the same text whenever the sync runs.
+- **What is stored.** The **dearest level** of the schedule, the one with
+  the highest output price (then input, then cached input), is the model's
+  own price. **Each other level is one `[[models.cost.time_prices]]` row
+  labelled `openrouter`**: `timezone = "UTC"`, its three prices, and the
+  windows it applies in. For a schedule that is cheaper from 20:00 to 08:00
+  UTC on weekdays and all weekend (illustrative; a made-up model):
+
+  ```toml
+  [[models]]
+  id = "openrouter/acme--alpha-1"
+  family = "alpha"
+  provider_id = "openrouter"
+  model_name = "acme/alpha-1"
+  location = "cloud"
+
+  [models.cost]
+  input_price_per_million = 1.0
+  cache_price_per_million = 0.1
+  output_price_per_million = 4.0
+
+  [[models.cost.time_prices]]
+  label = "openrouter"
+  timezone = "UTC"
+  input_price_per_million = 0.5
+  cache_price_per_million = 0.05
+  output_price_per_million = 2.0
+  windows = [
+      { days = ["mon", "tue", "wed", "thu", "fri"], start = "00:00", end = "08:00" },
+      { days = ["mon", "tue", "wed", "thu", "fri"], start = "20:00", end = "24:00" },
+      { days = ["sat", "sun"], start = "00:00", end = "24:00" },
+  ]
+  ```
+
+  (wt writes each window as its own `[[models.cost.time_prices.windows]]`
+  table with one day to a line; the inline form above is the same data.)
+  The sync writes each day's hours under that day: a level that runs past
+  midnight is two windows, one to `24:00` and one from `00:00`, as the
+  20:00 to 08:00 level is here. A row you write by hand may use one window
+  that runs past midnight; the sync's own never do. With more than two
+  levels there is one row per level, dearest first.
+- **The plan line shows the schedule**: the price, then each `openrouter`
+  row with its prices and windows. Three shapes (illustrative):
+
+  ```text
+  openrouter:   openrouter/acme--alpha-1: 0.5/0.05/2 -> 1/0.1/4 (openrouter 0.5/0.05/2 mon-fri 00:00-08:00 20:00-24:00, sat-sun 00:00-24:00)
+  openrouter:   openrouter/acme--alpha-1: 1/0.1/4 -> 1/0.1/4 (openrouter 0.5/0.05/2 mon-fri 00:00-08:00 20:00-24:00, sat-sun 00:00-24:00)
+  openrouter:   openrouter/acme--alpha-1: 1/0.1/4 (openrouter 0.5/0.05/2 mon-fri 00:00-08:00 20:00-24:00, sat-sun 00:00-24:00) -> 1.2/0.1/4.8
+  ```
+
+  The first is a model an earlier sync stored at the price of the window
+  it ran in: when the price on the left is one of the levels in the
+  brackets, OpenRouter did not re-price the model. The second is one that
+  sync happened to store at its dearest level: the price does not move and
+  only the row is new. The third is a model that no longer has a schedule:
+  its rows go.
+- **The first sync after this change lists one update for each
+  time-priced model**, in one of the first two shapes, and counts it in `N
+  price(s) changed`. Because a price update was written, the routes are
+  synced; where only rows were added (the second shape) that sync finds
+  `config.yaml` as it should be, leaves it byte for byte, and does not
+  restart the proxy. After that, a sync run in another window lists the
+  model under `Unchanged prices`, stamps it, and syncs no route.
+- **The `openrouter` rows are the sync's**, on models of the `openrouter`
+  provider. When they already hold the published schedule they are left
+  exactly where they stand in the file. When the schedule changed they are
+  replaced, together, where the first of them stood; a model that had none
+  gets them after its other rows; a model that no longer has a schedule
+  loses them. Rows are tried in file order
+  ([The price the picker shows](#the-price-the-picker-shows)), so a row of
+  yours that stands before them wins at an instant both hold. **A row you
+  label `openrouter` yourself on such a model is replaced or removed like
+  any other**, whatever it holds, and the plan line shows it as it was
+  found: `timezone="<zone>"` when its zone is not UTC, `+keys` when the row
+  or one of its windows has a key the sync does not write, `?` for windows
+  it cannot print. Give your own rows another label. A row with any other
+  label is kept as it is, and so is a row labelled `openrouter` on a model
+  of another provider. (The ollama flow's `off-peak` rows are on ollama
+  cloud entries, which this flow never touches: no model is in both flows.)
+- **What uses which price.** The model picker applies the rows: it shows,
+  and sorts by, the level in force when it opens, marked `~` ([The price
+  the picker shows](#the-price-the-picker-shows)). LiteLLM's route carries
+  the model's own price, the dearest level, at every hour. LiteLLM logs
+  OpenRouter's own cost figure for a request where it reads one and prices
+  the request from the route where it does not; for those requests, in the
+  hours another level applies, the spend `wt stats` shows is higher than
+  what was charged. It is not lower as long as the dearest level is also
+  the highest on input and cached input, which wt does not check. (Which
+  requests are priced from the route depends on the API the agent speaks
+  and on the LiteLLM version. With LiteLLM 1.103.1 it was the Responses
+  API, which codex speaks, measured against a stand-in for OpenRouter and
+  not the live service.)
+
+#### A schedule wt cannot read
+
+A model whose time-of-day entries cannot be read with certainty is left
+exactly as it is, with the price and the rows it had, and is not stamped.
+Its listed price would be that of the current window, so wt never falls
+back to it. The run prints `warning: Could not use OpenRouter's time-of-day
+pricing for <id>: <reason>`, with the same text in every window. The
+reasons:
+
+| `<reason>` | What OpenRouter's entry holds |
+|---|---|
+| `its windows do not cover the whole week` | some minute of the week has no price |
+| `an entry has a key wt does not know ("<key>")` | a condition that is not a time and not a price |
+| `an entry sets both a time window and min_prompt_tokens` | a price by time and by prompt size at once |
+| `an entry has no prompt or no completion price` | a window that would take a price from the top of the entry |
+| `its <prompt, completion or input_cache_read> price in one window is negative or not a number` | a window's price that is no price |
+| `some of its windows have a cached-input price and some do not` | |
+| `an entry has only one of utc_start and utc_end` | |
+| `utc_start or utc_end is not an HHMM time` | |
+| `utc_days is not a list of weekday names` | |
+| `its overrides are not a list` | `pricing.overrides` is some other value, so wt cannot say the model has no schedule |
+| `an overrides entry is not an object` | the same, for one entry of the list |
+
+The last two refuse a model whether or not it is priced by time of day. The
+warning comes back on every run until OpenRouter's list or wt's parser
+(`wt/internal/cloudsync/timeofday.go`) changes; nothing in the registry
+fixes it. Until then the model keeps what it had, which may be the price of
+whichever window an earlier sync ran in. When every OpenRouter-priced model
+is refused, nothing is stamped and the stale-pricing notice stays.
+
+#### What the schedule does not cover
+
+- **A listed price can still differ between two syncs** for a reason that
+  is not the clock. OpenRouter lists each model at the price of one of the
+  providers that serve it, and for a model many providers serve that price
+  can move within minutes. If the provider it lists changes, a model can
+  also gain or lose its schedule. wt stores what is listed, so each of
+  these is reported as a price update and synced to the routes
+  ([#337](https://github.com/ohanaverse/local-ai-setup/issues/337)).
+- **Only the picker follows the clock.** The route, and spend computed
+  from it, use the dearest level at every hour.
+- **A row of the model that breaks the registry's rules** (one written by
+  hand: [A row you write by hand](#a-row-you-write-by-hand)) makes wt
+  refuse to write that model, and the openrouter flow stamps every model
+  it matched in one write, so no price is refreshed until that row is
+  fixed.
 
 ### ollama
 
@@ -106,8 +276,8 @@ route sync) LiteLLM's routes.
 - **Off-peak prices** are stored as the `[[models.cost.time_prices]]` row
   labelled `off-peak`: UTC, weekdays outside 12:00–18:00, all day at
   weekends. That window is ollama's published one and is written, not read
-  from the page. Rows with any other label are yours and are kept. The
-  model picker applies the row: outside ollama's peak hours it shows the
+  from the page. Rows with any other label are not this flow's and are
+  kept. The model picker applies the row: outside ollama's peak hours it shows the
   off-peak price ([The price the picker
   shows](#the-price-the-picker-shows)). LiteLLM's route carries the peak
   price at every hour.
@@ -377,7 +547,10 @@ the job.
   to any of them.
 - **Writes `registry.toml`** through wt's one registry writer, which keeps
   every key it was not asked to change. openrouter: the cost keys that moved,
-  and `pricing_updated_at`. ollama: the same on ollama cloud entries, plus
+  the `openrouter` rows of `cost.time_prices` (on a model priced by time of
+  day, and only when the schedule they hold changed), and
+  `pricing_updated_at`. ollama: the cost keys that moved and
+  `pricing_updated_at` on ollama cloud entries, plus
   the `off-peak` row of `cost.time_prices` and `catalog_name` (the page name
   an entry was matched to); ollama cloud rows added and removed. As with
   every tool that writes the registry, comments in the file do not survive.
@@ -416,7 +589,11 @@ the price **in force at the moment the picker opens**:
   the next day ([A row you write by hand](#a-row-you-write-by-hand)). The
   rows the sync writes are all UTC.
 - This holds for every row, whoever wrote it: the ollama flow's `off-peak`
-  row (the model's own price is the peak one) and a row you wrote by hand.
+  row (the model's own price is the peak one), the openrouter flow's
+  `openrouter` rows (the model's own price is the dearest level of
+  OpenRouter's schedule, and a row is each other level), and a row you
+  wrote by hand. So after a sync, the price beside a model OpenRouter
+  prices by time of day is the one OpenRouter charges at that moment.
 - **A price that depends on the time is marked `~`** after its three
   numbers, and the column's heading then reads `COST (~ varies by time)`.
   The mark says the model has a row that applies, at any hour: the price
@@ -479,7 +656,8 @@ windows = [
 is a calendar day on the row's own clock: on a night the zone's clocks
 change, the window is an hour longer or shorter and still ends when the
 clock reads 06:00. `start` and `end` must differ; a whole day is `00:00`
-to `24:00`. The rows the sync writes never run past midnight (each day's
+to `24:00`. A window that runs past midnight may not end at `00:00`: the
+end of the listed day is `24:00`. The rows the sync writes never run past midnight (each day's
 hours are under that day), and the sync keeps a row of yours that does, as
 the one window you wrote. (As for any entry, the first write by wt lays a
 file typed by hand out again in its own layout and drops comments.) A wt

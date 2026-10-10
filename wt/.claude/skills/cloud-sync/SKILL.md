@@ -13,7 +13,10 @@ one; a flow that fails or is refused does not stop the other.
   ones whose `provider_id` is `openrouter`, and no other) from
   OpenRouter's public model list and stamps each one it matched. The stamps
   are what clear wt's `token pricing last refreshed <date> — run 'wt
-  cloud-sync'` notice.
+  cloud-sync'` notice. A model OpenRouter prices by time of day is stored
+  as its whole schedule: the dearest level as the model's price, each other
+  level as a `cost.time_prices` row labelled `openrouter`, which the model
+  picker applies (it shows the level in force when it opens).
 - **`ollama:`** makes three things match <https://ollama.com/pricing>: the
   ollama cloud entries in `registry.toml` with their prices (off-peak
   included), the cloud tags in `ollama list`, and, through one route sync at
@@ -56,18 +59,68 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      anything else with that binary (what an older `wt` does with the word
      `cloud-sync` has not been checked).
    - Summarize **both** plans for the user. openrouter: each `id: old -> new`
-     under `Price updates`. ollama: `Price updates`, `Registry additions`
+     under `Price updates`. A line that ends `(openrouter <in>/<cached>/<out>
+     <windows>)`, for example (illustrative) `openrouter/acme--alpha-1:
+     0.5/0.05/2 -> 1/0.1/4 (openrouter 0.5/0.05/2 mon-fri 00:00-08:00
+     20:00-24:00, sat-sun 00:00-24:00)`, is a model OpenRouter prices by
+     time of day. The price before the brackets is the dearest level of its
+     schedule, which is stored as the model's price whatever hour the sync
+     runs in; each bracket is another level, stored with its UTC windows as
+     a `cost.time_prices` row labelled `openrouter`. Tell the user what
+     such a line means in these cases:
+     - **The old price is one of the bracketed levels** (`0.5/0.05/2 ->
+       1/0.1/4 (openrouter 0.5/0.05/2 …)`): an earlier sync stored the price
+       of the window it ran in. OpenRouter did not re-price the model.
+     - **The same price on both sides, brackets only on the right** (`1/0.1/4
+       -> 1/0.1/4 (openrouter …)`): only the rows are new. It is still
+       listed and counted as a price update, and the routes are synced, but
+       that sync leaves `config.yaml` as it is and does not restart the
+       proxy.
+     - **Brackets on the left only**: the model no longer has a schedule and
+       its `openrouter` rows are removed.
+     - **Brackets on both sides**: the schedule changed, or the row on the
+       left was edited by hand. A left bracket with `timezone="<zone>"`,
+       `+keys` or `?` in it is a row labelled `openrouter` that is not what
+       the sync writes; the sync replaces it. If the user wrote it, tell
+       them before applying: a row of their own needs another label.
+
+     **One such update per time-priced model is expected on the first sync
+     with a wt that has this change**; it is not a sign of a price change.
+     A later sync, in whatever window it runs, lists these models under
+     `Unchanged prices`. If one shows up again as an update with a level
+     moved, the listed schedule itself changed.
+     ollama: `Price updates`, `Registry additions`
      (id and family; each also gets a route), `ollama pull`, `Registry
      removals` (each also loses its route; `(re-tagged as …)` marks an entry
      that comes straight back under the tag ollama publishes, with a new id
      and so a new route name), and `ollama rm` (pulled cloud tags with no
      entry).
    - Read out every `warning:` line: an OpenRouter-priced model with no
-     match or no usable price, ollama cloud entries that disagree on
+     match or no usable price, one whose time-of-day pricing could not be
+     used (`warning: Could not use OpenRouter's time-of-day pricing for
+     <id>: <reason>`, below), ollama cloud entries that disagree on
      subscription pricing, an unrecognized price cell, a model whose cloud
      tag did not resolve (it is skipped: nothing is added or pulled for it,
      and nothing with its name is removed), a removed entry whose tag is not
      a cloud tag.
+   - `warning: Could not use OpenRouter's time-of-day pricing for <id>:
+     <reason>` means wt could not read that model's schedule with
+     certainty. The model keeps its price and its rows and is not stamped;
+     wt does not fall back to the listed price, which is only that of the
+     current window. `<reason>` is one of: `its windows do not cover the
+     whole week`, `an entry has a key wt does not know ("<key>")`, `an
+     entry sets both a time window and min_prompt_tokens`, `an entry has no
+     prompt or no completion price`, `its <key> price in one window is
+     negative or not a number`, `some of its windows have a cached-input
+     price and some do not`, `an entry has only one of utc_start and
+     utc_end`, `utc_start or utc_end is not an HHMM time`, `utc_days is not
+     a list of weekday names`, `its overrides are not a list`, `an
+     overrides entry is not an object`. The warning repeats on every run.
+     Nothing in the registry fixes it and running the sync again does not
+     either: OpenRouter's list changed shape, and the repair is a code
+     change in `wt/internal/cloudsync/timeofday.go` (`parseSchedule`), with
+     the new shape added to `TestParseOpenRouterTimeOfDayShapes`. Tell the
+     user; do not edit the model's price by hand to "match" the list.
    - If it prints `openrouter: no model could be refreshed, so nothing is
      stamped and wt's stale-pricing notice is not cleared; the warnings
      above say why for each model`, tell the user: running the sync again
@@ -99,7 +152,9 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    cannot be answered: without `--yes` it stops with `error: not applied:
    there is no terminal to confirm on — rerun with --yes to apply without
    asking` (exit 1).
-   - Success reads `openrouter: refreshed N model(s); N price(s) changed`,
+   - Success reads `openrouter: refreshed N model(s); N price(s) changed`
+     (a time-priced model whose rows were added, replaced or removed counts
+     as a price changed, also when its own price did not move),
      `ollama: updated N, added N and removed N model(s)`, then one
      `ollama: pulled <tag>` or `ollama: removed <tag>` per tag. Report
      those to the user.
