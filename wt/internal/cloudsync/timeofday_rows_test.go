@@ -582,3 +582,140 @@ output_price_per_million = 6.0
 		t.Errorf("config.Load after the applies: %v", err)
 	}
 }
+
+// nightTimePrice is a cost.time_prices row a user wrote with a window that
+// runs past midnight, in the layout registries on disk have.
+const nightTimePrice = `[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 0.25
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri",
+]
+start = "22:00"
+end = "06:00"
+`
+
+// TestBothFlowsKeepAUsersWindowPastMidnight pins that a row a user wrote
+// with a window that runs past midnight ("22:00" to "06:00", which the
+// registry accepts since #322) comes through an apply of each flow byte for
+// byte, on a model that flow changes and writes its own row to. The flows'
+// own rows never hold such a window (each day's hours are written under
+// that day), but neither flow reads the windows of a row it does not own,
+// and the registry's validator, which checks every row of a model a write
+// touches, accepts it. Before #322 both applies here were refused with
+// "start must be before end", so one hand-written night rate stopped every
+// price refresh. The picker then applies the user's row and the flow's row
+// side by side, first match first.
+func TestBothFlowsKeepAUsersWindowPastMidnight(t *testing.T) {
+	path := scratchRegistry(t, `[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "OPENROUTER_API_KEY"
+
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "openrouter/tencent--hy3"
+family = "hy"
+provider_id = "openrouter"
+model_name = "tencent/hy3"
+location = "cloud"
+
+[models.cost]
+input_price_per_million = 9.0
+
+`+nightTimePrice+`
+[[models]]
+id = "ollama/glm-5.3:cloud"
+family = "glm"
+provider_id = "ollama"
+model_name = "glm-5.3:cloud"
+location = "cloud"
+source = "curated"
+tags = []
+
+[models.cost]
+input_price_per_million = 9.0
+
+`+nightTimePrice)
+
+	at := time.Date(2026, 10, 9, 2, 45, 0, 0, time.UTC)
+	var prices PricesApplied
+	if _, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
+		var err error
+		prices, err = PlanPrices(Entries(d.Models()), apiOf(t, fetchedAt(t, at))).Apply(d, at)
+		return err
+	}); err != nil {
+		t.Fatalf("the openrouter flow's apply: %v", err)
+	}
+	if prices != (PricesApplied{Stamped: 1, Changed: 1}) {
+		t.Errorf("the openrouter flow applied %+v, want 1 stamped, 1 changed", prices)
+	}
+	catalog := catalogOf(withOffpeak(cm("glm-5.3", 1.4, 0.26, 4.4), f(0.7), f(0.13), f(2.2)))
+	done, changed := applyCatalog(t, catalog, []string{"glm-5.3:cloud"}, map[string]string{"glm-5.3": "glm-5.3:cloud"})
+	if !changed || done.Updated != 1 {
+		t.Errorf("the ollama flow applied %+v (changed %v), want 1 updated", done, changed)
+	}
+
+	text := readFile(t, path)
+	if got := strings.Count(text, nightTimePrice); got != 2 {
+		t.Errorf("the user's night row is in the file %d times byte for byte, want 2 (once per model):\n%s", got, text)
+	}
+	// Each flow's own row follows the user's, on its own model.
+	for _, own := range []string{
+		nightTimePrice + "\n[[models.cost.time_prices]]\nlabel = \"openrouter\"\ntimezone = \"UTC\"\ninput_price_per_million = 0.0825\n",
+		nightTimePrice + "\n[[models.cost.time_prices]]\nlabel = \"off-peak\"\ntimezone = \"UTC\"\ninput_price_per_million = 0.7\n",
+	} {
+		if !strings.Contains(text, own) {
+			t.Errorf("registry.toml lacks:\n%s\n\nfile:\n%s", own, text)
+		}
+	}
+
+	// What was written loads, and the resolver applies both rows of the
+	// openrouter model: the user's in the New York night, the flow's from
+	// 16:00 UTC, the flat (dearest) price otherwise.
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load after the applies: %v", err)
+	}
+	for _, m := range cfg.Models {
+		if got := m.Malformed(); len(got) != 0 {
+			t.Errorf("%s: Malformed() = %q, want nothing", m.ID, got)
+		}
+		if m.ID != "openrouter/tencent--hy3" {
+			continue
+		}
+		for _, c := range []struct {
+			what string
+			at   time.Time
+			row  int
+			out  float64
+		}{
+			{"Monday 23:00 in New York", time.Date(2026, 10, 13, 3, 0, 0, 0, time.UTC), 0, 0.25},
+			{"Tuesday 05:59 in New York", time.Date(2026, 10, 13, 9, 59, 0, 0, time.UTC), 0, 0.25},
+			{"Tuesday 06:00 in New York", time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC), -1, 0.5279999999999999},
+			{"Tuesday 17:00 UTC", time.Date(2026, 10, 13, 17, 0, 0, 0, time.UTC), 1, 0.33},
+		} {
+			if got := m.Cost.PriceAt(c.at); got.Row != c.row || got.Output == nil || *got.Output != c.out {
+				t.Errorf("%s: output %v from row %d, want %v from row %d", c.what, got.Output, got.Row, c.out, c.row)
+			}
+		}
+	}
+}
