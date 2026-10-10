@@ -78,8 +78,9 @@ type modelForm struct {
 	// rewritten.
 	initial [mfCount]string
 	// malformed is true for an edit of a row whose fetch or draft the loader
-	// read as absent (config.Model.Malformed): the registry writer refuses
-	// to write such a row back, and no field of the form can repair it.
+	// read as absent, or which has a cost.time_prices row the validator
+	// refuses (config.Model.Malformed): the registry writer refuses to write
+	// such a row back, and no field of the form can repair it.
 	malformed bool
 	cursor    int
 	err       string
@@ -414,7 +415,8 @@ func (m *model) saveModelFormCmd() tea.Cmd {
 }
 
 // saveErrorText is a refused save as the form words it: the error, and for a
-// row the form opened knowing its fetch or draft is malformed (malformed),
+// row the form opened knowing its fetch or draft is malformed, or that one
+// of its cost.time_prices rows breaks the validator's rules (malformed),
 // which the registry writer will not write back as it stands in the file,
 // the file to repair, in config.RegistryFixHint's words — nothing in the form
 // can fix it. Every other refusal is passed through unchanged: a duplicated

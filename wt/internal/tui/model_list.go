@@ -65,6 +65,10 @@ type modelItem struct {
 	exception string
 	blocked   string // non-empty: the agent flow's Enter shows this instead of launching or starting
 	start     bool   // Enter starts the model through the lifecycle engine
+	// cost is the row's price in force as the launcher's mode line names it
+	// for the highlighted row (costNote); "" for a row with no per-token
+	// price.
+	cost string
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps

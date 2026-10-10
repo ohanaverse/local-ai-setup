@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"unicode/utf8"
 
@@ -45,6 +46,61 @@ const (
 var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colLoc, colFamily}
 
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
+
+// timePricedMark follows the COST cell of a model that has cost.time_prices
+// rows: the prices shown are the ones in force when the table was built, and
+// they change with the time. costLegend is the COST heading of a table that
+// has such a row; it says what the mark means. It is used only when the
+// column is already that wide (a marked cell with three prices is one column
+// wider), so it never widens a row. The table is still not as narrow as one
+// with no marked row: the mark's one column can cost a usage column (1D, 7D,
+// 30D, SURVEY) at the one list width where that column only just fitted,
+// and where COST is the last column drawn the long heading must also clear
+// the list's title bar (tuilayout.TitleRoom), so COST itself is given up at
+// three widths where a plain table shows it. The mode line names the
+// highlighted row's price whether or not the column is drawn (modeLine).
+const (
+	timePricedMark = "~"
+	costLegend     = "COST (~ varies by time)"
+)
+
+// costNote is a row's price in force as the launcher's mode line names it
+// when the row is highlighted: `cost 0.66/0.022/1.98`, input, cached input
+// and output per million tokens, a missing one as a dash. When the model's
+// price depends on the time the word is `cost~`: the mark comes before the
+// numbers, so nothing that shortens the line can leave the numbers without
+// it. It is "" for a row that shows no price (a discovered row) or has none
+// in force. The numbers are written short (six significant digits, no
+// padding) so that the note fits a 40-column terminal (modeLine); the COST
+// column keeps its fixed width.
+func costNote(r tableRow) string {
+	p := r.price()
+	if r.Discovered || p.Input == nil && p.Cache == nil && p.Output == nil {
+		return ""
+	}
+	short := func(v *float64) string {
+		if v == nil {
+			return "-"
+		}
+		return strconv.FormatFloat(*v, 'g', 6, 64)
+	}
+	word := "cost"
+	if r.timePriced() {
+		word += timePricedMark
+	}
+	return word + " " + short(p.Input) + "/" + short(p.Cache) + "/" + short(p.Output)
+}
+
+// costCell is a row's COST cell: the three prices in force for it
+// (tableRow.price), marked when the model's price depends on the time.
+func costCell(r tableRow) string {
+	p := r.price()
+	text := formatPerToken(config.ModelCost{InputPricePerMillion: p.Input, CachePricePerMillion: p.Cache, OutputPricePerMillion: p.Output})
+	if r.timePriced() {
+		text += timePricedMark
+	}
+	return text
+}
 
 func padRunes(s string, w int) string { return tuilayout.PadRunes(s, w) }
 
@@ -127,6 +183,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	c1, c7, c30 := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
 	famW, idW, costW, w1, w7, w30 := len("FAMILY"), len("MODEL"), len("COST"), len("1D"), len("7D"), len("30D")
 	wS := len("STATUS")
+	timePriced := false
 	for i, r := range rows {
 		fam[i] = r.Model.Family
 		if fam[i] == "" {
@@ -134,7 +191,8 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		}
 		cost[i] = "-"
 		if !r.Discovered {
-			cost[i] = formatPerToken(r.Model.Cost)
+			cost[i] = costCell(r)
+			timePriced = timePriced || r.timePriced()
 		}
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])
@@ -143,12 +201,16 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		w1, w7, w30 = maxRunes(w1, c1[i]), maxRunes(w7, c7[i]), maxRunes(w30, c30[i])
 		wS = maxRunes(wS, string(r.Status))
 	}
+	costHead := "COST"
+	if timePriced && len(costLegend) <= costW {
+		costHead = costLegend
+	}
 	// One layout for the header and every row. It starts with every column
 	// shown; whoever sizes the list narrows it (tuilayout.FitTo).
 	cols := tuilayout.NewColumns(
 		[]string{
 			padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", wS),
-			padRunes("RUNNING", 7), padRunes("COST", costW),
+			padRunes("RUNNING", 7), padRunes(costHead, costW),
 			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
 		},
 		[]int{famW, idW, 5, wS, 7, costW, w1, w7, w30, len("SURVEY")},
@@ -172,7 +234,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			survey.FormatPickerSegment(r.stats),
 		}
 		cols.Widths[colSurvey] = maxRunes(cols.Widths[colSurvey], cells[colSurvey])
-		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID]}
+		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r)}
 		switch r.Action() {
 		case catalog.ActionBlock:
 			it.blocked = r.BlockReason()

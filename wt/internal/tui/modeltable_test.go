@@ -288,3 +288,154 @@ func TestRenderTableShowsALoadingModelAsLoad(t *testing.T) {
 		}
 	}
 }
+
+// timedTableRows is a picker holding the two kinds of time-priced model wt
+// knows, with the rows `wt cloud-sync` stores for each, and one model with a
+// single price: an openrouter model whose flat price is its dear level and
+// whose row is the cheap one (deepseek's real schedule: dear on weekdays
+// 01:00-04:00 and 06:00-10:00 UTC), and an ollama cloud model with ollama's
+// off-peak row (cheap outside 12:00-18:00 UTC on weekdays).
+func timedTableRows(at time.Time) []tableRow {
+	weekdays := []string{"mon", "tue", "wed", "thu", "fri"}
+	openrouter := config.TimePrice{Label: "openrouter", Timezone: "UTC",
+		InputPricePerMillion: f64(0.66), CachePricePerMillion: f64(0.022), OutputPricePerMillion: f64(1.98),
+		Windows: []config.CostWindow{
+			{Days: weekdays, Start: "00:00", End: "01:00"}, {Days: weekdays, Start: "04:00", End: "06:00"},
+			{Days: weekdays, Start: "10:00", End: "24:00"}, {Days: []string{"sat", "sun"}, Start: "00:00", End: "24:00"},
+		}}
+	offpeak := config.TimePrice{Label: "off-peak", Timezone: "UTC",
+		InputPricePerMillion: f64(0.25), CachePricePerMillion: f64(0.025), OutputPricePerMillion: f64(1),
+		Windows: []config.CostWindow{
+			{Days: weekdays, Start: "00:00", End: "12:00"}, {Days: weekdays, Start: "18:00", End: "24:00"},
+			{Days: []string{"sat", "sun"}, Start: "00:00", End: "24:00"},
+		}}
+	return []tableRow{
+		tableRow{Row: catalog.Row{Model: config.Model{ID: "openrouter/deepseek--deepseek-v4-pro-0813", Family: "deepseek", Cost: config.ModelCost{
+			InputPricePerMillion: f64(1.32), CachePricePerMillion: f64(0.044), OutputPricePerMillion: f64(3.96), TimePrices: []config.TimePrice{openrouter}}},
+			Location: config.LocationCloud, Status: catalog.StatusOK}}.pricedAt(at),
+		tableRow{Row: catalog.Row{Model: config.Model{ID: "ollama/glm-5.3:cloud", Family: "glm", Cost: config.ModelCost{
+			InputPricePerMillion: f64(0.5), CachePricePerMillion: f64(0.05), OutputPricePerMillion: f64(2), TimePrices: []config.TimePrice{offpeak}}},
+			Location: config.LocationCloud, Status: catalog.StatusOK}}.pricedAt(at),
+		tableRow{Row: catalog.Row{Model: config.Model{ID: "openrouter/z-ai--glm-5.2", Family: "glm", Cost: config.ModelCost{
+			InputPricePerMillion: f64(0.06), CachePricePerMillion: f64(0.059), OutputPricePerMillion: f64(6)}},
+			Location: config.LocationCloud, Status: catalog.StatusOK}}.pricedAt(at),
+	}
+}
+
+// The instants the time-priced tables are drawn at, all on Monday 2026-10-12
+// UTC: 02:45 is in deepseek's dear window and in ollama's off-peak; 13:00 is
+// in deepseek's cheap window and in ollama's peak.
+var (
+	deepseekDear = time.Date(2026, 10, 12, 2, 45, 0, 0, time.UTC)
+	ollamaPeak   = time.Date(2026, 10, 12, 13, 0, 0, 0, time.UTC)
+)
+
+// costCellOf is the COST cell of the row with this id, as drawn.
+func costCellOf(t *testing.T, tbl modelTable, id string) string {
+	t.Helper()
+	for _, it := range tbl.items {
+		if it.model.ID == id {
+			return it.cells[colCost]
+		}
+	}
+	t.Fatalf("no row %s in the table", id)
+	return ""
+}
+
+// TestRenderTableShowsThePriceInForce pins what the COST column shows for a
+// model with cost.time_prices rows: the three prices in force at the instant
+// the table was built, followed by "~", the mark that the price depends on
+// the time. The owner picks a model by this column; before #322 it showed
+// the flat price all week, which for a model OpenRouter prices by time of
+// day is its dearest level (double what deepseek costs for 79% of the week)
+// and for an ollama cloud model is the peak price, wrong for every hour
+// outside 12:00-18:00 UTC. A model with one price has no mark, and when the
+// table has a marked row its COST heading says what the mark means.
+func TestRenderTableShowsThePriceInForce(t *testing.T) {
+	const deepseek, ollama, plain = "openrouter/deepseek--deepseek-v4-pro-0813", "ollama/glm-5.3:cloud", "openrouter/z-ai--glm-5.2"
+	for _, c := range []struct {
+		name               string
+		at                 time.Time
+		deepseek, ollamaAt string
+	}{
+		{"deepseek dear, ollama off-peak", deepseekDear, " 1.3200  0.0440  3.9600~", " 0.2500  0.0250  1.0000~"},
+		{"deepseek cheap, ollama peak", ollamaPeak, " 0.6600  0.0220  1.9800~", " 0.5000  0.0500  2.0000~"},
+		// A row built by hand has no clock: the flat prices, still marked,
+		// because the mark says what the model is, not what hour it is.
+		{"no clock", time.Time{}, " 1.3200  0.0440  3.9600~", " 0.5000  0.0500  2.0000~"},
+	} {
+		tbl := renderTable(timedTableRows(c.at), nil, "", nil, "")
+		if got := costCellOf(t, tbl, deepseek); got != c.deepseek {
+			t.Errorf("%s: deepseek's COST = %q, want %q", c.name, got, c.deepseek)
+		}
+		if got := costCellOf(t, tbl, ollama); got != c.ollamaAt {
+			t.Errorf("%s: the ollama cloud model's COST = %q, want %q", c.name, got, c.ollamaAt)
+		}
+		// One price all week: no mark, padded to the column like the rest.
+		if got := costCellOf(t, tbl, plain); got != " 0.0600  0.0590  6.0000 " {
+			t.Errorf("%s: the one-price model's COST = %q, want it unmarked", c.name, got)
+		}
+		if !strings.Contains(tbl.header, "  COST (~ varies by time)   1D") {
+			t.Errorf("%s: header = %q, want the COST heading to explain the mark", c.name, tbl.header)
+		}
+		// The heading is no wider than the column it heads, and every cell
+		// is padded to that column, so the columns after it still line up
+		// under their own headings.
+		if got := strings.Index(tbl.header, "1D") - strings.Index(tbl.header, "COST"); got != 24+2 {
+			t.Errorf("%s: the 1D heading starts %d columns after COST, want 26 (a 24-column cell and the separator)", c.name, got)
+		}
+		for _, it := range tbl.items {
+			if got := len(it.cells[colCost]); got != 24 {
+				t.Errorf("%s: %s: the COST cell %q is %d columns, want 24", c.name, it.model.ID, it.cells[colCost], got)
+			}
+		}
+	}
+
+	// A table with no time-priced model is drawn as it always was.
+	if tbl := renderTable(tableTestRows(), nil, "", nil, ""); strings.Contains(tbl.header, "~") || !strings.Contains(tbl.header, "  COST  ") {
+		t.Errorf("header of a table with no time-priced model = %q, want a plain COST heading", tbl.header)
+	}
+	// A discovered row shows no price, and so no mark, whatever its cost
+	// table holds.
+	rows := timedTableRows(ollamaPeak)
+	rows[0].Discovered = true
+	if got := costCellOf(t, renderTable(rows, nil, "", nil, ""), deepseek); strings.TrimSpace(got) != "-" {
+		t.Errorf("a discovered row's COST = %q, want -", got)
+	}
+	// A time-priced model with no price in force (rows only, outside their
+	// windows) is "-~": too narrow a column for the legend, so the heading
+	// stays COST and the column stays as wide as its cells.
+	bare := timedTableRows(deepseekDear)[:1]
+	bare[0].Model.Cost.InputPricePerMillion, bare[0].Model.Cost.CachePricePerMillion, bare[0].Model.Cost.OutputPricePerMillion = nil, nil, nil
+	bare[0] = bare[0].pricedAt(deepseekDear)
+	tbl := renderTable(bare, nil, "", nil, "")
+	if got := costCellOf(t, tbl, deepseek); got != "-~  " || strings.Contains(tbl.header, "varies") {
+		t.Errorf("rows only, outside their windows: COST = %q, header %q; want \"-~\" under a plain COST heading", got, tbl.header)
+	}
+	// A model whose only row breaks a rule (a time written "9:00", which is
+	// not "HH:MM") has one price: its flat one, with no mark, under a plain
+	// COST heading. A mark there would promise a change that never comes;
+	// `wt model list` is where the row is named.
+	odd := timedTableRows(deepseekDear)[:1]
+	odd[0].Model.Cost.TimePrices[0].Windows = []config.CostWindow{{Days: []string{"mon"}, Start: "9:00", End: "17:00"}}
+	odd[0] = odd[0].pricedAt(deepseekDear)
+	tbl = renderTable(odd, nil, "", nil, "")
+	if got := costCellOf(t, tbl, deepseek); got != " 1.3200  0.0440  3.9600" || strings.Contains(tbl.header, "~") {
+		t.Errorf("a row that is not applied: COST = %q, header %q; want the flat price unmarked under a plain COST heading", got, tbl.header)
+	}
+	// A row written by hand with a window that runs past midnight is a row
+	// like any other (#322): "22:00" to "06:00" on Sunday holds Monday 02:45
+	// UTC, so the cell is the night price, marked; at Monday 13:00 it is
+	// the flat price, marked all the same.
+	night := timedTableRows(deepseekDear)[:1]
+	night[0].Model.Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC", OutputPricePerMillion: f64(1.5),
+		Windows: []config.CostWindow{{Days: []string{"sun"}, Start: "22:00", End: "06:00"}}}}
+	night[0] = night[0].pricedAt(deepseekDear)
+	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  1.5000~" {
+		t.Errorf("a window past midnight, the morning after its day: COST = %q, want the night price, marked", got)
+	}
+	night[0] = night[0].pricedAt(ollamaPeak)
+	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  3.9600~" {
+		t.Errorf("a window past midnight, outside it: COST = %q, want the flat price, marked", got)
+	}
+}

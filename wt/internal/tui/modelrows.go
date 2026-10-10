@@ -2,6 +2,7 @@ package tui
 
 import (
 	"sort"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -10,6 +11,11 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
+// pickerNow is the clock a model table reads its prices at. It is read once
+// for each table that is built (buildRows), never while one is drawn. A test
+// replaces it to draw the picker at a chosen instant.
+var pickerNow = time.Now
+
 // tableRow is one line of the selector table: the shared catalog rules
 // (presence status, action, block reason) plus the picker-only decorations
 // (agent-scoped usage counts, survey stats).
@@ -17,6 +23,51 @@ type tableRow struct {
 	catalog.Row
 	counts usage.UsageCounts
 	stats  survey.Stats
+	// at is the instant the row's price was read at: the one its table was
+	// built at, the same for every row of the table. The zero time is a row
+	// with no clock (one a test built by hand), which is priced flat.
+	at time.Time
+	// in and timed are the row's price in force at that instant and whether
+	// its model's price depends on the time, resolved once when the row was
+	// given its clock (pricedAt). Resolving checks each cost.time_prices row
+	// against the registry's rules and reads its timezone, and the sort asks
+	// for a row's price twice per comparison, so nothing that sorts or draws
+	// the table resolves again. Neither is set for a row with no clock.
+	in    config.PriceInForce
+	timed bool
+}
+
+// pricedAt is the row with its clock set to at and its price resolved for
+// that instant: the model's flat prices, or those of the cost.time_prices
+// row whose window holds it (config.ModelCost.PriceAt). The zero time gives
+// a row with no clock. This is the one place a table's row is priced.
+func (r tableRow) pricedAt(at time.Time) tableRow {
+	r.at, r.in, r.timed = at, config.PriceInForce{}, false
+	if !at.IsZero() {
+		r.in, r.timed = r.Model.Cost.PriceAt(at), r.Model.Cost.TimePriced()
+	}
+	return r
+}
+
+// price is the row's three prices in force at the instant its table was
+// built, as pricedAt resolved them. It is what the COST column shows and
+// what the cost sort compares. A row with no clock has its model's flat
+// prices.
+func (r tableRow) price() config.PriceInForce {
+	if r.at.IsZero() {
+		return r.Model.Cost.Flat()
+	}
+	return r.in
+}
+
+// timePriced reports whether the row's price depends on the time (its model
+// has a cost.time_prices row that is applied), as pricedAt found it. It is
+// what marks the row's price with "~". A row with no clock asks its model.
+func (r tableRow) timePriced() bool {
+	if r.at.IsZero() {
+		return r.Model.Cost.TimePriced()
+	}
+	return r.timed
 }
 
 // tableInput gathers everything buildRows needs. models is the agent's
@@ -34,6 +85,9 @@ type tableInput struct {
 	skipRoute bool
 	usage     usage.Store
 	stats     map[string]survey.Stats
+	// now is the instant the rows are priced at. The zero time means the
+	// picker's clock (pickerNow), which is what both pickers leave it at.
+	now time.Time
 }
 
 // buildRows builds the shared catalog rows and decorates them with the
@@ -48,10 +102,17 @@ func buildRows(in tableInput) []tableRow {
 		Inventory:      in.inventory,
 		HideDiscovered: in.hideDiscovered,
 	})
+	// One reading of the clock for the whole table: the rows are sorted by
+	// the price in force, and two rows priced on two sides of a window
+	// boundary would be compared at different times.
+	now := in.now
+	if now.IsZero() {
+		now = pickerNow()
+	}
 	out := make([]tableRow, len(rows))
 	ids := make([]string, len(rows))
 	for i, r := range rows {
-		out[i] = tableRow{Row: r}
+		out[i] = tableRow{Row: r}.pricedAt(now)
 		ids[i] = r.Model.ID
 	}
 	var counts map[string]usage.UsageCounts
@@ -70,9 +131,11 @@ func buildRows(in tableInput) []tableRow {
 }
 
 // costKey is the sort key for "cost ascending": output price per million,
-// then input price per million. Local models and subscription-only models
-// (no per-token prices) count as $0; a model with no cost data at all sorts
-// after every priced model.
+// then input price per million, each the price in force when the table was
+// built (tableRow.price), so a model priced by time of day sorts by what it
+// costs now. Local models and subscription-only models (no per-token prices)
+// count as $0; a model with no cost data at all sorts after every priced
+// model.
 type costKey struct {
 	noData  bool
 	out, in float64
@@ -82,19 +145,19 @@ func rowCostKey(r tableRow) costKey {
 	if r.Location == config.LocationLocal {
 		return costKey{}
 	}
-	c := r.Model.Cost
-	if c.InputPricePerMillion == nil && c.CachePricePerMillion == nil && c.OutputPricePerMillion == nil {
-		if c.SubscriptionPrice != nil {
+	p := r.price()
+	if p.Input == nil && p.Cache == nil && p.Output == nil {
+		if r.Model.Cost.SubscriptionPrice != nil {
 			return costKey{}
 		}
 		return costKey{noData: true}
 	}
 	var k costKey
-	if c.OutputPricePerMillion != nil {
-		k.out = *c.OutputPricePerMillion
+	if p.Output != nil {
+		k.out = *p.Output
 	}
-	if c.InputPricePerMillion != nil {
-		k.in = *c.InputPricePerMillion
+	if p.Input != nil {
+		k.in = *p.Input
 	}
 	return k
 }

@@ -170,6 +170,47 @@
 
 ### Changed
 
+- The model picker shows the price in force now. For a model with
+  `cost.time_prices` rows (ollama's off-peak row, or rows written by hand),
+  the COST column shows, and the cost sort uses, the prices of the row
+  whose timezone and windows hold the current instant, and the model's own
+  price when none does. It used to show the model's own price at every
+  hour, which for an ollama cloud model is the peak price. Such a price is
+  marked `~`, and the column heading then reads `COST (~ varies by time)`.
+  The mark and the heading take room: at a few widths a table with a
+  time-priced model in it shows one usage column fewer (1D, 7D, 30D or
+  SURVEY) than it would without one, and at three widths, where COST is
+  the last column there is room for, it shows no COST column where a table
+  of single prices has one.
+  The line under the launcher's table now names the highlighted model's
+  price beside the LiteLLM mode, as `cost~ 0.66/0.022/1.98`, whole or not
+  at all: on a terminal too narrow for both (at 40 columns, a price with
+  many digits, and nearly every price when LiteLLM is off) the price takes
+  the line and the mode gives way. The COST column itself is dropped on a
+  narrow terminal, as before. Because the sort uses the
+  current price, a time-priced model's place in the list, and so the first
+  row, can differ from one hour to the next. The price is read when the
+  picker opens, not while it is open. A row that breaks the registry's
+  rules (an unknown timezone; a time that is not `HH:MM`; a negative
+  price) is not applied, and `wt model list` now names it on stderr and in
+  `--json`'s `malformed` array, as it does a malformed `fetch`. Not
+  changed: LiteLLM's route, and any spend computed from it, uses the
+  model's own price at every hour; `wt model list` and `wt config`'s
+  Models tab show no price, and the model form edits the model's own
+  price. Reference: `docs/wt-cloud-sync.md` ("The price the picker
+  shows").
+- A window of a `cost.time_prices` row may run past midnight. With its
+  `end` before its `start` (`start = "22:00"`, `end = "06:00"`) it is one
+  window, from `start` on each listed day to `end` on the next day, on the
+  clock of the row's timezone; the picker applies it. The registry used to
+  refuse such a row (`start must be before end`), so a model that carried
+  one could not be edited or re-priced until the window was split in two.
+  A window whose `start` equals its `end` is still refused (`start and end
+  must differ`; a whole day is `00:00` to `24:00`). A wt built before this
+  change still loads a row with a window past midnight but refuses to
+  write its model (`start must be before end`), so write one only once the
+  installed wt has this change. Reference: `docs/wt-cloud-sync.md` ("A row
+  you write by hand").
 - **Breaking:** the provider key `openrouter_priced` is no longer read, and
   the rule it overrode is simpler: a model takes its price from OpenRouter
   when its `provider_id` is `openrouter`, and never otherwise. That one rule

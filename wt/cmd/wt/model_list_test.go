@@ -636,3 +636,63 @@ func TestModelListIsQuietOnAWellFormedRegistry(t *testing.T) {
 		t.Errorf("stderr = %q, stdout =\n%s\nwant no note and six empty malformed arrays", errOut.String(), out.String())
 	}
 }
+
+// TestModelListNamesATimePricesRowThatIsNotApplied pins where a user learns
+// that a cost.time_prices row they wrote is not in use (#322). The model
+// picker shows the price in force from those rows, and passes over a row the
+// registry's rules refuse: here a time written "9:00", which is not "HH:MM".
+// The picker then shows the model's own price with no mark, as for any model
+// with one price, so without this line nothing says why the row changes
+// nothing. The listing names the row and the rule on stderr, and --json has
+// the same phrase in the model's "malformed" array. A row whose window runs
+// past midnight ("22:00" to "06:00") keeps the rules and is named by
+// nothing: stderr is the one line.
+func TestModelListNamesATimePricesRowThatIsNotApplied(t *testing.T) {
+	registry := malformedRegistry(false) + `
+[[providers]]
+id = "openrouter"
+location = "cloud"
+[providers.auth]
+type = "api_key"
+
+[[models]]
+id = "openrouter/early-bird"
+family = "bird"
+provider_id = "openrouter"
+model_name = "acme/early-bird"
+
+[models.cost]
+output_price_per_million = 75.0
+
+[[models.cost.time_prices]]
+timezone = "America/New_York"
+output_price_per_million = 10.0
+windows = [{ days = ["mon", "tue", "wed", "thu", "fri"], start = "9:00", end = "17:00" }]
+
+[[models]]
+id = "openrouter/night-owl"
+family = "owl"
+provider_id = "openrouter"
+model_name = "acme/night-owl"
+
+[models.cost]
+output_price_per_million = 75.0
+
+[[models.cost.time_prices]]
+timezone = "America/New_York"
+output_price_per_million = 10.0
+windows = [{ days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start = "22:00", end = "06:00" }]
+`
+	const problem = "cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00"
+	out, errOut, path := runModelListOver(t, registry, false)
+	if want := "openrouter/early-bird: " + problem + "; wt reads it as absent (fix the entry in " + path + ")\n"; errOut != want {
+		t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
+	}
+	if !strings.Contains(out, "openrouter/early-bird") || !strings.Contains(out, "openrouter/night-owl") || strings.Contains(out, "time_prices") {
+		t.Errorf("stdout =\n%s\nwant the table alone, both models listed", out)
+	}
+	out, errOut, _ = runModelListOver(t, registry, true)
+	if !strings.Contains(out, `"`+problem+`"`) || !strings.Contains(errOut, problem) || strings.Contains(errOut, "night-owl") {
+		t.Errorf("--json: stdout lacks the phrase in a malformed array, or stderr is not the one line:\n%s\n%s", out, errOut)
+	}
+}

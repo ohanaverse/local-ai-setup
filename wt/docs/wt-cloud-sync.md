@@ -106,8 +106,11 @@ route sync) LiteLLM's routes.
 - **Off-peak prices** are stored as the `[[models.cost.time_prices]]` row
   labelled `off-peak`: UTC, weekdays outside 12:00–18:00, all day at
   weekends. That window is ollama's published one and is written, not read
-  from the page. Rows with any other label are yours and are kept. Nothing
-  applies time prices at launch; they are stored.
+  from the page. Rows with any other label are yours and are kept. The
+  model picker applies the row: outside ollama's peak hours it shows the
+  off-peak price ([The price the picker
+  shows](#the-price-the-picker-shows)). LiteLLM's route carries the peak
+  price at every hour.
 - **Local models are never touched.** Only ollama cloud entries and `*:cloud`
   / `*-cloud` tags are in scope. An entry marked `location = "cloud"` whose
   `model_name` is not a cloud tag is removed from the registry like any other
@@ -396,6 +399,112 @@ The copy is still written and the exit status is unchanged. Redirecting the
 registry does not redirect ollama: an apply still runs the real `ollama`
 against the address in the copy's provider row. Use `--dry-run`, or put a
 stand-in `ollama` first on `PATH`.
+
+## The price the picker shows
+
+`cost.time_prices` rows are what the sync stores; the model picker is what
+reads them. For every model, the picker's COST column and its cost sort use
+the price **in force at the moment the picker opens**:
+
+- The rows are tried in file order. The first row with a window that holds
+  the current instant supplies each price it sets; a price it does not set
+  stays the model's own (flat) one. When no row's window holds the instant,
+  the model's own price is in force.
+- A window is `[start, end)` on the listed days, on the wall clock of the
+  row's `timezone`, so a row in a zone with daylight saving time follows
+  it. A window whose `end` is before its `start` runs past midnight, into
+  the next day ([A row you write by hand](#a-row-you-write-by-hand)). The
+  rows the sync writes are all UTC.
+- This holds for every row, whoever wrote it: the ollama flow's `off-peak`
+  row (the model's own price is the peak one) and a row you wrote by hand.
+- **A price that depends on the time is marked `~`** after its three
+  numbers, and the column's heading then reads `COST (~ varies by time)`.
+  The mark says the model has a row that applies, at any hour: the price
+  beside it is the one in force now and will change. The mark and its
+  heading take room. The mark makes the COST column one character wider, so
+  a table with a time-priced model in it can show one usage column fewer
+  (1D, 7D, 30D or SURVEY) than the same table without one, at the one
+  width where that column only just fitted. And where COST is the last
+  column the terminal has room for, the longer heading needs three columns
+  more than `COST` does, so at those three widths such a table has no COST
+  column where a table of single prices has one. The line under the table
+  names the price there (next bullet).
+- **The line under the table names the highlighted model's price** beside
+  the LiteLLM mode: `LiteLLM: on   cost~ 0.66/0.022/1.98` (input, cached
+  input and output per million tokens; `cost~` when the price depends on
+  the time; illustrative). The COST column is not always drawn: a narrow
+  table gives up whole columns, and one with a model id longer than about
+  15 characters in it, which is most tables, has no COST column at 80
+  columns. This line is there when the column is not. The price on it is whole or absent, never cut
+  short: on a terminal too narrow for the mode and the price together (at
+  40 columns, a price with many digits under `LiteLLM: on` and all but the
+  shortest under `LiteLLM: off (direct)`) the price takes the line and the
+  mode gives way, and a price too long even for that leaves the line as
+  the mode alone. The pickers of `wt start` and `wt smoke` have no such
+  line; they have the COST column only.
+- The price is read once, when the table is built: on opening the picker,
+  and when it is rebuilt after a start attempt. A picker left open across a
+  window boundary keeps the prices and the order it opened with; reopen it
+  for the new ones.
+- **Only the picker follows the clock.** LiteLLM's route, and so any spend
+  LiteLLM computes from it, uses the model's own price at every hour, and
+  `wt model list` shows no price at all.
+
+### A row you write by hand
+
+A row needs a `timezone` (an IANA name such as `America/New_York`; not
+empty, not `Local`) and `windows`. The prices it sets (`input_`, `cache_`
+and `output_price_per_million`, none below zero) replace the model's own
+while one of its windows holds the instant. Each window has `days` (from
+`mon` to `sun`) and `start` and `end` as `"HH:MM"`; `"24:00"` is the end of
+a day.
+
+**A window may run past midnight.** When `end` is before `start`, the
+window starts at `start` on each listed day and ends at `end` on the next
+day: `22:00` to `06:00` on `mon` is Monday 22:00 to Tuesday 06:00
+(illustrative):
+
+```toml
+[[models.cost.time_prices]]
+label = "night"
+timezone = "America/New_York"
+output_price_per_million = 10.0
+windows = [
+    { days = ["mon", "tue", "wed", "thu", "fri"], start = "22:00", end = "06:00" },
+]
+```
+
+`days` are the days a window starts on, so this row holds Saturday 05:00
+(Friday's night) and not Monday 05:00 (Sunday is not listed). The next day
+is a calendar day on the row's own clock: on a night the zone's clocks
+change, the window is an hour longer or shorter and still ends when the
+clock reads 06:00. `start` and `end` must differ; a whole day is `00:00`
+to `24:00`. The rows the sync writes never run past midnight (each day's
+hours are under that day), and the sync keeps a row of yours that does, as
+the one window you wrote. (As for any entry, the first write by wt lays a
+file typed by hand out again in its own layout and drops comments.) A wt
+built before this change still loads a row with such a window but refuses
+to write its model (`start must be before end`), so write one only once
+the installed wt has this change.
+
+A row that breaks one of these rules is still loaded, and it is **not
+applied**, whole, at any hour: the picker shows the model's own price, and
+no `~` unless another row of the model applies. `wt model list` names the
+row and the rule on stderr; for a time written `9:00`, which is not
+`HH:MM`: `<id>: cost.time_prices[0]: windows[0]: start must be HH:MM, got
+9:00; wt reads it as absent (fix the entry in <registry>)`. The Models tab
+of `wt config` shows the same under the selected model. wt also refuses to
+write that model's entry until the row is fixed: `wt model edit`, a save
+in `wt config`, or a `wt cloud-sync` with a change for that model is
+refused with `invalid registry entry: model "<id>": cost: time_prices[0]:
+windows[0]: start must be HH:MM, got 9:00`, and nothing is written.
+
+A value of the wrong TOML type is another matter. `windows = "always"`, or a
+price in quotes, makes the registry unreadable, and every wt command stops
+with `wt: config error: parse <registry>: toml: line N (last key
+"models.cost.time_prices.windows"): incompatible types: TOML value has type
+string; destination has type slice (fix that file by hand)` until that line
+is fixed, as for a wrong type anywhere else in the registry.
 
 ## The stale-pricing notice
 
