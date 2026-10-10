@@ -320,8 +320,13 @@ skill has the steps.
 
 **Exit 4** — `<n> of <m> ollama cloud entries would be removed — check the
 page parsed correctly, then re-run with --force. Nothing was changed by
-the ollama flow.` The line's `<n>` counts every removal line, a re-tagged one
-included, though the gate above leaves re-tagged entries out.
+the ollama flow.` `<n>` is the number the gate above weighs: the entries
+that leave the registry for good, re-tagged ones left out. `<m>` is the
+number of ollama cloud entries before the run. When the plan re-tags an
+entry, `<n>` is smaller than the count in its `Registry removals` heading,
+which counts every removal line, and the exit-4 line says so: `<n> of <m>
+ollama cloud entries would be removed (re-tagged entries are not counted)
+— …`.
 
 **Exit 5** — two causes, told apart by the last line:
 

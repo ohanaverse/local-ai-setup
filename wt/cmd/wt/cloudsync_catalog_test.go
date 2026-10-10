@@ -209,6 +209,12 @@ location = "cloud"
 source = "curated"
 tags = []
 `
+	// massRegistry with deepseek-v4-pro's entry turned into one for kimi-k3
+	// under the guessed tag kimi-k3:cloud. The page lists kimi-k3 and ollama
+	// publishes it only as kimi-k3:1t-cloud, so the plan re-tags it: three
+	// removal lines, of which two entries really leave.
+	retagRegistry := strings.Replace(massRegistry, "id = \"ollama/deepseek-v4-pro:cloud\"", "catalog_name = \"kimi-k3\"\nid = \"ollama/kimi-k3:cloud\"", 1)
+	retagRegistry = strings.Replace(retagRegistry, "model_name = \"deepseek-v4-pro:cloud\"", "model_name = \"kimi-k3:cloud\"", 1)
 	// A page of bare names only, with ollama.com/library unreachable.
 	allBare := map[string]string{cloudsync.PricingURL: strings.Replace(ollamaPage, ">gpt-oss:120b<", ">gpt-oss<", 1)}
 	cases := []struct {
@@ -218,6 +224,7 @@ tags = []
 		listFail string
 		opts     cloudSyncOpts
 		code     int
+		wantPlan string // a part of the printed plan the case depends on
 		stderr   string
 	}{
 		{name: "the page cannot be fetched", pages: map[string]string{}, opts: cloudSyncOpts{yes: true}, code: 2,
@@ -238,6 +245,12 @@ tags = []
 				"ollama: raw HTML saved to TMPDIR/ollama-pricing-20261007-090000.html — the parser to update is wt/internal/cloudsync/pricingpage.go; nothing was changed\n"},
 		{name: "more than half the cloud entries would go", registry: massRegistry, pages: ollamaPages(), opts: cloudSyncOpts{yes: true, approve: "anything"}, code: 4,
 			stderr: "ollama: error: 2 of 3 ollama cloud entries would be removed — check the page parsed correctly, then re-run with --force. Nothing was changed by the ollama flow.\n"},
+		// The count is the guard's own: a re-tagged entry comes straight back,
+		// so it is not one of the <n>, and the line says so because the plan
+		// above it heads the removals "(3)" (#320: it used to read "3 of 3").
+		{name: "a re-tagged entry is not one of the entries that would go", registry: retagRegistry, pages: ollamaPages(), opts: cloudSyncOpts{yes: true, approve: "anything"}, code: 4,
+			wantPlan: "`ollama rm` if pulled (3):\nollama:   ollama/kimi-k3:cloud (re-tagged as ollama/kimi-k3:1t-cloud)\nollama:   ollama/retired:cloud\nollama:   ollama/retired2:cloud\n",
+			stderr:   "ollama: error: 2 of 3 ollama cloud entries would be removed (re-tagged entries are not counted) — check the page parsed correctly, then re-run with --force. Nothing was changed by the ollama flow.\n"},
 		{name: "--yes with no digest", pages: ollamaPages(), opts: cloudSyncOpts{yes: true}, code: 5,
 			stderr: "ollama: error: the plan deletes models — review a --dry-run, then re-run with `--yes --approve-removals DIGEST`. Nothing was changed by the ollama flow.\n"},
 		{name: "--yes with another plan's digest", pages: ollamaPages(), opts: cloudSyncOpts{yes: true, approve: "000000000000"}, code: 5,
@@ -273,6 +286,12 @@ tags = []
 				2: "an input could not be read", 3: "the pricing page changed shape", 4: "mass removal refused", 5: "removals not approved",
 			}[tc.code]; final != want {
 				t.Errorf("the command's error = %q, want %q", final, want)
+			}
+			// Guarded: an empty wantPlan asks for nothing, and an unguarded
+			// Contains against "" would assert nothing while reading as though
+			// it did.
+			if tc.wantPlan != "" && !strings.Contains(stdout, tc.wantPlan) {
+				t.Errorf("the plan lacks %q:\n%s", tc.wantPlan, stdout)
 			}
 			want := strings.ReplaceAll(tc.stderr, "TMPDIR", os.TempDir())
 			if strings.Contains(want, "DIGEST") {
