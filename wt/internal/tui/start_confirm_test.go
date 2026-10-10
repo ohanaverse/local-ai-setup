@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -378,5 +379,69 @@ func TestCancelThatLostToAStartWhoseServerIsGoneSaysSo(t *testing.T) {
 	}
 	if got.status != goneStatus || got.phase != phaseModel {
 		t.Errorf("status = %q, phase = %v; want %q on the model picker", got.status, got.phase, goneStatus)
+	}
+}
+
+// TestFailedStartWaitsForTheProxyAndIsNotSettled pins the other way out of
+// the engine. A start that failed can still have restarted the proxy (a
+// replace that had already displaced a model), so the start's goroutine
+// waits for that restart before it reports, as it does after a start that
+// succeeded. What it does not do is settle the start: there is no server to
+// ask about, and a check that found none would replace the engine's error
+// with "is not running" and remove a route the start never wrote.
+func TestFailedStartWaitsForTheProxyAndIsNotSettled(t *testing.T) {
+	stubRouteNotes(t)
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	failed := errors.New("omlx start: exit status 1")
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return failed })
+	// Written by the start's goroutine only, and read once its result has
+	// been received.
+	var order []string
+	oldWait := waitPendingRoutes
+	waitPendingRoutes = func() { order = append(order, "wait") }
+	t.Cleanup(func() { waitPendingRoutes = oldWait })
+	stubSettleStart(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
+		order = append(order, "settle")
+		return goneQwen
+	})
+
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	msg := recvStart(t, got)
+	done, ok := msg.(startDoneMsg)
+	if !ok || done.err != failed {
+		t.Fatalf("the start reported %#v, want a result carrying the engine's error", msg)
+	}
+	if strings.Join(order, ",") != "wait" {
+		t.Errorf("before a failed start reported: %v; want one wait for the proxy and the start not settled", order)
+	}
+	got, _ = updateMsg(got, msg)
+	if want := lifecycle.StartErrorMessage("omlx/qwen3.8", failed); got.status != want || got.phase != phaseModel {
+		t.Errorf("status = %q, phase = %v; want %q on the model picker", got.status, got.phase, want)
+	}
+}
+
+// TestStartIsSettledUnderItsOwnContext pins what the picker hands
+// lifecycle.SettleStart: the context the engine was started under, as it is.
+// That function is what drops the cancellation for the check (its
+// TestSettleStartChecksUnderACancelledContext); the values, and whatever
+// else the engine comes to read from the start's context, are the caller's to
+// pass on, and a context made up here would lose them.
+func TestStartIsSettledUnderItsOwnContext(t *testing.T) {
+	stubRouteNotes(t)
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	// Both written by the start's goroutine, and read after its result.
+	var started, settled context.Context
+	stubStartModel(t, func(_ int, ctx context.Context, _ lifecycle.Target, _ lifecycle.Options) error {
+		started = ctx
+		return nil
+	})
+	stubSettleStart(t, func(ctx context.Context, _ io.Writer, _ *config.Config, _ lifecycle.Target) error {
+		settled = ctx
+		return goneQwen
+	})
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	recvStart(t, got)
+	if started == nil || settled != started {
+		t.Errorf("the start was settled under %v, want the context the engine was started under (%v)", settled, started)
 	}
 }
