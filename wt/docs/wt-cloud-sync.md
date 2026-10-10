@@ -243,12 +243,11 @@ is refused, nothing is stamped and the stale-pricing notice stays.
 #### A listed price that moves between syncs
 
 For a model that several providers serve, the price in OpenRouter's list is
-one provider's quote, near the cheap end of the field, and OpenRouter can
-change which quote it lists from one minute to the next. wt stores what is
-listed and does not smooth it. So two syncs run minutes apart can each list
-a price update for such a model although no provider changed a price. One
-sync and the next, a few minutes later (illustrative; a made-up model and
-prices):
+one provider's quote, and OpenRouter can change which quote it lists within
+minutes. wt stores what is listed and does not smooth it. So two syncs run
+minutes apart can each list a price update for such a model although no
+provider changed a price. One sync and the next, a few minutes later
+(illustrative; a made-up model and prices):
 
 ```text
 openrouter:   openrouter/acme--alpha-1: 1/0.1/4 -> 0.9/0.09/3.6
