@@ -719,3 +719,30 @@ input_price_per_million = 9.0
 		}
 	}
 }
+
+// TestPricePlanFormatShowsAWindowPriceStoredOverASchedule pins the line for
+// a registry that holds the schedule's rows under the price of one window:
+// what a wt built before #322 was fixed leaves when its own cloud-sync runs
+// on a registry this flow already wrote (it stores the listed price and
+// never touches time_prices), and what a hand edit of the price leaves. The
+// brackets are the same on both sides and only the price before them moves,
+// to the dearest level. The page and the skill tell a reader that this line
+// is not a re-pricing by OpenRouter, so its shape must not drift from them.
+func TestPricePlanFormatShowsAWindowPriceStoredOverASchedule(t *testing.T) {
+	const pricing = `{"prompt": "0.0000005", "completion": "0.000002", "overrides": [
+		{"utc_start": 0, "utc_end": 1200, "prompt": "0.000001", "completion": "0.000004"},
+		{"utc_start": 1200, "utc_end": 0, "prompt": "0.0000005", "completion": "0.000002"}
+	]}`
+	stored := &Cost{Input: f(0.5), Output: f(2), TimePrices: scheduleRows(t, pricing)}
+	plan := PlanPrices([]Entry{orEntry("m", stored)}, apiOf(t, one(pricing)))
+	const want = "openrouter.ai: 1 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+		"Price updates (1):\n" +
+		"  openrouter/m: 0.5/-/2 (openrouter 0.5/-/2 mon-sun 12:00-24:00) -> 1/-/4 (openrouter 0.5/-/2 mon-sun 12:00-24:00)\n" +
+		"Unchanged prices: 0"
+	if got := plan.Format(); got != want {
+		t.Errorf("Format() =\n%s\n\nwant\n%s", got, want)
+	}
+	if got, was := plan.Matched[0].After.TimePrices, stored.TimePrices; !reflect.DeepEqual(got, was) {
+		t.Errorf("the rows after = %v, want the stored ones as they stand: %v", got, was)
+	}
+}

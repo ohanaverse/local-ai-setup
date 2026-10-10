@@ -1119,3 +1119,48 @@ func TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone(t *testing.T) {
 		t.Errorf("registry.toml does not hold one openrouter row per model:\n%s", got)
 	}
 }
+
+// TestCloudSyncUnreadableScheduleIsAWarningNotAFailure pins what the run
+// does around a model whose time-of-day pricing it cannot read: that model
+// is warned about and left as it is (price, no stamp), every other model in
+// the plan is refreshed and stamped, and the run exits 0 with nothing on
+// stderr. The cloud-sync skill tells an agent to carry on to the next step
+// after this warning; if the warning ever became a failing exit, an agent
+// following it would apply a plan the run had refused.
+func TestCloudSyncUnreadableScheduleIsAWarningNotAFailure(t *testing.T) {
+	// deepseek's windows leave half of each day unpriced; hy3 has one price.
+	const body = `{"data": [
+		{"id": "deepseek/deepseek-v4-pro-0813", "pricing": {"prompt": "0.00000066", "completion": "0.00000198", "overrides": [
+			{"utc_start": 0, "utc_end": 1200, "prompt": "0.00000132", "completion": "0.00000396"}
+		]}},
+		{"id": "tencent/hy3", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+	]}`
+	path, cfg := cloudSyncHome(t, timeOfDayRegistry)
+	synced := stubRouteSync(t, "")
+	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	const want = "openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+		"openrouter: Price updates (1):\n" +
+		"openrouter:   openrouter/tencent--hy3: no cost -> 1/-/2\n" +
+		"openrouter: Unchanged prices: 0\n" +
+		"openrouter: warning: Could not use OpenRouter's time-of-day pricing for openrouter/deepseek--deepseek-v4-pro-0813: its windows do not cover the whole week\n" +
+		"openrouter: refreshed 1 model(s); 1 price(s) changed\n"
+	if stdout != want || stderr != "" || code != 0 {
+		t.Errorf("stdout:\n%s\nstderr: %q, exit %d\nwant stdout:\n%s\nand exit 0", stdout, stderr, code, want)
+	}
+	if *synced != 1 {
+		t.Errorf("the routes were synced %d time(s), want once: hy3's price changed", *synced)
+	}
+	applied := mustRead(t, path)
+	deepseek, hy3, ok := strings.Cut(applied, "[[models]]\nid = \"openrouter/tencent--hy3\"")
+	if !ok {
+		t.Fatalf("registry.toml after the apply has no hy3 entry:\n%s", applied)
+	}
+	if !strings.Contains(deepseek, "input_price_per_million = 0.66\ncache_price_per_million = 0.022\noutput_price_per_million = 1.9800000000000002\n") ||
+		strings.Contains(deepseek, "pricing_updated_at") || strings.Contains(deepseek, "time_prices") {
+		t.Errorf("the model with the unreadable schedule was changed or stamped:\n%s", deepseek)
+	}
+	if !strings.Contains(hy3, "input_price_per_million = 1.0\noutput_price_per_million = 2.0\n") || !strings.Contains(hy3, "pricing_updated_at") {
+		t.Errorf("the other model was not refreshed and stamped:\n%s", hy3)
+	}
+}
