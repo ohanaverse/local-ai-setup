@@ -71,8 +71,16 @@ type Rate struct {
 // An entry with no utc_ key is not a time-of-day entry (a prompt-size tier,
 // min_prompt_tokens, or a condition wt does not know) and is ignored: the
 // top-level price already is the price under default conditions.
+//
+// An overrides value that is not a list, and an entry that is not an object,
+// cannot be said to hold no window, so they are a reason too and not "no
+// schedule": if the model is priced by time of day, its top-level price is
+// the one that follows the hour. A missing or null overrides is no schedule.
 func parseSchedule(pricing map[string]any) (rates []Rate, unusable string) {
-	entries, _ := pricing["overrides"].([]any)
+	entries, isList := pricing["overrides"].([]any)
+	if !isList && pricing["overrides"] != nil {
+		return nil, "its overrides are not a list"
+	}
 	var (
 		levels    []level
 		week      [daysPerWeek * minutesPerDay]int
@@ -83,7 +91,10 @@ func parseSchedule(pricing map[string]any) (rates []Rate, unusable string) {
 	}
 	for _, raw := range entries {
 		entry, ok := raw.(map[string]any)
-		if !ok || !slices.ContainsFunc(timeConditionKeys, func(k string) bool { _, has := entry[k]; return has }) {
+		if !ok {
+			return nil, "an overrides entry is not an object"
+		}
+		if !slices.ContainsFunc(timeConditionKeys, func(k string) bool { _, has := entry[k]; return has }) {
 			continue
 		}
 		for _, key := range slices.Sorted(maps.Keys(entry)) {

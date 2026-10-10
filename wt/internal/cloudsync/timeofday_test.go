@@ -361,6 +361,32 @@ func TestParseOpenRouterTimeOfDayShapes(t *testing.T) {
 		t.Errorf("mixed rates = %s\nwant %s", ratesText(mixed.Rates), ratesText(want))
 	}
 
+	// One window published as two adjoining entries at one price is one
+	// stretch of the day: split at the entries' seam it would be written as
+	// two windows, and a sync after OpenRouter re-cut its list would report
+	// an update although no price moved at any minute.
+	split := apiOf(t, one(`{"prompt": "0.000001", "completion": "0.000002", "overrides": [
+		{"utc_start": 0, "utc_end": 800, "prompt": "0.000001", "completion": "0.000002"},
+		{"utc_start": 800, "utc_end": 1600, "prompt": "0.000001", "completion": "0.000002"},
+		{"utc_start": 1600, "utc_end": 0, "prompt": "0.000003", "completion": "0.000006"}
+	]}`))["vendor/m"]
+	wantTriple(t, "split", PriceTriple{Input: split.Input, Cache: split.Cache, Output: split.Output}, f(3), nil, f(6))
+	if want := []Rate{{Input: f(1), Output: f(2), Spans: all(Span{0, 960})}}; !sameRates(split.Rates, want) {
+		t.Errorf("split rates = %s\nwant %s", ratesText(split.Rates), ratesText(want))
+	}
+
+	// Levels that tie on output and input are ordered by the cached-input
+	// price, so the flat price is the dearer of them wherever it stands in
+	// the week: here the cheaper one comes first.
+	tied := apiOf(t, one(`{"prompt": "0.000002", "completion": "0.000004", "input_cache_read": "0.0000001", "overrides": [
+		{"utc_start": 0, "utc_end": 1200, "prompt": "0.000002", "completion": "0.000004", "input_cache_read": "0.0000001"},
+		{"utc_start": 1200, "utc_end": 0, "prompt": "0.000002", "completion": "0.000004", "input_cache_read": "0.0000002"}
+	]}`))["vendor/m"]
+	wantTriple(t, "tied", PriceTriple{Input: tied.Input, Cache: tied.Cache, Output: tied.Output}, f(2), pm("0.0000002"), f(4))
+	if want := []Rate{{Input: f(2), Cache: pm("0.0000001"), Output: f(4), Spans: all(Span{0, 720})}}; !sameRates(tied.Rates, want) {
+		t.Errorf("tied rates = %s\nwant %s", ratesText(tied.Rates), ratesText(want))
+	}
+
 	// Every window at one price: a schedule in form only. One price, no
 	// other level.
 	flat := apiOf(t, one(`{"prompt": "0.000009", "completion": "0.000009", "overrides": [
@@ -376,8 +402,6 @@ func TestParseOpenRouterTimeOfDayShapes(t *testing.T) {
 	for name, pricing := range map[string]string{
 		"a prompt-size tier":           `{"prompt": "0.000001", "completion": "0.000002", "overrides": [{"min_prompt_tokens": 200000, "prompt": "0.000002", "completion": "0.000004"}]}`,
 		"a condition wt does not know": `{"prompt": "0.000001", "completion": "0.000002", "overrides": [{"region": "eu", "prompt": "-1", "completion": "soon"}]}`,
-		"an overrides that is no list": `{"prompt": "0.000001", "completion": "0.000002", "overrides": {"utc_start": 0}}`,
-		"an entry that is not a table": `{"prompt": "0.000001", "completion": "0.000002", "overrides": ["utc_start", 7, null]}`,
 		"an empty overrides list":      `{"prompt": "0.000001", "completion": "0.000002", "overrides": []}`,
 		"a null overrides":             `{"prompt": "0.000001", "completion": "0.000002", "overrides": null}`,
 	} {
@@ -392,28 +416,35 @@ func TestParseOpenRouterTimeOfDayShapes(t *testing.T) {
 	// reason, and never half used.
 	const day, night2 = `"prompt": "0.000002", "completion": "0.000004"`, `"prompt": "0.000001", "completion": "0.000002"`
 	for name, c := range map[string]struct{ overrides, want string }{
-		"a gap":                 {`[{"utc_start": 0, "utc_end": 1200, ` + day + `}, {"utc_start": 1300, "utc_end": 0, ` + night2 + `}]`, "its windows do not cover the whole week"},
-		"a day with no entry":   {`[{"utc_days": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"], ` + day + `}]`, "its windows do not cover the whole week"},
-		"a skipped entry's gap": {`[{"utc_start": 0, "utc_end": 1200, ` + day + `}, {"region": "eu", ` + night2 + `}]`, "its windows do not cover the whole week"},
-		"a time and size entry": {`[{"utc_start": 0, "utc_end": 0, "min_prompt_tokens": 1000, ` + day + `}]`, "an entry sets both a time window and min_prompt_tokens"},
-		"an unknown key":        {`[{"utc_start": 0, "utc_end": 0, "utc_months": ["may"], ` + day + `}]`, `an entry has a key wt does not know ("utc_months")`},
-		"a discount key":        {`[{"utc_start": 0, "utc_end": 0, "discount": 0.5, ` + day + `}]`, `an entry has a key wt does not know ("discount")`},
-		"a key like a price":    {`[{"utc_start": 0, "utc_end": 0, "input_cache_write_5m": "0.000003", ` + day + `}]`, `an entry has a key wt does not know ("input_cache_write_5m")`},
-		"an entry's overrides":  {`[{"utc_start": 0, "utc_end": 0, "overrides": [], ` + day + `}]`, `an entry has a key wt does not know ("overrides")`},
-		"no completion price":   {`[{"utc_start": 0, "utc_end": 0, "prompt": "0.000002"}]`, "an entry has no prompt or no completion price"},
-		"a null prompt price":   {`[{"utc_start": 0, "utc_end": 0, "prompt": null, "completion": "0.000004"}]`, "an entry has no prompt or no completion price"},
-		"a price that varies":   {`[{"utc_start": 0, "utc_end": 0, "prompt": "-1", "completion": "0.000004"}]`, "its prompt price in one window is negative or not a number"},
-		"a cache price in some": {`[{"utc_start": 0, "utc_end": 1200, "input_cache_read": "0.0000001", ` + day + `}, {"utc_start": 1200, "utc_end": 0, ` + night2 + `}]`, "some of its windows have a cached-input price and some do not"},
-		"a start with no end":   {`[{"utc_start": 0, ` + day + `}]`, "an entry has only one of utc_start and utc_end"},
-		"an end with no start":  {`[{"utc_days": ["monday"], "utc_end": 1200, ` + day + `}]`, "an entry has only one of utc_start and utc_end"},
-		"75 minutes":            {`[{"utc_start": 1675, "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
-		"24:00":                 {`[{"utc_start": 0, "utc_end": 2400, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
-		"a time as text":        {`[{"utc_start": "0100", "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
-		"a fractional time":     {`[{"utc_start": 100.5, "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
-		"a negative time":       {`[{"utc_start": -100, "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
-		"a day wt cannot name":  {`[{"utc_days": ["monday", "holiday"], ` + day + `}]`, "utc_days is not a list of weekday names"},
-		"days as text":          {`[{"utc_days": "monday", ` + day + `}]`, "utc_days is not a list of weekday names"},
-		"no days":               {`[{"utc_days": [], ` + day + `}]`, "utc_days is not a list of weekday names"},
+		// An overrides value wt cannot read as a list of entries may hold a
+		// schedule, and then the top-level price is the one of the window in
+		// force: taking it would store a price that follows the hour.
+		"an overrides that is no list": {`{"utc_start": 0}`, "its overrides are not a list"},
+		"an overrides that is text":    {`"1630-0030"`, "its overrides are not a list"},
+		"an entry that is no object":   {`["utc_start", 7, null]`, "an overrides entry is not an object"},
+		"a null beside a tier":         {`[{"min_prompt_tokens": 200000, ` + day + `}, null]`, "an overrides entry is not an object"},
+		"a gap":                        {`[{"utc_start": 0, "utc_end": 1200, ` + day + `}, {"utc_start": 1300, "utc_end": 0, ` + night2 + `}]`, "its windows do not cover the whole week"},
+		"a day with no entry":          {`[{"utc_days": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"], ` + day + `}]`, "its windows do not cover the whole week"},
+		"a skipped entry's gap":        {`[{"utc_start": 0, "utc_end": 1200, ` + day + `}, {"region": "eu", ` + night2 + `}]`, "its windows do not cover the whole week"},
+		"a time and size entry":        {`[{"utc_start": 0, "utc_end": 0, "min_prompt_tokens": 1000, ` + day + `}]`, "an entry sets both a time window and min_prompt_tokens"},
+		"an unknown key":               {`[{"utc_start": 0, "utc_end": 0, "utc_months": ["may"], ` + day + `}]`, `an entry has a key wt does not know ("utc_months")`},
+		"a discount key":               {`[{"utc_start": 0, "utc_end": 0, "discount": 0.5, ` + day + `}]`, `an entry has a key wt does not know ("discount")`},
+		"a key like a price":           {`[{"utc_start": 0, "utc_end": 0, "input_cache_write_5m": "0.000003", ` + day + `}]`, `an entry has a key wt does not know ("input_cache_write_5m")`},
+		"an entry's overrides":         {`[{"utc_start": 0, "utc_end": 0, "overrides": [], ` + day + `}]`, `an entry has a key wt does not know ("overrides")`},
+		"no completion price":          {`[{"utc_start": 0, "utc_end": 0, "prompt": "0.000002"}]`, "an entry has no prompt or no completion price"},
+		"a null prompt price":          {`[{"utc_start": 0, "utc_end": 0, "prompt": null, "completion": "0.000004"}]`, "an entry has no prompt or no completion price"},
+		"a price that varies":          {`[{"utc_start": 0, "utc_end": 0, "prompt": "-1", "completion": "0.000004"}]`, "its prompt price in one window is negative or not a number"},
+		"a cache price in some":        {`[{"utc_start": 0, "utc_end": 1200, "input_cache_read": "0.0000001", ` + day + `}, {"utc_start": 1200, "utc_end": 0, ` + night2 + `}]`, "some of its windows have a cached-input price and some do not"},
+		"a start with no end":          {`[{"utc_start": 0, ` + day + `}]`, "an entry has only one of utc_start and utc_end"},
+		"an end with no start":         {`[{"utc_days": ["monday"], "utc_end": 1200, ` + day + `}]`, "an entry has only one of utc_start and utc_end"},
+		"75 minutes":                   {`[{"utc_start": 1675, "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
+		"24:00":                        {`[{"utc_start": 0, "utc_end": 2400, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
+		"a time as text":               {`[{"utc_start": "0100", "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
+		"a fractional time":            {`[{"utc_start": 100.5, "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
+		"a negative time":              {`[{"utc_start": -100, "utc_end": 0, ` + day + `}]`, "utc_start or utc_end is not an HHMM time"},
+		"a day wt cannot name":         {`[{"utc_days": ["monday", "holiday"], ` + day + `}]`, "utc_days is not a list of weekday names"},
+		"days as text":                 {`[{"utc_days": "monday", ` + day + `}]`, "utc_days is not a list of weekday names"},
+		"no days":                      {`[{"utc_days": [], ` + day + `}]`, "utc_days is not a list of weekday names"},
 	} {
 		got := apiOf(t, one(`{"prompt": "0.000001", "completion": "0.000002", "overrides": `+c.overrides+`}`))["vendor/m"]
 		if got.Unusable != c.want || got.Rates != nil {
