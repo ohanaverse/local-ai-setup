@@ -49,29 +49,30 @@ var startProgressInterval = 10 * time.Second
 var confirmReplace = promptReplace
 
 // waitPendingRoutes is a test seam over lifecycle.WaitPendingRoutes: the route
-// hook's proxy restart runs asynchronously, and a successful start hands
-// straight off to an agent that dials the model THROUGH the LiteLLM proxy.
-// Returning before the restart has finished lets the agent hit a refused
-// connection or the pre-restart route table, in which the model just started
-// is not listed yet. Tests stub it to observe that ordering without a proxy.
+// hook's proxy restart runs asynchronously, and a launch hands straight off to
+// an agent that dials the model THROUGH the LiteLLM proxy. Returning before
+// the restart has finished lets the agent hit a refused connection or the
+// pre-restart route table, in which the model is not listed yet. It is the
+// wait of every path but a start's own, which is lifecycleSettleStart's.
+// Tests stub it to observe that ordering without a proxy.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
 
-// confirmStarted is a test seam over lifecycle.ConfirmStarted: one probe of
-// the provider's server, made once the proxy wait is over, since that wait is
-// where another terminal's `wt stop` lands (#343). TestMain stubs it so no
-// test probes a real provider.
-var confirmStarted = lifecycle.ConfirmStarted
+// lifecycleSettleStart is a test seam over lifecycle.SettleStart: what a start
+// the engine reported done is owed before anyone is told it is running — the
+// wait for the route hook's proxy restart, one probe of the provider's server
+// once that wait is over, since the wait is where another terminal's `wt
+// stop` lands (#343), and for a server that is gone the wait for the restart
+// its route removal starts. TestMain stubs it so no test probes a real
+// provider.
+var lifecycleSettleStart = lifecycle.SettleStart
 
-// settleStart is what follows a start the engine reported done: the wait for
-// the route hook's proxy restart, then the check that the server is still
-// there. A server that is gone is a failed start, worded by startFailure.
-// The check runs detached from ctx's cancellation, as the picker's does
-// (runStart): Ctrl+C in the proxy wait leaves ctx done, the ollama probe reads
-// it, and a probe that was cancelled settles nothing — a daemon that is gone
-// would be reported as running.
+// settleStart is what follows a start the engine reported done: that one
+// call, with what it prints left on stderr. A server that is gone is a failed
+// start, worded by startFailure. ctx is handed over as it is — Ctrl+C in the
+// proxy wait leaves it done, and lifecycle.SettleStart is what keeps the
+// check from being cut short by that.
 func settleStart(ctx context.Context, cfg *config.Config, id string, t lifecycle.Target) error {
-	waitPendingRoutes()
-	if err := confirmStarted(context.WithoutCancel(ctx), cfg, t); err != nil {
+	if err := lifecycleSettleStart(ctx, nil, cfg, t); err != nil {
 		return startFailure(id, err)
 	}
 	return nil

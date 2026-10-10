@@ -1348,7 +1348,7 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	// A start the user quit out of at the routing stage (startState.quitting)
 	// is waited for as well. Nothing of it can be called off there, and its
 	// goroutine still has the proxy wait and the check after it to make
-	// (confirmStarted, #343), which for a server that is gone removes the
+	// (settleStart, #343), which for a server that is gone removes the
 	// route and starts one more restart. main()'s one WaitPendingRoutes is
 	// over when the first restart is, so without this the process left in
 	// the middle of the check: the dead model's route still in config.yaml,

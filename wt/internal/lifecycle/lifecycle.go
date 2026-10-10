@@ -47,7 +47,8 @@ type Options struct {
 	// is for a caller that owns the screen (the model picker's alt screen
 	// hides stderr). Writes are serialised (routesOutMu), but the restart's
 	// warnings are written by a goroutine that outlives Start, so the text
-	// is complete only once WaitPendingRoutes has returned.
+	// is complete only once WaitPendingRoutes has returned (SettleStart, for
+	// a start that succeeded).
 	Out io.Writer
 }
 
@@ -259,9 +260,10 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 // afterwards, whether or not the load succeeded (reconcilePool). After a
 // successful start the model's LiteLLM route is updated (routes.go), announced
 // as StageRouting so callers stop rendering the engine's last stage while the
-// proxy is bounced. It returns once config.yaml is written: a caller that
-// then waits for the proxy (WaitPendingRoutes) owes ConfirmStarted after the
-// wait, since the model can be stopped during it.
+// proxy is bounced. It returns once config.yaml is written, with the proxy
+// restart still running and the model free to be stopped during it: a caller
+// about to say the model is running, or to hand it to an agent, calls
+// SettleStart after a nil return, which is that wait and the check after it.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
 	return startWith(ctx, defaultEnv(), cfg, t, opts)
 }

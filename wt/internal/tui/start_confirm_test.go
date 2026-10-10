@@ -15,8 +15,11 @@ import (
 )
 
 // These tests pin where #343's check sits in #275's start flow: on the
-// start's own goroutine, after the wait for the proxy, with its result and
-// its output travelling in the start's one result message.
+// start's own goroutine, with its result and its output travelling in the
+// start's one result message. The check is one step of the engine's
+// lifecycle.SettleStart (#349), behind the settleStart seam: the wait for the
+// proxy before it and the wait for its route removal's restart after it are
+// that function's, and its own tests pin their order.
 
 // goneQwen is what the check reports for a server that was stopped during
 // the proxy wait, and goneStatus the picker's words for it.
@@ -30,12 +33,12 @@ const (
 	goneRestartLine = "wt: LiteLLM restart failed: exit status 1\n"
 )
 
-// stubConfirmStarted swaps the confirmStarted seam for fn until the test ends.
-func stubConfirmStarted(t *testing.T, fn func(ctx context.Context, out io.Writer, cfg *config.Config, target lifecycle.Target) error) {
+// stubSettleStart swaps the settleStart seam for fn until the test ends.
+func stubSettleStart(t *testing.T, fn func(ctx context.Context, out io.Writer, cfg *config.Config, target lifecycle.Target) error) {
 	t.Helper()
-	old := confirmStarted
-	confirmStarted = fn
-	t.Cleanup(func() { confirmStarted = old })
+	old := settleStart
+	settleStart = fn
+	t.Cleanup(func() { settleStart = old })
 }
 
 // TestStartWhoseServerIsGoneIsAFailedStartWithItsLines pins what the picker
@@ -43,8 +46,9 @@ func stubConfirmStarted(t *testing.T, fn func(ctx context.Context, out io.Writer
 // start like any other (#275), not a launch. The engine's lines, the line
 // the check's route removal printed and the warning of the restart that
 // removal started are all on the status above the failure, and left for the
-// terminal with the failure under them. The check is handed the writer the
-// engine was handed, so none of it goes to stderr under the alt screen. And
+// terminal with the failure under them. The call that settles the start is
+// handed the writer the engine was handed, so none of it goes to stderr under
+// the alt screen. And
 // the launch-time route check never runs: the table still shows the row as
 // started, so that check would write the removed route straight back.
 func TestStartWhoseServerIsGoneIsAFailedStartWithItsLines(t *testing.T) {
@@ -59,21 +63,14 @@ func TestStartWhoseServerIsGoneIsAFailedStartWithItsLines(t *testing.T) {
 		fmt.Fprint(opts.Out, engineLine)
 		return nil
 	})
-	// The second wait is the one for the restart the route removal started,
-	// which prints until that wait returns. All of this runs on the start's
+	// The restart the route removal started prints until the wait for it
+	// returns, which is before the call does. All of this runs on the start's
 	// goroutine and is read after its result was received.
-	waits := 0
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() {
-		if waits++; waits == 2 && confirmOut != nil {
-			fmt.Fprint(confirmOut, goneRestartLine)
-		}
-	}
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
-	stubConfirmStarted(t, func(_ context.Context, out io.Writer, _ *config.Config, _ lifecycle.Target) error {
+	stubSettleStart(t, func(_ context.Context, out io.Writer, _ *config.Config, _ lifecycle.Target) error {
 		confirmOut = out
 		if out != nil {
 			fmt.Fprint(out, goneRouteLine)
+			fmt.Fprint(out, goneRestartLine)
 		}
 		return goneQwen
 	})
@@ -105,8 +102,7 @@ func TestStartWhoseServerIsGoneIsAFailedStartWithItsLines(t *testing.T) {
 }
 
 // TestStartIsConfirmedOffTheUpdateGoroutine pins where the check runs: on
-// the start's own goroutine, after the wait for the proxy, before the start
-// reports — never in Update. It is a request to the provider's server and,
+// the start's own goroutine, before the start reports — never in Update. It is a request to the provider's server and,
 // when the server is gone, a config.yaml write; made in finishStart, where
 // #343 first put it, it would freeze the start screen that #275 had just
 // unfrozen. While the check is held the start has not reported and Update
@@ -121,26 +117,16 @@ func TestStartIsConfirmedOffTheUpdateGoroutine(t *testing.T) {
 		return nil
 	})
 	var mu sync.Mutex
-	var inUpdate, waited bool
+	var inUpdate bool
 	calls := 0
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() {
-		mu.Lock()
-		defer mu.Unlock()
-		waited = true
-	}
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
 	entered, release := make(chan struct{}), make(chan struct{})
-	stubConfirmStarted(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
+	stubSettleStart(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
 		mu.Lock()
 		calls++
-		first, called, after := calls == 1, inUpdate, waited
+		first, called := calls == 1, inUpdate
 		mu.Unlock()
 		if called {
-			t.Error("confirmStarted was called while Update was running")
-		}
-		if !after {
-			t.Error("confirmStarted was called before the wait for the proxy")
+			t.Error("settleStart was called while Update was running")
 		}
 		if first {
 			close(entered)
@@ -190,7 +176,7 @@ func TestStartIsConfirmedOffTheUpdateGoroutine(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if calls != 1 {
-		t.Errorf("confirmStarted was called %d times, want once, by the start's goroutine", calls)
+		t.Errorf("settleStart was called %d times, want once, by the start's goroutine", calls)
 	}
 }
 
@@ -214,7 +200,7 @@ func TestQuitAtTheRoutingStageWithAGoneServerNeverLaunches(t *testing.T) {
 		opts.Progress(lifecycle.StageRouting)
 		return nil
 	})
-	stubConfirmStarted(t, func(_ context.Context, out io.Writer, _ *config.Config, _ lifecycle.Target) error {
+	stubSettleStart(t, func(_ context.Context, out io.Writer, _ *config.Config, _ lifecycle.Target) error {
 		if out != nil {
 			fmt.Fprint(out, goneRouteLine)
 		}
@@ -251,8 +237,8 @@ func TestQuitAtTheRoutingStageWithAGoneServerNeverLaunches(t *testing.T) {
 // TestQuitAtTheRoutingStageWaitsForTheStartToSettle pins that wt does not
 // leave in the middle of a start the user quit out of at the routing stage.
 // The start's goroutine still has the proxy wait and the check after it to
-// make, and for a server that is gone the check removes the route and starts
-// one more proxy restart. main()'s single wait for the proxy ends with the
+// make (settleStart), and for a server that is gone the check removes the
+// route and starts one more proxy restart, which that same call waits for. main()'s single wait for the proxy ends with the
 // first restart, so the process used to exit under the check: the dead
 // model's route left in config.yaml, or config.yaml rewritten and the proxy
 // not restarted. Run()'s exit path now waits for the goroutine, says so once
@@ -274,24 +260,16 @@ func TestQuitAtTheRoutingStageWaitsForTheStartToSettle(t *testing.T) {
 		return nil
 	})
 	var mu sync.Mutex
-	waits, confirmed := 0, false
+	settled := false
 	entered, release := make(chan struct{}), make(chan struct{})
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() {
-		mu.Lock()
-		waits++
-		first := waits == 1
-		mu.Unlock()
-		if first {
-			close(entered)
-			<-release
-		}
-	}
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
-	stubConfirmStarted(t, func(_ context.Context, out io.Writer, _ *config.Config, _ lifecycle.Target) error {
+	// Held in the wait for the proxy; the check's line and the wait for its
+	// route removal's restart come after, before the call returns.
+	stubSettleStart(t, func(_ context.Context, out io.Writer, _ *config.Config, _ lifecycle.Target) error {
+		close(entered)
+		<-release
 		fmt.Fprint(out, goneRouteLine)
 		mu.Lock()
-		confirmed = true
+		settled = true
 		mu.Unlock()
 		return goneQwen
 	})
@@ -331,11 +309,8 @@ func TestQuitAtTheRoutingStageWaitsForTheStartToSettle(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !confirmed {
-		t.Error("wt left before the start was confirmed")
-	}
-	if waits != 2 {
-		t.Errorf("the proxy was waited for %d times before wt left, want 2: the start's restart and the route removal's", waits)
+	if !settled {
+		t.Error("wt left before the start was settled: the proxy wait, the check and the wait for its route removal's restart")
 	}
 	if want := engineLine + waitingLine + goneRouteLine; term.String() != want {
 		t.Errorf("printed at exit = %q, want %q", term.String(), want)
@@ -360,7 +335,7 @@ func TestStartWhoseServerIsGoneAndPrintedNothingIsOnTheStatusOnly(t *testing.T) 
 		opts.Progress(lifecycle.StageRouting)
 		return nil
 	})
-	stubConfirmStarted(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
+	stubSettleStart(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
 		return goneQwen
 	})
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
@@ -376,11 +351,13 @@ func TestStartWhoseServerIsGoneAndPrintedNothingIsOnTheStatusOnly(t *testing.T) 
 
 // TestCancelThatLostToAStartWhoseServerIsGoneSaysSo pins the check under a
 // cancel that lost: esc before the routing stage, an engine that started the
-// model anyway, and a server that was gone after the wait. The check is
-// still made, on a context the cancel has not ended (a probe under a done
-// context settles nothing), because the status is about to say "started …".
-// What it says instead is that the model is not running — neither that it
-// started nor "cancelled", which would name the cancel as what stopped it.
+// model anyway, and a server that was gone after the wait. The start is
+// still settled, because the status is about to say "started …"; that the
+// check then runs on a context the cancel has not ended (a probe under a done
+// context settles nothing) is lifecycle.SettleStart's, pinned by its
+// TestSettleStartChecksUnderACancelledContext. What the status says instead
+// is that the model is not running — neither that it started nor
+// "cancelled", which would name the cancel as what stopped it.
 func TestCancelThatLostToAStartWhoseServerIsGoneSaysSo(t *testing.T) {
 	stubRouteNotes(t)
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
@@ -388,16 +365,16 @@ func TestCancelThatLostToAStartWhoseServerIsGoneSaysSo(t *testing.T) {
 		<-ctx.Done()
 		return nil
 	})
-	var ctxErr error // written by the start's goroutine, read after its result
-	stubConfirmStarted(t, func(ctx context.Context, _ io.Writer, _ *config.Config, _ lifecycle.Target) error {
-		ctxErr = ctx.Err()
+	settled := false // written by the start's goroutine, read after its result
+	stubSettleStart(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
+		settled = true
 		return goneQwen
 	})
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got, _ = updateMsg(got, tea.KeyMsg{Type: tea.KeyEsc})
 	got, _ = updateMsg(got, recvStart(t, got))
-	if ctxErr != nil {
-		t.Errorf("the check's context was done (%v): its probe could settle nothing", ctxErr)
+	if !settled {
+		t.Error("a start that finished under a cancel was not settled: nothing asked whether its server is still there")
 	}
 	if got.status != goneStatus || got.phase != phaseModel {
 		t.Errorf("status = %q, phase = %v; want %q on the model picker", got.status, got.phase, goneStatus)

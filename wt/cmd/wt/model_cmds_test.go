@@ -1060,13 +1060,13 @@ func TestStartDoesNotSayRunningForAServerThatIsGone(t *testing.T) {
 	cfg, _ := startFixture(t)
 	stubSignals(t)
 	stubLifecycleStart(t, []error{nil})
-	oldDriver, oldWait, oldConfirm, oldErr := startModel, waitPendingRoutes, confirmStarted, osStderr
-	startModel, waitPendingRoutes, osStderr = startForLaunch, func() {}, io.Discard
-	confirmStarted = func(context.Context, *config.Config, lifecycle.Target) error {
+	oldDriver, oldSettle, oldErr := startModel, lifecycleSettleStart, osStderr
+	startModel, osStderr = startForLaunch, io.Discard
+	lifecycleSettleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
 		return &lifecycle.StoppedError{Why: "ollama no longer answers at http://127.0.0.1:11434"}
 	}
 	t.Cleanup(func() {
-		startModel, waitPendingRoutes, confirmStarted, osStderr = oldDriver, oldWait, oldConfirm, oldErr
+		startModel, lifecycleSettleStart, osStderr = oldDriver, oldSettle, oldErr
 	})
 
 	var out bytes.Buffer

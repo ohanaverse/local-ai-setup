@@ -868,9 +868,7 @@ func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() { close(entered); <-release }
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
+	stubProxyWait(t, func() { close(entered); <-release })
 
 	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
 	// A model value is far too large for a channel element, so the result is
@@ -1705,9 +1703,10 @@ func TestEnterOnALoadingRowJoinsTheLoad(t *testing.T) {
 // TUI half of #343: the engine reports the model started, and by the end of
 // the proxy wait another terminal has stopped it. The flow must come back to
 // the picker with the shared one-line message and launch nothing — an agent
-// handed that model would only meet a dead port. The check is asked about the
-// row's own target, after the wait, and is followed by a wait of its own: the
-// route removal it makes can have left a proxy restart running.
+// handed that model would only meet a dead port. The wait, the check and the
+// wait for the check's own route removal are one call into the engine
+// (lifecycle.SettleStart, #349, whose tests pin their order); the flow makes
+// it once, about the row's own target, and waits for the proxy nowhere else.
 func TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching(t *testing.T) {
 	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
 	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
@@ -1718,14 +1717,14 @@ func TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching(t *testing.T
 	var order []string
 	var asked lifecycle.Target
 	gone := &lifecycle.StoppedError{Why: "ollama no longer answers at http://127.0.0.1:11434"}
-	oldWait, oldConfirm := waitPendingRoutes, confirmStarted
+	oldWait, oldSettle := waitPendingRoutes, settleStart
 	waitPendingRoutes = func() { order = append(order, "wait") }
-	confirmStarted = func(_ context.Context, _ io.Writer, _ *config.Config, target lifecycle.Target) error {
-		order = append(order, "confirm")
+	settleStart = func(_ context.Context, _ io.Writer, _ *config.Config, target lifecycle.Target) error {
+		order = append(order, "settle")
 		asked = target
 		return gone
 	}
-	t.Cleanup(func() { waitPendingRoutes, confirmStarted = oldWait, oldConfirm })
+	t.Cleanup(func() { waitPendingRoutes, settleStart = oldWait, oldSettle })
 
 	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
 	next, _ := updateMsg(got, recvStart(t, got))
@@ -1735,8 +1734,8 @@ func TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching(t *testing.T
 	if want := lifecycle.StartErrorMessage("ollama/gemma4:9b", gone); next.status != want {
 		t.Errorf("status = %q, want %q", next.status, want)
 	}
-	if strings.Join(order, ",") != "wait,confirm,wait" {
-		t.Errorf("order = %v, want the check after the proxy wait, then the wait for its own route removal", order)
+	if strings.Join(order, ",") != "settle" {
+		t.Errorf("order = %v, want the start settled once and no wait of the flow's own", order)
 	}
 	if want := (lifecycle.Target{ProviderID: "ollama", ModelName: "gemma4:9b", ModelID: "ollama/gemma4:9b"}); asked != want {
 		t.Errorf("asked about %+v, want %+v", asked, want)

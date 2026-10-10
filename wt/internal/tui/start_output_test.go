@@ -118,8 +118,7 @@ func TestStartWaitsForTheProxyOffTheUpdateGoroutine(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var inUpdate bool
 	var mu sync.Mutex
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() {
+	stubProxyWait(t, func() {
 		mu.Lock()
 		called := inUpdate
 		mu.Unlock()
@@ -131,8 +130,7 @@ func TestStartWaitsForTheProxyOffTheUpdateGoroutine(t *testing.T) {
 		<-release
 		// What a proxy restart prints while it is waited for.
 		out.print("wt: LiteLLM restart failed: exit status 1\n")
-	}
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
+	})
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	select {
@@ -178,9 +176,7 @@ func TestStartedModelOffersNoCancelWhileItWaitsForTheProxy(t *testing.T) {
 		return nil
 	})
 	entered, release := make(chan struct{}), make(chan struct{})
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() { close(entered); <-release }
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
+	stubProxyWait(t, func() { close(entered); <-release })
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got, _ = updateMsg(got, recvStart(t, got))

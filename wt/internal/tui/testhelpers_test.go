@@ -88,9 +88,10 @@ func TestMain(m *testing.M) {
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
 	}
-	// The check that follows a start (#343) probes the provider's server and
-	// may remove a route. Tests that assert on it swap it themselves.
-	confirmStarted = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error { return nil }
+	// What follows a start the engine reported done (#343, #349) waits for
+	// the proxy, probes the provider's server and may remove a route. Tests
+	// that assert on it swap it themselves (stubSettleStart).
+	settleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error { return nil }
 	// The launch-time route check (#192): unstubbed, a test that launches a
 	// running local model through LiteLLM would rewrite the developer's real
 	// config.yaml and restart their proxy. Both forms are stubbed — the
@@ -216,9 +217,28 @@ type routeStub struct {
 	outs []io.Writer
 }
 
+// stubProxyWait replaces the wait a start makes for the proxy restart on both
+// ways out of the engine: waitPendingRoutes, which is the wait after a start
+// that failed (and the launch-time route check's), and settleStart, which is
+// the wait after one that succeeded. The stand-in for the second is
+// lifecycle.SettleStart's first step in front of a server that is still
+// there: it waits and returns nil. Both are restored on cleanup.
+func stubProxyWait(t *testing.T, wait func()) {
+	t.Helper()
+	oldWait, oldSettle := waitPendingRoutes, settleStart
+	waitPendingRoutes = wait
+	settleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
+		wait()
+		return nil
+	}
+	t.Cleanup(func() { waitPendingRoutes, settleStart = oldWait, oldSettle })
+}
+
 // stubEnsureRoute swaps the three launch-time route check seams
 // (tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes) for recording
-// fakes scripted by the returned routeStub. Nothing real is touched: no
+// fakes scripted by the returned routeStub. The wait fake also stands in for
+// the wait of a start that succeeded (stubProxyWait), so a start's wait is a
+// "wait" event whichever way the engine returned. Nothing real is touched: no
 // config.yaml and no proxy. All three seams are restored on cleanup. The two
 // check fakes take no lock: a test either runs the routing command itself, on
 // the test goroutine, or (with waitEntered/waitRelease) reads the stub only
@@ -235,7 +255,7 @@ type routeStub struct {
 func stubEnsureRoute(t *testing.T) *routeStub {
 	t.Helper()
 	s := &routeStub{changed: true}
-	oldTry, oldEnsure, oldWait := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes
+	oldTry, oldEnsure := tryEnsureModelRoute, ensureModelRoute
 	// write prints to the writer the latest check was handed; a wait that no
 	// check preceded (finishStart's) has none and prints nothing.
 	write := func(text string) {
@@ -260,7 +280,7 @@ func stubEnsureRoute(t *testing.T) *routeStub {
 		return s.changed
 	}
 	var waitMu sync.Mutex
-	waitPendingRoutes = func() {
+	stubProxyWait(t, func() {
 		waitMu.Lock()
 		defer waitMu.Unlock()
 		s.events = append(s.events, "wait")
@@ -269,9 +289,9 @@ func stubEnsureRoute(t *testing.T) *routeStub {
 			<-s.waitRelease
 		}
 		write(s.waitOutput)
-	}
+	})
 	t.Cleanup(func() {
-		tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes = oldTry, oldEnsure, oldWait
+		tryEnsureModelRoute, ensureModelRoute = oldTry, oldEnsure
 	})
 	return s
 }

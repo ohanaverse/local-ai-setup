@@ -171,6 +171,18 @@
 
 ### Changed
 
+- What follows a start that succeeded is one call into the engine,
+  `lifecycle.SettleStart` (#349): the wait for the LiteLLM proxy restart, the
+  check that the model's server is still there (#343), and, when it is not,
+  the wait for the restart that removing its route starts. The sequence was
+  written out twice, in the non-TUI start driver and in the model picker's
+  start, and the two had drifted. Nothing a user sees changes but one
+  ordering: after a `wt start`, `wt smoke` or `-M` launch whose model was
+  stopped during the proxy wait, wt now waits for the proxy to restart
+  without the removed route before it prints the `is not running` line, as
+  the picker already did, instead of at exit. The check drops the caller's
+  cancellation inside the engine, so no caller has to, and the check without
+  its waits (`ConfirmStarted`, `ConfirmStartedTo`) is no longer exported.
 - The model picker shows the price in force now. For a model with
   `cost.time_prices` rows (ollama's off-peak row, the rows `wt cloud-sync`
   stores for a model OpenRouter prices by time of day, or rows written by
