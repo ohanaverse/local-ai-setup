@@ -67,10 +67,12 @@ type Row struct {
 	// repo or a path; both "" for any other model.
 	Target string
 	Draft  string
-	// Malformed names what the loader tolerated in the registry row's fetch
-	// and draft (config.Model.Malformed): each reads as absent, which is why
-	// the row has no path or no pairing side. Empty for a well-formed row and
-	// for a discovered one.
+	// Malformed names what the loader tolerated in the registry row
+	// (config.Model.Malformed). In its fetch and draft: each reads as absent,
+	// which is why the row has no path or no pairing side. And each
+	// cost.time_prices row the registry's validator refuses, which the model
+	// picker does not apply. Empty for a well-formed row and for a discovered
+	// one.
 	Malformed []string
 }
 

@@ -52,7 +52,13 @@ const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by mo
 // they change with the time. costLegend is the COST heading of a table that
 // has such a row; it says what the mark means. It is used only when the
 // column is already that wide (a marked cell with three prices is one column
-// wider), so it never widens the table.
+// wider), so it never widens a row. The table is still not as narrow as one
+// with no marked row: the mark's one column can cost a usage column (1D, 7D,
+// 30D, SURVEY) at the one list width where that column only just fitted,
+// and where COST is the last column drawn the long heading must also clear
+// the list's title bar (tuilayout.TitleRoom), so COST itself is given up at
+// three widths where a plain table shows it. The mode line names the
+// highlighted row's price whether or not the column is drawn (modeLine).
 const (
 	timePricedMark = "~"
 	costLegend     = "COST (~ varies by time)"

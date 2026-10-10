@@ -316,10 +316,12 @@ func (m *model) modelsStatus() string {
 	return wrapText(strings.Join(parts, "\n"), m.width)
 }
 
-// malformedLine says what the loader tolerated in a row's fetch and draft, in
-// config.Model.Malformed's own phrases — "fetch is not a table; read as
-// absent" — or "" for a row with nothing malformed. `wt model list` prints
-// the same phrases on stderr, with the file to fix.
+// malformedLine says what the loader tolerated in a row: a malformed fetch or
+// draft, or a cost.time_prices row the registry's validator refuses, which
+// the model picker does not apply. It is in config.Model.Malformed's own
+// phrases — "fetch is not a table; read as absent" — or "" for a row with
+// nothing malformed. `wt model list` prints the same phrases on stderr, with
+// the file to fix.
 func malformedLine(r modeladmin.Row) string {
 	if len(r.Malformed) == 0 {
 		return ""
