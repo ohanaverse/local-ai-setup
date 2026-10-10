@@ -138,6 +138,8 @@ func TestStartProbeAndRouteAgreeOnAProvidersAddress(t *testing.T) {
 		{"mtplx", "http://127.0.0.1/v1", "http://" + mtplxServeHost},
 		{"mtplx", "http://localhost", "http://localhost:" + strconv.Itoa(config.MtplxPort)},
 		{"mtplx", "http://[::1]/v1", "http://[::1]:" + strconv.Itoa(config.MtplxPort)},
+		{"mtplx", "http://0.0.0.0/v1", "http://0.0.0.0:" + strconv.Itoa(config.MtplxPort)},
+		{"mtplx", "http://localhost./v1", "http://localhost.:" + strconv.Itoa(config.MtplxPort)},
 		{"mtplx", "http://127.0.0.1:9123/v1", "http://127.0.0.1:9123"},
 		{"omlx", "http://127.0.0.1/v1", "http://127.0.0.1"},
 		{"omlx", "http://127.0.0.1:9123/v1", "http://127.0.0.1:9123"},

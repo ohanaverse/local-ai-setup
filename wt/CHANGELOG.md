@@ -176,11 +176,14 @@
   check that the model's server is still there (#343), and, when it is not,
   the wait for the restart that removing its route starts. The sequence was
   written out twice, in the non-TUI start driver and in the model picker's
-  start, and the two had drifted. Nothing a user sees changes but one
-  ordering: after a `wt start`, `wt smoke` or `-M` launch whose model was
-  stopped during the proxy wait, wt now waits for the proxy to restart
-  without the removed route before it prints the `is not running` line, as
-  the picker already did, instead of at exit. The check drops the caller's
+  start, and the two had drifted. What wt prints, and in what order, is
+  unchanged. One thing moves: after a `wt start`, `wt smoke` or `-M` launch
+  whose model was stopped during the proxy wait, the wait for the proxy to
+  restart without the removed route is now part of the start, as it already
+  was in the picker, instead of the wait wt makes as it exits. A first
+  Ctrl+C during that wait is therefore taken by the start, as during the
+  rest of it, and no longer ends wt mid-restart; a second one still does.
+  The check drops the caller's
   cancellation inside the engine, so no caller has to, and the check without
   its waits (`ConfirmStarted`, `ConfirmStartedTo`) is no longer exported.
 - The model picker shows the price in force now. For a model with
@@ -313,8 +316,14 @@
   LiteLLM route's `api_base` and a direct launch pointed at port 80, and
   `wt litellm sync` removed the family's routes as if the server were down.
   An `http` url for the mtplx provider on this machine (`localhost`,
-  `127.0.0.1`, `[::1]`) with no port now means 8003 everywhere, the port
-  `wt start` serves mtplx on. Nothing else changes: a `base_url` that names
+  `127.0.0.1`, `[::1]`, or `0.0.0.0`) with no port now means 8003 everywhere,
+  the port `wt start` serves mtplx on. **If such a url really meant port 80**
+  (an mtplx you run yourself on 80, or something on 80 in front of it),
+  write the port: `base_url = "http://127.0.0.1:80/v1"`. Until you do, wt
+  looks on 8003, shows the model as not running and drops its route on the
+  next sync. A host name that only resolves to this machine (an `/etc/hosts`
+  alias) is not recognised, so that url has to name its port too.
+  Nothing else changes: a `base_url` that names
   a port is that port; an mtplx url that is `https` or names another host,
   and every omlx, ollama and mlx_lm_server url, is read as written (no port
   meaning the scheme's own), because wt passes those servers no port. A

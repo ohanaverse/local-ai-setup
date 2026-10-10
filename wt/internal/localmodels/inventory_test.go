@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -775,6 +776,33 @@ func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
 	}
 }
 
+// TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot pins that
+// FamilyOriginPort cannot be the way a second reading of a provider's address
+// comes back (#348). For a family wt hands no port to, a url with no port has
+// no port to return: it is an error, not the family's usual port put on an
+// origin the probes, the start and the route do not use. A url that names its
+// port, and the default with no registry row, are FamilyOrigin's own origin.
+func TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot(t *testing.T) {
+	for _, id := range []string{"omlx", "omlx-6bit", "ollama", "mlx_lm_server"} {
+		family := familyOf(id)
+		bare := &config.Config{Providers: []config.Provider{localProvider(id, "http://127.0.0.1/v1", "")}}
+		if origin, port, err := FamilyOriginPort(bare, family); err == nil {
+			probe, _ := FamilyOrigin(bare, family)
+			t.Errorf("%s with no port: FamilyOriginPort = %q, %d; want an error (FamilyOrigin is %q)", id, origin, port, probe)
+		}
+		for _, cfg := range []*config.Config{
+			{},
+			{Providers: []config.Provider{localProvider(id, "http://127.0.0.1:9123/v1", "")}},
+		} {
+			probe, _ := FamilyOrigin(cfg, family)
+			origin, port, err := FamilyOriginPort(cfg, family)
+			if err != nil || origin != probe || !strings.HasSuffix(origin, ":"+strconv.Itoa(port)) {
+				t.Errorf("%s: FamilyOriginPort = %q, %d, %v; want FamilyOrigin's %q and its port", id, origin, port, err, probe)
+			}
+		}
+	}
+}
+
 // TestFamilyOriginIsWhereAStartServesMtplx pins #348 at the helpers: for an
 // mtplx base_url that names no port, the origin every probe uses
 // (FamilyOrigin) is the origin a start spawns and polls (FamilyOriginPort),
@@ -784,7 +812,7 @@ func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
 // port nothing listens on. Families wt hands no port to keep the url as it
 // is written: there the start and the probes already asked the same address.
 func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
-	for _, base := range []string{"http://127.0.0.1/v1", "http://localhost", "http://[::1]/v1/", "http://127.0.0.1:9123/v1"} {
+	for _, base := range []string{"http://127.0.0.1/v1", "http://localhost", "http://[::1]/v1/", "http://0.0.0.0/v1", "http://localhost./v1", "http://127.0.0.1:9123/v1"} {
 		cfg := &config.Config{Providers: []config.Provider{localProvider("mtplx", base, "")}}
 		probe, fromRegistry := FamilyOrigin(cfg, "mtplx")
 		start, port, err := FamilyOriginPort(cfg, "mtplx")

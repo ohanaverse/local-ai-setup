@@ -282,9 +282,9 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 // and the URL it is polled at come from one resolution. When they diverge the
 // spawn succeeds and the wait then times out for the full load budget before
 // killing the server it just started. The registry host is one the fallback
-// cannot produce, so this passes only through the portless resolution path: if
-// that path (and defaultPortFor) went away, the fallback's localhost origin
-// would show up here instead of the registry's host and fail the test.
+// cannot produce, so this passes only through the registry's own url: if a
+// url with no port stopped resolving, the fallback's localhost origin would
+// show up here instead of the registry's host and fail the test.
 func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
 	cfg := provCfg("mtplx", "http://127.0.0.1") // registry value with no port
 	origin, modelsURL, port := mtplxEndpoint(cfg)

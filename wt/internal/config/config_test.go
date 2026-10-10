@@ -43,6 +43,12 @@ func TestProviderOriginGivesMtplxThePortWtServesItOn(t *testing.T) {
 		{"mtplx", "http://LOCALHOST", "http://LOCALHOST:8003"},
 		{"mtplx", "http://127.0.0.2/v1", "http://127.0.0.2:8003"},
 		{"mtplx", "http://[::1]/v1", "http://[::1]:8003"},
+		// Other spellings of this machine: a dial of the unspecified address
+		// reaches the server on 127.0.0.1, and "localhost." is localhost.
+		{"mtplx", "http://0.0.0.0/v1", "http://0.0.0.0:8003"},
+		{"mtplx", "http://[::]/v1", "http://[::]:8003"},
+		{"mtplx", "http://localhost./v1", "http://localhost.:8003"},
+		{"mtplx", "http://0.0.0.0:80/v1", "http://0.0.0.0:80"},
 		// A port that is named is the port.
 		{"mtplx", "http://127.0.0.1:9123/v1", "http://127.0.0.1:9123"},
 		{"mtplx", "http://localhost:80", "http://localhost:80"},
@@ -51,6 +57,7 @@ func TestProviderOriginGivesMtplxThePortWtServesItOn(t *testing.T) {
 		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example"},
 		{"mtplx", "http://10.0.0.5/v1", "http://10.0.0.5"},
 		{"mtplx", "http://mtplx.example", "http://mtplx.example"},
+		{"mtplx", "http://localhost.example", "http://localhost.example"},
 		{"mtplx", "", ""},
 		{"mtplx", "127.0.0.1", "127.0.0.1"},
 		// wt hands these servers no port.

@@ -384,15 +384,20 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 // FamilyOriginPort is FamilyOrigin with the URL's port resolved, for callers
 // that must hand a numeric port to a command line as well as dial the origin
 // (mtplx's start and stop). The origin it returns is FamilyOrigin's whenever
-// that names a port, which for mtplx on this machine it always does.
+// that names a port, which it does for the default of every family and for
+// mtplx on this machine.
 //
-// When the origin carries no port — an mtplx base_url that is https or names
-// another host, or a family other than mtplx — the family default is applied
-// to the origin itself, not only to the returned number, so the two never
-// describe different servers. That origin is then not FamilyOrigin's, which
-// keeps the url's implicit port: wt serves mtplx on 127.0.0.1 only, so a
-// start against such a url was never one that could work, and what it dials
-// is left as it was rather than moved onto a port the user did not write.
+// An origin with no port has one answer, and only for mtplx: an mtplx
+// base_url that is https or names a host config.Provider.Origin does not
+// take for this machine gets config.MtplxPort, applied to the origin itself
+// and not only to the returned number, so the two never describe different
+// servers. That origin is then not FamilyOrigin's, which keeps the url's
+// implicit port: wt serves mtplx on 127.0.0.1 only, so a start against such
+// a url works only where the host is this machine under a name Origin does
+// not recognise (an /etc/hosts alias), and what it dials is left as it was
+// rather than moved onto a port the user did not write. For every other
+// family it is an error: wt hands those servers no port, so a port put on
+// the origin here would be an address nothing else reads (#348).
 func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
 	origin, _ := FamilyOrigin(cfg, family)
 	u, err := url.Parse(origin)
@@ -406,28 +411,11 @@ func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
 		}
 		return origin, n, nil
 	}
-	def, ok := defaultPortFor(family)
-	if !ok {
-		return "", 0, fmt.Errorf("origin %q has no port and family %q has no default", origin, family)
+	if family != "mtplx" {
+		return "", 0, fmt.Errorf("origin %q has no port, and wt does not choose the port of family %q", origin, family)
 	}
-	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(def))
-	return u.String(), def, nil
-}
-
-// defaultPortFor is the port a family's default origin uses, so a registry base
-// url that omits a port resolves to the same server the defaults describe.
-func defaultPortFor(family string) (int, bool) {
-	switch family {
-	case "ollama":
-		return 11434, true
-	case "omlx":
-		return 8000, true
-	case "mtplx":
-		return config.MtplxPort, true
-	case "mlx_lm_server":
-		return 8001, true
-	}
-	return 0, false
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(config.MtplxPort))
+	return u.String(), config.MtplxPort, nil
 }
 
 // refused reports whether err is a refused TCP connection: the port has no
