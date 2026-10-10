@@ -317,12 +317,12 @@ wt 0.1.0
 
 **Gotcha (verified on this machine, 2026-08-29):** `go env GOPATH` is `/Users/keith/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so the fresh binary lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `/Users/keith/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). The stale binary is dated 2026-08-27 (guide 06's pre-registry-generation build). After rebuilding into GOPATH the shadowed stale binary keeps answering `wt` — this is exactly what guide 06's "the installed binary is STALE" caveat describes. The fix that actually changes what runs: build straight over the shadowing copy (`cd /Users/keith/github/ohanaverse/local-ai-setup/wt && go build -o /Users/keith/.local/bin/wt ./cmd/wt`) or delete the stale one and ensure the asdf GOPATH bin is on PATH; then re-check `which wt` and `wt --version` **and** `ls -la` the file mtime.
 
-**LiteLLM** — real syntax verified via `uv tool upgrade --help` (the tool accepts a package spec, so the extra-quoted name is valid):
+**LiteLLM** — `uv tool upgrade` takes the tool's name (`uv tool upgrade --help`). The extras and the Python version are the ones recorded at install, in `~/.local/share/uv/tools/litellm/uv-receipt.toml`; check that file names `proxy`, `extra-proxy` and Python 3.11 before upgrading, and if it does not, use the reinstall form in item 1 instead:
 
-<!-- UNVERIFIED — upgrade not run in this session (Litellm already current: 1.98.0). -->
+<!-- UNVERIFIED — the upgrade itself was not run when this was written; the receipt was read. -->
 
 ```bash
-uv tool upgrade 'litellm[proxy]'
+uv tool upgrade litellm
 ```
 
 Verify, then expect the proxy to need a kickstart (item 2 below):
@@ -339,7 +339,7 @@ LiteLLM: Current Version = 1.98.0
 
 Two things upgrade can break (guide 01 §6/§7):
 
-1. **The tool env is re-created** — anything pip-installed into it afterwards disappears. On this machine that is `prisma` + `prisma-client-py` (verified present in `/Users/keith/.local/share/uv/tools/litellm/bin/`), which the proxy needs for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall 'litellm[proxy]'` (the nuclear fallback; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
+1. **The tool env is re-created** — anything pip-installed into it afterwards disappears. On this machine that is `prisma` + `prisma-client-py` (verified present in `/Users/keith/.local/share/uv/tools/litellm/bin/`), which the proxy needs for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]'` (the nuclear fallback, with the extras and Python of guide 01 §1: bare `litellm[proxy]` drops Prisma; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
 
    ```bash
    ls /Users/keith/.local/share/uv/tools/litellm/bin/ | grep prisma

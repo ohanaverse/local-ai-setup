@@ -232,8 +232,8 @@ func rootCmd() *cobra.Command {
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
 		// rejects any leading positional arg that isn't a registered
 		// subcommand name (models/agents/rotate). Without this, passthrough
-		// commands given without `--` (e.g. `shell-wt ls -la`) fail with
-		// "unknown command \"ls\" for \"wt\"" even though Find() would never
+		// commands given without `--` (e.g. `shell-wt npm test`) fail with
+		// "unknown command \"npm\" for \"wt\"" even though Find() would never
 		// have routed them to a subcommand anyway.
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -247,8 +247,8 @@ func rootCmd() *cobra.Command {
 			}
 
 			// Reject removed subcommands. `cobra.ArbitraryArgs` (set below)
-			// is load-bearing for shell-wt passthrough (`shell-wt ls -la` →
-			// `wt --agent shell ls -la`), so it swallows the first positional
+			// is load-bearing for shell-wt passthrough (`shell-wt npm test` →
+			// `wt --agent shell npm test`), so it swallows the first positional
 			// without complaining. Without this guard, `wt models -A claude`
 			// silently creates a worktree named "models" and launches claude
 			// there — a footgun for users with stale muscle-memory invocations.
