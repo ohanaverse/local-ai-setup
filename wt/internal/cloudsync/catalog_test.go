@@ -466,6 +466,54 @@ func TestPlanUnrecognizedCellKeepsTheExistingPrice(t *testing.T) {
 	}
 }
 
+// TestTwoOffPeakRowsKeepTheExtraOne pins the extra-label rule: the label is
+// free text, so a hand edit can leave a second row labelled off-peak, and
+// the sync replaces only the first where it stands (time_prices resolve
+// first match wins, so moving it would change which row wins an overlapping
+// window) while keeping every later one exactly as it stands. The plan line
+// must show both off-peak rows: nothing is written that the printed plan
+// does not show.
+func TestTwoOffPeakRowsKeepTheExtraOne(t *testing.T) {
+	extra := offpeakRow(f(1.5), nil, f(2.5))
+	old := Cost{Input: f(9), TimePrices: []*tomlw.Table{
+		timeRow("holiday", "sun"), offpeakRow(f(0.4), f(0.04), f(0.8)), extra,
+	}}
+	catalog, err := ParsePricing(page(pageHead,
+		pageRow("ww", "$1.00", "$0.10 / 1M", "$2.00"),
+		pageRow("ww (Off-Peak)", "$0.50", "$0.05*", "$1.00"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := PlanCatalog([]Entry{cloudEntry("ww:cloud", withCost(old))}, catalog, nil, nil)
+	if len(plan.Updates) != 1 {
+		t.Fatalf("updates = %d, want one for ollama/ww:cloud", len(plan.Updates))
+	}
+	after := plan.Updates[0].After
+	if len(after.TimePrices) != 3 {
+		t.Fatalf("time_prices = %d rows, want all three kept, none dropped", len(after.TimePrices))
+	}
+	if lbl := str(after.TimePrices[0], "label"); lbl != "holiday" {
+		t.Errorf("first row's label = %q, want the row the user wrote to keep its place", lbl)
+	}
+	replaced := after.TimePrices[1]
+	if !samePrice(number(replaced, "input_price_per_million"), f(0.5)) ||
+		!samePrice(number(replaced, "cache_price_per_million"), f(0.04)) ||
+		!samePrice(number(replaced, "output_price_per_million"), f(1)) {
+		t.Errorf("off-peak row = %v, want the page's prices with the kept cache 0.04",
+			replaced.Keys())
+	}
+	if !tomlw.Same(after.TimePrices[2], extra) {
+		t.Errorf("the second off-peak row was not kept whole: %v", after.TimePrices[2].Keys())
+	}
+	text := formatCost(&after)
+	for _, want := range []string{"(off-peak 0.5/0.04/1)", "(off-peak 1.5/-/2.5)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("plan line %q lacks %q — the row would be written but not shown", text, want)
+		}
+	}
+}
+
 // TestPlanUsesTheResolvedTag pins that additions and pulls use the tag the
 // library lookup found, not the :cloud guess.
 func TestPlanUsesTheResolvedTag(t *testing.T) {

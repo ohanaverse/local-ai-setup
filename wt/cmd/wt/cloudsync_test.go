@@ -972,6 +972,8 @@ func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
 
 	path, _ := cloudSyncHome(t, timeOfDayRegistry)
 	synced := stubRouteSync(t, "")
+	oldNow := cloudSyncNow
+	t.Cleanup(func() { cloudSyncNow = oldNow })
 	run := func(body string, now time.Time, o cloudSyncOpts) string {
 		t.Helper()
 		stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})

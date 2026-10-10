@@ -274,6 +274,8 @@ func TestThePickerShowsThePriceOpenRouterChargesNow(t *testing.T) {
 	_, cfg := cloudSyncHome(t, pickerRegistry)
 	stubRouteSync(t, "")
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
+	oldNow := cloudSyncNow
+	t.Cleanup(func() { cloudSyncNow = oldNow })
 	cloudSyncNow = func() time.Time { return time.Date(2026, 10, 9, 14, 6, 0, 0, time.UTC) }
 	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if stderr != "" || code != 0 || !strings.HasSuffix(stdout, "openrouter: refreshed 6 model(s); 6 price(s) changed\n") {
