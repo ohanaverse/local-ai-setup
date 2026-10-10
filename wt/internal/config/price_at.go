@@ -200,9 +200,9 @@ func loadZone(name string) (*time.Location, error) {
 // clockMinutes reads "HH:MM", from "00:00" to "24:00", as minutes of the
 // day. For a window start, 24:00 is not allowed (validateWindow rejects
 // start >= 24:00). For a window end, 24:00 means the end of the listed day
-// and is distinct from 00:00 (which is the start of the day). When a window
-// runs past midnight (end < start), an end of 00:00 means midnight of the
-// listed day, not the next day.
+// and is distinct from 00:00 (which is the start of the day). A window that
+// runs past midnight (end < start) never ends at 00:00: validateWindow
+// refuses it, and the end of the listed day is 24:00.
 func clockMinutes(s string) (int, bool) {
 	if len(s) != 5 || s[2] != ':' {
 		return 0, false

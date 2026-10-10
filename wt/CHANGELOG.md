@@ -47,7 +47,8 @@
   otherwise it asks once on the terminal unless `--yes` is given. Input and
   output prices take OpenRouter's value; a cache price is replaced only when
   OpenRouter reports one, and a subscription or time-windowed price is never
-  touched. Every matched model is stamped, changed or not, which is what the
+  touched (but for the flow's own `openrouter` rows on a model priced by
+  time of day: the entry under Fixed). Every matched model is stamped, changed or not, which is what the
   stale-pricing notice reads. The LiteLLM routes are synced once when a
   price changed, and not at all when none did. With no OpenRouter-priced
   model in the registry it says so and exits 0 without fetching, asking or
@@ -171,12 +172,15 @@
 ### Changed
 
 - The model picker shows the price in force now. For a model with
-  `cost.time_prices` rows (ollama's off-peak row, or rows written by hand),
-  the COST column shows, and the cost sort uses, the prices of the row
-  whose timezone and windows hold the current instant, and the model's own
-  price when none does. It used to show the model's own price at every
-  hour, which for an ollama cloud model is the peak price. Such a price is
-  marked `~`, and the column heading then reads `COST (~ varies by time)`.
+  `cost.time_prices` rows (ollama's off-peak row, the rows `wt cloud-sync`
+  stores for a model OpenRouter prices by time of day, or rows written by
+  hand), the COST column shows, and the cost sort uses, the prices of the
+  row whose timezone and windows hold the current instant, and the model's
+  own price when none does. It used to show the model's own price at every
+  hour, which for an ollama cloud model is the peak price (and for a model
+  OpenRouter prices by time of day would be its dearest level). Such a
+  price is marked `~`, and the column heading then reads `COST (~ varies
+  by time)`.
   The mark and the heading take room: at a few widths a table with a
   time-priced model in it shows one usage column fewer (1D, 7D, 30D or
   SURVEY) than it would without one, and at three widths, where COST is
@@ -284,6 +288,49 @@
 
 ### Fixed
 
+- `wt cloud-sync` no longer stores, for a model OpenRouter prices by time of
+  day, whichever price was in force when the sync ran (#322). Such a model
+  used to flip between its rates from one sync to the next, each flip
+  reported as a price update, written to LiteLLM's routes and able to
+  restart the proxy. The openrouter flow now reads the model's whole
+  schedule from OpenRouter's list (the entries of `pricing.overrides` that
+  have `utc_start`, `utc_end` or `utc_days`) and never the price at the top
+  of the entry, and it reads no clock. It stores the dearest level (the one
+  with the highest output price) as the model's price, and each other
+  level as a `[[models.cost.time_prices]]` row labelled `openrouter`, in
+  UTC, each day's hours under that day (a level that runs past midnight is
+  two windows). The plan line shows them: `<id>: <old> -> <price>
+  (openrouter <in>/<cached>/<out> <windows>)`. The model picker, which
+  already applied `cost.time_prices` rows, now shows and sorts by the level
+  OpenRouter charges at the moment it opens, marked `~`; LiteLLM's route
+  carries the model's price, the dearest level, at every hour.
+  What to expect: the first sync after this change lists one update for
+  each such model, and a sync run later in another window lists none. When
+  only the rows are new (the stored price already was the dearest level,
+  `<price> -> <price> (openrouter …)`), the update is still listed and
+  counted and the routes are synced, but `config.yaml` is left byte for
+  byte and the proxy is not restarted.
+  The label is the sync's: on a model of the `openrouter` provider a row
+  labelled `openrouter` is replaced or removed, one you wrote yourself
+  included (the plan line shows it as found, with `timezone="…"` or `+keys`
+  where it differs from the sync's own), and the rows are left exactly
+  where they stand when they already hold the schedule. Rows under any
+  other label are kept as they are. A price that depends on prompt size
+  (`min_prompt_tokens`) is not a schedule: it is ignored and the model's
+  listed price is stored, as before. A schedule wt cannot read with
+  certainty is a `warning: Could not use OpenRouter's time-of-day pricing
+  for <id>: <reason>`; the model is left as it is and not stamped, and wt
+  does not fall back to the listed price. A model whose `pricing.overrides`
+  is not a list, or holds an entry that is not an object, is refused the
+  same way (`its overrides are not a list`, `an overrides entry is not an
+  object`), where it used to be priced from the top of its entry.
+  Not fixed here: only a few of OpenRouter's models are priced by time of
+  day, and a model that several providers serve can still show a different
+  price from one sync to the next, because OpenRouter lists the price of
+  one of them and that price moves
+  ([#337](https://github.com/ohanaverse/local-ai-setup/issues/337)).
+  Reference: `docs/wt-cloud-sync.md` ("A model OpenRouter prices by time of
+  day").
 - `wt cloud-sync`'s mass-removal refusal (exit 4) prints the count its gate
   uses. `<n> of <m> ollama cloud entries would be removed` printed the
   number of removal lines, a re-tagged entry included, while the gate that

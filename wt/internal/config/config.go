@@ -450,13 +450,16 @@ type CostWindow struct {
 }
 
 // TimePrice is a time-windowed override of a ModelCost's flat (default)
-// per-token prices. The rows are written by `wt cloud-sync`'s ollama flow
-// (ollama's off-peak pricing); a user may write more by hand.
-// ModelCost.PriceAt (price_at.go) applies them, and the model picker shows
-// what it returns. A LiteLLM route carries the flat prices. What a row
-// means: the first row whose window contains an instant wins, per field,
-// falling back to the flat prices. A row the registry's validator refuses
-// is not applied (TimePrice.Problem).
+// per-token prices. The rows are written by `wt cloud-sync`: the ollama
+// flow's row labelled off-peak (ollama's off-peak pricing, on ollama cloud
+// entries) and the openrouter flow's rows labelled openrouter (the other
+// levels of a model OpenRouter prices by time of day, whose flat price is
+// the dearest level); a user may write more by hand. ModelCost.PriceAt
+// (price_at.go) applies them, and the model picker shows what it returns.
+// A LiteLLM route carries the flat prices. What a row means: the first row
+// whose window contains an instant wins, per field, falling back to the
+// flat prices. A row the registry's validator refuses is not applied
+// (TimePrice.Problem).
 type TimePrice struct {
 	Label                 string       `toml:"label,omitempty"`
 	Timezone              string       `toml:"timezone"`

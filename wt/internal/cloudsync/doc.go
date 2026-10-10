@@ -2,7 +2,11 @@
 // public services publish into changes to registry.toml.
 //
 //   - The openrouter flow: OpenRouter's model list (ParseOpenRouter, PlanPrices) refreshes
-//     the per-token prices of the registry's OpenRouter-priced models.
+//     the per-token prices of the registry's OpenRouter-priced models. A
+//     model OpenRouter prices by time of day is read as its whole schedule
+//     (timeofday.go) and stored as its dearest level plus one time_prices
+//     row per other level (timeofday_rows.go), never as the price of the
+//     hour the list was fetched in.
 //   - The ollama flow: ollama.com/pricing (ParsePricing), each model's cloud tag
 //     (ResolveCloudTags) and the plan that makes the registry's ollama cloud
 //     entries mirror the page (PlanCatalog), with its two safety gates: the
