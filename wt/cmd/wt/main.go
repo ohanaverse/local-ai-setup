@@ -191,10 +191,15 @@ func runLaunchPath(
 // the root command's other errors are printed as they were. `wt start` and
 // `wt smoke` silence cobra for the whole command instead (SilenceErrors), as
 // `wt cloud-sync` does.
+//
+// cobra's usage block goes with it: the root command prints one after every
+// error, and a start that failed or was refused is not a usage mistake. Left
+// in, it stood between the start's progress lines and main's one line, with
+// no "Error:" above it any more to say why it was there.
 func printOnce(cmd *cobra.Command, err error) error {
-	var se *startError
-	if errors.As(err, &se) {
+	if isStartError(err) {
 		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
 	}
 	return err
 }

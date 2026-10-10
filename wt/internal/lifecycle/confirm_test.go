@@ -8,8 +8,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
 // errorSrv is a provider server that is listening and answers every request
@@ -208,5 +210,49 @@ func TestConfirmStartedToSendsItsOutputToTheCaller(t *testing.T) {
 	}
 	if warn.Len() != 0 {
 		t.Errorf("stderr got %q, want nothing: the caller owns the screen", warn.String())
+	}
+}
+
+// TestConfirmStartedRemovesTheRouteUnderACancelledContext verifies the route
+// removal does not inherit the caller's cancellation. Ctrl+C during the proxy
+// wait cancels the non-TUI start's context before the check runs, and the
+// mtplx and omlx probes do not read it, so the check still finds the server
+// gone; the write that follows must then wait for config.yaml's lock like any
+// other. Under the done context it gave up at once when another wt held the
+// lock — the stop that took the server down writes its own removal about
+// then — and left a route to a port nothing listens on.
+func TestConfirmStartedRemovesTheRouteUnderACancelledContext(t *testing.T) {
+	q35 := Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"}
+	path, _, warn := realRoutes(t, twoMtplxYAML)
+	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), "http://"+freeAddr(t))
+
+	held, release, unlocked := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		unlocked <- litellm.WithLock(context.Background(), path, func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	// Long enough for the write to have met the held lock at least once.
+	time.AfterFunc(150*time.Millisecond, func() { close(release) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ConfirmStarted(ctx, cfg, q35)
+	WaitPendingRoutes()
+	if lerr := <-unlocked; lerr != nil {
+		t.Fatalf("holding the lock: %v", lerr)
+	}
+	var stopped *StoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("ConfirmStarted = %v, want a *StoppedError", err)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"mtplx/Y--Q27", "ollama/a:1"}) {
+		t.Errorf("routed = %v, want the gone model's route removed (warn %q)", got, warn.String())
+	}
+	if warn.Len() != 0 {
+		t.Errorf("stderr got %q, want no \"not updated\" warning", warn.String())
 	}
 }

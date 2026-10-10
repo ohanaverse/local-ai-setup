@@ -72,7 +72,13 @@ func ConfirmStartedTo(ctx context.Context, out io.Writer, cfg *config.Config, t 
 	if why == "" {
 		return nil
 	}
-	routeAfterGone(ctx, cfg, t)
+	// Detached from the caller's cancellation, as the restart it starts is
+	// (bounceProxyAsync): the probe has settled that the server is gone, and
+	// only the mtplx and omlx probes ignore ctx, so a Ctrl+C that landed in
+	// the proxy wait reaches here with a done context. Under one, the write
+	// gives up on a config.yaml lock another wt holds — the stop that took
+	// the server down is the likely holder — and the dead route would stay.
+	routeAfterGone(context.WithoutCancel(ctx), cfg, t)
 	return &StoppedError{Why: why}
 }
 

@@ -61,7 +61,9 @@ func TestStartCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 
 // TestSmokeCmdLeavesAFailedStartToMainsOnePrint is the same for `wt smoke`,
 // which starts an idle model before its rows: the failure is returned, and
-// cobra prints no "Error:" copy of it.
+// cobra prints no "Error:" copy of it — and no usage block either, which with
+// the "Error:" line gone would stand alone above main's line, for a failure
+// that is not a usage mistake.
 func TestSmokeCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	stubFailedStart(t)
@@ -83,6 +85,9 @@ func TestSmokeCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 	if strings.Contains(out.String()+errOut.String(), "failed to start") {
 		t.Errorf("the command printed the error itself (stdout %q, stderr %q); main prints it once", out.String(), errOut.String())
 	}
+	if strings.Contains(out.String()+errOut.String(), "Usage:") {
+		t.Errorf("the command printed its usage after a failed start (stdout %q, stderr %q)", out.String(), errOut.String())
+	}
 }
 
 // TestLaunchLeavesAFailedStartToMainsOnePrint is the same for a launch whose
@@ -90,7 +95,8 @@ func TestSmokeCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 // other errors, so it is silenced for this run only, and only by an error
 // that came out of the start: the driver's own (*startError) or anything
 // else the start returned — a refused replace, a cancel — which resolveModel
-// marks. It runs the real launch funnel (runLaunchPath) on the root command.
+// marks. The usage block the root command prints after an error is silenced
+// with it. It runs the real launch funnel (runLaunchPath) on the root command.
 func TestLaunchLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
@@ -121,36 +127,44 @@ func TestLaunchLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 			if tc.start != nil && (!errors.Is(err, tc.start) || err.Error() != tc.start.Error()) {
 				t.Errorf("err = %v, want the start's error, text unchanged", err)
 			}
-			if root.SilenceErrors != tc.silence {
-				t.Errorf("SilenceErrors = %v, want %v", root.SilenceErrors, tc.silence)
+			if root.SilenceErrors != tc.silence || root.SilenceUsage != tc.silence {
+				t.Errorf("SilenceErrors = %v, SilenceUsage = %v, want both %v", root.SilenceErrors, root.SilenceUsage, tc.silence)
 			}
 		})
 	}
 }
 
 // TestPrintOnceSilencesCobraForAStartErrorOnly runs the mark through cobra
-// itself: an error printOnce recognises is not printed by Execute, and any
-// other error still is, as "Error: …". It is what ties the SilenceErrors
-// field the launch test reads to what the user sees.
+// itself, on a command set up as the root command is (no SilenceUsage): for
+// an error printOnce recognises Execute prints nothing — not the error, and
+// not the usage block, which would otherwise stand alone between the start's
+// progress and main's line — and any other error is still printed as
+// "Error: …" with the usage after it. It is what ties the fields the launch
+// test reads to what the user sees.
 func TestPrintOnceSilencesCobraForAStartErrorOnly(t *testing.T) {
 	for name, tc := range map[string]struct {
-		err  error
-		want string
+		err    error
+		silent bool
 	}{
-		"a start error":   {asStartError(errors.New("boom")), ""},
-		"any other error": {errors.New("boom"), "Error: boom\n"},
+		"a start error":   {asStartError(errors.New("boom")), true},
+		"any other error": {errors.New("boom"), false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := &cobra.Command{Use: "x", SilenceUsage: true}
+			c := &cobra.Command{Use: "x"}
 			c.RunE = func(cmd *cobra.Command, _ []string) error { return printOnce(cmd, tc.err) }
-			var errOut bytes.Buffer
+			var out, errOut bytes.Buffer
+			c.SetOut(&out)
 			c.SetErr(&errOut)
 			c.SetArgs(nil)
 			if err := c.Execute(); err == nil || err.Error() != "boom" {
 				t.Fatalf("err = %v, want boom", err)
 			}
-			if errOut.String() != tc.want {
-				t.Errorf("cobra printed %q, want %q", errOut.String(), tc.want)
+			printed := errOut.String() + out.String()
+			if tc.silent && printed != "" {
+				t.Errorf("cobra printed %q, want nothing", printed)
+			}
+			if !tc.silent && (!strings.HasPrefix(printed, "Error: boom\n") || !strings.Contains(printed, "Usage:")) {
+				t.Errorf("cobra printed %q, want the error and the usage, as before", printed)
 			}
 		})
 	}

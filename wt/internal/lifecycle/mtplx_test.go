@@ -347,7 +347,9 @@ func TestLogTailReadsOnlyTheTail(t *testing.T) {
 // log that fits is whole; and a tail with no newline at all — one long line —
 // is still returned, since dropping it would show nothing. The same holds for
 // a tail whose only newline is its last byte: a last line longer than max, or
-// a run of "\r" progress redraws before the server's last words.
+// a run of "\r" progress redraws before the server's last words. And for a
+// long last line with only blank lines after it: those are all a failed start
+// would be left to show, and it trims them to an empty "log tail:".
 func TestLogTailLinesBeginsAtALineStart(t *testing.T) {
 	dir := t.TempDir()
 	p := pidProcess{name: "mtplx", logfile: filepath.Join(dir, "mtplx.log")}
@@ -363,6 +365,7 @@ func TestLogTailLinesBeginsAtALineStart(t *testing.T) {
 		"log is exactly max":      {"first\nsecond\n", 13, "first\nsecond\n"},
 		"one long line":           {strings.Repeat("x", 100), 10, strings.Repeat("x", 10)},
 		"long last line":          {"first\n" + strings.Repeat("x", 100) + "\n", 10, strings.Repeat("x", 9) + "\n"},
+		"long line, then a blank": {"first\n" + strings.Repeat("x", 100) + "\n\n", 10, strings.Repeat("x", 8) + "\n\n"},
 		"redraws, then one line":  {"first\n" + strings.Repeat("10%\r", 20) + "boom\n", 10, "\r10%\rboom\n"},
 		"empty log":               {"", 512, ""},
 		"nothing asked for":       {"first\n", 0, ""},

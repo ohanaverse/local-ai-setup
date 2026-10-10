@@ -65,9 +65,13 @@ var confirmStarted = lifecycle.ConfirmStarted
 // settleStart is what follows a start the engine reported done: the wait for
 // the route hook's proxy restart, then the check that the server is still
 // there. A server that is gone is a failed start, worded by startFailure.
+// The check runs detached from ctx's cancellation, as the picker's does
+// (runStart): Ctrl+C in the proxy wait leaves ctx done, the ollama probe reads
+// it, and a probe that was cancelled settles nothing — a daemon that is gone
+// would be reported as running.
 func settleStart(ctx context.Context, cfg *config.Config, id string, t lifecycle.Target) error {
 	waitPendingRoutes()
-	if err := confirmStarted(ctx, cfg, t); err != nil {
+	if err := confirmStarted(context.WithoutCancel(ctx), cfg, t); err != nil {
 		return startFailure(id, err)
 	}
 	return nil
@@ -358,13 +362,19 @@ func startFailure(id string, err error) error {
 // asStartError marks err as the outcome of a start the launch attempted —
 // failed, refused or cancelled — keeping its text and its chain. The root
 // command reads the mark to leave such an error to main's one print
-// (printOnce).
+// (printOnce), and `wt smoke` to print no usage after it.
 func asStartError(err error) error {
-	var se *startError
-	if errors.As(err, &se) {
+	if isStartError(err) {
 		return err
 	}
 	return &startError{msg: err.Error(), err: err}
+}
+
+// isStartError reports whether err is, or wraps, the outcome of a start
+// (startFailure, asStartError).
+func isStartError(err error) bool {
+	var se *startError
+	return errors.As(err, &se)
 }
 
 // askReplace resolves a replacement question: with a TTY it asks on

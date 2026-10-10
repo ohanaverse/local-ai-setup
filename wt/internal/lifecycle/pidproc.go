@@ -123,15 +123,17 @@ func (p pidProcess) logTail(max int) string {
 // one byte more than max is read and everything up to the first newline is
 // dropped — the byte before the tail says whether the cut already fell on a
 // line start, in which case nothing of the tail is lost. A log that fits in
-// max is returned whole, and a tail with nothing after its first newline — no
-// newline at all, or only the one that ends a last line longer than max — is
-// one long line, returned as cut: its end is still worth more than nothing.
+// max is returned whole, and a tail with nothing to read after its first
+// newline — no newline at all, only the one that ends a last line longer than
+// max, or that one and blank lines after it — is one long line, returned as
+// cut: its end is still worth more than nothing, and blank lines alone are
+// nothing — a failed start trims the tail and would show "log tail:" empty.
 func (p pidProcess) logTailLines(max int) string {
 	tail := p.logTail(max + 1)
 	if len(tail) <= max {
 		return tail
 	}
-	if i := strings.IndexByte(tail, '\n'); i >= 0 && i+1 < len(tail) {
+	if i := strings.IndexByte(tail, '\n'); i >= 0 && strings.TrimSpace(tail[i+1:]) != "" {
 		return tail[i+1:]
 	}
 	return tail[1:]

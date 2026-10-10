@@ -704,3 +704,27 @@ func TestStartForLaunchDoesNotCheckAStartThatFailed(t *testing.T) {
 		t.Errorf("order = %v, want no check after a failed start", order)
 	}
 }
+
+// TestSettleStartConfirmsUnderACancelledContext verifies Ctrl+C during the
+// proxy wait does not cut the check short: the ollama probe reads its context,
+// and one that was cancelled settles nothing, so a daemon that is gone would
+// be reported as running. The check runs detached, as the picker's does.
+func TestSettleStartConfirmsUnderACancelledContext(t *testing.T) {
+	oldWait, oldConfirm := waitPendingRoutes, confirmStarted
+	t.Cleanup(func() { waitPendingRoutes, confirmStarted = oldWait, oldConfirm })
+	waitPendingRoutes = func() {}
+	confirmStarted = func(ctx context.Context, _ *config.Config, _ lifecycle.Target) error {
+		if err := ctx.Err(); err != nil {
+			t.Errorf("confirmStarted ran under a done context: %v", err)
+			return nil
+		}
+		return &lifecycle.StoppedError{Why: "ollama no longer answers"}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := settleStart(ctx, &config.Config{}, "ollama/x", lifecycle.Target{ProviderID: "ollama", ModelName: "x"})
+	var stopped *lifecycle.StoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("settleStart = %v, want the *StoppedError on its chain", err)
+	}
+}
