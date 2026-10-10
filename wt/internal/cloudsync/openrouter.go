@@ -178,8 +178,9 @@ func (p *PricePlan) HasWork() bool { return len(p.Matched) > 0 }
 // PlanPrices matches the registry's OpenRouter-priced models to api on
 // model_name. Input and output prices are always overwritten: they are what
 // the refresh measures. The cache price is overwritten only when the API
-// reported one (it usually does not), and the subscription and time_prices
-// are never touched, so a refresh never clears a price set by hand.
+// reported one (it usually does not). The subscription is never touched,
+// and of the time_prices rows only the flow's own (OpenRouterLabel), so a
+// refresh never clears a price set by hand.
 //
 // It reads no clock, and api is a function of the response alone, a model
 // priced by time of day included (parseSchedule): the same registry and
@@ -224,6 +225,7 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 		if price.Cache != nil {
 			after.Cache = price.Cache
 		}
+		after.TimePrices = withOpenRouterRows(after.TimePrices, price.Rates)
 		plan.Matched = append(plan.Matched, PriceChange{
 			ModelID: e.ID, Before: e.Cost, After: after, Changed: !sameCost(e.Cost, after),
 		})

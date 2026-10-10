@@ -992,8 +992,8 @@ func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
 
 	const plan = "openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
 		"openrouter: Price updates (2):\n" +
-		"openrouter:   openrouter/deepseek--deepseek-v4-pro-0813: 0.66/0.022/1.98 -> 1.32/0.044/3.96\n" +
-		"openrouter:   openrouter/tencent--hy3: no cost -> 0.132/0.033/0.528\n" +
+		"openrouter:   openrouter/deepseek--deepseek-v4-pro-0813: 0.66/0.022/1.98 -> 1.32/0.044/3.96 (openrouter 0.66/0.022/1.98 mon-fri 00:00-01:00 04:00-06:00 10:00-24:00, sat-sun 00:00-24:00)\n" +
+		"openrouter:   openrouter/tencent--hy3: no cost -> 0.132/0.033/0.528 (openrouter 0.0825/0.020625/0.33 mon-sun 16:00-24:00)\n" +
 		"openrouter: Unchanged prices: 0\n"
 	if got := run(cheap, inCheapWindow, cloudSyncOpts{dryRun: true}); got != plan {
 		t.Errorf("dry run in the cheap window:\n%s\nwant:\n%s", got, plan)
@@ -1010,7 +1010,7 @@ func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
 	}
 	applied := mustRead(t, path)
 	for _, want := range []string{
-		"input_price_per_million = 1.32\ncache_price_per_million = 0.044\noutput_price_per_million = 3.9600000000000004\n\n[[models]]\n",
+		"input_price_per_million = 1.32\ncache_price_per_million = 0.044\noutput_price_per_million = 3.9600000000000004\n\n[[models.cost.time_prices]]\nlabel = \"openrouter\"\ntimezone = \"UTC\"\ninput_price_per_million = 0.66\n",
 		"pricing_updated_at = \"2026-10-09T14:06:00+00:00\"",
 	} {
 		if !strings.Contains(applied, want) {
@@ -1032,5 +1032,90 @@ func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
 	}
 	if got, want := mustRead(t, path), strings.ReplaceAll(applied, "2026-10-09T14:06:00+00:00", "2026-10-12T02:45:00+00:00"); got != want {
 		t.Errorf("registry.toml after the second apply:\n%s\nwant the first apply's file with the new stamp and nothing else:\n%s", got, want)
+	}
+}
+
+// TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone pins the first sync after
+// the rows were added, for a user whose last sync before #322 was fixed ran
+// in the models' dear windows: the flat prices are already the ones the
+// schedule gives, so only the rows are new. That is a price update (it is
+// listed and counted, and the routes are synced), but a route is priced from
+// the flat prices alone, so the real route sync finds config.yaml as it
+// should be: the file keeps its bytes and the proxy is not restarted under
+// running agents.
+func TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone(t *testing.T) {
+	// timeOfDayRegistry as that earlier sync left it: both models at their
+	// dearest level, no time_prices row.
+	dearStored := strings.Replace(timeOfDayRegistry,
+		"input_price_per_million = 0.66\ncache_price_per_million = 0.022\noutput_price_per_million = 1.9800000000000002\n",
+		"input_price_per_million = 1.32\ncache_price_per_million = 0.044\noutput_price_per_million = 3.9600000000000004\n", 1) +
+		"\n[models.cost]\ninput_price_per_million = 0.13199999999999998\ncache_price_per_million = 0.032999999999999995\noutput_price_per_million = 0.5279999999999999\n"
+	home := t.TempDir()
+	registry, yaml, marker := filepath.Join(home, "scratch", "registry.toml"), filepath.Join(home, "scratch", "config.yaml"), filepath.Join(home, "restarted")
+	if err := os.MkdirAll(filepath.Dir(registry), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{registry: dearStored, yaml: "model_list: []\n"} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	t.Setenv("WT_REGISTRY", registry)
+	t.Setenv("WT_LITELLM_CONFIG", yaml)
+	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
+	t.Setenv("WT_TEST_OPENROUTER_KEY", "sk-test-not-a-real-key")
+	realRouteSync(t)
+	t.Setenv("WT_LITELLM_RESTART_CMD", "touch "+marker)
+	// realRouteSync probes nothing; say instead that every provider
+	// answered, so the sync has no probe failure to warn about.
+	probeInventory = localmodels.OnDiskSnapshotForTest
+
+	// The routes as that earlier sync left them. Writing them restarts the
+	// proxy, which is how this test knows the marker would show a restart.
+	var said bytes.Buffer
+	if warning := syncRoutesAfterWrite(&said, &said); warning != "" {
+		t.Fatalf("the first route sync warned: %s\n%s", warning, said.String())
+	}
+	routes := mustRead(t, yaml)
+	if _, err := os.Stat(marker); err != nil || !strings.Contains(routes, "deepseek/deepseek-v4-pro-0813") {
+		t.Fatalf("the first route sync did not write the routes and restart the proxy (marker: %v):\n%s\n%s", err, said.String(), routes)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile("../../internal/cloudsync/testdata/openrouter_models.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: string(raw)})
+	old := cloudSyncNow
+	cloudSyncNow = func() time.Time { return time.Date(2026, 10, 9, 14, 6, 0, 0, time.UTC) }
+	t.Cleanup(func() { cloudSyncNow = old })
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	const want = "openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
+		"openrouter: Price updates (2):\n" +
+		"openrouter:   openrouter/deepseek--deepseek-v4-pro-0813: 1.32/0.044/3.96 -> 1.32/0.044/3.96 (openrouter 0.66/0.022/1.98 mon-fri 00:00-01:00 04:00-06:00 10:00-24:00, sat-sun 00:00-24:00)\n" +
+		"openrouter:   openrouter/tencent--hy3: 0.132/0.033/0.528 -> 0.132/0.033/0.528 (openrouter 0.0825/0.020625/0.33 mon-sun 16:00-24:00)\n" +
+		"openrouter: Unchanged prices: 0\n" +
+		"openrouter: refreshed 2 model(s); 2 price(s) changed\n"
+	if stdout != want || stderr != "" || code != 0 {
+		t.Errorf("stdout:\n%s\nstderr: %q, exit %d\nwant stdout:\n%s", stdout, stderr, code, want)
+	}
+	if got := mustRead(t, yaml); got != routes {
+		t.Errorf("config.yaml after an update that changed only rows:\n%s\nwant it as it was:\n%s", got, routes)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the proxy was restarted after an update that changed only rows")
+	}
+	if got := mustRead(t, registry); strings.Count(got, "label = \"openrouter\"") != 2 {
+		t.Errorf("registry.toml does not hold one openrouter row per model:\n%s", got)
 	}
 }

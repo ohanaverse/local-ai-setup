@@ -12,8 +12,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
 )
 
-// OffpeakLabel is the label of the time_prices row the ollama flow owns.
-// Rows with any other label are the user's and are never touched.
+// OffpeakLabel is the label of the time_prices row the ollama flow owns, on
+// ollama cloud entries. It touches a row with no other label. (The
+// openrouter flow's rows, OpenRouterLabel, are on openrouter models, which
+// the ollama flow never plans from.)
 const OffpeakLabel = "off-peak"
 
 // CostUpdate is a price change to one existing entry.
@@ -469,6 +471,11 @@ func formatCost(c *Cost) string {
 			text += fmt.Sprintf(" (off-peak %s/%s/%s)", formatPrice(number(row, "input_price_per_million")),
 				formatPrice(number(row, "cache_price_per_million")), formatPrice(number(row, "output_price_per_million")))
 			break
+		}
+	}
+	for _, row := range c.TimePrices {
+		if isOpenRouterRow(row) {
+			text += formatOpenRouterRow(row)
 		}
 	}
 	return text

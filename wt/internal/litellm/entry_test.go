@@ -286,3 +286,28 @@ func TestBuildEntrySecretRefEmptyIsAnError(t *testing.T) {
 		}
 	}
 }
+
+// TestPricingInfoReadsOnlyTheFlatPrices pins what a route's model_info is
+// priced from: the cost table's flat prices, never a cost.time_prices row.
+// `wt cloud-sync` stores a model's time-of-day schedule as such rows (#322)
+// and its dearest level as the flat price, so the route carries that level
+// whenever the sync ran, and a sync that changes only the rows leaves
+// config.yaml as it was (no proxy restart).
+func TestPricingInfoReadsOnlyTheFlatPrices(t *testing.T) {
+	in, cache, out, cheap := 1.32, 0.044, 3.96, 0.66
+	flat := config.ModelCost{InputPricePerMillion: &in, CachePricePerMillion: &cache, OutputPricePerMillion: &out}
+	withRow := flat
+	withRow.TimePrices = []config.TimePrice{{
+		Label: "openrouter", Timezone: "UTC", InputPricePerMillion: &cheap, CachePricePerMillion: &cheap, OutputPricePerMillion: &cheap,
+		Windows: []config.CostWindow{{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}, Start: "00:00", End: "24:00"}},
+	}}
+	want := []kv{
+		{"input_cost_per_token", in / 1e6}, {"output_cost_per_token", out / 1e6},
+		{"cache_creation_input_token_cost", cache / 1e6}, {"cache_read_input_token_cost", cache / 1e6},
+	}
+	for name, c := range map[string]config.ModelCost{"flat": flat, "with a row": withRow} {
+		if got := pricingInfo(c); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: pricingInfo = %v, want %v", name, got, want)
+		}
+	}
+}
