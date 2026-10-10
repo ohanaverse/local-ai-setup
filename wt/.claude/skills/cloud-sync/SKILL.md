@@ -82,7 +82,10 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
        left was edited by hand. A left bracket with `timezone="<zone>"`,
        `+keys` or `?` in it is a row labelled `openrouter` that is not what
        the sync writes; the sync replaces it. If the user wrote it, tell
-       them before applying: a row of their own needs another label.
+       them before applying: a row of their own needs another label. With
+       the same brackets on both sides and only the price before them
+       moved to the dearest level, an older wt (or a hand edit) stored a
+       window's price over it; OpenRouter did not re-price the model.
 
      **One such update per time-priced model is expected on the first sync
      with a wt that has this change**; it is not a sign of a price change.
@@ -116,11 +119,15 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      utc_end`, `utc_start or utc_end is not an HHMM time`, `utc_days is not
      a list of weekday names`, `its overrides are not a list`, `an
      overrides entry is not an object`. The warning repeats on every run.
-     Nothing in the registry fixes it and running the sync again does not
-     either: OpenRouter's list changed shape, and the repair is a code
-     change in `wt/internal/cloudsync/timeofday.go` (`parseSchedule`), with
-     the new shape added to `TestParseOpenRouterTimeOfDayShapes`. Tell the
-     user; do not edit the model's price by hand to "match" the list.
+     It is not a failure: the run exits 0 and the rest of the plan is
+     applied as usual, so go on to step 2. Nothing in the registry fixes
+     it and running the sync again does not either: either OpenRouter's
+     entry for that model is incomplete, or its list has a shape wt does
+     not read yet; the second is a code change in
+     `wt/internal/cloudsync/timeofday.go` (`parseSchedule`), with the new
+     shape added to `TestParseOpenRouterTimeOfDayShapes`, and is done only
+     when the user asks for it. Tell the user; do not edit the model's
+     price by hand to "match" the list.
    - If it prints `openrouter: no model could be refreshed, so nothing is
      stamped and wt's stale-pricing notice is not cleared; the warnings
      above say why for each model`, tell the user: running the sync again

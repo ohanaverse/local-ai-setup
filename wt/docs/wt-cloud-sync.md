@@ -125,7 +125,10 @@ each flip reported as a price update and written to LiteLLM's routes.
   ```
 
   (wt writes each window as its own `[[models.cost.time_prices.windows]]`
-  table with one day to a line; the inline form above is the same data.)
+  table with one day to a line; the inline form above is the same data. A
+  price wt converts from OpenRouter's per-token figure can carry a long
+  tail of digits (`0.09999999999999999` for 0.1); the plan line prints it
+  rounded to six significant digits.)
   The sync writes each day's hours under that day: a level that runs past
   midnight is two windows, one to `24:00` and one from `00:00`, as the
   20:00 to 08:00 level is here. A row you write by hand may use one window
@@ -169,6 +172,17 @@ each flip reported as a price update and written to LiteLLM's routes.
   label is kept as it is, and so is a row labelled `openrouter` on a model
   of another provider. (The ollama flow's `off-peak` rows are on ollama
   cloud entries, which this flow never touches: no model is in both flows.)
+- **A wt built before this change** loads and writes a registry that holds
+  these rows and keeps them as they are, but its own cloud-sync stores the
+  price of the window it ran in as the model's price and leaves the rows.
+  Until the next sync with this wt, the picker then shows that window's
+  price at every hour. That sync puts the dearest level back: the line has
+  the same brackets on both sides and a price on the left that is one of
+  the bracketed levels (illustrative):
+
+  ```text
+  openrouter:   openrouter/acme--alpha-1: 0.5/0.05/2 (openrouter 0.5/0.05/2 mon-fri 00:00-08:00 20:00-24:00, sat-sun 00:00-24:00) -> 1/0.1/4 (openrouter 0.5/0.05/2 mon-fri 00:00-08:00 20:00-24:00, sat-sun 00:00-24:00)
+  ```
 - **What uses which price.** The model picker applies the rows: it shows,
   and sorts by, the level in force when it opens, marked `~` ([The price
   the picker shows](#the-price-the-picker-shows)). LiteLLM's route carries
@@ -657,13 +671,14 @@ is a calendar day on the row's own clock: on a night the zone's clocks
 change, the window is an hour longer or shorter and still ends when the
 clock reads 06:00. `start` and `end` must differ; a whole day is `00:00`
 to `24:00`. A window that runs past midnight may not end at `00:00`: the
-end of the listed day is `24:00`. The rows the sync writes never run past midnight (each day's
-hours are under that day), and the sync keeps a row of yours that does, as
-the one window you wrote. (As for any entry, the first write by wt lays a
-file typed by hand out again in its own layout and drops comments.) A wt
-built before this change still loads a row with such a window but refuses
-to write its model (`start must be before end`), so write one only once
-the installed wt has this change.
+end of the listed day is `24:00`.
+The rows the sync writes never run past midnight (each day's hours are
+under that day), and the sync keeps a row of yours that does, as the one
+window you wrote. (As for any entry, the first write by wt lays a file
+typed by hand out again in its own layout and drops comments.) A wt built
+before this change still loads a row with such a window but refuses to
+write its model (`start must be before end`), so write one only once the
+installed wt has this change.
 
 A row that breaks one of these rules is still loaded, and it is **not
 applied**, whole, at any hour: the picker shows the model's own price, and
