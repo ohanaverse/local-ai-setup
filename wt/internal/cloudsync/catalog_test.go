@@ -376,6 +376,31 @@ func TestPlanMassRemovalGuard(t *testing.T) {
 	}
 }
 
+// TestPlanEntriesGoneLeavesReTaggedEntriesOut pins the one number the
+// mass-removal guard and the command's refusal both use. Two entries gone
+// and one re-tagged is three removal lines but two entries leaving: the
+// count is 2, and 2 of 3 trips the guard. The refusal used to print the
+// number of removal lines (3 of 3) while the guard counted 2, so the line
+// meant to say how much is at stake contradicted the plan above it (#320).
+func TestPlanEntriesGoneLeavesReTaggedEntriesOut(t *testing.T) {
+	entries := []Entry{cloudEntry("a:cloud"), cloudEntry("b:cloud"), cloudEntry("m:cloud", withName("m"))}
+	plan := PlanCatalog(entries, catalogOf(cm("m")), nil, map[string]string{"m": "m:675b-cloud"})
+	wantIDs(t, "removals", plan.Removals, "ollama/a:cloud", "ollama/b:cloud", "ollama/m:cloud")
+	if want := map[string]string{"ollama/m:cloud": "ollama/m:675b-cloud"}; !reflect.DeepEqual(plan.Replaced, want) {
+		t.Fatalf("replaced = %v, want %v", plan.Replaced, want)
+	}
+	if got := plan.EntriesGone(); got != 2 {
+		t.Errorf("EntriesGone() = %d, want 2: the re-tagged entry comes straight back", got)
+	}
+	if !plan.MassRemoval() {
+		t.Error("2 of 3 entries leaving was not flagged")
+	}
+	// With no re-tag the count is every removal.
+	if got := PlanCatalog(entries[:2], catalogOf(), nil, nil).EntriesGone(); got != 2 {
+		t.Errorf("EntriesGone() with no re-tag = %d, want 2", got)
+	}
+}
+
 // TestPlanIDCollisionWarns pins that an id the page would add but another
 // row already holds is left alone with a warning that says who holds it. The
 // alternative, a duplicate id, is a registry wt refuses to load. The owner's

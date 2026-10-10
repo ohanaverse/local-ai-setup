@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
@@ -282,10 +281,10 @@ func validateTimePrice(row *tomlw.Table) error {
 	if name == "" || name == "Local" {
 		return fmt.Errorf("timezone %q is not a known IANA timezone", name)
 	}
-	// Known limit: LoadLocation reads the host's zone database and wt does not
+	// Known limit: loadZone reads the host's zone database and wt does not
 	// embed one (time/tzdata), so on a host without it every zone but UTC is
 	// refused here. macOS, wt's platform, ships one.
-	if _, err := time.LoadLocation(name); err != nil {
+	if _, err := loadZone(name); err != nil {
 		return fmt.Errorf("timezone %q is not a known IANA timezone", name)
 	}
 	for _, k := range priceKeys {
@@ -328,8 +327,22 @@ func validateWindow(w *tomlw.Table) error {
 	if start >= 24*60 {
 		return errors.New("start must be before 24:00")
 	}
-	if start >= end {
-		return errors.New("start must be before end")
+	// An end before the start is a window that runs past midnight: from start
+	// on each listed day to end on the next calendar day (#322). An end of
+	// "24:00" is the end of the listed day, so it is never before a start.
+	// Only a start equal to the end is refused: read as [start, end) it holds
+	// no minute, read as running past midnight it holds a whole day, and a
+	// guess either way can show a price for 24 hours that its writer did not
+	// mean.
+	if start == end {
+		return errors.New("start and end must differ (a whole day is 00:00 to 24:00)")
+	}
+	// A past-midnight window with end = 00:00 runs from start on day D to
+	// 00:00 on day D+1 (24 hours later). This is almost never what the writer
+	// means; they usually intend 24:00 (end of day D). Refuse it and suggest
+	// 24:00.
+	if start > end && end == 0 {
+		return errors.New("end must not be 00:00 when the window runs past midnight (use 24:00 for the end of the listed day)")
 	}
 	return nil
 }

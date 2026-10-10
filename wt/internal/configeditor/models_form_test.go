@@ -915,3 +915,61 @@ func TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit(t *testing.T) {
 		}
 	})
 }
+
+// TestModelFormEditsTheFlatPriceOfATimePricedModel pins what the model form
+// shows for a model with cost.time_prices rows: the model's own (flat)
+// prices, which are the keys the form edits, and never the price in force
+// now. The picker shows the price in force (#322); if the form did too, a
+// save made during a cheap window would write that window's price over the
+// model's own, which is the price LiteLLM's route carries. The row here is
+// in force at every instant, so the test does not depend on the clock.
+func TestModelFormEditsTheFlatPriceOfATimePricedModel(t *testing.T) {
+	registry := tabRegistry + `
+[[models]]
+id = "openrouter/timed"
+family = "timed"
+provider_id = "openrouter"
+model_name = "vendor/timed"
+tags = []
+
+[models.cost]
+input_price_per_million = 1.32
+cache_price_per_million = 0.044
+output_price_per_million = 3.96
+
+[[models.cost.time_prices]]
+label = "openrouter"
+timezone = "UTC"
+input_price_per_million = 0.66
+cache_price_per_million = 0.022
+output_price_per_million = 1.98
+
+[[models.cost.time_prices.windows]]
+days = [
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri",
+    "sat",
+    "sun",
+]
+start = "00:00"
+end = "24:00"
+`
+	tm := newTabMachine(t, registry)
+	m := keys(t, selectModel(t, modelsEditor(t, tm, 80, 24), "openrouter/timed"), "enter")
+	f := m.models.form
+	if f == nil || f.mode != modelFormEdit {
+		t.Fatalf("enter did not open the edit form:\n%s", m.View())
+	}
+	for field, want := range map[int]string{mfInput: "1.32", mfCache: "0.044", mfOutput: "3.96"} {
+		if got := f.value(field); got != want {
+			t.Errorf("%s opens as %q, want the model's own price %q", modelFormLabels[field], got, want)
+		}
+	}
+	m = keys(t, m, "ctrl+s")
+	if tm.text(t) != registry || !strings.Contains(m.View(), "no change to openrouter/timed") {
+		t.Errorf("saving the untouched form changed the registry or did not say it wrote nothing:\n%s", m.View())
+	}
+}

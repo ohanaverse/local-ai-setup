@@ -89,8 +89,10 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    …)`, against the counts of `Price updates`, `Unchanged prices` and
    `Registry removals` added together. If that looks like more than half,
    say so now: the apply refuses it without `--force` (exit 4, whose line
-   gives the exact `<n> of <m>`), and that many removals usually means the
-   page parsed wrong, not that the catalog shrank.
+   gives the exact `<n> of <m>`, counted the same way: re-tagged entries
+   are not in `<n>`, and the line says `(re-tagged entries are not
+   counted)` when the plan has any), and that many removals usually means
+   the page parsed wrong, not that the catalog shrank.
 3. **Apply:** `wt cloud-sync --yes --approve-removals <digest>`, with the
    digest from step 1. Leave `--approve-removals` out if the dry run printed
    no digest. Your shell has no terminal, so the command's one question

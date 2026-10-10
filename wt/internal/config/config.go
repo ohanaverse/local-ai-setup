@@ -438,9 +438,11 @@ type AuthConfig struct {
 
 // ── Model ─────────────────────────────────────────────────
 
-// CostWindow is one [start, end) span on the listed weekdays, in its
-// TimePrice's timezone. Days use "mon".."sun"; times are "HH:MM" and end
-// may be "24:00".
+// CostWindow is one [start, end) span in its TimePrice's timezone, starting
+// on each of the listed weekdays. Days use "mon".."sun"; times are "HH:MM"
+// and end may be "24:00". An end before the start is a window that runs past
+// midnight: from start on a listed day to end on the next calendar day. A
+// start equal to the end is refused (validateWindow).
 type CostWindow struct {
 	Days  []string `toml:"days"`
 	Start string   `toml:"start"`
@@ -449,9 +451,12 @@ type CostWindow struct {
 
 // TimePrice is a time-windowed override of a ModelCost's flat (default)
 // per-token prices. The rows are written by `wt cloud-sync`'s ollama flow
-// (ollama's off-peak pricing) and applied by nothing: wt decodes them and
-// shows the flat prices. What a row means: the first row whose window
-// contains an instant wins, per field, falling back to the flat prices.
+// (ollama's off-peak pricing); a user may write more by hand.
+// ModelCost.PriceAt (price_at.go) applies them, and the model picker shows
+// what it returns. A LiteLLM route carries the flat prices. What a row
+// means: the first row whose window contains an instant wins, per field,
+// falling back to the flat prices. A row the registry's validator refuses
+// is not applied (TimePrice.Problem).
 type TimePrice struct {
 	Label                 string       `toml:"label,omitempty"`
 	Timezone              string       `toml:"timezone"`
@@ -601,13 +606,22 @@ func (a ModelArtifact) problems(key string) []string {
 	return out
 }
 
-// Malformed names what the loader tolerated in this row's fetch and draft
-// instead of failing on it, as phrases for a person: "fetch is not a table",
-// "draft.local_path is not a string". fetch comes before draft, and repo
-// before local_path. nil for a row with nothing malformed, and for a Model
-// that was not read from a registry file.
+// Malformed names what the loader tolerated in this row instead of failing on
+// it, as phrases for a person. In its fetch and draft: "fetch is not a
+// table", "draft.local_path is not a string" (fetch before draft, repo
+// before local_path); each reads as absent. Then each cost.time_prices row
+// the registry's validator refuses (TimePrice.Problem), by its place in the
+// file: "cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00";
+// the model picker does not apply such a row. nil for a row with nothing
+// malformed, and for a Model that was not read from a registry file.
 func (m Model) Malformed() []string {
-	return append(m.Fetch.problems("fetch"), m.Draft.problems("draft")...)
+	out := append(m.Fetch.problems("fetch"), m.Draft.problems("draft")...)
+	for i, row := range m.Cost.TimePrices {
+		if problem := row.Problem(); problem != "" {
+			out = append(out, fmt.Sprintf("cost.time_prices[%d]: %s", i, problem))
+		}
+	}
+	return out
 }
 
 // Target is the artifact as a user names it on a command line: the local

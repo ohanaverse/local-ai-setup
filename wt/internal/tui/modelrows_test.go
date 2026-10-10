@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -153,4 +154,130 @@ func TestSortRowsPutsALoadingModelWithTheStartRows(t *testing.T) {
 	if got, want := strings.Join(rowIDs(rows), ","), "run,cloud,a-off,m-loading,z-off"; got != want {
 		t.Errorf("order = %s\nwant    %s", got, want)
 	}
+}
+
+// timedRows are two cloud rows for the price tests: "timed" has a dear flat
+// price (3.96 out) and a row that halves it at weekends, and "steady" costs
+// 3 out all week. On a weekday steady is the cheaper one; at a weekend timed
+// is.
+func timedRows(at time.Time) []tableRow {
+	weekend := config.TimePrice{Label: "openrouter", Timezone: "UTC",
+		InputPricePerMillion: f64(0.66), CachePricePerMillion: f64(0.022), OutputPricePerMillion: f64(1.98),
+		Windows: []config.CostWindow{{Days: []string{"sat", "sun"}, Start: "00:00", End: "24:00"}}}
+	return []tableRow{
+		tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "timed", Cost: config.ModelCost{
+			InputPricePerMillion: f64(1.32), CachePricePerMillion: f64(0.044), OutputPricePerMillion: f64(3.96), TimePrices: []config.TimePrice{weekend}}}}}.pricedAt(at),
+		tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "steady", Cost: config.ModelCost{
+			InputPricePerMillion: f64(1), OutputPricePerMillion: f64(3)}}}}.pricedAt(at),
+	}
+}
+
+var (
+	pickerMonday   = time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	pickerSaturday = time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+)
+
+// TestSortRowsUsesThePriceInForce pins the cost sort on a model priced by
+// time of day: it sorts by the price in force when the table was built, not
+// by its flat price. The sort order is also the picker's default selection,
+// so a model that is the cheapest right now is what a bare Enter launches,
+// and one in its dear window does not keep a cheap model's place. A row with
+// no clock (one built by hand) sorts by its flat price, and sorting again at
+// the same instant changes nothing.
+func TestSortRowsUsesThePriceInForce(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		at   time.Time
+		want string
+	}{
+		{"a weekday: the flat price is in force", pickerMonday, "steady,timed"},
+		{"a weekend: the cheap row is in force", pickerSaturday, "timed,steady"},
+		{"no clock: the flat price", time.Time{}, "steady,timed"},
+	} {
+		rows := timedRows(c.at)
+		sortRows(rows)
+		if got := strings.Join(rowIDs(rows), ","); got != c.want {
+			t.Errorf("%s: order = %s, want %s", c.name, got, c.want)
+		}
+		sortRows(rows)
+		if got := strings.Join(rowIDs(rows), ","); got != c.want {
+			t.Errorf("%s: sorted a second time, order = %s, want it unchanged (%s)", c.name, got, c.want)
+		}
+	}
+	// A model whose flat price is missing and whose row supplies one has cost
+	// data while the row is in force, and none outside it.
+	rowsOnly := func(at time.Time) []tableRow {
+		rows := timedRows(at)
+		rows[0].Model.Cost.InputPricePerMillion, rows[0].Model.Cost.CachePricePerMillion, rows[0].Model.Cost.OutputPricePerMillion = nil, nil, nil
+		rows[0] = rows[0].pricedAt(at)
+		return rows
+	}
+	if k := rowCostKey(rowsOnly(pickerSaturday)[0]); k.noData || k.out != 1.98 || k.in != 0.66 {
+		t.Errorf("rows only, at the weekend: cost key = %+v, want the row's prices", k)
+	}
+	if k := rowCostKey(rowsOnly(pickerMonday)[0]); !k.noData {
+		t.Errorf("rows only, on a weekday: cost key = %+v, want no cost data", k)
+	}
+}
+
+// TestBuildRowsReadsThePickersClock pins where the instant comes from: the
+// table is given one (tableInput.now), and one left out is the picker's own
+// clock, read once for the whole table. Every row is priced at that one
+// instant, so two rows of a table are never priced on two sides of a window
+// boundary.
+func TestBuildRowsReadsThePickersClock(t *testing.T) {
+	cfg := rowsTestCfg()
+	models := []config.Model{{ID: "openrouter/a", ProviderID: "openrouter"}, {ID: "openrouter/b", ProviderID: "openrouter"}}
+	rows := buildRows(tableInput{cfg: cfg, models: models, now: pickerSaturday})
+	if len(rows) != 2 || !rows[0].at.Equal(pickerSaturday) || !rows[1].at.Equal(pickerSaturday) {
+		t.Fatalf("rows built with a clock: %d rows, at %v", len(rows), rows)
+	}
+	calls := 0
+	old := pickerNow
+	pickerNow = func() time.Time { calls++; return pickerMonday }
+	t.Cleanup(func() { pickerNow = old })
+	rows = buildRows(tableInput{cfg: cfg, models: models})
+	if calls != 1 || !rows[0].at.Equal(pickerMonday) || !rows[1].at.Equal(pickerMonday) {
+		t.Errorf("rows built without a clock: the picker's clock was read %d time(s), rows at %v and %v; want one reading for both", calls, rows[0].at, rows[1].at)
+	}
+}
+
+// TestBuildRowsPricesEachRowOnce pins that a table's rows are priced when
+// the table is built and not again: the sort, the COST cell, the mode line's
+// price and the "~" mark all read what buildRows resolved. Resolving a price
+// checks its rows against the registry's rules and reads their timezones,
+// and the sort asks for two prices per comparison, so a picker that resolved
+// on every question did that work hundreds of times on the goroutine that
+// handles keys, where one that resolves per row does it once per model. The
+// test changes a row behind the built table's back, which nothing in wt
+// does, only to see whether the row is read a second time.
+func TestBuildRowsPricesEachRowOnce(t *testing.T) {
+	weekend := config.TimePrice{Label: "openrouter", Timezone: "UTC",
+		InputPricePerMillion: f64(0.66), CachePricePerMillion: f64(0.022), OutputPricePerMillion: f64(1.98),
+		Windows: []config.CostWindow{{Days: []string{"sat", "sun"}, Start: "00:00", End: "24:00"}}}
+	models := []config.Model{{ID: "openrouter/a", ProviderID: "openrouter", Cost: config.ModelCost{
+		InputPricePerMillion: f64(1.32), CachePricePerMillion: f64(0.044), OutputPricePerMillion: f64(3.96),
+		TimePrices: []config.TimePrice{weekend}}}}
+	rows := buildRows(tableInput{cfg: rowsTestCfg(), models: models, now: pickerSaturday})
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want 1", len(rows))
+	}
+	check := func(when string) {
+		t.Helper()
+		r := rows[0]
+		if k := rowCostKey(r); k.out != 1.98 || k.in != 0.66 {
+			t.Errorf("%s: cost key = %+v, want the weekend row's 0.66 in, 1.98 out", when, k)
+		}
+		if got, want := costCell(r), " 0.6600  0.0220  1.9800~"; got != want {
+			t.Errorf("%s: COST cell = %q, want %q", when, got, want)
+		}
+		if got, want := costNote(r), "cost~ 0.66/0.022/1.98"; got != want {
+			t.Errorf("%s: mode-line price = %q, want %q", when, got, want)
+		}
+	}
+	check("as built")
+	// The row now names no zone, so resolving it again would pass it over:
+	// the flat price, and no mark.
+	rows[0].Model.Cost.TimePrices[0].Timezone = "Nowhere/None"
+	check("after the row changed under the table")
 }

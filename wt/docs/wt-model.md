@@ -60,12 +60,26 @@ with or without the line, and the command still exits 0. A hand-typed
 local_path = "~/models/mine"
 ```
 
+A `cost.time_prices` row that breaks the registry's rules is named the same
+way, after the `fetch` and `draft` phrases of its model (illustrative):
+
+```text
+openrouter/mine: cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00; wt reads it as absent (fix the entry in /Users/you/.config/local-ai/registry.toml)
+```
+
+The model picker does not apply such a row, at any hour: it shows the
+model's own price
+([wt-cloud-sync.md](wt-cloud-sync.md#a-row-you-write-by-hand) has the rules;
+a window whose `end` is before its `start` breaks none, it runs past
+midnight). The listing itself shows no price.
+
 `--json` always has everything: `registry` (the file), `models` (each with
 `id`, `family`, `provider_id`, `model_name`, `location`, `tags`,
 `registered`, `status`, `running`, `size_bytes` and `path` — the last two
 `null` when wt does not know them — `target` and `draft` for a pairing, and
 `malformed`, an array of the phrases above (`"fetch is not a table"`,
-`"draft.local_path is not a string"`) that is always there and empty for a
+`"draft.local_path is not a string"`, `"cost.time_prices[0]: windows[0]:
+start must be HH:MM, got 9:00"`) that is always there and empty for a
 row with nothing malformed), and `providers` (each probed provider's status:
 `ok`, `partial`, `unreachable`). Stdout is that one document; the stderr
 lines for malformed rows are printed in this mode too.
@@ -261,7 +275,10 @@ pairing's target and draft before its key hints and the id.
 A row whose `fetch` or `draft` is malformed in `registry.toml` has one more
 line under its id, in the words `wt model list` prints on stderr: `fetch is
 not a table; read as absent`. wt reads such a value as absent, which is why
-the row has no path, or reads `missing` when its weights are there.
+the row has no path, or reads `missing` when its weights are there. A
+`cost.time_prices` row that breaks a rule is on that line too
+(`cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00; read as
+absent`): the model picker does not apply it.
 
 | Key | Does |
 |---|---|
@@ -321,7 +338,9 @@ owed:
   model "<id>": fetch must be a table (fix the entry in <registry path>)`.
   wt reads the value as absent but does not write the row back around it.
   The form adds `(fix the entry in <registry path>)` only for such a row,
-  where no field can repair what is wrong.
+  where no field can repair what is wrong. A row with a `cost.time_prices`
+  row that breaks a rule is refused the same way (`… cost: time_prices[0]:
+  windows[0]: start must be HH:MM, got 9:00`), with the same hint.
 
 Both are repaired in `registry.toml`; `r` on the table reads it again. A
 hand-written row the registry writer refuses for a key the form has a field

@@ -38,7 +38,9 @@ func modelListCmd(a *app) *cobra.Command {
 			"A model whose fetch or draft is malformed in the registry (not a table, or a\n" +
 			"repo or local_path that is not a string) is still listed, with that value\n" +
 			"read as absent; a line on stderr names the row and the problem, and --json\n" +
-			"has the same in each model's \"malformed\" array.",
+			"has the same in each model's \"malformed\" array. A cost.time_prices row that\n" +
+			"breaks the registry's rules (an unknown timezone, a time that is not HH:MM)\n" +
+			"is named the same way: the model picker does not apply such a row.",
 		Example:      "  wt model list\n  wt model list --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -135,13 +137,17 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 }
 
 // noteMalformed prints one line for each registry row whose fetch or draft
-// the loader read as absent because it is malformed (config.Model.Malformed),
-// in the registry's own order — the order the user meets them in the file,
-// not the table's. The load tolerates such a value so that a hand edit cannot
-// stop wt, and this listing says so for every row (the Models tab says it for
+// the loader read as absent because it is malformed, or which has a
+// cost.time_prices row the registry's validator refuses and the model picker
+// therefore does not apply (config.Model.Malformed names both), in the
+// registry's own order — the order the user meets them in the file, not the
+// table's. The load tolerates such a value so that a hand edit cannot stop
+// wt, and this listing says so for every row (the Models tab says it for
 // the selected one, from the same phrases): without the line a
 // `fetch = "~/models/x"` meant as a local_path only makes the row read
-// "missing". The id is escaped as the table escapes it.
+// "missing", and a time_prices row with a time written "9:00" only leaves
+// the picker showing the flat price. The id is escaped as the table escapes
+// it.
 func noteMalformed(errOut io.Writer, cfg *config.Config) {
 	// A malformed fetch is a bad registry entry, so the repair is worded by
 	// the one function that words those.
