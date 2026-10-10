@@ -258,16 +258,18 @@ openrouter:   openrouter/acme--alpha-1: 0.9/0.09/3.6 -> 1/0.1/4
 This is expected and harmless
 ([#337](https://github.com/ohanaverse/local-ai-setup/issues/337)). Each
 such update is applied like any other price update: the registry price is
-rewritten with its `pricing_updated_at` stamp, and the model's LiteLLM
-route is rewritten, which restarts the proxy. The plan line reads the same
-as for a price a provider did change, so the line alone does not say which
-it is. `--dry-run` shows the moves without applying them.
+rewritten (the row is stamped in `pricing_updated_at`, as every matched
+model's is on every sync), and where LiteLLM is set up the model's route is
+rewritten, which restarts the proxy. The plan line reads the same as for a
+price a provider did change, so the line alone does not say which it is.
+`--dry-run` shows the moves without applying them.
 
 This is not time-of-day pricing. A model with a published schedule is
-stored as its schedule ([above](#a-model-openrouter-prices-by-time-of-day))
-and does not move this way from one hour to the next. If the provider
-OpenRouter lists for a model changes, though, the model can gain or lose
-its schedule, and that too is reported as a price update.
+stored as its schedule ([above](#a-model-openrouter-prices-by-time-of-day)),
+so the hour a sync runs in does not move its price. The schedule is read
+from the same listed entry as the price, though: if the provider OpenRouter
+lists for a model changes, the model can gain, lose or change its schedule,
+and that too is reported as a price update.
 
 ### ollama
 

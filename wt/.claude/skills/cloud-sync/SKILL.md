@@ -99,11 +99,13 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      lists within minutes. Two syncs minutes apart can each show an update
      for such a model, back and forth. That is expected and harmless: wt
      stores what is listed and does not smooth it. Applying one rewrites
-     the registry price, its stamp and the model's route, and so restarts
-     the proxy, like any price update. Tell the user this when a model's
-     price moves again right after a sync; do not run the sync repeatedly
-     to "settle" it. A model with a schedule (the bracketed lines above)
-     does not move this way.
+     the registry price and, where LiteLLM is set up, the model's route,
+     which restarts the proxy, like any price update. Tell the user this
+     when a model's price moves again right after a sync; do not run the
+     sync repeatedly to "settle" it. A model with a schedule does not move
+     with the hour; if the provider OpenRouter lists for it changes, it
+     can gain, lose or change its schedule, which shows as one of the
+     bracketed updates above.
      ollama: `Price updates`, `Registry additions`
      (id and family; each also gets a route), `ollama pull`, `Registry
      removals` (each also loses its route; `(re-tagged as …)` marks an entry
