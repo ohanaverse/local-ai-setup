@@ -12,8 +12,10 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
 // startModel is a test seam: production starts the model through the lifecycle
@@ -254,6 +256,13 @@ type startState struct {
 	ch         <-chan tea.Msg
 	// out is what the engine has printed so far (lifecycle.Options.Out).
 	out *startOutput
+	// quitting is set once ctrl+c at the routing stage asked wt to quit.
+	// tea.Quit is a command: its QuitMsg comes back through the message
+	// channel, so the start's startDoneMsg can still be delivered in between,
+	// and a successful one would launch. A quitting start drops it, as
+	// routingState.quitting does for the route check. The state itself is
+	// kept so Run() can print what the engine printed (startOutput.release).
+	quitting bool
 }
 
 // pastCancel reports whether the start has got past anything a cancel could
@@ -314,9 +323,11 @@ func buildReplaceChoices() []list.Item {
 // follows a successful start dials the model through the proxy, and the
 // restart prints its warnings into the same output, so the result carries
 // all of it. The wait used to be finishStart's, on the update goroutine,
-// where it froze the screen for as long as the restart took. After a start
-// that failed there is a restart to wait for only when the start had already
-// displaced a model; the stage then says so.
+// where it froze the screen for as long as the restart took. Whenever there
+// is a restart to wait for, the goroutine reports the routing stage itself,
+// so the screen says so: after a start that failed (one that had already
+// displaced a model), and after one that succeeded under a cancel, whose own
+// report of the stage went through a context the cancel had ended.
 //
 // The seams are read HERE, on the caller's goroutine, so a test seam swap
 // never races the goroutine's late first read.
@@ -333,7 +344,7 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 			}
 		}
 		err := start(ctx, cfg, t, lifecycle.Options{AllowReplace: allow, Progress: stage, Out: out})
-		if err != nil && pending() {
+		if pending() {
 			// Not through stage: a cancelled start has a done context, and
 			// the screen still has to say what it is waiting for.
 			ch <- startStageMsg{id: id, stage: lifecycle.StageRouting}
@@ -383,10 +394,17 @@ func (m model) beginStart(it *modelItem, allowReplace bool) (model, tea.Cmd) {
 // that exits. Every other key is ignored.
 //
 // From the routing stage on there is nothing left to cancel (pastCancel):
-// esc and q are ignored and ctrl+c quits wt, as in phaseRouting.
+// esc and q are ignored and ctrl+c quits wt, as in phaseRouting. That ctrl+c
+// also marks the start as quitting, so its startDoneMsg cannot launch an
+// agent in the gap before the QuitMsg is handled (see startState.quitting).
 func (m model) handleStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
 	if m.start.pastCancel() {
 		if msg.String() == "ctrl+c" {
+			// A copy, not a write through the pointer, as in handleRouteKey:
+			// Update must leave the model it was given as it found it.
+			quitting := *m.start
+			quitting.quitting = true
+			m.start = &quitting
 			return m, tea.Quit
 		}
 		return m, nil
@@ -414,8 +432,12 @@ func (m model) handleStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
 // handleStartMsg processes the start flow's messages. Its callers route only
 // startStageMsg/startTickMsg/startDoneMsg here, so every type it can receive is
 // one it handles; a message whose id no longer matches m.start is a stale
-// message from a superseded run and is dropped.
+// message from a superseded run and is dropped. So is every message for a
+// start the user quit out of (startState.quitting): its result would launch.
 func (m model) handleStartMsg(msg tea.Msg) (model, tea.Cmd) {
+	if m.start != nil && m.start.quitting {
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case startStageMsg:
 		if m.start == nil || msg.id != m.start.id {
@@ -542,17 +564,27 @@ func (m model) startingView() string {
 		// while the engine tears down, so advertising them would be a lie.
 		waiting := "waiting for the server to stop"
 		if m.start.stage == lifecycle.StageRouting {
-			// The engine has returned; what is left is the proxy restart
-			// that drops the route of a model the start had displaced.
+			// The engine has returned; what is left is the proxy restart:
+			// for the route of a model the start had displaced, or for the
+			// started model's own when the cancel lost.
 			waiting = "waiting for the LiteLLM proxy restart"
 		}
-		return fmt.Sprintf("Cancelling %s… (%s)\n\n%s\n\n[ctrl+c] quit wt",
-			m.start.item.model.ID, elapsed, waiting)
+		return tuilayout.WrapText(fmt.Sprintf("Cancelling %s… (%s)\n\n%s", m.start.item.model.ID, elapsed, waiting), m.width) +
+			"\n\n[ctrl+c] quit wt"
 	}
 	hint := "[esc] cancel"
 	if m.start.pastCancel() {
 		// Name only the key that still does something (handleStartKey).
 		hint = "[ctrl+c] quit wt"
 	}
-	return fmt.Sprintf("Starting %s — %s (%s)\n\n%s", m.start.item.model.ID, lifecycle.StageLabel(m.start.stage), elapsed, hint)
+	head := "Starting " + m.start.item.model.ID
+	stage := fmt.Sprintf("%s (%s)", lifecycle.StageLabel(m.start.stage), elapsed)
+	line := head + " — " + stage
+	if m.width > 0 && lipgloss.Width(line) > m.width {
+		// The stage is what the screen is for, and from the routing stage
+		// on it is the only reason given for a key that stopped working: on
+		// a line of its own it is not what the terminal's edge cuts.
+		line = head + "\n" + stage
+	}
+	return tuilayout.WrapText(line, m.width) + "\n\n" + hint
 }

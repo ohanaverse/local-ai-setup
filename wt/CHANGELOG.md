@@ -308,7 +308,8 @@
   shows `updating LiteLLM routes` it can no longer be cancelled (the model
   is loaded): esc does nothing there and ctrl+c quits wt, where an esc used
   to end in `cancelled` with the model running. Quitting during a start
-  prints what it had printed (#275).
+  prints what it had printed. On a terminal too narrow for the start
+  screen's line the stage is on a line of its own instead of cut off (#275).
 - `wt cloud-sync` no longer stores, for a model OpenRouter prices by time of
   day, whichever price was in force when the sync ran (#322). Such a model
   used to flip between its rates from one sync to the next, each flip

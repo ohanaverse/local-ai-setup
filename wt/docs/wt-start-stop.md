@@ -258,7 +258,9 @@ recently used when a load does not fit.
   and when that fails too the lines above the agent's output are where to
   find why it answers `Invalid model name`. Once a start has reached
   `updating LiteLLM routes` the model is loaded and there is nothing left to
-  cancel: esc does nothing there, and ctrl+c quits wt. After a start that
+  cancel: esc does nothing there, and ctrl+c quits wt without launching the
+  agent. On a terminal too narrow for the start screen's one line, the stage
+  is on a line of its own under the model id. After a start that
   fails or is cancelled having already displaced a model, the start screen
   stays up until the proxy has restarted (`updating LiteLLM routes`), so
   those warnings are in the status. Quitting wt during a start (ctrl+c

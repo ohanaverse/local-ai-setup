@@ -34,15 +34,23 @@ const startLines = "wt: omlx unloaded omlx/old to make room (not predicted)\n" +
 	"wt: LiteLLM route not updated: open /scratch/config.yaml: permission denied\n"
 
 // TestStartHandsTheEngineAWriter pins #275 at its root: the picker's start
-// gives the engine somewhere to print. Without Options.Out every line of a
-// start went to stderr under the alt screen.
+// gives the engine somewhere to print, and what the engine prints there is
+// what the picker shows. Without Options.Out every line of a start went to
+// stderr under the alt screen.
 func TestStartHandsTheEngineAWriter(t *testing.T) {
+	stubRouteNotes(t)
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
-	calls := stubStartModel(t, printingStart(errors.New("boom"), ""))
+	calls := stubStartModel(t, printingStart(errors.New("boom"), "wt: LiteLLM route not updated: boom\n"))
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
-	_, _ = updateMsg(got, recvStart(t, got))
-	if calls.len() != 1 || calls.at(0).opts.Out == nil {
-		t.Fatalf("the engine was started %d times; want once, with Options.Out set", calls.len())
+	got, _ = updateMsg(got, recvStart(t, got))
+	if calls.len() != 1 {
+		t.Fatalf("the engine was started %d times; want once", calls.len())
+	}
+	if want := "LiteLLM route not updated: boom\n" + lifecycle.StartErrorMessage("omlx/qwen3.8", errors.New("boom")); got.status != want {
+		t.Errorf("status = %q\nwant     %q", got.status, want)
+	}
+	if view := got.View(); !strings.Contains(view, "LiteLLM route not updated: boom") {
+		t.Errorf("the line the engine printed is not on the picker:\n%s", view)
 	}
 }
 
@@ -267,8 +275,9 @@ func (p *startOutputProbe) print(text string) {
 // is in flight, the flow waits for it, and the screen says so instead of
 // showing the engine's last stage (or, after a cancel, "waiting for the
 // server to stop" over a server that has stopped). A failed start that left
-// no restart behind reports at once, with no such stage.
+// no restart behind goes straight back to the picker, with no such screen.
 func TestFailedStartThatOwesARestartSaysWhatItWaitsFor(t *testing.T) {
+	stubRouteNotes(t)
 	old := routesPending
 	t.Cleanup(func() { routesPending = old })
 
@@ -280,24 +289,167 @@ func TestFailedStartThatOwesARestartSaysWhatItWaitsFor(t *testing.T) {
 	})
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got, _ = updateMsg(got, tea.KeyMsg{Type: tea.KeyEsc})
-	msg := recvStart(t, got)
-	if stage, ok := msg.(startStageMsg); !ok || stage.stage != lifecycle.StageRouting {
-		t.Fatalf("after a cancelled start with a restart pending the flow sent %#v, want the routing stage", msg)
-	}
-	got, _ = updateMsg(got, msg)
+	got, _ = updateMsg(got, recvStart(t, got))
 	if view := got.View(); !strings.Contains(view, "waiting for the LiteLLM proxy restart") || strings.Contains(view, "waiting for the server to stop") {
 		t.Errorf("the cancelling screen does not say it waits for the proxy:\n%s", view)
 	}
-	if _, ok := recvStart(t, got).(startDoneMsg); !ok {
-		t.Error("the result did not follow the routing stage")
+	got, _ = updateMsg(got, recvStart(t, got))
+	if got.phase != phaseModel || got.status != "cancelled" {
+		t.Errorf("after the wait: phase = %v, status = %q; want the picker and %q", got.phase, got.status, "cancelled")
+	}
+
+	// Failed, not cancelled: the same wait, on the screen of a start.
+	m = startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	stubStartModel(t, printingStart(errors.New("boom"), ""))
+	got, _ = enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, recvStart(t, got))
+	if view := got.View(); got.phase != phaseStarting || !strings.Contains(view, "Starting omlx/qwen3.8 — updating LiteLLM routes") || strings.Contains(view, "cancel") || !strings.Contains(view, "[ctrl+c] quit wt") {
+		t.Fatalf("a failed start with a restart pending must say what it waits for and offer no cancel (phase %v):\n%s", got.phase, view)
+	}
+	got, _ = updateMsg(got, recvStart(t, got))
+	if want := lifecycle.StartErrorMessage("omlx/qwen3.8", errors.New("boom")); got.phase != phaseModel || got.status != want {
+		t.Errorf("after the wait: phase = %v, status = %q; want the picker and %q", got.phase, got.status, want)
 	}
 
 	routesPending = func() bool { return false }
 	m = startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	stubStartModel(t, printingStart(errors.New("boom"), ""))
 	got, _ = enterStartRow(t, m, "omlx/qwen3.8")
-	if msg := recvStart(t, got); fmt.Sprintf("%T", msg) != "tui.startDoneMsg" {
-		t.Errorf("a failed start with no restart pending sent %#v first, want its result", msg)
+	got, _ = updateMsg(got, recvStart(t, got))
+	if want := lifecycle.StartErrorMessage("omlx/qwen3.8", errors.New("boom")); got.phase != phaseModel || got.status != want {
+		t.Errorf("a failed start with no restart pending: phase = %v, status = %q; want the picker at once, with %q", got.phase, got.status, want)
+	}
+}
+
+// TestCancelThatLostSaysItWaitsForTheProxy pins the stage the flow reports
+// itself whenever a restart is in flight, after a start that succeeded too.
+// The engine reports its stages through a context the cancel has ended, so
+// its own routing stage can be lost; the cancelling screen then read "waiting
+// for the server to stop" for the 10 to 20 seconds of a restart, over a model
+// that had loaded.
+func TestCancelThatLostSaysItWaitsForTheProxy(t *testing.T) {
+	stubRouteNotes(t)
+	old := routesPending
+	routesPending = func() bool { return true }
+	t.Cleanup(func() { routesPending = old })
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	stubStartModel(t, func(_ int, ctx context.Context, _ lifecycle.Target, _ lifecycle.Options) error {
+		<-ctx.Done()
+		return nil
+	})
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, tea.KeyMsg{Type: tea.KeyEsc})
+	got, _ = updateMsg(got, recvStart(t, got))
+	if view := got.View(); got.phase != phaseStarting || !strings.Contains(view, "waiting for the LiteLLM proxy restart") {
+		t.Fatalf("the cancelling screen does not say it waits for the proxy (phase %v):\n%s", got.phase, view)
+	}
+	got, _ = updateMsg(got, recvStart(t, got))
+	if want := "started omlx/qwen3.8; launch cancelled"; got.status != want {
+		t.Errorf("status = %q, want %q", got.status, want)
+	}
+}
+
+// TestQuitAtTheRoutingStageNeverLaunches pins the gap between ctrl+c at the
+// routing stage and wt's exit. tea.Quit is a command, so the start's result
+// can be delivered before the QuitMsg; handled, it would run the launch-time
+// route check (a config.yaml write, a proxy restart), record rotation and
+// refcount and issue the agent's command, for a wt the user had just quit.
+// The result is dropped instead, the model the key was given is left as it
+// was, and what the engine printed is still printed at exit.
+func TestQuitAtTheRoutingStageNeverLaunches(t *testing.T) {
+	stubRouteNotes(t)
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	m.agent = "not-a-real-agent"
+	routes := stubEnsureRoute(t)
+	stubStartModel(t, func(_ int, _ context.Context, _ lifecycle.Target, opts lifecycle.Options) error {
+		fmt.Fprint(opts.Out, "wt: omlx unloaded omlx/old to make room\n")
+		opts.Progress(lifecycle.StageRouting)
+		return nil
+	})
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, recvStart(t, got))
+	quit, cmd := updateMsg(got, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c at the routing stage returned no command, want tea.Quit")
+	}
+	if got.start.quitting {
+		t.Error("the key changed the model it was given: Update must return a new one")
+	}
+	done := recvStart(t, got)
+	if _, ok := done.(startDoneMsg); !ok {
+		t.Fatalf("the start sent %#v, want its result", done)
+	}
+	after, cmd := updateMsg(quit, done)
+	if cmd != nil || after.phase != phaseStarting || after.status != "" || after.start == nil {
+		t.Errorf("the result of a start the user quit out of: a command = %v, phase = %v, status = %q, start kept = %v; want it dropped", cmd != nil, after.phase, after.status, after.start != nil)
+	}
+	if strings.Contains(strings.Join(routes.events, " "), "ensure:") {
+		t.Errorf("the launch-time route check ran after the quit: %v", routes.events)
+	}
+	var term lockedBuffer
+	flushRouteNotesAfterRun(after, &term)
+	if want := "wt: omlx unloaded omlx/old to make room\n"; term.String() != want {
+		t.Errorf("printed at exit = %q, want %q", term.String(), want)
+	}
+}
+
+// TestStartScreenSaysItsStageAtEveryWidth pins what the start screen must
+// never lose to the terminal's edge: the stage. It was one clipped line, so
+// with a real model id a 40-column terminal showed `Starting <id> — star`,
+// and `updating LiteLLM routes` — the only statement of why esc stopped
+// working, and of what a failed start is waiting for — was cut off. A line
+// that does not fit is broken between the id and the stage, so the stage is
+// read as one phrase and no dash is left hanging at the end of the id.
+func TestStartScreenSaysItsStageAtEveryWidth(t *testing.T) {
+	const id = "omlx/Qwen3.8-27B-Instruct-MLX-6bit"
+	old := routesPending
+	routesPending = func() bool { return true }
+	t.Cleanup(func() { routesPending = old })
+	for _, width := range layoutWidths {
+		for _, height := range layoutHeights {
+			for _, c := range []struct {
+				stage      lifecycle.Stage
+				cancelling bool
+				want       []string
+			}{
+				{lifecycle.StageWaiting, false, []string{"waiting for the model to load", "[esc] cancel"}},
+				{lifecycle.StageRouting, false, []string{"updating LiteLLM routes", "[ctrl+c] quit wt"}},
+				{lifecycle.StageRouting, true, []string{"waiting for the LiteLLM proxy restart", "[ctrl+c] quit wt"}},
+			} {
+				name := fmt.Sprintf("stage %v, cancelling %v at %dx%d", c.stage, c.cancelling, width, height)
+				m := resized(t, startFixture(t, "omlx", id, "Qwen3.8-27B-Instruct-MLX-6bit"), width, height)
+				hold := make(chan struct{})
+				t.Cleanup(func() { close(hold) })
+				stubStartModel(t, func(_ int, ctx context.Context, _ lifecycle.Target, opts lifecycle.Options) error {
+					if c.cancelling {
+						// The flow reports the stage itself: the engine's
+						// own goes through a context the cancel has ended.
+						<-ctx.Done()
+						return ctx.Err()
+					}
+					opts.Progress(c.stage)
+					<-hold
+					return nil
+				})
+				got, _ := enterStartRow(t, m, id)
+				if c.cancelling {
+					got, _ = updateMsg(got, tea.KeyMsg{Type: tea.KeyEsc})
+				}
+				got, _ = updateMsg(got, recvStart(t, got))
+				view := got.View()
+				assertFits(t, name, view, width, height)
+				for _, want := range append(c.want, "Qwen3.8-27B-Instruct-MLX-6bit") {
+					if !strings.Contains(view, want) {
+						t.Errorf("%s: %q is not on screen:\n%s", name, want, view)
+					}
+				}
+				for _, line := range strings.Split(view, "\n") {
+					if strings.HasSuffix(strings.TrimRight(line, " "), "—") {
+						t.Errorf("%s: a line ends in the dash that joins the id and the stage:\n%s", name, view)
+					}
+				}
+			}
+		}
 	}
 }
 
