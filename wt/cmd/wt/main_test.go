@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -102,9 +103,15 @@ func TestPickerSkippedOnWorktreeFlag(t *testing.T) {
 // TestRemovedSubcommand_Rejected verifies that `wt models` and `wt agents`
 // exit non-zero with a migration message pointing at `wt config`. Without
 // this guard, cobra's ArbitraryArgs (required for shell-wt passthrough)
-// silently swallows the unknown first positional and the root RunE
-// creates a worktree literally named "models" or "agents" — a silent
-// footgun for users with muscle-memory invocations or stale doc snippets.
+// silently swallows the unknown first positional and the root RunE goes on
+// to a launch with "models" or "agents" as the agent's first argument — a
+// silent footgun for users with muscle-memory invocations or stale doc
+// snippets.
+//
+// The word is refused wherever it stands before a `--`, or with none: a `--`
+// that comes after it (`wt models -- x`) does not make it a passthrough
+// command, and neither does -A shell without a `--` (`shell-wt agents`).
+// TestRemovedSubcommandNameAfterDashIsPassedThrough covers the other side.
 func TestRemovedSubcommand_Rejected(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -115,6 +122,10 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 		{"wt models with flags", []string{"models", "-A", "claude"}, "wt models is removed"},
 		{"wt agents", []string{"agents"}, "wt agents is removed"},
 		{"wt agents with flags", []string{"agents", "-A", "codex"}, "wt agents is removed"},
+		{"wt models before a dash", []string{"models", "--", "x"}, "wt models is removed"},
+		{"wt agents before a dash", []string{"agents", "--", "list"}, "wt agents is removed"},
+		{"shell models before a dash", []string{"-A", "shell", "models", "--", "x"}, "wt models is removed"},
+		{"shell agents with no dash", []string{"--agent", "shell", "agents", "list"}, "wt agents is removed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,6 +144,82 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 			// Must point users at the replacement.
 			if !strings.Contains(err.Error(), "wt config") {
 				t.Errorf("error %q does not mention `wt config` as the replacement", err.Error())
+			}
+		})
+	}
+}
+
+// TestRemovedSubcommandNameAfterDashIsPassedThrough pins the other half of
+// the removed-subcommand guard: a first positional that came after `--` is a
+// passthrough command whatever its name, so `shell-wt -- models` and
+// `wt -A shell -- agents list` reach the launch with the words as the
+// command. A guard that looks only at the first positional leaves a script
+// or binary named "models" or "agents" impossible to run through shell-wt:
+// the user gets "wt models is removed" for a command that was never wt's.
+//
+// The same holds for the name of a subcommand wt still has (`config`) or
+// has removed as a hidden stub (`litellm expose`): cobra stops looking for a
+// subcommand at `--`, so those are the command too. With no -A the words
+// are still passthrough arguments, and the refusal is the picker's own (it
+// needs a terminal), never "is removed".
+func TestRemovedSubcommandNameAfterDashIsPassedThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"shell-wt -- models", []string{"--agent", "shell", "--", "models"}, []string{"models"}},
+		{"wt -A shell -- agents list", []string{"-A", "shell", "--", "agents", "list"}, []string{"agents", "list"}},
+		{"a second dash is the command's own", []string{"-A", "shell", "--", "models", "--", "x"}, []string{"models", "--", "x"}},
+		{"a live subcommand's name", []string{"-A", "shell", "--", "config"}, []string{"config"}},
+		{"a removed stub's name", []string{"-A", "shell", "--", "litellm", "expose"}, []string{"litellm", "expose"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			withCleanConfigEnv(t, t.TempDir())
+			var gotAgent string
+			var gotArgs []string
+			launched := false
+			prev := launchFiltered
+			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+				launched, gotAgent, gotArgs = true, agent, extraArgs
+				return nil
+			}
+			t.Cleanup(func() { launchFiltered = prev })
+
+			var buf bytes.Buffer
+			root := rootCmd()
+			root.SetOut(&buf)
+			root.SetErr(&buf)
+			root.SetArgs(tc.args)
+			if err := root.Execute(); err != nil {
+				t.Fatalf("wt %v was refused: %v", tc.args, err)
+			}
+			if !launched {
+				t.Fatalf("the launch was never reached (output: %q)", buf.String())
+			}
+			if gotAgent != "shell" || !slices.Equal(gotArgs, tc.want) {
+				t.Errorf("launched agent %q with args %q, want shell with %q", gotAgent, gotArgs, tc.want)
+			}
+		})
+	}
+
+	for _, word := range []string{"models", "agents"} {
+		t.Run("wt -- "+word+" with no agent", func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			withCleanConfigEnv(t, t.TempDir())
+			prev := stdinTTY
+			stdinTTY = func() bool { return false }
+			t.Cleanup(func() { stdinTTY = prev })
+
+			var buf bytes.Buffer
+			root := rootCmd()
+			root.SetOut(&buf)
+			root.SetErr(&buf)
+			root.SetArgs([]string{"--", word})
+			err := root.Execute()
+			if !errors.Is(err, errPickerNeedsTTY) {
+				t.Fatalf("err = %v, want the picker's terminal error: the word is a passthrough argument and no agent was named", err)
 			}
 		})
 	}

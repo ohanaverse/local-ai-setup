@@ -250,10 +250,18 @@ func rootCmd() *cobra.Command {
 			// is load-bearing for shell-wt passthrough (`shell-wt npm test` →
 			// `wt --agent shell npm test`), so it swallows the first positional
 			// without complaining. Without this guard, `wt models -A claude`
-			// silently creates a worktree named "models" and launches claude
-			// there — a footgun for users with stale muscle-memory invocations.
+			// hands the word "models" to claude as its first argument — a
+			// footgun for users with stale muscle-memory invocations.
 			// Keep this list in sync with removed subcommand names.
-			if len(args) > 0 {
+			//
+			// Only a word typed before any `--` is refused. ArgsLenAtDash is
+			// the number of positionals before the `--`: 0 means the first
+			// positional came after it, where the user has said outright
+			// that it is a passthrough command (`shell-wt -- models`), and
+			// it is passed through whatever its name. -1 (no `--`) and 1 or
+			// more (`wt models -- x`) leave the word where a subcommand
+			// would stand.
+			if len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
 				switch args[0] {
 				case "models":
 					return fmt.Errorf("wt models is removed; use `wt config` to view models")

@@ -4,4 +4,7 @@
 # `--` is required when any argument of <command> begins with a dash
 # (e.g. `shell-wt -- ls -la`, `shell-wt -- rm --init`): without it wt's own
 # flag parser reads that argument as a wt flag, wherever it stands.
+# It is also required when <command>'s first word is the name of a wt
+# subcommand (`shell-wt config` is `wt config`) or one of the removed names
+# `models` and `agents`, which wt refuses: after `--` every word is the command.
 exec wt --agent shell "$@"

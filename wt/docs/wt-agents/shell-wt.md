@@ -13,7 +13,8 @@ Because it has no model layer, `shell-wt` works on a fresh machine without a mod
 ## Usage
 
 ```bash
-# Simple command (no -- needed when no argument starts with a dash)
+# Simple command (no -- needed when no argument starts with a dash and the
+# first word is not one of wt's own; see below)
 shell-wt ls
 
 # Any dash-prefixed argument needs -- (`wt`'s flag parser would otherwise
@@ -31,6 +32,20 @@ shell-wt -W my-feature -- make test
 # Run in the current directory (skip picker)
 shell-wt --cwd -- npm test
 ```
+
+After `--`, every word is the command, whatever its name. Without `--`, `wt`
+reads the first word before it treats it as a command, so two kinds of first
+word need the `--`:
+
+- the name of a `wt` subcommand (`config`, `start`, `stop`, `stats`, `model`
+  and the rest of `wt --help`'s list): `shell-wt config` opens `wt config`,
+  `shell-wt -- config` runs a command named `config`;
+- `models` and `agents`, two subcommands `wt` no longer has: `shell-wt models`
+  exits with ``wt models is removed; use `wt config` to view models``,
+  `shell-wt -- models` runs a command named `models`.
+
+A `--` placed after such a word does not help (`shell-wt models -- x` is
+still refused): put it before the command.
 
 ## Command execution
 
