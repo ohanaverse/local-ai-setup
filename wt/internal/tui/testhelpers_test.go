@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -89,7 +90,7 @@ func TestMain(m *testing.M) {
 	}
 	// The check that follows a start (#343) probes the provider's server and
 	// may remove a route. Tests that assert on it swap it themselves.
-	confirmStarted = func(context.Context, *config.Config, lifecycle.Target) error { return nil }
+	confirmStarted = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error { return nil }
 	// The launch-time route check (#192): unstubbed, a test that launches a
 	// running local model through LiteLLM would rewrite the developer's real
 	// config.yaml and restart their proxy. Both forms are stubbed — the
@@ -97,6 +98,9 @@ func TestMain(m *testing.M) {
 	// launch-in-this-same-Update path.
 	tryEnsureModelRoute = func(io.Writer, *config.Config, config.Model) (bool, bool) { return false, true }
 	ensureModelRoute = func(io.Writer, *config.Config, config.Model) bool { return false }
+	// The start flow asks whether a proxy restart is in flight before it
+	// waits for one; no test may read the engine's real answer.
+	routesPending = func() bool { return false }
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.
 	releaseSession = func() {}
@@ -215,11 +219,13 @@ type routeStub struct {
 // stubEnsureRoute swaps the three launch-time route check seams
 // (tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes) for recording
 // fakes scripted by the returned routeStub. Nothing real is touched: no
-// config.yaml and no proxy. All three seams are restored on cleanup. The fakes take no lock: a test either
-// runs the routing command itself, on the test goroutine, or (with
-// waitEntered/waitRelease) reads the stub only after every goroutine that
-// settles the check has finished — settle is once-only, so the fakes still run
-// on one goroutine at a time.
+// config.yaml and no proxy. All three seams are restored on cleanup. The two
+// check fakes take no lock: a test either runs the routing command itself, on
+// the test goroutine, or (with waitEntered/waitRelease) reads the stub only
+// after every goroutine that settles the check has finished — settle is
+// once-only, so they still run on one goroutine at a time. The wait fake does
+// take one: a start waits for the proxy on its own goroutine (runStart), so
+// two waits can be recorded at once.
 //
 // Both forms of the check record the same "ensure:<id>" event: they are one
 // check, once blocking and once not, and a test asserting on the flow reads
@@ -253,7 +259,10 @@ func stubEnsureRoute(t *testing.T) *routeStub {
 		write(s.ensureOutput)
 		return s.changed
 	}
+	var waitMu sync.Mutex
 	waitPendingRoutes = func() {
+		waitMu.Lock()
+		defer waitMu.Unlock()
 		s.events = append(s.events, "wait")
 		if s.waitEntered != nil {
 			close(s.waitEntered)

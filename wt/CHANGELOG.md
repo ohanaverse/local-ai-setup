@@ -311,8 +311,15 @@
   no longer serves the model, an omlx that refuses or no longer has it
   loaded, an ollama daemon that refuses. An ollama model that was only
   unloaded still counts as running, because ollama loads it on the next
-  request. `wt smoke`, a `-M` launch that starts its model and the TUI's
-  start make the same check before they use the model.
+  request. `wt smoke`, a `-M` launch that starts its model and the model
+  picker's start make the same check before they use the model. In the
+  picker a model that is gone is a failed start: the picker comes back with
+  that line on its status, under whatever the start printed, the agent is
+  not launched, and the lines are printed again when wt exits. The check is
+  made behind the start screen's `updating LiteLLM routes`, which keeps
+  answering keys meanwhile, and it is made for a start whose cancel came too
+  late as well, which then reads `is not running` instead of `started <id>;
+  launch cancelled`.
 - `wt stop` of a serving mtplx removes the pidfile and wt's start record
   (#343). Only the stop of a server that was still loading did; the ordinary
   stop left both in `/tmp` naming a dead pid. They are removed only when the
@@ -320,6 +327,28 @@
   loading server is (the user's own regular file, no symlink, the user's own
   mtplx server on that port, the recorded start time), and only once that
   process is gone. A pidfile naming any other process is left alone.
+- The model picker shows what a start printed. A start from the picker ran
+  with nowhere to print but stderr, which the full-screen picker hides: a
+  model started while `config.yaml` could not be written launched its agent
+  into `Invalid model name` with the line that explains it,
+  `LiteLLM route not updated: …`, lost, as were the proxy restart's
+  warnings and the `(not predicted)` on a model omlx unloaded. The picker
+  now takes every line the start prints: above the agent's output after a
+  start that succeeds, and on the status above the failure, and again on
+  the terminal when wt exits, after one that fails or is cancelled. The
+  picker's status is wrapped to the terminal's width instead of cut at its
+  edge, and one too tall for the terminal has the screen to itself until the
+  next key. A row the picker just started now gets the launch-time route
+  check like any other, so a route the start could not write is tried once
+  more before the agent launches; when it still cannot be written the agent
+  is launched as before, with the lines that say why above its output.
+  After a failed or cancelled start that had already unloaded a model, the
+  start screen now stays up until the proxy has restarted. Once a start
+  shows `updating LiteLLM routes` it can no longer be cancelled (the model
+  is loaded): esc does nothing there and ctrl+c quits wt, where an esc used
+  to end in `cancelled` with the model running. Quitting during a start
+  prints what it had printed. On a terminal too narrow for the start
+  screen's line the stage is on a line of its own instead of cut off (#275).
 - `wt cloud-sync` no longer stores, for a model OpenRouter prices by time of
   day, whichever price was in force when the sync ran (#322). Such a model
   used to flip between its rates from one sync to the next, each flip

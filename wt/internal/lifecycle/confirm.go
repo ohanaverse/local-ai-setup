@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -52,8 +53,21 @@ func (e *StoppedError) Error() string {
 // a server wt now knows is down. Only this model's ids are removed, never the
 // family: an Exclusive server that answers with another model is that other
 // start's, and so is its route. The proxy restart that follows is asynchronous,
-// like every route write's (WaitPendingRoutes).
+// like every route write's (WaitPendingRoutes): a caller that goes on to read
+// what was printed, or to exit, owes that wait once more after an error.
 func ConfirmStarted(ctx context.Context, cfg *config.Config, t Target) error {
+	return ConfirmStartedTo(ctx, nil, cfg, t)
+}
+
+// ConfirmStartedTo is ConfirmStarted with everything the check prints sent to
+// out instead of stderr, as Options.Out does for the start it follows: a route
+// that could not be removed, and the warnings of the proxy restart the removal
+// starts. It is for the caller that owns the screen (the model picker), which
+// hands it the writer it handed Start, so one start's lines stay together. The
+// restart's warnings are written by a goroutine: out is complete only once
+// WaitPendingRoutes has returned. A nil out means stderr.
+func ConfirmStartedTo(ctx context.Context, out io.Writer, cfg *config.Config, t Target) error {
+	ctx = withRouteOutput(ctx, out)
 	why := defaultEnv().startedGone(ctx, cfg, t)
 	if why == "" {
 		return nil

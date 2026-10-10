@@ -35,7 +35,9 @@ wt stop --all                    # stop every running local model, then the omlx
   refuses. An ollama model that was only unloaded (`ollama stop`) is still
   reported as running, since ollama loads a pulled model on the next
   request. `wt smoke`, a `-M` launch that starts its model and the picker's
-  start make the same check before they use the model.
+  start make the same check before they use the model; the full-screen
+  picker reports a model that is gone on its status instead of exiting (see
+  the picker's entry below).
 - omlx: "running" means loaded. The omlx service lists every model in its
   directory whether or not it is loaded, so an omlx model that is on disk but
   not loaded is idle and is started (loaded) like any other. If omlx has some
@@ -261,15 +263,39 @@ recently used when a load does not fit.
   removes that model's route and prints
   `wt: omlx unloaded <id> to make room (not predicted)`. A load omlx refuses
   as too large fails with omlx's own explanation of what holds the memory.
-- The full-screen `wt` picker hides that stderr line, so the picker reports
-  the unloaded models itself, without the `(not predicted)` marker: after a
-  start that fails or is cancelled the status shows
-  `omlx unloaded <id> to make room` on the line above the failure, and after
-  a start that succeeds `wt: omlx unloaded <id> to make room` is printed
-  above the agent's output. If the agent then fails to launch, the picker's
-  status shows the same note on the line above `launch failed`. The engine
-  still writes its own line to stderr, so `wt 2>log` records each unloaded
-  model there as well.
+- The full-screen `wt` picker cannot show stderr, so it takes every line a
+  start prints and shows them itself, in the same words: what omlx unloaded
+  (with `(not predicted)`), `LiteLLM route not updated: …` when `config.yaml`
+  could not be written, and the warnings of the proxy restart. After a start
+  that succeeds they are printed above the agent's output; if the agent then
+  fails to launch, the picker's status shows them above `launch failed`.
+  After a start that fails or is cancelled the status shows them above the
+  failure, wrapped to the terminal's width and never cut, and the same lines
+  are printed, with the failure under them, when wt exits or above the next
+  agent launched from that picker. A status too tall to share the terminal
+  with the table has the screen to itself until the next key. The agent is
+  still launched after a start that could not write the route: the picker
+  tries the route once more first (the launch-time check every launch gets),
+  and when that fails too the lines above the agent's output are where to
+  find why it answers `Invalid model name`. Once a start has reached
+  `updating LiteLLM routes` the model is loaded and there is nothing left to
+  cancel: esc does nothing there, and ctrl+c quits wt without launching the
+  agent. On a terminal too narrow for the start screen's one line, the stage
+  is on a line of its own under the model id. After a start that
+  fails or is cancelled having already displaced a model, the start screen
+  stays up until the proxy has restarted (`updating LiteLLM routes`), so
+  those warnings are in the status. A model that was stopped while the
+  screen showed `updating LiteLLM routes` (a `wt stop` in another terminal)
+  is a failed start here too: wt asks the provider's server once after the
+  proxy has restarted, and when the model is gone the picker comes back with
+  `<id> is not running: it started, and was stopped while wt updated the
+  LiteLLM routes (...)` on its status, under whatever the start printed, and
+  launches no agent. The route the start wrote is removed again and not
+  written back. The screen stays on `updating LiteLLM routes` and keeps
+  answering ctrl+c while wt asks. Quitting wt during a start (ctrl+c
+  twice) prints what the start had printed once the screen is restored.
+  Nothing a start prints is written to stderr while the picker is up, and
+  `wt 2>log` records each line once.
 - `wt stop <omlx model>` unloads that one model. The service and the other
   models stay up, even when it was the last one.
 - `wt stop omlx` (or `omlx-6bit`) halts the service and every model in it.

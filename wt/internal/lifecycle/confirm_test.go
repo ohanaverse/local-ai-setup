@@ -182,3 +182,31 @@ func TestConfirmStartedRemovesEveryRouteOfAPoolModel(t *testing.T) {
 		t.Errorf("routed = %v, want [omlx/B] (warn %q)", got, warn.String())
 	}
 }
+
+// TestConfirmStartedToSendsItsOutputToTheCaller verifies the form of the
+// check the model picker calls: what it prints goes to the caller's writer,
+// as Options.Out does for the start it follows, the warning of the proxy
+// restart its route removal starts included — that one is written by a
+// goroutine, so it is there once WaitPendingRoutes has returned. Nothing is
+// left for stderr, which the picker's alt screen hides.
+func TestConfirmStartedToSendsItsOutputToTheCaller(t *testing.T) {
+	q35 := Target{ProviderID: "mtplx", ModelName: "Y/Q35", ModelID: "mtplx/Y--Q35"}
+	path, _, warn := realRoutes(t, twoMtplxYAML)
+	t.Setenv("WT_LITELLM_RESTART_CMD", "exit 3")
+	var out strings.Builder
+	err := ConfirmStartedTo(context.Background(), &out, wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), "http://"+freeAddr(t)), q35)
+	WaitPendingRoutes()
+	var stopped *StoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("ConfirmStartedTo = %v, want a *StoppedError", err)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"mtplx/Y--Q27", "ollama/a:1"}) {
+		t.Errorf("routed = %v, want the gone model's route removed", got)
+	}
+	if !strings.HasPrefix(out.String(), "wt: ") || !strings.Contains(out.String(), "restart") {
+		t.Errorf("the caller's writer got %q, want the failed restart's warning", out.String())
+	}
+	if warn.Len() != 0 {
+		t.Errorf("stderr got %q, want nothing: the caller owns the screen", warn.String())
+	}
+}
