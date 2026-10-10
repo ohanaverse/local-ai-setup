@@ -16,74 +16,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
-// gitLocationEnv names the variables that tell git which repository, work
-// tree, index, object store or command-line config to use: the ones git
-// itself drops before it runs a command in another repository
-// (`git rev-parse --local-env-vars`), and GIT_NAMESPACE. A git hook exports
-// several of them to whatever it runs, `go test` included.
-var gitLocationEnv = []string{
-	"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
-	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX",
-	"GIT_NAMESPACE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
-	"GIT_SHALLOW_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE",
-	"GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-}
-
-// isolateGit makes git, for the rest of the test, find a repository only
-// where the test put one. Every test that runs git in a temp directory, or
-// that depends on a temp directory not being a repository, calls it (gitInit
-// does, for the tests that build a repository).
-//
-// Two things on the developer's machine otherwise decide what git finds:
-//
-//   - an exported GIT_DIR (tests run from a git hook) names a repository
-//     whatever the working directory is. Every temp directory is then "inside
-//     a repo", `git init <dir>` and `git -C <dir> commit` act on that
-//     repository, and the guard is appended to its hooks. The variables are
-//     unset, not emptied: an empty GIT_DIR is a fatal error to git.
-//   - a TMPDIR or GOTMPDIR inside a checkout puts every t.TempDir() inside
-//     that checkout, which git discovers by walking up with no variable set.
-//     GIT_CEILING_DIRECTORIES stops that walk at the temp roots (tempRoots),
-//     so a directory below one is in a repository only when the test ran
-//     `git init` there or in a parent it made itself.
-//
-// It uses t.Setenv, so it cannot be called from a parallel test.
-func isolateGit(t *testing.T) {
-	t.Helper()
-	for _, name := range gitLocationEnv {
-		if _, set := os.LookupEnv(name); set {
-			t.Setenv(name, "") // registers the restore of the inherited value
-			if err := os.Unsetenv(name); err != nil {
-				t.Fatalf("unset %s: %v", name, err)
-			}
-		}
-	}
-	t.Setenv("GIT_CEILING_DIRECTORIES", strings.Join(tempRoots(t), string(os.PathListSeparator)))
-}
-
-// tempRoots returns, as absolute paths, the directories a test's temp
-// directories are made in: os.TempDir() (TMPDIR), where os.MkdirTemp("", ...)
-// puts them, and GOTMPDIR when it is set, where t.TempDir() puts them instead.
-func tempRoots(t *testing.T) []string {
-	t.Helper()
-	roots := []string{os.TempDir()}
-	if dir := os.Getenv("GOTMPDIR"); dir != "" {
-		roots = append(roots, dir)
-	}
-	for i, root := range roots {
-		abs, err := filepath.Abs(root)
-		if err != nil {
-			t.Fatalf("temp root %s: %v", root, err)
-		}
-		roots[i] = abs
-	}
-	return roots
-}
-
 // expectDirectLaunch is for a test that runs the root command and expects it
 // to reach a launch the test has stubbed (launchFiltered, launchPassthrough)
-// without the TUI. It isolates git (isolateGit) and replaces the two seams
-// such a test would otherwise leave real with stubs that fail it:
+// without the TUI. It replaces the two seams such a test would otherwise
+// leave real with stubs that fail it:
 //
 //   - tuiRun, which opens /dev/tty: a hang in a developer's terminal, where
 //     there is one to open;
@@ -91,14 +27,14 @@ func tempRoots(t *testing.T) []string {
 //     git finds from the working directory.
 //
 // Both are reached when the launch decision goes another way than the test
-// expects, most easily because the directory it ran in turned out to be
-// inside a repository. Both are restored on cleanup. A test that launches
-// inside a repository it built expects the guard: it calls this first and
-// then installs its own maybeInstallGuard stub. A test that means to reach
-// the TUI does not call this; it stubs tuiRun itself.
+// expects. TestMain (gitenv.IsolateForTest) already keeps a bare temp
+// directory from being taken for a repository; these stubs turn any other
+// wrong turn into a failure that names it. Both are restored on cleanup. A
+// test that launches inside a repository it built expects the guard: it calls
+// this first and then installs its own maybeInstallGuard stub. A test that
+// means to reach the TUI does not call this; it stubs tuiRun itself.
 func expectDirectLaunch(t *testing.T) {
 	t.Helper()
-	isolateGit(t)
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
 	tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier) error {
 		t.Error("tuiRun was called: the command went to the TUI instead of the launch this test stubs")
@@ -111,11 +47,10 @@ func expectDirectLaunch(t *testing.T) {
 }
 
 // gitInit makes dir a git repository with a committer identity of its own.
-// It isolates git first (isolateGit), so the repository is created in dir and
-// nowhere else.
+// TestMain (gitenv.IsolateForTest) is what makes `git init <dir>` create it
+// in dir whatever the environment the tests were started from.
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
-	isolateGit(t)
 	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
@@ -211,7 +146,6 @@ func TestMaybeInstallGuardInRepo(t *testing.T) {
 // inside a git repo. The passthrough path must remain safe outside version
 // control.
 func TestMaybeInstallGuardOutsideRepo(t *testing.T) {
-	isolateGit(t)
 	oldWd, _ := os.Getwd()
 	os.Chdir(t.TempDir())
 	defer os.Chdir(oldWd)
@@ -300,74 +234,9 @@ func TestRemoveGuardUninstalls(t *testing.T) {
 	}
 }
 
-// TestIsolateGitStopsAtEveryTempRoot checks that after isolateGit a fresh temp
-// directory is outside every git repository even when the temp roots are
-// inside a checkout: TMPDIR, where os.MkdirTemp("", ...) puts a directory,
-// and GOTMPDIR, where t.TempDir() puts one when it is set. A root left out of
-// the ceiling list means a developer who runs the suite with that variable
-// pointing into a checkout gets the wt commit hook, a branch and a worktree
-// written into that checkout by tests that believe they are outside a
-// repository.
-func TestIsolateGitStopsAtEveryTempRoot(t *testing.T) {
-	checkout := t.TempDir()
-	gitInit(t, checkout)
-	inCheckout := func(t *testing.T, name string) string {
-		t.Helper()
-		dir := filepath.Join(checkout, name)
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return dir
-	}
-
-	for _, tc := range []struct {
-		name             string
-		tmpdir, gotmpdir bool // which variables point into the checkout
-	}{
-		{name: "TMPDIR", tmpdir: true},
-		{name: "GOTMPDIR", gotmpdir: true},
-		{name: "both", tmpdir: true, gotmpdir: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("GOTMPDIR", "") // empty is unset, to os.MkdirTemp as to isolateGit
-			if tc.tmpdir {
-				t.Setenv("TMPDIR", inCheckout(t, tc.name+"-tmpdir"))
-			}
-			if tc.gotmpdir {
-				t.Setenv("GOTMPDIR", inCheckout(t, tc.name+"-gotmpdir"))
-			}
-			isolateGit(t)
-
-			fromTesting := t.TempDir()
-			fromOS, err := os.MkdirTemp("", "wt-isolate-git-")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.RemoveAll(fromOS) })
-
-			// The case is only a test of the ceiling if the directories
-			// really are below the checkout.
-			if !strings.HasPrefix(fromTesting, checkout+string(os.PathSeparator)) {
-				t.Fatalf("t.TempDir() = %s, want it below the checkout %s", fromTesting, checkout)
-			}
-			if tc.tmpdir && !strings.HasPrefix(fromOS, checkout+string(os.PathSeparator)) {
-				t.Fatalf("os.MkdirTemp = %s, want it below the checkout %s", fromOS, checkout)
-			}
-
-			for _, dir := range []string{fromTesting, fromOS} {
-				out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").CombinedOutput()
-				if err == nil {
-					t.Errorf("git in %s found the repository %s; want none", dir, strings.TrimSpace(string(out)))
-				}
-			}
-		})
-	}
-}
-
 // TestGuardHelpersOutsideRepoError returns an error when not in a git repo so
 // the flags cannot be misused outside version control.
 func TestGuardHelpersOutsideRepoError(t *testing.T) {
-	isolateGit(t)
 	oldWd, _ := os.Getwd()
 	os.Chdir(t.TempDir())
 	defer os.Chdir(oldWd)
@@ -393,7 +262,6 @@ func TestGuardHelpersOutsideRepoError(t *testing.T) {
 func TestPickerSkippedOutsideTTY(t *testing.T) {
 	// Run from a non-git directory so the RunE path that would open the
 	// TUI is the outside-repo branch (the simplest one to trigger).
-	isolateGit(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
 	if err := os.Chdir(t.TempDir()); err != nil {

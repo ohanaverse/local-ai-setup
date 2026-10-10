@@ -77,7 +77,6 @@ func TestLegacyShortFlagRejected(t *testing.T) {
 // before any TUI is launched.
 func TestPickerSkippedOnWorktreeFlag(t *testing.T) {
 	// Run from a non-git directory.
-	isolateGit(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
 	if err := os.Chdir(t.TempDir()); err != nil {
@@ -899,7 +898,6 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 // worktree. The guard is stubbed because the real guard.Install operates on
 // the test process's cwd and would install the hook into the repo under test.
 func TestRunLaunchPath(t *testing.T) {
-	isolateGit(t)
 	repo := t.TempDir()
 	if err := exec.Command("git", "-C", repo, "init", "-q").Run(); err != nil {
 		t.Fatal(err)
