@@ -201,6 +201,8 @@ func TestStartIsConfirmedOffTheUpdateGoroutine(t *testing.T) {
 // dropped like any other result of a start the user quit out of: no launch,
 // no route check, no status, nothing recorded for the terminal twice. The
 // start is kept, so what the engine and the check printed is printed at exit.
+// Here the start has reported by the time wt leaves; that wt waits for one
+// that has not is TestQuitAtTheRoutingStageWaitsForTheStartToSettle.
 func TestQuitAtTheRoutingStageWithAGoneServerNeverLaunches(t *testing.T) {
 	stubRouteNotes(t)
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
@@ -243,6 +245,132 @@ func TestQuitAtTheRoutingStageWithAGoneServerNeverLaunches(t *testing.T) {
 	flushRouteNotesAfterRun(after, &term)
 	if want := engineLine + goneRouteLine; term.String() != want {
 		t.Errorf("printed at exit = %q, want %q", term.String(), want)
+	}
+}
+
+// TestQuitAtTheRoutingStageWaitsForTheStartToSettle pins that wt does not
+// leave in the middle of a start the user quit out of at the routing stage.
+// The start's goroutine still has the proxy wait and the check after it to
+// make, and for a server that is gone the check removes the route and starts
+// one more proxy restart. main()'s single wait for the proxy ends with the
+// first restart, so the process used to exit under the check: the dead
+// model's route left in config.yaml, or config.yaml rewritten and the proxy
+// not restarted. Run()'s exit path now waits for the goroutine, says so once
+// the wait has lasted, and whatever the check prints meanwhile reaches the
+// terminal.
+func TestQuitAtTheRoutingStageWaitsForTheStartToSettle(t *testing.T) {
+	stubRouteNotes(t)
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	m.agent = "not-a-real-agent"
+	stubEnsureRoute(t)
+	oldGrace := quitStartGrace
+	quitStartGrace = time.Millisecond
+	t.Cleanup(func() { quitStartGrace = oldGrace })
+	const engineLine = "wt: omlx unloaded omlx/old to make room\n"
+	const waitingLine = "wt: waiting for the LiteLLM proxy restart…\n"
+	stubStartModel(t, func(_ int, _ context.Context, _ lifecycle.Target, opts lifecycle.Options) error {
+		fmt.Fprint(opts.Out, engineLine)
+		opts.Progress(lifecycle.StageRouting)
+		return nil
+	})
+	var mu sync.Mutex
+	waits, confirmed := 0, false
+	entered, release := make(chan struct{}), make(chan struct{})
+	oldWait := waitPendingRoutes
+	waitPendingRoutes = func() {
+		mu.Lock()
+		waits++
+		first := waits == 1
+		mu.Unlock()
+		if first {
+			close(entered)
+			<-release
+		}
+	}
+	t.Cleanup(func() { waitPendingRoutes = oldWait })
+	stubConfirmStarted(t, func(_ context.Context, out io.Writer, _ *config.Config, _ lifecycle.Target) error {
+		fmt.Fprint(out, goneRouteLine)
+		mu.Lock()
+		confirmed = true
+		mu.Unlock()
+		return goneQwen
+	})
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, recvStart(t, got)) // the routing stage
+	quit, cmd := updateMsg(got, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil || !quit.start.quitting {
+		t.Fatalf("ctrl+c at the routing stage: a command = %v, quitting = %v; want tea.Quit and the start marked", cmd != nil, quit.start.quitting)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start's goroutine never waited for the proxy")
+	}
+
+	var term lockedBuffer
+	flushed := make(chan struct{})
+	go func() {
+		defer close(flushed)
+		flushRouteNotesAfterRun(quit, &term)
+	}()
+	deadline := time.After(5 * time.Second)
+	for term.String() != engineLine+waitingLine {
+		select {
+		case <-flushed:
+			t.Fatalf("wt left while the start's goroutine was still waiting for the proxy, having printed %q", term.String())
+		case <-deadline:
+			t.Fatalf("printed while the start is waited for = %q, want %q", term.String(), engineLine+waitingLine)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(release)
+	select {
+	case <-flushed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wt never left after the start's goroutine finished")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !confirmed {
+		t.Error("wt left before the start was confirmed")
+	}
+	if waits != 2 {
+		t.Errorf("the proxy was waited for %d times before wt left, want 2: the start's restart and the route removal's", waits)
+	}
+	if want := engineLine + waitingLine + goneRouteLine; term.String() != want {
+		t.Errorf("printed at exit = %q, want %q", term.String(), want)
+	}
+	if pendingRouteNotes != "" {
+		t.Errorf("route notes = %q, want none: the result of a start the user quit out of is dropped", pendingRouteNotes)
+	}
+}
+
+// TestStartWhoseServerIsGoneAndPrintedNothingIsOnTheStatusOnly pins the
+// ordinary case of a start whose server was gone after the wait: the start
+// printed nothing and the route removal succeeded without a line. The
+// failure is then on the picker's status and nowhere else, as for any failed
+// start that printed nothing (#275): the terminal copy exists to keep the
+// engine's lines, which a status the next key replaces would lose, and there
+// are none. The docs say so; a change here changes them.
+func TestStartWhoseServerIsGoneAndPrintedNothingIsOnTheStatusOnly(t *testing.T) {
+	stubRouteNotes(t)
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	m.agent = "not-a-real-agent"
+	stubStartModel(t, func(_ int, _ context.Context, _ lifecycle.Target, opts lifecycle.Options) error {
+		opts.Progress(lifecycle.StageRouting)
+		return nil
+	})
+	stubConfirmStarted(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
+		return goneQwen
+	})
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, recvStart(t, got)) // the routing stage
+	got, _ = updateMsg(got, recvStart(t, got))
+	if got.status != goneStatus || got.phase != phaseModel {
+		t.Errorf("status = %q, phase = %v; want %q on the picker", got.status, got.phase, goneStatus)
+	}
+	if pendingRouteNotes != "" {
+		t.Errorf("route notes = %q, want none for a start that printed nothing", pendingRouteNotes)
 	}
 }
 

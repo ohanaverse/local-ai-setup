@@ -315,11 +315,16 @@
   picker's start make the same check before they use the model. In the
   picker a model that is gone is a failed start: the picker comes back with
   that line on its status, under whatever the start printed, the agent is
-  not launched, and the lines are printed again when wt exits. The check is
+  not launched, and when the start printed anything those lines are printed
+  again, with that line under them, when wt exits. The check is
   made behind the start screen's `updating LiteLLM routes`, which keeps
   answering keys meanwhile, and it is made for a start whose cancel came too
   late as well, which then reads `is not running` instead of `started <id>;
-  launch cancelled`.
+  launch cancelled`. Quitting wt with ctrl+c at `updating LiteLLM routes`
+  no longer leaves before that check is done: wt waits for the proxy and
+  the check (`wt: waiting for the LiteLLM proxy restart…`), so a model that
+  was stopped meanwhile does not keep its route, and the proxy is restarted
+  after the route is removed.
 - `wt stop` of a serving mtplx removes the pidfile and wt's start record
   (#343). Only the stop of a server that was still loading did; the ordinary
   stop left both in `/tmp` naming a dead pid. They are removed only when the
@@ -335,7 +340,8 @@
   warnings and the `(not predicted)` on a model omlx unloaded. The picker
   now takes every line the start prints: above the agent's output after a
   start that succeeds, and on the status above the failure, and again on
-  the terminal when wt exits, after one that fails or is cancelled. The
+  the terminal when wt exits, after one that fails or is cancelled (a start
+  that printed nothing leaves its failure on the status only). The
   picker's status is wrapped to the terminal's width instead of cut at its
   edge, and one too tall for the terminal has the screen to itself until the
   next key. A row the picker just started now gets the launch-time route

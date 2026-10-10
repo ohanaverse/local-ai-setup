@@ -280,7 +280,8 @@ recently used when a load does not fit.
   find why it answers `Invalid model name`. Once a start has reached
   `updating LiteLLM routes` the model is loaded and there is nothing left to
   cancel: esc does nothing there, and ctrl+c quits wt without launching the
-  agent. On a terminal too narrow for the start screen's one line, the stage
+  agent, once the route update is finished (`wt: waiting for the LiteLLM
+  proxy restart…` when that takes a moment). On a terminal too narrow for the start screen's one line, the stage
   is on a line of its own under the model id. After a start that
   fails or is cancelled having already displaced a model, the start screen
   stays up until the proxy has restarted (`updating LiteLLM routes`), so
@@ -290,7 +291,8 @@ recently used when a load does not fit.
   proxy has restarted, and when the model is gone the picker comes back with
   `<id> is not running: it started, and was stopped while wt updated the
   LiteLLM routes (...)` on its status, under whatever the start printed, and
-  launches no agent. The route the start wrote is removed again and not
+  launches no agent. When the start printed nothing, the status is the only
+  place that line appears. The route the start wrote is removed again and not
   written back. The screen stays on `updating LiteLLM routes` and keeps
   answering ctrl+c while wt asks. Quitting wt during a start (ctrl+c
   twice) prints what the start had printed once the screen is restored.

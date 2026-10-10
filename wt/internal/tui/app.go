@@ -1344,8 +1344,50 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	// buffer: print it, and let whatever the engine and its proxy restart
 	// print from here on go straight to the terminal. main() waits for that
 	// restart before the process exits.
+	//
+	// A start the user quit out of at the routing stage (startState.quitting)
+	// is waited for as well. Nothing of it can be called off there, and its
+	// goroutine still has the proxy wait and the check after it to make
+	// (confirmStarted, #343), which for a server that is gone removes the
+	// route and starts one more restart. main()'s one WaitPendingRoutes is
+	// over when the first restart is, so without this the process left in
+	// the middle of the check: the dead model's route still in config.yaml,
+	// or config.yaml rewritten and the proxy never restarted. The quit while
+	// a cancel drains is not waited for: that ctrl+c is the way out of a
+	// teardown that hangs.
 	if fm, ok := final.(model); ok && fm.start != nil && fm.start.out != nil {
 		fm.start.out.release(w)
+		if fm.start.quitting {
+			settleQuitStart(fm.start.ch, w)
+		}
+	}
+}
+
+// quitStartGrace is how long a start that wt is quitting out of may take to
+// finish before the terminal says what it is waiting for. A start that had
+// already reported, or is about to, gets no line.
+var quitStartGrace = 200 * time.Millisecond
+
+// settleQuitStart returns once the goroutine of a start the user quit out of
+// has finished: it closes ch after its result, which nothing reads any more.
+// The wait is the proxy restart's, which the process waits for before it
+// exits in any case, and one request to the provider's server; it is
+// announced once it has lasted quitStartGrace.
+func settleQuitStart(ch <-chan tea.Msg, w io.Writer) {
+	grace := time.NewTimer(quitStartGrace)
+	defer grace.Stop()
+	for {
+		select {
+		case _, open := <-ch:
+			if !open {
+				return
+			}
+		case <-grace.C:
+			fmt.Fprintln(w, "wt: waiting for the LiteLLM proxy restart…")
+			for range ch {
+			}
+			return
+		}
 	}
 }
 
