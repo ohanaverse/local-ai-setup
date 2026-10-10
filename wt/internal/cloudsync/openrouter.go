@@ -8,6 +8,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // OpenRouterModelsURL is the public model list the openrouter flow reads.
@@ -108,8 +110,9 @@ func ParseOpenRouter(body []byte) (map[string]APIPrice, error) {
 }
 
 // OpenRouterProvider is the provider_id of the models the openrouter flow
-// refreshes.
-const OpenRouterProvider = "openrouter"
+// refreshes. config owns the value, so the openrouter flow and
+// config.Config.OpenRouterPriced are two readers of one rule, not two rules.
+const OpenRouterProvider = config.OpenRouterProvider
 
 // OpenRouterPriced reports whether e takes its price from OpenRouter: a
 // model whose provider_id is "openrouter", and no other. It is

@@ -952,6 +952,12 @@ func (c *Config) InCatalog(m Model) bool {
 	return err == nil
 }
 
+// OpenRouterProvider is the provider_id whose models take their price from
+// OpenRouter — the whole OpenRouterPriced rule. cloudsync aliases it, so the
+// rule's two readers (over the typed config and over registry rows) cannot
+// name different ids.
+const OpenRouterProvider = "openrouter"
+
 // OpenRouterPriced reports whether m's price comes from OpenRouter, which is
 // what `wt cloud-sync`'s openrouter flow refreshes and what the stale-pricing
 // notice watches: a model whose provider_id is "openrouter", and no other.
@@ -964,7 +970,7 @@ func (c *Config) InCatalog(m Model) bool {
 // A registry that still has it loads (the decoder ignores a key Provider
 // does not model) and a write keeps it.
 func (c *Config) OpenRouterPriced(m Model) bool {
-	return m.ProviderID == "openrouter"
+	return m.ProviderID == OpenRouterProvider
 }
 
 // AgentSupportsProvider reports whether the named agent lists providerID in
