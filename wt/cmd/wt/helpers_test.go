@@ -41,11 +41,11 @@ var gitLocationEnv = []string{
 //     a repo", `git init <dir>` and `git -C <dir> commit` act on that
 //     repository, and the guard is appended to its hooks. The variables are
 //     unset, not emptied: an empty GIT_DIR is a fatal error to git.
-//   - a TMPDIR inside a checkout puts every t.TempDir() inside that checkout,
-//     which git discovers by walking up with no variable set.
-//     GIT_CEILING_DIRECTORIES stops that walk at the temp root, so a
-//     directory below it is in a repository only when the test ran `git init`
-//     there or in a parent it made itself.
+//   - a TMPDIR or GOTMPDIR inside a checkout puts every t.TempDir() inside
+//     that checkout, which git discovers by walking up with no variable set.
+//     GIT_CEILING_DIRECTORIES stops that walk at the temp roots (tempRoots),
+//     so a directory below one is in a repository only when the test ran
+//     `git init` there or in a parent it made itself.
 //
 // It uses t.Setenv, so it cannot be called from a parallel test.
 func isolateGit(t *testing.T) {
@@ -58,11 +58,26 @@ func isolateGit(t *testing.T) {
 			}
 		}
 	}
-	tmp, err := filepath.Abs(os.TempDir())
-	if err != nil {
-		t.Fatalf("temp root: %v", err)
+	t.Setenv("GIT_CEILING_DIRECTORIES", strings.Join(tempRoots(t), string(os.PathListSeparator)))
+}
+
+// tempRoots returns, as absolute paths, the directories a test's temp
+// directories are made in: os.TempDir() (TMPDIR), where os.MkdirTemp("", ...)
+// puts them, and GOTMPDIR when it is set, where t.TempDir() puts them instead.
+func tempRoots(t *testing.T) []string {
+	t.Helper()
+	roots := []string{os.TempDir()}
+	if dir := os.Getenv("GOTMPDIR"); dir != "" {
+		roots = append(roots, dir)
 	}
-	t.Setenv("GIT_CEILING_DIRECTORIES", tmp)
+	for i, root := range roots {
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			t.Fatalf("temp root %s: %v", root, err)
+		}
+		roots[i] = abs
+	}
+	return roots
 }
 
 // expectDirectLaunch is for a test that runs the root command and expects it
@@ -282,6 +297,70 @@ func TestRemoveGuardUninstalls(t *testing.T) {
 	}
 	if guard.Check() != guard.NotInstalled {
 		t.Fatal("expected guard removed")
+	}
+}
+
+// TestIsolateGitStopsAtEveryTempRoot checks that after isolateGit a fresh temp
+// directory is outside every git repository even when the temp roots are
+// inside a checkout: TMPDIR, where os.MkdirTemp("", ...) puts a directory,
+// and GOTMPDIR, where t.TempDir() puts one when it is set. A root left out of
+// the ceiling list means a developer who runs the suite with that variable
+// pointing into a checkout gets the wt commit hook, a branch and a worktree
+// written into that checkout by tests that believe they are outside a
+// repository.
+func TestIsolateGitStopsAtEveryTempRoot(t *testing.T) {
+	checkout := t.TempDir()
+	gitInit(t, checkout)
+	inCheckout := func(t *testing.T, name string) string {
+		t.Helper()
+		dir := filepath.Join(checkout, name)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	for _, tc := range []struct {
+		name             string
+		tmpdir, gotmpdir bool // which variables point into the checkout
+	}{
+		{name: "TMPDIR", tmpdir: true},
+		{name: "GOTMPDIR", gotmpdir: true},
+		{name: "both", tmpdir: true, gotmpdir: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GOTMPDIR", "") // empty is unset, to os.MkdirTemp as to isolateGit
+			if tc.tmpdir {
+				t.Setenv("TMPDIR", inCheckout(t, tc.name+"-tmpdir"))
+			}
+			if tc.gotmpdir {
+				t.Setenv("GOTMPDIR", inCheckout(t, tc.name+"-gotmpdir"))
+			}
+			isolateGit(t)
+
+			fromTesting := t.TempDir()
+			fromOS, err := os.MkdirTemp("", "wt-isolate-git-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(fromOS) })
+
+			// The case is only a test of the ceiling if the directories
+			// really are below the checkout.
+			if !strings.HasPrefix(fromTesting, checkout+string(os.PathSeparator)) {
+				t.Fatalf("t.TempDir() = %s, want it below the checkout %s", fromTesting, checkout)
+			}
+			if tc.tmpdir && !strings.HasPrefix(fromOS, checkout+string(os.PathSeparator)) {
+				t.Fatalf("os.MkdirTemp = %s, want it below the checkout %s", fromOS, checkout)
+			}
+
+			for _, dir := range []string{fromTesting, fromOS} {
+				out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").CombinedOutput()
+				if err == nil {
+					t.Errorf("git in %s found the repository %s; want none", dir, strings.TrimSpace(string(out)))
+				}
+			}
+		})
 	}
 }
 
