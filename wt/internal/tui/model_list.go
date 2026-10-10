@@ -196,7 +196,7 @@ func clampModelSelection(m *model) tea.Cmd {
 // itself (statusAlone).
 func (m *model) phaseModelView() string {
 	view := drawnFrame(&m.models, m.height, m.modelFrames()...)(m.models.View())
-	if !m.statusAloneOver(view) {
+	if !m.statusMayBeAlone() || lipgloss.Height(view) <= m.height {
 		return view
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
@@ -220,14 +220,17 @@ const statusAloneHint = "press a key to go back to the models"
 // help is open: that view is allowed to run over a short terminal, and the
 // key that would be taken for "go back" is the one that closes the help. Nor
 // while a filter is being typed, where every key is a character of it.
+//
+// Update asks this for every key the picker gets, so the frame is drawn only
+// when there is a status that could have the screen (statusMayBeAlone).
 func (m *model) statusAlone() bool {
-	return m.statusAloneOver(drawnFrame(&m.models, m.height, m.modelFrames()...)(m.models.View()))
+	return m.statusMayBeAlone() &&
+		lipgloss.Height(drawnFrame(&m.models, m.height, m.modelFrames()...)(m.models.View())) > m.height
 }
 
-// statusAloneOver is statusAlone given the frame already drawn.
-func (m *model) statusAloneOver(view string) bool {
-	if m.status == "" || m.height <= 0 || m.models.Help.ShowAll || m.models.SettingFilter() {
-		return false
-	}
-	return lipgloss.Height(view) > m.height
+// statusMayBeAlone is the part of statusAlone that costs nothing: whether
+// there is a status, a known height and a view the rule applies to. What is
+// left is to measure the frame.
+func (m *model) statusMayBeAlone() bool {
+	return m.status != "" && m.height > 0 && !m.models.Help.ShowAll && !m.models.SettingFilter()
 }
