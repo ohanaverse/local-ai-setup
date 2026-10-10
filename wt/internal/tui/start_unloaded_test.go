@@ -3,23 +3,24 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // unloadingStart scripts a start that makes omlx unload ids before it ends
-// with err, reporting each the way the engine does: through OnUnloaded. A flow
-// that passes no OnUnloaded is told nothing, as the real engine would tell it
-// nothing, so its tests fail on what the user sees rather than on a nil call.
+// with err, reporting each the way the engine does: one line per model into
+// Options.Out. A flow that passes no Out is told nothing, as the real engine
+// would then print to a stderr the alt screen hides, so its tests fail on
+// what the user sees rather than on a nil writer.
 func unloadingStart(err error, ids ...string) func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
 	return func(_ int, _ context.Context, _ lifecycle.Target, opts lifecycle.Options) error {
 		for _, id := range ids {
-			if opts.OnUnloaded != nil {
-				opts.OnUnloaded(localmodels.Entry{ProviderID: "omlx", ModelID: id})
+			if opts.Out != nil {
+				fmt.Fprintf(opts.Out, "wt: omlx unloaded %s to make room\n", id)
 			}
 		}
 		return err
@@ -30,21 +31,24 @@ func unloadingStart(err error, ids ...string) func(int, context.Context, lifecyc
 // make room and then fail the load. The engine's "omlx unloaded X" line goes
 // to stderr, which the alt screen hides, so the picker came back showing only
 // the failure: a model another session was using was gone and nothing said so.
-// The status line now names every unloaded model, ahead of the failure.
+// The status now carries the engine's line for every unloaded model, ahead of
+// the failure, and the same lines are kept for the real terminal with the
+// failure under them (#275): the status cuts a long line at the terminal's
+// edge and the next key replaces it, so it cannot be the only record.
 func TestFailedStartShowsWhatOmlxUnloaded(t *testing.T) {
 	stubRouteNotes(t)
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	stubStartModel(t, unloadingStart(errors.New("boom"), "omlx/old", "omlx/older"))
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
 	got, _ = updateMsg(got, recvStart(t, got))
-	if want := "omlx unloaded omlx/old, omlx/older to make room\nfailed to start omlx/qwen3.8: boom"; got.status != want {
+	if want := "omlx unloaded omlx/old to make room\nomlx unloaded omlx/older to make room\nfailed to start omlx/qwen3.8: boom"; got.status != want {
 		t.Errorf("status = %q\nwant     %q", got.status, want)
 	}
 	if got.phase != phaseModel {
 		t.Errorf("phase = %v, want the picker", got.phase)
 	}
-	if pendingRouteNotes != "" {
-		t.Errorf("route notes = %q, want none: the picker's status line already says it", pendingRouteNotes)
+	if want := "wt: omlx unloaded omlx/old to make room\nwt: omlx unloaded omlx/older to make room\nwt: failed to start omlx/qwen3.8: boom\n"; pendingRouteNotes != want {
+		t.Errorf("route notes = %q\nwant          %q", pendingRouteNotes, want)
 	}
 }
 
@@ -59,6 +63,9 @@ func TestStartThatUnloadedNothingLeavesTheStatusAlone(t *testing.T) {
 	got, _ = updateMsg(got, recvStart(t, got))
 	if want := "failed to start omlx/qwen3.8: boom"; got.status != want {
 		t.Errorf("status = %q, want %q", got.status, want)
+	}
+	if pendingRouteNotes != "" {
+		t.Errorf("route notes after a failed start that printed nothing = %q, want none", pendingRouteNotes)
 	}
 
 	m = startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")

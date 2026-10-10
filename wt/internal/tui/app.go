@@ -92,7 +92,7 @@ type model struct {
 	initialAgent string       // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
 	pinnedModel  string       // model from --model flag; "" = no model pinned (model picker is shown)
 	launchModel  config.Model // the model being launched, captured when the launch began (the routing phase finishes an Update later)
-	startNote    string       // what the start that led to this launch made omlx unload (unloadedNote, #258); launchSelected, or proceedToLaunch when it has no row to launch, takes it once and puts it ahead of the failure
+	startNote    string       // what the engine printed during the start that led to this launch (statusNote, #258, #275); launchSelected, or proceedToLaunch when it has no row to launch, takes it once and puts it ahead of the failure
 
 	// filter inputs (PR 3b): -T/--tags and -F/--family values from the CLI;
 	// forwarded to the model screen so the picker can pre-filter the catalog.
@@ -1328,6 +1328,14 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 		pendingRouteNotes += fm.routing.settle()
 	}
 	flushRouteNotes(w)
+	// A start that was still running when wt quit (ctrl+c twice on the start
+	// screen) never reported, so what the engine had printed is still in its
+	// buffer: print it, and let whatever the engine and its proxy restart
+	// print from here on go straight to the terminal. main() waits for that
+	// restart before the process exits.
+	if fm, ok := final.(model); ok && fm.start != nil && fm.start.out != nil {
+		fm.start.out.release(w)
+	}
 }
 
 // printPendingSummaryAndSurvey runs the TUI's post-exit flow once the

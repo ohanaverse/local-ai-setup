@@ -882,7 +882,11 @@ func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
 		next, _ = updateMsg(got, recvStart(t, got))
 	}()
 
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start flow never waited for the proxy restart")
+	}
 	select {
 	case <-done:
 		t.Fatal("the start flow launched while the proxy restart was still pending")

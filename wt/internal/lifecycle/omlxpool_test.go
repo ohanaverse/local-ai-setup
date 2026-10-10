@@ -266,19 +266,17 @@ func TestStartOnPoolAsksBeforeEvicting(t *testing.T) {
 
 // TestStartOnPoolRemovesAnEvictedModelsRoute verifies that once the user
 // agrees, omlx does the evicting and wt drops the evicted model's route and
-// tells the caller, so no route points at a model that is no longer loaded.
+// says so, so no route points at a model that is no longer loaded.
 func TestStartOnPoolRemovesAnEvictedModelsRoute(t *testing.T) {
 	out := captureRoutes(t)
 	sizes := map[string]int64{"A": 60, "B": 60}
 	fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, evictOnLoad: []string{"A"}}
 	e, stopped := poolEnv(t, poolSnap(100, sizes, "A"))
-	var unloaded []string
-	opts := Options{AllowReplace: true, OnUnloaded: func(en localmodels.Entry) { unloaded = append(unloaded, en.ModelID) }}
-	if err := start(context.Background(), e, provCfg("omlx", fp.serve(t)), Target{ProviderID: "omlx", ModelName: "B"}, opts); err != nil {
+	if err := start(context.Background(), e, provCfg("omlx", fp.serve(t)), Target{ProviderID: "omlx", ModelName: "B"}, Options{AllowReplace: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(*stopped, []string{"omlx/A"}) || !reflect.DeepEqual(unloaded, []string{"omlx/A"}) || !e.restartOwed {
-		t.Errorf("hook = %v, OnUnloaded = %v, restartOwed = %v; want [omlx/A] twice and true", *stopped, unloaded, e.restartOwed)
+	if !reflect.DeepEqual(*stopped, []string{"omlx/A"}) || !e.restartOwed {
+		t.Errorf("hook = %v, restartOwed = %v; want [omlx/A] and true", *stopped, e.restartOwed)
 	}
 	if got := out.String(); !containsFold(got, "omlx unloaded omlx/A") || containsFold(got, "not predicted") {
 		t.Errorf("output = %q, want the eviction line without 'not predicted'", got)
@@ -318,9 +316,7 @@ func TestStartOnPoolKeepsRoutesWhenTheReadingAfterTheLoadIsTheFallback(t *testin
 	}
 	e, stopped := poolEnv(t, poolSnap(100, sizes, "A"))
 	cfg := provCfg("omlx", fp.serve(t))
-	var unloaded []string
-	opts := Options{OnUnloaded: func(en localmodels.Entry) { unloaded = append(unloaded, en.ModelID) }}
-	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "B", ModelID: "omlx/B"}, opts); err != nil {
+	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "B", ModelID: "omlx/B"}, Options{}); err != nil {
 		t.Fatalf("start = %v, want nil: B fits beside A", err)
 	}
 	// The premise: the reading reconcilePool gets is the fallback, and it does
@@ -329,8 +325,8 @@ func TestStartOnPoolKeepsRoutesWhenTheReadingAfterTheLoadIsTheFallback(t *testin
 	if _, found := pool.Find("A"); err != nil || pool.SizesKnown || found || !fp.isLoaded("A") || !fp.isLoaded("B") {
 		t.Fatalf("pool after the load = %+v err = %v, A loaded = %v, B loaded = %v; want a fallback reading without A while both are loaded", pool, err, fp.isLoaded("A"), fp.isLoaded("B"))
 	}
-	if len(*stopped) != 0 || len(unloaded) != 0 || e.restartOwed {
-		t.Errorf("occupant hook = %v, OnUnloaded = %v, restartOwed = %v; want none, none, false: A is still loaded", *stopped, unloaded, e.restartOwed)
+	if len(*stopped) != 0 || e.restartOwed {
+		t.Errorf("occupant hook = %v, restartOwed = %v; want none and false: A is still loaded", *stopped, e.restartOwed)
 	}
 	if got := out.String(); containsFold(got, "omlx unloaded") {
 		t.Errorf("output = %q, want no eviction line for a model that is still loaded", got)
