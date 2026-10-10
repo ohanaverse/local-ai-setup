@@ -92,6 +92,18 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      A later sync, in whatever window it runs, lists these models under
      `Unchanged prices`. If one shows up again as an update with a level
      moved, the listed schedule itself changed.
+
+     **A plain `old -> new` update is not always a provider changing its
+     price.** For a model several providers serve, OpenRouter lists one
+     provider's quote, near the cheap end, and can change which quote it
+     lists within minutes. Two syncs minutes apart can each show an update
+     for such a model, back and forth. That is expected and harmless: wt
+     stores what is listed and does not smooth it. Applying one rewrites
+     the registry price, its stamp and the model's route, and so restarts
+     the proxy, like any price update. Tell the user this when a model's
+     price moves again right after a sync; do not run the sync repeatedly
+     to "settle" it. A model with a schedule (the bracketed lines above)
+     does not move this way.
      ollama: `Price updates`, `Registry additions`
      (id and family; each also gets a route), `ollama pull`, `Registry
      removals` (each also loses its route; `(re-tagged as …)` marks an entry

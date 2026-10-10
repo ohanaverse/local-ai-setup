@@ -230,12 +230,8 @@ is refused, nothing is stamped and the stale-pricing notice stays.
 #### What the schedule does not cover
 
 - **A listed price can still differ between two syncs** for a reason that
-  is not the clock. OpenRouter lists each model at the price of one of the
-  providers that serve it, and for a model many providers serve that price
-  can move within minutes. If the provider it lists changes, a model can
-  also gain or lose its schedule. wt stores what is listed, so each of
-  these is reported as a price update and synced to the routes
-  ([#337](https://github.com/ohanaverse/local-ai-setup/issues/337)).
+  is not the clock: [A listed price that moves between
+  syncs](#a-listed-price-that-moves-between-syncs).
 - **Only the picker follows the clock.** The route, and spend computed
   from it, use the dearest level at every hour.
 - **A row of the model that breaks the registry's rules** (one written by
@@ -243,6 +239,35 @@ is refused, nothing is stamped and the stale-pricing notice stays.
   refuse to write that model, and the openrouter flow stamps every model
   it matched in one write, so no price is refreshed until that row is
   fixed.
+
+#### A listed price that moves between syncs
+
+For a model that several providers serve, the price in OpenRouter's list is
+one provider's quote, near the cheap end of the field, and OpenRouter can
+change which quote it lists from one minute to the next. wt stores what is
+listed and does not smooth it. So two syncs run minutes apart can each list
+a price update for such a model although no provider changed a price. One
+sync and the next, a few minutes later (illustrative; a made-up model and
+prices):
+
+```text
+openrouter:   openrouter/acme--alpha-1: 1/0.1/4 -> 0.9/0.09/3.6
+openrouter:   openrouter/acme--alpha-1: 0.9/0.09/3.6 -> 1/0.1/4
+```
+
+This is expected and harmless
+([#337](https://github.com/ohanaverse/local-ai-setup/issues/337)). Each
+such update is applied like any other price update: the registry price is
+rewritten with its `pricing_updated_at` stamp, and the model's LiteLLM
+route is rewritten, which restarts the proxy. The plan line reads the same
+as for a price a provider did change, so the line alone does not say which
+it is. `--dry-run` shows the moves without applying them.
+
+This is not time-of-day pricing. A model with a published schedule is
+stored as its schedule ([above](#a-model-openrouter-prices-by-time-of-day))
+and does not move this way from one hour to the next. If the provider
+OpenRouter lists for a model changes, though, the model can gain or lose
+its schedule, and that too is reported as a price update.
 
 ### ollama
 
