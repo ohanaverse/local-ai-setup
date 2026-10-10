@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -68,6 +69,15 @@ func routePrintf(ctx context.Context, format string, args ...any) {
 
 // routeWG tracks the in-flight async proxy restarts applyAndReport started.
 var routeWG sync.WaitGroup
+
+// routesInFlight counts the same restarts, for RoutesPending: a WaitGroup
+// cannot be asked whether it would block.
+var routesInFlight atomic.Int32
+
+// RoutesPending reports whether a proxy restart is in flight, that is,
+// whether WaitPendingRoutes would wait. It is for a caller that is about to
+// wait and wants to say so on screen first; it decides nothing.
+func RoutesPending() bool { return routesInFlight.Load() > 0 }
 
 // WaitPendingRoutes blocks until every async proxy restart started by
 // applyAndReport has finished. It has two distinct callers:
@@ -584,8 +594,10 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 	url := cfg.LitellmBaseURL()
 	routeWG.Add(1)
+	routesInFlight.Add(1)
 	go func() {
 		defer routeWG.Done()
+		defer routesInFlight.Add(-1)
 		// Detached from ctx: every real caller cancels its own ctx via a
 		// scoped defer cancel() the instant its (now async) call returns —
 		// which happens before this restart even starts. A caller's normal
