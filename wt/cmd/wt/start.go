@@ -355,6 +355,18 @@ func startFailure(id string, err error) error {
 	return &startError{msg: lifecycle.StartErrorMessage(id, err), err: err}
 }
 
+// asStartError marks err as the outcome of a start the launch attempted —
+// failed, refused or cancelled — keeping its text and its chain. The root
+// command reads the mark to leave such an error to main's one print
+// (printOnce).
+func asStartError(err error) error {
+	var se *startError
+	if errors.As(err, &se) {
+		return err
+	}
+	return &startError{msg: err.Error(), err: err}
+}
+
 // askReplace resolves a replacement question: with a TTY it asks on
 // /dev/tty; without one it refuses and names the flag that would opt in, so a
 // scripted launch tells the operator what to add instead of hanging or

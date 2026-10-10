@@ -63,7 +63,7 @@ func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Tar
 	}()
 	report(StageWaiting)
 	if err = e.waitForModel(ctx, models, t.ModelName, sp, e.loadTimeout); err != nil {
-		if tail := e.mtplxProc.logTail(512); tail != "" && !errors.Is(err, context.Canceled) {
+		if tail := e.mtplxProc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
 			err = fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
 		}
 		return err

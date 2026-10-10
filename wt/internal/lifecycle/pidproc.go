@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -51,7 +52,7 @@ func (p pidProcess) spawn(bin string, args []string) (*spawned, error) {
 	select {
 	case <-sp.done:
 		msg := fmt.Sprintf("%s exited immediately (%v)", p.name, sp.waitErr)
-		if tail := p.logTail(512); tail != "" {
+		if tail := p.logTailLines(512); tail != "" {
 			msg += "; log tail: " + tail
 		}
 		_ = os.Remove(p.pidfile)
@@ -115,4 +116,22 @@ func (p pidProcess) logTail(max int) string {
 		b = b[len(b)-max:]
 	}
 	return string(b)
+}
+
+// logTailLines is logTail for showing to a user: the tail begins at the start
+// of a line. A cut at a byte count lands mid-word ("stained MTP runtime"), so
+// one byte more than max is read and everything up to the first newline is
+// dropped — the byte before the tail says whether the cut already fell on a
+// line start, in which case nothing of the tail is lost. A log that fits in
+// max is returned whole, and a tail with no newline in it is one long line,
+// returned as cut: its end is still worth more than nothing.
+func (p pidProcess) logTailLines(max int) string {
+	tail := p.logTail(max + 1)
+	if len(tail) <= max {
+		return tail
+	}
+	if i := strings.IndexByte(tail, '\n'); i >= 0 {
+		return tail[i+1:]
+	}
+	return tail[1:]
 }

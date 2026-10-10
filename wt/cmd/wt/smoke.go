@@ -65,6 +65,9 @@ func smokeCmd(a *app) *cobra.Command {
 			"model that isn't running is started first; on exit, offers to stop\n" +
 			"running local models.",
 		Args: cobra.MaximumNArgs(1),
+		// main prints the one error line; cobra's own print made a failed
+		// start's message, log tail included, come out twice (#344).
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {

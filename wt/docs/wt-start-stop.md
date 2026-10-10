@@ -355,4 +355,9 @@ confirmation, a cancelled `wt start` picker (`model selection canceled`), a
 provider wt stopped but that still answers, and a `wt stop` that could not
 tell what a provider is running and had no way to stop it regardless.
 
+An error of `wt start` is printed once, on stderr, as `wt: <message>`. A
+failed mtplx start ends with the server's last log lines
+(`...; log tail: <lines>`): at most 512 bytes of the log, from the start of
+a line.
+
 See also [`wt-smoke.md`](wt-smoke.md).

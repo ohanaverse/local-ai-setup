@@ -107,7 +107,7 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 			return row.Model, launchable, nil
 		case catalog.ActionStart:
 			if err := startModel(cfg, row, allowReplace); err != nil {
-				return config.Model{}, launchable, err
+				return config.Model{}, launchable, asStartError(err)
 			}
 			return row.Model, launchable, nil
 		}

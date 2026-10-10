@@ -288,6 +288,15 @@
 
 ### Fixed
 
+- A failed start is printed once (#344). `wt start`, `wt smoke` and a launch
+  whose `-M` pin had to be started printed the whole message twice, as
+  `Error: failed to start ...` and again as `wt: failed to start ...`, each
+  with the server's multi-line log tail. The `wt:` line is the one that
+  remains; exit codes are unchanged. Every other error of `wt start` and
+  `wt smoke` is printed once as well, and so is a start the launch refused
+  or that was cancelled.
+- The log tail a failed mtplx start shows begins at the start of a line. It
+  was cut at 512 bytes wherever that fell, so it could begin mid-word.
 - `wt start` no longer prints `<id> is running` and exits 0 for a model that
   was stopped while it waited for the LiteLLM proxy (#343). A start reports
   success as soon as the route is written; the wait for the proxy that
