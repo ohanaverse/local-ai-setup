@@ -254,7 +254,7 @@ openrouter:   openrouter/acme--alpha-1: 1/0.1/4 -> 0.9/0.09/3.6
 openrouter:   openrouter/acme--alpha-1: 0.9/0.09/3.6 -> 1/0.1/4
 ```
 
-This is expected and harmless
+This is expected
 ([#337](https://github.com/ohanaverse/local-ai-setup/issues/337)). Each
 such update is applied like any other price update: the registry price is
 rewritten (the row is stamped in `pricing_updated_at`, as every matched
