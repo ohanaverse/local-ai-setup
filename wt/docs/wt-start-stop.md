@@ -23,6 +23,21 @@ wt stop --all                    # stop every running local model, then the omlx
   stderr, Ctrl+C cancels). If mtplx (one model per process) is
   occupied wt asks before replacing the running model; `--replace` skips the
   question. omlx is different, see below.
+  Once the model is up and the LiteLLM proxy has picked up its route, wt
+  asks the provider's server once whether the model is still there, and only
+  then prints `wt: <id> is running`. A model that something stopped in the
+  meantime (a `wt stop` in another terminal while this one showed
+  `updating LiteLLM routes`) is an error and exit 1:
+  `wt: <id> is not running: it started, and was stopped while wt updated the LiteLLM routes (mtplx no longer answers at http://127.0.0.1:8003)`.
+  The route this start wrote is removed again. What counts as stopped: an
+  mtplx whose port refuses the connection or that serves another model; an
+  omlx that refuses or no longer has the model loaded; an ollama daemon that
+  refuses. An ollama model that was only unloaded (`ollama stop`) is still
+  reported as running, since ollama loads a pulled model on the next
+  request. `wt smoke`, a `-M` launch that starts its model and the picker's
+  start make the same check before they use the model; the full-screen
+  picker reports a model that is gone on its status instead of exiting (see
+  the picker's entry below).
 - omlx: "running" means loaded. The omlx service lists every model in its
   directory whether or not it is loaded, so an omlx model that is on disk but
   not loaded is idle and is started (loaded) like any other. If omlx has some
@@ -88,7 +103,13 @@ wt stop --all                    # stop every running local model, then the omlx
     when wt cannot tell what it has loaded: a server that answered with an
     error, or gave no answer within the probe's 2 seconds. It prints
     `Stopping mtplx... done`, or `failed` and exits 1 when the port is still
-    open afterwards. wt stops mtplx with mtplx's own `mtplx stop`, which
+    open afterwards. After a stop that worked wt removes the pidfile and
+    its own start record beside it, when the pidfile named the server that
+    was just stopped: checked before the stop by the rules given for a
+    loading mtplx below, and removed once that process is gone. A pidfile
+    that names anything else (another live process, a pid wt could not
+    verify, the pid of a server started since) is left as it is.
+    wt stops mtplx with mtplx's own `mtplx stop`, which
     has to recognise the server on the port: when it does not (a server that
     accepts the connection and answers nothing), the stop is `failed` with
     mtplx's own message, and the process has to be ended by hand.
@@ -259,11 +280,21 @@ recently used when a load does not fit.
   find why it answers `Invalid model name`. Once a start has reached
   `updating LiteLLM routes` the model is loaded and there is nothing left to
   cancel: esc does nothing there, and ctrl+c quits wt without launching the
-  agent. On a terminal too narrow for the start screen's one line, the stage
+  agent, once the route update is finished (`wt: waiting for the LiteLLM
+  proxy restart…` when that takes a moment). On a terminal too narrow for the start screen's one line, the stage
   is on a line of its own under the model id. After a start that
   fails or is cancelled having already displaced a model, the start screen
   stays up until the proxy has restarted (`updating LiteLLM routes`), so
-  those warnings are in the status. Quitting wt during a start (ctrl+c
+  those warnings are in the status. A model that was stopped while the
+  screen showed `updating LiteLLM routes` (a `wt stop` in another terminal)
+  is a failed start here too: wt asks the provider's server once after the
+  proxy has restarted, and when the model is gone the picker comes back with
+  `<id> is not running: it started, and was stopped while wt updated the
+  LiteLLM routes (...)` on its status, under whatever the start printed, and
+  launches no agent. When the start printed nothing, the status is the only
+  place that line appears. The route the start wrote is removed again and not
+  written back. The screen stays on `updating LiteLLM routes` and keeps
+  answering ctrl+c while wt asks. Quitting wt during a start (ctrl+c
   twice) prints what the start had printed once the screen is restored.
   Nothing a start prints is written to stderr while the picker is up, and
   `wt 2>log` records each line once.
@@ -351,5 +382,10 @@ on a provider) or a cancelled `wt stop` picker; `1` on any error, including a de
 confirmation, a cancelled `wt start` picker (`model selection canceled`), a
 provider wt stopped but that still answers, and a `wt stop` that could not
 tell what a provider is running and had no way to stop it regardless.
+
+An error of `wt start` is printed once, on stderr, as `wt: <message>`. A
+failed mtplx start ends with the server's last log lines
+(`...; log tail: <lines>`): at most 512 bytes of the log, from the start of
+a line (a last line longer than that is shown cut).
 
 See also [`wt-smoke.md`](wt-smoke.md).

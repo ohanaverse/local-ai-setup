@@ -26,13 +26,21 @@ var startModel = lifecycle.Start
 // hook's LiteLLM proxy restart runs asynchronously, and both of its callers
 // here hand straight off to the launch flow, whose agent dials the model
 // THROUGH the proxy: launching while the restart is in flight can meet a
-// refused connection or the pre-restart route table. finishStart calls it on
-// the Bubble Tea update goroutine, so the "Starting …" screen stops updating
-// for the length of the restart — that screen already says the routes are
-// being updated, and it is the last thing before the agent takes the
-// terminal. The launch-time route check (checkLaunchRoute) has no such screen
-// to sit behind, so it calls it from a command, behind phaseRouting.
+// refused connection or the pre-restart route table. Neither waits on the
+// Bubble Tea update goroutine, which is the one that repaints the screen and
+// answers keys: a start waits on its own goroutine (runStart), behind the
+// start screen's routing stage, and the launch-time route check
+// (checkLaunchRoute) waits in a command, behind phaseRouting.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
+
+// confirmStarted is a test seam over lifecycle.ConfirmStartedTo: the one probe
+// that follows the proxy wait, so a model another terminal stopped during
+// that wait is reported instead of launched on (#343). It is a request to the
+// provider's server and, when the server is gone, a config.yaml write, so
+// like the wait it follows it is runStart's goroutine that calls it, never
+// the update goroutine. It is handed the start's own writer: under the alt
+// screen stderr is hidden.
+var confirmStarted = lifecycle.ConfirmStartedTo
 
 // routesPending is a test seam over lifecycle.RoutesPending: whether a proxy
 // restart is in flight, so that the start screen can say what it is waiting
@@ -290,12 +298,16 @@ type startStageMsg struct {
 	stage lifecycle.Stage
 }
 type startDoneMsg struct {
-	id  int
+	id int
+	// err is what became of the start: the engine's error, or for a start the
+	// engine reported done, a *lifecycle.StoppedError when its server was
+	// gone again by the end of the proxy wait (confirmStarted, #343).
 	err error
 	// out is every line the engine printed for this start, as it printed
-	// them, set whether or not the start succeeded. It is complete: the
-	// goroutine that sends this message has already waited for the proxy
-	// restart the start may have left running.
+	// them, set whether or not the start succeeded, and whatever the check
+	// after the wait printed. It is complete: the goroutine that sends this
+	// message has already waited for every proxy restart the start, or that
+	// check's route removal, may have left running.
 	out string
 }
 type startTickMsg struct{ id int }
@@ -329,11 +341,29 @@ func buildReplaceChoices() []list.Item {
 // displaced a model), and after one that succeeded under a cancel, whose own
 // report of the stage went through a context the cancel had ended.
 //
+// After the wait, a start the engine reported done is confirmed
+// (confirmStarted, #343): that wait is where another terminal's `wt stop`
+// lands. It belongs here for the reason the wait does — it is a request to
+// the provider's server and, when the server is gone, a config.yaml write
+// that can wait for the file's lock, none of which the update goroutine can
+// pay — and because the result has to carry it: a server that is gone is
+// sent as the start's error, so finishStart treats it as any failed start
+// and no launch, and no launch-time route check, follows. What the check
+// prints goes to the start's own output, and the restart its route removal
+// starts is waited for too, so the text is still complete and wt does not
+// go back to the picker under a restart.
+//
+// The check runs whether or not the start was cancelled: a cancel that lost
+// is about to be reported as "started …", which has to be true as well. So
+// its context keeps the start's values and drops its cancellation — under a
+// done context the probe settles nothing and the route removal would give up
+// on a held lock.
+//
 // The seams are read HERE, on the caller's goroutine, so a test seam swap
 // never races the goroutine's late first read.
 func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow bool, id int) (<-chan tea.Msg, *startOutput) {
 	ch := make(chan tea.Msg, 16)
-	start, wait, pending := startModel, waitPendingRoutes, routesPending
+	start, wait, pending, confirm := startModel, waitPendingRoutes, routesPending, confirmStarted
 	out := &startOutput{}
 	go func() {
 		defer close(ch)
@@ -350,6 +380,13 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 			ch <- startStageMsg{id: id, stage: lifecycle.StageRouting}
 		}
 		wait()
+		if err == nil {
+			if err = confirm(context.WithoutCancel(ctx), out, cfg, t); err != nil {
+				// The route removal may have left a restart running, and
+				// its warnings are written to out.
+				wait()
+			}
+		}
 		ch <- startDoneMsg{id: id, err: err, out: out.text()}
 	}()
 	return ch, out
@@ -514,14 +551,23 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		// would say the start was.
 		return back(fmt.Sprintf("started %s; launch cancelled", st.item.model.ID))
 	}
-	if st.cancelling {
+	var stopped *lifecycle.StoppedError
+	if st.cancelling && !errors.As(msg.err, &stopped) {
 		return back("cancelled")
 	}
+	// A start that was cancelled, succeeded anyway and was then found
+	// stopped is reported as what it is, below: "cancelled" would name the
+	// cancel as what stopped it, and nothing else would say that the model
+	// the screen showed loading is not running.
 	if msg.err == nil {
 		m.phase = phaseModel
 		// The launch that follows routes through LiteLLM. The route hook's
-		// proxy restart is over: runStart's goroutine waited for it before
-		// it sent this message, so nothing here waits.
+		// proxy restart is over and the server was still there after it:
+		// runStart's goroutine waited for the one and asked about the other
+		// (confirmStarted) before it sent this message, so nothing here
+		// waits. A server that was gone came as an error instead, and never
+		// reaches proceedToLaunch's route check, which would write the route
+		// of a row the table still shows as started straight back.
 		//
 		// The launch follows a successful start, and proceedToLaunch clears
 		// the status line, so the engine's lines take the route notes' way

@@ -1050,3 +1050,31 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 		t.Fatalf("walked %d commands, want the whole tree (wt has more than 20)", seen)
 	}
 }
+
+// TestStartDoesNotSayRunningForAServerThatIsGone runs `wt start` through the
+// real start driver for #343's sequence: the engine starts the model, and by
+// the end of the proxy wait its server is gone. The command must fail with the
+// one line that says so and must not print "is running" — which it did, with
+// exit 0, over a port nothing was listening on.
+func TestStartDoesNotSayRunningForAServerThatIsGone(t *testing.T) {
+	cfg, _ := startFixture(t)
+	stubSignals(t)
+	stubLifecycleStart(t, []error{nil})
+	oldDriver, oldWait, oldConfirm, oldErr := startModel, waitPendingRoutes, confirmStarted, osStderr
+	startModel, waitPendingRoutes, osStderr = startForLaunch, func() {}, io.Discard
+	confirmStarted = func(context.Context, *config.Config, lifecycle.Target) error {
+		return &lifecycle.StoppedError{Why: "ollama no longer answers at http://127.0.0.1:11434"}
+	}
+	t.Cleanup(func() {
+		startModel, waitPendingRoutes, confirmStarted, osStderr = oldDriver, oldWait, oldConfirm, oldErr
+	})
+
+	var out bytes.Buffer
+	err := runStart(&out, cfg, themes.Theme{}, "ollama/b:1", false)
+	if err == nil || !strings.HasPrefix(err.Error(), "ollama/b:1 is not running: ") || strings.Contains(err.Error(), "\n") {
+		t.Errorf("runStart() error = %v, want one line saying ollama/b:1 is not running", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing: the model is not running", out.String())
+	}
+}

@@ -708,8 +708,11 @@ func startCmd(a *app) *cobra.Command {
 			"the question.",
 		Example: "  wt start ollama/qwen3.8:27b-mlx\n  wt start",
 		Args:    cobra.MaximumNArgs(1),
-		// A refused or failed start is not a usage mistake.
-		SilenceUsage: true,
+		// A refused or failed start is not a usage mistake, and main prints
+		// the one error line: left to cobra as well, a failed start's message
+		// came out twice, the server's log tail with it (#344).
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
 				return configError(a.cfgErr)

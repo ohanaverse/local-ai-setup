@@ -173,7 +173,7 @@ func runLaunchPath(
 	if needsModelPicker(agent, pinned) {
 		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
 		if err == nil && resolved {
-			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState())
+			return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState()))
 		}
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
@@ -181,7 +181,27 @@ func runLaunchPath(
 		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile)
 	}
 
-	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState())
+	return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))
+}
+
+// printOnce leaves the error of a launch whose -M pin could not be started
+// to main, which prints every error after "wt:". cobra prints it as well, as
+// "Error: …", and a failed start's message carries the server's log tail, so
+// it came out twice in full (#344). Only that error is taken from cobra here:
+// the root command's other errors are printed as they were. `wt start` and
+// `wt smoke` silence cobra for the whole command instead (SilenceErrors), as
+// `wt cloud-sync` does.
+//
+// cobra's usage block goes with it: the root command prints one after every
+// error, and a start that failed or was refused is not a usage mistake. Left
+// in, it stood between the start's progress lines and main's one line, with
+// no "Error:" above it any more to say why it was there.
+func printOnce(cmd *cobra.Command, err error) error {
+	if isStartError(err) {
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+	}
+	return err
 }
 
 func rootCmd() *cobra.Command {

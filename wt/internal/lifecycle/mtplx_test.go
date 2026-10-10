@@ -340,6 +340,97 @@ func TestLogTailReadsOnlyTheTail(t *testing.T) {
 	}
 }
 
+// TestLogTailLinesBeginsAtALineStart verifies the tail shown to a user starts
+// at the beginning of a line (#344): a cut at a byte count landed mid-word,
+// so a failed start's message began "stained MTP runtime". The partial first
+// line is dropped; a cut that already falls on a line start loses nothing; a
+// log that fits is whole; and a tail with no newline at all — one long line —
+// is still returned, since dropping it would show nothing. The same holds for
+// a tail whose only newline is its last byte: a last line longer than max, or
+// a run of "\r" progress redraws before the server's last words. And for a
+// long last line with only blank lines after it: those are all a failed start
+// would be left to show, and it trims them to an empty "log tail:".
+func TestLogTailLinesBeginsAtALineStart(t *testing.T) {
+	dir := t.TempDir()
+	p := pidProcess{name: "mtplx", logfile: filepath.Join(dir, "mtplx.log")}
+	for name, tc := range map[string]struct {
+		log  string
+		max  int
+		want string
+	}{
+		"cut mid-line":            {"could not load the sustained MTP runtime\nfatal: out of memory\n", 40, "fatal: out of memory\n"},
+		"cut on a line start":     {"first\nsecond\nthird\n", 13, "second\nthird\n"},
+		"cut just after the line": {"first\nsecond\nthird\n", 12, "third\n"},
+		"log fits":                {"first\nsecond\n", 512, "first\nsecond\n"},
+		"log is exactly max":      {"first\nsecond\n", 13, "first\nsecond\n"},
+		"one long line":           {strings.Repeat("x", 100), 10, strings.Repeat("x", 10)},
+		"long last line":          {"first\n" + strings.Repeat("x", 100) + "\n", 10, strings.Repeat("x", 9) + "\n"},
+		"long line, then a blank": {"first\n" + strings.Repeat("x", 100) + "\n\n", 10, strings.Repeat("x", 8) + "\n\n"},
+		"redraws, then one line":  {"first\n" + strings.Repeat("10%\r", 20) + "boom\n", 10, "\r10%\rboom\n"},
+		"empty log":               {"", 512, ""},
+		"nothing asked for":       {"first\n", 0, ""},
+	} {
+		if err := os.WriteFile(p.logfile, []byte(tc.log), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.logTailLines(tc.max); got != tc.want {
+			t.Errorf("%s: logTailLines(%d) = %q, want %q", name, tc.max, got, tc.want)
+		}
+	}
+	if got := (pidProcess{logfile: filepath.Join(dir, "missing.log")}).logTailLines(512); got != "" {
+		t.Errorf("unreadable log: logTailLines = %q, want empty", got)
+	}
+}
+
+// TestLogTailLinesReadsOnlyTheTail verifies the line-start tail keeps
+// logTail's bound: the log is append-only and shared with llmbench, so it
+// grows without limit, and a failed start must read one byte more than it
+// shows, not the file.
+func TestLogTailLinesReadsOnlyTheTail(t *testing.T) {
+	dir := t.TempDir()
+	p := pidProcess{name: "mtplx", logfile: filepath.Join(dir, "mtplx.log")}
+	content := append(bytes.Repeat([]byte("A"), 1<<20), []byte("\nlast line\n")...)
+	if err := os.WriteFile(p.logfile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.logTailLines(512); got != "last line\n" {
+		t.Errorf("logTailLines(512) = %d bytes %q, want the last line alone", len(got), got)
+	}
+}
+
+// TestMtplxFailedStartShowsWholeLogLines verifies the failed start itself
+// uses the line-start tail: with more than 512 bytes of log before the
+// server's last words, the error carries those lines and no fragment of the
+// line the cut fell in.
+func TestMtplxFailedStartShowsWholeLogLines(t *testing.T) {
+	e, cfg, _, _ := mtplxEnv(t, "die", 0)
+	if err := os.WriteFile(e.mtplxProc.logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	if err == nil || !strings.HasSuffix(err.Error(), "; log tail: boom") {
+		t.Errorf("err = %v, want the log tail to be the server's last line alone", err)
+	}
+}
+
+// TestSpawnExitedImmediatelyShowsWholeLogLines is the same for a process that
+// dies inside spawn's own 200ms watch: its "exited immediately" message
+// carries the line-start tail too.
+func TestSpawnExitedImmediatelyShowsWholeLogLines(t *testing.T) {
+	e, cfg, _, _ := mtplxEnv(t, "die-now", 0)
+	if err := os.WriteFile(e.mtplxProc.logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\nfatal: out of memory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "exited immediately") {
+		t.Fatalf("err = %v, want 'exited immediately'", err)
+	}
+	_, tail, _ := strings.Cut(err.Error(), "; log tail: ")
+	if !strings.HasPrefix(tail, "fatal: out of memory\n") {
+		t.Errorf("log tail = %q, want it to begin at a line start", tail)
+	}
+}
+
 // TestLogTailClampsWhatArrivedAfterTheSizeWasSampled pins the clamp: the one
 // guarantee that exists to make logTail's "at most max bytes" promise true even
 // when more bytes arrive between sampling the size and reading. It matters

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -635,6 +636,155 @@ func TestStopLoadingMtplxLeavesANewerStartsPidfile(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(e.mtplxProc.pidfile); string(b) != "5000" {
 		t.Errorf("pidfile = %q, want the newer start's pid 5000 left in place", b)
+	}
+}
+
+// stopEnv is loadingEnv with the server's port open on a real listener: an
+// mtplx that is serving, whose `mtplx stop` (the fake runner) closes the port
+// and runs onStop. It returns the process table, the env and the config for
+// that port.
+func stopEnv(t *testing.T, recorded bool, onStop func(pt *procTable, e *env)) (*procTable, *env, *config.Config) {
+	t.Helper()
+	srv, addr := serveFree(t, chatHandler())
+	_, portStr, _ := net.SplitHostPort(addr)
+	port := mustAtoi(t, portStr)
+	pt := &procTable{procs: map[int]procInfo{4242: mine(4242, "100.5", daemonArgv(port))}}
+	e := pt.env(t)
+	writePidfile(t, e, "4242")
+	if recorded {
+		writeStartRecord(t, e, `{"pid":4242,"started":"100.5"}`)
+	}
+	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
+	e.run = func(context.Context, string, ...string) ([]byte, error) {
+		srv.Close()
+		onStop(pt, e)
+		return nil, nil
+	}
+	return pt, e, provCfg("mtplx", "http://"+addr+"/v1")
+}
+
+// TestMtplxStopRemovesThePidfileOfTheServerItStopped verifies the ordinary
+// stop — `mtplx stop` through the port — removes the pidfile and wt's start
+// record once the server they named is gone (#343): before, every stop left
+// both behind, naming a dead pid that a later process could be given. It
+// signals nothing: the stop went through the port.
+func TestMtplxStopRemovesThePidfileOfTheServerItStopped(t *testing.T) {
+	for name, recorded := range map[string]bool{"started by this wt": true, "pid-only pidfile": false} {
+		t.Run(name, func(t *testing.T) {
+			pt, e, cfg := stopEnv(t, recorded, func(pt *procTable, _ *env) { delete(pt.procs, 4242) })
+			if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if pidfile, record := filesLeft(e); pidfile || record {
+				t.Errorf("pidfile left = %v, start record left = %v, want both removed", pidfile, record)
+			}
+			if len(pt.signals) != 0 {
+				t.Errorf("signals = %v, want none", pt.signals)
+			}
+		})
+	}
+}
+
+// TestMtplxStopLeavesAPidfileItCannotTieToTheServerItStopped verifies the
+// cleanup's limits, the same ones the stop of a loading server keeps: the
+// files go only when the pidfile named a process wt verified as this
+// provider's server before the stop, and only once the process table shows
+// that process gone. A pidfile naming some other live process, one that is
+// not this user's own regular file, one a newer start has rewritten, a
+// process table that cannot be read, a server still exiting — each is left
+// exactly as it was. Removing any of them would take away the only handle a
+// later `wt stop` has on a server that is still there, or follow a link
+// another user planted in /tmp.
+func TestMtplxStopLeavesAPidfileItCannotTieToTheServerItStopped(t *testing.T) {
+	for name, tc := range map[string]struct {
+		before  func(t *testing.T, pt *procTable, e *env)
+		onStop  func(t *testing.T, pt *procTable, e *env)
+		wantPid string
+	}{
+		"names another live process": {
+			before: func(t *testing.T, pt *procTable, e *env) {
+				pt.procs[4242] = mine(4242, "100.5", []string{"sleep", "60"})
+			},
+			wantPid: "4242",
+		},
+		"names an mtplx on another port": {
+			before:  func(t *testing.T, pt *procTable, e *env) { pt.procs[4242] = mine(4242, "100.5", daemonArgv(1)) },
+			wantPid: "4242",
+		},
+		"names a pid that was reused": {
+			before:  func(t *testing.T, pt *procTable, e *env) { writeStartRecord(t, e, `{"pid":4242,"started":"7.0"}`) },
+			wantPid: "4242",
+		},
+		"names a dead pid already": {
+			before:  func(t *testing.T, pt *procTable, e *env) { writePidfile(t, e, "999") },
+			wantPid: "999",
+		},
+		"is a symlink": {
+			before:  func(t *testing.T, pt *procTable, e *env) { symlinked(t, e.mtplxProc.pidfile) },
+			wantPid: "4242",
+		},
+		"process table unreadable": {
+			before:  func(t *testing.T, pt *procTable, e *env) { pt.describe = errors.New("sysctl failed") },
+			wantPid: "4242",
+		},
+		"rewritten by a newer start": {
+			onStop: func(t *testing.T, pt *procTable, e *env) {
+				delete(pt.procs, 4242)
+				writePidfile(t, e, "5000")
+				writeStartRecord(t, e, `{"pid":5000,"started":"200.0"}`)
+			},
+			wantPid: "5000",
+		},
+		"server still exiting when the wait ends": {
+			onStop: func(t *testing.T, pt *procTable, e *env) {
+				info := pt.procs[4242]
+				info.exiting, info.argv = true, nil
+				pt.procs[4242] = info
+			},
+			wantPid: "4242",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var onStop func(t *testing.T, pt *procTable, e *env)
+			pt, e, cfg := stopEnv(t, true, func(pt *procTable, e *env) {
+				if onStop != nil {
+					onStop(t, pt, e)
+				} else {
+					delete(pt.procs, 4242)
+				}
+			})
+			onStop = tc.onStop
+			if tc.before != nil {
+				tc.before(t, pt, e)
+			}
+			if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if b, err := os.ReadFile(e.mtplxProc.pidfile); err != nil || string(b) != tc.wantPid {
+				t.Errorf("pidfile = %q (%v), want %q left in place", b, err, tc.wantPid)
+			}
+			if _, record := filesLeft(e); !record {
+				t.Error("start record removed, want it left in place")
+			}
+			if len(pt.signals) != 0 {
+				t.Errorf("signals = %v, want none", pt.signals)
+			}
+		})
+	}
+}
+
+// TestMtplxStopThatFailsLeavesThePidfile verifies a stop that left the port
+// answering removes nothing: the server is still there, and the pidfile is
+// what the next stop finds it by.
+func TestMtplxStopThatFailsLeavesThePidfile(t *testing.T) {
+	_, e, cfg := stopEnv(t, true, func(*procTable, *env) {})
+	// An `mtplx stop` that exits 0 and stops nothing.
+	e.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err == nil {
+		t.Fatal("stop = nil over a port that still answers")
+	}
+	if pidfile, record := filesLeft(e); !pidfile || !record {
+		t.Errorf("pidfile left = %v, start record left = %v, want both left", pidfile, record)
 	}
 }
 

@@ -288,6 +288,50 @@
 
 ### Fixed
 
+- A failed start is printed once (#344). `wt start`, `wt smoke` and a launch
+  whose `-M` pin had to be started printed the whole message twice, as
+  `Error: failed to start ...` and again as `wt: failed to start ...`, each
+  with the server's multi-line log tail. The `wt:` line is the one that
+  remains; exit codes are unchanged. Every other error of `wt start` and
+  `wt smoke` is printed once as well, and so is a start the launch refused
+  or that was cancelled.
+- The log tail a failed mtplx start shows begins at the start of a line. It
+  was cut at 512 bytes wherever that fell, so it could begin mid-word.
+- `wt start` no longer prints `<id> is running` and exits 0 for a model that
+  was stopped while it waited for the LiteLLM proxy (#343). A start reports
+  success as soon as the route is written; the wait for the proxy that
+  follows takes about ten seconds, and a `wt stop` from another terminal in
+  that time left the first one announcing a server that was gone. After the
+  wait wt now asks the provider's server once whether the model is still
+  there, and a model that is gone is one error line and exit 1:
+  `<id> is not running: it started, and was stopped while wt updated the
+  LiteLLM routes (...)`. The route the start wrote is removed, so a stop
+  that ran just before the start's route write does not leave a route to a
+  dead port. Gone means: an mtplx whose port refuses the connection or that
+  no longer serves the model, an omlx that refuses or no longer has it
+  loaded, an ollama daemon that refuses. An ollama model that was only
+  unloaded still counts as running, because ollama loads it on the next
+  request. `wt smoke`, a `-M` launch that starts its model and the model
+  picker's start make the same check before they use the model. In the
+  picker a model that is gone is a failed start: the picker comes back with
+  that line on its status, under whatever the start printed, the agent is
+  not launched, and when the start printed anything those lines are printed
+  again, with that line under them, when wt exits. The check is
+  made behind the start screen's `updating LiteLLM routes`, which keeps
+  answering keys meanwhile, and it is made for a start whose cancel came too
+  late as well, which then reads `is not running` instead of `started <id>;
+  launch cancelled`. Quitting wt with ctrl+c at `updating LiteLLM routes`
+  no longer leaves before that check is done: wt waits for the proxy and
+  the check (`wt: waiting for the LiteLLM proxy restart…`), so a model that
+  was stopped meanwhile does not keep its route, and the proxy is restarted
+  after the route is removed.
+- `wt stop` of a serving mtplx removes the pidfile and wt's start record
+  (#343). Only the stop of a server that was still loading did; the ordinary
+  stop left both in `/tmp` naming a dead pid. They are removed only when the
+  pidfile named the server that was stopped, verified before the stop as a
+  loading server is (the user's own regular file, no symlink, the user's own
+  mtplx server on that port, the recorded start time), and only once that
+  process is gone. A pidfile naming any other process is left alone.
 - The model picker shows what a start printed. A start from the picker ran
   with nowhere to print but stderr, which the full-screen picker hides: a
   model started while `config.yaml` could not be written launched its agent
@@ -296,7 +340,8 @@
   warnings and the `(not predicted)` on a model omlx unloaded. The picker
   now takes every line the start prints: above the agent's output after a
   start that succeeds, and on the status above the failure, and again on
-  the terminal when wt exits, after one that fails or is cancelled. The
+  the terminal when wt exits, after one that fails or is cancelled (a start
+  that printed nothing leaves its failure on the status only). The
   picker's status is wrapped to the terminal's width instead of cut at its
   edge, and one too tall for the terminal has the screen to itself until the
   next key. A row the picker just started now gets the launch-time route

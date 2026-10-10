@@ -65,11 +65,17 @@ func smokeCmd(a *app) *cobra.Command {
 			"model that isn't running is started first; on exit, offers to stop\n" +
 			"running local models.",
 		Args: cobra.MaximumNArgs(1),
+		// main prints the one error line; cobra's own print made a failed
+		// start's message, log tail included, come out twice (#344).
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
 				// An interrupt is not a usage mistake: no flag summary after it.
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted)
+				// Neither is a start that failed or was refused, and with
+				// cobra's "Error:" line gone the summary would stand alone
+				// above main's one line.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err)
 				return err
 			}
 			if anyFail {
@@ -151,7 +157,9 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	if t.Start() {
 		replace, _ := cmd.Flags().GetBool("replace")
 		if err := startModel(a.cfg, t.Row, replace); err != nil {
-			return false, err
+			// Marked, text unchanged, so the command can tell a start that
+			// failed or was refused from a usage mistake.
+			return false, asStartError(err)
 		}
 		// The rows below fire a one-shot prompt through the LiteLLM proxy at
 		// once, so the route hook's async restart has to have landed first: a

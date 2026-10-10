@@ -1700,3 +1700,45 @@ func TestEnterOnALoadingRowJoinsTheLoad(t *testing.T) {
 		t.Errorf("started %q, want omlx/qwen3.8", id)
 	}
 }
+
+// TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching pins the
+// TUI half of #343: the engine reports the model started, and by the end of
+// the proxy wait another terminal has stopped it. The flow must come back to
+// the picker with the shared one-line message and launch nothing — an agent
+// handed that model would only meet a dead port. The check is asked about the
+// row's own target, after the wait, and is followed by a wait of its own: the
+// route removal it makes can have left a proxy restart running.
+func TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching(t *testing.T) {
+	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	m.agent = "not-a-real-agent" // a launch, if one were attempted, fails observably
+
+	// Written by the start's goroutine only, and read once its result has
+	// been received.
+	var order []string
+	var asked lifecycle.Target
+	gone := &lifecycle.StoppedError{Why: "ollama no longer answers at http://127.0.0.1:11434"}
+	oldWait, oldConfirm := waitPendingRoutes, confirmStarted
+	waitPendingRoutes = func() { order = append(order, "wait") }
+	confirmStarted = func(_ context.Context, _ io.Writer, _ *config.Config, target lifecycle.Target) error {
+		order = append(order, "confirm")
+		asked = target
+		return gone
+	}
+	t.Cleanup(func() { waitPendingRoutes, confirmStarted = oldWait, oldConfirm })
+
+	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+	next, _ := updateMsg(got, recvStart(t, got))
+	if next.phase != phaseModel {
+		t.Errorf("phase = %v, want the model picker", next.phase)
+	}
+	if want := lifecycle.StartErrorMessage("ollama/gemma4:9b", gone); next.status != want {
+		t.Errorf("status = %q, want %q", next.status, want)
+	}
+	if strings.Join(order, ",") != "wait,confirm,wait" {
+		t.Errorf("order = %v, want the check after the proxy wait, then the wait for its own route removal", order)
+	}
+	if want := (lifecycle.Target{ProviderID: "ollama", ModelName: "gemma4:9b", ModelID: "ollama/gemma4:9b"}); asked != want {
+		t.Errorf("asked about %+v, want %+v", asked, want)
+	}
+}

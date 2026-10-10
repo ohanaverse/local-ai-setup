@@ -278,15 +278,39 @@ func (e *env) stopLoadingMtplx(ctx context.Context, cfg *config.Config, pid int)
 			}
 		}
 	}
-	// Confirmed gone. Remove the pidfile as a failed start's cleanup does —
-	// unless a new start has put its own pid there since.
+	// Confirmed gone.
+	e.forgetMtplx(pid)
+	return nil
+}
+
+// forgetMtplx removes the pidfile and the start record of a server confirmed
+// gone, as a failed start's cleanup does — each only while it still names
+// pid: a new start may have put its own pid there since.
+func (e *env) forgetMtplx(pid int) {
 	if b, ok := readOwnFile(e.mtplxProc.pidfile, os.Getuid()); ok && strings.TrimSpace(string(b)) == strconv.Itoa(pid) {
 		_ = os.Remove(e.mtplxProc.pidfile)
 	}
 	if e.recordedStart(pid) != "" {
 		_ = os.Remove(e.mtplxProc.startfile())
 	}
-	return nil
+}
+
+// forgetStopped is the cleanup of a stop that went through the port
+// (mtplxBackend.stop): id is what the pidfile named before `mtplx stop` ran —
+// verified then as this provider's server (loadingMtplx), the zero value when
+// it named nothing wt could verify. The files are removed once the process
+// table shows that process gone, and left for anything else: a process still
+// exiting when the wait ends, a process table that does not answer, a
+// cancelled wait. A pidfile left behind names a dead pid, which is what every
+// stop left before (#343).
+func (e *env) forgetStopped(ctx context.Context, id mtplxIdent) {
+	if id.pid == 0 {
+		return
+	}
+	if gone, err := e.waitGone(ctx, id, e.stopTimeout, "SIGTERM"); err != nil || !gone {
+		return
+	}
+	e.forgetMtplx(id.pid)
 }
 
 // waitGone polls the process table until id's process is gone — no such pid,
