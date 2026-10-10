@@ -23,6 +23,19 @@ wt stop --all                    # stop every running local model, then the omlx
   stderr, Ctrl+C cancels). If mtplx (one model per process) is
   occupied wt asks before replacing the running model; `--replace` skips the
   question. omlx is different, see below.
+  Once the model is up and the LiteLLM proxy has picked up its route, wt
+  asks the provider's server once whether the model is still there, and only
+  then prints `wt: <id> is running`. A model that something stopped in the
+  meantime (a `wt stop` in another terminal while this one showed
+  `updating LiteLLM routes`) is an error and exit 1:
+  `wt: <id> is not running: it started, and was stopped while wt updated the LiteLLM routes (mtplx no longer answers at http://127.0.0.1:8003)`.
+  The route this start wrote is removed again. What counts as stopped: an
+  mtplx whose port refuses the connection or that serves another model; an
+  omlx that refuses or no longer has the model loaded; an ollama daemon that
+  refuses. An ollama model that was only unloaded (`ollama stop`) is still
+  reported as running, since ollama loads a pulled model on the next
+  request. `wt smoke`, a `-M` launch that starts its model and the picker's
+  start make the same check before they use the model.
 - omlx: "running" means loaded. The omlx service lists every model in its
   directory whether or not it is loaded, so an omlx model that is on disk but
   not loaded is idle and is started (loaded) like any other. If omlx has some
@@ -88,7 +101,13 @@ wt stop --all                    # stop every running local model, then the omlx
     when wt cannot tell what it has loaded: a server that answered with an
     error, or gave no answer within the probe's 2 seconds. It prints
     `Stopping mtplx... done`, or `failed` and exits 1 when the port is still
-    open afterwards. wt stops mtplx with mtplx's own `mtplx stop`, which
+    open afterwards. After a stop that worked wt removes the pidfile and
+    its own start record beside it, when the pidfile named the server that
+    was just stopped: checked before the stop by the rules given for a
+    loading mtplx below, and removed once that process is gone. A pidfile
+    that names anything else (another live process, a pid wt could not
+    verify, the pid of a server started since) is left as it is.
+    wt stops mtplx with mtplx's own `mtplx stop`, which
     has to recognise the server on the port: when it does not (a server that
     accepts the connection and answers nothing), the stop is `failed` with
     mtplx's own message, and the process has to be ended by hand.

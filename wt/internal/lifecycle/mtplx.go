@@ -78,12 +78,16 @@ func (mtplxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error 
 		return &BinaryMissingError{Binary: "mtplx"}
 	}
 	_, models, port := mtplxEndpoint(cfg)
+	// What the pidfile names now, while the server is still there to be
+	// identified: only that process's pidfile is removed below.
+	named, _ := e.loadingMtplx(cfg)
 	out, runErr := e.run(ctx, bin, "stop", "--port", strconv.Itoa(port), "--grace-seconds", "10")
 	closed, cerr := e.portClosedWithin(ctx, models, e.stopTimeout)
 	if cerr != nil {
 		return cerr
 	}
 	if closed {
+		e.forgetStopped(ctx, named)
 		return nil
 	}
 	if runErr != nil {

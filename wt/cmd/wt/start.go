@@ -56,6 +56,23 @@ var confirmReplace = promptReplace
 // is not listed yet. Tests stub it to observe that ordering without a proxy.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
 
+// confirmStarted is a test seam over lifecycle.ConfirmStarted: one probe of
+// the provider's server, made once the proxy wait is over, since that wait is
+// where another terminal's `wt stop` lands (#343). TestMain stubs it so no
+// test probes a real provider.
+var confirmStarted = lifecycle.ConfirmStarted
+
+// settleStart is what follows a start the engine reported done: the wait for
+// the route hook's proxy restart, then the check that the server is still
+// there. A server that is gone is a failed start, worded by startFailure.
+func settleStart(ctx context.Context, cfg *config.Config, id string, t lifecycle.Target) error {
+	waitPendingRoutes()
+	if err := confirmStarted(ctx, cfg, t); err != nil {
+		return startFailure(id, err)
+	}
+	return nil
+}
+
 // ensureModelRoute is a test seam over lifecycle.EnsureModelRoute. Production
 // rewrites config.yaml and restarts the LiteLLM proxy; TestMain stubs it so no
 // test touches the developer's real proxy.
@@ -242,8 +259,7 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	if err == nil {
 		// The agent launch follows immediately and routes through LiteLLM:
 		// settle the route hook's async proxy restart first.
-		waitPendingRoutes()
-		return nil
+		return settleStart(ctx, cfg, id, target)
 	}
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("cancelled before %s started: %w", id, err)
@@ -314,8 +330,7 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	if err == nil {
 		// Same as the first attempt: the proxy must carry the new route (and
 		// have dropped the replaced occupant's) before the agent launches.
-		waitPendingRoutes()
-		return nil
+		return settleStart(ctx, cfg, id, target)
 	}
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("cancelled before %s started: %w", id, err)

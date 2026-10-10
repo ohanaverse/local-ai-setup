@@ -624,3 +624,83 @@ func TestStartForLaunchHandsTheEngineTheRowsModelID(t *testing.T) {
 		t.Fatalf("target = %+v, want %+v with the row's id", got, want)
 	}
 }
+
+// stubConfirmStarted replaces the check that follows a start with one that
+// records the target it was asked about, appends "confirm" to log, and
+// returns err.
+func stubConfirmStarted(t *testing.T, log *[]string, mu *sync.Mutex, err error) *[]lifecycle.Target {
+	t.Helper()
+	asked := &[]lifecycle.Target{}
+	old := confirmStarted
+	confirmStarted = func(_ context.Context, _ *config.Config, target lifecycle.Target) error {
+		mu.Lock()
+		*log = append(*log, "confirm")
+		*asked = append(*asked, target)
+		mu.Unlock()
+		return err
+	}
+	t.Cleanup(func() { confirmStarted = old })
+	return asked
+}
+
+// TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait pins #343: the
+// engine reports the model started, another terminal stops it while this one
+// waits for the LiteLLM proxy, and the driver must then fail — with the shared
+// one-line wording and the engine's typed error still on the chain — instead
+// of returning nil, which `wt start` prints as "is running" and a launch hands
+// to an agent. The check runs after the wait, because the wait is where the
+// stop lands, and it is asked about the row's own target. Both ways into a
+// successful start are covered: the first attempt and the one after a replace.
+func TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait(t *testing.T) {
+	gone := &lifecycle.StoppedError{Why: "omlx no longer has it loaded"}
+	for name, outcomes := range map[string][]error{
+		"first attempt": {nil},
+		"after replace": {&lifecycle.OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubSignals(t)
+			stubLifecycleStart(t, outcomes)
+			var mu sync.Mutex
+			var order []string
+			_, release := stubWaitRoutes(t, &order, &mu)
+			release()
+			asked := stubConfirmStarted(t, &order, &mu, gone)
+			old := osStderr
+			osStderr = io.Discard
+			t.Cleanup(func() { osStderr = old })
+
+			err := startForLaunch(&config.Config{}, startTestRow(), true)
+			var stopped *lifecycle.StoppedError
+			if !errors.As(err, &stopped) {
+				t.Fatalf("startForLaunch() = %v, want the *StoppedError on the chain", err)
+			}
+			if want := lifecycle.StartErrorMessage("omlx/qwen3.8", gone); err.Error() != want || !strings.HasPrefix(want, "omlx/qwen3.8 is not running") {
+				t.Errorf("error = %q, want the shared wording %q", err, want)
+			}
+			if strings.Join(order, ",") != "wait,confirm" {
+				t.Errorf("order = %v, want the check after the proxy wait", order)
+			}
+			want := lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", ModelID: "omlx/qwen3.8"}
+			if len(*asked) != 1 || (*asked)[0] != want {
+				t.Errorf("asked about %+v, want %+v once", *asked, want)
+			}
+		})
+	}
+}
+
+// TestStartForLaunchDoesNotCheckAStartThatFailed verifies the check is the
+// success path's alone: a failed start has no server to ask about, and a
+// probe there could remove the route of a model the failure never touched.
+func TestStartForLaunchDoesNotCheckAStartThatFailed(t *testing.T) {
+	stubSignals(t)
+	stubLifecycleStart(t, []error{errors.New("omlx: boom")})
+	var mu sync.Mutex
+	var order []string
+	stubConfirmStarted(t, &order, &mu, nil)
+	if err := startForLaunch(&config.Config{}, startTestRow(), false); err == nil {
+		t.Fatal("startForLaunch() error = nil, want the engine's failure")
+	}
+	if len(order) != 0 {
+		t.Errorf("order = %v, want no check after a failed start", order)
+	}
+}

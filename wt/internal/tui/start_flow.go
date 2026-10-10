@@ -33,6 +33,11 @@ var startModel = lifecycle.Start
 // to sit behind, so it calls it from a command, behind phaseRouting.
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
 
+// confirmStarted is a test seam over lifecycle.ConfirmStarted: the one probe
+// that follows the proxy wait, so a model another terminal stopped during
+// that wait is reported instead of launched on (#343).
+var confirmStarted = lifecycle.ConfirmStarted
+
 // ensureModelRoute is a test seam over lifecycle.EnsureModelRouteTo, the form
 // of the launch-time check that sends its output to a writer of the caller's.
 // Production rewrites config.yaml and restarts the LiteLLM proxy; TestMain
@@ -438,6 +443,12 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		// The launch that follows routes through LiteLLM: settle the route
 		// hook's async proxy restart before handing the model to an agent.
 		waitPendingRoutes()
+		// That wait is where a stop from another terminal lands: one probe
+		// before the model is handed to an agent.
+		mdl := st.item.model
+		if err := confirmStarted(context.Background(), m.cfg, lifecycle.Target{ProviderID: mdl.ProviderID, ModelName: mdl.ModelName, ModelID: mdl.ID}); err != nil {
+			return back(lifecycle.StartErrorMessage(mdl.ID, err))
+		}
 		// The launch follows a successful start, and proceedToLaunch clears
 		// the status line, so the note takes the route notes' way out: onto
 		// the real terminal, above the agent's output. If that launch fails

@@ -87,6 +87,9 @@ func TestMain(m *testing.M) {
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
 	}
+	// The check that follows a start (#343) probes the provider's server and
+	// may remove a route. Tests that assert on it swap it themselves.
+	confirmStarted = func(context.Context, *config.Config, lifecycle.Target) error { return nil }
 	// The launch-time route check (#192): unstubbed, a test that launches a
 	// running local model through LiteLLM would rewrite the developer's real
 	// config.yaml and restart their proxy. Both forms are stubbed — the

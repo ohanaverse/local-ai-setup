@@ -253,7 +253,9 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 // afterwards, whether or not the load succeeded (reconcilePool). After a
 // successful start the model's LiteLLM route is updated (routes.go), announced
 // as StageRouting so callers stop rendering the engine's last stage while the
-// proxy is bounced.
+// proxy is bounced. It returns once config.yaml is written: a caller that
+// then waits for the proxy (WaitPendingRoutes) owes ConfirmStarted after the
+// wait, since the model can be stopped during it.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
 	e := defaultEnv()
 	if err := start(ctx, e, cfg, t, opts); err != nil {

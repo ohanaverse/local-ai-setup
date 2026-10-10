@@ -288,6 +288,29 @@
 
 ### Fixed
 
+- `wt start` no longer prints `<id> is running` and exits 0 for a model that
+  was stopped while it waited for the LiteLLM proxy (#343). A start reports
+  success as soon as the route is written; the wait for the proxy that
+  follows takes about ten seconds, and a `wt stop` from another terminal in
+  that time left the first one announcing a server that was gone. After the
+  wait wt now asks the provider's server once whether the model is still
+  there, and a model that is gone is one error line and exit 1:
+  `<id> is not running: it started, and was stopped while wt updated the
+  LiteLLM routes (...)`. The route the start wrote is removed, so a stop
+  that ran just before the start's route write does not leave a route to a
+  dead port. Gone means: an mtplx whose port refuses the connection or that
+  no longer serves the model, an omlx that refuses or no longer has it
+  loaded, an ollama daemon that refuses. An ollama model that was only
+  unloaded still counts as running, because ollama loads it on the next
+  request. `wt smoke`, a `-M` launch that starts its model and the TUI's
+  start make the same check before they use the model.
+- `wt stop` of a serving mtplx removes the pidfile and wt's start record
+  (#343). Only the stop of a server that was still loading did; the ordinary
+  stop left both in `/tmp` naming a dead pid. They are removed only when the
+  pidfile named the server that was stopped, verified before the stop as a
+  loading server is (the user's own regular file, no symlink, the user's own
+  mtplx server on that port, the recorded start time), and only once that
+  process is gone. A pidfile naming any other process is left alone.
 - `wt cloud-sync` no longer stores, for a model OpenRouter prices by time of
   day, whichever price was in force when the sync ran (#322). Such a model
   used to flip between its rates from one sync to the next, each flip
