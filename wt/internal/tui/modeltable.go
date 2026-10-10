@@ -79,7 +79,7 @@ func costNote(r tableRow) string {
 		return strconv.FormatFloat(*v, 'g', 6, 64)
 	}
 	word := "cost"
-	if r.Model.Cost.TimePriced() {
+	if r.timePriced() {
 		word += timePricedMark
 	}
 	return word + " " + short(p.Input) + "/" + short(p.Cache) + "/" + short(p.Output)
@@ -90,7 +90,7 @@ func costNote(r tableRow) string {
 func costCell(r tableRow) string {
 	p := r.price()
 	text := formatPerToken(config.ModelCost{InputPricePerMillion: p.Input, CachePricePerMillion: p.Cache, OutputPricePerMillion: p.Output})
-	if r.Model.Cost.TimePriced() {
+	if r.timePriced() {
 		text += timePricedMark
 	}
 	return text
@@ -186,7 +186,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		cost[i] = "-"
 		if !r.Discovered {
 			cost[i] = costCell(r)
-			timePriced = timePriced || r.Model.Cost.TimePriced()
+			timePriced = timePriced || r.timePriced()
 		}
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])

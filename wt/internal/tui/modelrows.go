@@ -23,21 +23,51 @@ type tableRow struct {
 	catalog.Row
 	counts usage.UsageCounts
 	stats  survey.Stats
-	// at is the instant the row's price is read at: the one its table was
+	// at is the instant the row's price was read at: the one its table was
 	// built at, the same for every row of the table. The zero time is a row
 	// with no clock (one a test built by hand), which is priced flat.
 	at time.Time
+	// in and timed are the row's price in force at that instant and whether
+	// its model's price depends on the time, resolved once when the row was
+	// given its clock (pricedAt). Resolving checks each cost.time_prices row
+	// against the registry's rules and reads its timezone, and the sort asks
+	// for a row's price twice per comparison, so nothing that sorts or draws
+	// the table resolves again. Neither is set for a row with no clock.
+	in    config.PriceInForce
+	timed bool
+}
+
+// pricedAt is the row with its clock set to at and its price resolved for
+// that instant: the model's flat prices, or those of the cost.time_prices
+// row whose window holds it (config.ModelCost.PriceAt). The zero time gives
+// a row with no clock. This is the one place a table's row is priced.
+func (r tableRow) pricedAt(at time.Time) tableRow {
+	r.at, r.in, r.timed = at, config.PriceInForce{}, false
+	if !at.IsZero() {
+		r.in, r.timed = r.Model.Cost.PriceAt(at), r.Model.Cost.TimePriced()
+	}
+	return r
 }
 
 // price is the row's three prices in force at the instant its table was
-// built: the model's flat prices, or those of the cost.time_prices row
-// whose window holds that instant (config.ModelCost.PriceAt). It is what
-// the COST column shows and what the cost sort compares.
+// built, as pricedAt resolved them. It is what the COST column shows and
+// what the cost sort compares. A row with no clock has its model's flat
+// prices.
 func (r tableRow) price() config.PriceInForce {
 	if r.at.IsZero() {
 		return r.Model.Cost.Flat()
 	}
-	return r.Model.Cost.PriceAt(r.at)
+	return r.in
+}
+
+// timePriced reports whether the row's price depends on the time (its model
+// has a cost.time_prices row that is applied), as pricedAt found it. It is
+// what marks the row's price with "~". A row with no clock asks its model.
+func (r tableRow) timePriced() bool {
+	if r.at.IsZero() {
+		return r.Model.Cost.TimePriced()
+	}
+	return r.timed
 }
 
 // tableInput gathers everything buildRows needs. models is the agent's
@@ -82,7 +112,7 @@ func buildRows(in tableInput) []tableRow {
 	out := make([]tableRow, len(rows))
 	ids := make([]string, len(rows))
 	for i, r := range rows {
-		out[i] = tableRow{Row: r, at: now}
+		out[i] = tableRow{Row: r}.pricedAt(now)
 		ids[i] = r.Model.ID
 	}
 	var counts map[string]usage.UsageCounts

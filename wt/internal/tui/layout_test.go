@@ -1110,6 +1110,7 @@ func TestModelPickerNamesTheHighlightedModelsPrice(t *testing.T) {
 	// discovered row.
 	row := timedTableRows(ollamaPeak)[0]
 	row.Model.Cost.CachePricePerMillion, row.Model.Cost.TimePrices[0].CachePricePerMillion = nil, nil
+	row = row.pricedAt(ollamaPeak)
 	if got := costNote(row); got != "cost~ 0.66/-/1.98" {
 		t.Errorf("costNote with no cached-input price = %q", got)
 	}

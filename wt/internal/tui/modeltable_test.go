@@ -310,15 +310,15 @@ func timedTableRows(at time.Time) []tableRow {
 			{Days: []string{"sat", "sun"}, Start: "00:00", End: "24:00"},
 		}}
 	return []tableRow{
-		{Row: catalog.Row{Model: config.Model{ID: "openrouter/deepseek--deepseek-v4-pro-0813", Family: "deepseek", Cost: config.ModelCost{
+		tableRow{Row: catalog.Row{Model: config.Model{ID: "openrouter/deepseek--deepseek-v4-pro-0813", Family: "deepseek", Cost: config.ModelCost{
 			InputPricePerMillion: f64(1.32), CachePricePerMillion: f64(0.044), OutputPricePerMillion: f64(3.96), TimePrices: []config.TimePrice{openrouter}}},
-			Location: config.LocationCloud, Status: catalog.StatusOK}, at: at},
-		{Row: catalog.Row{Model: config.Model{ID: "ollama/glm-5.3:cloud", Family: "glm", Cost: config.ModelCost{
+			Location: config.LocationCloud, Status: catalog.StatusOK}}.pricedAt(at),
+		tableRow{Row: catalog.Row{Model: config.Model{ID: "ollama/glm-5.3:cloud", Family: "glm", Cost: config.ModelCost{
 			InputPricePerMillion: f64(0.5), CachePricePerMillion: f64(0.05), OutputPricePerMillion: f64(2), TimePrices: []config.TimePrice{offpeak}}},
-			Location: config.LocationCloud, Status: catalog.StatusOK}, at: at},
-		{Row: catalog.Row{Model: config.Model{ID: "openrouter/z-ai--glm-5.2", Family: "glm", Cost: config.ModelCost{
+			Location: config.LocationCloud, Status: catalog.StatusOK}}.pricedAt(at),
+		tableRow{Row: catalog.Row{Model: config.Model{ID: "openrouter/z-ai--glm-5.2", Family: "glm", Cost: config.ModelCost{
 			InputPricePerMillion: f64(0.06), CachePricePerMillion: f64(0.059), OutputPricePerMillion: f64(6)}},
-			Location: config.LocationCloud, Status: catalog.StatusOK}, at: at},
+			Location: config.LocationCloud, Status: catalog.StatusOK}}.pricedAt(at),
 	}
 }
 
@@ -407,6 +407,7 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	// stays COST and the column stays as wide as its cells.
 	bare := timedTableRows(deepseekDear)[:1]
 	bare[0].Model.Cost.InputPricePerMillion, bare[0].Model.Cost.CachePricePerMillion, bare[0].Model.Cost.OutputPricePerMillion = nil, nil, nil
+	bare[0] = bare[0].pricedAt(deepseekDear)
 	tbl := renderTable(bare, nil, "", nil, "")
 	if got := costCellOf(t, tbl, deepseek); got != "-~  " || strings.Contains(tbl.header, "varies") {
 		t.Errorf("rows only, outside their windows: COST = %q, header %q; want \"-~\" under a plain COST heading", got, tbl.header)
@@ -417,6 +418,7 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	// `wt model list` is where the row is named.
 	odd := timedTableRows(deepseekDear)[:1]
 	odd[0].Model.Cost.TimePrices[0].Windows = []config.CostWindow{{Days: []string{"mon"}, Start: "9:00", End: "17:00"}}
+	odd[0] = odd[0].pricedAt(deepseekDear)
 	tbl = renderTable(odd, nil, "", nil, "")
 	if got := costCellOf(t, tbl, deepseek); got != " 1.3200  0.0440  3.9600" || strings.Contains(tbl.header, "~") {
 		t.Errorf("a row that is not applied: COST = %q, header %q; want the flat price unmarked under a plain COST heading", got, tbl.header)
@@ -428,10 +430,11 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	night := timedTableRows(deepseekDear)[:1]
 	night[0].Model.Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC", OutputPricePerMillion: f64(1.5),
 		Windows: []config.CostWindow{{Days: []string{"sun"}, Start: "22:00", End: "06:00"}}}}
+	night[0] = night[0].pricedAt(deepseekDear)
 	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  1.5000~" {
 		t.Errorf("a window past midnight, the morning after its day: COST = %q, want the night price, marked", got)
 	}
-	night[0].at = ollamaPeak
+	night[0] = night[0].pricedAt(ollamaPeak)
 	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  3.9600~" {
 		t.Errorf("a window past midnight, outside it: COST = %q, want the flat price, marked", got)
 	}
