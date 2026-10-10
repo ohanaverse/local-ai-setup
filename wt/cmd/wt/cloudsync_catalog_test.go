@@ -287,7 +287,10 @@ tags = []
 			}[tc.code]; final != want {
 				t.Errorf("the command's error = %q, want %q", final, want)
 			}
-			if !strings.Contains(stdout, tc.wantPlan) {
+			// Guarded: an empty wantPlan asks for nothing, and an unguarded
+			// Contains against "" would assert nothing while reading as though
+			// it did.
+			if tc.wantPlan != "" && !strings.Contains(stdout, tc.wantPlan) {
 				t.Errorf("the plan lacks %q:\n%s", tc.wantPlan, stdout)
 			}
 			want := strings.ReplaceAll(tc.stderr, "TMPDIR", os.TempDir())
