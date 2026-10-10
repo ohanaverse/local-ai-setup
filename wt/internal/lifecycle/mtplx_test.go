@@ -345,7 +345,9 @@ func TestLogTailReadsOnlyTheTail(t *testing.T) {
 // so a failed start's message began "stained MTP runtime". The partial first
 // line is dropped; a cut that already falls on a line start loses nothing; a
 // log that fits is whole; and a tail with no newline at all — one long line —
-// is still returned, since dropping it would show nothing.
+// is still returned, since dropping it would show nothing. The same holds for
+// a tail whose only newline is its last byte: a last line longer than max, or
+// a run of "\r" progress redraws before the server's last words.
 func TestLogTailLinesBeginsAtALineStart(t *testing.T) {
 	dir := t.TempDir()
 	p := pidProcess{name: "mtplx", logfile: filepath.Join(dir, "mtplx.log")}
@@ -360,6 +362,8 @@ func TestLogTailLinesBeginsAtALineStart(t *testing.T) {
 		"log fits":                {"first\nsecond\n", 512, "first\nsecond\n"},
 		"log is exactly max":      {"first\nsecond\n", 13, "first\nsecond\n"},
 		"one long line":           {strings.Repeat("x", 100), 10, strings.Repeat("x", 10)},
+		"long last line":          {"first\n" + strings.Repeat("x", 100) + "\n", 10, strings.Repeat("x", 9) + "\n"},
+		"redraws, then one line":  {"first\n" + strings.Repeat("10%\r", 20) + "boom\n", 10, "\r10%\rboom\n"},
 		"empty log":               {"", 512, ""},
 		"nothing asked for":       {"first\n", 0, ""},
 	} {
@@ -403,6 +407,24 @@ func TestMtplxFailedStartShowsWholeLogLines(t *testing.T) {
 	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.HasSuffix(err.Error(), "; log tail: boom") {
 		t.Errorf("err = %v, want the log tail to be the server's last line alone", err)
+	}
+}
+
+// TestSpawnExitedImmediatelyShowsWholeLogLines is the same for a process that
+// dies inside spawn's own 200ms watch: its "exited immediately" message
+// carries the line-start tail too.
+func TestSpawnExitedImmediatelyShowsWholeLogLines(t *testing.T) {
+	e, cfg, _, _ := mtplxEnv(t, "die-now", 0)
+	if err := os.WriteFile(e.mtplxProc.logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\nfatal: out of memory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "exited immediately") {
+		t.Fatalf("err = %v, want 'exited immediately'", err)
+	}
+	_, tail, _ := strings.Cut(err.Error(), "; log tail: ")
+	if !strings.HasPrefix(tail, "fatal: out of memory\n") {
+		t.Errorf("log tail = %q, want it to begin at a line start", tail)
 	}
 }
 
