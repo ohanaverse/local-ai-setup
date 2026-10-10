@@ -526,6 +526,30 @@ func TestSyncModelsDirectResyncsStaleNonOllamaProvider(t *testing.T) {
 	}
 }
 
+// TestSyncModelsDirectWritesMtplxWhereWtServesIt verifies pi's direct mtplx
+// block gets the address wt's own probes use (#348): a registry base_url with
+// no port means the port `wt start` serves mtplx on. Written as it stands in
+// the registry, pi dials port 80 and cannot reach the model wt just started.
+func TestSyncModelsDirectWritesMtplxWhereWtServesIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	// The block as an earlier wt wrote it, from the url as it stands.
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mtplx-local","baseUrl":"http://127.0.0.1/v1","models":[{"_launch":true,"id":"Y/Q35"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://127.0.0.1/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "mtplx/Y--Q35", ModelName: "Y/Q35", ProviderID: "mtplx"},
+		},
+	}
+	if err := syncModels(cfg, path, config.Model{}, Route{}); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	if got := readPiModels(t, path).Providers["mtplx"].BaseURL; got != "http://127.0.0.1:8003/v1" {
+		t.Errorf("baseUrl = %q, want http://127.0.0.1:8003/v1", got)
+	}
+}
+
 // A non-ollama provider block holding a model wt doesn't recognize (i.e. not
 // one of the registry's own models for that provider id) must be treated as
 // the user's own independently-configured pi provider, not wt-owned — its

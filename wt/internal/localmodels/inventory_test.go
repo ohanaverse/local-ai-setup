@@ -8,7 +8,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -771,6 +773,123 @@ func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
 	// The registry-free default still resolves to the family default.
 	if origin, port, err = FamilyOriginPort(&config.Config{}, "omlx"); err != nil || port != 8000 {
 		t.Errorf("default omlx: origin=%q port=%d err=%v, want 8000 and no error", origin, port, err)
+	}
+}
+
+// TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot pins that
+// FamilyOriginPort cannot be the way a second reading of a provider's address
+// comes back (#348). For a family wt hands no port to, a url with no port has
+// no port to return: it is an error, not the family's usual port put on an
+// origin the probes, the start and the route do not use. A url that names its
+// port, and the default with no registry row, are FamilyOrigin's own origin.
+func TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot(t *testing.T) {
+	for _, id := range []string{"omlx", "omlx-6bit", "ollama", "mlx_lm_server"} {
+		family := familyOf(id)
+		bare := &config.Config{Providers: []config.Provider{localProvider(id, "http://127.0.0.1/v1", "")}}
+		if origin, port, err := FamilyOriginPort(bare, family); err == nil {
+			probe, _ := FamilyOrigin(bare, family)
+			t.Errorf("%s with no port: FamilyOriginPort = %q, %d; want an error (FamilyOrigin is %q)", id, origin, port, probe)
+		}
+		for _, cfg := range []*config.Config{
+			{},
+			{Providers: []config.Provider{localProvider(id, "http://127.0.0.1:9123/v1", "")}},
+		} {
+			probe, _ := FamilyOrigin(cfg, family)
+			origin, port, err := FamilyOriginPort(cfg, family)
+			if err != nil || origin != probe || !strings.HasSuffix(origin, ":"+strconv.Itoa(port)) {
+				t.Errorf("%s: FamilyOriginPort = %q, %d, %v; want FamilyOrigin's %q and its port", id, origin, port, err, probe)
+			}
+		}
+	}
+}
+
+// TestFamilyOriginIsWhereAStartServesMtplx pins #348 at the helpers: for an
+// mtplx base_url that names no port, the origin every probe uses
+// (FamilyOrigin) is the origin a start spawns and polls (FamilyOriginPort),
+// on the port wt serves mtplx on. FamilyOrigin used to read such a url as
+// written — port 80 — so the start polled 8003 and succeeded, and the
+// inventory, the occupant check and the check after the start all asked a
+// port nothing listens on. Families wt hands no port to keep the url as it
+// is written: there the start and the probes already asked the same address.
+func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
+	for _, base := range []string{"http://127.0.0.1/v1", "http://localhost", "http://0.0.0.0/v1", "http://localhost./v1", "http://127.0.0.1:9123/v1"} {
+		cfg := &config.Config{Providers: []config.Provider{localProvider("mtplx", base, "")}}
+		probe, fromRegistry := FamilyOrigin(cfg, "mtplx")
+		start, port, err := FamilyOriginPort(cfg, "mtplx")
+		if err != nil {
+			t.Fatalf("%q: FamilyOriginPort: %v", base, err)
+		}
+		u, perr := url.Parse(probe)
+		if perr != nil || probe != start || u.Port() != strconv.Itoa(port) || !fromRegistry {
+			t.Errorf("%q: probe origin %q, start origin %q on port %d; want one origin that names that port", base, probe, start, port)
+		}
+	}
+	if got, _ := FamilyOrigin(&config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1/v1", "")}}, "mtplx"); got != "http://127.0.0.1:"+strconv.Itoa(config.MtplxPort) {
+		t.Errorf("FamilyOrigin = %q, want the port wt serves mtplx on (%d)", got, config.MtplxPort)
+	}
+	if got, _ := FamilyOrigin(&config.Config{}, "mtplx"); got != "http://localhost:"+strconv.Itoa(config.MtplxPort) {
+		t.Errorf("default mtplx origin = %q, want config.MtplxPort (%d): the two are one port", got, config.MtplxPort)
+	}
+	// As written: another host or https (not a server wt started), and the
+	// families whose port is not wt's to choose.
+	for _, c := range []struct{ id, base, want string }{
+		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example"},
+		{"mtplx", "http://10.0.0.5/v1", "http://10.0.0.5"},
+		{"mtplx", "http://mybox/v1", "http://mybox"},
+		{"mtplx", "http://[::1]/v1", "http://[::1]"},
+		{"omlx", "http://127.0.0.1/v1", "http://127.0.0.1"},
+		{"ollama", "http://127.0.0.1", "http://127.0.0.1"},
+		{"mlx_lm_server", "http://localhost/v1", "http://localhost"},
+	} {
+		cfg := &config.Config{Providers: []config.Provider{localProvider(c.id, c.base, "")}}
+		if got, _ := FamilyOrigin(cfg, familyOf(c.id)); got != c.want {
+			t.Errorf("%s %q: FamilyOrigin = %q, want %q (as written)", c.id, c.base, got, c.want)
+		}
+		// No port on the probes' origin is no port for a start either: a
+		// second reading that added one is what #348 was.
+		if origin, port, err := FamilyOriginPort(cfg, familyOf(c.id)); err == nil {
+			t.Errorf("%s %q: FamilyOriginPort = %q, %d; want an error, FamilyOrigin names no port", c.id, c.base, origin, port)
+		}
+	}
+}
+
+// onlyHost is an HTTP client that reaches srv when asked for host and gets a
+// refused connection for anything else, so a test can stand a server on a
+// fixed port (mtplx's default) without binding it or dialling whatever does.
+func onlyHost(t *testing.T, host string, srv *httptest.Server) *http.Client {
+	t.Helper()
+	to, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{Timeout: 2 * time.Second, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != host {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+		}
+		fwd := r.Clone(r.Context())
+		fwd.URL.Host = to.Host
+		return http.DefaultTransport.RoundTrip(fwd)
+	})}
+}
+
+// TestInventorySeesAnMtplxOnThePortWtServesItOn verifies the inventory and
+// `wt served` find an mtplx the registry gives no port for where `wt start`
+// put it (#348). Asking port 80 instead, the picker listed a serving model as
+// not running and offered to start it again, `wt stop` had nothing to stop,
+// and a route sync read the refused connection as a server that is down and
+// removed the family's routes.
+func TestInventorySeesAnMtplxOnThePortWtServesItOn(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "Y--Q35")
+	client := onlyHost(t, "127.0.0.1:"+strconv.Itoa(config.MtplxPort), modelsServer(t, "Y/Q35"))
+	cfg := &config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1/v1", root)}}
+
+	snap := inventory(cfg, client)
+	if e, ok := byModelID(snap, "mtplx/Y/Q35"); !ok || !e.Running || snap.Down["mtplx"] {
+		t.Errorf("entry = %+v ok=%v down=%v, want the model running on a family that is up", e, ok, snap.Down["mtplx"])
+	}
+	if ids, err := ServedIDs(cfg, client, "mtplx"); err != nil || !slices.Equal(ids, []string{"Y/Q35"}) {
+		t.Errorf("ServedIDs = %v, %v; want [Y/Q35]", ids, err)
 	}
 }
 

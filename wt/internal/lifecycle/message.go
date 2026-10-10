@@ -26,7 +26,8 @@ func StageLabel(s Stage) string {
 // StartErrorMessage is the one-line message for a failed start, shared by the
 // TUI's picker status line and the non-TUI driver's stderr. A down daemon
 // names the provider and origin (the user has to start an app or service);
-// the binary and port errors are already actionable as written; a server
+// the binary, port and mtplx address errors are already actionable as
+// written; a server
 // that was stopped again after it started (*StoppedError) did not fail to
 // start, and is worded as not running; everything
 // else is prefixed with the model id so an unattributed engine error is still
@@ -40,10 +41,11 @@ func StartErrorMessage(id string, err error) string {
 	var bin *BinaryMissingError
 	var busy *PortBusyError
 	var stopped *StoppedError
+	var addr *MtplxAddressError
 	switch {
 	case errors.As(err, &down):
 		return fmt.Sprintf("%s is not answering at %s — start it first", down.Provider, down.Origin)
-	case errors.As(err, &bin), errors.As(err, &busy):
+	case errors.As(err, &bin), errors.As(err, &busy), errors.As(err, &addr):
 		return err.Error()
 	case errors.As(err, &stopped):
 		return fmt.Sprintf("%s is not running: %v", id, stopped)

@@ -47,7 +47,8 @@ type Options struct {
 	// is for a caller that owns the screen (the model picker's alt screen
 	// hides stderr). Writes are serialised (routesOutMu), but the restart's
 	// warnings are written by a goroutine that outlives Start, so the text
-	// is complete only once WaitPendingRoutes has returned.
+	// is complete only once WaitPendingRoutes has returned (SettleStart, for
+	// a start that succeeded).
 	Out io.Writer
 }
 
@@ -89,6 +90,18 @@ type PortBusyError struct{ Port int }
 
 func (e *PortBusyError) Error() string {
 	return fmt.Sprintf("port %d is in use by another process — stop it before starting this model", e.Port)
+}
+
+// MtplxAddressError means the registry's mtplx base_url gives a start no
+// address: it names no port and is not a url wt puts its own on, or it does
+// not parse. wt serves mtplx on 127.0.0.1 and gives a url with no port its
+// port only where that server answers (config.Provider.Origin); a server
+// spawned for any other url would not be the one at that address, so nothing
+// is spawned. Origin is the address as wt reads it.
+type MtplxAddressError struct{ Origin string }
+
+func (e *MtplxAddressError) Error() string {
+	return fmt.Sprintf("the registry's mtplx base_url (%s) names no port, and wt serves mtplx on 127.0.0.1 — name the port mtplx listens on in the base_url, or use http://127.0.0.1", e.Origin)
 }
 
 // OccupancyUnknownError means the provider's live state could not be
@@ -259,9 +272,10 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 // afterwards, whether or not the load succeeded (reconcilePool). After a
 // successful start the model's LiteLLM route is updated (routes.go), announced
 // as StageRouting so callers stop rendering the engine's last stage while the
-// proxy is bounced. It returns once config.yaml is written: a caller that
-// then waits for the proxy (WaitPendingRoutes) owes ConfirmStarted after the
-// wait, since the model can be stopped during it.
+// proxy is bounced. It returns once config.yaml is written, with the proxy
+// restart still running and the model free to be stopped during it: a caller
+// about to say the model is running, or to hand it to an agent, calls
+// SettleStart after a nil return, which is that wait and the check after it.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
 	return startWith(ctx, defaultEnv(), cfg, t, opts)
 }

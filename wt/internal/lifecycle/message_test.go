@@ -23,6 +23,7 @@ func TestStartErrorMessageMapsEngineFailures(t *testing.T) {
 		{"daemon down", &DaemonDownError{Provider: "omlx", Origin: "http://localhost:8000"}, "omlx/q", []string{"is not answering at", "http://localhost:8000"}},
 		{"binary missing", &BinaryMissingError{Binary: "omlx"}, "omlx/q", []string{"omlx"}},
 		{"port busy", &PortBusyError{Port: 8000}, "omlx/q", []string{"8000"}},
+		{"mtplx address", &MtplxAddressError{Origin: "http://mybox"}, "mtplx/q", []string{"http://mybox", "names no port", "127.0.0.1"}},
 		{"generic", errors.New("boom"), "omlx/q", []string{"failed to start omlx/q: boom"}},
 		{"stopped after it started", &StoppedError{Why: "mtplx no longer answers at http://127.0.0.1:8003"}, "mtplx/q", []string{"mtplx/q is not running: it started, and was stopped while wt updated the LiteLLM routes (mtplx no longer answers at http://127.0.0.1:8003)"}},
 	}

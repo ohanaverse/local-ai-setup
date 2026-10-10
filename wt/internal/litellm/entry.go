@@ -117,7 +117,9 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 	}
 	if base != "" {
 		if pol.V1Base {
-			base = config.BaseOrigin(base) + "/v1"
+			// Provider.Origin, as wt's own probes read the address: the
+			// proxy has to dial the server wt started (#348).
+			base = p.Origin() + "/v1"
 		}
 		params = append(params, kv{"api_base", base})
 	}

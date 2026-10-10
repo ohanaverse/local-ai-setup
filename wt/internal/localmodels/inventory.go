@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -47,10 +46,15 @@ const probeTimeout = 2 * time.Second
 const (
 	defaultOmlxOrigin  = "http://localhost:8000"
 	defaultMlxLMOrigin = "http://localhost:8001"
-	defaultMtplxOrigin = "http://localhost:8003"
 	defaultOmlxDir     = "~/.omlx/models"
 	defaultMtplxDir    = "~/.mtplx/models"
 )
+
+// defaultMtplxOrigin is where wt looks for mtplx when the registry has no
+// mtplx base_url. Its port is config.MtplxPort, the one a start serves mtplx
+// on and config.Provider.Origin gives a url with no port, so the three cannot
+// come to name different ports.
+var defaultMtplxOrigin = "http://localhost:" + strconv.Itoa(config.MtplxPort)
 
 // ModelDir is the expanded model directory the probe scans for a family: the
 // first of the family's provider rows that names a model_dir, else the family
@@ -357,7 +361,10 @@ func familyProviderID(cfg *config.Config, family string) string {
 // registry (the first provider row of the family with an auth.base_url) rather
 // than the default port. The inventory probe and internal/lifecycle's
 // start/stop flows both resolve origins through it, so they always describe
-// the same server.
+// the same server. The registry's value is read through config.Provider.Origin,
+// as a route's api_base and a direct route are: for an mtplx base_url with no
+// port on this machine that is the port `wt start` serves it on, not port 80
+// (#348).
 func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistry bool) {
 	def := ""
 	switch family {
@@ -372,52 +379,37 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 	}
 	for _, id := range familyProviderIDs(family) {
 		if p := cfg.ProviderByID(id); p != nil && p.Auth.BaseURL != "" {
-			return config.BaseOrigin(p.Auth.BaseURL), true
+			return p.Origin(), true
 		}
 	}
 	return def, false
 }
 
 // FamilyOriginPort is FamilyOrigin with the URL's port resolved, for callers
-// that must hand a numeric port to a command line as well as dial the origin.
-// When the origin carries no port the family default is applied to the origin
-// itself, not only to the returned number, so the two can never describe
-// different servers.
+// that must hand a numeric port to a command line as well as dial the origin
+// (mtplx's start and stop). The origin it returns is always FamilyOrigin's,
+// so it cannot be a second reading of a provider's address (#348).
+//
+// FamilyOrigin names a port for the default of every family and for an mtplx
+// url on an address wt serves mtplx on (config.Provider.Origin). An origin
+// with no port is an error: for mtplx it is a url wt cannot serve at, which
+// a start refuses, and wt hands the other families no port, so one added
+// here would be an address nothing else reads.
 func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
 	origin, _ := FamilyOrigin(cfg, family)
 	u, err := url.Parse(origin)
 	if err != nil {
 		return "", 0, fmt.Errorf("origin %q: %w", origin, err)
 	}
-	if p := u.Port(); p != "" {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return "", 0, fmt.Errorf("origin %q: bad port %q", origin, p)
-		}
-		return origin, n, nil
+	p := u.Port()
+	if p == "" {
+		return "", 0, fmt.Errorf("origin %q names no port", origin)
 	}
-	def, ok := defaultPortFor(family)
-	if !ok {
-		return "", 0, fmt.Errorf("origin %q has no port and family %q has no default", origin, family)
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		return "", 0, fmt.Errorf("origin %q: bad port %q", origin, p)
 	}
-	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(def))
-	return u.String(), def, nil
-}
-
-// defaultPortFor is the port a family's default origin uses, so a registry base
-// url that omits a port resolves to the same server the defaults describe.
-func defaultPortFor(family string) (int, bool) {
-	switch family {
-	case "ollama":
-		return 11434, true
-	case "omlx":
-		return 8000, true
-	case "mtplx":
-		return 8003, true
-	case "mlx_lm_server":
-		return 8001, true
-	}
-	return 0, false
+	return origin, n, nil
 }
 
 // refused reports whether err is a refused TCP connection: the port has no

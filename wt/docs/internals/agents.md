@@ -6,7 +6,7 @@ Internals reference for `wt/`, reached from [`wt/CLAUDE.md`](../../CLAUDE.md). B
 
 Each agent registers a `Driver` (`Build(m config.Model, yolo bool, r config.Route) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)` is the shared constructor for both launch paths — it resolves one `config.Route` via `cfg.ResolveRoute(m, agents.ProtocolsFor(agent))` and hands it to `Build`; drivers must not bypass it.
 
-`Route` carries `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the provider's own `auth.base_url` (key from `auth.secret_ref` via `ResolveSecret`); litellm/forced routes dial the `[litellm]` url/key.
+`Route` carries `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the provider's own `auth.base_url`, read through `Provider.Origin` as wt's probes read it (an mtplx url on this machine with no port is port 8003, #348; key from `auth.secret_ref` via `ResolveSecret`); litellm/forced routes dial the `[litellm]` url/key.
 
 **Agent protocols.** Agents declare wire protocols via `ProtocolDeclarer`; providers declare what they serve (`Provider.protocols`, default `openai-chat`). An empty intersection sets `Forced = true` — LiteLLM regardless of the toggle.
 

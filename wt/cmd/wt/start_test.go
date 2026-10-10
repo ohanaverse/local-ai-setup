@@ -503,39 +503,56 @@ func TestStartForLaunchGenericFailureUsesSharedWording(t *testing.T) {
 	}
 }
 
-// stubWaitRoutes replaces the route-settling seam with a recorder. The
-// returned entered channel is closed when the wait begins; the wait does not
-// return until release is closed, so a test can observe what the caller does
-// (or refuses to do) while a proxy restart is still in flight.
-func stubWaitRoutes(t *testing.T, log *[]string, mu *sync.Mutex) (entered chan struct{}, release func()) {
+// stubSettleStart replaces what follows a start the engine reported done
+// (lifecycleSettleStart: the proxy wait, the check, the wait after a route
+// removal) with a recorder that appends "settle" to log, records the target
+// and the writer it was handed, and returns err. The returned entered channel
+// is closed when the first call begins; no call returns until release is
+// called, so a test can observe what the caller does (or refuses to do) while
+// a proxy restart is still in flight.
+func stubSettleStart(t *testing.T, log *[]string, mu *sync.Mutex, err error) (entered chan struct{}, release func(), calls *[]settleCall) {
 	t.Helper()
 	entered = make(chan struct{})
 	ch := make(chan struct{})
 	// Closed at most once, whether the test releases the wait itself or the
 	// cleanup has to unblock an abandoned caller after a failed assertion.
 	release = sync.OnceFunc(func() { close(ch) })
-	old := waitPendingRoutes
-	waitPendingRoutes = func() {
+	enter := sync.OnceFunc(func() { close(entered) })
+	calls = &[]settleCall{}
+	old := lifecycleSettleStart
+	lifecycleSettleStart = func(ctx context.Context, out io.Writer, _ *config.Config, target lifecycle.Target) error {
 		mu.Lock()
-		*log = append(*log, "wait")
+		*log = append(*log, "settle")
+		*calls = append(*calls, settleCall{target: target, out: out, ctxErr: ctx.Err()})
 		mu.Unlock()
-		close(entered)
+		enter()
 		<-ch
+		return err
 	}
-	t.Cleanup(func() { waitPendingRoutes = old; release() })
-	return entered, release
+	t.Cleanup(func() { lifecycleSettleStart = old; release() })
+	return entered, release, calls
 }
 
-// TestStartForLaunchWaitsForPendingRoutesBeforeReturning pins the ordering the
+// settleCall is one call stubSettleStart recorded.
+type settleCall struct {
+	target lifecycle.Target
+	out    io.Writer
+	ctxErr error
+}
+
+// TestStartForLaunchSettlesTheStartBeforeReturning pins the ordering the
 // agent launch depends on: the LiteLLM proxy restart the route hook kicks off
 // runs asynchronously, and startForLaunch's caller hands the model straight to
 // an agent that dials it THROUGH the proxy. Returning early would let that
 // agent meet a mid-restart proxy (connection refused) or the route table from
 // before the model existed. The wait must also come AFTER the engine start, so
-// it settles this start's own route write rather than some earlier one.
+// it settles this start's own route write rather than some earlier one. The
+// wait is lifecycle.SettleStart's first step since #349;
 // lifecycle.WaitPendingRoutes really blocking until the restart finishes is
-// pinned separately by TestWaitPendingRoutesBlocksUntilTheRestartFinishes.
-func TestStartForLaunchWaitsForPendingRoutesBeforeReturning(t *testing.T) {
+// pinned separately by TestWaitPendingRoutesBlocksUntilTheRestartFinishes, and
+// SettleStart waiting before it checks by
+// TestSettleStartWaitsForTheProxyBeforeItChecks.
+func TestStartForLaunchSettlesTheStartBeforeReturning(t *testing.T) {
 	stubSignals(t)
 	var mu sync.Mutex
 	var order []string
@@ -547,7 +564,7 @@ func TestStartForLaunchWaitsForPendingRoutesBeforeReturning(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { lifecycleStart = oldStart })
-	entered, release := stubWaitRoutes(t, &order, &mu)
+	entered, release, _ := stubSettleStart(t, &order, &mu, nil)
 
 	done := make(chan error, 1)
 	go func() { done <- startForLaunch(&config.Config{}, startTestRow(), false) }()
@@ -569,8 +586,8 @@ func TestStartForLaunchWaitsForPendingRoutesBeforeReturning(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(order) != 2 || order[0] != "start" || order[1] != "wait" {
-		t.Errorf("order = %v, want [start wait]", order)
+	if len(order) != 2 || order[0] != "start" || order[1] != "settle" {
+		t.Errorf("order = %v, want [start settle]", order)
 	}
 }
 
@@ -586,12 +603,16 @@ func TestStartForLaunchDoesNotWaitWhenTheStartFailed(t *testing.T) {
 	old := waitPendingRoutes
 	waitPendingRoutes = func() { waited++ }
 	t.Cleanup(func() { waitPendingRoutes = old })
+	var mu sync.Mutex
+	var order []string
+	_, release, _ := stubSettleStart(t, &order, &mu, nil)
+	release()
 
 	if err := startForLaunch(&config.Config{}, startTestRow(), false); err == nil {
 		t.Fatal("startForLaunch() error = nil, want the engine's failure")
 	}
-	if waited != 0 {
-		t.Errorf("waited for pending routes %d times after a failed start, want 0", waited)
+	if waited != 0 || len(order) != 0 {
+		t.Errorf("after a failed start: waited for pending routes %d times, settled %v; want neither", waited, order)
 	}
 }
 
@@ -611,9 +632,6 @@ func TestStartForLaunchHandsTheEngineTheRowsModelID(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { lifecycleStart = old })
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() {}
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
 
 	row := startTestRow()
 	if err := startForLaunch(&config.Config{}, row, false); err != nil {
@@ -625,32 +643,16 @@ func TestStartForLaunchHandsTheEngineTheRowsModelID(t *testing.T) {
 	}
 }
 
-// stubConfirmStarted replaces the check that follows a start with one that
-// records the target it was asked about, appends "confirm" to log, and
-// returns err.
-func stubConfirmStarted(t *testing.T, log *[]string, mu *sync.Mutex, err error) *[]lifecycle.Target {
-	t.Helper()
-	asked := &[]lifecycle.Target{}
-	old := confirmStarted
-	confirmStarted = func(_ context.Context, _ *config.Config, target lifecycle.Target) error {
-		mu.Lock()
-		*log = append(*log, "confirm")
-		*asked = append(*asked, target)
-		mu.Unlock()
-		return err
-	}
-	t.Cleanup(func() { confirmStarted = old })
-	return asked
-}
-
 // TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait pins #343: the
 // engine reports the model started, another terminal stops it while this one
 // waits for the LiteLLM proxy, and the driver must then fail — with the shared
 // one-line wording and the engine's typed error still on the chain — instead
 // of returning nil, which `wt start` prints as "is running" and a launch hands
-// to an agent. The check runs after the wait, because the wait is where the
-// stop lands, and it is asked about the row's own target. Both ways into a
-// successful start are covered: the first attempt and the one after a replace.
+// to an agent. The wait and the check after it are one call into the engine
+// (lifecycle.SettleStart, #349, whose own tests pin their order); the driver
+// makes it once, about the row's own target, with no writer of its own, so
+// what the check prints stays on stderr. Both ways into a successful start
+// are covered: the first attempt and the one after a replace.
 func TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait(t *testing.T) {
 	gone := &lifecycle.StoppedError{Why: "omlx no longer has it loaded"}
 	for name, outcomes := range map[string][]error{
@@ -662,9 +664,8 @@ func TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait(t *testing.T) {
 			stubLifecycleStart(t, outcomes)
 			var mu sync.Mutex
 			var order []string
-			_, release := stubWaitRoutes(t, &order, &mu)
+			_, release, calls := stubSettleStart(t, &order, &mu, gone)
 			release()
-			asked := stubConfirmStarted(t, &order, &mu, gone)
 			old := osStderr
 			osStderr = io.Discard
 			t.Cleanup(func() { osStderr = old })
@@ -677,12 +678,9 @@ func TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait(t *testing.T) {
 			if want := lifecycle.StartErrorMessage("omlx/qwen3.8", gone); err.Error() != want || !strings.HasPrefix(want, "omlx/qwen3.8 is not running") {
 				t.Errorf("error = %q, want the shared wording %q", err, want)
 			}
-			if strings.Join(order, ",") != "wait,confirm" {
-				t.Errorf("order = %v, want the check after the proxy wait", order)
-			}
 			want := lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", ModelID: "omlx/qwen3.8"}
-			if len(*asked) != 1 || (*asked)[0] != want {
-				t.Errorf("asked about %+v, want %+v once", *asked, want)
+			if len(*calls) != 1 || (*calls)[0].target != want || (*calls)[0].out != nil {
+				t.Errorf("settled %+v, want %+v once, with no writer", *calls, want)
 			}
 		})
 	}
@@ -696,7 +694,8 @@ func TestStartForLaunchDoesNotCheckAStartThatFailed(t *testing.T) {
 	stubLifecycleStart(t, []error{errors.New("omlx: boom")})
 	var mu sync.Mutex
 	var order []string
-	stubConfirmStarted(t, &order, &mu, nil)
+	_, release, _ := stubSettleStart(t, &order, &mu, nil)
+	release()
 	if err := startForLaunch(&config.Config{}, startTestRow(), false); err == nil {
 		t.Fatal("startForLaunch() error = nil, want the engine's failure")
 	}
@@ -705,26 +704,26 @@ func TestStartForLaunchDoesNotCheckAStartThatFailed(t *testing.T) {
 	}
 }
 
-// TestSettleStartConfirmsUnderACancelledContext verifies Ctrl+C during the
-// proxy wait does not cut the check short: the ollama probe reads its context,
-// and one that was cancelled settles nothing, so a daemon that is gone would
-// be reported as running. The check runs detached, as the picker's does.
-func TestSettleStartConfirmsUnderACancelledContext(t *testing.T) {
-	oldWait, oldConfirm := waitPendingRoutes, confirmStarted
-	t.Cleanup(func() { waitPendingRoutes, confirmStarted = oldWait, oldConfirm })
-	waitPendingRoutes = func() {}
-	confirmStarted = func(ctx context.Context, _ *config.Config, _ lifecycle.Target) error {
-		if err := ctx.Err(); err != nil {
-			t.Errorf("confirmStarted ran under a done context: %v", err)
-			return nil
-		}
-		return &lifecycle.StoppedError{Why: "ollama no longer answers"}
-	}
+// TestSettleStartSettlesUnderACancelledContext verifies Ctrl+C during the
+// proxy wait does not cut the driver's part short: a done context is no
+// reason to skip the call, or the model would be reported as running with
+// nothing having asked. The context is handed over as it is; that the check
+// then runs detached from its cancellation (the ollama probe reads its
+// context, and one that was cancelled settles nothing) is the engine's, pinned
+// by lifecycle's TestSettleStartChecksUnderACancelledContext.
+func TestSettleStartSettlesUnderACancelledContext(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	_, release, calls := stubSettleStart(t, &order, &mu, &lifecycle.StoppedError{Why: "ollama no longer answers"})
+	release()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := settleStart(ctx, &config.Config{}, "ollama/x", lifecycle.Target{ProviderID: "ollama", ModelName: "x"})
 	var stopped *lifecycle.StoppedError
 	if !errors.As(err, &stopped) {
 		t.Fatalf("settleStart = %v, want the *StoppedError on its chain", err)
+	}
+	if len(*calls) != 1 || (*calls)[0].ctxErr == nil {
+		t.Errorf("settled %+v, want one call, under the caller's own (done) context", *calls)
 	}
 }

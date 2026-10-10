@@ -405,7 +405,7 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile, synced []config.Mod
 			continue
 		}
 
-		wantBaseURL := config.BaseOrigin(provider.Auth.BaseURL) + "/v1"
+		wantBaseURL := provider.Origin() + "/v1"
 		wantAPIKey := defaultPiOllamaAPIKey
 		if provider.Auth.SecretRef != "" {
 			var err error
