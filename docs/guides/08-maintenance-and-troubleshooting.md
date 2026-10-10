@@ -350,7 +350,7 @@ Two things upgrade can break (guide 01 §6/§7):
    prisma-client-py
    ```
 
-   Empty → re-run the Prisma steps in guide 01 §6, then kickstart the proxy.
+   Both names listed is not the whole check: the generated client lives inside the tool env too, so re-run guide 01 §6's `prisma generate` after any upgrade or reinstall, then kickstart the proxy. Empty → the `extra-proxy` extra is missing; reinstall with the command above first.
 
 2. **The proxy must be restarted after upgrade + any config change** — `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` (§2 step 8 for the measured recovery).
 

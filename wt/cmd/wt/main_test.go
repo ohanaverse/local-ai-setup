@@ -140,9 +140,11 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 
 // TestShellPassthrough_StillWorks guards against an over-tightened Args
 // validator or removed-subcommand guard regressing shell-wt: `wt --agent
-// shell ls` (the form the shell-wt shim produces for `shell-wt ls`) must
-// reach the launch with `ls` as the command. If it stops earlier, every
-// shell-wt command given without `--` fails.
+// shell npm test` (the form the shell-wt shim produces for `shell-wt npm
+// test`) must reach the launch with every positional as the command, in
+// order. If it stops earlier, every shell-wt command given without `--`
+// fails. (TestCommandAgentWithoutModelLaunchesDirectly covers the
+// one-word command; this one is the command with arguments.)
 //
 // The command has no flag-like argument on purpose: `ls -la` without `--`
 // is refused by the flag parser before RunE runs, so it would never reach
@@ -150,6 +152,7 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 // is executed.
 func TestShellPassthrough_StillWorks(t *testing.T) {
 	t.Chdir(t.TempDir())
+	withCleanConfigEnv(t, t.TempDir())
 	var gotAgent string
 	var gotArgs []string
 	launched := false
@@ -164,15 +167,15 @@ func TestShellPassthrough_StillWorks(t *testing.T) {
 	root := rootCmd()
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"--agent", "shell", "ls"})
+	root.SetArgs([]string{"--agent", "shell", "npm", "test"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("shell passthrough without `--` was refused: %v", err)
 	}
 	if !launched {
 		t.Fatalf("the launch was never reached (output: %q)", buf.String())
 	}
-	if gotAgent != "shell" || len(gotArgs) != 1 || gotArgs[0] != "ls" {
-		t.Errorf("launched agent %q with args %q, want shell with [ls]", gotAgent, gotArgs)
+	if gotAgent != "shell" || len(gotArgs) != 2 || gotArgs[0] != "npm" || gotArgs[1] != "test" {
+		t.Errorf("launched agent %q with args %q, want shell with [npm test]", gotAgent, gotArgs)
 	}
 }
 

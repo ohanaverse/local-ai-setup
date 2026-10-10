@@ -231,7 +231,7 @@ func rootCmd() *cobra.Command {
 			"  wt cloud-sync --dry-run      # plan a refresh of cloud prices and the ollama catalog",
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
 		// rejects any leading positional arg that isn't a registered
-		// subcommand name (models/agents/rotate). Without this, passthrough
+		// subcommand name (config, start, rotate, …). Without this, passthrough
 		// commands given without `--` (e.g. `shell-wt npm test`) fail with
 		// "unknown command \"npm\" for \"wt\"" even though Find() would never
 		// have routed them to a subcommand anyway.
@@ -246,7 +246,7 @@ func rootCmd() *cobra.Command {
 				return fmt.Errorf("-w is removed; use -W or --worktree")
 			}
 
-			// Reject removed subcommands. `cobra.ArbitraryArgs` (set below)
+			// Reject removed subcommands. `cobra.ArbitraryArgs` (set above)
 			// is load-bearing for shell-wt passthrough (`shell-wt npm test` →
 			// `wt --agent shell npm test`), so it swallows the first positional
 			// without complaining. Without this guard, `wt models -A claude`

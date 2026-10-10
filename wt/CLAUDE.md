@@ -45,7 +45,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 
 ## Passthrough args
 
-Extra args forward to the launched agent. `--` is only required when the command starts with a flag-like token, since the root `wt` uses `cobra.ArbitraryArgs`.
+Extra args forward to the launched agent. `--` is required when any argument begins with a dash (`shell-wt -- ls -la`); other commands pass without it, since the root `wt` uses `cobra.ArbitraryArgs`.
 
 ```bash
 claude-wt -W feat -- --verbose  # → claude --model X --verbose
