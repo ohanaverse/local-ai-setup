@@ -337,6 +337,13 @@ func validateWindow(w *tomlw.Table) error {
 	if start == end {
 		return errors.New("start and end must differ (a whole day is 00:00 to 24:00)")
 	}
+	// A past-midnight window with end = 00:00 runs from start on day D to
+	// 00:00 on day D+1 (24 hours later). This is almost never what the writer
+	// means; they usually intend 24:00 (end of day D). Refuse it and suggest
+	// 24:00.
+	if start > end && end == 0 {
+		return errors.New("end must not be 00:00 when the window runs past midnight (use 24:00 for the end of the listed day)")
+	}
 	return nil
 }
 

@@ -185,7 +185,7 @@ repo = 7
 		{"an empty cost table", map[string]any{"cost": map[string]any{}}, "[models.cost]"},
 		{"a time price", map[string]any{"cost.time_prices": offPeak}, `timezone = "UTC"`},
 		{"a window that runs past midnight", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"mon"}, "start": "22:00", "end": "06:00"}}}}}, `end = "06:00"`},
-		{"a window that runs to midnight, written 00:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"sun"}, "start": "22:00", "end": "00:00"}}}}}, `end = "00:00"`},
+		{"a window that runs to midnight, written 24:00", map[string]any{"cost.time_prices": []map[string]any{{"timezone": "UTC", "windows": []map[string]any{{"days": []string{"sun"}, "start": "22:00", "end": "24:00"}}}}}, `end = "24:00"`},
 		{"the legacy free kind", map[string]any{"cost.kind": "free"}, `kind = "free"`},
 		{"a legacy per-token price", map[string]any{"cost.kind": "per_token", "cost.price_per_million_tokens": 2.5}, "price_per_million_tokens = 2.5"},
 		{"a legacy subscription", map[string]any{"cost.kind": "subscription", "cost.price_per_period": 20, "cost.period": "year"}, `period = "year"`},
@@ -363,7 +363,7 @@ days = [
     "sat",
 ]
 start = "20:00"
-end = "00:00"
+end = "24:00"
 `
 	const withNight = docRegistry + `
 [[models]]

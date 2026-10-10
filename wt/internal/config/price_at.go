@@ -164,9 +164,11 @@ func (tp TimePrice) holds(at time.Time) bool {
 // to count the reads.
 var zoneLoad = time.LoadLocation
 
-// zoneCache holds each zone loadZone has read, by its IANA name (string to
-// *time.Location).
-var zoneCache sync.Map
+// zoneCache holds each zone loadZone has read, by its IANA name.
+var zoneCache = struct {
+	sync.RWMutex
+	m map[string]*time.Location
+}{m: make(map[string]*time.Location)}
 
 // loadZone is the zone with the IANA name given, read from the host's zone
 // database the first time it is asked for and from memory after that.
@@ -177,19 +179,30 @@ var zoneCache sync.Map
 // looked up, and refused, each time. A zone is kept for the life of the
 // process, so a zone database replaced while wt runs is not read again.
 func loadZone(name string) (*time.Location, error) {
-	if zone, ok := zoneCache.Load(name); ok {
-		return zone.(*time.Location), nil
+	zoneCache.RLock()
+	if zone, ok := zoneCache.m[name]; ok {
+		zoneCache.RUnlock()
+		return zone, nil
 	}
+	zoneCache.RUnlock()
+
 	zone, err := zoneLoad(name)
 	if err != nil {
 		return nil, err
 	}
-	zoneCache.Store(name, zone)
+
+	zoneCache.Lock()
+	zoneCache.m[name] = zone
+	zoneCache.Unlock()
 	return zone, nil
 }
 
 // clockMinutes reads "HH:MM", from "00:00" to "24:00", as minutes of the
-// day.
+// day. For a window start, 24:00 is not allowed (validateWindow rejects
+// start >= 24:00). For a window end, 24:00 means the end of the listed day
+// and is distinct from 00:00 (which is the start of the day). When a window
+// runs past midnight (end < start), an end of 00:00 means midnight of the
+// listed day, not the next day.
 func clockMinutes(s string) (int, bool) {
 	if len(s) != 5 || s[2] != ':' {
 		return 0, false

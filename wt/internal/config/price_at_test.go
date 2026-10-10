@@ -269,16 +269,15 @@ func TestPriceAtAWindowPastMidnight(t *testing.T) {
 		{utc(27, 5, 0, 0), false},  // Sunday morning would be Saturday's window
 		{utc(28, 22, 0, 0), false}, // Monday evening
 	})
-	// An end of "00:00" is midnight and no further, exactly as "24:00" is;
-	// "24:00" is the end of the listed day and never a window past midnight.
-	for _, end := range []string{"00:00", "24:00"} {
-		wantHeld(t, "mon 22:00 to "+end, night("UTC", mon, "22:00", end), []at{
-			{utc(28, 21, 59, 0), false},
-			{utc(28, 23, 59, 59), true},
-			{utc(29, 0, 0, 0), false},
-			{utc(29, 5, 0, 0), false},
-		})
-	}
+	// An end of "24:00" is the end of the listed day and never a window past
+	// midnight. "00:00" as end with start > end is rejected by the validator
+	// (it would mean 24 hours, which is almost never intended).
+	wantHeld(t, "mon 22:00 to 24:00", night("UTC", mon, "22:00", "24:00"), []at{
+		{utc(28, 21, 59, 0), false},
+		{utc(28, 23, 59, 59), true},
+		{utc(29, 0, 0, 0), false},
+		{utc(29, 5, 0, 0), false},
+	})
 	// One minute short of a whole day: 06:00 to 05:59.
 	wantHeld(t, "mon 06:00 to 05:59", night("UTC", mon, "06:00", "05:59"), []at{
 		{utc(28, 5, 59, 0), false},
@@ -513,7 +512,7 @@ func TestTimePriceProblemIsTheValidatorsRefusal(t *testing.T) {
 	}
 	for _, w := range []CostWindow{
 		{Days: []string{"mon"}, Start: "22:00", End: "06:00"},
-		{Days: []string{"sun"}, Start: "23:59", End: "00:00"},
+		{Days: []string{"sun"}, Start: "23:59", End: "24:00"},
 		{Days: []string{"mon"}, Start: "22:00", End: "24:00"},
 	} {
 		row := TimePrice{Timezone: "America/New_York", Windows: []CostWindow{w}}
@@ -695,8 +694,16 @@ func TestAZoneIsReadFromDiskOnce(t *testing.T) {
 		reads[name]++
 		return real(name)
 	}
-	zoneCache.Clear()
-	t.Cleanup(func() { zoneLoad = real; zoneCache.Clear() })
+	// Clear the cache
+	zoneCache.Lock()
+	zoneCache.m = make(map[string]*time.Location)
+	zoneCache.Unlock()
+	t.Cleanup(func() {
+		zoneLoad = real
+		zoneCache.Lock()
+		zoneCache.m = make(map[string]*time.Location)
+		zoneCache.Unlock()
+	})
 
 	cost := night("America/New_York", []string{"mon"}, "22:00", "06:00")
 	cost.TimePrices = append(cost.TimePrices, night("Europe/Berlin", []string{"tue"}, "01:00", "02:00").TimePrices...)
