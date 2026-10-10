@@ -77,6 +77,7 @@ func TestLegacyShortFlagRejected(t *testing.T) {
 // before any TUI is launched.
 func TestPickerSkippedOnWorktreeFlag(t *testing.T) {
 	// Run from a non-git directory.
+	isolateGit(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
 	if err := os.Chdir(t.TempDir()); err != nil {
@@ -175,6 +176,7 @@ func TestRemovedSubcommandNameAfterDashIsPassedThrough(t *testing.T) {
 		{"a removed stub's name", []string{"-A", "shell", "--", "litellm", "expose"}, []string{"litellm", "expose"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			expectDirectLaunch(t)
 			t.Chdir(t.TempDir())
 			withCleanConfigEnv(t, t.TempDir())
 			var gotAgent string
@@ -206,6 +208,9 @@ func TestRemovedSubcommandNameAfterDashIsPassedThrough(t *testing.T) {
 
 	for _, word := range []string{"models", "agents"} {
 		t.Run("wt -- "+word+" with no agent", func(t *testing.T) {
+			// Nothing is launched here; the helper's stubs say what else
+			// must not happen: no TUI, no guard.
+			expectDirectLaunch(t)
 			t.Chdir(t.TempDir())
 			withCleanConfigEnv(t, t.TempDir())
 			prev := stdinTTY
@@ -238,6 +243,7 @@ func TestRemovedSubcommandNameAfterDashIsPassedThrough(t *testing.T) {
 // the guard this test is about. The launch itself is stubbed, so nothing
 // is executed.
 func TestShellPassthrough_StillWorks(t *testing.T) {
+	expectDirectLaunch(t)
 	t.Chdir(t.TempDir())
 	withCleanConfigEnv(t, t.TempDir())
 	var gotAgent string
@@ -469,6 +475,7 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 // condition must not apply to them; otherwise `shell-wt -W foo` would fail
 // with a model-picker TTY error instead of running the command.
 func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
+	expectDirectLaunch(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
 	if err := os.Chdir(t.TempDir()); err != nil {
@@ -544,6 +551,12 @@ func TestNeedsModelPicker(t *testing.T) {
 // single entry. Without this fix, scripts and CI invocations of
 // `wt --cwd -A <agent>` force an interactive picker or fail with a TTY error.
 func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
+	expectDirectLaunch(t)
+	// --cwd inside a repository installs the guard; that is not what this
+	// test is about, so it is a no-op here.
+	oldGuard := maybeInstallGuard
+	maybeInstallGuard = func() {}
+	t.Cleanup(func() { maybeInstallGuard = oldGuard })
 	dir := initTestRepo(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
@@ -790,6 +803,7 @@ func TestPinnedAgentNotInstalledErrorsBeforeWorktreeWork(t *testing.T) {
 // new pinned-installed fast-fail must not block it even when the installed
 // seam reports false for every name.
 func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
+	expectDirectLaunch(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
 	if err := os.Chdir(t.TempDir()); err != nil {
@@ -827,6 +841,7 @@ func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
 // launch path: wt --cwd --agent shell on a fresh machine must skip the
 // missing-registry gate and proceed to launchFiltered.
 func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
+	expectDirectLaunch(t) // the guard is expected here: stubbed again below
 	dir := initTestRepo(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
@@ -884,6 +899,7 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 // worktree. The guard is stubbed because the real guard.Install operates on
 // the test process's cwd and would install the hook into the repo under test.
 func TestRunLaunchPath(t *testing.T) {
+	isolateGit(t)
 	repo := t.TempDir()
 	if err := exec.Command("git", "-C", repo, "init", "-q").Run(); err != nil {
 		t.Fatal(err)
@@ -1051,6 +1067,12 @@ func TestNoWtCommandIsHidden(t *testing.T) {
 // malformed config.toml/registry.toml still fails
 // (TestMalformedRegistryStillFailsClosed).
 func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
+	expectDirectLaunch(t)
+	// -W inside a repository installs the guard; that is not what this test
+	// is about, so it is a no-op here.
+	oldGuard := maybeInstallGuard
+	maybeInstallGuard = func() {}
+	t.Cleanup(func() { maybeInstallGuard = oldGuard })
 	dir := initTestRepo(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
@@ -1304,6 +1326,7 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 // for the agent than for the user. -W and the picker still start at a
 // worktree's root; --cwd is the one launch that stays put.
 func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
+	expectDirectLaunch(t) // the guard is expected here: stubbed again below
 	dir := initTestRepo(t)
 	sub := filepath.Join(dir, "pkg", "inner")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
