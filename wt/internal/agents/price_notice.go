@@ -78,12 +78,10 @@ func PriceNotice(last time.Time, present bool, now time.Time) string {
 
 // HasOpenRouterPricedModel reports whether any model in cfg takes its price
 // from OpenRouter — what `wt cloud-sync`'s openrouter flow refreshes. It
-// delegates to config.OpenRouterPriced: an openrouter model, or a model of a
-// non-native cloud provider. Keyed on the provider's location, not the
-// model's, so ollama cloud models (location "cloud" on the local ollama
-// provider, priced by ollama.com) don't count. A model whose ProviderID has
-// no registry provider doesn't count either (p == nil, location
-// unresolvable). A nil cfg has no models.
+// delegates to config.OpenRouterPriced: a model whose provider_id is
+// "openrouter". Ollama cloud models (priced by ollama.com), native agent
+// models and any other cloud provider's models don't count. A nil cfg has
+// no models.
 func HasOpenRouterPricedModel(cfg *config.Config) bool {
 	if cfg == nil {
 		return false

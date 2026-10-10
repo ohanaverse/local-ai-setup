@@ -9,7 +9,8 @@ description: Refresh cloud model prices and the ollama cloud catalog with `wt cl
 one it is about. Both run unless `--only openrouter` or `--only ollama` picks
 one; a flow that fails or is refused does not stop the other.
 
-- **`openrouter:`** re-prices the registry's OpenRouter-priced models from
+- **`openrouter:`** re-prices the registry's OpenRouter-priced models (the
+  ones whose `provider_id` is `openrouter`, and no other) from
   OpenRouter's public model list and stamps each one it matched. The stamps
   are what clear wt's `token pricing last refreshed <date> — run 'wt
   cloud-sync'` notice.
@@ -68,10 +69,13 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      and nothing with its name is removed), a removed entry whose tag is not
      a cloud tag.
    - If it prints `openrouter: no model could be refreshed, so nothing is
-     stamped and wt's stale-pricing notice is not cleared; set
-     openrouter_priced = false on a provider whose model names are not
-     OpenRouter ids`, tell the user: running the sync will not clear the
-     notice, and that provider key is the fix. It is their decision.
+     stamped and wt's stale-pricing notice is not cleared; the warnings
+     above say why for each model`, tell the user: running the sync again
+     will not clear the notice. Read them the warnings: each names a model
+     of the `openrouter` provider and what is wrong with it (most often a
+     `model_name` OpenRouter does not list). Correcting the name or
+     removing the model is their decision. Do not suggest the provider key
+     `openrouter_priced`: wt no longer reads it.
    - Note the line `ollama: Removal digest: <digest> (apply
      non-interactively with …)` if there is one. No such line means the
      ollama plan deletes nothing.

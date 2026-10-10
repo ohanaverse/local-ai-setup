@@ -170,6 +170,24 @@
 
 ### Changed
 
+- **Breaking:** the provider key `openrouter_priced` is no longer read, and
+  the rule it overrode is simpler: a model takes its price from OpenRouter
+  when its `provider_id` is `openrouter`, and never otherwise. That one rule
+  decides what `wt cloud-sync`'s openrouter flow refreshes and what the
+  stale-pricing notice watches. Until now a model of any cloud provider that
+  is not an agent's native one counted too, and the key could put a
+  provider's models in (`true`) or take them out (`false`); it dates from
+  when ollama's cloud models had no published prices. A registry that still
+  has the key loads as before, nothing warns about it, and wt keeps the key
+  when it writes the file; it just decides nothing. So a model under a cloud
+  provider other than `openrouter` (a gateway that serves OpenRouter ids,
+  say) is no longer refreshed, and no longer watched by the notice, whether
+  the key was `true` or was never set. It keeps the price it has. To have
+  it refreshed, register the model under the `openrouter` provider; to keep
+  it where it is, set its price yourself with `wt model edit <id>
+  --input-price … --output-price …`. The line a run prints when no model
+  could be refreshed no longer names the key: it ends `the warnings above
+  say why for each model`. Reference: `docs/wt-cloud-sync.md`.
 - **Breaking:** `wt cloud-sync`'s two flows are named for the provider each
   one syncs: `prices` is now `openrouter` and `catalog` is now `ollama`.
   The names changed everywhere they appear: `--only openrouter`, `--only
@@ -209,8 +227,7 @@
   and name `modelman refresh-prices`. wt no longer reads that key. Either
   tool's refresh still clears the notice for a registry in which it matches
   at least one model, since both stamp the models they match; when a refresh
-  matches none, `wt cloud-sync` says that the notice stays and how to stop it
-  (`openrouter_priced = false`).
+  matches none, `wt cloud-sync` says that the notice stays.
 - omlx is handled as the multi-model pool it is (#213). `wt start` loads an
   omlx model beside the ones already loaded instead of stopping the service
   first, and asks only when the model does not fit, naming what omlx is

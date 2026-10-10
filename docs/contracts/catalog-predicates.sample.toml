@@ -40,8 +40,10 @@ type = "api_key"
 base_url = "https://acme.example/v1"
 secret_ref = "ACME_API_KEY"
 
-# A non-native cloud provider explicitly marked openrouter_priced = false:
-# a corporate LiteLLM gateway whose model names are not OpenRouter ids.
+# A provider row that still carries openrouter_priced, a key wt read until
+# #322 and no longer does: the row loads and the key says nothing. (It was
+# false here: a corporate LiteLLM gateway whose model names are not
+# OpenRouter ids.)
 [[providers]]
 id = "corp-litellm"
 name = "Corp LiteLLM"
@@ -52,10 +54,10 @@ type = "api_key"
 base_url = "https://litellm.corp.example"
 secret_ref = "exec:/usr/local/bin/corp-credential-helper.sh"
 
-# The override in the other direction: a local provider marked
-# openrouter_priced = true (a local proxy serving OpenRouter ids). Both readers
-# (the typed config and the cloud-sync rows) must honor true as well as false,
-# or they disagree about this model.
+# The same key the other way round, true on a local provider (a local proxy
+# serving OpenRouter ids). It is ignored too: only a model whose provider_id
+# is "openrouter" is OpenRouter-priced, in both readers (the typed config and
+# the cloud-sync rows).
 [[providers]]
 id = "local-gateway"
 name = "Local gateway"
@@ -67,7 +69,7 @@ base_url = "http://localhost:4100/v1"
 
 # A provider whose location is mistyped (#200): neither "local" nor "cloud",
 # so it is not a location. Its model is out of the catalog, is not routed, and
-# is not OpenRouter-priced (the rule keys on an exact "cloud").
+# is not OpenRouter-priced (its provider is not "openrouter").
 [[providers]]
 id = "typo"
 name = "Mistyped location"
@@ -98,24 +100,25 @@ provider_id = "ollama"
 model_name = "glm:cloud"
 location = "cloud"
 
-# Inherits "cloud" from the acme provider.
+# Inherits "cloud" from the acme provider. A cloud provider that is not
+# "openrouter": not OpenRouter-priced.
 [[models]]
 id = "acme/model-a"
 family = "fixture"
 provider_id = "acme"
 model_name = "vendor/model-a"
 
-# corp-litellm has openrouter_priced = false: not OpenRouter-priced even
-# though it is a non-native cloud provider.
+# Not OpenRouter-priced: its provider is not "openrouter". (The provider
+# row's openrouter_priced = false is not what decides it.)
 [[models]]
 id = "corp-litellm/claude-3"
 family = "fixture"
 provider_id = "corp-litellm"
 model_name = "claude-3"
 
-# local-gateway has openrouter_priced = true: OpenRouter-priced even though
-# its provider is local. In the catalog as any local model is; not a cloud
-# route.
+# Not OpenRouter-priced either, whatever its provider row's
+# openrouter_priced = true once meant. In the catalog as any local model is;
+# not a cloud route.
 [[models]]
 id = "local-gateway/vendor-y"
 family = "fixture"
