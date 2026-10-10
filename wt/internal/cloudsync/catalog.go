@@ -61,12 +61,13 @@ type CatalogPlan struct {
 	Warnings []string
 }
 
-// RemovedCount is how many ollama cloud entries the plan takes out of the
+// EntriesGone is how many ollama cloud entries the plan takes out of the
 // registry for good: its removals less the re-tagged ones, which come
 // straight back under another id. It is the number the mass-removal guard
 // weighs and the number its refusal prints, so the two cannot disagree; the
-// printed plan's removal list and the removal digest cover every removal.
-func (p *CatalogPlan) RemovedCount() int {
+// printed plan's removal list and the removal digest cover every removal,
+// and a caller that wants that broader count reads len(Removals).
+func (p *CatalogPlan) EntriesGone() int {
 	gone := 0
 	for _, id := range p.Removals {
 		if _, retagged := p.Replaced[id]; !retagged {
@@ -77,10 +78,10 @@ func (p *CatalogPlan) RemovedCount() int {
 }
 
 // MassRemoval reports whether more than half the registry's ollama cloud
-// entries would go (RemovedCount of CloudEntries), which is more likely a
-// page that parsed wrong than a catalog that shrank.
+// entries would go for good (EntriesGone of CloudEntries), which is more
+// likely a page that parsed wrong than a catalog that shrank.
 func (p *CatalogPlan) MassRemoval() bool {
-	return p.RemovedCount()*2 > p.CloudEntries
+	return p.EntriesGone()*2 > p.CloudEntries
 }
 
 // RemovalDigest fingerprints everything the plan deletes: registry removals

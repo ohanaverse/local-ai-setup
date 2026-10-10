@@ -195,7 +195,7 @@ func ollamaTouchedIDs(plan *cloudsync.CatalogPlan) []string {
 }
 
 // ollamaGate decides whether a printed ollama plan may be applied: not a
-// mass removal without --force (its refusal prints the plan's RemovedCount,
+// mass removal without --force (its refusal prints the plan's EntriesGone,
 // the number the guard itself uses), and under --yes not a plan that deletes
 // anything without the digest of a reviewed dry run. It reports false, with
 // the reason printed and res.ollamaCode set, when it may not.
@@ -204,7 +204,7 @@ func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncO
 		// The count is the one MassRemoval weighed. The plan printed above
 		// lists every removal, a re-tagged one included, so when the two
 		// numbers differ the line says why.
-		gone, note := c.plan.RemovedCount(), ""
+		gone, note := c.plan.EntriesGone(), ""
 		if gone != len(c.plan.Removals) {
 			note = " (re-tagged entries are not counted)"
 		}
