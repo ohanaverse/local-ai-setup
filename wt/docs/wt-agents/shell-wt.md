@@ -2,9 +2,9 @@
 
 ## Overview
 
-`shell-wt` is the worktree launcher for executing a single command with arguments. Unlike other `*-wt` wrappers, it does not launch an AI agent. Instead, it presents the worktree/branch picker, changes into the chosen directory, and executes a command.
+`shell-wt` is the worktree launcher for executing a single command with arguments. Unlike other `*-wt` wrappers, it does not launch an AI agent. Instead, it presents the worktree/branch picker, changes into the chosen directory, and executes a command. With no command, it opens an interactive `bash` in the chosen directory.
 
-Because it has no model layer, `shell-wt` works on a fresh machine without a model registry; model-driven agents still need one (`wt model init` creates `registry.toml`). Shell metacharacters (`|`, `>`, `&&`, etc.) are not interpreted as shell syntax — each argument is shell-quoted individually. To run pipelines or redirections, use an explicit shell: `shell-wt -- bash -lc 'cmd1 | cmd2'`.
+Because it has no model layer, `shell-wt` works on a fresh machine without a model registry; model-driven agents still need one (`wt model init` creates `registry.toml`). Shell metacharacters (`|`, `>`, `&&`, etc.) are not interpreted as shell syntax — the arguments are passed to the command verbatim as argv, with no shell and no quoting step. To run pipelines or redirections, use an explicit shell: `shell-wt -- bash -lc 'cmd1 | cmd2'`.
 
 ## Installation
 
@@ -13,12 +13,17 @@ Because it has no model layer, `shell-wt` works on a fresh machine without a mod
 ## Usage
 
 ```bash
-# Simple command (no -- needed if no flag-like args)
-shell-wt ls -la
+# Simple command (no -- needed when no argument starts with a dash)
+shell-wt ls
 
-# Command with flag-like arguments (required: `wt`'s flag parser would
-# otherwise try to interpret --init as a wt flag, not a shell-wt argument)
+# Any dash-prefixed argument needs -- (`wt`'s flag parser would otherwise
+# read it as a wt flag: -la is rejected as an unknown flag, and --init
+# would be taken as wt's own --init)
+shell-wt -- ls -la
 shell-wt -- rm --init
+
+# No command: open an interactive bash in the chosen worktree
+shell-wt -W my-feature
 
 # Skip picker, use/create a named worktree
 shell-wt -W my-feature -- make test
@@ -29,9 +34,9 @@ shell-wt --cwd -- npm test
 
 ## Command execution
 
-`shell-wt` execs the passthrough args directly as argv — no shell is involved, so there is no re-quoting step. The launcher process is replaced by the command, so exit codes propagate naturally.
+`shell-wt` runs the passthrough args directly as argv in a child process — no shell is involved, so there is no re-quoting step. When the command exits, `wt` prints its one-line summary (`wt: shell · <duration>`) and exits with the command's exit code.
 
-> **Limitation:** Because the command is exec'd directly (not interpreted by a shell), shell metacharacters (`|`, `>`, `&&`, etc.) are treated as literal argument characters. To use pipelines, redirections, or other shell features, wrap the command in an explicit shell invocation:
+> **Limitation:** Because the command is run directly (not interpreted by a shell), shell metacharacters (`|`, `>`, `&&`, etc.) are treated as literal argument characters. To use pipelines, redirections, or other shell features, wrap the command in an explicit shell invocation:
 >
 > ```bash
 > shell-wt -- bash -lc 'cmd1 | cmd2 > output.txt'

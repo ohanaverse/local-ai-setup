@@ -297,7 +297,7 @@ launchctl list | awk '/local.litellm.proxy/{print "new PID:", $1}'
 new PID: 65475
 ```
 
-(401, not 000/200: the proxy is up and once again demanding the master key. `KeepAlive=true` in the plist means launchd respawns it if it dies — use `kickstart -k`, not bare `stop`.) Whole-stack alternative with per-service health checks: `~/.local/bin/llm-restart` (see guide 01 §7).
+(401, not 000/200: the proxy is up and once again demanding the master key. `KeepAlive=true` in the plist means launchd respawns it if it dies — use `kickstart -k`, not bare `stop`.) To bring up whatever part of the stack is down: `uv run --directory llmbench llmbench provider restore` (from the repo root) (see guide 01 §7).
 
 ## Verification
 

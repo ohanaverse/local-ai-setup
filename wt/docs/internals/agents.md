@@ -17,7 +17,7 @@ Each agent registers a `Driver` (`Build(m config.Model, yolo bool, r config.Rout
 | copilot, opencode, pi | `openai-chat` |
 | agy, shell | none — agy is a native passthrough, shell a command runner |
 
-Consequence: **codex always routes through LiteLLM** (no local provider serves `openai-responses`), and `BuildLaunchCmd` prints the forced-LiteLLM notice on every direct-mode launch; claude × openrouter is forced the same way. litellm ≤ 1.98.0 cannot serve codex without a workaround — see [docs/wt-agents/codex-wt.md](../wt-agents/codex-wt.md).
+Consequence: **codex always routes through LiteLLM** (no local provider serves `openai-responses`), and `BuildLaunchCmd` prints the forced-LiteLLM notice on every launch of a protocol-forced pair, whether the LiteLLM toggle is on or off; claude × openrouter is forced the same way. litellm ≤ 1.98.0 cannot serve codex without a workaround — see [docs/wt-agents/codex-wt.md](../wt-agents/codex-wt.md).
 
 **Model id contract** (resolved centrally in `ResolveRoute`): litellm/forced routes set `Route.ModelRef` to the **registry id** (`m.ID`, e.g. `ollama/qwen3.8:27b-mlx` — LiteLLM's `model_list` key); direct routes use the **provider-side name** (`m.ModelName`). `Route.Display` is always `m.ModelName`. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use distinct `ID`/`ModelName` so a wrong id can't slip through.
 
@@ -25,12 +25,12 @@ Consequence: **codex always routes through LiteLLM** (no local provider serves `
 
 Per-agent env/args/config shapes (direct and LiteLLM): [docs/wt-agents/](../wt-agents/) `{claude,codex,copilot,opencode,pi,agy,shell}-wt.md`. Notable: **agy is not a command agent** (`IsCommand("agy")` is false), so `-A agy` without `-M` errors "multiple models match" when >1 agy model is eligible.
 
-**Optional capabilities** (type assertions in `BuildLaunchCmd`):
+**Optional capabilities** (type assertions: `Syncer` and `ArgSetter` in `BuildLaunchCmd` (via `BuildLaunchCmdInfo`), `ProtocolDeclarer` in `ProtocolsFor`, `Seeder` in `initseed.Seed`, `OneShotRunner` and `StateDirer` in `internal/smoke`):
 
 | Capability | Purpose | Implemented by |
 |---|---|---|
 | `ProtocolDeclarer` | wire protocols → `ResolveRoute` | claude, codex, copilot, opencode, pi |
-| `Seeder` | pre-launch AGENTS.md + pointer seeding | claude, copilot |
+| `Seeder` | `InstructionPointers()` — the pointer files `wt --init` creates beside AGENTS.md (never on a launch) | claude, copilot |
 | `Syncer` | pre-launch sync, given the launch target and its resolved route (pi → `~/.pi/agent/models.json`: the registry models plus the launch target, so a discovered model gets its entry too, written where the route makes `Build` look — `litellm` for a protocol-forced route even with the toggle off) | pi |
 | `ArgSetter` | passthrough args become argv | shell |
 | `OneShotRunner` | `OneShotArgs(prompt)` for `wt smoke` | claude, codex, copilot, opencode, pi, agy |

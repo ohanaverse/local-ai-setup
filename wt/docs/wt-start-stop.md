@@ -24,8 +24,12 @@ wt stop --all                    # stop every running local model, then the omlx
   occupied wt asks before replacing the running model; `--replace` skips the
   question. omlx is different, see below.
   mtplx is served on the port of the mtplx provider's `base_url` in the
-  registry, and on 8003 when that names none (`http://127.0.0.1/v1`): wt
-  then looks for the server on 8003 too, and routes to it there.
+  registry. An `http` url for `localhost`, `127.0.0.1` or the unspecified address (`0.0.0.0`, `[::]`) that
+  names no port (`http://127.0.0.1/v1`) means 8003: wt then looks for the
+  server on 8003 too, and routes to it there. Any other mtplx `base_url`
+  with no port (an `https` url, another host name, `[::1]`, `127.0.0.2`) is
+  refused before anything is spawned:
+  `the registry's mtplx base_url (<origin>) names no port, and wt serves mtplx on 127.0.0.1 — name the port mtplx listens on in the base_url, or use http://127.0.0.1`.
   Once the model is up and the LiteLLM proxy has picked up its route, wt
   asks the provider's server once whether the model is still there, and only
   then prints `wt: <id> is running`. A model that something stopped in the

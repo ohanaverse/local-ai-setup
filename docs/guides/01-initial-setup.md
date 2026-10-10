@@ -238,7 +238,7 @@ ls ~/.omlx/models/
 
 `ls` prints one flat directory per model oMLX can serve — the downloaded model's directory should be among them.
 
-Turn off API-key auth for local inference. oMLX 0.7.0's first-run setup (the `:8000/admin` wizard) enables it, and then every request without a key gets `401 API key required`, including wt's warmup (`wt start` retries for up to 10 minutes) and every LiteLLM omlx route (`api_key: not-needed`). Set `auth.allow_unauthenticated_inference` to `true` in `~/.omlx/settings.json`, then `omlx stop` (the next `wt start` restarts it). Verified on the 2026-09-30 rebuild. Then verify the server answers without a key:
+Turn off API-key auth for local inference. oMLX 0.7.0's first-run setup (the `:8000/admin` wizard) enables it, and then every request without a key gets `401 API key required`, including wt's warmup (`wt start` fails at once, saying the server wants an API key) and every LiteLLM omlx route (`api_key: not-needed`). Set `auth.allow_unauthenticated_inference` to `true` in `~/.omlx/settings.json`, then `omlx stop` (the next `wt start` restarts it). Verified on the 2026-09-30 rebuild. Then verify the server answers without a key:
 
 ```bash
 curl -s http://localhost:8000/v1/models | head -c 250
@@ -442,7 +442,7 @@ kickstart OK
 
 Expect the port to refuse connections for ~15 s — the proxy was answering 401 again by the 20 s mark (verified live; new PID proves the bounce).
 
-`~/.local/bin/llm-restart` restarts the whole stack in one shot with per-service health checks (`llm-restart`, or scoped: `llm-restart litellm|omlx|ollama`).
+`uv run --directory llmbench llmbench provider restore` (from the repo root) brings the whole stack back in one shot: it starts ollama, oMLX and the LiteLLM proxy when they are not answering, and leaves a service that already answers alone.
 
 ## Verification
 
@@ -530,7 +530,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 ## Gotchas
 
 - **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/<model-id>` (e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`) writes a `model_list` row named after the registry id — or, for a model directory with no registry entry, after its discovered id `omlx/<directory name>` — with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt never removes or replaces an unmarked row whose name is not a registry id, so a hand-written row under a discovered model's id blocks wt's own. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory llmbench llmbench provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
-- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` or `~/.local/bin/llm-restart`.
+- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).
 - **Discrepancies in the archive doc, reality wins:** (1) it says `omlx status` — oMLX 0.6.3rc3 has no `status` subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only); (2) its `sk-1234` Bearer examples are placeholders — real key is `LITELLM_MASTER_KEY` from the plist; (3) its `hf login` is stale — current huggingface-hub v1.28.0 CLI says `hf auth login`. (The archive doc's llama.cpp items are moot — llama.cpp was retired 2026-09-07, see [provider-artifacts.md](../reference/provider-artifacts.md).)

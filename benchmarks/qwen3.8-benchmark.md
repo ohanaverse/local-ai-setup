@@ -12,6 +12,7 @@ The LiteLLM proxy at `localhost:4000` routes the same `model_name` to four diffe
 |---|---|---|---|
 | **Ollama** | `ollama/qwen3.8:27b-mlx` | MLX (nvfp4, 18 GB) | `~/.ollama/models/` |
 | **oMLX** | `omlx/Qwen3.8-27B-4bit` | MLX 4-bit | `~/.omlx/models/mlx-community/Qwen3.8-27B-4bit/` |
+| **MTPLX** | `mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality` | MLX | served by `mtplx serve` on `:8003` |
 | **OpenRouter** | `openrouter/qwen/qwen3.8-{flash,27b,2.4t-a95b,max}` | cloud API | `https://openrouter.ai/api/v1` |
 
 > **llama.cpp retired 2026-09-07** (issue #33) — no longer a benchmark
@@ -33,37 +34,39 @@ The three local backends share Apple Silicon's GPU and unified memory. Running a
 - Thermal throttling affecting later tests
 - Unfair comparisons because the *first* test gets a cold cache and *later* tests don't
 
-**The benchmark runs each local backend in isolation**: before each test, all local models are unloaded (Ollama) or fully stopped (oMLX). Only the one being tested has its model loaded in GPU/RAM.
+**The benchmark runs each local backend in isolation**: before each test, all local models are unloaded (Ollama) or fully stopped (oMLX, MTPLX). Only the one being tested has its model loaded in GPU/RAM.
 
 | Backend | "Stop" mechanism | What's left running |
 |---|---|---|
 | **Ollama** | `ollama stop <model>` | Daemon on `:11434`, but model is unloaded from GPU/RAM |
 | **oMLX** | `omlx stop` | Nothing — service halts entirely |
+| **MTPLX** | `mtplx stop --port 8003 --grace-seconds 10` | Nothing — the serve process exits |
 | **OpenRouter** | n/a | Always live (cloud) |
 
-The Ollama daemon keeps port 11434 bound even after the model is unloaded — that's expected. The script reports "local service ports still bound: 1" after a stop cycle, and that's correct.
+The Ollama daemon keeps port 11434 bound even after the model is unloaded — that's expected. Isolation checks `ollama ps` for an empty model list rather than the port.
 
 ---
 
 ## The Script
 
-**Location**: `~/.local/bin/qwen3.8-benchmark`
+**Location**: `benchmarks/qwen3.8-benchmark` in this repo. It is not installed on PATH; run it by path (`./qwen3.8-benchmark` from `benchmarks/`). It sources `lib/benchmark-common.sh` relative to its own location, so the working directory does not matter.
 
 **Usage**:
 ```bash
-qwen3.8-benchmark               # default: 200 max_tokens
-qwen3.8-benchmark 100           # custom max_tokens
+./qwen3.8-benchmark               # default: 200 max_tokens
+./qwen3.8-benchmark 100           # custom max_tokens
 ```
 
 **What it does**:
-1. Ensures all four services are up
-2. For each local backend (ollama, omlx):
-   - Stops the other two local services
-   - Loads only the one being tested
-   - Runs the same prompt twice: once direct, once through LiteLLM
+1. Brings ollama, oMLX and LiteLLM up (`llmbench provider restore`)
+2. Direct rows — for each local backend (ollama, omlx, mtplx):
+   - Stops the other local services
+   - Loads only the one being tested (`llmbench provider isolate`)
+   - Runs the prompt against the backend directly
    - Measures TTFT (time to first token), total time, tokens, throughput
-3. Tests OpenRouter (cloud, always live)
+3. LiteLLM rows — isolates each local backend again and runs the same prompt through LiteLLM
 4. Restores all local services
+5. Tests OpenRouter (cloud, always live), each model direct and through LiteLLM
 
 **Output**: Markdown file in `/tmp/qwen3.8-benchmark-<timestamp>.md`
 
@@ -141,12 +144,12 @@ Captured 2026-08-27 with **3 passes at `max_tokens=200`** (15s cool-down between
 
 ## Multiple-Pass Mode (recommended for stable numbers)
 
-For reliable measurements, run the benchmark 3-5 times and look at the median. A wrapper script `~/.local/bin/qwen3.8-benchmark-multi` handles this:
+For reliable measurements, run the benchmark 3-5 times and look at the median. A wrapper script, `benchmarks/qwen3.8-benchmark-multi`, handles this:
 
 ```bash
-qwen3.8-benchmark-multi 3           # 3 passes (default)
-qwen3.8-benchmark-multi 5 200       # 5 passes, 200 max_tokens each
-qwen3.8-benchmark-multi 3 200 30    # 3 passes, 200 max_tokens, 30s cool-down
+./qwen3.8-benchmark-multi 3           # 3 passes (default)
+./qwen3.8-benchmark-multi 5 200       # 5 passes, 200 max_tokens each
+./qwen3.8-benchmark-multi 3 200 30    # 3 passes, 200 max_tokens, 30s cool-down
 ```
 
 The script runs N passes with configurable cool-down between them (default 15s, so the machine can cool slightly). Each pass writes a separate `/tmp/qwen3.8-benchmark-<timestamp>.md` file.
@@ -272,15 +275,14 @@ fi
 To get fresh numbers:
 
 ```bash
-# Make sure all services are up
-llm-restart
+# from: benchmarks/ (the script brings the local services up itself)
 
 # Run a single 200-token pass
-qwen3.8-benchmark 200
+./qwen3.8-benchmark 200
 
 # Or run multiple passes for stability
 for i in 1 2 3; do
-    qwen3.8-benchmark 200
+    ./qwen3.8-benchmark 200
     sleep 10  # cool-down between passes
 done
 ```
@@ -297,16 +299,15 @@ ls -t /tmp/qwen3.8-benchmark-*.md | head -1
 
 To add another model (e.g., a different qwen3.8 quantization):
 
-1. Edit `~/.local/bin/qwen3.8-benchmark`
-2. Add an entry to `DIRECT_MODELS` and `LITELLM_MODELS` associative arrays
-3. Add a `case` branch in `start_one_local` for any service-management commands
+1. Edit `benchmarks/qwen3.8-benchmark`
+2. Add an entry to the `DIRECT_URLS`, `DIRECT_MODELS` and `LITELLM_MODELS` associative arrays
+3. Add the key to `ISOLATE_ID` (the `llmbench provider` id that isolates it) and to both `for backend in` loops
 4. Add the model to `~/.config/litellm/config.yaml` first (the LiteLLM proxy won't know about it otherwise)
 
 For a totally new provider (say, vLLM), add it to:
 - `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS`
-- The main `for backend in` loop
-- `stop_all_local` (if it has a model to unload)
-- `start_one_local` (with appropriate service-start + model-warmup logic)
+- `ISOLATE_ID` and both `for backend in` loops
+- llmbench: a `Backend` with the provider's start/stop/warmup in `llmbench/src/llmbench/providers/lifecycle/backends/`, registered in `BACKENDS` (see the `adding-a-benchmark-backend` skill). The script has no service-management code of its own; `isolate_one` calls `llmbench provider isolate`.
 
 For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the script and a matching `openrouter/<slug>` entry to `~/.config/litellm/config.yaml`. The OpenRouter loop tests each model both directly and via LiteLLM automatically.
 
@@ -315,5 +316,5 @@ For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the
 ## Related
 
 - **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/archive/Local%20AI%20Setup%202026-08-25.md) — covers LiteLLM, Ollama, oMLX, llama.cpp, OpenRouter setup and auto-start
-- **Service management**: `~/.local/bin/llm-restart` — restart all providers in one command
+- **Service management**: `uv run --directory llmbench llmbench provider restore` (from the repo root) — brings ollama, oMLX and LiteLLM back up
 - **LiteLLM config**: `~/.config/litellm/config.yaml` — the four model entries

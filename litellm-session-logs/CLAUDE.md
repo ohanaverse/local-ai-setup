@@ -15,15 +15,26 @@ LiteLLM applies to a request's headers is quoted in that file under
 
 ## Pipeline
 
-1. **`01_export_session_logs.sql`** — runs against the live DB, dumps
-   `request_id, startTime, status, request_duration_ms, prompt_tokens,
-   completion_tokens, spend, messages, response` for one `session_id`,
-   ordered by time, to `session_logs_<id>.json`.
+1. **`01_export_session_logs.sql`** — the query for one `session_id`,
+   ordered by time: `request_id, startTime, status, request_duration_ms,
+   prompt_tokens, completion_tokens, spend, messages, response`. The file
+   is a plain `SELECT`, so `psql -f 01_export_session_logs.sql` prints an
+   aligned text table, which is good for a look at the rows and is not
+   what steps 3-4 read. Both builders `json.load` a JSON array of row
+   objects; to write that as `session_logs_<id>.json`, run the same query
+   wrapped in `json_agg`, unaligned and tuples-only (`-At`), from stdin
+   (psql does not substitute `:session_id` in a `-c` command):
    ```
    psql "${LITELLM_DATABASE_URL:-postgresql://keith@localhost:5432/litellm}" \
-     -v session_id="'<session-id>'" \
-     -f 01_export_session_logs.sql \
-     > session_logs_<id>.json
+     -At -v session_id="'<session-id>'" > session_logs_<id>.json <<'SQL'
+   SELECT coalesce(json_agg(t ORDER BY t."startTime"), '[]')
+   FROM (
+     SELECT request_id, "startTime", status, request_duration_ms,
+            prompt_tokens, completion_tokens, spend, messages, response
+     FROM "LiteLLM_SpendLogs"
+     WHERE session_id = :session_id
+   ) t;
+   SQL
    ```
 2. **`02_export_proxy_server_request.sh <session_id> [output_file]`** —
    dumps the `proxy_server_request` column (the real request body: messages,

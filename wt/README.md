@@ -59,8 +59,10 @@ claude-wt --yolo
 |-----|--------|
 | `enter` | Select worktree → agent+model screen → launch (and advance rotation) |
 | `up` / `down` (or `j` / `k`) | Move the model cursor |
-| `d` | Toggle between code and design tag groups |
+| `n` | New worktree (in the worktree picker) |
 | `q` / `esc` | Quit / go back |
+
+Tag groups are chosen on the command line with `-T <tags>`; no key switches them.
 
 ## Flags
 
@@ -68,8 +70,8 @@ All launchers support:
 
 | Flag | Description |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip TUI |
-| `--cwd` | Launch in the current directory; skips the TUI picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
+| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip the worktree picker |
+| `--cwd` | Launch in the current directory; skips the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |
@@ -93,7 +95,7 @@ On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` int
 
 ## User preferences (`wt config`)
 
-The `wt config` family manages user-level preferences (separate from `config.toml`, which holds the agent/model registry). The first shipped subcommand is `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
+Bare `wt config` opens an interactive editor with two tabs: Agents (the agents in `config.toml`) and Models (the models in `registry.toml`; `wt model` opens the editor on this tab). Its subcommands are `wt config path`, which prints the config directory, and `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
 
 ```bash
 wt config theme              # show the active theme + available names
@@ -123,7 +125,7 @@ wt rotate code    # print the model after the last launch within the "code" tag 
 
 ### Ollama availability check
 
-Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`, asked of the ollama address in `registry.toml` (not the shell's `OLLAMA_HOST`). In the TUI, if the model is missing, you can proceed anyway or cancel. (The "skip to next model" choice was removed when the `r` key was removed; use `up`/`down` to pick a different model.) In non-TUI mode (`-w` or `--cwd`), a missing model causes an error with a pull suggestion.
+Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`, asked of the ollama address in `registry.toml` (not the shell's `OLLAMA_HOST`). In the TUI, if the model is missing, you can proceed anyway or cancel; use `up`/`down` to pick a different model. When the launch runs without the TUI (`-W`/`--worktree` or `--cwd`, with `-A` and a model that resolves without the picker), a missing model causes an error with a pull suggestion.
 
 ## Copilot-specific: Ollama passthrough
 
@@ -136,7 +138,7 @@ COPILOT_PROVIDER_WIRE_API=completions
 COPILOT_MODEL=<model-name>
 ```
 
-The base URL comes from the ollama provider config in `config.toml`, defaulting to `http://localhost:11434`. `WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md).
+The base URL is the resolved route's origin plus `/v1`. On a direct route that origin is the ollama provider row's `auth.base_url` in `registry.toml` (a row with no `base_url` is an error, not a default); when the launch goes through LiteLLM it is the `[litellm]` url, and `COPILOT_MODEL` is the registry id. `WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md).
 
 ## Main guard
 
@@ -186,9 +188,9 @@ go vet ./...       # Vet
 | Path | Purpose |
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
-| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
+| `cmd/wt/app.go` | Shared dependency struct: loads and validates config, the active theme and `profiles.toml` once (no model discovery) |
 | `cmd/wt/commands.go` | Subcommand constructors: `rotate` (debug helper) |
-| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
+| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `borderStyle`, `renderTable`, guard helpers (`checkGuardStatus`, `removeGuard`), `isStdinTTY`, `configError`, `pickerNeedsTTYError` |
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd`, `launchFiltered`, `launchPassthroughImpl`, `runAgentCmd` |
 | `internal/config/` | Config loading, model registry types (joined from `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |

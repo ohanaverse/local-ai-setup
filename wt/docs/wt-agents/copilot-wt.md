@@ -38,7 +38,7 @@ COPILOT_PROVIDER_WIRE_API="completions"
 COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
 ```
 
-`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is `config.OllamaBaseURL` (`http://localhost:11434`) with a `/v1` suffix, matching the OpenAI-compatible endpoint that Copilot CLI's BYOK provider expects.
+`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row) with a `/v1` suffix, matching the OpenAI-compatible endpoint that Copilot CLI's BYOK provider expects. `COPILOT_PROVIDER_API_KEY` is that provider's resolved `secret_ref` (empty when it has none).
 
 `WIRE_API=completions` (chat-completions) is deliberate: Copilot CLI's `responses` wire drops leading characters through the OpenAI-compatible bridge, making one-shot prompts unreliable (observed via LiteLLM's responses bridge with `glm-5.3-flash:cloud`). This diverges from `ollama launch copilot`, which still prescribes `responses`. Re-test when LiteLLM's responses bridge is fixed ([BerriAI/litellm#37452](https://github.com/BerriAI/litellm/issues/37452)) or copilot CLI's responses client changes.
 

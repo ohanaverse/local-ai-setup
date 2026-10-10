@@ -49,7 +49,7 @@ ANTHROPIC_API_KEY=""
 ANTHROPIC_BASE_URL="http://localhost:11434"
 ```
 
-The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`). This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
+The values shown are for the default ollama provider row. The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row), and `ANTHROPIC_AUTH_TOKEN` is that provider's resolved `secret_ref`, falling back to the placeholder `ollama` when the provider has no key. This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
 
 ### LiteLLM routing
 
