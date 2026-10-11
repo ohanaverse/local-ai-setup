@@ -15,7 +15,7 @@ from llmbench.benchmark.eval.runner import (
     run_suite,
     select_rows,
 )
-from llmbench.benchmark.eval.suite import load_suite
+from llmbench.benchmark.eval.suite import RowConfig, load_suite
 from llmbench.benchmark.results import RunDirError
 from llmbench.benchmark.results import run_dir as resolve_run_dir
 from llmbench.registry import load_registry
@@ -146,21 +146,17 @@ def run_cmd(
         # print as skipped — the real run skips them the same way (a
         # notice to stderr, never a silent zero-category execution).
         selected_names = {cat.name for cat in categories}
+        skipped: list[RowConfig] = []
         for r in rows:
             row_categories = r.categories or [c.name for c in categories]
             overlap = [c for c in row_categories if c in selected_names]
+            if not overlap:
+                skipped.append(r)
             note = "" if overlap else "  (skipped: no category overlap with selection)"
             typer.echo(
                 f"{r.suite_index:02d}  {r.label}  model={r.model_id}  route={r.route}  "
                 f"categories={row_categories}{note}"
             )
-        skipped = [
-            r
-            for r in rows
-            if not (
-                set(r.categories or [c.name for c in categories]) & {cat.name for cat in categories}
-            )
-        ]
         typer.echo(
             f"{len(rows) - len(skipped)} of {len(loaded_suite.rows)} row(s), "
             f"{len(categories)} categorie(s) resolved, dry run — nothing executed"
@@ -199,12 +195,9 @@ def _record_run(run_dir: Path) -> None:
     save_state(state)
 
 
-@eval_app.command("show")
-def show_cmd(
-    latest: bool = typer.Option(False, "--latest"),
-    run_id: str | None = typer.Option(None, "--run-id"),  # noqa: B008
-    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
-) -> None:
+def _target_dir(latest: bool, run_id: str | None, results_dir: Path) -> Path:
+    """The run directory `--latest` or `--run-id` names; exits 1 with a
+    message when neither is given or the run cannot be resolved."""
     if not latest and not run_id:
         typer.echo("error: specify --latest or --run-id", err=True)
         raise typer.Exit(1)
@@ -214,13 +207,21 @@ def show_cmd(
         if not run_dir_str:
             typer.echo("error: no latest eval run recorded", err=True)
             raise typer.Exit(1)
-        md_path = Path(run_dir_str) / "summary.md"
-    else:
-        try:
-            md_path = resolve_run_dir(results_dir, str(run_id)) / "summary.md"
-        except RunDirError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(1) from exc
+        return Path(run_dir_str)
+    try:
+        return resolve_run_dir(results_dir, str(run_id))
+    except RunDirError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+
+
+@eval_app.command("show")
+def show_cmd(
+    latest: bool = typer.Option(False, "--latest"),
+    run_id: str | None = typer.Option(None, "--run-id"),  # noqa: B008
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
+) -> None:
+    md_path = _target_dir(latest, run_id, results_dir) / "summary.md"
     if not md_path.exists():
         typer.echo(f"error: results not found: {md_path}", err=True)
         raise typer.Exit(1)
@@ -236,22 +237,7 @@ def judge_cmd(
     samples: int | None = typer.Option(None, "--samples"),
     results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
 ) -> None:
-    if not latest and not run_id:
-        typer.echo("error: specify --latest or --run-id", err=True)
-        raise typer.Exit(1)
-    if latest:
-        state = load_state()
-        run_dir_str = state.extra.get("benchmarks", {}).get("eval_last_run")
-        if not run_dir_str:
-            typer.echo("error: no latest eval run recorded", err=True)
-            raise typer.Exit(1)
-        target_dir = Path(run_dir_str)
-    else:
-        try:
-            target_dir = resolve_run_dir(results_dir, str(run_id))
-        except RunDirError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(1) from exc
+    target_dir = _target_dir(latest, run_id, results_dir)
 
     categories = _load_all_categories(root)
     if not categories:

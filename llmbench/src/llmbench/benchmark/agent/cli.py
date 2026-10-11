@@ -131,13 +131,9 @@ def _record_run_and_report(run_dir: Path, results: list) -> None:
             typer.echo(f"  {result.row.label} pass {result.pass_number}: {result.error}", err=True)
 
 
-@agent_app.command("show")
-def show_cmd(
-    latest: bool = typer.Option(False, "--latest", help="Show the latest agent run"),
-    run_id: str | None = typer.Option(None, "--run-id", help="Run id to show"),  # noqa: B008
-    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
-) -> None:
-    """Print the persisted summary.md for an agent benchmark run."""
+def _target_dir(latest: bool, run_id: str | None, results_dir: Path) -> Path:
+    """The run directory `--latest` or `--run-id` names; exits 1 with a
+    message when neither is given or the run cannot be resolved."""
     if not latest and not run_id:
         typer.echo("error: specify --latest or --run-id", err=True)
         raise typer.Exit(1)
@@ -147,13 +143,22 @@ def show_cmd(
         if not run_dir_str:
             typer.echo("error: no latest agent run recorded", err=True)
             raise typer.Exit(1)
-        md_path = Path(run_dir_str) / "summary.md"
-    else:
-        try:
-            md_path = resolve_run_dir(results_dir, str(run_id)) / "summary.md"
-        except RunDirError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(1) from exc
+        return Path(run_dir_str)
+    try:
+        return resolve_run_dir(results_dir, str(run_id))
+    except RunDirError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+
+
+@agent_app.command("show")
+def show_cmd(
+    latest: bool = typer.Option(False, "--latest", help="Show the latest agent run"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Run id to show"),  # noqa: B008
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
+) -> None:
+    """Print the persisted summary.md for an agent benchmark run."""
+    md_path = _target_dir(latest, run_id, results_dir) / "summary.md"
     if not md_path.exists():
         typer.echo(f"error: results not found: {md_path}", err=True)
         raise typer.Exit(1)
@@ -171,22 +176,7 @@ def judge_cmd(
     results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
 ) -> None:
     """Re-score an existing run's persisted artifacts without re-running any agent."""
-    if not latest and not run_id:
-        typer.echo("error: specify --latest or --run-id", err=True)
-        raise typer.Exit(1)
-    if latest:
-        state = load_state()
-        run_dir_str = state.extra.get("benchmarks", {}).get("agent_last_run")
-        if not run_dir_str:
-            typer.echo("error: no latest agent run recorded", err=True)
-            raise typer.Exit(1)
-        target_dir = Path(run_dir_str)
-    else:
-        try:
-            target_dir = resolve_run_dir(results_dir, str(run_id))
-        except RunDirError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(1) from exc
+    target_dir = _target_dir(latest, run_id, results_dir)
 
     try:
         outcomes = rejudge_run(target_dir, row_filter=row or None, samples_override=samples)

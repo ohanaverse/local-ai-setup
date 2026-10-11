@@ -59,6 +59,33 @@ def _provider_for(model_id: str, registry: Registry) -> str:
         raise BenchmarkError(f"suite row references unknown model: {model_id}") from exc
 
 
+def _row(
+    label: str,
+    model_id: str,
+    thinking: str,
+    route: str,
+    provider_id: str,
+    raw: dict,
+    registry: Registry,
+) -> RowConfig:
+    # Populate mlx_lm_server pairing + mtplx model-name fields from
+    # the registry entry.
+    model_entry = registry.model(model_id)
+    return RowConfig(
+        label=label,
+        model_id=model_id,
+        thinking=thinking,
+        route=route,
+        provider_id=provider_id,
+        direct_model=raw.get("direct_model"),
+        target_local_path=model_entry.fetch.local_path if model_entry.fetch else None,
+        target_repo=model_entry.fetch.repo if model_entry.fetch else None,
+        draft_local_path=model_entry.draft.local_path if model_entry.draft else None,
+        draft_repo=model_entry.draft.repo if model_entry.draft else None,
+        mtplx_model_name=model_entry.model_name,
+    )
+
+
 def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
     rows: list[RowConfig] = []
     index = 0
@@ -82,24 +109,7 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             label = (
                 raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
             )
-            # Populate mlx_lm_server pairing + mtplx model-name fields from
-            # the registry entry.
-            model_entry = registry.model(model_id)
-            rows.append(
-                RowConfig(
-                    label=label,
-                    model_id=model_id,
-                    thinking=thinking,
-                    route=route,
-                    provider_id=provider_id,
-                    direct_model=raw.get("direct_model"),
-                    target_local_path=model_entry.fetch.local_path if model_entry.fetch else None,
-                    target_repo=model_entry.fetch.repo if model_entry.fetch else None,
-                    draft_local_path=model_entry.draft.local_path if model_entry.draft else None,
-                    draft_repo=model_entry.draft.repo if model_entry.draft else None,
-                    mtplx_model_name=model_entry.model_name,
-                )
-            )
+            rows.append(_row(label, model_id, thinking, route, provider_id, raw, registry))
             continue
 
         models = raw.get("models", [])
@@ -109,22 +119,7 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             index += 1
             provider_id = raw.get("provider") or _provider_for(model_id, registry)
             label = f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
-            model_entry = registry.model(model_id)
-            rows.append(
-                RowConfig(
-                    label=label,
-                    model_id=model_id,
-                    thinking=thinking,
-                    route=route,
-                    provider_id=provider_id,
-                    direct_model=raw.get("direct_model"),
-                    target_local_path=model_entry.fetch.local_path if model_entry.fetch else None,
-                    target_repo=model_entry.fetch.repo if model_entry.fetch else None,
-                    draft_local_path=model_entry.draft.local_path if model_entry.draft else None,
-                    draft_repo=model_entry.draft.repo if model_entry.draft else None,
-                    mtplx_model_name=model_entry.model_name,
-                )
-            )
+            rows.append(_row(label, model_id, thinking, route, provider_id, raw, registry))
     return rows
 
 
@@ -205,10 +200,6 @@ def load_suite(path: Path, registry: Registry) -> Suite:
     )
 
 
-def _openrouter_key_available(plist_path: Path) -> bool:
-    return openrouter_key(plist_path) is not None
-
-
 def preflight(
     suite: Suite, registry: Registry, task: TaskBundle, *, plist_path: Path = LITELLM_PLIST
 ) -> None:
@@ -249,7 +240,7 @@ def preflight(
     needs_openrouter = (
         suite.judge.route == "openrouter" or suite.judge.model.split("/")[0] == "openrouter"
     )
-    if needs_openrouter and not _openrouter_key_available(plist_path):
+    if needs_openrouter and openrouter_key(plist_path) is None:
         raise BenchmarkError(
             f"OPENROUTER_API_KEY not found for judge model {suite.judge.model!r} "
             f"(route={suite.judge.route!r}); check the environment or "
