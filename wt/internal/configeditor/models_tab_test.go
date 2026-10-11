@@ -1095,13 +1095,6 @@ func TestModelsTabFilterTakesTheTabsKeys(t *testing.T) {
 	if m.models.phase != modelsList || tm.probes != probes || m.models.list.FilterValue() != "qdr" {
 		t.Errorf("phase = %d, probes = %d (was %d), filter = %q; want the keys typed into the filter", m.models.phase, tm.probes, probes, m.models.list.FilterValue())
 	}
-	isQuit := func(cmd tea.Cmd) bool {
-		if cmd == nil {
-			return false
-		}
-		_, ok := cmd().(tea.QuitMsg)
-		return ok
-	}
 	if _, cmd := m.Update(keyMsg("ctrl+c")); !isQuit(cmd) {
 		t.Error("ctrl+c while a Models filter is being typed should quit")
 	}
@@ -1272,13 +1265,6 @@ func TestQuitOnTheModelsTab(t *testing.T) {
 // held quit is a quit like any other when its turn comes: agent edits made
 // while it waited get the unsaved-changes prompt, not thrown away unasked.
 func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
-	isQuit := func(cmd tea.Cmd) bool {
-		if cmd == nil {
-			return false
-		}
-		_, ok := cmd().(tea.QuitMsg)
-		return ok
-	}
 	// removing presses d and y on a row and hands back the write, not run.
 	removing := func(t *testing.T, dirty bool) (*tabMachine, *model, tea.Cmd) {
 		tm := newTabMachine(t, tabRegistry)
@@ -1537,11 +1523,7 @@ func TestWrapTextWithoutAWidth(t *testing.T) {
 // the edits are still unsaved. Both failures are covered: the write's, and
 // the validation that runs before it.
 func TestAFailedQuitSaveIsShownOnTheAgentsTab(t *testing.T) {
-	old := saveCmd
-	saveCmd = func(*config.Config) tea.Cmd {
-		return func() tea.Msg { return saveMsg{err: errors.New("disk full")} }
-	}
-	t.Cleanup(func() { saveCmd = old })
+	stubSaveResult(t, errors.New("disk full"))
 
 	t.Run("the write fails", func(t *testing.T) {
 		m := modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24)

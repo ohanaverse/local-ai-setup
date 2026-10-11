@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -161,10 +162,10 @@ func TestSeedSkipsExistingPointer(t *testing.T) {
 	}
 	wantCreated := []string{"AGENTS.md"}
 	wantSkipped := []string{"CLAUDE.md"}
-	if !slicesEqual(res.Created, wantCreated) {
+	if !slices.Equal(res.Created, wantCreated) {
 		t.Fatalf("created = %v, want %v", res.Created, wantCreated)
 	}
-	if !slicesEqual(res.Skipped, wantSkipped) {
+	if !slices.Equal(res.Skipped, wantSkipped) {
 		t.Fatalf("skipped = %v, want %v", res.Skipped, wantSkipped)
 	}
 }
@@ -175,18 +176,6 @@ func gitInit(t *testing.T, dir string) error {
 		return fmt.Errorf("git init: %w\n%s", err, out)
 	}
 	return nil
-}
-
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestSeedShell creates only AGENTS.md for the shell command agent, which

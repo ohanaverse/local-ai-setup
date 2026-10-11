@@ -22,9 +22,10 @@ collect_ignore = ["fixtures"]
 def litellm_models_json(tmp_path: Path) -> Path:
     """A stand-in for ~/.pi/agent/models.json with a gateway entry.
 
-    A litellm-route row resolves its target from that file and raises without
-    an apiKey, so a test that only cares about isolation still has to supply a
-    resolvable one. Mirrors test_pidriver's helper; never read the real file.
+    Never read the real file (hermetic), and never pass a *missing* one to a
+    litellm row: resolve_pi_target raises without an apiKey, so a test that
+    only cares about isolation or the config shape still has to supply a
+    resolvable gateway entry.
     """
     path = tmp_path / "models.json"
     path.write_text(

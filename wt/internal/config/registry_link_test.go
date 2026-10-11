@@ -30,7 +30,7 @@ func linkedRegistry(t *testing.T) (link, target string) {
 }
 
 // TestResolveRegistryFile pins the symlink rule the registry's reader and
-// (from the next step) its writer share: a link that leads to a file resolves
+// its writer share: a link that leads to a file resolves
 // to that file, so a write can rename onto it and keep the link; a link that
 // leads nowhere is ErrRegistryLink; only a path with nothing at it is
 // "missing".

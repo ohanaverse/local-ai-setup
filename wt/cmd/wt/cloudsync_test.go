@@ -105,17 +105,9 @@ const sameOpenRouterBody = `{"data": [{"id": "vendor/gpt", "pricing": {"prompt":
 // and returns the registry path and the loaded config.
 func cloudSyncHome(t *testing.T, registry string) (string, *config.Config) {
 	t.Helper()
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
+	path := modelHome(t, registry)
 	// Where a refused pricing page is saved.
 	t.Setenv("TMPDIR", t.TempDir())
-	path := filepath.Join(home, ".config", "local-ai", "registry.toml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(registry), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
@@ -613,24 +605,8 @@ func TestCloudSyncReportsARefusedRegistryWrite(t *testing.T) {
 // copy of the registry from rewriting the real proxy's routes.
 func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
 	setup := func(t *testing.T) (registry, defaultYAML string, cfg *config.Config) {
-		home := t.TempDir()
-		registry = filepath.Join(home, "scratch", "registry.toml")
-		defaultYAML = filepath.Join(home, ".config", "litellm", "config.yaml")
-		for path, content := range map[string]string{registry: cloudSyncRegistry, defaultYAML: "model_list: []\n"} {
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("WT_REGISTRY", registry)
-		t.Setenv("WT_LITELLM_CONFIG", "")
-		t.Setenv("MODELMAN_LITELLM_CONFIG", "")
+		registry, defaultYAML = redirectedRegistry(t, cloudSyncRegistry)
 		t.Setenv("WT_TEST_OPENROUTER_KEY", "sk-test-not-a-real-key")
-		realRouteSync(t)
 		stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 		cfg, err := config.Load()
 		if err != nil {
@@ -972,8 +948,6 @@ func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
 
 	path, _ := cloudSyncHome(t, timeOfDayRegistry)
 	synced := stubRouteSync(t, "")
-	oldNow := cloudSyncNow
-	t.Cleanup(func() { cloudSyncNow = oldNow })
 	run := func(body string, now time.Time, o cloudSyncOpts) string {
 		t.Helper()
 		stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})

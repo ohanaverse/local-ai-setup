@@ -9,18 +9,28 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
+// stubSaveResult swaps the saveCmd seam for one that reports err (nil for a
+// save that succeeds) without touching disk, until the test ends.
+func stubSaveResult(t *testing.T, err error) {
+	t.Helper()
+	old := saveCmd
+	saveCmd = func(*config.Config) tea.Cmd {
+		return func() tea.Msg { return saveMsg{err: err} }
+	}
+	t.Cleanup(func() { saveCmd = old })
+}
+
 // TestSave_AtomicWrite verifies that Ctrl-S writes the in-memory config
 // to disk atomically and that no temporary file is left behind.
 func TestSave_AtomicWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "ollama"}},
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
+	}, nil)
 	m.dirty = true
 
 	// Simulate handleSave dispatch.
@@ -67,11 +77,10 @@ func TestSave_ValidationFails_BlocksWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
 		Models:     []config.Model{{ID: "foo", ProviderID: "missing"}},
-	}
+	}, nil)
 	m.dirty = true
 
 	got, cmd := m.handleSave()
@@ -92,8 +101,7 @@ func TestSave_ValidationFails_BlocksWrite(t *testing.T) {
 // TestSave_DirtyFlag_TogglesOn verifies that a successful save resets
 // dirty to false, and that making an edit sets it to true.
 func TestSave_DirtyFlag_TogglesOn(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{DefaultTag: "code"}
+	m := newModel(testTheme(), &config.Config{DefaultTag: "code"}, nil)
 	if m.dirty {
 		t.Fatal("expected dirty=false at start")
 	}
@@ -103,11 +111,7 @@ func TestSave_DirtyFlag_TogglesOn(t *testing.T) {
 	m.dirty = true
 
 	// Stub saveCmd to succeed without touching disk.
-	old := saveCmd
-	saveCmd = func(cfg *config.Config) tea.Cmd {
-		return func() tea.Msg { return saveMsg{} }
-	}
-	defer func() { saveCmd = old }()
+	stubSaveResult(t, nil)
 
 	_, cmd := m.handleSave()
 	msg := cmd()
@@ -125,11 +129,7 @@ func TestSave_SavingFlagResetsAfterError(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{DefaultTag: "code"}, nil)
 	m.dirty = true
 
-	old := saveCmd
-	saveCmd = func(cfg *config.Config) tea.Cmd {
-		return func() tea.Msg { return saveMsg{err: os.ErrPermission} }
-	}
-	defer func() { saveCmd = old }()
+	stubSaveResult(t, os.ErrPermission)
 
 	_, cmd := m.handleSave()
 	msg := cmd()
@@ -201,7 +201,6 @@ models = []
 		t.Fatal(err)
 	}
 	m := newModel(testTheme(), editorCfg, nil)
-	m.cfg = editorCfg
 	m.cfg.Agents = append(m.cfg.Agents, config.Agent{Name: "claude", SupportedProviders: []string{"ollama"}})
 	m.dirty = true
 
@@ -251,16 +250,11 @@ models = []
 // TestSave_FailureKeepsDirty verifies that a failed save leaves dirty=true
 // so the user can retry after fixing the problem.
 func TestSave_FailureKeepsDirty(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{DefaultTag: "code"}
+	m := newModel(testTheme(), &config.Config{DefaultTag: "code"}, nil)
 	m.dirty = true
 
 	// Stub saveCmd to return an error.
-	old := saveCmd
-	saveCmd = func(cfg *config.Config) tea.Cmd {
-		return func() tea.Msg { return saveMsg{err: os.ErrPermission} }
-	}
-	defer func() { saveCmd = old }()
+	stubSaveResult(t, os.ErrPermission)
 
 	_, cmd := m.handleSave()
 	msg := cmd()
@@ -309,7 +303,8 @@ func TestSave_RegistryRowErrorNamesTheRegistry(t *testing.T) {
 // returns multiple errors including both a registry.toml problem and a
 // config.toml problem, the status shows the registry repair hint (not the
 // config.toml one). This prevents the user being sent to `wt config` when the
-// real fix is in registry.toml.
+// real fix is in registry.toml. The hint wins wherever the registry error sits
+// in the join: RegistryFixHint looks through the whole join.
 func TestSave_JoinedErrors_RegistryHintPreferred(t *testing.T) {
 	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	// Config with BOTH a registry.toml problem (missing model_name) AND a
@@ -325,33 +320,6 @@ func TestSave_JoinedErrors_RegistryHintPreferred(t *testing.T) {
 		t.Fatal("a config that fails validation was saved")
 	}
 	// The hint must be the registry one, not "run `wt config` to repair"
-	const wantRegistryHint = "fix the entry in /tmp/somewhere/registry.toml"
-	status := got.(*model).status
-	if !strings.Contains(status, wantRegistryHint) {
-		t.Errorf("status = %q, want it to contain registry hint %q", status, wantRegistryHint)
-	}
-	if strings.Contains(status, "run `wt config` to repair") {
-		t.Errorf("status = %q, must not contain config.toml hint when registry problem exists", status)
-	}
-}
-
-// TestSave_JoinedErrors_ConfigFirst_RegistryHintStillWins pins that even
-// when the config.toml error appears first in the joined error, the registry
-// hint is still shown: RegistryFixHint looks through the whole join.
-func TestSave_JoinedErrors_ConfigFirst_RegistryHintStillWins(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
-	// Same config, but we're testing that the order in the joined error
-	// doesn't matter - RegistryFixHint checks all errors.
-	m := newModel(testTheme(), &config.Config{
-		DefaultTag: "", // config.toml problem
-		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
-		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx"}}, // registry.toml problem
-	}, nil)
-	m.dirty = true
-	got, cmd := m.handleSave()
-	if cmd != nil {
-		t.Fatal("a config that fails validation was saved")
-	}
 	const wantRegistryHint = "fix the entry in /tmp/somewhere/registry.toml"
 	status := got.(*model).status
 	if !strings.Contains(status, wantRegistryHint) {

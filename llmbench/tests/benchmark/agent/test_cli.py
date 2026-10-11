@@ -30,19 +30,7 @@ def _registry() -> Registry:
     )
 
 
-def test_list_tasks_lists_bundles_under_root():
-    result = runner.invoke(agent_app, ["list-tasks", "--root", str(FIXTURE_TASKS)])
-    assert result.exit_code == 0
-    assert "mini-drift" in result.output
-
-
-def test_dry_run_never_calls_run_suite(tmp_path, monkeypatch):
-    def _boom(*args, **kwargs):
-        raise AssertionError("run_suite must not be called during --dry-run")
-
-    monkeypatch.setattr(cli_module, "load_registry", lambda: _registry())
-    monkeypatch.setattr(cli_module, "run_suite", _boom)
-
+def _write_suite(tmp_path: Path) -> Path:
     suite_path = tmp_path / "suite.toml"
     suite_path.write_text(
         """
@@ -64,6 +52,23 @@ routes = ["direct"]
 """,
         encoding="utf-8",
     )
+    return suite_path
+
+
+def test_list_tasks_lists_bundles_under_root():
+    result = runner.invoke(agent_app, ["list-tasks", "--root", str(FIXTURE_TASKS)])
+    assert result.exit_code == 0
+    assert "mini-drift" in result.output
+
+
+def test_dry_run_never_calls_run_suite(tmp_path, monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("run_suite must not be called during --dry-run")
+
+    monkeypatch.setattr(cli_module, "load_registry", lambda: _registry())
+    monkeypatch.setattr(cli_module, "run_suite", _boom)
+
+    suite_path = _write_suite(tmp_path)
     result = runner.invoke(agent_app, ["run", "--suite", str(suite_path), "--dry-run"])
     assert result.exit_code == 0
     assert "01" in result.output
@@ -97,27 +102,7 @@ def test_run_records_agent_last_run_pointer(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "latest.toml"))
 
-    suite_path = tmp_path / "suite.toml"
-    suite_path.write_text(
-        """
-name = "s"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[[rows]]
-models = ["ollama/a"]
-thinking = ["off"]
-routes = ["direct"]
-""",
-        encoding="utf-8",
-    )
+    suite_path = _write_suite(tmp_path)
     result = runner.invoke(agent_app, ["run", "--suite", str(suite_path)])
     assert result.exit_code == 0
 
@@ -157,27 +142,7 @@ def test_run_prints_each_row_error_once(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "latest.toml"))
 
-    suite_path = tmp_path / "suite.toml"
-    suite_path.write_text(
-        """
-name = "s"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[[rows]]
-models = ["ollama/a"]
-thinking = ["off"]
-routes = ["direct"]
-""",
-        encoding="utf-8",
-    )
+    suite_path = _write_suite(tmp_path)
     result = runner.invoke(agent_app, ["run", "--suite", str(suite_path)])
     assert result.exit_code == 0
     assert result.output.count("provider failed") == 1
@@ -194,27 +159,7 @@ def test_run_passes_skip_judge_through_to_run_suite(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_module, "run_suite", _fake_run_suite)
     monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "latest.toml"))
 
-    suite_path = tmp_path / "suite.toml"
-    suite_path.write_text(
-        """
-name = "s"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[[rows]]
-models = ["ollama/a"]
-thinking = ["off"]
-routes = ["direct"]
-""",
-        encoding="utf-8",
-    )
+    suite_path = _write_suite(tmp_path)
     result = runner.invoke(agent_app, ["run", "--suite", str(suite_path), "--skip-judge"])
     assert result.exit_code == 0
     assert captured["skip_judge"] is True

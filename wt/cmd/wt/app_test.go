@@ -1,10 +1,6 @@
 package main
 
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 // TestNewAppLoadsProfilesStore verifies newApp populates a.profiles from
 // profiles.toml (via the same XDG_CONFIG_HOME resolution config.Dir()
@@ -38,11 +34,6 @@ func TestNewAppLoadsProfilesStore(t *testing.T) {
 // case (the whole point of splitting the two error fields — see
 // TestNewAppLoadFailureLeavesProfilesEmpty for the contrasting case).
 func TestNewAppSurfacesProfilesValidateError(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	bad := `
 [[profiles]]
 agent = "pi"
@@ -50,9 +41,7 @@ match = "location"
 location = "local"
 config_content = { x = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(bad), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, bad)
 	a, err := newApp()
 	if err != nil {
 		t.Fatalf("newApp() error = %v, want nil (profilesValidateErr carries the problem, like cfgErr does)", err)
@@ -76,14 +65,7 @@ config_content = { x = "1" }
 // touch it" apart from "the file parsed fine but one profile is invalid,
 // the data is safe to write back".
 func TestNewAppLoadFailureLeavesProfilesEmpty(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte("not [ valid toml"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, "not [ valid toml")
 	a, err := newApp()
 	if err != nil {
 		t.Fatalf("newApp() error = %v, want nil (profilesLoadErr carries the problem)", err)

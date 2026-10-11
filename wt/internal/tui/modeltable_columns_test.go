@@ -15,8 +15,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
-func price(v float64) *float64 { return &v }
-
 // realisticTable is a table with the shapes real rows take: a long cloud model
 // id with prices, usage and a survey segment (and the last-launched marker); a
 // running local model in use by two sessions; and a discovered local model
@@ -26,7 +24,7 @@ func realisticTable() modelTable {
 		{
 			Row: catalog.Row{
 				Model: config.Model{ID: "openrouter/anthropic/claude-sonnet-4.5-thinking", ProviderID: "openrouter", ModelName: "anthropic/claude-sonnet-4.5-thinking", Family: "sonnet",
-					Cost: config.ModelCost{InputPricePerMillion: price(3), CachePricePerMillion: price(0.3), OutputPricePerMillion: price(15)}},
+					Cost: config.ModelCost{InputPricePerMillion: f64(3), CachePricePerMillion: f64(0.3), OutputPricePerMillion: f64(15)}},
 				Location: config.LocationCloud, Status: catalog.StatusOK,
 			},
 			counts: usage.UsageCounts{OneDay: 3, SevenDay: 12, ThirtyDay: 104},
@@ -76,7 +74,7 @@ func refusedTable(t *testing.T) modelTable {
 		{
 			Row: catalog.Row{
 				Model: config.Model{ID: "zcloud/glm-5.5-turbo-preview-2026-09", ProviderID: "zcloud", ModelName: "glm-5.5-turbo-preview-2026-09", Family: "glm",
-					Cost: config.ModelCost{InputPricePerMillion: price(1), CachePricePerMillion: price(0.1), OutputPricePerMillion: price(4)}},
+					Cost: config.ModelCost{InputPricePerMillion: f64(1), CachePricePerMillion: f64(0.1), OutputPricePerMillion: f64(4)}},
 				Location: config.LocationCloud, Status: catalog.StatusOK, Unmapped: true,
 			},
 			counts: usage.UsageCounts{OneDay: 2, SevenDay: 30, ThirtyDay: 211},
@@ -106,17 +104,7 @@ func tablePicker(t *testing.T, width, height int) model {
 // given size, with the cursor on the second row.
 func pickerOver(t *testing.T, tbl modelTable, width, height int) model {
 	t.Helper()
-	delegate := ThemedListDelegate(themes.Default)
-	delegate.ShowDescription = false
-	delegate.SetSpacing(0)
-	items := make([]list.Item, len(tbl.items))
-	for i, it := range tbl.items {
-		items[i] = it
-	}
-	ml := list.New(items, delegate, width-2, height-2)
-	ml.Title = tbl.header
-	styleTableTitle(&ml, themes.Default)
-	ml.SetShowStatusBar(false)
+	ml := tableList(tbl, width-2, height-2)
 	ml.Select(1)
 	m := model{phase: phaseModel, theme: themes.Default, agent: "claude", tag: "code", models: ml}
 	return resized(t, m, width, height)

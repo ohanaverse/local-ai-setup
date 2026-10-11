@@ -94,6 +94,11 @@ func runStats(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
+	if args == nil {
+		// Cobra reads a nil slice as "use os.Args[1:]", the test binary's own
+		// command line.
+		args = []string{}
+	}
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("wt stats %v: %v", args, err)

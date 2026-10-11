@@ -11,11 +11,10 @@ import (
 // TestAgentForm_Add_Success verifies that a new agent is appended to
 // cfg.Agents when the form is saved with valid data.
 func TestAgentForm_Add_Success(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{},
-	}
+	}, nil)
 	enterAgentForm(m, config.Agent{}, true)
 	m.agName.SetValue("foo")
 	m.agProvidersInput.SetValue("agy")
@@ -45,11 +44,10 @@ func TestAgentForm_Add_Success(t *testing.T) {
 // provider must be one of the supported providers. This prevents
 // inconsistent agent configurations.
 func TestAgentForm_DefaultProvider_Constrained(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{},
-	}
+	}, nil)
 	enterAgentForm(m, config.Agent{}, true)
 	m.agName.SetValue("foo")
 	m.agProvidersInput.SetValue("agy, claude")
@@ -69,11 +67,10 @@ func TestAgentForm_DefaultProvider_Constrained(t *testing.T) {
 // supported providers cannot be saved. Every agent needs at least one
 // provider to be launchable.
 func TestAgentForm_NoProviders_BlocksSave(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{},
-	}
+	}, nil)
 	enterAgentForm(m, config.Agent{}, true)
 	m.agName.SetValue("foo")
 	m.agProvidersInput.SetValue("")
@@ -92,11 +89,10 @@ func TestAgentForm_NoProviders_BlocksSave(t *testing.T) {
 // with a new name updates it in place. Previously the name was only set on
 // new agents, so renames were silently ignored.
 func TestAgentForm_RenameExisting(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{{Name: "old", SupportedProviders: []string{"agy"}}},
-	}
+	}, nil)
 	enterAgentForm(m, m.cfg.Agents[0], false)
 	m.agName.SetValue("new")
 	m.agProvidersInput.SetValue("agy")
@@ -118,17 +114,8 @@ func TestAgentForm_RenameExisting(t *testing.T) {
 // has no editable textinput cursor marker, confirming it is display-only.
 func TestAgentForm_InstalledReadOnly(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{}
 	enterAgentForm(m, config.Agent{Name: "claude"}, false)
 	view := m.agentFormView()
-	// The installed field should show the checkmark or x, but no cursor.
-	if strings.Contains(view, "[") && strings.Contains(view, "]") {
-		// Simple heuristic: if there's a bracket pair near the installed
-		// line, it might be a list marker, not a textinput cursor.
-		// A textinput cursor is typically a blinking block rendered by
-		// the textinput itself. Since installed is just a string value,
-		// there should be no textinput.View() output for it.
-	}
 	// More direct: the "Installed" line should not contain a textinput
 	// placeholder or prompt character.
 	lines := strings.Split(view, "\n")

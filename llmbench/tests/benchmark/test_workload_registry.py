@@ -1,3 +1,6 @@
+import pytest
+
+from llmbench.benchmark.errors import BenchmarkError
 from llmbench.benchmark.workloads import get_workload, list_workloads
 
 
@@ -12,10 +15,5 @@ def test_get_workload_chat():
 
 
 def test_get_workload_unknown_raises():
-    from llmbench.benchmark.errors import BenchmarkError
-
-    try:
+    with pytest.raises(BenchmarkError):
         get_workload("nonexistent")
-        raise AssertionError("expected BenchmarkError")
-    except BenchmarkError:
-        pass

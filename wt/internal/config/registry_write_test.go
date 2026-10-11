@@ -18,12 +18,7 @@ func scratchRegistry(t *testing.T, content string) string {
 	t.Setenv("XDG_CONFIG_HOME", home)
 	path := filepath.Join(home, "local-ai", "registry.toml")
 	if content != "" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		must(t, path, content)
 	}
 	return path
 }

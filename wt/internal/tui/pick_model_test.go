@@ -75,62 +75,42 @@ func TestPickStartModelDefaultsToNativeRow(t *testing.T) {
 	}
 }
 
-// TestPickModelEscCancels asserts that Esc cancels the standalone picker
-// without a selection, so a caller can distinguish "user picked nothing"
-// from "user picked the first model" and must not silently launch a default.
-func TestPickModelEscCancels(t *testing.T) {
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
-	m := newPickModel(nil, models, themes.Default, false)
-
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	gm := got.(pickModel)
-
-	if cmd == nil {
-		t.Fatalf("cmd = nil, want tea.Quit")
+// TestPickModelCancelKeys asserts each cancel key quits the standalone picker
+// without a selection.
+func TestPickModelCancelKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		// Esc cancels without a selection, so a caller can distinguish "user
+		// picked nothing" from "user picked the first model" and must not
+		// silently launch a default.
+		{"esc", tea.KeyMsg{Type: tea.KeyEsc}},
+		// Mirrors the whole-TUI convention (app_test.go's TestUpdateQuitKeys)
+		// that Ctrl+C always quits immediately, even though this picker is a
+		// separate, standalone Bubble Tea program from the main app.
+		{"ctrl+c", tea.KeyMsg{Type: tea.KeyCtrlC}},
+		// 'q' cancels the picker outside filter mode, matching the main TUI's
+		// universal quit-key convention.
+		{"q when idle", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}},
 	}
-	if !gm.canceled {
-		t.Errorf("canceled = false, want true")
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubUsageStore(t)
+			stubRefcountStore(t)
+			models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
+			m := newPickModel(nil, models, themes.Default, false)
 
-// TestPickModelCtrlCCancels mirrors the whole-TUI convention (app_test.go's
-// TestUpdateQuitKeys) that Ctrl+C always quits immediately, even though this
-// picker is a separate, standalone Bubble Tea program from the main app.
-func TestPickModelCtrlCCancels(t *testing.T) {
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
-	m := newPickModel(nil, models, themes.Default, false)
+			got, cmd := m.Update(tc.key)
+			gm := got.(pickModel)
 
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	gm := got.(pickModel)
-
-	if cmd == nil {
-		t.Fatalf("cmd = nil, want tea.Quit")
-	}
-	if !gm.canceled {
-		t.Errorf("canceled = false, want true")
-	}
-}
-
-// TestPickModelQCancelsWhenIdle asserts 'q' cancels the picker outside
-// filter mode, matching the main TUI's universal quit-key convention.
-func TestPickModelQCancelsWhenIdle(t *testing.T) {
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
-	m := newPickModel(nil, models, themes.Default, false)
-
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	gm := got.(pickModel)
-
-	if cmd == nil {
-		t.Fatalf("cmd = nil, want tea.Quit")
-	}
-	if !gm.canceled {
-		t.Errorf("canceled = false, want true")
+			if cmd == nil {
+				t.Fatalf("cmd = nil, want tea.Quit")
+			}
+			if !gm.canceled {
+				t.Errorf("canceled = false, want true")
+			}
+		})
 	}
 }
 
@@ -202,25 +182,7 @@ func TestPickModelViewHeaderAlignsWithRows(t *testing.T) {
 	models := []config.Model{{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"}}
 	pm := newPickModel(nil, models, themes.Default, false)
 
-	var header, row string
-	for _, ln := range strings.Split(ansiRE.ReplaceAllString(pm.View(), ""), "\n") {
-		if strings.Contains(ln, "FAMILY") && header == "" {
-			header = ln
-		}
-		if strings.Contains(ln, "ollama/gemma4:9b") && row == "" {
-			row = ln
-		}
-	}
-	if header == "" || row == "" {
-		t.Fatalf("header/row not found in view:\n%s", pm.View())
-	}
-	off := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
-	if off(header, "MODEL") != off(row, "ollama/gemma4:9b") {
-		t.Errorf("MODEL offset %d != row id offset %d\n%q\n%q", off(header, "MODEL"), off(row, "ollama/gemma4:9b"), header, row)
-	}
-	if off(header, "FAMILY") != off(row, "gemma4") {
-		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, "gemma4"), header, row)
-	}
+	assertHeaderAlignsWithRow(t, pm.View(), "ollama/gemma4:9b", "gemma4")
 }
 
 // TestNewPickModelHidesDiscoveredRows verifies wt smoke's picker only shows the

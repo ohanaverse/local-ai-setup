@@ -157,12 +157,7 @@ func drivePhaseAgentEnter(t *testing.T, m model, agentName string) model {
 	if m.phase != phaseAgent {
 		t.Fatalf("after selectedEntryMsg: phase = %v, want phaseAgent", m.phase)
 	}
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == agentName {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, agentName)
 	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	return got.(model)
 }
@@ -249,7 +244,7 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-		// No models — ModelsForAgentAndTag returns an empty list.
+		// No models — cfg.EligibleModels returns an empty list.
 	}
 	m := model{cfg: cfg, initialAgent: "claude", width: 80, height: 24}
 	// Load the worktree list first so m.ready is true; the pinned-path
@@ -423,7 +418,7 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
 	// State file: rotation.state holding a single model-id-per-line
-	// ("ollama/gemma4:9b\n"). Last() reads that line and FindAfter
+	// ("ollama/gemma4:9b\n"). Last() reads that line and NextFromEligible
 	// returns the next model (gemma4:14b). The cursor lands on gemma4:14b.
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
@@ -680,8 +675,8 @@ func TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow(t *testing.T) {
 // the end of the list forever. PR 3b: the picker now sources
 // models from cfg.EligibleModels without an implicit tag filter,
 // so all 3 testConfig models (2 code + 1 design) are in the
-// snapshot; wrapping past gemma4:14b (index 2) lands on
-// gemma4:design (index 3). Index 0 is the leading family divider.
+// snapshot; wrapping past gemma4:14b (index 1) lands on
+// gemma4:design (index 2).
 func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:14b")
@@ -865,10 +860,9 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 // added a phaseAgent step before phaseModel, so each picker entry now
 // drives the worktree pick and the phaseAgent Enter to reach phaseModel.
 func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
-	dir := tempStateDir(t)
 	// No prior state. Picker entry 1 lands on the first model row
 	// at index 0.
-	_ = dir
+	tempStateDir(t)
 
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m = drivePhaseAgentEnter(t, m, "claude")

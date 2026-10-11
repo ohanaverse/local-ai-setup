@@ -582,10 +582,8 @@ func TestSaveFollowsSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range g.RoutedIDs() {
-		if id == "keep/me" {
-			t.Fatal("target file was not updated")
-		}
+	if slices.Contains(g.RoutedIDs(), "keep/me") {
+		t.Fatal("target file was not updated")
 	}
 }
 

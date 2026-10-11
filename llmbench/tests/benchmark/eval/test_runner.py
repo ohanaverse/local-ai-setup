@@ -84,13 +84,23 @@ def _suite(row_categories=None) -> Suite:
     )
 
 
-def _mini_review_category() -> Category:
+def _mini_review_category(name: str = "mini_review") -> Category:
     return Category(
-        name="mini_review",
+        name=name,
         path=Path("."),
         items=[Item(id="i1", prompt="p", meta={})],
         rubric=Rubric(dimensions={"a": 100}),
         rubric_md="score a (100)",
+    )
+
+
+def _unjudged_result(category: str = "mini_review") -> judged_runner.CategoryRowResult:
+    return judged_runner.CategoryRowResult(
+        category=category,
+        items=[
+            judged_runner.ItemResult(item_id="i1", response_text="r", judge=None, score_100=None)
+        ],
+        score_100=None,
     )
 
 
@@ -236,13 +246,7 @@ def test_run_suite_preserves_earlier_category_results_when_a_later_category_fail
         _fake_category_result(50.0),
         JudgeTransportError("second category exploded"),
     ]
-    other_category = Category(
-        name="other_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="p", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    other_category = _mini_review_category("other_review")
 
     run_dir, results = run_suite(
         _suite(),
@@ -279,13 +283,7 @@ def test_run_suite_continues_to_later_categories_after_an_earlier_one_fails(
         JudgeTransportError("first category exploded"),
         _fake_category_result(50.0),
     ]
-    other_category = Category(
-        name="other_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="p", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    other_category = _mini_review_category("other_review")
 
     _run_dir, results = run_suite(
         _suite(),
@@ -420,9 +418,7 @@ def test_run_suite_unmatched_row_filter_raises_and_writes_nothing(mock_isolation
             results_dir=tmp_path,
             judge_transport_factory=lambda judge_cfg: object(),
         )
-    # No run dir was created for either failed attempt (the autouse
-    # conftest fixture drops an unrelated _default_litellm_config dir into
-    # tmp_path — only eval-* run dirs matter here).
+    # No run dir was created for either failed attempt (only eval-* run dirs matter here).
     assert [p for p in tmp_path.iterdir() if p.name.startswith("eval-")] == []
     mock_isolation.isolate_provider.assert_not_called()
 
@@ -700,13 +696,7 @@ def test_run_suite_judges_after_restore_not_interleaved_with_generation(
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
     # generate_category fake leaves items UNJUDGED; judge_category is the
     # real function, driven through the fake judge transport below.
-    from llmbench.benchmark.eval.judged_runner import ItemResult
-
-    mock_generate.return_value = judged_runner.CategoryRowResult(
-        category="mini_review",
-        items=[ItemResult(item_id="i1", response_text="r", judge=None, score_100=None)],
-        score_100=None,
-    )
+    mock_generate.return_value = _unjudged_result()
     call_log: list[str] = []
 
     def _fake_isolate(provider_id, *args, env=None):
@@ -760,13 +750,7 @@ def test_run_suite_interrupted_judge_phase_leaves_a_rejudge_recoverable_run(
     # failure as judge_fail items (not a raise), so the run finishes with
     # an honest JUDGE_FAIL/UNJUDGED report instead of crashing.
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    from llmbench.benchmark.eval.judged_runner import ItemResult
-
-    mock_generate.return_value = judged_runner.CategoryRowResult(
-        category="mini_review",
-        items=[ItemResult(item_id="i1", response_text="r", judge=None, score_100=None)],
-        score_100=None,
-    )
+    mock_generate.return_value = _unjudged_result()
 
     class _DeadJudgeTransport:
         def complete(self, prompt, *, temperature):
@@ -804,14 +788,9 @@ def test_run_suite_rejudge_transport_failure_is_contained_per_category(
     # scored, rather than one dead judge round-trip aborting the whole
     # scoring phase.
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    from llmbench.benchmark.eval.judged_runner import ItemResult
 
     def _gen(category, transport, *, temperature):
-        return judged_runner.CategoryRowResult(
-            category=category.name,
-            items=[ItemResult(item_id="i1", response_text="r", judge=None, score_100=None)],
-            score_100=None,
-        )
+        return _unjudged_result(category.name)
 
     mock_generate.side_effect = _gen
 
@@ -829,13 +808,7 @@ def test_run_suite_rejudge_transport_failure_is_contained_per_category(
                 raise JudgeTransportError("route dead on second category")
             return json.dumps({"scores": {"a": 70}, "total": 70})
 
-    other_category = Category(
-        name="other_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="p", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    other_category = _mini_review_category("other_review")
     run_dir, results = run_suite(
         _suite(),
         _registry(),

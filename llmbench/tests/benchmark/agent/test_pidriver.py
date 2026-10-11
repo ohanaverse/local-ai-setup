@@ -33,32 +33,6 @@ from llmbench.benchmark.errors import BenchmarkError
 LITELLM_ID = "ollama/qwen3.8:27b-mlx"
 
 
-def _live_litellm_path(tmp_path: Path) -> Path:
-    """A stand-in for ~/.pi/agent/models.json.
-
-    Never read the real file (hermetic), and never pass a *missing* one to a
-    litellm row: resolve_pi_target raises without an apiKey, so tests that
-    only care about the config shape still have to supply a resolvable
-    gateway entry.
-    """
-    path = tmp_path / "models.json"
-    path.write_text(
-        json.dumps(
-            {
-                "providers": {
-                    "litellm": {
-                        "baseUrl": "http://localhost:4000/v1",
-                        "apiKey": "sk-test-key",
-                        "models": [],
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
 def _litellm_row() -> RowConfig:
     return RowConfig(
         label="r1", model_id=LITELLM_ID, thinking="off", route="litellm", provider_id="ollama"
@@ -172,7 +146,7 @@ def test_litellm_route_missing_key_raises(tmp_path):
         resolve_pi_target(row, "x", routes_direct={}, live_models_path=tmp_path / "missing.json")
 
 
-def test_build_models_json_matches_wt_pi_models_shape(tmp_path):
+def test_build_models_json_matches_wt_pi_models_shape(litellm_models_json):
     """Provider/entry shape mirrors wt/internal/agents/pi_models.go exactly
     (id/contextWindow/input/reasoning/_launch) so an agent row behaves like
     a wt-launched pi session."""
@@ -180,7 +154,7 @@ def test_build_models_json_matches_wt_pi_models_shape(tmp_path):
         _litellm_row(),
         "qwen3.8:27b-mlx",
         routes_direct={},
-        live_models_path=_live_litellm_path(tmp_path),
+        live_models_path=litellm_models_json,
     )
     doc = build_models_json(target)
     provider = doc["providers"]["litellm"]
@@ -193,12 +167,12 @@ def test_build_models_json_matches_wt_pi_models_shape(tmp_path):
     assert provider["api"] == "openai-completions"
 
 
-def test_write_pi_config_writes_models_json(tmp_path):
+def test_write_pi_config_writes_models_json(tmp_path, litellm_models_json):
     target = resolve_pi_target(
         _litellm_row(),
         "qwen3.8:27b-mlx",
         routes_direct={},
-        live_models_path=_live_litellm_path(tmp_path),
+        live_models_path=litellm_models_json,
     )
     config_dir = tmp_path / "run-config"
     path = write_pi_config(target, config_dir)
@@ -209,13 +183,11 @@ def test_write_pi_config_writes_models_json(tmp_path):
     )
 
 
-def test_build_pi_command_shape(tmp_path):
+def test_build_pi_command_shape(tmp_path, litellm_models_json):
     row = RowConfig(
         label="r1", model_id="ollama/x", thinking="high", route="litellm", provider_id="ollama"
     )
-    target = resolve_pi_target(
-        row, "x", routes_direct={}, live_models_path=_live_litellm_path(tmp_path)
-    )
+    target = resolve_pi_target(row, "x", routes_direct={}, live_models_path=litellm_models_json)
     cmd = build_pi_command(target, "high", tmp_path / "session", "do the task")
     assert cmd[0] == "pi"
     assert "--mode" in cmd and "json" in cmd
@@ -226,7 +198,6 @@ def test_build_pi_command_shape(tmp_path):
 
 
 FAKE_AGENT = Path(__file__).parent / "fixtures" / "fake_agent.py"
-_AGENT_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "tasks" / "mini-drift"
 
 
 def _fake_agent_cmd(session_dir: Path, extra_args: list[str] | None = None) -> list[str]:
@@ -735,23 +706,18 @@ def test_compute_metrics_gen_seconds_ignores_the_user_message_pair():
 
 def test_metrics_log_written_per_run(tmp_path):
     from llmbench.benchmark.agent.pidriver import _log
-    from llmbench.benchmark.agent.task import load_task
 
-    ws = create_workspace(load_task(_AGENT_FIXTURES_DIR))
     log_path = tmp_path / "metrics.log"
-    try:
-        compute_metrics(
-            [_session_event(), _assistant_message_start(1), _assistant_message_end(2)],
-            start_wall=0.0,
-            end_wall=1.0,
-            log_fn=lambda msg: _log(msg, log_path),
-        )
-        assert log_path.exists()
-        content = log_path.read_text(encoding="utf-8")
-        assert "[seq 0] session" in content
-        assert "in=100 out=20" in content
-    finally:
-        destroy_workspace(ws)
+    compute_metrics(
+        [_session_event(), _assistant_message_start(1), _assistant_message_end(2)],
+        start_wall=0.0,
+        end_wall=1.0,
+        log_fn=lambda msg: _log(msg, log_path),
+    )
+    assert log_path.exists()
+    content = log_path.read_text(encoding="utf-8")
+    assert "[seq 0] session" in content
+    assert "in=100 out=20" in content
 
 
 def test_run_pi_process_forwards_env_to_the_child(tmp_path):

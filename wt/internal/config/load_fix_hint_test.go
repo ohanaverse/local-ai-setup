@@ -193,16 +193,8 @@ func wrapNonNil(err error) error {
 // config.toml error appears first in the join (e.g., empty default_tag +
 // missing model_name both present).
 func TestRegistryFixHint_JoinedErrors(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	registry := filepath.Join(home, "local-ai", "registry.toml")
-	if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	// Write a minimal registry so RegistryPath() works
-	if err := os.WriteFile(registry, []byte("providers = []\nmodels = []\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	registry := scratchRegistry(t, "providers = []\nmodels = []\n")
 
 	cases := []struct {
 		name string

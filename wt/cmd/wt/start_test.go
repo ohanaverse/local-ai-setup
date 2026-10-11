@@ -95,9 +95,7 @@ func TestStartForLaunchRetriesOccupiedOnlyWithReplace(t *testing.T) {
 // there is nobody to ask.
 func TestStartForLaunchNonInteractiveOccupiedRefuses(t *testing.T) {
 	stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return false }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, false)
 	asked := false
 	oldConfirm := confirmReplace
 	confirmReplace = func(string) (bool, error) { asked = true; return true, nil }
@@ -125,9 +123,7 @@ func TestStartForLaunchNonInteractiveOccupiedRefuses(t *testing.T) {
 // to No precisely so an accidental Enter cannot stop a model.
 func TestStartForLaunchTTYDeclineKeepsRunningModel(t *testing.T) {
 	stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 	oldConfirm := confirmReplace
 	confirmReplace = func(q string) (bool, error) {
 		if !strings.Contains(q, "omlx/other") {
@@ -153,9 +149,7 @@ func TestStartForLaunchTTYDeclineKeepsRunningModel(t *testing.T) {
 // while the non-interactive one cannot.
 func TestStartForLaunchTTYConfirmReplaces(t *testing.T) {
 	stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 	oldConfirm := confirmReplace
 	confirmReplace = func(string) (bool, error) { return true, nil }
 	t.Cleanup(func() { confirmReplace = oldConfirm })
@@ -228,13 +222,7 @@ func TestStartForLaunchCancelIsReported(t *testing.T) {
 // line per stage, naming the model, the stage phrase and an elapsed time. A
 // silent start would leave the user staring at nothing during a long warmup.
 func TestStartProgressReportsEachStage(t *testing.T) {
-	oldOut := osStderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	osStderr = w
-	t.Cleanup(func() { osStderr = oldOut })
+	r, w := pipeStderr(t)
 
 	done := make(chan struct{})
 	report := startProgress("omlx/qwen3.8", done, time.Now().Add(-12*time.Second))
@@ -263,13 +251,7 @@ func TestStartProgressReportsEachStage(t *testing.T) {
 // still prints that stage every interval, so a multi-minute warmup does not
 // look like a hang.
 func TestStartProgressRepeatsWhileWarming(t *testing.T) {
-	oldOut := osStderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	osStderr = w
-	t.Cleanup(func() { osStderr = oldOut })
+	r, w := pipeStderr(t)
 	oldInterval := startProgressInterval
 	startProgressInterval = 5 * time.Millisecond
 	t.Cleanup(func() { startProgressInterval = oldInterval })
@@ -301,13 +283,7 @@ func TestStartProgressRepeatsWhileWarming(t *testing.T) {
 // elapsed time, as the engine's own progress line does; a run that waits must
 // show it started waiting and that it is still going.
 func TestEnsureRouteBeforeLaunchAnnouncesTheProxyWait(t *testing.T) {
-	oldOut := osStderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	osStderr = w
-	t.Cleanup(func() { osStderr = oldOut })
+	r, w := pipeStderr(t)
 	oldInterval := routeWaitInterval
 	routeWaitInterval = 5 * time.Millisecond
 	t.Cleanup(func() { routeWaitInterval = oldInterval })
@@ -362,13 +338,7 @@ func TestEnsureRouteBeforeLaunchAnnouncesTheProxyWait(t *testing.T) {
 // the wait line unconditionally would put a line about a restart that is not
 // happening in front of every such launch.
 func TestEnsureRouteBeforeLaunchStaysQuietWhenNothingChanged(t *testing.T) {
-	oldOut := osStderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	osStderr = w
-	t.Cleanup(func() { osStderr = oldOut })
+	r, w := pipeStderr(t)
 
 	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
 	ensureModelRoute = func(*config.Config, config.Model) bool { return false }
@@ -423,6 +393,20 @@ func localmodelsEntry(id, name string) localmodels.Entry {
 	return localmodels.Entry{ModelID: id, ModelName: name, Artifact: name, Registered: true}
 }
 
+// pipeStderr points osStderr at a pipe until the test ends and returns both
+// ends: the test closes w and reads r itself.
+func pipeStderr(t *testing.T) (r, w *os.File) {
+	t.Helper()
+	oldOut := osStderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	osStderr = w
+	t.Cleanup(func() { osStderr = oldOut })
+	return r, w
+}
+
 // readSome drains everything readable from r without blocking, so the
 // heartbeat test can poll for output while the ticker is still running.
 func readSome(t *testing.T, r *os.File) string {
@@ -441,9 +425,7 @@ func readSome(t *testing.T, r *os.File) string {
 // ctx race the user would have to press Enter and then Ctrl+C a second time.
 func TestStartForLaunchCtrlCAbortsReplacePrompt(t *testing.T) {
 	cancel := stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	oldConfirm := confirmReplace

@@ -16,6 +16,46 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// claudeTarget sets up a claude config_content target for one test: a
+// throwaway XDG_CONFIG_HOME (so backups land in the test's own directory) and
+// a worktree whose .claude/settings.local.json is the target. A non-nil
+// content is written there as the pre-existing file; nil leaves the target,
+// and the worktree, absent.
+func claudeTarget(t *testing.T, content []byte) (worktree, target string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree = filepath.Join(dir, "worktree")
+	target = filepath.Join(worktree, ".claude", "settings.local.json")
+	if content != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return worktree, target
+}
+
+// assertSameJSON fails the test unless got and want hold the same JSON
+// document. The comparison is semantic, not byte for byte, because a restore
+// re-marshals the file. what names got in the failure and wantNote says what
+// want stands for.
+func assertSameJSON(t *testing.T, what, wantNote string, got, want []byte) {
+	t.Helper()
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(got, &gotDoc); err != nil {
+		t.Fatalf("%s is not valid JSON: %v (%s)", what, err, got)
+	}
+	if err := json.Unmarshal(want, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("%s = %v, want %v (%s)", what, gotDoc, wantDoc, wantNote)
+	}
+}
+
 // TestConfigFileTargetClaudeIsWorktreeScoped verifies claude's target is
 // inside the launch's own worktree (.claude/settings.local.json), never
 // the global ~/.claude/settings.json — the whole point of the
@@ -48,23 +88,13 @@ func TestConfigFileTargetClaudeResolvesRelativeWorktreePathToAbsolute(t *testing
 	dirA := t.TempDir()
 	dirB := t.TempDir()
 
-	origWD, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(origWD) })
-
-	if err := os.Chdir(dirA); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(dirA)
 	pathA, _, _, err := ConfigFileTarget("claude", ".")
 	if err != nil {
 		t.Fatalf("ConfigFileTarget(claude, \".\") in dirA: %v", err)
 	}
 
-	if err := os.Chdir(dirB); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(dirB)
 	pathB, _, _, err := ConfigFileTarget("claude", ".")
 	if err != nil {
 		t.Fatalf("ConfigFileTarget(claude, \".\") in dirB: %v", err)
@@ -144,17 +174,8 @@ func TestConfigFileTargetCodexHomeDirErrorPropagates(t *testing.T) {
 // semantically here; see
 // TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession for why.
 func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"env":{"MY_OWN_SETTING":"keep-me"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"MAX_THINKING_TOKENS": "4096"}}}
@@ -181,16 +202,7 @@ func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(restored, &gotDoc); err != nil {
-		t.Fatalf("restored content is not valid JSON: %v (%s)", err, restored)
-	}
-	if err := json.Unmarshal(original, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("restored content = %v, want %v (same keys/values as the pre-launch original)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "restored content", "same keys/values as the pre-launch original", restored, original)
 }
 
 // TestApplyConfigContentDeletesFileThatDidNotExistBefore verifies that
@@ -198,10 +210,7 @@ func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
 // leaving the wt-written file behind — the "restore, or delete if none
 // existed" half of the design.
 func TestApplyConfigContentDeletesFileThatDidNotExistBefore(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	worktree, target := claudeTarget(t, nil)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -227,17 +236,8 @@ func TestApplyConfigContentDeletesFileThatDidNotExistBefore(t *testing.T) {
 // new content — so a hand-edited file is never permanently lost to an
 // unclean exit.
 func TestApplyConfigContentSelfHealsOrphanedBackup(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, handEdited)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -260,16 +260,7 @@ func TestApplyConfigContentSelfHealsOrphanedBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(got, &gotDoc); err != nil {
-		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("self-healed content = %v, want %v (the original hand-edited content)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "self-healed content", "the original hand-edited content", got, handEdited)
 }
 
 // TestApplyConfigContentCodexWritesValidTOMLAndAppendsProfileFlag verifies
@@ -426,17 +417,8 @@ func TestMergeOpenCodeEnvUsesLastEntryNotFirst(t *testing.T) {
 // backup left behind by a session that never called its cleanup (kill -9)
 // is restored, and the restored flag reports true.
 func TestSelfHealRestoresOrphanedBackup(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, handEdited)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -456,16 +438,7 @@ func TestSelfHealRestoresOrphanedBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(got, &gotDoc); err != nil {
-		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("self-healed content = %v, want %v (the original hand-edited content)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "self-healed content", "the original hand-edited content", got, handEdited)
 }
 
 // TestSelfHealNoopWithoutBackup verifies SelfHeal is safe to call
@@ -535,16 +508,7 @@ func TestRestoreIfBackedUpReturnsTrueWhenCleanupFailsAfterSuccessfulRestore(t *t
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(got, &gotDoc); err != nil {
-		t.Fatalf("restored content is not valid JSON: %v (%s)", err, got)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("target content = %v, want %v (the restored hand-edited content)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "target content", "the restored hand-edited content", got, handEdited)
 }
 
 // TestApplyConfigContentOpenCodeMergesIntoEnv verifies opencode's
@@ -716,17 +680,8 @@ func TestWithTargetLockSerializesConcurrentAccess(t *testing.T) {
 // that key while still reverting the profile's own "env" key to its
 // pre-launch value.
 func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"env":{"MY_OWN_SETTING":"keep-me"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"MAX_THINKING_TOKENS": "4096"}}}
@@ -781,17 +736,8 @@ func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession(t *testing.T
 // second session's write must refuse instead of clobbering the first
 // session's still-in-use file.
 func TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 
 	cmd1 := exec.Command("claude")
 	rp1 := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -835,17 +781,8 @@ func TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession(t *testing.T) {
 // agent) also respects the live-owner guard: it must never restore a
 // backup a different, still-running wt process still owns.
 func TestSelfHealSkipsBackupOwnedByLiveProcess(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
 	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
@@ -887,17 +824,8 @@ func TestSelfHealSkipsBackupOwnedByLiveProcess(t *testing.T) {
 // alive (the owning wt process was killed, e.g. `kill -9`), the backup is
 // still treated as orphaned and restored, exactly as before this fix.
 func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, handEdited)
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
 	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
@@ -919,20 +847,11 @@ func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
 	if !restored {
 		t.Fatal("restoreIfBackedUp() restored = false, want true (owner pid is dead — orphaned backup)")
 	}
-	var gotDoc, wantDoc map[string]any
 	gotBytes, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(gotBytes, &gotDoc); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("self-healed content = %v, want %v", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "self-healed content", "the original hand-edited content", gotBytes, handEdited)
 }
 
 // TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails is the
@@ -946,17 +865,8 @@ func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
 // backup marker is written, so a failed write leaves nothing behind to
 // self-heal over.
 func TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	invalidJSON := []byte(`{ not valid json`)
-	if err := os.WriteFile(target, invalidJSON, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, invalidJSON)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -989,10 +899,7 @@ func TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails(t *testing.T) 
 // already fixed this for a target that DID exist beforehand, but the
 // "did not exist" branch still discarded everything unconditionally.
 func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSessionWhenTargetDidNotExistBefore(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	worktree, target := claudeTarget(t, nil)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}

@@ -42,21 +42,12 @@ func TestCountsSlidingWindows(t *testing.T) {
 	now = func() time.Time { return fixed }
 	defer func() { now = time.Now }()
 
-	events := []struct {
-		id   string
-		when time.Time
-	}{
-		{"m", fixed.Add(-30 * time.Minute)},    // 1d, 7d, 30d
-		{"m", fixed.Add(-26 * time.Hour)},      // 7d, 30d
-		{"m", fixed.Add(-10 * 24 * time.Hour)}, // 30d
-		{"m", fixed.Add(-40 * 24 * time.Hour)}, // none
-	}
-	var data []byte
-	for _, e := range events {
-		line, _ := json.Marshal(event{ModelID: e.id, Timestamp: e.when})
-		data = append(data, append(line, '\n')...)
-	}
-	_ = os.WriteFile(store.path(), data, 0o600)
+	writeEvents(t, store, []event{
+		{ModelID: "m", Timestamp: fixed.Add(-30 * time.Minute)},    // 1d, 7d, 30d
+		{ModelID: "m", Timestamp: fixed.Add(-26 * time.Hour)},      // 7d, 30d
+		{ModelID: "m", Timestamp: fixed.Add(-10 * 24 * time.Hour)}, // 30d
+		{ModelID: "m", Timestamp: fixed.Add(-40 * 24 * time.Hour)}, // none
+	})
 
 	got := store.Counts([]string{"m"})
 	want := UsageCounts{OneDay: 1, SevenDay: 2, ThirtyDay: 3}

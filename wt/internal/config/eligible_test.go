@@ -4,11 +4,9 @@ import (
 	"testing"
 )
 
-// TestEligibleModels covers the eligible-model function used by both the
-// non-TUI launch path and (eventually) the model picker. This is the
-// single source of truth for "which models can this user launch right now",
-// so its filter semantics must be locked down here.
-func TestEligibleModels(t *testing.T) {
+// eligibleFixture returns a fresh copy of the catalog both tests below filter:
+// two providers, five models and two agents, with native already derived.
+func eligibleFixture() *Config {
 	cfg := &Config{
 		DefaultTag: "code",
 		Providers: []Provider{
@@ -28,6 +26,15 @@ func TestEligibleModels(t *testing.T) {
 		},
 	}
 	deriveNative(cfg)
+	return cfg
+}
+
+// TestEligibleModels covers the eligible-model function used by both the
+// non-TUI launch path and (eventually) the model picker. This is the
+// single source of truth for "which models can this user launch right now",
+// so its filter semantics must be locked down here.
+func TestEligibleModels(t *testing.T) {
+	cfg := eligibleFixture()
 
 	tests := []struct {
 		name    string
@@ -56,10 +63,7 @@ func TestEligibleModels(t *testing.T) {
 			if err != nil {
 				return
 			}
-			gotIDs := make([]string, len(got))
-			for i, m := range got {
-				gotIDs[i] = m.ID
-			}
+			gotIDs := idsOf(got)
 			if len(gotIDs) != len(tc.wantIDs) {
 				t.Fatalf("got %d models (%v), want %d (%v)", len(gotIDs), gotIDs, len(tc.wantIDs), tc.wantIDs)
 			}
@@ -78,25 +82,7 @@ func TestEligibleModels(t *testing.T) {
 // directly. The two must never drift — if they did, the picker's eligible
 // slice would disagree with the non-TUI launch path.
 func TestEligibleModelsInMatchesEligibleModels(t *testing.T) {
-	cfg := &Config{
-		DefaultTag: "code",
-		Providers: []Provider{
-			{ID: "claude", Location: LocationCloud, Auth: AuthConfig{Type: "native"}},
-			{ID: "ollama", Location: LocationLocal, Auth: AuthConfig{Type: "none"}},
-		},
-		Models: []Model{
-			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Location: LocationCloud, Tags: []string{"code"}},
-			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Family: "sonnet", Location: LocationCloud, Tags: []string{"code", "design"}},
-			{ID: "claude/native", ProviderID: "claude", ModelName: "native", Location: LocationCloud, Tags: []string{"code"}},
-			{ID: "ollama/gemma4:9b", ProviderID: "ollama", ModelName: "gemma4:9b", Family: "gemma4", Location: LocationLocal, Tags: []string{"code"}},
-			{ID: "ollama/llama3", ProviderID: "ollama", ModelName: "llama3", Family: "llama3", Location: LocationLocal, Tags: []string{"design"}},
-		},
-		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-			{Name: "pi", SupportedProviders: []string{"ollama", "claude"}},
-		},
-	}
-	deriveNative(cfg)
+	cfg := eligibleFixture()
 
 	catalog, err := cfg.ModelsForAgent("pi")
 	if err != nil {

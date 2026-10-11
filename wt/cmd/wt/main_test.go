@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -26,12 +25,7 @@ import (
 func TestConfig_NoSubcommand_LaunchesEditor(t *testing.T) {
 	call := stubConfigEditor(t, configeditor.Result{}, nil)
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"config"})
-	err := root.Execute()
+	_, err := runWT(t, "config")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,12 +48,7 @@ func TestLegacyShortFlagRejected(t *testing.T) {
 		{"equals", []string{"-w=my-branch"}},
 	} {
 		t.Run(args.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			root := rootCmd()
-			root.SetOut(&buf)
-			root.SetErr(&buf)
-			root.SetArgs(args.args)
-			err := root.Execute()
+			_, err := runWT(t, args.args...)
 			if err == nil {
 				t.Fatal("expected error for legacy -w flag, got nil")
 			}
@@ -77,20 +66,10 @@ func TestLegacyShortFlagRejected(t *testing.T) {
 // before any TUI is launched.
 func TestPickerSkippedOnWorktreeFlag(t *testing.T) {
 	// Run from a non-git directory.
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	writeEmptyRegistry(t, home)
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-W", "my-branch"})
-	err := root.Execute()
+	_, err := runWT(t, "-W", "my-branch")
 	// Should error with "not in a git repo", not launch a TUI.
 	if err == nil {
 		t.Fatal("expected error for -W outside git repo")
@@ -130,14 +109,9 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			root := rootCmd()
-			root.SetOut(&buf)
-			root.SetErr(&buf)
-			root.SetArgs(tc.args)
-			err := root.Execute()
+			out, err := runWT(t, tc.args...)
 			if err == nil {
-				t.Fatalf("expected error for %v, got nil (output: %q)", tc.args, buf.String())
+				t.Fatalf("expected error for %v, got nil (output: %q)", tc.args, out)
 			}
 			if !strings.Contains(err.Error(), tc.wantInError) {
 				t.Errorf("error %q does not contain %q", err.Error(), tc.wantInError)
@@ -189,16 +163,12 @@ func TestRemovedSubcommandNameAfterDashIsPassedThrough(t *testing.T) {
 			}
 			t.Cleanup(func() { launchFiltered = prev })
 
-			var buf bytes.Buffer
-			root := rootCmd()
-			root.SetOut(&buf)
-			root.SetErr(&buf)
-			root.SetArgs(tc.args)
-			if err := root.Execute(); err != nil {
+			out, err := runWT(t, tc.args...)
+			if err != nil {
 				t.Fatalf("wt %v was refused: %v", tc.args, err)
 			}
 			if !launched {
-				t.Fatalf("the launch was never reached (output: %q)", buf.String())
+				t.Fatalf("the launch was never reached (output: %q)", out)
 			}
 			if gotAgent != "shell" || !slices.Equal(gotArgs, tc.want) {
 				t.Errorf("launched agent %q with args %q, want shell with %q", gotAgent, gotArgs, tc.want)
@@ -217,12 +187,7 @@ func TestRemovedSubcommandNameAfterDashIsPassedThrough(t *testing.T) {
 			stdinTTY = func() bool { return false }
 			t.Cleanup(func() { stdinTTY = prev })
 
-			var buf bytes.Buffer
-			root := rootCmd()
-			root.SetOut(&buf)
-			root.SetErr(&buf)
-			root.SetArgs([]string{"--", word})
-			err := root.Execute()
+			_, err := runWT(t, "--", word)
 			if !errors.Is(err, errPickerNeedsTTY) {
 				t.Fatalf("err = %v, want the picker's terminal error: the word is a passthrough argument and no agent was named", err)
 			}
@@ -256,16 +221,12 @@ func TestShellPassthrough_StillWorks(t *testing.T) {
 	}
 	t.Cleanup(func() { launchFiltered = prev })
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"--agent", "shell", "npm", "test"})
-	if err := root.Execute(); err != nil {
+	out, err := runWT(t, "--agent", "shell", "npm", "test")
+	if err != nil {
 		t.Fatalf("shell passthrough without `--` was refused: %v", err)
 	}
 	if !launched {
-		t.Fatalf("the launch was never reached (output: %q)", buf.String())
+		t.Fatalf("the launch was never reached (output: %q)", out)
 	}
 	if gotAgent != "shell" || len(gotArgs) != 2 || gotArgs[0] != "npm" || gotArgs[1] != "test" {
 		t.Errorf("launched agent %q with args %q, want shell with [npm test]", gotAgent, gotArgs)
@@ -292,11 +253,7 @@ func initTestRepo(t *testing.T) string {
 // the real tuiRun would try to open /dev/tty and hang in an interactive shell.
 func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
 	// pi must be CONFIGURED (a config.toml entry, zero eligible models) so
 	// this test still exercises "configured agent, unresolved model → TUI",
@@ -316,12 +273,7 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-W", "my-feature", "-A", "pi"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "-W", "my-feature", "-A", "pi"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotAgent != "pi" {
@@ -348,11 +300,7 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := initTestRepo(t)
-			oldWd, _ := os.Getwd()
-			t.Cleanup(func() { _ = os.Chdir(oldWd) })
-			if err := os.Chdir(dir); err != nil {
-				t.Fatalf("chdir: %v", err)
-			}
+			t.Chdir(dir)
 			home := t.TempDir()
 			// pi must be CONFIGURED (a config.toml entry, zero eligible
 			// models) so this test still exercises "configured agent,
@@ -376,12 +324,7 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 			stdinTTY = func() bool { return true }
 			t.Cleanup(func() { stdinTTY = oldStdinTTY })
 
-			var buf bytes.Buffer
-			root := rootCmd()
-			root.SetOut(&buf)
-			root.SetErr(&buf)
-			root.SetArgs(c.args)
-			if err := root.Execute(); err != nil {
+			if _, err := runWT(t, c.args...); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if !called {
@@ -400,21 +343,11 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 // resolution, but it must NOT surface a picker TTY error.
 func TestWorktreeWithAgentAndModelLaunches(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	withCleanConfigEnv(t, home)
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-W", "my-feature", "-A", "pi", "-M", "claude/opus"})
-	err := root.Execute()
+	_, err := runWT(t, "-W", "my-feature", "-A", "pi", "-M", "claude/opus")
 	if err == nil {
 		t.Fatal("expected a launch error (empty config has no models), got nil")
 	}
@@ -430,14 +363,8 @@ func TestWorktreeWithAgentAndModelLaunches(t *testing.T) {
 // dropped on the unpinned-agent path.
 func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	writeEmptyRegistry(t, home)
 
 	var gotAgent, gotPinned string
@@ -453,12 +380,7 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-W", "my-feature", "-M", "claude/opus"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "-W", "my-feature", "-M", "claude/opus"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotAgent != "" {
@@ -476,14 +398,8 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 // with a model-picker TTY error instead of running the command.
 func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 	expectDirectLaunch(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	writeEmptyRegistry(t, home)
 
 	var gotAgent string
@@ -496,12 +412,7 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 	}
 	defer func() { launchFiltered = oldLaunchFiltered }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "shell", "true"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "-A", "shell", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotAgent != "shell" {
@@ -553,14 +464,9 @@ func TestNeedsModelPicker(t *testing.T) {
 func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	expectDirectLaunchInRepo(t)
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	withCleanConfigEnv(t, home)
 
 	// Running state comes from the live inventory, so the stub probe must
 	// report the model serving or the row is a start row, not a launch row.
@@ -601,12 +507,7 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	}
 	defer func() { launchFiltered = oldLaunchFiltered }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"--cwd", "-A", "claude"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "--cwd", "-A", "claude"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -621,15 +522,9 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 // name, and the CLI must surface that.
 func TestUnknownAgentFailsFast(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	writeEmptyRegistry(t, home)
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "claud"})
-	err := root.Execute()
+	_, err := runWT(t, "-A", "claud")
 	if err == nil {
 		t.Fatal("expected unknown-agent error, got nil")
 	}
@@ -648,11 +543,7 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 
 	oldInstallGuard := maybeInstallGuard
 	maybeInstallGuard = func() {}
@@ -669,12 +560,7 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"--agent", "shell"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "--agent", "shell"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -687,75 +573,45 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 // tolerated by the launch-path gate, never a real parse error. Regression
 // guard for decision #7 of the passthrough design (fail closed on malformed
 // config).
-func TestMalformedRegistryStillFailsClosed(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	regDir := filepath.Join(home, ".config", "local-ai")
-	if err := os.MkdirAll(regDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte("not valid toml [[["), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
-	err := root.Execute()
-	if err == nil {
-		t.Fatal("expected a config error for a malformed registry.toml")
-	}
-	// registry.toml is not `wt config`'s file: the repair is a hand edit (#291).
-	if got := err.Error(); !strings.HasSuffix(got, "(fix that file by hand)") || strings.Contains(got, "wt config") {
-		t.Errorf("err = %v, want the hand-edit hint and no mention of `wt config`, which cannot edit the registry", err)
-	}
-}
-
-// The malformed-registry fail-closed gate (main.go's
+//
+// The command-agent row: the malformed-registry fail-closed gate (main.go's
 // `!errors.Is(a.cfgErr, config.ErrRegistryMissing)` check) runs once before
 // any agent-type branching and does not distinguish command agents from
 // model-driven ones — unlike TestCommandAgentSkipsMissingRegistryGate's
 // tolerated ErrRegistryMissing case, a genuine parse error must still block
-// a command agent (e.g. shell) exactly as it blocks claude
-// (TestMalformedRegistryStillFailsClosed), since a future agent-type carve-
-// out for the malformed case could otherwise slip past this gate unnoticed.
-func TestMalformedRegistryStillFailsClosedForCommandAgent(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	regDir := filepath.Join(home, ".config", "local-ai")
-	if err := os.MkdirAll(regDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte("not valid toml [[["), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// a command agent (e.g. shell) exactly as it blocks claude (the model-driven
+// row), since a future agent-type carve-out for the malformed case could
+// otherwise slip past this gate unnoticed.
+func TestMalformedRegistryStillFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"model-driven agent", []string{"-A", "claude", "-W", "my-feature"}},
+		{"command agent", []string{"--agent", "shell"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			withCleanConfigEnv(t, home)
+			dir := initTestRepo(t)
+			t.Chdir(dir)
+			regDir := filepath.Join(home, ".config", "local-ai")
+			if err := os.MkdirAll(regDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte("not valid toml [[["), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"--agent", "shell"})
-	err := root.Execute()
-	if err == nil {
-		t.Fatal("expected a config error for a malformed registry.toml")
-	}
-	// registry.toml is not `wt config`'s file: the repair is a hand edit (#291).
-	if got := err.Error(); !strings.HasSuffix(got, "(fix that file by hand)") || strings.Contains(got, "wt config") {
-		t.Errorf("err = %v, want the hand-edit hint and no mention of `wt config`, which cannot edit the registry", err)
+			_, err := runWT(t, tc.args...)
+			if err == nil {
+				t.Fatal("expected a config error for a malformed registry.toml")
+			}
+			// registry.toml is not `wt config`'s file: the repair is a hand edit (#291).
+			if got := err.Error(); !strings.HasSuffix(got, "(fix that file by hand)") || strings.Contains(got, "wt config") {
+				t.Errorf("err = %v, want the hand-edit hint and no mention of `wt config`, which cannot edit the registry", err)
+			}
+		})
 	}
 }
 
@@ -765,11 +621,7 @@ func TestMalformedRegistryStillFailsClosedForCommandAgent(t *testing.T) {
 // design: the installed check is early and pinned-agent-only.
 func TestPinnedAgentNotInstalledErrorsBeforeWorktreeWork(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
 	writeEmptyRegistry(t, home)
 
@@ -777,12 +629,7 @@ func TestPinnedAgentNotInstalledErrorsBeforeWorktreeWork(t *testing.T) {
 	installed = func(name string) bool { return false }
 	defer func() { installed = oldInstalled }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
-	err := root.Execute()
+	_, err := runWT(t, "-A", "claude", "-W", "my-feature")
 	if err == nil {
 		t.Fatal("expected a not-installed error")
 	}
@@ -799,11 +646,7 @@ func TestPinnedAgentNotInstalledErrorsBeforeWorktreeWork(t *testing.T) {
 // seam reports false for every name.
 func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
 	expectDirectLaunch(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 	home := t.TempDir()
 	writeEmptyRegistry(t, home)
 
@@ -819,12 +662,7 @@ func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
 	}
 	defer func() { launchFiltered = oldLaunchFiltered }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "shell", "true"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "-A", "shell", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -838,11 +676,7 @@ func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
 func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 	expectDirectLaunch(t) // the guard is expected here: stubbed again below
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	withCleanConfigEnv(t, t.TempDir())
 
 	var called bool
@@ -860,12 +694,7 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 	maybeInstallGuard = func() {}
 	defer func() { maybeInstallGuard = oldMaybeInstallGuard }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"--cwd", "--agent", "shell"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "--cwd", "--agent", "shell"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -1004,12 +833,8 @@ func TestResolveModelCloudOnlyResolves(t *testing.T) {
 // subcommands' usage examples, so the command set is discoverable without
 // reading the docs.
 func TestRootHelpListsModelSubcommands(t *testing.T) {
-	var out bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs([]string{"--help"})
-	if err := root.Execute(); err != nil {
+	out, err := runWT(t, "--help")
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -1017,8 +842,8 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 		"config", "litellm", "profile", "stats", "rotate",
 		"wt start", "wt stop", "wt smoke",
 	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("help output missing %q:\n%s", want, out.String())
+		if !strings.Contains(out, want) {
+			t.Errorf("help output missing %q:\n%s", want, out)
 		}
 	}
 }
@@ -1063,11 +888,7 @@ func TestNoWtCommandIsHidden(t *testing.T) {
 func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
 	expectDirectLaunchInRepo(t)
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	// No registry.toml written: config.Load fails closed with
@@ -1083,12 +904,7 @@ func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
 	}
 	defer func() { launchPassthrough = oldLaunchPassthrough }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "-A", "claude", "-W", "my-feature"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -1112,11 +928,7 @@ func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
 // launch (see TestWorktreeWithAgentWithoutModelShowsModelPicker).
 func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	cfgDir := filepath.Join(home, ".config", "agent-wt")
@@ -1150,12 +962,7 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-W", "my-feature", "-A", "pi"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "-W", "my-feature", "-A", "pi"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if passthroughCalled {
@@ -1170,20 +977,11 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 // drop the pin — decision #5 of the passthrough design.
 func TestPinnedModelWithUnconfiguredAgentErrors(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
 	writeEmptyRegistry(t, home) // registry exists but claude has no config.toml entry
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "claude", "-W", "my-feature", "-M", "ollama/foo"})
-	err := root.Execute()
+	_, err := runWT(t, "-A", "claude", "-W", "my-feature", "-M", "ollama/foo")
 	if err == nil {
 		t.Fatal("expected an error for -M against an unconfigured agent")
 	}
@@ -1199,11 +997,7 @@ func TestPinnedModelWithUnconfiguredAgentErrors(t *testing.T) {
 // short-circuit straight into agents.BuildPassthroughCmd("", ...).
 func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
 	writeEmptyRegistry(t, home)
 
@@ -1226,12 +1020,7 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 	}
 	defer func() { launchPassthrough = oldLaunchPassthrough }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-W", "my-feature"})
-	if err := root.Execute(); err != nil {
+	if _, err := runWT(t, "-W", "my-feature"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !tuiCalled {
@@ -1250,11 +1039,6 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 // verifying it actually resolves and applies a profile exactly like the
 // non-TUI path's applyProfileForLaunch does — not a nil or no-op closure.
 func TestRunLaunchPathPassesWorkingProfileApplierToTUI(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 [[profiles]]
 agent = "claude"
@@ -1262,9 +1046,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return true, nil }
 	t.Cleanup(func() { confirmProfile = oldConfirm })
@@ -1297,13 +1079,7 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 	if _, err := captured(cmd, "claude", m); err != nil {
 		t.Fatalf("captured ProfileApplier() error = %v", err)
 	}
-	found := false
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_TUI_PROFILE_APPLIED=1" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Env, "WT_TEST_TUI_PROFILE_APPLIED=1") {
 		t.Errorf("cmd.Env = %v, want WT_TEST_TUI_PROFILE_APPLIED=1 (the captured applier must actually apply the profile)", cmd.Env)
 	}
 }
@@ -1321,11 +1097,7 @@ func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(sub); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(sub)
 	withCleanConfigEnv(t, t.TempDir())
 
 	var gotPath string
@@ -1362,11 +1134,7 @@ func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
 // native launch would bill their own account instead of the routed model.
 func TestBrokenRegistryLinkIsNotAPassthrough(t *testing.T) {
 	dir := initTestRepo(t)
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(dir)
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	link := filepath.Join(home, ".config", "local-ai", "registry.toml")
@@ -1385,12 +1153,7 @@ func TestBrokenRegistryLinkIsNotAPassthrough(t *testing.T) {
 	}
 	defer func() { launchPassthrough = oldLaunchPassthrough }()
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
-	err := root.Execute()
+	_, err := runWT(t, "-A", "claude", "-W", "my-feature")
 	if !errors.Is(err, config.ErrRegistryLink) {
 		t.Fatalf("err = %v, want config.ErrRegistryLink", err)
 	}

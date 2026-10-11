@@ -64,20 +64,6 @@ func psBodyHandler(loaded ...string) http.Handler {
 	})
 }
 
-// psFailing answers /api/ps with a server error: the deterministic stand-in
-// for a re-probe that cannot get an answer (daemon gone). Closing a real
-// server instead would leave a window in which another process takes the
-// freed ephemeral port — the flake vector #131's listener handoff removed,
-// since a stranger's JSON without a "models" key decodes to an empty loaded
-// list and would fake a successful stop.
-func psFailing(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv, _ := serveFree(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	return srv
-}
-
 // failingOllamaStop is an env whose `ollama stop` exits 1 with "model not found".
 func failingOllamaStop() *env {
 	e := testEnv()
@@ -150,9 +136,15 @@ func TestStopModelOllamaCancelledReturnsCancelWithoutProbe(t *testing.T) {
 // re-probe itself cannot get an answer (daemon gone), the original CLI message
 // is returned rather than guessing success: with no evidence the model is
 // unloaded, the stop is reported as it failed.
+//
+// The daemon is a server answering 500, the deterministic stand-in for a
+// re-probe that cannot get an answer, rather than a closed one: closing a real
+// server would leave a window in which another process takes the freed
+// ephemeral port — the flake vector #131's listener handoff removed, since a
+// stranger's JSON without a "models" key decodes to an empty loaded list and
+// would fake a successful stop.
 func TestStopModelOllamaReprobeFailureKeepsOriginalError(t *testing.T) {
-	daemon := psFailing(t)
-	err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x")
+	err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", errorSrv(t)), "ollama", "x")
 	if err == nil || err.Error() != "model not found" {
 		t.Fatalf("err = %v, want ollama's own message", err)
 	}

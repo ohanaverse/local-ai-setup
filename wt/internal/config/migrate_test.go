@@ -120,7 +120,6 @@ func TestMergeTags(t *testing.T) {
 func TestMigrate_EndToEnd(t *testing.T) {
 	tmp := t.TempDir()
 	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
 
 	legacy := `# comment
 CODE_MODELS=(
@@ -134,7 +133,7 @@ DESIGN_MODELS=(
 )
 PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 `
-	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
+	must(t, filepath.Join(cfgDir, "models.conf"), legacy)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
 	migrated, err := Migrate()
@@ -233,15 +232,13 @@ func TestMigrate_NoLegacyFile(t *testing.T) {
 // duplicating agy provider/model when a legacy config includes native:agy.
 func TestMigrate_AgySeedingIsIdempotent(t *testing.T) {
 	tmp := t.TempDir()
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
 
 	legacy := `CODE_MODELS=(
 	  "native:agy"
 	  "native:google"
 	)
 	`
-	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
+	must(t, filepath.Join(tmp, "agent-wt", "models.conf"), legacy)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
 	migrated, err := Migrate()

@@ -108,6 +108,11 @@ func runWT(t *testing.T, args ...string) (string, error) {
 	root := rootCmd()
 	root.SetOut(&buf)
 	root.SetErr(&buf)
+	if args == nil {
+		// Cobra reads a nil slice as "use os.Args[1:]", the test binary's own
+		// command line.
+		args = []string{}
+	}
 	root.SetArgs(args)
 	err := root.Execute()
 	return buf.String(), err

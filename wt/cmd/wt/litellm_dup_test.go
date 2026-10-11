@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -59,15 +57,7 @@ const (
 // the command does, and returns the app and the registry's path.
 func dupSyncApp(t *testing.T) (*app, string) {
 	t.Helper()
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
-	if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(registry, []byte(dupSyncRegistry), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	registry := modelHome(t, dupSyncRegistry)
 	a, err := newApp()
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +246,6 @@ func TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone(t *testing.T) {
 // is". A family with a route of its own beside the duplicated id keeps the
 // warning.
 func TestSyncDownWarningIgnoresADuplicatedID(t *testing.T) {
-	const stale = `provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`
 	cloud := func(name string) config.Model {
 		return config.Model{ID: "local/qwen", ProviderID: "openrouter", ModelName: name, Location: config.LocationCloud}
 	}
@@ -272,14 +261,14 @@ func TestSyncDownWarningIgnoresADuplicatedID(t *testing.T) {
 		routed map[string]bool
 		want   []string
 	}{
-		{"the id's only row", []config.Model{local}, map[string]bool{"local/qwen": true}, []string{stale}},
+		{"the id's only row", []config.Model{local}, map[string]bool{"local/qwen": true}, []string{downProbeWarn}},
 		{"a cloud row ahead of the local row", []config.Model{cloud("a/q"), local}, map[string]bool{"local/qwen": true}, nil},
 		// The local row first: litellm.RowFamily answers by the first row, so
 		// the marked route reads as an ollama row too.
 		{"a cloud row behind the local row", []config.Model{local, cloud("a/q")}, map[string]bool{"local/qwen": true}, nil},
 		{"the local row between two cloud rows", []config.Model{cloud("a/q"), local, cloud("b/q")}, map[string]bool{"local/qwen": true}, nil},
 		{"an unmarked route", []config.Model{local, cloud("a/q")}, map[string]bool{"local/qwen": false}, nil},
-		{"a duplicated id beside a route of the family's own", []config.Model{local, cloud("a/q"), other}, map[string]bool{"local/qwen": true, "ollama/other": true}, []string{stale}},
+		{"a duplicated id beside a route of the family's own", []config.Model{local, cloud("a/q"), other}, map[string]bool{"local/qwen": true, "ollama/other": true}, []string{downProbeWarn}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{

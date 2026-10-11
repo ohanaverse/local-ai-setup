@@ -25,6 +25,28 @@ from llmbench.registry import DraftSpec, Fetch, ModelEntry, ProviderEntry, Regis
 
 MINI_DRIFT = Path(__file__).parent / "fixtures" / "tasks" / "mini-drift"
 
+# A well-formed judge reply awarding every rubric dimension its maximum.
+_MAX_RUBRIC_REPLY = json.dumps(
+    {
+        "scores": {
+            "root_cause": 30,
+            "approach": 25,
+            "test_quality": 20,
+            "scope": 15,
+            "coherence": 10,
+        },
+        "total": 100,
+        "verdict": "principled_fix",
+        "flags": [],
+        "rationale": "ok",
+    }
+)
+
+
+class _FakeJudgeTransport:
+    def complete(self, prompt, *, temperature):
+        return _MAX_RUBRIC_REPLY
+
 
 def _registry() -> Registry:
     return Registry(
@@ -313,8 +335,7 @@ def test_run_suite_marks_agent_error_when_the_agent_writes_no_session_file(tmp_p
     assert results[0].gates.results[0].code == "AGENT_ERROR"
     assert results[0].gates.cap == 0.0
 
-    # NOTE for Task 18: once run_suite grows its judge phase, add
-    # skip_judge=True to the call above — this row has gates (an
+    # skip_judge=True is required in the call above: this row has gates (an
     # AGENT_ERROR report), so _judge_all would otherwise try to build a real
     # LiteLLM transport from the missing live_models_path and raise.
 
@@ -352,21 +373,7 @@ def test_run_suite_judges_rows_after_restore_and_sets_composite(tmp_path, monkey
     class _FakeJudgeTransport:
         def complete(self, prompt, *, temperature):
             order.append(("judge",))
-            return json.dumps(
-                {
-                    "scores": {
-                        "root_cause": 30,
-                        "approach": 25,
-                        "test_quality": 20,
-                        "scope": 15,
-                        "coherence": 10,
-                    },
-                    "total": 100,
-                    "verdict": "principled_fix",
-                    "flags": [],
-                    "rationale": "ok",
-                }
-            )
+            return _MAX_RUBRIC_REPLY
 
     suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
     run_dir, results = run_suite(
@@ -406,24 +413,6 @@ def test_persist_judge_artifact_does_not_rewrite_the_full_row(tmp_path, monkeypa
         return original(*args, **kwargs)
 
     monkeypatch.setattr(report_module, "write_row_artifacts", _counting)
-
-    class _FakeJudgeTransport:
-        def complete(self, prompt, *, temperature):
-            return json.dumps(
-                {
-                    "scores": {
-                        "root_cause": 30,
-                        "approach": 25,
-                        "test_quality": 20,
-                        "scope": 15,
-                        "coherence": 10,
-                    },
-                    "total": 100,
-                    "verdict": "principled_fix",
-                    "flags": [],
-                    "rationale": "ok",
-                }
-            )
 
     suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
     run_dir, results = run_suite(
@@ -499,24 +488,6 @@ def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monk
     )
 
     from llmbench.benchmark.agent.runner import rejudge_run
-
-    class _FakeJudgeTransport:
-        def complete(self, prompt, *, temperature):
-            return json.dumps(
-                {
-                    "scores": {
-                        "root_cause": 30,
-                        "approach": 25,
-                        "test_quality": 20,
-                        "scope": 15,
-                        "coherence": 10,
-                    },
-                    "total": 100,
-                    "verdict": "principled_fix",
-                    "flags": [],
-                    "rationale": "ok",
-                }
-            )
 
     # Seed a raw event stream so "the re-judge left it alone" is assertable.
     with gzip.open(results[0].row_dir / "agent.jsonl.gz", "wt", encoding="utf-8") as f:
@@ -809,18 +780,16 @@ def test_run_suite_isolates_mlx_lm_server_with_pairing_args(tmp_path, monkeypatc
     )
     # local_path target forwarded verbatim (already absolute); repo-id draft
     # passed through un-mangled — the same contract
-    # benchmark/runner._isolate_extra_args is tested to honor.
+    # benchmark/isolation.mlx_lm_server_pairing_args is tested to honor.
     assert calls == [("mlx_lm_server", "/models/target", "org/draft")]
 
 
-def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group(tmp_path, monkeypatch):
+def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group():
     """A misregistered mlx_lm_server model with no draft source must fail
     that group's rows with a clear error, not crash the run or call
     isolate_provider without the pairing the helper requires."""
-    from llmbench.benchmark import isolation
-
     with pytest.raises(BenchmarkError, match="missing a target or draft"):
-        isolation.mlx_lm_server_pairing_args(
+        isolation_module.mlx_lm_server_pairing_args(
             "mlx_lm_server/broken",
             None,  # target_local_path
             None,  # target_repo

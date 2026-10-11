@@ -15,6 +15,21 @@ from llmbench.benchmark.errors import BenchmarkError
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "tasks"
 
 
+def _bundle(tmp_path: Path, gates_toml: str | None = None) -> Path:
+    """A bundle that is whole except for gates.toml, which is written only
+    when given: absent it is the missing-file case, present it carries the
+    tests_dir under test."""
+    bundle = tmp_path / "broken"
+    bundle.mkdir()
+    (bundle / "task.md").write_text("x", encoding="utf-8")
+    (bundle / "rubric.md").write_text("x", encoding="utf-8")
+    (bundle / "meta.toml").write_text("", encoding="utf-8")
+    if gates_toml is not None:
+        (bundle / "gates.toml").write_text(gates_toml, encoding="utf-8")
+    (bundle / "visible").mkdir()
+    return bundle
+
+
 def test_load_task_reads_all_bundle_fields():
     """A well-formed bundle loads task.md/rubric.md text and gates/meta TOML.
 
@@ -36,12 +51,7 @@ def test_load_task_missing_required_file_raises(tmp_path):
     Silently proceeding with a half-loaded bundle would let a suite run
     agents against a task with no way to grade the result.
     """
-    bundle = tmp_path / "broken"
-    bundle.mkdir()
-    (bundle / "task.md").write_text("x", encoding="utf-8")
-    (bundle / "rubric.md").write_text("x", encoding="utf-8")
-    (bundle / "meta.toml").write_text("", encoding="utf-8")
-    (bundle / "visible").mkdir()
+    bundle = _bundle(tmp_path)
 
     with pytest.raises(BenchmarkError, match="gates.toml"):
         load_task(bundle)
@@ -53,13 +63,7 @@ def test_load_task_degenerate_tests_dir_raises(tmp_path):
     would silently treat every file in the workspace as "under tests_dir".
     Rejecting it at load time (like every other malformed bundle) keeps that
     failure at preflight instead of a wrong gate verdict mid-run."""
-    bundle = tmp_path / "broken"
-    bundle.mkdir()
-    (bundle / "task.md").write_text("x", encoding="utf-8")
-    (bundle / "rubric.md").write_text("x", encoding="utf-8")
-    (bundle / "meta.toml").write_text("", encoding="utf-8")
-    (bundle / "gates.toml").write_text('[build]\ntests_dir = "."\n', encoding="utf-8")
-    (bundle / "visible").mkdir()
+    bundle = _bundle(tmp_path, '[build]\ntests_dir = "."\n')
 
     with pytest.raises(BenchmarkError, match="tests_dir"):
         load_task(bundle)
@@ -81,13 +85,7 @@ def test_load_task_tests_dir_escaping_workspace_raises(tmp_path, bad):
     """create_workspace mkdirs every part of tests_dir under the workspace
     root, so an absolute path or a '..' segment in a bundle's gates.toml would
     create directories outside the sandbox. Reject at load time."""
-    bundle = tmp_path / "broken"
-    bundle.mkdir()
-    (bundle / "task.md").write_text("x", encoding="utf-8")
-    (bundle / "rubric.md").write_text("x", encoding="utf-8")
-    (bundle / "meta.toml").write_text("", encoding="utf-8")
-    (bundle / "gates.toml").write_text(f'[build]\ntests_dir = "{bad}"\n', encoding="utf-8")
-    (bundle / "visible").mkdir()
+    bundle = _bundle(tmp_path, f'[build]\ntests_dir = "{bad}"\n')
 
     with pytest.raises(BenchmarkError, match="tests_dir"):
         load_task(bundle)

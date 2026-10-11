@@ -721,13 +721,7 @@ func TestALoadingSiblingStillOccupiesThePool(t *testing.T) {
 func TestStartOnALoadingTargetReportsHowTheLoadEnded(t *testing.T) {
 	sizes := map[string]int64{"A": 20, "B": 20}
 	target := Target{ProviderID: "omlx", ModelName: "B", ModelID: "omlx/B"}
-	busy := func(n int) []int {
-		codes := make([]int, n)
-		for i := range codes {
-			codes[i] = http.StatusConflict
-		}
-		return codes
-	}
+	busy := slices.Repeat([]int{http.StatusConflict}, 10000)
 	join := func(t *testing.T, ctx context.Context, fp *fakePool, tune func(*env)) error {
 		t.Helper()
 		e, stopped := poolEnv(t, loadingSnap(poolSnap(100, sizes, "A"), "B"))
@@ -749,7 +743,7 @@ func TestStartOnALoadingTargetReportsHowTheLoadEnded(t *testing.T) {
 		}
 	})
 	t.Run("the load never finishes", func(t *testing.T) {
-		fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, loadCodes: busy(10000)}
+		fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, loadCodes: busy}
 		err := join(t, context.Background(), fp, nil)
 		// Only the prefix: what follows is the last attempt's outcome, which is
 		// omlx's 409 or the request the deadline cut short.
@@ -763,7 +757,7 @@ func TestStartOnALoadingTargetReportsHowTheLoadEnded(t *testing.T) {
 		// The cancel is tied to the third load request, not to a timer, so it
 		// lands mid-wait however slow the runner is.
 		polls := 0
-		fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, loadCodes: busy(10000), onLoad: func() {
+		fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, sizes: sizes, ceiling: 100, loadCodes: busy, onLoad: func() {
 			if polls++; polls == 3 {
 				cancel()
 			}

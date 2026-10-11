@@ -13,14 +13,7 @@ from llmbench.benchmark.eval.runner import rejudge_run
 from llmbench.benchmark.judge_core import Rubric
 from llmbench.registry import ModelEntry, ProviderEntry, Registry
 
-
-def _seed_run(tmp_path: Path) -> Path:
-    row_dir = tmp_path / "01--row1"
-    item_dir = row_dir / "mini_review" / "i1"
-    item_dir.mkdir(parents=True)
-    (item_dir / "response.txt").write_text("off by one in the loop", encoding="utf-8")
-    (tmp_path / "run.toml").write_text(
-        """
+_RUN_TOML = """
 [run]
 git_sha = "abc123"
 
@@ -32,9 +25,28 @@ max_attempts = 2
 route = "litellm"
 
 [suite.coding]
-""",
-        encoding="utf-8",
-    )
+"""
+
+_GOOD_JUDGE = {
+    "status": "scored",
+    "combined": {
+        "scores": {"a": 90},
+        "total": 90,
+        "verdict": "",
+        "flags": [],
+        "rationale": "",
+        "raw_text": "",
+    },
+    "attempts_used": 1,
+}
+
+
+def _seed_run(tmp_path: Path) -> Path:
+    row_dir = tmp_path / "01--row1"
+    item_dir = row_dir / "mini_review" / "i1"
+    item_dir.mkdir(parents=True)
+    (item_dir / "response.txt").write_text("off by one in the loop", encoding="utf-8")
+    (tmp_path / "run.toml").write_text(_RUN_TOML, encoding="utf-8")
     return tmp_path
 
 
@@ -49,13 +61,7 @@ def test_rejudge_run_rescores_from_persisted_response(tmp_path):
     # without ever regenerating the model's response. This is the core
     # contract: cheap re-scoring after a rubric/judge-model change.
     run_dir = _seed_run(tmp_path)
-    category = Category(
-        name="mini_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="review this", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    category = _mini_category()
     outcomes = rejudge_run(
         run_dir,
         [category],
@@ -73,13 +79,7 @@ def test_rejudge_run_samples_override_takes_precedence_over_run_toml(tmp_path):
     # original run used (run.toml says samples=1); this verifies the
     # override wins over the persisted config rather than being ignored.
     run_dir = _seed_run(tmp_path)
-    category = Category(
-        name="mini_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="review this", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    category = _mini_category()
     calls = []
 
     class _CountingTransport:
@@ -132,13 +132,7 @@ def test_rejudge_run_recomputes_score_json_and_summary_after_rescoring(tmp_path)
         encoding="utf-8",
     )
 
-    category = Category(
-        name="mini_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="review this", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    category = _mini_category()
     rejudge_run(
         run_dir,
         [category],
@@ -178,22 +172,7 @@ def test_rejudge_run_recovers_model_id_route_family_despite_double_index_prefix(
     item_dir = row_dir / "mini_review" / "i1"
     item_dir.mkdir(parents=True)
     (item_dir / "response.txt").write_text("off by one in the loop", encoding="utf-8")
-    (run_dir / "run.toml").write_text(
-        """
-[run]
-git_sha = "abc123"
-
-[suite.judge]
-model = "j"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[suite.coding]
-""",
-        encoding="utf-8",
-    )
+    (run_dir / "run.toml").write_text(_RUN_TOML, encoding="utf-8")
     (run_dir / "metrics.jsonl").write_text(
         json.dumps(
             {
@@ -208,13 +187,7 @@ route = "litellm"
         encoding="utf-8",
     )
 
-    category = Category(
-        name="mini_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="review this", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    category = _mini_category()
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
         models=[ModelEntry(id="ollama/a", family="fam-x", provider_id="ollama", model_name="a")],
@@ -246,23 +219,7 @@ def test_reconstruct_keeps_scored_categories_alongside_error_txt(tmp_path):
 
     run_dir = _seed_run(tmp_path)
     item_dir = run_dir / "01--row1" / "mini_review" / "i1"
-    (item_dir / "judge.json").write_text(
-        json.dumps(
-            {
-                "status": "scored",
-                "combined": {
-                    "scores": {"a": 90},
-                    "total": 90,
-                    "verdict": "",
-                    "flags": [],
-                    "rationale": "",
-                    "raw_text": "",
-                },
-                "attempts_used": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
+    (item_dir / "judge.json").write_text(json.dumps(_GOOD_JUDGE), encoding="utf-8")
     (run_dir / "01--row1" / "error.txt").write_text("doc_summary timed out", encoding="utf-8")
 
     results = _reconstruct_run_results(run_dir)
@@ -346,8 +303,6 @@ def test_rejudge_row_filter_unknown_value_raises(tmp_path):
     # than silently producing an empty no-op rejudge that still rewrites
     # summary.md/metrics.jsonl and exits 0 — the user would believe a
     # rejudge happened when nothing was re-judged.
-    from llmbench.benchmark.errors import BenchmarkError
-
     run_dir = _seed_run(tmp_path)
     category = _mini_category()
     with pytest.raises(BenchmarkError, match="matched no row"):
@@ -401,20 +356,8 @@ def test_reconstruct_skips_malformed_judge_json(tmp_path):
 
     run_dir = tmp_path
     category_dir = run_dir / "01--row1" / "mini_review"
-    good_judge = {
-        "status": "scored",
-        "combined": {
-            "scores": {"a": 90},
-            "total": 90,
-            "verdict": "",
-            "flags": [],
-            "rationale": "",
-            "raw_text": "",
-        },
-        "attempts_used": 1,
-    }
     for name, judge_body in (
-        ("i1", json.dumps(good_judge)),
+        ("i1", json.dumps(_GOOD_JUDGE)),
         ("i2", '{"status": "scored", "combin'),  # truncated mid-write
     ):
         item_dir = category_dir / name
@@ -472,20 +415,8 @@ def test_reconstruct_skips_wellformed_but_reshaped_judge_json(tmp_path):
 
     run_dir = tmp_path
     category_dir = run_dir / "01--row1" / "mini_review"
-    good_judge = {
-        "status": "scored",
-        "combined": {
-            "scores": {"a": 90},
-            "total": 90,
-            "verdict": "",
-            "flags": [],
-            "rationale": "",
-            "raw_text": "",
-        },
-        "attempts_used": 1,
-    }
     for name, judge_body in (
-        ("i1", json.dumps(good_judge)),
+        ("i1", json.dumps(_GOOD_JUDGE)),
         # Well-formed JSON, but "combined" carries a field JudgeScore
         # doesn't have and lacks one it requires.
         (
@@ -578,22 +509,7 @@ def test_rejudge_row_index_resolves_to_the_same_row_run_selected(tmp_path):
         item_dir = run_dir / dir_name / "mini_review" / "i1"
         item_dir.mkdir(parents=True)
         (item_dir / "response.txt").write_text(f"response for {label}", encoding="utf-8")
-    (run_dir / "run.toml").write_text(
-        """
-[run]
-git_sha = "abc123"
-
-[suite.judge]
-model = "j"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[suite.coding]
-""",
-        encoding="utf-8",
-    )
+    (run_dir / "run.toml").write_text(_RUN_TOML, encoding="utf-8")
     category = _mini_category()
     outcomes = rejudge_run(
         run_dir,
@@ -618,22 +534,7 @@ def test_rejudge_row_index_finds_filtered_run_dirs_with_gaps(tmp_path):
         item_dir = run_dir / dir_name / "mini_review" / "i1"
         item_dir.mkdir(parents=True)
         (item_dir / "response.txt").write_text("response", encoding="utf-8")
-    (run_dir / "run.toml").write_text(
-        """
-[run]
-git_sha = "abc123"
-
-[suite.judge]
-model = "j"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[suite.coding]
-""",
-        encoding="utf-8",
-    )
+    (run_dir / "run.toml").write_text(_RUN_TOML, encoding="utf-8")
     category = _mini_category()
     outcomes = rejudge_run(
         run_dir,
@@ -670,13 +571,7 @@ def test_rejudge_run_keeps_existing_judge_json_when_rejudge_fails(tmp_path):
     judge_path = run_dir / "01--row1" / "mini_review" / "i1" / "judge.json"
     original = json.dumps({"status": "scored", "combined": {"total": 77}, "attempts_used": 1})
     judge_path.write_text(original, encoding="utf-8")
-    category = Category(
-        name="mini_review",
-        path=Path("."),
-        items=[Item(id="i1", prompt="review this", meta={})],
-        rubric=Rubric(dimensions={"a": 100}),
-        rubric_md="score a (100)",
-    )
+    category = _mini_category()
 
     class _GarbageTransport:
         def complete(self, prompt: str, *, temperature: float) -> str:

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -78,10 +79,8 @@ func TestWithLockCleansUpLockFile(t *testing.T) {
 // PatchSave must instead merge: it writes only the fields apply touches
 // and leaves everything else as it is on disk right now.
 func TestPatchSavePreservesConcurrentLitellmChange(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	must(t, filepath.Join(home, "local-ai", "registry.toml"), "providers = []\nmodels = []\n")
-	must(t, filepath.Join(home, "agent-wt", "config.toml"), "default_tag = \"code\"\n")
+	scratchRegistry(t, "providers = []\nmodels = []\n")
+	must(t, Path(), "default_tag = \"code\"\n")
 
 	// The editor "opens" here: it loads a stale snapshot with no [litellm].
 	editorCfg, err := Load()
@@ -127,10 +126,8 @@ func TestPatchSavePreservesConcurrentLitellmChange(t *testing.T) {
 // against a config loaded before a concurrent editor session added an
 // agent must not revert that agent when it persists its own change.
 func TestUpdateLitellmPreservesConcurrentAgentChange(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	must(t, filepath.Join(home, "local-ai", "registry.toml"), "providers = []\nmodels = []\n")
-	must(t, filepath.Join(home, "agent-wt", "config.toml"), "default_tag = \"code\"\n")
+	scratchRegistry(t, "providers = []\nmodels = []\n")
+	must(t, Path(), "default_tag = \"code\"\n")
 
 	// The `wt litellm on` process loads its config first...
 	litellmCfg, err := Load()
@@ -179,10 +176,8 @@ func TestUpdateLitellmPreservesConcurrentAgentChange(t *testing.T) {
 // eventual save — reopening the exact lost-update race PatchSave closed for
 // the editor/UpdateLitellm pair, just for this third writer.
 func TestLockedApplyPreservesConcurrentLitellmChange(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	must(t, filepath.Join(home, "local-ai", "registry.toml"), "providers = []\nmodels = []\n")
-	must(t, filepath.Join(home, "agent-wt", "config.toml"), "default_tag = \"code\"\n")
+	scratchRegistry(t, "providers = []\nmodels = []\n")
+	must(t, Path(), "default_tag = \"code\"\n")
 
 	// `wt litellm set` runs to completion (a locked read-modify-write) before
 	// lockedApply below ever takes the lock. UpdateLitellm/PatchSave only
@@ -225,12 +220,7 @@ func TestLockedApplyPreservesConcurrentLitellmChange(t *testing.T) {
 }
 
 func hasAgent(agents []Agent, name string) bool {
-	for _, a := range agents {
-		if a.Name == name {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(agents, func(a Agent) bool { return a.Name == name })
 }
 
 func must(t *testing.T, path, body string) {

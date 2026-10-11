@@ -74,6 +74,18 @@ func stubSmokeProbe(t *testing.T, snap localmodels.Snapshot) {
 	t.Cleanup(smoke.SetSmokeProbeForTest(snap))
 }
 
+// runSmokeCmd runs `wt smoke` with args, as the command, on a. It returns
+// stdout and stderr apart, and the command's error.
+func runSmokeCmd(a *app, args ...string) (stdout, stderr string, err error) {
+	cmd := smokeCmd(a)
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(args)
+	err = cmd.Execute()
+	return out.String(), errOut.String(), err
+}
+
 // TestResolveSmokeModelPinnedEligible asserts a pinned id already in the
 // eligible set resolves directly, with no TTY/picker interaction.
 func TestResolveSmokeModelPinnedEligible(t *testing.T) {
@@ -201,11 +213,7 @@ func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
 		return smoke.StubOutcome("boom", 1)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"ollama/not-eligible:x"})
-	if err := cmd.Execute(); err != nil {
+	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x"); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(events, ","); got != "start,wait,row,stop,exit1" {
@@ -227,9 +235,7 @@ func TestResolveSmokeModelUnknown(t *testing.T) {
 // TTY fails clearly, pointing at passing a model id directly, instead of
 // trying to open a picker and failing opaquely.
 func TestResolveSmokeModelNoModelNoTTY(t *testing.T) {
-	old := stdinTTY
-	stdinTTY = func() bool { return false }
-	defer func() { stdinTTY = old }()
+	stubStdinTTY(t, false)
 
 	cfg := smokeFixtureConfig(t)
 	_, err := resolveSmokeModel(cfg, themes.Default, "")
@@ -253,9 +259,7 @@ func TestResolveSmokeModelNoneEligible(t *testing.T) {
 // decorated list the wt agent flow uses) rather than a bare numbered
 // prompt, and resolves to whatever model the picker returns.
 func TestResolveSmokeModelInteractivePicksViaTUI(t *testing.T) {
-	old := stdinTTY
-	stdinTTY = func() bool { return true }
-	defer func() { stdinTTY = old }()
+	stubStdinTTY(t, true)
 
 	oldPick := pickModelTUI
 	pickModelTUI = func(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
@@ -288,9 +292,7 @@ func TestResolveSmokeModelInteractivePicksViaTUI(t *testing.T) {
 // picker (Esc/q/Ctrl+C) surfaces a clear error instead of silently
 // resolving to a zero-value model.
 func TestResolveSmokeModelInteractiveCanceled(t *testing.T) {
-	old := stdinTTY
-	stdinTTY = func() bool { return true }
-	defer func() { stdinTTY = old }()
+	stubStdinTTY(t, true)
 
 	oldPick := pickModelTUI
 	pickModelTUI = func(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
@@ -531,11 +533,7 @@ func TestSmokeCmdFailedStartSkipsStopFlow(t *testing.T) {
 	runStopPicker = func(*config.Config) { pickerRan = true }
 	stdinTTY = func() bool { return true }
 
-	cmd := smokeCmd(&app{cfg: cfg})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"ollama/not-eligible:x"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "start failed") {
+	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x"); err == nil || !strings.Contains(err.Error(), "start failed") {
 		t.Fatalf("err = %v, want the start failure", err)
 	}
 	if pickerRan {
@@ -587,11 +585,7 @@ func TestSmokeCmdExplicitZeroTimeoutRejected(t *testing.T) {
 		runStopPicker = func(*config.Config) {}
 		stdinTTY = func() bool { return true }
 
-		cmd := smokeCmd(&app{cfg: cfg})
-		cmd.SetOut(&bytes.Buffer{})
-		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs([]string{"ollama/not-eligible:x", "--timeout", val})
-		err := cmd.Execute()
+		_, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x", "--timeout", val)
 		if err == nil || !strings.Contains(err.Error(), "timeout") {
 			t.Fatalf("--timeout %s: err = %v, want a timeout validation error", val, err)
 		}
@@ -643,11 +637,7 @@ func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg, profiles: store})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx"})
-	if err := cmd.Execute(); err != nil {
+	if _, _, err := runSmokeCmd(&app{cfg: cfg, profiles: store}, "ollama/qwen3.8:27b-mlx"); err != nil {
 		t.Fatalf("smoke executed with error: %v", err)
 	}
 	if got := strings.Join(events, ","); got != "row" {
@@ -680,11 +670,7 @@ func TestSmokeCmdRunningPinEnsuresRouteBeforeRows(t *testing.T) {
 		return smoke.StubOutcome("boom", 1)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx"})
-	if err := cmd.Execute(); err != nil {
+	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx"); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(*events, ","); got != "ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1" {
@@ -799,22 +785,18 @@ func TestSmokeCmdRowDirFailureFailsTheRow(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg})
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx", "--json"})
 	// Set last: a temp root that does not exist makes os.MkdirTemp fail.
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-	if err := cmd.Execute(); err != nil {
+	out, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--json")
+	if err != nil {
 		t.Fatalf("smoke returned %v instead of reporting the row", err)
 	}
 	if ran {
 		t.Fatal("the agent ran although its row directory could not be created")
 	}
 	var report smokeJSONReport
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-		t.Fatalf("no JSON report: %v\n%s", err, out.String())
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("no JSON report: %v\n%s", err, out)
 	}
 	if len(report.Rows) != 1 || report.Rows[0].Status != string(smoke.StatusFail) || !strings.Contains(report.Rows[0].Error, "smoke directory") {
 		t.Fatalf("rows = %+v, want one FAIL row naming the smoke directory", report.Rows)
@@ -853,13 +835,7 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg})
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	var errOut bytes.Buffer
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx", "--prompt", "say ok"})
-	err := cmd.Execute()
+	out, errOut, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok")
 	if err == nil || !strings.Contains(err.Error(), "interrupted") {
 		t.Fatalf("err = %v, want an interrupted error", err)
 	}
@@ -869,15 +845,15 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 	if _, serr := os.Stat(dirs[0]); serr == nil {
 		t.Errorf("the row's directory %s was left behind", dirs[0])
 	}
-	if !strings.Contains(out.String(), "claude") && !strings.Contains(out.String(), "pi") {
-		t.Errorf("the row that ran was not reported:\n%s", out.String())
+	if !strings.Contains(out, "claude") && !strings.Contains(out, "pi") {
+		t.Errorf("the row that ran was not reported:\n%s", out)
 	}
 	if picked {
 		t.Error("the stop picker was shown after an interrupt")
 	}
 	// An interrupt is not a usage mistake: the flag summary must not follow it.
 	// (cobra prints it to the command's out writer when one is set.)
-	if printed := out.String() + errOut.String(); strings.Contains(printed, "Usage:") {
+	if printed := out + errOut; strings.Contains(printed, "Usage:") {
 		t.Errorf("the usage text was printed after an interrupt:\n%s", printed)
 	}
 }
@@ -911,11 +887,7 @@ func TestSmokeCmdRemovesTheAgentStateDir(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"ollama/qwen3.8:27b-mlx", "--prompt", "say ok"})
-	if err := cmd.Execute(); err != nil {
+	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok"); err != nil {
 		t.Fatal(err)
 	}
 	if stateDir == "" {

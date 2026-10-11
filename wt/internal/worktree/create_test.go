@@ -90,55 +90,7 @@ func TestEnsureForBranchNewBranch(t *testing.T) {
 func TestEnsureForBranchRemote(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
-
-	// Set up a bare remote with a branch.
-	remoteDir := filepath.Join(dir, "remote.git")
-	if err := exec.Command("git", "init", "--bare", remoteDir).Run(); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("git", "remote", "add", "origin", remoteDir)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git remote add: %v\n%s", err, out)
-	}
-
-	// Create a local branch and push it to origin as "feature", then delete
-	// the local branch so origin/feature exists without a local feature.
-	cmd = exec.Command("git", "checkout", "-b", "temp")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git checkout -b temp: %v\n%s", err, out)
-	}
-	cmd = exec.Command("git", "push", "origin", "temp:feature")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git push temp:feature: %v\n%s", err, out)
-	}
-
-	// Switch back to default and delete the local temp branch.
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout: %v", err)
-		}
-	}
-	cmd = exec.Command("git", "branch", "-D", "temp")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git branch -D temp: %v\n%s", err, out)
-	}
-
-	// Fetch so origin/feature is known.
-	cmd = exec.Command("git", "fetch", "origin")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git fetch: %v\n%s", err, out)
-	}
+	setupRemote(t, dir, "temp", "feature")
 
 	path, err := EnsureForBranch(dir, "origin/feature")
 	if err != nil {
@@ -177,16 +129,8 @@ func setupRemote(t *testing.T, dir, localBranch, remoteBranch string) string {
 	}
 
 	// Switch back to default and delete the local branch.
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 	cmd = exec.Command("git", "branch", "-D", localBranch)
 	cmd.Dir = dir
@@ -215,16 +159,8 @@ func TestEnsureForNameExistingLocalBranch(t *testing.T) {
 		t.Fatalf("git checkout -b existing: %v\n%s", err, out)
 	}
 	// Switch back to default so existing is not checked out here.
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 
 	path, err := EnsureForName(dir, "existing")
@@ -258,16 +194,8 @@ func TestEnsureForNameReusesCheckedOutWorktree(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
 	}
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 	wtDir := filepath.Join(dir, ".worktrees", "feature")
 	cmd = exec.Command("git", "worktree", "add", wtDir, "feature")
@@ -351,16 +279,8 @@ func TestEnsureForBranchLocalWithSlash(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b feature/x: %v\n%s", err, out)
 	}
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 
 	path, err := EnsureForBranch(dir, "feature/x")
@@ -458,16 +378,8 @@ func TestRemoteConflictsWithLocal(t *testing.T) {
 	}
 
 	// Switch back to default.
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 
 	cmd = exec.Command("git", "fetch", "origin")

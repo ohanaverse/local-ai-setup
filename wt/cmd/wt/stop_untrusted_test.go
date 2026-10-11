@@ -495,28 +495,19 @@ func TestStopDoesNotHaltAnExclusiveProviderThatWasNotProbed(t *testing.T) {
 func TestStopFailurePrintsNoUsage(t *testing.T) {
 	stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true}))
 	stubHalt(t)
-	run := func(args ...string) (string, error) {
-		var out bytes.Buffer
-		cmd := stopCmd(&app{cfg: stopCfg()})
-		cmd.SetArgs(args)
-		cmd.SetOut(&out)
-		cmd.SetErr(&out)
-		err := cmd.Execute()
-		return out.String(), err
-	}
-	got, err := run("ollama")
+	got, err := runStopCmd(stopCfg(), "ollama")
 	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on ollama") || strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop ollama: err = %v out = %q, want the cannot-tell error and no usage text", err, got)
 	}
 	stubPicker(t, false, "ollama")
-	if got, err = run(); err == nil || strings.Contains(got, "Usage:") {
+	if got, err = runStopCmd(stopCfg()); err == nil || strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop: err = %v out = %q, want an error and no usage text", err, got)
 	}
-	if got, err = run("nosuch"); err == nil || !strings.Contains(got, "Usage:") {
+	if got, err = runStopCmd(stopCfg(), "nosuch"); err == nil || !strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop nosuch: err = %v out = %q, want the usage text for an argument mistake", err, got)
 	}
 	stdinTTY = func() bool { return false }
-	if got, err = run(); err == nil || !strings.Contains(got, "Usage:") {
+	if got, err = runStopCmd(stopCfg()); err == nil || !strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop without a TTY: err = %v out = %q, want the usage text", err, got)
 	}
 }

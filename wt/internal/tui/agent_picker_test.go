@@ -118,7 +118,6 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	// real rotation.state without it).
 	tempStateDir(t)
 	stubUsageStore(t)
-	t.Cleanup(stubInstalled("claude"))
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
@@ -142,20 +141,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	// Build a model in phaseAgent (where phaseAgent Enter fires).
 	// The picker list is built from buildAgentList so Enter advances
 	// to phaseModel via the same production code path.
-	m := model{
-		cfg:    cfg,
-		phase:  phaseAgent,
-		width:  80,
-		height: 24,
-	}
-	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	// Select the "claude" row so the Enter handler picks the right agent.
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	m := buildModelInPhaseAgent(t, cfg)
 	m.activeTags = "code,design"
 	m.activeFamily = "gemma4"
 
@@ -214,8 +200,9 @@ func singleModelConfig() *config.Config {
 }
 
 // buildModelInPhaseAgent constructs a model in phaseAgent with the agent
-// row pre-selected. Mirrors the setup in TestPhaseModelHonorsFilters so
-// the production phaseAgent Enter handler fires against the same shape.
+// row pre-selected. It is the setup TestPhaseModelHonorsFilters and the
+// single-model tests share, so the production phaseAgent Enter handler
+// fires against the same shape.
 func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 	t.Helper()
 	t.Cleanup(stubInstalled("claude"))
@@ -226,13 +213,20 @@ func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 		height: 24,
 	}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
+	selectAgentRow(&m, "claude")
+	return m
+}
+
+// selectAgentRow puts the agent picker's cursor on the named agent row (never
+// a command row), so the Enter handler picks that agent. It does nothing when
+// no such row exists.
+func selectAgentRow(m *model, name string) {
 	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == name {
 			m.agentList.Select(i)
 			break
 		}
 	}
-	return m
 }
 
 // TestPhaseAgentEnterSkipsPickerWhenSingleModel asserts that when the
@@ -342,12 +336,7 @@ func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
 
 	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "opencode" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, "opencode")
 
 	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := gotModel.(model)
@@ -377,12 +366,7 @@ func TestPhaseAgentEnterBlocksUninstalledAgent(t *testing.T) {
 
 	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "definitely-not-installed" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, "definitely-not-installed")
 
 	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := gotModel.(model)
@@ -502,12 +486,7 @@ func TestPhaseAgentEnterLaunchesPassthroughForUnconfiguredAgent(t *testing.T) {
 
 	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24, selectedPath: "/tmp/repo"}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && ai.name == "opencode" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, "opencode")
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if gotAgent != "opencode" {

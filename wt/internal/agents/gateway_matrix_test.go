@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -302,24 +301,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
 		lc := d.Build(m, false, directRoute(m))
-		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
-		var parsed struct {
-			Model      string `json:"model"`
-			SmallModel string `json:"small_model"`
-			Provider   map[string]struct {
-				NPM     string `json:"npm"`
-				Options struct {
-					BaseURL string `json:"baseURL"`
-					APIKey  string `json:"apiKey"`
-				} `json:"options"`
-				Models map[string]struct {
-					Name string `json:"name"`
-				} `json:"models"`
-			} `json:"provider"`
-		}
-		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-			t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
-		}
+		parsed := parseOpenCodeConfig(t, lc.Env)
 		if parsed.Model != "agent-wt/"+m.ModelName {
 			t.Errorf("model = %q, want agent-wt/%s (bare ModelName, not the registry id)", parsed.Model, m.ModelName)
 		}
@@ -345,24 +327,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 	t.Run("direct-openrouter", func(t *testing.T) {
 		m := matrixModels[3]
 		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
-		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
-		var parsed struct {
-			Model      string `json:"model"`
-			SmallModel string `json:"small_model"`
-			Provider   map[string]struct {
-				NPM     string `json:"npm"`
-				Options struct {
-					BaseURL string `json:"baseURL"`
-					APIKey  string `json:"apiKey"`
-				} `json:"options"`
-				Models map[string]struct {
-					Name string `json:"name"`
-				} `json:"models"`
-			} `json:"provider"`
-		}
-		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-			t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
-		}
+		parsed := parseOpenCodeConfig(t, lc.Env)
 		if parsed.Model != "agent-wt/"+m.ModelName {
 			t.Errorf("model = %q, want agent-wt/%s", parsed.Model, m.ModelName)
 		}
@@ -378,18 +343,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 	t.Run("direct-omlx", func(t *testing.T) {
 		m := matrixModels[2]
 		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
-		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
-		var parsed struct {
-			Model    string `json:"model"`
-			Provider map[string]struct {
-				Options struct {
-					BaseURL string `json:"baseURL"`
-				} `json:"options"`
-			} `json:"provider"`
-		}
-		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-			t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
-		}
+		parsed := parseOpenCodeConfig(t, lc.Env)
 		p := parsed.Provider[opencodeGatewayProviderID]
 		if p.Options.BaseURL != "http://localhost:8081/v1" {
 			t.Errorf("baseURL = %q, want omlx /v1 endpoint", p.Options.BaseURL)
@@ -399,24 +353,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
 			lc := d.Build(m, false, litellmRoute(m))
-			content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
-			var parsed struct {
-				Model      string `json:"model"`
-				SmallModel string `json:"small_model"`
-				Provider   map[string]struct {
-					NPM     string `json:"npm"`
-					Options struct {
-						BaseURL string `json:"baseURL"`
-						APIKey  string `json:"apiKey"`
-					} `json:"options"`
-					Models map[string]struct {
-						Name string `json:"name"`
-					} `json:"models"`
-				} `json:"provider"`
-			}
-			if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-				t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
-			}
+			parsed := parseOpenCodeConfig(t, lc.Env)
 			p := parsed.Provider[opencodeGatewayProviderID]
 			if p.NPM != "@ai-sdk/openai-compatible" {
 				t.Errorf("npm = %q, want @ai-sdk/openai-compatible (chat wire)", p.NPM)

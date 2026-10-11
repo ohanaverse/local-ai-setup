@@ -20,7 +20,7 @@ def _registry(models):
     return Registry(providers=[], models=models)
 
 
-def _mtplx_model_entry(model_name: str, n: int = 1):
+def _mtplx_model_entry(model_name: str):
     from llmbench.registry import ModelEntry
 
     return ModelEntry(

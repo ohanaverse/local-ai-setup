@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -91,9 +92,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 }
 
 // TestRegistryFixtureCost verifies that the shared fixture's full pricing
-// model decodes with the new flat per-token + subscription fields. This test
-// uses a local decode struct so it keeps working before the production
-// Model.Cost field is added in the next task.
+// model decodes with the flat per-token + subscription fields. This test
+// uses a local decode struct of its own.
 func TestRegistryFixtureCost(t *testing.T) {
 	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 
@@ -190,27 +190,13 @@ func TestRegistryFixtureProviderProtocols(t *testing.T) {
 		t.Fatalf("loadRegistry() error: %v", err)
 	}
 	ollama := providers[0]
-	if got := ollama.EffectiveProtocols(); !equalProtocols(got, []Protocol{ProtocolAnthropic, ProtocolOpenAIChat}) {
+	if got := ollama.EffectiveProtocols(); !slices.Equal(got, []Protocol{ProtocolAnthropic, ProtocolOpenAIChat}) {
 		t.Errorf("ollama protocols = %v", got)
 	}
 	openrouter := providers[1]
-	if got := openrouter.EffectiveProtocols(); !equalProtocols(got, []Protocol{ProtocolOpenAIChat}) {
+	if got := openrouter.EffectiveProtocols(); !slices.Equal(got, []Protocol{ProtocolOpenAIChat}) {
 		t.Errorf("openrouter protocols = %v", got)
 	}
-}
-
-// equalProtocols reports whether two protocol slices contain the same
-// elements in the same order.
-func equalProtocols(a, b []Protocol) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestRegistryFixtureProviderLocationInheritance pins issue #46 from the
@@ -246,10 +232,9 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 
 // TestRegistryFixtureTimePrices pins the time-windowed pricing rows
 // (docs/superpowers/specs/2026-09-28-ollama-catalog-sync-design.md) that
-// `wt cloud-sync` writes under [models.cost]. wt only decodes them today
-// (nothing applies a window yet: see TimePrice), so this pins that a registry
-// holding them still loads and that each window and price comes back as
-// written, ready for the code that will apply them.
+// `wt cloud-sync` writes under [models.cost]. This pins the decode: a registry
+// holding them loads and each window and price comes back as written
+// (ModelCost.PriceAt, which applies them, is pinned in price_at_test.go).
 func TestRegistryFixtureTimePrices(t *testing.T) {
 	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 

@@ -215,7 +215,6 @@ func TestRecordSerializesConcurrentProcesses(t *testing.T) {
 	wg.Add(n)
 	errs := make([]error, n)
 	for i := 0; i < n; i++ {
-		i := i
 		go func() {
 			defer wg.Done()
 			errs[i] = store.Record(Event{Agent: "claude", ModelID: "model-" + string(rune('a'+i)), Skipped: true})

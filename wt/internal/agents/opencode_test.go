@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,8 +23,7 @@ import (
 // gpt-5-nano) does not query the proxy with nonexistent model names.
 func TestOpenCodeBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := opencodeDriver{}.Build(m, false, routeFor(m, gw))
+	lc := opencodeDriver{}.Build(m, false, litellmRoute(m))
 	content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 	if !strings.Contains(content, `"model":"`+opencodeGatewayProviderID+`/ollama/qwen3.8:27b-mlx"`) {
 		t.Errorf("config content = %s, want model %s/ollama/qwen3.8:27b-mlx", content, opencodeGatewayProviderID)
@@ -56,6 +56,35 @@ func envValue(t *testing.T, env []string, key string) string {
 	}
 	t.Fatalf("env %s not found in %v", key, env)
 	return ""
+}
+
+// opencodeConfigDoc is the part of opencode's inline JSON config the tests
+// read.
+type opencodeConfigDoc struct {
+	Model      string `json:"model"`
+	SmallModel string `json:"small_model"`
+	Provider   map[string]struct {
+		NPM     string `json:"npm"`
+		Options struct {
+			BaseURL string `json:"baseURL"`
+			APIKey  string `json:"apiKey"`
+		} `json:"options"`
+		Models map[string]struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	} `json:"provider"`
+}
+
+// parseOpenCodeConfig decodes the OPENCODE_CONFIG_CONTENT entry of env,
+// failing the test when the entry is absent or is not valid JSON.
+func parseOpenCodeConfig(t *testing.T, env []string) opencodeConfigDoc {
+	t.Helper()
+	content := envValue(t, env, "OPENCODE_CONFIG_CONTENT")
+	var parsed opencodeConfigDoc
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
+	}
+	return parsed
 }
 
 // OpenCode was the one driver whose Build ignored the Native model bit —

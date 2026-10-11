@@ -244,13 +244,7 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 	if gotAgent != "claude" || gotModel.ID != "ollama/x" {
 		t.Errorf("profileApplier called with (%q, %+v), want (claude, {ID: ollama/x})", gotAgent, gotModel)
 	}
-	found := false
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
 		t.Error("profileApplier's cmd.Env mutation did not survive into cmd.Run()")
 	}
 	if !cleanupCalled {

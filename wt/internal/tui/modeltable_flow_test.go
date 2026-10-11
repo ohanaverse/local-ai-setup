@@ -2,6 +2,7 @@ package tui
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,12 +32,7 @@ func itemIDs(got model) []string {
 }
 
 func indexOfID(got model, id string) int {
-	for i, x := range itemIDs(got) {
-		if x == id {
-			return i
-		}
-	}
-	return -1
+	return slices.Index(itemIDs(got), id)
 }
 
 // TestEnterModelPhaseShowsNonRunningAndDiscoveredRows verifies the picker now
@@ -196,6 +192,32 @@ func TestEnterModelPhaseNoRotationDefaultsToNativeRow(t *testing.T) {
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
+// assertHeaderAlignsWithRow checks, in a rendered list view, that the header's
+// FAMILY and MODEL columns start at the same rune offset as the family and
+// model id cells of the first row showing id.
+func assertHeaderAlignsWithRow(t *testing.T, view, id, family string) {
+	t.Helper()
+	var header, row string
+	for _, ln := range strings.Split(ansiRE.ReplaceAllString(view, ""), "\n") {
+		if strings.Contains(ln, "FAMILY") && header == "" {
+			header = ln
+		}
+		if strings.Contains(ln, id) && row == "" {
+			row = ln
+		}
+	}
+	if header == "" || row == "" {
+		t.Fatalf("header/row not found in view:\n%s", view)
+	}
+	off := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
+	if off(header, "MODEL") != off(row, id) {
+		t.Errorf("MODEL offset %d != row id offset %d\n%q\n%q", off(header, "MODEL"), off(row, id), header, row)
+	}
+	if off(header, "FAMILY") != off(row, family) {
+		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, family), header, row)
+	}
+}
+
 // TestModelPickerViewHeaderAlignsWithRows renders the real list view and
 // checks the header's FAMILY and MODEL columns start at the same rune offset
 // as the first row's family and model id. String-level checks on Title/line
@@ -203,23 +225,5 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func TestModelPickerViewHeaderAlignsWithRows(t *testing.T) {
 	got := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
 	first := got.models.Items()[0].(*modelItem)
-	var header, row string
-	for _, ln := range strings.Split(ansiRE.ReplaceAllString(got.models.View(), ""), "\n") {
-		if strings.Contains(ln, "FAMILY") && header == "" {
-			header = ln
-		}
-		if strings.Contains(ln, first.model.ID) && row == "" {
-			row = ln
-		}
-	}
-	if header == "" || row == "" {
-		t.Fatalf("header/row not found in view:\n%s", got.models.View())
-	}
-	off := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
-	if off(header, "MODEL") != off(row, first.model.ID) {
-		t.Errorf("MODEL offset %d != row id offset %d\n%q\n%q", off(header, "MODEL"), off(row, first.model.ID), header, row)
-	}
-	if off(header, "FAMILY") != off(row, first.model.Family) {
-		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, first.model.Family), header, row)
-	}
+	assertHeaderAlignsWithRow(t, got.models.View(), first.model.ID, first.model.Family)
 }

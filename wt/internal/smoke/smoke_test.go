@@ -187,13 +187,7 @@ func TestEligibilityIncludesRunningLocalModel(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	stubSmokeProbe(t, smokeRunningSnapshot()) // live truth: the probe reports the model running
 	got, _ := Eligibility(cfg)
-	var found bool
-	for _, m := range got {
-		if m.ID == "ollama/qwen3.8:27b-mlx" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.ContainsFunc(got, func(m config.Model) bool { return m.ID == "ollama/qwen3.8:27b-mlx" }) {
 		t.Errorf("running local model not eligible: %+v", got)
 	}
 }
@@ -213,13 +207,7 @@ func TestEligibilityIncludesDiscoveredRunningModel(t *testing.T) {
 		},
 	})
 	models, _ := Eligibility(cfg)
-	var found bool
-	for _, m := range models {
-		if m.ID == disc {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.ContainsFunc(models, func(m config.Model) bool { return m.ID == disc }) {
 		t.Errorf("running discovered model not eligible: %+v", models)
 	}
 }
@@ -256,56 +244,51 @@ func withStubBuildAndRun(t *testing.T, out execOutcome) {
 	t.Cleanup(func() { buildAndRun = old })
 }
 
-// TestRunRowPass asserts exit 0 plus the sentinel present in captured
-// output classifies PASS.
-func TestRunRowPass(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "before WT-SMOKE-claude-run-1 after"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
-	if res.Status != StatusPass {
-		t.Fatalf("Status = %v, want PASS (err=%v)", res.Status, res.Err)
+// TestRunRowStatus pins how RunRow classifies a finished row from the
+// agent's outcome alone: exit code, captured output and start error against
+// the prompt's sentinel. It matters because PASS/FAIL/SKIP is all `wt smoke`
+// reports; a row classified wrongly either hides a broken model x agent pair
+// or blames a model for an agent that is simply not installed.
+func TestRunRowStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		outcome  execOutcome
+		prompt   string
+		sentinel string
+		want     Status
+		note     string // appended to the failure message
+	}{
+		// Exit 0 plus the sentinel present in captured output classifies
+		// PASS.
+		{"pass", execOutcome{ExitCode: 0, Output: "before WT-SMOKE-claude-run-1 after"}, "prompt", "WT-SMOKE-claude-run-1", StatusPass, ""},
+		// Exit 0 without the sentinel in output classifies FAIL, not PASS —
+		// a process exiting cleanly is not enough on its own when a sentinel
+		// was requested.
+		{"missing sentinel", execOutcome{ExitCode: 0, Output: "wrong output"}, "prompt", "WT-SMOKE-claude-run-1", StatusFail, ""},
+		// A non-zero exit code is FAIL regardless of what the output
+		// contains.
+		{"non-zero exit", execOutcome{ExitCode: 1, Output: "WT-SMOKE-claude-run-1"}, "prompt", "WT-SMOKE-claude-run-1", StatusFail, ""},
+		// A StartErr matching agents.BuildLaunchCmdInfo's exact "agent <name>
+		// not installed" text classifies SKIP — the same substring convention
+		// agents-smoke.sh's classifier uses.
+		{"agent not installed", execOutcome{StartErr: fmt.Errorf("agent claude not installed")}, "prompt", "sentinel", StatusSkip, ""},
+		// A StartErr that is NOT the not-installed message (e.g. a
+		// route-resolution failure) classifies FAIL, not SKIP — only the exact
+		// installed-check message means SKIP.
+		{"other start error", execOutcome{StartErr: fmt.Errorf(`unknown provider "x" for model "y"`)}, "prompt", "sentinel", StatusFail, ""},
+		// An empty sentinel (the --prompt override case) makes exit-code-0
+		// alone sufficient for PASS — the documented verification degradation
+		// for a custom prompt: an empty sentinel means exit-code-only.
+		{"custom prompt, no sentinel", execOutcome{ExitCode: 0, Output: "anything at all"}, "do the task", "", StatusPass, " (empty sentinel means exit-code-only)"},
 	}
-}
-
-// TestRunRowFailMissingSentinel asserts exit 0 without the sentinel in
-// output classifies FAIL, not PASS — a process exiting cleanly is not
-// enough on its own when a sentinel was requested.
-func TestRunRowFailMissingSentinel(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "wrong output"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
-	if res.Status != StatusFail {
-		t.Fatalf("Status = %v, want FAIL", res.Status)
-	}
-}
-
-// TestRunRowFailNonZeroExit asserts a non-zero exit code is FAIL
-// regardless of what the output contains.
-func TestRunRowFailNonZeroExit(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{ExitCode: 1, Output: "WT-SMOKE-claude-run-1"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, FixedDir("."), nil)
-	if res.Status != StatusFail {
-		t.Fatalf("Status = %v, want FAIL", res.Status)
-	}
-}
-
-// TestRunRowSkipNotInstalled asserts a StartErr matching agents.BuildLaunchCmdInfo's
-// exact "agent <name> not installed" text classifies SKIP — the same
-// substring convention agents-smoke.sh's classifier uses.
-func TestRunRowSkipNotInstalled(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf("agent claude not installed")})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
-	if res.Status != StatusSkip {
-		t.Fatalf("Status = %v, want SKIP", res.Status)
-	}
-}
-
-// TestRunRowFailOtherStartErr asserts a StartErr that is NOT the
-// not-installed message (e.g. a route-resolution failure) classifies FAIL,
-// not SKIP — only the exact installed-check message means SKIP.
-func TestRunRowFailOtherStartErr(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf(`unknown provider "x" for model "y"`)})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
-	if res.Status != StatusFail {
-		t.Fatalf("Status = %v, want FAIL", res.Status)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			withStubBuildAndRun(t, c.outcome)
+			res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, c.prompt, c.sentinel, time.Second, FixedDir("."), nil)
+			if res.Status != c.want {
+				t.Fatalf("Status = %v (err=%v), want %v%s", res.Status, res.Err, c.want, c.note)
+			}
+		})
 	}
 }
 
@@ -316,17 +299,6 @@ func TestRunRowFailTimeout(t *testing.T) {
 	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
 	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "timed out") {
 		t.Fatalf("Status = %v, Err = %v, want FAIL with a timeout error", res.Status, res.Err)
-	}
-}
-
-// TestRunRowCustomPromptSkipsSentinelCheck asserts an empty sentinel (the
-// --prompt override case) makes exit-code-0 alone sufficient for PASS —
-// the documented verification degradation for a custom prompt.
-func TestRunRowCustomPromptSkipsSentinelCheck(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "anything at all"})
-	res := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, FixedDir("."), nil)
-	if res.Status != StatusPass {
-		t.Fatalf("Status = %v, want PASS (empty sentinel means exit-code-only)", res.Status)
 	}
 }
 

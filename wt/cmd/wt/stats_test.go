@@ -48,21 +48,30 @@ func seedSurveyEvents(t *testing.T, tmp string, events []survey.Event) {
 	}
 }
 
+// statsOut runs `wt stats` with args and returns its stdout; stderr is
+// discarded. The arguments are always a non-nil slice, because cobra reads a
+// nil one as "use os.Args[1:]", the test binary's own command line.
+func statsOut(t *testing.T, a *app, args ...string) string {
+	t.Helper()
+	cmd := statsCmd(a)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(append([]string{}, args...))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	return out.String()
+}
+
 // TestStatsCmdEmptyStorePrintsMessage verifies `wt stats` never errors on
 // a fresh install (no survey.jsonl, no usage.jsonl, no spend) — it reports
 // "no survey data" and "no usage data", one per table, instead.
 func TestStatsCmdEmptyStorePrintsMessage(t *testing.T) {
 	a, _ := newTestApp(t)
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if out.String() != "no survey data\n\nno usage data\n" {
-		t.Fatalf("output = %q, want \"no survey data\", a blank line, \"no usage data\"", out.String())
+	out := statsOut(t, a)
+	if out != "no survey data\n\nno usage data\n" {
+		t.Fatalf("output = %q, want \"no survey data\", a blank line, \"no usage data\"", out)
 	}
 }
 
@@ -77,15 +86,7 @@ func TestStatsCmdReportsAllAgentAndComboRows(t *testing.T) {
 		{Agent: "codex", ModelID: "ollama/gemma4:9b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(false)},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	got := out.String()
+	got := statsOut(t, a)
 	if !strings.Contains(got, "(all)") {
 		t.Errorf("output = %q, want a (all) aggregate row", got)
 	}
@@ -106,28 +107,14 @@ func TestStatsCmdWindowFilter(t *testing.T) {
 		{Agent: "claude", ModelID: "old-model", Timestamp: now.Add(-10 * 24 * time.Hour), Worked: boolPtr(true)},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--window", "1d"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.HasPrefix(out.String(), "no survey data\n") {
-		t.Errorf("output = %q, want \"no survey data\" first (10-day-old event excluded from 1d window)", out.String())
+	out := statsOut(t, a, "--window", "1d")
+	if !strings.HasPrefix(out, "no survey data\n") {
+		t.Errorf("output = %q, want \"no survey data\" first (10-day-old event excluded from 1d window)", out)
 	}
 
-	cmd30 := statsCmd(a)
-	var out30 bytes.Buffer
-	cmd30.SetOut(&out30)
-	cmd30.SetErr(io.Discard)
-	cmd30.SetArgs([]string{"--window", "30d"})
-	if err := cmd30.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(out30.String(), "old-model") {
-		t.Errorf("30d output = %q, want old-model included", out30.String())
+	out30 := statsOut(t, a, "--window", "30d")
+	if !strings.Contains(out30, "old-model") {
+		t.Errorf("30d output = %q, want old-model included", out30)
 	}
 }
 
@@ -141,28 +128,14 @@ func TestStatsCmdModelAndAgentFilters(t *testing.T) {
 		{Agent: "codex", ModelID: "model-b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--model", "model-a"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(out.String(), "model-a") || strings.Contains(out.String(), "model-b") {
-		t.Errorf("output = %q, want only model-a rows", out.String())
+	out := statsOut(t, a, "--model", "model-a")
+	if !strings.Contains(out, "model-a") || strings.Contains(out, "model-b") {
+		t.Errorf("output = %q, want only model-a rows", out)
 	}
 
-	cmd2 := statsCmd(a)
-	var out2 bytes.Buffer
-	cmd2.SetOut(&out2)
-	cmd2.SetErr(io.Discard)
-	cmd2.SetArgs([]string{"--agent", "codex"})
-	if err := cmd2.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(out2.String(), "codex") || strings.Contains(out2.String(), "claude") {
-		t.Errorf("output = %q, want only codex rows", out2.String())
+	out2 := statsOut(t, a, "--agent", "codex")
+	if !strings.Contains(out2, "codex") || strings.Contains(out2, "claude") {
+		t.Errorf("output = %q, want only codex rows", out2)
 	}
 }
 
@@ -197,16 +170,8 @@ func TestStatsCmdExcludesEmptyRows(t *testing.T) {
 		{Agent: "copilot", ModelID: "model-empty", Timestamp: now.Add(-48 * time.Hour), Skipped: true},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--window", "1d"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
+	got := statsOut(t, a, "--window", "1d")
 
-	got := out.String()
 	if !strings.Contains(got, "model-data") {
 		t.Errorf("output = %q, want model-data included", got)
 	}

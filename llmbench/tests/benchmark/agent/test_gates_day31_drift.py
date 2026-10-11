@@ -12,32 +12,15 @@ from llmbench.benchmark.agent.pidriver import PiRunResult
 from llmbench.benchmark.agent.task import load_task
 from llmbench.benchmark.agent.workspace import create_workspace, destroy_workspace
 
-from .test_day31_drift_bundle import CORRECT_CALENDARLIB, SYMPTOM_PATCH_BILLING
+from .test_day31_drift_bundle import (
+    CORRECT_CALENDARLIB,
+    REAL_REGRESSION_TEST,
+    SYMPTOM_PATCH_BILLING,
+)
+from .test_gates import _ok_run, _reply_events
 
 # parents[4] = monorepo root from llmbench/tests/benchmark/agent/ (see Task 4)
 TASK_ROOT = Path(__file__).resolve().parents[4] / "benchmarks" / "tasks" / "day31-drift"
-
-REAL_REGRESSION_TEST = (
-    "import unittest\nfrom datetime import date\nfrom kettlecomb import add_months\n\n"
-    "class T(unittest.TestCase):\n"
-    "    def test_feb_boundary(self):\n"
-    "        self.assertEqual(add_months(date(2025, 1, 31), 1), date(2025, 2, 28))\n"
-)
-
-
-def _ok_run() -> PiRunResult:
-    return PiRunResult(
-        exit_code=0,
-        timed_out=False,
-        aborted=False,
-        seen_message_end=True,
-        unparsed_lines=0,
-        stderr_tail="",
-    )
-
-
-def _reply_events() -> list[dict]:
-    return [{"type": "message_end", "message": {"role": "assistant", "usage": {}, "content": []}}]
 
 
 def _evaluate(ws, task):
