@@ -13,12 +13,10 @@ If no version is given, extracts from all available versions.
 
 import hashlib
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -426,17 +424,15 @@ def main():
     for f in OUTPUT_DIR.glob("*.md"):
         f.unlink()
 
-    written = 0
     seen_filenames = set()
     for i, block in enumerate(unique_blocks):
         filename = generate_filename(block, i, seen_filenames)
-        filepath = write_block(block, OUTPUT_DIR, filename)
-        written += 1
+        write_block(block, OUTPUT_DIR, filename)
         print(f"  {filename} ({len(block.content)} chars)")
 
     write_version_manifest(versions, OUTPUT_DIR)
 
-    print(f"\nWrote {written} blocks to {OUTPUT_DIR}")
+    print(f"\nWrote {len(unique_blocks)} blocks to {OUTPUT_DIR}")
     print(f"Manifest: {OUTPUT_DIR / 'manifest.json'}")
 
 
