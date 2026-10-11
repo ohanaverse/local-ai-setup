@@ -318,7 +318,7 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	}
 	victims, unknown := e.resolveEvictions(ctx, cfg, family, t, snap)
 	if unknown && !opts.AllowReplace {
-		origin, _ := localmodels.FamilyOrigin(cfg, family)
+		origin := localmodels.FamilyOrigin(cfg, family)
 		return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
 	}
 	if len(victims) > 0 && !opts.AllowReplace {

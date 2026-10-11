@@ -133,10 +133,7 @@ func runModelInit(out, errOut io.Writer, asJSON bool) error {
 		return err
 	})
 	if err != nil {
-		if hint := config.RegistryFixHint(err); hint != "" {
-			return fmt.Errorf("%w (%s)", err, hint)
-		}
-		return err
+		return withRegistryHint(err)
 	}
 	doc := modelInitJSON{
 		Registry: path, Created: missing && changed, Changed: changed,

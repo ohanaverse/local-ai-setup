@@ -45,7 +45,7 @@ type ProtocolDeclarer interface {
 // ProtocolsFor returns the named agent's declared protocols, or nil if the
 // agent is unknown or its driver doesn't implement ProtocolDeclarer. Used by
 // BuildLaunchCmd (to resolve the actual launch route) and by the model
-// picker (Task 6) — both need the same answer.
+// picker — both need the same answer.
 func ProtocolsFor(agent string) []Protocol {
 	driver := ByName(agent)
 	if driver == nil {
@@ -376,15 +376,10 @@ func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo 
 	return cmd, info, nil
 }
 
-// Command resolves the agent binary and returns an exec.Cmd ready to run in
-// workdir, with the driver's extra env merged over the inherited environment.
-func Command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, error) {
-	cmd, _, err := command(d, m, yolo, r, workdir)
-	return cmd, err
-}
-
-// command is Command plus the driver's LaunchCmd, so BuildLaunchCmdInfo can
-// report what the driver decided (ModelFallback) alongside the exec.Cmd.
+// command resolves the agent binary and returns an exec.Cmd ready to run in
+// workdir, with the driver's extra env merged over the inherited environment,
+// plus the driver's LaunchCmd, so BuildLaunchCmdInfo can report what the
+// driver decided (ModelFallback) alongside the exec.Cmd.
 func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, LaunchCmd, error) {
 	lc := d.Build(m, yolo, r)
 	bin, err := exec.LookPath(lc.Bin)
@@ -395,18 +390,11 @@ func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exe
 		fmt.Fprintln(os.Stderr, lc.Warn)
 	}
 	cmd := exec.Command(bin, lc.Args...)
-	if len(lc.ClearEnv) > 0 {
-		cmd.Env = append(filterEnv(os.Environ(), lc.ClearEnv), lc.Env...)
-	} else {
-		cmd.Env = append(os.Environ(), lc.Env...)
-	}
+	cmd.Env = append(filterEnv(os.Environ(), lc.ClearEnv), lc.Env...)
 	SetDir(cmd, workdir)
 	return cmd, lc, nil
 }
 
-// filterEnv returns env with any entry whose key is in clear removed. It is
-// used to strip inherited gateway vars (e.g. ANTHROPIC_BASE_URL) before a
-// native launch, so the agent uses its own subscription rather than routing
 // SetDir makes dir the working directory cmd runs in, PWD included. cmd's
 // environment is inherited from wt, whose PWD names the caller's directory,
 // and os/exec only fills PWD in when the environment has none — so an agent
@@ -424,6 +412,9 @@ func SetDir(cmd *exec.Cmd, dir string) {
 	cmd.Env = append(filterEnv(env, []string{"PWD"}), "PWD="+dir)
 }
 
+// filterEnv returns env with any entry whose key is in clear removed. It is
+// used to strip inherited gateway vars (e.g. ANTHROPIC_BASE_URL) before a
+// native launch, so the agent uses its own subscription rather than routing
 // to a gateway a parent shell happened to export.
 func filterEnv(env, clear []string) []string {
 	drop := make(map[string]bool, len(clear))

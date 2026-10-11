@@ -938,7 +938,7 @@ func TestOllamaWarnCancel(t *testing.T) {
 // TestOllamaWarnHasProceedAndCancelOnly asserts the ollama
 // availability warning has two choices: proceed and cancel.
 // The "skip" choice (which rotated to the next model) is gone
-// because rotation now advances via rotation.Record at the
+// because rotation now advances via rotation.RecordFor at the
 // launchAndRecord commit point, not on Enter.
 func TestOllamaWarnHasProceedAndCancelOnly(t *testing.T) {
 	choices := buildOllamaChoices()

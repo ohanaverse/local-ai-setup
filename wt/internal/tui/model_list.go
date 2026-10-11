@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
@@ -48,8 +47,8 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // NOT one of these — it is a start row — and a local model that is not on disk
 // is not one either: it has no row at all. Every
 // picker honors it: the agent flow shows it on Enter, and the standalone
-// PickModel/PickStartModel (wt smoke, wt start) refuse to select a blocked
-// row and show it as a notice instead.
+// PickStartModel (wt smoke, wt start) refuses to select a blocked
+// row and shows it as a notice instead.
 //
 // line is always the FULL table's row, whatever the terminal's width: it is
 // what the filter matches, so a query for a family or a cost still finds its
@@ -159,7 +158,7 @@ func formatPerToken(cost config.ModelCost) string {
 // it sits flush with the row text, in the theme's dim colour. The reset is
 // tuilayout.StyleTableTitle, which `wt config`'s Models tab calls too; this
 // is the launcher's name for it, used by the agent-flow picker and wt smoke's
-// PickModel.
+// PickStartModel.
 func styleTableTitle(l *list.Model, theme themes.Theme) {
 	tuilayout.StyleTableTitle(l, theme.Token(themes.TokenDim))
 }
@@ -173,17 +172,15 @@ func (m modelItem) TableColumns() *tuilayout.Columns { return m.cols }
 
 // clampModelSelection guards against bubbles v1.0.0 leaving
 // m.Index() outside [0, len(VisibleItems())) after a filter
-// narrows the list. With dividers gone there is no
-// direction-of-travel walk or divider-skipping — just the clamp.
-func clampModelSelection(m *model) tea.Cmd {
+// narrows the list.
+func clampModelSelection(m *model) {
 	visible := m.models.VisibleItems()
 	if len(visible) == 0 {
-		return nil
+		return
 	}
 	if i := m.models.Index(); i < 0 || i >= len(visible) {
 		m.models.Select(0)
 	}
-	return nil
 }
 
 // phaseModelView renders the model picker screen: the list of

@@ -18,7 +18,7 @@ type omlxBackend struct{}
 func (omlxBackend) tenancy() Tenancy { return Pool }
 
 func (omlxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {
-	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
+	origin := localmodels.FamilyOrigin(cfg, "omlx")
 	health := origin + "/v1/models"
 	if responded, _ := e.probe(ctx, health, 2*time.Second); !responded {
 		if err := ctx.Err(); err != nil {
@@ -50,13 +50,13 @@ func (omlxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Targ
 // one: an omlx started with an API key refuses a keyless chat completion
 // (#256), and that same 401 on the liveness probe still counts as "up".
 func omlxWarm(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
-	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
+	origin := localmodels.FamilyOrigin(cfg, "omlx")
 	key := localmodels.FamilyAPIKey(cfg, "omlx")
 	return e.warmup(ctx, origin+"/v1/chat/completions", path.Base(modelName), origin+"/v1/models", key, e.warmupTimeout)
 }
 
 func (omlxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {
-	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
+	origin := localmodels.FamilyOrigin(cfg, "omlx")
 	if bin, err := e.lookPath("omlx"); err == nil {
 		_, _ = e.run(ctx, bin, "stop")
 	}

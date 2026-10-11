@@ -100,7 +100,6 @@ def _streaming_run(
                         prompt_tokens = usage["prompt_tokens"]
     except requests.RequestException as exc:
         error = str(exc)
-        start = start or time.perf_counter()
 
     end = time.perf_counter()
     return RawRun(

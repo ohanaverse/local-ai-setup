@@ -208,14 +208,15 @@ func inUse(entries []Entry) map[string]bool {
 	return m
 }
 
-// DefaultBranch returns the repo default branch (e.g. main) from origin/HEAD.
-func DefaultBranch(dir string) (string, error) {
+// DefaultBranch returns the repo default branch (e.g. main) from origin/HEAD,
+// or "" when there is no remote or origin/HEAD is not set, which is non-fatal.
+func DefaultBranch(dir string) string {
 	out, err := runGit(dir, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err != nil {
-		return "", nil //nolint:nilerr // No remote or origin/HEAD not set is non-fatal.
+		return ""
 	}
 	s := strings.TrimSpace(string(out))
-	return strings.TrimPrefix(s, "refs/remotes/origin/"), nil
+	return strings.TrimPrefix(s, "refs/remotes/origin/")
 }
 
 // IsDefaultBranchForm reports whether branch names the repo default branch

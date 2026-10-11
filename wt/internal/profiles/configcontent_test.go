@@ -378,7 +378,7 @@ func TestApplyConfigContentCodexProfileFlagOnlyAppendedAfterSuccessfulWrite(t *t
 
 // TestMergeOpenCodeEnvUsesLastEntryNotFirst is the regression lock for
 // Important finding #3: mergeOpenCodeEnv must merge into the LAST
-// OPENCODE_CONFIG_CONTENT entry in cmd.Env, not the first. Command()
+// OPENCODE_CONFIG_CONTENT entry in cmd.Env, not the first. BuildLaunchCmd
 // (internal/agents) builds cmd.Env as os.Environ() (inherited parent env)
 // followed by the driver's own entries; if the parent process already
 // exports OPENCODE_CONFIG_CONTENT (e.g. wt launched from inside an

@@ -25,7 +25,7 @@ import (
 // smokeFixtureConfig builds a small multi-agent, multi-provider config:
 // claude supports ollama+openrouter, codex supports only ollama, agy only
 // its own native provider, and shell is deliberately included as an Agent
-// entry (with a provider it would otherwise match) to prove EligibleAgents
+// entry (with a provider it would otherwise match) to prove Eligibility
 // excludes it via IsCommand rather than relying on it being absent from
 // config.toml. The probe is stubbed to smokeIdleSnapshot — the local model is
 // on disk but not running, so it has a start row (#179 Phase B: an empty
@@ -105,10 +105,11 @@ func TestEligibleAgentsExcludesShellAndMatchesProviders(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	stubSmokeProbe(t, smokeRunningSnapshot()) // live truth: the probe must report the model running
 	m := findModel(t, cfg, "ollama/qwen3.8:27b-mlx")
-	got := EligibleAgents(cfg, m)
+	_, byModel := Eligibility(cfg)
+	got := byModel[m.ID]
 	want := []string{"claude", "codex"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("EligibleAgents = %v, want %v", got, want)
+		t.Fatalf("Eligibility agents for %s = %v, want %v", m.ID, got, want)
 	}
 }
 
@@ -119,10 +120,11 @@ func TestEligibleAgentsExcludesShellAndMatchesProviders(t *testing.T) {
 func TestEligibleAgentsAgyNarrowedToNative(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	m := findModel(t, cfg, "agy/native")
-	got := EligibleAgents(cfg, m)
+	_, byModel := Eligibility(cfg)
+	got := byModel[m.ID]
 	want := []string{"agy"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("EligibleAgents = %v, want %v", got, want)
+		t.Fatalf("Eligibility agents for %s = %v, want %v", m.ID, got, want)
 	}
 }
 
@@ -131,10 +133,11 @@ func TestEligibleAgentsAgyNarrowedToNative(t *testing.T) {
 func TestEligibleAgentsCloudModel(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	m := findModel(t, cfg, "openrouter/glm-5.3-flash")
-	got := EligibleAgents(cfg, m)
+	_, byModel := Eligibility(cfg)
+	got := byModel[m.ID]
 	want := []string{"claude"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("EligibleAgents = %v, want %v", got, want)
+		t.Fatalf("Eligibility agents for %s = %v, want %v", m.ID, got, want)
 	}
 }
 
@@ -144,14 +147,14 @@ func TestEligibleAgentsCloudModel(t *testing.T) {
 func TestAllEligibleModelsUnionsAcrossAgents(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	stubSmokeProbe(t, smokeRunningSnapshot()) // live truth: the probe must report the model running
-	got := AllEligibleModels(cfg)
+	got, _ := Eligibility(cfg)
 	var ids []string
 	for _, m := range got {
 		ids = append(ids, m.ID)
 	}
 	want := []string{"agy/native", "ollama/qwen3.8:27b-mlx", "openrouter/glm-5.3-flash"}
 	if !slices.Equal(ids, want) {
-		t.Fatalf("AllEligibleModels ids = %v, want %v", ids, want)
+		t.Fatalf("Eligibility model ids = %v, want %v", ids, want)
 	}
 }
 
@@ -183,7 +186,7 @@ func TestEligibilityExcludesIdleLocalModels(t *testing.T) {
 func TestEligibilityIncludesRunningLocalModel(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	stubSmokeProbe(t, smokeRunningSnapshot()) // live truth: the probe reports the model running
-	got := AllEligibleModels(cfg)
+	got, _ := Eligibility(cfg)
 	var found bool
 	for _, m := range got {
 		if m.ID == "ollama/qwen3.8:27b-mlx" {
@@ -284,7 +287,7 @@ func TestRunRowFailNonZeroExit(t *testing.T) {
 	}
 }
 
-// TestRunRowSkipNotInstalled asserts a StartErr matching agents.Command's
+// TestRunRowSkipNotInstalled asserts a StartErr matching agents.BuildLaunchCmdInfo's
 // exact "agent <name> not installed" text classifies SKIP — the same
 // substring convention agents-smoke.sh's classifier uses.
 func TestRunRowSkipNotInstalled(t *testing.T) {
@@ -612,43 +615,26 @@ func TestNewRunIDFormat(t *testing.T) {
 	}
 }
 
-// TestTruncateOutputShortUnchanged asserts output at or under the 8KiB
+// TestBoundedWriterShortOutputUnchanged asserts output at or under the 8KiB
 // bound passes through byte-for-byte, with no marker prepended — only
 // output that actually exceeds the bound should ever be flagged as cut.
-func TestTruncateOutputShortUnchanged(t *testing.T) {
+func TestBoundedWriterShortOutputUnchanged(t *testing.T) {
 	short := strings.Repeat("a", maxCapturedOutput)
-	got := truncateOutput(short)
-	if got != short {
-		t.Fatalf("truncateOutput changed output at the exact bound (len %d)", len(short))
-	}
 	tiny := "hello world"
-	if got := truncateOutput(tiny); got != tiny {
-		t.Fatalf("truncateOutput(%q) = %q, want unchanged", tiny, got)
-	}
-}
-
-// TestTruncateOutputLongTailWithMarker asserts output over the 8KiB bound
-// is cut to its last maxCapturedOutput bytes and prefixed with a marker —
-// this is what caps the FAIL detail block (human renderer) and the --json
-// "output" field, per the design spec's "truncated to a bounded tail".
-func TestTruncateOutputLongTailWithMarker(t *testing.T) {
-	long := strings.Repeat("x", maxCapturedOutput) + "TAIL-MARKER-END"
-	got := truncateOutput(long)
-	if !strings.HasPrefix(got, truncatedMarker) {
-		t.Fatalf("truncateOutput output missing truncation marker prefix: %q", got[:min(80, len(got))])
-	}
-	if !strings.HasSuffix(got, "TAIL-MARKER-END") {
-		t.Fatal("truncateOutput dropped the tail of long output instead of keeping the last bytes")
-	}
-	body := strings.TrimPrefix(got, truncatedMarker)
-	if len(body) != maxCapturedOutput {
-		t.Fatalf("truncated body len = %d, want %d", len(body), maxCapturedOutput)
+	for _, in := range []string{short, tiny} {
+		var w boundedWriter
+		if _, err := w.Write([]byte(in)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if got := w.String(); got != in {
+			t.Fatalf("boundedWriter changed output that fits the bound (len %d): %q", len(in), got[:min(80, len(got))])
+		}
 	}
 }
 
 // TestBoundedWriterStaysBoundedDuringWrites asserts boundedWriter never
 // retains more than maxCapturedOutput bytes at any point while writes are
-// still arriving — not just after the fact like truncateOutput — so a
+// still arriving — not just once the process has exited — so a
 // runaway agent that logs megabytes before its timeout can't balloon the
 // in-memory buffer realBuildAndRun captures stdout/stderr into.
 func TestBoundedWriterStaysBoundedDuringWrites(t *testing.T) {
@@ -664,14 +650,14 @@ func TestBoundedWriterStaysBoundedDuringWrites(t *testing.T) {
 	}
 }
 
-// TestBoundedWriterMatchesTruncateOutput asserts boundedWriter's final
-// String() equals truncateOutput applied to the same bytes written in one
-// shot — the incremental, memory-bounded capture path must produce the
-// exact same marker+tail output the existing truncateOutput contract (and
-// its tests) already pin down.
-func TestBoundedWriterMatchesTruncateOutput(t *testing.T) {
+// TestBoundedWriterLongOutputTailWithMarker asserts output over the 8KiB
+// bound, written in several chunks, comes out of String() as the marker
+// followed by exactly its last maxCapturedOutput bytes — this is what caps
+// the FAIL detail block (human renderer) and the --json "output" field, per
+// the design spec's "truncated to a bounded tail".
+func TestBoundedWriterLongOutputTailWithMarker(t *testing.T) {
 	full := strings.Repeat("y", maxCapturedOutput) + "TAIL-MARKER-END"
-	want := truncateOutput(full)
+	want := truncatedMarker + full[len(full)-maxCapturedOutput:]
 
 	var w boundedWriter
 	for _, chunk := range []string{full[:100], full[100:5000], full[5000:]} {
@@ -679,8 +665,18 @@ func TestBoundedWriterMatchesTruncateOutput(t *testing.T) {
 			t.Fatalf("Write: %v", err)
 		}
 	}
-	if got := w.String(); got != want {
-		t.Fatalf("boundedWriter.String() = %q, want %q (from truncateOutput)", got[:min(80, len(got))], want[:min(80, len(want))])
+	got := w.String()
+	if got != want {
+		t.Fatalf("boundedWriter.String() = %q, want %q", got[:min(80, len(got))], want[:min(80, len(want))])
+	}
+	if !strings.HasPrefix(got, truncatedMarker) {
+		t.Fatalf("boundedWriter output missing truncation marker prefix: %q", got[:min(80, len(got))])
+	}
+	if !strings.HasSuffix(got, "TAIL-MARKER-END") {
+		t.Fatal("boundedWriter dropped the tail of long output instead of keeping the last bytes")
+	}
+	if body := strings.TrimPrefix(got, truncatedMarker); len(body) != maxCapturedOutput {
+		t.Fatalf("truncated body len = %d, want %d", len(body), maxCapturedOutput)
 	}
 }
 

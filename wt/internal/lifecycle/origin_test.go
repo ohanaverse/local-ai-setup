@@ -157,7 +157,7 @@ func TestStartProbeAndRouteAgreeOnAProvidersAddress(t *testing.T) {
 			cfg := &config.Config{Providers: []config.Provider{p}, Models: []config.Model{m}}
 			family := localmodels.Family(c.provider)
 
-			if probe, _ := localmodels.FamilyOrigin(cfg, family); probe != c.want {
+			if probe := localmodels.FamilyOrigin(cfg, family); probe != c.want {
 				t.Errorf("probe origin = %q, want %q", probe, c.want)
 			}
 

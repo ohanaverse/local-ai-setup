@@ -252,6 +252,18 @@ func syncedModels(cfg *config.Config, target config.Model) []config.Model {
 	return append(slices.Clone(cfg.Models), target)
 }
 
+// launchEntry is the models.json entry wt writes for a model it launches
+// under id.
+func launchEntry(id string) piModel {
+	return piModel{
+		Launch:        true,
+		ContextWindow: 262144,
+		ID:            id,
+		Input:         []string{"text", "image"},
+		Reasoning:     true,
+	}
+}
+
 // syncLitellmProvider ensures provider "litellm" exists with the configured
 // gateway endpoint and one _launch entry per non-native model in models (the
 // cfg models plus the launch target — see syncedModels — or the target alone
@@ -280,13 +292,7 @@ func syncLitellmProvider(cfg *config.Config, f piModelsFile, models []config.Mod
 		if existing[m.ID] {
 			continue
 		}
-		p.Models = append(p.Models, piModel{
-			Launch:        true,
-			ContextWindow: 262144,
-			ID:            m.ID,
-			Input:         []string{"text", "image"},
-			Reasoning:     true,
-		})
+		p.Models = append(p.Models, launchEntry(m.ID))
 		existing[m.ID] = true
 		mutated = true
 	}
@@ -312,10 +318,7 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 		p.BaseURL = defaultPiOllamaBaseURL
 		// The apiKey was local-ollama or gateway-set; restore pi's placeholder.
 		if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
-			if p.APIKey != defaultPiOllamaAPIKey {
-				p.APIKey = defaultPiOllamaAPIKey
-				mutated = true
-			}
+			p.APIKey = defaultPiOllamaAPIKey
 		}
 		mutated = true
 	}
@@ -491,13 +494,7 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile, synced []config.Mod
 			if existing[m.ModelName] {
 				continue
 			}
-			p.Models = append(p.Models, piModel{
-				Launch:        true,
-				ContextWindow: 262144,
-				ID:            m.ModelName,
-				Input:         []string{"text", "image"},
-				Reasoning:     true,
-			})
+			p.Models = append(p.Models, launchEntry(m.ModelName))
 			existing[m.ModelName] = true
 			mutated = true
 		}

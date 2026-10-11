@@ -198,8 +198,7 @@ func configThemeShowCmd(a *app) *cobra.Command {
 }
 
 // renderThemePreview prints a single theme's tokens with dark/light
-// previews. Used by both configThemeShowCmd and the active-theme display
-// in configThemeCmd.
+// previews.
 func renderThemePreview(cmd *cobra.Command, theme themes.Theme) {
 	out := cmd.OutOrStdout()
 	desc := themeDescription(theme.Name)

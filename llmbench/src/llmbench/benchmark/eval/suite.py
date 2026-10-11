@@ -7,8 +7,8 @@ optional per-row `categories` override; the direct-route config needs no
 `api` protocol discriminator because every eval transport speaks the same
 OpenAI-compatible chat-completions wire format. The suite PARSING stays
 duplicated by design; the credential helpers those routes resolve through
-(LITELLM_PLIST, LIVE_PI_MODELS_PATH, OPENROUTER_BASE_URL, openrouter_key,
-load_live_models) are shared via llmbench.benchmark._routes.
+(LITELLM_PLIST, LIVE_PI_MODELS_PATH, OPENROUTER_BASE_URL, openrouter_key)
+are shared via llmbench.benchmark._routes.
 """
 
 from __future__ import annotations
@@ -17,12 +17,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from llmbench.benchmark._routes import (  # noqa: F401 — re-exports; suite-only consumers patch them here
+from llmbench.benchmark._routes import (
     LITELLM_PLIST,
     LIVE_PI_MODELS_PATH,
     OPENROUTER_BASE_URL,
     litellm_credentials,
-    load_live_models,
     openrouter_key,
 )
 from llmbench.benchmark.errors import BenchmarkError

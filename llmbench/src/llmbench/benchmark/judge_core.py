@@ -256,27 +256,21 @@ class LiteLLMJudgeTransport:
     def complete(self, prompt: str, *, temperature: float) -> str:
         try:
             return self._post(prompt, temperature)
-        except requests.ReadTimeout as exc:
-            if not self.fail_fast_on_read_timeout:
-                time.sleep(self.retry_backoff_s)
-                try:
-                    return self._post(prompt, temperature)
-                except requests.RequestException as retry_exc:
-                    raise JudgeTransportError(
-                        f"judge transport failed after retry: {retry_exc}"
-                    ) from retry_exc
-            # A read timeout already burned the full timeout_s (900s for
-            # row generation); retrying would double the stall on a model
-            # that is likely looping, so generation transports fail fast.
-            raise JudgeTransportError(
-                f"transport timed out after {self.timeout_s}s: {exc}"
-            ) from exc
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            if isinstance(exc, requests.ReadTimeout) and self.fail_fast_on_read_timeout:
+                # A read timeout already burned the full timeout_s (900s for
+                # row generation); retrying would double the stall on a model
+                # that is likely looping, so generation transports fail fast.
+                raise JudgeTransportError(
+                    f"transport timed out after {self.timeout_s}s: {exc}"
+                ) from exc
             time.sleep(self.retry_backoff_s)
             try:
                 return self._post(prompt, temperature)
-            except requests.RequestException as exc:
-                raise JudgeTransportError(f"judge transport failed after retry: {exc}") from exc
+            except requests.RequestException as retry_exc:
+                raise JudgeTransportError(
+                    f"judge transport failed after retry: {retry_exc}"
+                ) from retry_exc
 
     def _post(self, prompt: str, temperature: float) -> str:
         response = requests.post(

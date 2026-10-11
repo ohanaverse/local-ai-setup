@@ -9,7 +9,7 @@ import os
 def env_first(*names: str) -> str | None:
     """The value of the first of `names` that is set and not empty.
 
-    Callers list the LLMBENCH_ name first and the MODELMAN_ name it replaced
+    Callers list the current name first and the MODELMAN_ name it replaced
     second, so the old name keeps working and the new one wins when both are
     set.
     """

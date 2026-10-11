@@ -94,7 +94,7 @@ func omlxPost(ctx context.Context, e *env, target, key string) (code int, detail
 // *KeyRefusedError. A key that was sent and refused gets no fallback: the
 // registry's key is wrong, and that is the user's to fix.
 func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
-	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
+	origin := localmodels.FamilyOrigin(cfg, "omlx")
 	key := localmodels.FamilyAPIKey(cfg, "omlx")
 	id := omlxPoolID(cfg, e, modelName)
 	target := origin + "/v1/models/" + url.PathEscape(id) + "/load"
@@ -145,7 +145,7 @@ func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string)
 // service — and wt takes neither: a model stop never stops the service, since
 // that would take the other loaded models down.
 func omlxUnload(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
-	origin, _ := localmodels.FamilyOrigin(cfg, "omlx")
+	origin := localmodels.FamilyOrigin(cfg, "omlx")
 	key := localmodels.FamilyAPIKey(cfg, "omlx")
 	id := omlxPoolID(cfg, e, modelName)
 	target := origin + "/v1/models/" + url.PathEscape(id) + "/unload"

@@ -39,7 +39,7 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 	if err != nil {
 		return &BinaryMissingError{Binary: "ollama"}
 	}
-	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
+	origin := localmodels.FamilyOrigin(cfg, "ollama")
 	out, runErr := e.runEnv(ctx, []string{"OLLAMA_HOST=" + origin}, bin, "stop", modelName)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -68,7 +68,7 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 }
 
 func (ollamaBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {
-	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
+	origin := localmodels.FamilyOrigin(cfg, "ollama")
 	health := origin + "/api/tags"
 	if responded, _ := e.probe(ctx, health, 2*time.Second); !responded {
 		if err := ctx.Err(); err != nil {

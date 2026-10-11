@@ -21,13 +21,6 @@ const (
 	phaseQuit
 )
 
-type formKind int
-
-const (
-	formNone formKind = iota
-	formAgent
-)
-
 // loadedMsg carries the config after loading.
 type loadedMsg struct {
 	cfg *config.Config
@@ -74,13 +67,11 @@ type model struct {
 
 	// delete state
 	deleteTarget deleteTarget
-	deleteError  string
 
 	// quit state
 	quitting bool // true when waiting for save-before-quit
 
 	// Form state
-	formKind   formKind
 	formIsNew  bool
 	formCursor int
 	formError  string
@@ -207,11 +198,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
-		// Call fitList immediately after setting status to ensure the list
-		// height accounts for any wrapped status (e.g. location error hint).
-		// Without this, the first render after loadedMsg could have the list
-		// at the wrong height if the hint makes status exceed terminal width.
-		m.fitList()
 		return m, nil
 	case modelsLoadedMsg:
 		m.applyModels(msg)
@@ -227,12 +213,10 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "save failed: " + msg.err.Error()
 			m.showQuitSaveFailure()
-			m.fitList()
 			return m, nil
 		}
 		m.dirty = false
 		m.status = "saved"
-		m.fitList()
 		if m.quitting {
 			m.quitting = false
 			return m.leave()
@@ -241,7 +225,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.phase == phaseForm {
-		return m.handleFormUpdate(msg)
+		return m.handleAgentFormUpdate(msg)
 	}
 	if m.phase == phaseDelete {
 		return m.handleDeleteUpdate(msg)
@@ -402,7 +386,7 @@ func (m *model) View() string {
 	}
 	switch m.phase {
 	case phaseForm:
-		return m.formView()
+		return m.agentFormView()
 	case phaseDelete:
 		return m.deleteView()
 	case phaseQuit:
@@ -429,22 +413,6 @@ func (m *model) resizeFormInputs() {
 	m.agName.Width = w
 	m.agProvidersInput.Width = w
 	m.agDefaultProviderInput.Width = w
-}
-
-// formView dispatches to the appropriate form renderer.
-func (m *model) formView() string {
-	if m.formKind == formAgent {
-		return m.agentFormView()
-	}
-	return ""
-}
-
-// handleFormUpdate dispatches to the appropriate form update handler.
-func (m *model) handleFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.formKind == formAgent {
-		return m.handleAgentFormUpdate(msg)
-	}
-	return m, nil
 }
 
 // Run starts the config editor TUI with the config already loaded by the

@@ -21,8 +21,8 @@ func TestRecordAndCounts(t *testing.T) {
 	now = func() time.Time { return fixed }
 	defer func() { now = time.Now }()
 
-	if err := store.Record("ollama/gemma4:9b"); err != nil {
-		t.Fatalf("Record: %v", err)
+	if err := store.RecordFor("", "ollama/gemma4:9b"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
 	}
 
 	got := store.Counts([]string{"ollama/gemma4:9b"})
@@ -98,7 +98,7 @@ func TestCountsIgnoresBadLines(t *testing.T) {
 	defer func() { now = time.Now }()
 
 	_ = os.WriteFile(store.path(), []byte("not json\n"), 0o600)
-	store.Record("a")
+	store.RecordFor("", "a")
 
 	got := store.Counts([]string{"a"})
 	if got["a"].OneDay != 1 {
@@ -118,7 +118,7 @@ func TestCountsMissingFile(t *testing.T) {
 	}
 }
 
-// TestRecordPrunesEventsOlderThanRetentionWindow verifies Record drops
+// TestRecordPrunesEventsOlderThanRetentionWindow verifies RecordFor drops
 // events past the 30-day window on every write, so usage.jsonl stays
 // bounded by launch frequency instead of growing across the lifetime of
 // the install — only the trailing 30-day window is ever read by Counts.
@@ -143,8 +143,8 @@ func TestRecordPrunesEventsOlderThanRetentionWindow(t *testing.T) {
 		t.Fatalf("seed usage file: %v", err)
 	}
 
-	if err := store.Record("new"); err != nil {
-		t.Fatalf("Record: %v", err)
+	if err := store.RecordFor("", "new"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
 	}
 
 	raw, err := os.ReadFile(store.path())
@@ -163,7 +163,7 @@ func TestRecordPrunesEventsOlderThanRetentionWindow(t *testing.T) {
 	}
 }
 
-// TestRecordCreatesDirectory verifies Record creates the config directory if
+// TestRecordCreatesDirectory verifies RecordFor creates the config directory if
 // it does not exist.
 func TestRecordCreatesDirectory(t *testing.T) {
 	dir := t.TempDir()
@@ -172,8 +172,8 @@ func TestRecordCreatesDirectory(t *testing.T) {
 	now = func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }
 	defer func() { now = time.Now }()
 
-	if err := store.Record("x"); err != nil {
-		t.Fatalf("Record: %v", err)
+	if err := store.RecordFor("", "x"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
 	}
 	if _, err := os.Stat(store.path()); err != nil {
 		t.Fatalf("usage file missing: %v", err)
@@ -182,7 +182,7 @@ func TestRecordCreatesDirectory(t *testing.T) {
 
 // TestRecordSerializesConcurrentProcesses verifies the file-lock around the
 // read-prune-write critical section prevents lost writes when N goroutines
-// (in-process stand-in for N concurrent wt processes) call Record at the
+// (in-process stand-in for N concurrent wt processes) call RecordFor at the
 // same time on the same usage.jsonl. Without the lock, two goroutines
 // read the same starting state and each rewrite the file, silently
 // dropping the other's just-recorded event — a regression a user would
@@ -203,13 +203,13 @@ func TestRecordSerializesConcurrentProcesses(t *testing.T) {
 		i := i
 		go func() {
 			defer wg.Done()
-			errs[i] = store.Record("model-" + string(rune('a'+i)))
+			errs[i] = store.RecordFor("", "model-"+string(rune('a'+i)))
 		}()
 	}
 	wg.Wait()
 	for i, err := range errs {
 		if err != nil {
-			t.Fatalf("Record[%d]: %v", i, err)
+			t.Fatalf("RecordFor[%d]: %v", i, err)
 		}
 	}
 
@@ -242,7 +242,7 @@ func TestRecordSerializesConcurrentProcesses(t *testing.T) {
 	}
 }
 
-// TestRecordLockFileCreated verifies Record creates the sidecar lock file
+// TestRecordLockFileCreated verifies RecordFor creates the sidecar lock file
 // in the same directory as usage.jsonl so the advisory flock is attached
 // to the file's location regardless of rename of the target file. The
 // sidecar's presence is what allows an external operator to inspect
@@ -255,8 +255,8 @@ func TestRecordLockFileCreated(t *testing.T) {
 	now = func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }
 	defer func() { now = time.Now }()
 
-	if err := store.Record("x"); err != nil {
-		t.Fatalf("Record: %v", err)
+	if err := store.RecordFor("", "x"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
 	}
 
 	lockPath := filepath.Join(dir, "usage.jsonl.lock")

@@ -12,13 +12,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// legacyPaths returns the paths to the legacy models.conf and state directory.
-func legacyPaths() (modelsConf, stateDir string) {
-	dir := Dir()
-	return filepath.Join(dir, "models.conf"), dir
-}
-
-// parseBashArray extracts the quoted tokens from `NAME=( "a" "b" ... )`.
+// bashArrayRe matches a bash array assignment `NAME=( "a" "b" ... )`,
+// capturing the name and the text between the parentheses.
 var bashArrayRe = regexp.MustCompile(`([A-Z_]+)=\(([^)]*)\)`)
 
 // quotedRe matches a double-quoted token.
@@ -46,14 +41,6 @@ func stripComments(s string) string {
 	return strings.Join(out, "\n")
 }
 
-func parseBashArray(line string) (name string, vals []string) {
-	m := bashArrayRe.FindStringSubmatch(line)
-	if m == nil {
-		return "", nil
-	}
-	return m[1], extractQuoted(m[2])
-}
-
 // Migrate converts a legacy models.conf into the new TOML Config, if the new
 // config does not already exist. Returns whether if performed a migration.
 func Migrate() (bool, error) {
@@ -63,8 +50,7 @@ func Migrate() (bool, error) {
 		return false, err
 	}
 
-	legacyFile, _ := legacyPaths()
-	data, err := os.ReadFile(legacyFile)
+	data, err := os.ReadFile(filepath.Join(Dir(), "models.conf"))
 	if os.IsNotExist(err) {
 		return false, nil // nothing to migrate
 	}
@@ -93,7 +79,7 @@ func Migrate() (bool, error) {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "PROVIDER_OLLAMA_BASE_URL=") {
-			raw := trimQuotes(line[len("PROVIDER_OLLAMA_BASE_URL="):])
+			raw := strings.Trim(line[len("PROVIDER_OLLAMA_BASE_URL="):], `"`)
 			if raw != "" {
 				cfg.Providers[0].Auth.BaseURL = raw
 			}
@@ -310,10 +296,6 @@ func displayName(agent string) string {
 	default:
 		return agent
 	}
-}
-
-func trimQuotes(s string) string {
-	return strings.Trim(s, `"`)
 }
 
 // noNativeAgents lists agents that, after the native-provider alignment, have

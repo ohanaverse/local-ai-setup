@@ -148,9 +148,9 @@ func walk(cfg *config.Config, includeStart bool) []Candidate {
 
 // Eligibility takes ONE live inventory snapshot and walks the same catalog
 // rows the picker and the non-TUI launch path read, returning both the
-// deduped, id-sorted union of eligible models (AllEligibleModels' answer)
-// and, per model id, the sorted list of eligible agents (EligibleAgents'
-// answer). A model is eligible when selecting it would launch: a cloud row,
+// deduped, id-sorted union of models eligible for at least one non-command
+// agent and, per model id, the sorted list of non-command agents eligible to
+// launch it. A model is eligible when selecting it would launch: a cloud row,
 // or a local row the probe reports as running — discovered running rows
 // included, which a -M pin can launch — minus Unmapped cloud rows routed
 // through LiteLLM, which the picker makes unselectable and the CLI refuses.
@@ -158,10 +158,8 @@ func walk(cfg *config.Config, includeStart bool) []Candidate {
 // the rows are the same ones a real launch consults, wt smoke cannot
 // advertise a model a real `wt -A <agent> -M <id>` launch would refuse. It
 // never starts or stops anything itself; `Candidates` plus the caller's start
-// step is how `wt smoke` handles idle local models. wt smoke's command layer calls this
-// once per invocation and derives both answers from the result, instead of
-// calling EligibleAgents and AllEligibleModels back to back, which would
-// each pay their own inventory round.
+// step is how `wt smoke` handles idle local models. Both answers come from
+// the one snapshot, so a caller that needs both pays one inventory round.
 func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[string][]string) {
 	agentsForModel = map[string][]string{}
 	for _, c := range walk(cfg, false) {
@@ -169,24 +167,6 @@ func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[
 		agentsForModel[c.Row.Model.ID] = c.Agents
 	}
 	return models, agentsForModel
-}
-
-// EligibleAgents returns, sorted, every non-command agent currently
-// eligible to launch model m. A thin Eligibility wrapper for callers that
-// only need one model's agent list; callers that also need
-// AllEligibleModels in the same invocation should call Eligibility directly
-// to share one inventory snapshot instead of calling both wrappers.
-func EligibleAgents(cfg *config.Config, m config.Model) []string {
-	_, agentsForModel := Eligibility(cfg)
-	return agentsForModel[m.ID]
-}
-
-// AllEligibleModels returns, sorted by id, the union of every model
-// currently eligible for at least one non-command agent — the candidate
-// list wt smoke's interactive picker offers when no model id is given.
-func AllEligibleModels(cfg *config.Config) []config.Model {
-	models, _ := Eligibility(cfg)
-	return models
 }
 
 // execOutcome is what the buildAndRun seam reports for one row.
@@ -239,8 +219,8 @@ var buildAndRun = realBuildAndRun
 // ProfileApplier is a no-op.
 type ProfileApplier func(cmd *exec.Cmd, oneShotArgs []string) (cleanup func() error, err error)
 
-// notInstalledMessage mirrors agents.Command's exact error text ("agent %s
-// not installed") so RunRow can classify a missing binary as SKIP rather
+// notInstalledMessage mirrors agents.BuildLaunchCmdInfo's exact error text
+// ("agent %s not installed") so RunRow can classify a missing binary as SKIP rather
 // than FAIL. Matches the same substring convention agents-smoke.sh uses.
 func notInstalledMessage(agent string) string {
 	return fmt.Sprintf("agent %s not installed", agent)
@@ -255,22 +235,13 @@ const maxCapturedOutput = 8192 // 8 KiB
 
 const truncatedMarker = "...[truncated, showing last 8KiB]...\n"
 
-// truncateOutput bounds s to its last maxCapturedOutput bytes, prefixing a
-// marker line when truncation actually occurs so a reader knows output was
-// cut. Left unchanged (no marker) when s already fits.
-func truncateOutput(s string) string {
-	if len(s) <= maxCapturedOutput {
-		return s
-	}
-	return truncatedMarker + s[len(s)-maxCapturedOutput:]
-}
-
 // boundedWriter caps the process output held in memory to at most
 // maxCapturedOutput bytes throughout the run, not just once the process
 // exits or times out — a runaway agent (verbose logging, a stuck retry
 // loop) that writes megabytes before the timeout never grows the captured
-// buffer past the bound that's eventually kept anyway. String applies the
-// same tail-keeping + marker convention as truncateOutput.
+// buffer past the bound that's eventually kept anyway. String returns the
+// last maxCapturedOutput bytes written, prefixed with a marker line when
+// anything was cut so a reader knows; output that fits is returned unchanged.
 type boundedWriter struct {
 	tail      []byte
 	truncated bool
@@ -429,18 +400,14 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 		// child, so a surviving descendant can't keep Wait() blocked
 		// forever. Errors are tolerated the same way the direct-child Kill
 		// this replaced already did (the process may already be gone).
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-done
 		return execOutcome{Command: cmdLine, Output: buf.String(), TimedOut: true}
 	case <-ctx.Done():
 		// Ctrl+C: Setpgid keeps the terminal's SIGINT from the agent, so
 		// unless the group is killed here it outlives wt, still running with
 		// permission checks off.
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-done
 		return execOutcome{Command: cmdLine, Output: buf.String(), Interrupted: true}
 	}

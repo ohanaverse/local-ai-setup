@@ -276,12 +276,7 @@ func (d *RegistryDoc) PatchModel(id string, set map[string]any, unset []string) 
 	if err != nil {
 		return err
 	}
-	for key := range set {
-		if key == "id" {
-			return fmt.Errorf("model %q: the id cannot be patched", id)
-		}
-	}
-	if slices.Contains(unset, "id") {
+	if _, ok := set["id"]; ok || slices.Contains(unset, "id") {
 		return fmt.Errorf("model %q: the id cannot be patched", id)
 	}
 	// Patch a copy and swap it in only when every key applied: a patch that

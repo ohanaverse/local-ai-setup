@@ -387,13 +387,14 @@ func TestStartDiscoveredRunningModel(t *testing.T) {
 		t.Fatalf("called = %v out = %q, want already-running no-op", req.called, out.String())
 	}
 	found := false
-	for _, r := range localRows(cfg) {
+	rows, _ := localRowsSnap(cfg)
+	for _, r := range rows {
 		if r.Model.ID == "ollama/d:1" && r.Discovered && r.Running {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("localRows must include the discovered running model")
+		t.Error("localRowsSnap must include the discovered running model")
 	}
 }
 

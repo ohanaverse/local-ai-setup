@@ -18,17 +18,17 @@ func TestLastMissingFile(t *testing.T) {
 	}
 }
 
-// TestRecordAndLastRoundTrip verifies Record writes the model ID and Last
+// TestRecordAndLastRoundTrip verifies RecordFor writes the model ID and Last
 // reads it back.
 func TestRecordAndLastRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
-	if err := r.Record("alpha"); err != nil {
-		t.Fatalf("Record: %v", err)
+	if err := r.RecordFor("", "alpha"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
 	}
 	got, ok := r.Last()
 	if !ok {
-		t.Fatal("Last returned !ok after Record")
+		t.Fatal("Last returned !ok after RecordFor")
 	}
 	if got != "alpha" {
 		t.Errorf("Last = %q, want alpha", got)
@@ -39,8 +39,8 @@ func TestRecordAndLastRoundTrip(t *testing.T) {
 func TestRecordOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
-	_ = r.Record("alpha")
-	_ = r.Record("beta")
+	_ = r.RecordFor("", "alpha")
+	_ = r.RecordFor("", "beta")
 	got, _ := r.Last()
 	if got != "beta" {
 		t.Errorf("Last = %q, want beta", got)
@@ -52,8 +52,8 @@ func TestRecordOverwrites(t *testing.T) {
 func TestRecordWritesSingleLineAnd0600(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
-	if err := r.Record("alpha"); err != nil {
-		t.Fatalf("Record: %v", err)
+	if err := r.RecordFor("", "alpha"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
 	}
 	path := r.statePath()
 	info, err := os.Stat(path)
@@ -67,6 +67,17 @@ func TestRecordWritesSingleLineAnd0600(t *testing.T) {
 	if got := string(data); got != "alpha\n" {
 		t.Errorf("file = %q, want %q", got, "alpha\n")
 	}
+}
+
+// eligibleFor returns the models cfg lists for the claude agent with no tag
+// or family filter: the eligible slice the TestNext* cases rotate over.
+func eligibleFor(t *testing.T, cfg *config.Config) []config.Model {
+	t.Helper()
+	eligible, err := cfg.EligibleModels("claude", "", "")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	return eligible
 }
 
 // TestNextReturnsFirstEligibleWhenEmpty returns the first agent-eligible
@@ -86,15 +97,15 @@ func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
 		},
 	}
 	r := NewAt(t.TempDir())
-	got, ok := r.Next(cfg, "claude", "", "")
+	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
-// TestNextAdvancesAfterLast asserts that rotation.Next picks the
-// model in the global list that follows the model recorded by
-// rotation.Record (the same model returned by rotation.Last).
+// TestNextAdvancesAfterLast asserts that rotation.NextFromEligible picks
+// the model in the global list that follows the model recorded by
+// rotation.RecordFor (the same model returned by rotation.Last).
 // Without this advance, every launch would pick the same model
 // and rotation would be a no-op.
 func TestNextAdvancesAfterLast(t *testing.T) {
@@ -114,10 +125,10 @@ func TestNextAdvancesAfterLast(t *testing.T) {
 	}
 	dir := t.TempDir()
 	r := NewAt(dir)
-	_ = r.Record("claude/sonnet")
-	got, ok := r.Next(cfg, "claude", "", "")
+	_ = r.RecordFor("", "claude/sonnet")
+	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
 	if !ok || got.ID != "claude/opus" {
-		t.Fatalf("Next = %q, %v; want claude/opus, true", got.ID, ok)
+		t.Fatalf("NextFromEligible = %q, %v; want claude/opus, true", got.ID, ok)
 	}
 }
 
@@ -140,10 +151,10 @@ func TestNextWrapsAround(t *testing.T) {
 	}
 	dir := t.TempDir()
 	r := NewAt(dir)
-	_ = r.Record("claude/opus")
-	got, ok := r.Next(cfg, "claude", "", "")
+	_ = r.RecordFor("", "claude/opus")
+	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
@@ -166,10 +177,10 @@ func TestNextSkipsIneligibleModels(t *testing.T) {
 	}
 	dir := t.TempDir()
 	r := NewAt(dir)
-	_ = r.Record("ollama/b")
-	got, ok := r.Next(cfg, "claude", "", "")
+	_ = r.RecordFor("", "ollama/b")
+	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
@@ -185,9 +196,12 @@ func TestNextReturnsFalseWhenNoModels(t *testing.T) {
 		},
 	}
 	r := NewAt(t.TempDir())
-	_, ok := r.Next(cfg, "claude", "", "")
-	if ok {
-		t.Fatal("Next returned ok=true with no eligible models")
+	eligible := eligibleFor(t, cfg)
+	if len(eligible) != 0 {
+		t.Fatalf("eligible = %v, want none", eligible)
+	}
+	if _, ok := r.NextFromEligible(eligible, cfg); ok {
+		t.Fatal("NextFromEligible returned ok=true with no eligible models")
 	}
 }
 
@@ -209,10 +223,10 @@ func TestNextFallsBackToStartWhenLastUnknown(t *testing.T) {
 	}
 	dir := t.TempDir()
 	r := NewAt(dir)
-	_ = r.Record("claude/ghost")
-	got, ok := r.Next(cfg, "claude", "", "")
+	_ = r.RecordFor("", "claude/ghost")
+	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
@@ -265,7 +279,7 @@ func TestMigrationDoesNotOverwriteExistingState(t *testing.T) {
 	_ = os.WriteFile(old, []byte("ollama/old\n"), 0o600)
 
 	r1 := NewAt(dir)
-	_ = r1.Record("ollama/new")
+	_ = r1.RecordFor("", "ollama/new")
 
 	r2 := NewAt(dir)
 	last, _ := r2.Last()
@@ -324,7 +338,7 @@ func TestRotationNextFromEligible(t *testing.T) {
 			{ID: "c"},
 		},
 	}
-	if err := r.Record("a"); err != nil {
+	if err := r.RecordFor("", "a"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -338,9 +352,9 @@ func TestRotationNextFromEligible(t *testing.T) {
 	}
 }
 
-// TestRecordForAttributesUsageToAgent verifies RecordFor writes the same
-// rotation state as Record and also records a usage event tagged with the
-// agent, so launch history is attributable to an agent-model pair.
+// TestRecordForAttributesUsageToAgent verifies RecordFor writes the
+// rotation state and also records a usage event tagged with the agent, so
+// launch history is attributable to an agent-model pair.
 func TestRecordForAttributesUsageToAgent(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)

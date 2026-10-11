@@ -155,7 +155,7 @@ func Inventory(cfg *config.Config) Snapshot {
 }
 
 // familyIDs is the ONE table of probe families and the registry provider ids
-// that belong to each; familyOf, Families and familyProviderIDs are all
+// that belong to each; Family, Families and familyProviderIDs are all
 // derived from it, so a new family (or a second provider id sharing one, as
 // omlx-6bit shares omlx's single server) is added in exactly one place and can
 // never be visible to one accessor and not another.
@@ -166,10 +166,10 @@ var familyIDs = map[string][]string{
 	"omlx":          {"omlx", "omlx-6bit"},
 }
 
-// familyOf maps a registry provider id to its probe family; "" when wt has no
+// Family maps a registry provider id to its probe family; "" when wt has no
 // probe for it (e.g. retired llamacpp). omlx and omlx-6bit are ONE physical
 // server, so they share the "omlx" family.
-func familyOf(providerID string) string {
+func Family(providerID string) string {
 	for family, ids := range familyIDs {
 		for _, id := range ids {
 			if id == providerID {
@@ -190,10 +190,6 @@ func Families() []string {
 	return out
 }
 
-// Family maps a registry provider id to its probe family ("omlx-6bit" shares
-// "omlx"); "" when wt has no probe for it.
-func Family(providerID string) string { return familyOf(providerID) }
-
 // RunningOnly reports whether a provider's family is probed for running state
 // only: wt can never enumerate what it has on disk, so a stopped model of that
 // family is indistinguishable from one that does not exist. True only for
@@ -201,7 +197,7 @@ func Family(providerID string) string { return familyOf(providerID) }
 // not reconstructable). It is the one place that names such a family —
 // knowsArtifacts and internal/catalog's row rules both ask it, so adding a
 // second running-only family is an edit here alone.
-func RunningOnly(providerID string) bool { return familyOf(providerID) == "mlx_lm_server" }
+func RunningOnly(providerID string) bool { return Family(providerID) == "mlx_lm_server" }
 
 // RoutesFollowArtifact reports whether a family's LiteLLM routes follow
 // artifact presence rather than running state. True only for ollama: it
@@ -324,13 +320,6 @@ func (s *source) isLoading(name string) bool {
 	return ok && m.Loading && !m.Loaded
 }
 
-// familyOrigin is the probe origin for a family: the first registry provider
-// row of the family with an auth.base_url, else the default port.
-func familyOrigin(cfg *config.Config, family string) string {
-	o, _ := FamilyOrigin(cfg, family)
-	return o
-}
-
 // familyProviderIDs lists the registry provider ids that belong to a family.
 func familyProviderIDs(family string) []string { return familyIDs[family] }
 
@@ -357,15 +346,15 @@ func familyProviderID(cfg *config.Config, family string) string {
 	return family
 }
 
-// FamilyOrigin is the probe origin for a family and whether it came from the
-// registry (the first provider row of the family with an auth.base_url) rather
-// than the default port. The inventory probe and internal/lifecycle's
-// start/stop flows both resolve origins through it, so they always describe
-// the same server. The registry's value is read through config.Provider.Origin,
+// FamilyOrigin is the probe origin for a family: the first registry provider
+// row of the family with an auth.base_url, else the default port. The
+// inventory probe and internal/lifecycle's start/stop flows both resolve
+// origins through it, so they always describe the same server. The
+// registry's value is read through config.Provider.Origin,
 // as a route's api_base and a direct route are: for an mtplx base_url with no
 // port on this machine that is the port `wt start` serves it on, not port 80
 // (#348).
-func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistry bool) {
+func FamilyOrigin(cfg *config.Config, family string) string {
 	def := ""
 	switch family {
 	case "ollama":
@@ -379,10 +368,10 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 	}
 	for _, id := range familyProviderIDs(family) {
 		if p := cfg.ProviderByID(id); p != nil && p.Auth.BaseURL != "" {
-			return p.Origin(), true
+			return p.Origin()
 		}
 	}
-	return def, false
+	return def
 }
 
 // FamilyOriginPort is FamilyOrigin with the URL's port resolved, for callers
@@ -396,7 +385,7 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 // a start refuses, and wt hands the other families no port, so one added
 // here would be an address nothing else reads.
 func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
-	origin, _ := FamilyOrigin(cfg, family)
+	origin := FamilyOrigin(cfg, family)
 	u, err := url.Parse(origin)
 	if err != nil {
 		return "", 0, fmt.Errorf("origin %q: %w", origin, err)
@@ -418,7 +407,7 @@ func refused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }
 
 func probeFamily(cfg *config.Config, client *http.Client, family string) *source {
 	s := &source{family: family, status: StatusOK}
-	origin := familyOrigin(cfg, family)
+	origin := FamilyOrigin(cfg, family)
 	switch family {
 	case "ollama":
 		models, err := ollamaModels(context.Background(), client, origin+"/api/tags")
@@ -513,7 +502,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 	var families []string
 	seen := map[string]bool{}
 	for _, p := range cfg.Providers {
-		f := familyOf(p.ID)
+		f := Family(p.ID)
 		if f == "" || p.Location != config.LocationLocal || seen[f] {
 			continue
 		}
@@ -527,7 +516,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
 			continue
 		}
-		f := familyOf(m.ProviderID)
+		f := Family(m.ProviderID)
 		if f == "" {
 			continue
 		}
@@ -577,7 +566,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 			continue
 		}
 		e := Entry{ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName, Registered: true}
-		if src := sources[familyOf(m.ProviderID)]; src != nil {
+		if src := sources[Family(m.ProviderID)]; src != nil {
 			e.ArtifactKnown = src.knowsArtifacts()
 			for _, a := range src.artifacts {
 				key := src.family + "\x00" + a
@@ -613,7 +602,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		src.registered >= 2 {
 		matched := false
 		for _, e := range snap.Entries {
-			if e.Running && familyOf(e.ProviderID) == "mlx_lm_server" {
+			if e.Running && Family(e.ProviderID) == "mlx_lm_server" {
 				matched = true
 				break
 			}

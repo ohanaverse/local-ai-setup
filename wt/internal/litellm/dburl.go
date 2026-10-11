@@ -32,9 +32,9 @@ const proxyDatabaseEnv = "DATABASE_URL"
 // `general_settings: *base`, `database_url: *conn` — to the node the anchor
 // holds, as LiteLLM's own YAML loader resolves one before reading it. An
 // unresolved alias is not "the value is not a string": it is the value the
-// anchor holds. The same rule ollamaServeWarnings states and applies for the
-// rows it scans (configfile.go). The chase is bounded but not recursive: an
-// anchor may name an anchor, and a self-referential one must not loop.
+// anchor holds. ollamaServeWarnings resolves the rows it scans with it too
+// (configfile.go). The chase is bounded but not recursive: an anchor may name
+// an anchor, and a self-referential one must not loop.
 func aliasValue(n *yaml.Node) *yaml.Node {
 	for i := 0; i < 32; i++ {
 		if n == nil || n.Kind != yaml.AliasNode || n.Alias == nil {

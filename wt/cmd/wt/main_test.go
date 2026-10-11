@@ -979,23 +979,23 @@ func TestRunLaunchPath(t *testing.T) {
 	}
 }
 
-// TestResolveModelForLaunchCloudOnlyResolves verifies the auto-launch
-// short-circuit still fires for a cloud-only config, so `wt -A claude` with
-// one eligible model launches without a picker. The old drifted-marker test
-// this replaces asserted gate semantics that no longer exist.
-func TestResolveModelForLaunchCloudOnlyResolves(t *testing.T) {
+// TestResolveModelCloudOnlyResolves verifies resolveModel returns the one
+// eligible model of a cloud-only config with a nil error, which is the
+// condition runLaunchPath's auto-launch short-circuit tests, so
+// `wt -A claude` with one eligible model launches without a picker.
+func TestResolveModelCloudOnlyResolves(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
 		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
 	}
 
-	resolved, m, _, err := resolveModelForLaunch("claude", cfg, "", "", "")
+	m, _, err := resolveModel("claude", cfg, "", "", "")
 	if err != nil {
-		t.Fatalf("resolveModelForLaunch error = %v, want nil", err)
+		t.Fatalf("resolveModel error = %v, want nil", err)
 	}
-	if !resolved || m.ID != "claude/opus" {
-		t.Errorf("resolveModelForLaunch() = (resolved=%v, m=%v), want (true, claude/opus)", resolved, m)
+	if m.ID != "claude/opus" {
+		t.Errorf("resolveModel() = %v, want claude/opus", m)
 	}
 }
 

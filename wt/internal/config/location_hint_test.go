@@ -33,7 +33,7 @@ func TestRegistryFixHint(t *testing.T) {
 	}
 }
 
-// TestRegistryFixHint_ExpandHomeFailure tests the case where expandHome fails
+// TestRegistryFixHint_ExpandHomeFailure tests the case where ExpandHome fails
 // (e.g., HOME is unset). When this happens, RegistryPath writes to stderr and
 // falls back to the literal path. The hint should still show the literal path
 // so the user sees something actionable, even if it's not fully expanded.
@@ -48,7 +48,7 @@ func TestRegistryFixHint_ExpandHomeFailure(t *testing.T) {
 		t.Fatalf("fixture error = %v, want a location error", err)
 	}
 
-	// The hint should contain the literal path since expandHome fails
+	// The hint should contain the literal path since ExpandHome fails
 	hint := RegistryFixHint(err)
 	if !strings.Contains(hint, "~/custom/registry.toml") {
 		t.Errorf("hint = %q should contain literal tilde path when HOME is unset", hint)

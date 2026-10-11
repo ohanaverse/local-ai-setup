@@ -66,7 +66,7 @@ func OllamaCapabilities(cfg *config.Config, name string) (map[string]any, error)
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	host, _ := localmodels.FamilyOrigin(cfg, "ollama")
+	host := localmodels.FamilyOrigin(cfg, "ollama")
 	ctx, cancel := context.WithTimeout(context.Background(), ollamaShowTimeout)
 	defer cancel()
 	out, err := runOllamaShow(ctx, host, name)

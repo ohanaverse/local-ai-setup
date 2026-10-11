@@ -1212,9 +1212,6 @@ func TestDirectRouteWhenProtocolsOverlap(t *testing.T) {
 // their provider endpoints directly.
 func TestLitellmDirectByDefault(t *testing.T) {
 	cfg := &Config{}
-	if !cfg.IsDirect() {
-		t.Fatalf("expected default routing mode to be direct")
-	}
 	if cfg.IsLitellm() {
 		t.Fatalf("expected default routing mode not to be litellm")
 	}

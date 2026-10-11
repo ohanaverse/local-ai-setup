@@ -26,7 +26,7 @@ func (mtplxBackend) tenancy() Tenancy { return Exclusive }
 func mtplxStartEndpoint(cfg *config.Config) (origin, modelsURL string, port int, err error) {
 	origin, port, err = localmodels.FamilyOriginPort(cfg, "mtplx")
 	if err != nil {
-		asRead, _ := localmodels.FamilyOrigin(cfg, "mtplx")
+		asRead := localmodels.FamilyOrigin(cfg, "mtplx")
 		return "", "", 0, &MtplxAddressError{Origin: asRead}
 	}
 	return origin, origin + "/v1/models", port, nil

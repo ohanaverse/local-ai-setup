@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ._env import env_first
+
 # The local providers the benchmarks can isolate and run against.
 DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx", "mlx_lm_server", "mtplx")
 
@@ -100,21 +102,12 @@ def is_model_local(
 _REGISTRY_ENV_NAMES = ("WT_REGISTRY", "MODELMAN_REGISTRY")
 
 
-def _registry_override() -> str | None:
-    """The registry path the environment names outright, or None."""
-    for name in _REGISTRY_ENV_NAMES:
-        value = os.environ.get(name)
-        if value:
-            return value
-    return None
-
-
 def registry_path() -> Path:
     """Where the registry lives: WT_REGISTRY > MODELMAN_REGISTRY >
     XDG_CONFIG_HOME > ~/.config.
 
     The same precedence as wt's config.RegistryPath."""
-    override = _registry_override()
+    override = env_first(*_REGISTRY_ENV_NAMES)
     if override:
         return Path(override).expanduser()
     base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"

@@ -123,9 +123,6 @@ def _run_discover(root: Path, tests_dir: str) -> tuple[int, int, int] | None:
     return counts["total"], counts["failures"], counts["errors"]
 
 
-SHORT_CIRCUIT_CODES = {"AGENT_ERROR", "TIMEOUT", "NO_DIFF", "BROKEN_BUILD", "TAMPERED_TESTS"}
-
-
 @dataclass
 class TestOutcome:
     name: str
@@ -144,8 +141,6 @@ def run_test_file(root: Path, module_name: str) -> list[TestOutcome]:
     valid JSON) is reported as a failing outcome, not an exception — a hidden
     test file that throws on import is a real result the row should see, not a
     harness bug."""
-    import subprocess
-
     script = (
         "import io, json, sys, time, unittest\n"
         "class RecordedResult(unittest.TextTestResult):\n"
@@ -370,15 +365,12 @@ def evaluate(
         for p in workspace.modified_or_deleted_since_baseline()
         if p.relative_to(workspace.root).parts[: len(tests_dir_parts)] == tests_dir_parts
     ]
-    if not tampered:
-        add(6, True)
-    else:
-        add(
-            6,
-            False,
-            "TAMPERED_TESTS",
-            ", ".join(str(p.relative_to(workspace.root)) for p in tampered),
-        )
+    if not add(
+        6,
+        not tampered,
+        "TAMPERED_TESTS",
+        ", ".join(str(p.relative_to(workspace.root)) for p in tampered),
+    ):
         return finish("TAMPERED_TESTS", 6)
 
     # Gate 7: has a regression test (a new file in the tests dir).
@@ -388,21 +380,14 @@ def evaluate(
         if p.relative_to(workspace.root).parts[: len(tests_dir_parts)] == tests_dir_parts
         and p.name.startswith("test_")
     ]
-    if new_tests:
-        add(7, True)
-    else:
-        add(7, False, "NO_REGRESSION_TEST")
+    add(7, bool(new_tests), "NO_REGRESSION_TEST")
 
     # Gate 8: the regression test must not be vacuous. Only meaningful when a
     # new test file exists at all — otherwise there is nothing to check and the
     # gate is skipped, not passed.
     if new_tests:
         gate8_results = _detect_and_evaluate_gate8(workspace, task, new_tests)
-        vacuous = any(o.passed for o in gate8_results)
-        if vacuous:
-            add(8, False, "VACUOUS_TEST")
-        else:
-            add(8, True)
+        add(8, not any(o.passed for o in gate8_results), "VACUOUS_TEST")
         report.results[
             -1
         ].detail = f"{len(new_tests)} new test file(s) checked against the baseline"

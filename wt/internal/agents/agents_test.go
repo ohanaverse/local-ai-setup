@@ -159,7 +159,7 @@ func TestClaude(t *testing.T) {
 	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
 		t.Errorf("cloud args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
 	}
-	if !hasEnv(lc.Env, "ANTHROPIC_BASE_URL=http://localhost:11434") {
+	if !slices.Contains(lc.Env, "ANTHROPIC_BASE_URL=http://localhost:11434") {
 		t.Errorf("cloud env missing gateway: %v", lc.Env)
 	}
 
@@ -231,13 +231,13 @@ func TestCopilot(t *testing.T) {
 	if len(lc.Args) != 0 {
 		t.Errorf("copilot should not pass --model, got args %v", lc.Args)
 	}
-	if !hasEnv(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
+	if !slices.Contains(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
 		t.Errorf("env missing COPILOT_MODEL: %v", lc.Env)
 	}
-	if !hasEnv(lc.Env, "COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1") {
+	if !slices.Contains(lc.Env, "COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1") {
 		t.Errorf("env missing base url: %v", lc.Env)
 	}
-	if !hasEnv(lc.Env, "COPILOT_PROVIDER_WIRE_API=completions") {
+	if !slices.Contains(lc.Env, "COPILOT_PROVIDER_WIRE_API=completions") {
 		t.Errorf("env missing wire api: %v", lc.Env)
 	}
 	if len(d.Build(nativeModel("copilot"), false, directRoute(nativeModel("copilot"))).Env) != 0 {
@@ -428,7 +428,7 @@ func TestInstalled(t *testing.T) {
 	}
 }
 
-// Command builds an exec.Cmd with the correct binary, args, working
+// command builds an exec.Cmd with the correct binary, args, working
 // directory, and merged environment. This is the final step before the
 // tool replaces itself with the agent process.
 func TestCommand(t *testing.T) {
@@ -436,7 +436,7 @@ func TestCommand(t *testing.T) {
 	m := cloudModel("test-model")
 	workdir := "/tmp"
 
-	cmd, err := Command(d, m, false, directRoute(m), workdir)
+	cmd, _, err := command(d, m, false, directRoute(m), workdir)
 	if err != nil {
 		// pi may not be installed; that's fine, just verify the error is clear.
 		if !strings.Contains(err.Error(), "not installed") {
@@ -453,7 +453,7 @@ func TestCommand(t *testing.T) {
 	}
 }
 
-// Command must strip LaunchCmd.ClearEnv names from the inherited environment
+// command must strip LaunchCmd.ClearEnv names from the inherited environment
 // before launching. This is how native launches avoid inheriting the ollama
 // gateway vars (ANTHROPIC_BASE_URL etc.) from a parent shell that has them
 // exported — without it, a native claude launch would silently route to the
@@ -462,9 +462,9 @@ func TestCommandClearsInheritedEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "http://localhost:11434")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ollama")
 
-	cmd, err := Command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
+	cmd, _, err := command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
 	if err != nil {
-		t.Fatalf("Command: %v", err)
+		t.Fatalf("command: %v", err)
 	}
 	if hasEnvKey(cmd.Env, "ANTHROPIC_BASE_URL") {
 		t.Errorf("cmd.Env still contains ANTHROPIC_BASE_URL: %v", cmd.Env)
@@ -528,15 +528,6 @@ func (regularTestDriver) Build(_ config.Model, _ bool, _ Route) LaunchCmd {
 }
 func (regularTestDriver) YoloFlag() string { return "" }
 
-func hasEnv(env []string, want string) bool {
-	for _, e := range env {
-		if e == want {
-			return true
-		}
-	}
-	return false
-}
-
 // hasEnvKey reports whether env contains an entry for key (KEY=...).
 func hasEnvKey(env []string, key string) bool {
 	prefix := key + "="
@@ -549,7 +540,7 @@ func hasEnvKey(env []string, key string) bool {
 }
 
 // clearEnvDriver is a test-only Driver that clears two env vars, used to
-// verify Command strips them from the inherited environment.
+// verify command strips them from the inherited environment.
 type clearEnvDriver struct{}
 
 func (clearEnvDriver) Build(_ config.Model, _ bool, _ Route) LaunchCmd {
@@ -558,7 +549,7 @@ func (clearEnvDriver) Build(_ config.Model, _ bool, _ Route) LaunchCmd {
 func (clearEnvDriver) YoloFlag() string { return "" }
 
 // warnDriver is a test-only Driver whose Build returns a fixed warning, used
-// to verify Command surfaces it on stderr.
+// to verify command surfaces it on stderr.
 type warnDriver struct{}
 
 func (warnDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
@@ -566,7 +557,7 @@ func (warnDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 }
 func (warnDriver) YoloFlag() string { return "" }
 
-// Command must print a non-empty LaunchCmd.Warn to stderr before returning the
+// command must print a non-empty LaunchCmd.Warn to stderr before returning the
 // command. This is how the pi driver tells the user it fell back to pi's
 // default model; if the warning is swallowed, the user silently gets a
 // different model than they selected.
@@ -577,11 +568,11 @@ func TestCommandPrintsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stderr = w
-	_, cmdErr := Command(warnDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
+	_, _, cmdErr := command(warnDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
 	w.Close()
 	os.Stderr = old
 	if cmdErr != nil {
-		t.Fatalf("Command: %v", cmdErr)
+		t.Fatalf("command: %v", cmdErr)
 	}
 	out, _ := io.ReadAll(r)
 	if !strings.Contains(string(out), "test warning") {
@@ -671,7 +662,7 @@ func TestCopilotOllamaPrefix(t *testing.T) {
 		t.Fatal("copilot driver not registered")
 	}
 	lc := d.Build(ollamaPrefixedModel(), false, directRoute(ollamaPrefixedModel()))
-	if !hasEnv(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
+	if !slices.Contains(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
 		t.Errorf("COPILOT_MODEL missing or wrong; env = %v", lc.Env)
 	}
 	for _, e := range lc.Env {
@@ -926,7 +917,7 @@ func TestIssueFor(t *testing.T) {
 // the caller's directory instead of the worktree it was launched in.
 func TestCommandSetsPWDToTheWorkdir(t *testing.T) {
 	t.Setenv("PWD", "/stale/caller")
-	cmd, err := Command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/work/tree")
+	cmd, _, err := command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/work/tree")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -181,15 +180,7 @@ func promptReplace(question string) (bool, error) {
 // a refusal. It is the parse half of promptReplace, split out so tests can
 // drive it without a terminal.
 func askYesNo(r io.Reader) (bool, error) {
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && line == "" {
-		return false, nil
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true, nil
-	}
-	return false, nil
+	return askYesNoDefault(r, false)
 }
 
 // startProgress returns the engine's Progress callback: one timestamped stderr

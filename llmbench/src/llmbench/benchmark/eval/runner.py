@@ -61,15 +61,6 @@ class RowRunResult:
     error: str | None = None
 
 
-def _row_index(row: RowConfig) -> int:
-    """The row's 1-based SUITE position (stashed on the RowConfig when the
-    suite was loaded/selected) — the stable identity a row's directory is
-    numbered by, independent of execution order (rows execute sorted by
-    (provider, model) for isolation grouping, which on any multi-provider
-    suite differs from suite order)."""
-    return row.suite_index
-
-
 # Local reasoning/planning generations can run well past the judge default.
 GENERATION_TIMEOUT_S = 900
 
@@ -165,7 +156,7 @@ def _row_isolation_spec(
 
 def select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[RowConfig]:
     # Stash each row's 1-based SUITE position on the RowConfig so run_suite
-    # can number its row directories by it (see _row_index): rows execute
+    # can number its row directories by it (see RowConfig.suite_index): rows execute
     # sorted by (provider, model) for isolation grouping, so on any
     # multi-provider suite the execution order differs from suite order —
     # numbering dirs by suite position is what makes `judge --row N` resolve
@@ -460,7 +451,7 @@ def run_suite(
                 except BenchmarkError as exc:
                     results.append(
                         RowRunResult(
-                            row=row, row_dir=_row_dir(run_dir, _row_index(row), row), error=str(exc)
+                            row=row, row_dir=_row_dir(run_dir, row.suite_index, row), error=str(exc)
                         )
                     )
                     continue
@@ -492,14 +483,14 @@ def run_suite(
                         results.append(
                             RowRunResult(
                                 row=row,
-                                row_dir=_row_dir(run_dir, _row_index(row), row),
+                                row_dir=_row_dir(run_dir, row.suite_index, row),
                                 error=str(exc2),
                             )
                         )
                         continue
                     prev_spec = spec
 
-                row_dir = _row_dir(run_dir, _row_index(row), row)
+                row_dir = _row_dir(run_dir, row.suite_index, row)
                 try:
                     category_results = _run_row(row, categories, suite, registry)
                     results.append(
@@ -729,6 +720,9 @@ def _reconstruct_category_result(
         if not response_path.is_file():
             continue
         response_text = response_path.read_text(encoding="utf-8")
+        unjudged = judged_runner.ItemResult(
+            item_id=item_dir.name, response_text=response_text, judge=None, score_100=None
+        )
         # An item directory with response.txt but no judge.json is an
         # UNJUDGED item — a run whose judge phase was interrupted (see
         # run_suite's pre-judge snapshot) or an item whose judge.json was
@@ -736,20 +730,13 @@ def _reconstruct_category_result(
         # shows UNJUDGED rather than the row vanishing; rejudge_run will
         # score it from the response on this same pass.
         if not judge_path.is_file():
-            item_results.append(
-                judged_runner.ItemResult(
-                    item_id=item_dir.name, response_text=response_text, judge=None, score_100=None
-                )
-            )
+            item_results.append(unjudged)
             continue
         # An unreadable or reshaped judge.json keeps its item as UNJUDGED
         # (judge=None) instead of dropping it: dropping would let the
         # category mean silently exclude it and show a clean score, whereas
         # UNJUDGED surfaces in summary.md and rejudge_run re-scores it from
         # the response on the next pass.
-        unjudged = judged_runner.ItemResult(
-            item_id=item_dir.name, response_text=response_text, judge=None, score_100=None
-        )
         judge_data = _load_json_artifact(judge_path)
         if judge_data is None:
             item_results.append(unjudged)

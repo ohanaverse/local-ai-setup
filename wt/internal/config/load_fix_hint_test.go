@@ -187,12 +187,12 @@ func wrapNonNil(err error) error {
 	return fmt.Errorf("config error: %w", err)
 }
 
-// TestRegistryFixHintFromAny pins the behavior of checking every error in a
-// joined error for a registry problem, returning the first hint found. This
-// ensures the correct repair location is shown even when a config.toml error
-// appears first in the join (e.g., empty default_tag + missing model_name
-// both present).
-func TestRegistryFixHintFromAny(t *testing.T) {
+// TestRegistryFixHint_JoinedErrors pins that RegistryFixHint finds a registry
+// problem anywhere in a joined error (as ValidateAll returns), wrapped or
+// not. This ensures the correct repair location is shown even when a
+// config.toml error appears first in the join (e.g., empty default_tag +
+// missing model_name both present).
+func TestRegistryFixHint_JoinedErrors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	registry := filepath.Join(home, "local-ai", "registry.toml")
@@ -235,9 +235,9 @@ func TestRegistryFixHintFromAny(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := RegistryFixHintFromAny(c.err)
+			got := RegistryFixHint(c.err)
 			if got != c.want {
-				t.Errorf("RegistryFixHintFromAny(%v) = %q, want %q", c.err, got, c.want)
+				t.Errorf("RegistryFixHint(%v) = %q, want %q", c.err, got, c.want)
 			}
 		})
 	}

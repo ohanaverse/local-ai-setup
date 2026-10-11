@@ -24,10 +24,6 @@ func (s *mockStore) Counts(ids []string) map[string]usage.UsageCounts {
 	return res
 }
 
-func (s *mockStore) Record(modelID string) error {
-	return nil
-}
-
 func (s *mockStore) RecordFor(agent, modelID string) error { return nil }
 
 func (s *mockStore) CountsForAgent(agent string, ids []string) map[string]usage.UsageCounts {

@@ -1,19 +1,6 @@
-"""MTPLX backend — moved from `lifecycle/__init__.py`, which held mtplx's
-original, unmoved Python implementation from before this port began (the
-ONE backend already native in Python, unlike ollama/omlx/mlx_lm_server,
-which were ported from bash by earlier tasks in this series).
-
-This move also wires mtplx onto the shared `probe.py`/`pidproc.py`
-primitives instead of the private helpers `__init__.py` used to carry
-(`_wait_for_port_closed`, `_wait_for_model`, `_serving_model`, `_warmup`,
-`_start_mtplx_serve`, `_log_tail`) — those primitives were generalized FROM
-this exact mtplx code by an earlier task, without wiring `__init__.py` to
-use them yet. This module closes that gap.
-
-One deliberate behavior change versus today's `_stop_mtplx`: `stop_and_wait`
-now polls for the port to actually close and reports a warning if it
-doesn't, instead of unconditionally reporting success once the `mtplx
-stop` subprocess exits 0. See `stop_and_wait`'s docstring.
+"""MTPLX backend: one model per `mtplx serve` process on port 8003, a plain
+backgrounded subprocess tracked by a pidfile (never a LaunchAgent), built on
+the shared `probe.py`/`pidproc.py` primitives.
 """
 
 from __future__ import annotations
@@ -127,21 +114,13 @@ class MtplxBackend(PidfileTrackedBackend):
 
     def warm(self, plan: StartPlan) -> None:
         # mtplx's warmup uses a shorter timeout (120s) than the base
-        # class's default probe.WARMUP_TIMEOUT (300s) — preserved
-        # unchanged from today's _warmup.
+        # class's default probe.WARMUP_TIMEOUT.
         probe.warmup(self.chat_url, plan.model, health_url=self.health_url, timeout=120.0)
 
     def stop_and_wait(self) -> str | None:
         """Stop MTPLX via `mtplx stop --port 8003 --grace-seconds 10`, then
-        confirm the port actually closed.
-
-        Bug fix versus today's `_stop_mtplx`: today's code returns success
-        as soon as the `mtplx stop` subprocess exits 0, with no check that
-        port 8003 actually stopped answering — bash's `stop mtplx` case arm
-        never captured a warning either, so a stop that reported success
-        while mtplx kept the port bound went completely unnoticed. This now
-        polls `probe.port_closed_within` and reports a warning if the port
-        is still open.
+        confirm the port actually closed: poll `probe.port_closed_within`
+        and report a warning if the port is still open.
 
         The port check runs regardless of `mtplx stop`'s exit code, not
         only after a clean exit — `mtplx stop` itself exits non-zero
