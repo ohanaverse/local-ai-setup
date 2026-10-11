@@ -64,12 +64,12 @@ func containsFold(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
 
-// TestOccupantRules verifies who a start would replace: nobody for ollama
+// TestEvictionsRules verifies who a start would replace: nobody for ollama
 // (multi-tenant), a running model on the same single-model domain otherwise —
 // with omlx and omlx-6bit sharing one domain — never the target itself and
 // never a model that is not running. Getting this wrong either silently kills
 // a model the user was using or skips a confirmation that was needed.
-func TestOccupantRules(t *testing.T) {
+func TestEvictionsRules(t *testing.T) {
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{
 		running("ollama", "ollama/a", "a:1b"),
 		running("omlx-6bit", "omlx-6bit/six", "org/Six-6bit"),
@@ -209,7 +209,7 @@ func TestTypedErrorMessages(t *testing.T) {
 	}
 }
 
-// TestOccupantDerivesSingleModelFromBackendRegistry verifies Evictions'
+// TestEvictionsDeriveSingleModelFromBackendRegistry verifies Evictions'
 // single-model rule comes from the same registry defaultEnv builds, for every
 // registered family. The map comparison is the structural half: it pins the
 // registry's *contents* — which family maps to which backend — against an
@@ -228,7 +228,7 @@ func TestTypedErrorMessages(t *testing.T) {
 // a non-comparable field (a slice, map or func) would make this guard panic
 // rather than fail. All three backends are empty structs today, so it is safe;
 // a new backend must stay comparable for this guard to work.
-func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
+func TestEvictionsDeriveSingleModelFromBackendRegistry(t *testing.T) {
 	if !maps.Equal(defaultEnv().backends, map[string]backend{
 		"ollama": ollamaBackend{},
 		"omlx":   omlxBackend{},
@@ -248,7 +248,7 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 	}
 }
 
-// TestOccupantUnregisteredFamilyHasNoOccupant verifies Evictions reports no
+// TestUnregisteredFamilyHasNoEvictions verifies Evictions reports no
 // occupant for a family wt has no backend for, even when the snapshot carries a
 // running model of that very family that would otherwise be the target's
 // occupant. This is the arm that keeps a provider wt cannot start from reporting
@@ -257,7 +257,7 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 // entry: start would return *UnsupportedError, so there is nothing wt could
 // replace. Do not "fix" that with a backend entry — the picker would then offer
 // a start wt cannot perform.
-func TestOccupantUnregisteredFamilyHasNoOccupant(t *testing.T) {
+func TestUnregisteredFamilyHasNoEvictions(t *testing.T) {
 	for _, id := range []string{"ghost", "mlx_lm_server"} {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{
 			running("omlx", "omlx/other", "other"),  // an unrelated family
@@ -452,10 +452,10 @@ func TestStartReprobesAServerTheSnapshotSawDown(t *testing.T) {
 	}
 }
 
-// TestOccupantIgnoresUntrustworthySnapshot verifies Evictions does not claim
+// TestEvictionsIgnoreAnUntrustworthySnapshot verifies Evictions does not claim
 // "no occupant" from a probe it knows failed. Its contract is that the caller
 // may act on a false result, so it must not answer from untrustworthy data.
-func TestOccupantIgnoresUntrustworthySnapshot(t *testing.T) {
+func TestEvictionsIgnoreAnUntrustworthySnapshot(t *testing.T) {
 	snap := localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial},
 		Entries:   []localmodels.Entry{running("omlx", "omlx/a", "a")},
