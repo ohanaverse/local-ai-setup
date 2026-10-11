@@ -249,7 +249,7 @@ func TestResolveSmokeModelNoneEligible(t *testing.T) {
 }
 
 // TestResolveSmokeModelInteractivePicksViaTUI asserts that omitting the
-// model id on a TTY delegates to the shared tui.PickModel picker (the same
+// model id on a TTY delegates to the shared tui.PickStartModel picker (the same
 // decorated list the wt agent flow uses) rather than a bare numbered
 // prompt, and resolves to whatever model the picker returns.
 func TestResolveSmokeModelInteractivePicksViaTUI(t *testing.T) {

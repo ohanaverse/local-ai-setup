@@ -38,7 +38,7 @@ var smokeExit = os.Exit
 // pickModelTUI is a test seam wrapping tui.PickStartModel: production dials the
 // real TUI, which needs a TTY; tests stub it to avoid one. The route-skipping
 // picker is deliberate — smoke.Candidates already applied each agent's own
-// route rules, and the agent-less route check in tui.PickModel could block a
+// route rules, and the agent-less route check the picker otherwise runs could block a
 // row that an agent's forced-through-LiteLLM route accepts.
 var pickModelTUI = tui.PickStartModel
 
@@ -337,7 +337,7 @@ func (t smokeTarget) Start() bool { return t.Row.Action() == catalog.ActionStart
 // resolveSmokeModel resolves the model to test from smoke.Candidates (launch
 // rows plus startable idle local models): the pinned id if given (with a
 // message distinguishing "unknown" from "exists but cannot be tested"), or an
-// interactive pick via the shared picker (tui.PickModel), unfiltered by agent
+// interactive pick via the shared picker (tui.PickStartModel), unfiltered by agent
 // since the eligible agents are determined from the chosen model. The target
 // carries its eligible agents so no second inventory round is needed.
 func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (smokeTarget, error) {

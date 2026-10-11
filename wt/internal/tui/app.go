@@ -1,12 +1,4 @@
 // Package tui implements the Bubble Tea terminal UI for wt.
-//
-// Lesson 12 establishes the app shell: a single screen that shows a status,
-// responds to q/esc/ctrl+c, and demonstrates the Model/Update/View cycle.
-// Lesson 13 layers on the worktree/branch picker using bubbles/list.
-// Lesson 14 adds the agent+model screen reached after picking a worktree.
-// Lesson 15 added a separate model browser, opened with `m`; the picker
-// list now subsumes that role (the agent+model screen shows all
-// agent-compatible models in the active tag, sourced from config.toml).
 package tui
 
 import (
@@ -36,9 +28,9 @@ import (
 type phase int
 
 const (
-	phaseList           phase = iota // worktree list (lesson 13)
+	phaseList           phase = iota // worktree list
 	phaseAgent                       // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
-	phaseModel                       // agent+model picker (lesson 14 + lesson 15 merged)
+	phaseModel                       // agent+model picker
 	phaseOllamaWarn                  // confirm before launching with unavailable ollama model
 	phaseNewWorktree                 // create-new-worktree prompt
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
@@ -83,8 +75,8 @@ type model struct {
 	// here so future per-phase rebuilds are one-line).
 	agentList list.Model // bubble/list of agent+command items (PR 2)
 
-	// launch state (lesson 16)
-	selectedPath string       // worktree path chosen in lesson 13
+	// launch state
+	selectedPath string       // worktree path chosen in the worktree list
 	prePath      string       // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
 	yolo         bool         // pass skip-permissions flag to the agent
 	allowReplace bool         // --replace mode: the -M start path may stop a running occupant without the dialog
@@ -119,7 +111,7 @@ type model struct {
 	routing  *routingState // in-flight route check (phaseRouting); nil when idle
 	routeRun int           // monotonically increasing run id; stale messages are dropped by id
 
-	// new-worktree prompt (this lesson)
+	// new-worktree prompt
 	newInput         textinput.Model
 	newError         string
 	pendingHighlight string // branch name to focus after re-enumerating
@@ -380,12 +372,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				m.status = ""
 				return m, nil
 			}
-			if m.phase == phaseOllamaWarn {
-				m.phase = phaseModel
-				m.status = ""
-				return m, nil
-			}
-			if m.phase == phaseReplaceConfirm {
+			if m.phase == phaseOllamaWarn || m.phase == phaseReplaceConfirm {
 				m.phase = phaseModel
 				m.status = ""
 				return m, nil
@@ -424,27 +411,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					// launch directly, no model layer to resolve.
 					return m.launchPassthrough(item.name)
 				}
-				// Agent: validate the model catalog for the agent + active
-				// filters (-T/-F), then build the picker list and position
-				// the cursor. The full catalog is fetched ONCE here and
-				// narrowed in place by EligibleModelsIn, so the registry is
-				// walked once per entry.
-				firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
-				fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
-				if err != nil {
-					m.status = "config error: " + err.Error()
-					return m, nil
-				}
-				models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
-				if err != nil {
-					m.status = "config error: " + err.Error()
-					return m, nil
-				}
-				if len(models) == 0 {
-					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
-					return m, nil
-				}
-				return m.enterModelPhase(m.agent, models, firstTag)
+				// Agent: validate the model catalog, then build the picker
+				// list and position the cursor.
+				return m.enterModelPhaseForAgent()
 			case phaseList:
 				if !m.ready {
 					return m, nil
@@ -742,25 +711,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 		}
 		// Pinned agent: skip the picker, run the same model setup
 		// that phaseAgent Enter would have run for an agent item.
-		// EligibleModelsIn narrows the single fetched catalog by
-		// -T/-F filters consistently with the phaseAgent Enter path.
-		firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
-		m.tag = firstTag
-		fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
-		if err != nil {
-			m.status = "config error: " + err.Error()
-			return m, nil
-		}
-		models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
-		if err != nil {
-			m.status = "config error: " + err.Error()
-			return m, nil
-		}
-		if len(models) == 0 {
-			m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
-			return m, nil
-		}
-		return m.enterModelPhase(m.agent, models, firstTag)
+		return m.enterModelPhaseForAgent()
 	}
 	// Unpinned: build the agent+command picker and hand off to phaseAgent.
 	// Clear any prior status so a stale error from a previous picker
@@ -780,6 +731,30 @@ var runInventory = realRunInventory
 // realRunInventory is the production implementation of the runInventory seam: a
 // live probe of every local provider.
 func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmodels.Inventory(cfg) }
+
+// enterModelPhaseForAgent validates the model catalog for m.agent under the
+// active filters (-T/-F) and hands the eligible models to enterModelPhase. The
+// full catalog is fetched once and narrowed in place by EligibleModelsIn, so
+// the registry is walked once per entry. A config error or an empty eligible
+// list sets the status and leaves the phase where it is.
+func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
+	firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
+	fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
+	if err != nil {
+		m.status = "config error: " + err.Error()
+		return m, nil
+	}
+	models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
+	if err != nil {
+		m.status = "config error: " + err.Error()
+		return m, nil
+	}
+	if len(models) == 0 {
+		m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
+		return m, nil
+	}
+	return m.enterModelPhase(m.agent, models, firstTag)
+}
 
 // enterModelPhase builds the selector table for the agent and either
 // transitions to phaseModel or, when exactly one launchable row exists, skips
@@ -807,9 +782,8 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // (EligibleModelsIn only filters when a tag set is present) while the
 // header still shows a tag.
 //
-// models must be non-empty: both callers (the phaseAgent Enter path and
-// proceedFromSelectedPath's pinned-agent path) guard len(models) == 0 with
-// their own status message. A non-empty list can still build zero rows (#179
+// models must be non-empty: the caller, enterModelPhaseForAgent, guards
+// len(models) == 0 with its own status message. A non-empty list can still build zero rows (#179
 // Phase B: a registry local model that is neither on disk nor running has no
 // row), so an empty table routes back with catalog.NoRowsReason rather than
 // opening a "No items." picker whose Enter does nothing.
@@ -1073,8 +1047,7 @@ func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
 // phaseRouting shows the proxy restart first.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// The highlighted list item is what gets launched, regardless
-	// of any other state. m.current is gone; m.models is the
-	// single source of truth.
+	// of any other state. m.models is the single source of truth.
 	highlighted, ok := m.models.SelectedItem().(*modelItem)
 	if !ok {
 		// Reached after a start too (finishStart), and this way back to the
@@ -1174,19 +1147,17 @@ func loadEntriesCmd() tea.Cmd {
 	}
 }
 
-// selectFirstEntry selects the first kindEntry item in l matching pred and
-// reports whether a match was found. Shared by the pendingHighlight,
-// default-branch, and current-checkout cursor placements in Update so a
-// future change to the iteration shape (e.g. skipping separator rows) only
-// needs to happen once.
-func selectFirstEntry(l *list.Model, pred func(entryItem) bool) bool {
+// selectFirstEntry selects the first kindEntry item in l matching pred.
+// Shared by the pendingHighlight, default-branch, and current-checkout cursor
+// placements in Update so a future change to the iteration shape (e.g.
+// skipping separator rows) only needs to happen once.
+func selectFirstEntry(l *list.Model, pred func(entryItem) bool) {
 	for i, it := range l.Items() {
 		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && pred(ei) {
 			l.Select(i)
-			return true
+			return
 		}
 	}
-	return false
 }
 
 // isCurrentOnDefaultBranch returns true when the entry is the current

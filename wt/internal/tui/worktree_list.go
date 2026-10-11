@@ -32,10 +32,9 @@ const (
 // the underlying entry worktree.Entry is never mutated, so it stays
 // safe to forward into selectedEntryMsg at launch time.
 type entryItem struct {
-	kind      entryKind
-	entry     worktree.Entry
-	label     string
-	groupKind worktree.GroupKind // group the entry came from (zero value for sentinel/separator)
+	kind  entryKind
+	entry worktree.Entry
+	label string
 }
 
 // FilterValue is used by the list's built-in filter. Non-entry rows
@@ -148,7 +147,7 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 			if worktree.SkipInPicker(g.Kind, e, defaultBranch) {
 				continue
 			}
-			ei := entryItem{kind: kindEntry, entry: e, groupKind: g.Kind}
+			ei := entryItem{kind: kindEntry, entry: e}
 			// Mark default-branch entries with (default). This applies to
 			// non-current worktrees on the default branch (a linked worktree
 			// created outside wt); bare default-branch rows are skipped above.

@@ -201,8 +201,8 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 	}
 }
 
-// choiceItem adapts a prompt choice to list.Item. The prompt screens (guard,
-// ollama, replace) share this single type; each keeps its own named
+// choiceItem adapts a prompt choice to list.Item. The prompt screens
+// (ollama, replace) share this single type; each keeps its own named
 // choice enum, stored in the any-typed choice field.
 type choiceItem struct {
 	choice any
