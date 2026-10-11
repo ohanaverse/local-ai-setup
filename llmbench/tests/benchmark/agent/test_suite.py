@@ -17,7 +17,21 @@ from llmbench.benchmark.agent.task import load_task
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.registry import ModelEntry, ProviderEntry, Registry
 
-FIXTURE_ROOT = Path(__file__).parent / "fixtures"
+# The suite header most parsing tests share: the two required top-level keys
+# and a valid [judge] table. Each test appends the rows/routes it is about.
+_HEADER = """
+name = "test suite"
+task = "some/task"
+
+[judge]
+model = "x"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+"""
 
 
 def _registry() -> Registry:
@@ -101,23 +115,14 @@ route = "direct"
 
 
 def test_unknown_model_reference_raises(tmp_path):
-    body = """
-name = "test suite"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[[rows]]
+    body = (
+        _HEADER
+        + """[[rows]]
 models = ["ollama/does-not-exist"]
 thinking = ["off"]
 routes = ["direct"]
 """
+    )
     with pytest.raises(BenchmarkError, match="does-not-exist"):
         load_suite(_write_suite(tmp_path, body), _registry())
 
@@ -130,22 +135,13 @@ def test_single_model_row_missing_thinking_or_route_raises_clean_error(tmp_path)
     must not disagree on what a malformed row does)."""
     for missing in ("thinking", "route"):
         present = "route" if missing == "thinking" else "thinking"
-        body = f"""
-name = "test suite"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[[rows]]
+        body = (
+            _HEADER
+            + f"""[[rows]]
 model = "ollama/a"
 {present} = "off"
 """
+        )
         with pytest.raises(BenchmarkError, match=missing):
             load_suite(_write_suite(tmp_path, body), _registry())
 
@@ -154,25 +150,16 @@ def test_provider_override_distinguishes_shared_backend_variants(tmp_path):
     """A row can override provider= so e.g. omlx 4-bit and 6-bit — served by
     one provider that must be isolated with the exact variant name — stay
     distinguishable, per the spec's route-resolution section."""
-    body = """
-name = "test suite"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[[rows]]
+    body = (
+        _HEADER
+        + """[[rows]]
 label = "sixbit"
 model = "omlx/b"
 thinking = "off"
 route = "direct"
 provider = "omlx-6bit"
 """
+    )
     suite = load_suite(_write_suite(tmp_path, body), _registry())
     assert suite.rows[0].provider_id == "omlx-6bit"
 
@@ -182,25 +169,16 @@ def test_direct_model_override_is_parsed(tmp_path):
     route=direct row. The registry model_name is org-prefixed for omlx
     (`mlx-community/X`) while the server knows only `X`, and resolve_pi_target
     (Task 5) needs the override to address it."""
-    body = """
-name = "test suite"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[[rows]]
+    body = (
+        _HEADER
+        + """[[rows]]
 label = "omlx-direct"
 model = "omlx/b"
 thinking = "off"
 route = "direct"
 direct_model = "X"
 """
+    )
     suite = load_suite(_write_suite(tmp_path, body), _registry())
     assert suite.rows[0].direct_model == "X"
 
@@ -230,19 +208,9 @@ routes = ["direct"]
 
 
 def test_routes_direct_blocks_parsed(tmp_path):
-    body = """
-name = "test suite"
-task = "some/task"
-
-[judge]
-model = "x"
-thinking = "low"
-temperature = 0.0
-samples = 1
-max_attempts = 2
-route = "litellm"
-
-[routes.direct.omlx]
+    body = (
+        _HEADER
+        + """[routes.direct.omlx]
 base_url = "http://localhost:8000/v1"
 api = "openai-completions"
 
@@ -251,6 +219,7 @@ models = ["omlx/b"]
 thinking = ["off"]
 routes = ["direct"]
 """
+    )
     suite = load_suite(_write_suite(tmp_path, body), _registry())
     assert suite.routes_direct["omlx"] == DirectRouteConfig(
         base_url="http://localhost:8000/v1", api="openai-completions"
@@ -391,12 +360,8 @@ def test_task_path_resolves_from_the_suite_file_ancestors(tmp_path, monkeypatch)
 def test_task_path_left_alone_when_unresolvable(tmp_path):
     """An unresolvable task is not silently rewritten into something else: it
     stays as written so load_task raises its own named error."""
-    suite_path = tmp_path / "suite.toml"
-    suite_path.write_text(
-        _passing_suite_toml().replace('task = "some/task"', 'task = "nope/missing"'),
-        encoding="utf-8",
-    )
-    suite = load_suite(suite_path, _registry())
+    body = _passing_suite_toml().replace('task = "some/task"', 'task = "nope/missing"')
+    suite = load_suite(_write_suite(tmp_path, body), _registry())
     assert suite.task_path == Path("nope/missing")
 
 
@@ -405,10 +370,8 @@ def test_load_suite_rejects_an_unknown_judge_route(tmp_path):
     route the harness does not implement looked configured while every row
     silently judge_failed."""
     body = _passing_suite_toml().replace('route = "litellm"', 'route = "openai"')
-    path = tmp_path / "suite.toml"
-    path.write_text(body, encoding="utf-8")
     with pytest.raises(BenchmarkError, match="judge.*route|route"):
-        load_suite(path, _registry())
+        load_suite(_write_suite(tmp_path, body), _registry())
 
 
 def test_load_suite_rejects_a_non_agent_suite_with_a_clean_error(tmp_path):

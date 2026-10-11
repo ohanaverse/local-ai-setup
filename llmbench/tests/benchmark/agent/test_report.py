@@ -320,8 +320,6 @@ def test_summary_omits_errors_section_when_clean():
 
 
 def test_judge_json_includes_the_failure_reason(tmp_path):
-    from llmbench.benchmark.agent.judge import JudgeOutcome
-
     row_dir = tmp_path / "rowj"
     write_judge_json(
         row_dir,

@@ -9,9 +9,12 @@ generalized, not just the agent benchmark's old constants renamed.
 import json
 
 import pytest
+import requests
 
 from llmbench.benchmark.judge_core import (
     JudgeContractError,
+    JudgeTransportError,
+    LiteLLMJudgeTransport,
     Rubric,
     judge_row,
     parse_response,
@@ -146,10 +149,6 @@ def test_litellm_transport_retries_read_timeouts_by_default(monkeypatch):
     # The judge transport (120s timeout) must retry a read timeout once with
     # backoff like any other request error — a slow judge otherwise loses
     # one of its judge_row attempts to a single transient stall.
-    import requests
-
-    from llmbench.benchmark.judge_core import JudgeTransportError, LiteLLMJudgeTransport
-
     calls = []
 
     def fake_post(*args, **kwargs):
@@ -167,10 +166,6 @@ def test_litellm_transport_fail_fast_on_read_timeout_does_not_retry(monkeypatch)
     # A generation transport (900s timeout) opts out of the retry: a read
     # timeout already burned the full timeout_s, and retrying would double
     # the stall on a model that is likely looping.
-    import requests
-
-    from llmbench.benchmark.judge_core import JudgeTransportError, LiteLLMJudgeTransport
-
     calls = []
 
     def fake_post(*args, **kwargs):
@@ -190,8 +185,6 @@ def test_judge_row_two_sample_median_rounds_half_up():
     # An even sample count gives a .5 median; round() would apply banker's
     # rounding (2.5 -> 2, 3.5 -> 4), scoring identical judge splits
     # differently by parity. Half-up keeps combined scores consistent.
-    from llmbench.benchmark.judge_core import judge_row
-
     replies = [
         json.dumps({"scores": {"x": 2, "y": 3, "z": 0}, "total": 5}),
         json.dumps({"scores": {"x": 3, "y": 4, "z": 0}, "total": 7}),

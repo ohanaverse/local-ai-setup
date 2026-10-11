@@ -102,7 +102,7 @@ def test_isolate_returns_envelope_when_check_available_raises():
 
 
 @pytest.mark.parametrize("provider_id", ["ollama", "omlx", "mlx_lm_server", "mtplx"])
-def test_isolate_resolve_failure_returns_error_envelope_without_teardown(provider_id):
+def test_isolate_resolve_failure_returns_error_envelope_without_teardown(provider_id, stub_stops):
     """BUG FIX (b), proven at the orchestration level for EVERY backend.
 
     bash validates each provider's request only AFTER `stop_all_local`
@@ -113,30 +113,16 @@ def test_isolate_resolve_failure_returns_error_envelope_without_teardown(provide
     with NO backend's stop_and_wait() or start() ever called — including the
     sibling backends _stop_others would have torn down."""
     backend = BACKENDS[provider_id]
-    stop_calls = []
     with (
         patch.object(backend, "check_available", return_value=None),
         patch.object(backend, "resolve", side_effect=LifecycleError("bad request")),
         patch.object(backend, "start") as mock_start,
     ):
-        stoppers = [
-            patch.object(
-                other,
-                "stop_and_wait",
-                MagicMock(side_effect=lambda oid=other.id: stop_calls.append(oid)),
-            )
-            for other in BACKENDS.values()
-        ]
-        for p in stoppers:
-            p.start()
-        try:
-            result = orchestrate.isolate(provider_id)
-        finally:
-            for p in stoppers:
-                p.stop()
+        result = orchestrate.isolate(provider_id)
     assert result.ok is False
     assert result.error == "bad request"
-    assert stop_calls == []
+    for backend_id, stop_and_wait in stub_stops.items():
+        assert not stop_and_wait.called, backend_id
     mock_start.assert_not_called()
 
 

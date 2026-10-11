@@ -90,9 +90,7 @@ def test_timeout_short_circuits(workspace):
 def test_no_diff_short_circuits(workspace):
     """An agent that touched nothing at all fails gate 3 before any test
     infrastructure gate runs."""
-    report = evaluate(
-        workspace, _task(), _ok_run(), events=_reply_events(), session_file_present=True
-    )
+    report = _evaluate(workspace)
     assert report.results[2].code == "NO_DIFF"
     assert all(r.outcome == "skipped" for r in report.results[3:])
     assert report.cap == 0.0
@@ -104,9 +102,7 @@ def test_broken_build_short_circuits(workspace):
     (workspace.root / "pkg" / "__init__.py").write_text(
         "this is not valid python(((", encoding="utf-8"
     )
-    report = evaluate(
-        workspace, _task(), _ok_run(), events=_reply_events(), session_file_present=True
-    )
+    report = _evaluate(workspace)
     assert report.results[3].code == "BROKEN_BUILD"
     assert all(r.outcome == "skipped" for r in report.results[4:])
     assert report.cap == 0.25
@@ -156,7 +152,7 @@ def test_finish_raises_on_a_triggered_code_missing_from_cap_table(workspace, mon
         "this is not valid python(((", encoding="utf-8"
     )
     with pytest.raises(BenchmarkError, match="BROKEN_BUILD"):
-        evaluate(workspace, _task(), _ok_run(), events=_reply_events(), session_file_present=True)
+        _evaluate(workspace)
 
 
 def test_visible_regression_still_does_not_raise_despite_no_cap_table_entry(workspace):

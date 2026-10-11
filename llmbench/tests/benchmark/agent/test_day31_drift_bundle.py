@@ -59,6 +59,15 @@ def prorate(anchor_day: int, year: int, month: int, credits_per_cycle: float) ->
     return round(credits_per_cycle * days_active / length, 4)
 '''
 
+# A regression test that asserts the Feb-boundary fix; test_gates_day31_drift.py
+# imports it, like the two patches above, so both files use the same one.
+REAL_REGRESSION_TEST = (
+    "import unittest\nfrom datetime import date\nfrom kettlecomb import add_months\n\n"
+    "class T(unittest.TestCase):\n"
+    "    def test_feb_boundary(self):\n"
+    "        self.assertEqual(add_months(date(2025, 1, 31), 1), date(2025, 2, 28))\n"
+)
+
 _RUNNER_SCRIPT = (
     "import json, sys, unittest\n"
     "loader = unittest.defaultTestLoader\n"
@@ -149,16 +158,12 @@ def test_real_regression_test_fails_on_unfixed_baseline():
     task = load_task(TASK_ROOT)
     ws = create_workspace(task)
     dest = ws.root.parent / "baseline-check-real"
-    real_test = (
-        "import unittest\nfrom datetime import date\nfrom kettlecomb import add_months\n\n"
-        "class T(unittest.TestCase):\n"
-        "    def test_feb_boundary(self):\n"
-        "        self.assertEqual(add_months(date(2025, 1, 31), 1), date(2025, 2, 28))\n"
-    )
     try:
-        (ws.root / "tests" / "test_regression.py").write_text(real_test, encoding="utf-8")
+        (ws.root / "tests" / "test_regression.py").write_text(
+            REAL_REGRESSION_TEST, encoding="utf-8"
+        )
         ws.checkout_baseline_worktree(dest)
-        (dest / "tests" / "test_regression.py").write_text(real_test, encoding="utf-8")
+        (dest / "tests" / "test_regression.py").write_text(REAL_REGRESSION_TEST, encoding="utf-8")
         total, failures, errors = _run_test_module(dest, "tests.test_regression")
         assert total == 1
         assert failures + errors == 1

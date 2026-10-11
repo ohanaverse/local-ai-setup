@@ -111,10 +111,10 @@ def test_a_corrupt_latest_toml_reads_as_no_pointers_and_is_replaced(paths):
     legacy.write_text(MODELMAN_TOML, encoding="utf-8")
     latest.parent.mkdir(parents=True)
     latest.write_text("last_run = \n", encoding="utf-8")
-    _assert_replaced(latest, legacy)
+    _assert_replaced()
 
     latest.write_bytes(b'last_run = "\xff\xfe"\n')  # not UTF-8
-    _assert_replaced(latest, legacy)
+    _assert_replaced()
 
 
 def test_latest_toml_yields_only_string_pointers(paths):
@@ -132,7 +132,7 @@ def test_latest_toml_yields_only_string_pointers(paths):
     assert load_state().extra["benchmarks"] == {"agent_last_run": "/results/agent-1"}
 
 
-def _assert_replaced(latest, legacy):
+def _assert_replaced():
     store = load_state()
     assert store.extra.get("benchmarks", {}) == {}
     store.extra.setdefault("benchmarks", {})["last_run_dir"] = "/results"

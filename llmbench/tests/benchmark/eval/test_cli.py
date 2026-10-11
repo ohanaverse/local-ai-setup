@@ -45,29 +45,9 @@ def test_list_items_cmd_unknown_category_errors():
 def test_run_cmd_dry_run_prints_resolved_rows_without_running(mock_load_registry, tmp_path):
     # --dry-run must resolve and print every suite row (model/route/categories) without
     # touching providers or the network, so users can sanity-check a suite before a real run.
-    from llmbench.registry import ModelEntry, ProviderEntry, Registry
-
-    mock_load_registry.return_value = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    _mock_registry(mock_load_registry)
     suite_path = tmp_path / "suite.toml"
-    suite_path.write_text(
-        """
-name = "t"
-[judge]
-model = "j"
-temperature = 0.0
-samples = 1
-max_attempts = 1
-route = "litellm"
-
-[[rows]]
-model = "ollama/a"
-route = "litellm"
-""",
-        encoding="utf-8",
-    )
+    suite_path.write_text(_SUITE_BODY, encoding="utf-8")
     result = runner.invoke(
         eval_app,
         ["run", "--suite", str(suite_path), "--root", str(FIXTURE_CATEGORIES), "--dry-run"],
@@ -83,30 +63,9 @@ def test_run_cmd_rejects_row_naming_unknown_category(mock_load_registry, tmp_pat
     # names: a typo ("reasning") previously filtered every category out
     # silently, and the row "ran" with zero results — a wasted, possibly
     # billed run with nothing but N/A cells in the report.
-    from llmbench.registry import ModelEntry, ProviderEntry, Registry
-
-    mock_load_registry.return_value = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    _mock_registry(mock_load_registry)
     suite_path = tmp_path / "suite.toml"
-    suite_path.write_text(
-        """
-name = "t"
-[judge]
-model = "j"
-temperature = 0.0
-samples = 1
-max_attempts = 1
-route = "litellm"
-
-[[rows]]
-model = "ollama/a"
-route = "litellm"
-categories = ["reasning"]
-""",
-        encoding="utf-8",
-    )
+    suite_path.write_text(_SUITE_BODY + 'categories = ["reasning"]\n', encoding="utf-8")
     result = runner.invoke(
         eval_app,
         ["run", "--suite", str(suite_path), "--root", str(FIXTURE_CATEGORIES), "--dry-run"],
@@ -122,12 +81,7 @@ def test_run_cmd_dry_run_prints_full_suite_row_indexes(mock_load_registry, tmp_p
     # so the dry run must print each selected row's full-suite index —
     # renumbering the filtered list would show "01" for a row the user
     # selected as 3, defeating the dry run's purpose.
-    from llmbench.registry import ModelEntry, ProviderEntry, Registry
-
-    mock_load_registry.return_value = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    _mock_registry(mock_load_registry)
     suite_path = tmp_path / "suite.toml"
     rows = "\n".join(
         f'[[rows]]\nmodel = "ollama/a"\nroute = "litellm"\nlabel = "row{i}"\n' for i in range(1, 4)
@@ -165,29 +119,10 @@ def test_run_cmd_category_filter_allows_row_naming_other_known_categories(
     # already-narrowed set: eval-sweep row 3 declares ["coding",
     # "reasoning"] and `--category coding` should legitimately run just its
     # coding cell, not be rejected as naming an "unknown" category.
-    from llmbench.registry import ModelEntry, ProviderEntry, Registry
-
-    mock_load_registry.return_value = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    _mock_registry(mock_load_registry)
     suite_path = tmp_path / "suite.toml"
     suite_path.write_text(
-        """
-name = "t"
-[judge]
-model = "j"
-temperature = 0.0
-samples = 1
-max_attempts = 1
-route = "litellm"
-
-[[rows]]
-model = "ollama/a"
-route = "litellm"
-categories = ["coding", "mini_review"]
-""",
-        encoding="utf-8",
+        _SUITE_BODY + 'categories = ["coding", "mini_review"]\n', encoding="utf-8"
     )
     result = runner.invoke(
         eval_app,
@@ -219,32 +154,11 @@ def test_run_cmd_dry_run_notes_rows_disjoint_from_the_category_selection(
     # "reasoning"] — isolated a provider and produced an empty row dir, an
     # all-N/A matrix row with no anomaly, and "categories": {} in
     # metrics.jsonl.
-    from llmbench.registry import ModelEntry, ProviderEntry, Registry
-
-    mock_load_registry.return_value = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    _mock_registry(mock_load_registry)
     suite_path = tmp_path / "suite.toml"
     suite_path.write_text(
-        """
-name = "t"
-[judge]
-model = "j"
-temperature = 0.0
-samples = 1
-max_attempts = 1
-route = "litellm"
-
-[[rows]]
-model = "ollama/a"
-route = "litellm"
-categories = ["coding"]
-
-[[rows]]
-model = "ollama/a"
-route = "litellm"
-""",
+        _SUITE_BODY
+        + 'categories = ["coding"]\n\n[[rows]]\nmodel = "ollama/a"\nroute = "litellm"\n',
         encoding="utf-8",
     )
     result = runner.invoke(
@@ -396,12 +310,7 @@ def test_run_cmd_dry_run_rejects_row_filter_matching_nothing(mock_load_registry,
     # A --row that matches no suite row makes a real run exit 1; the dry run
     # must fail the same way, or it would give false confidence that a typo'd
     # --row selection is fine before an expensive sweep.
-    from llmbench.registry import ModelEntry, ProviderEntry, Registry
-
-    mock_load_registry.return_value = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    _mock_registry(mock_load_registry)
     suite_path = tmp_path / "suite.toml"
     suite_path.write_text(
         'name = "t"\n[judge]\nmodel = "j"\nroute = "litellm"\n'

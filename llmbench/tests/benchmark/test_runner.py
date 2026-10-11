@@ -36,6 +36,17 @@ class _FakeWorkload:
         return BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4)
 
 
+def _fake_route(session, target, route, url, workload, pass_number):
+    return TargetResult(
+        model_id=target.model_id,
+        provider_id=target.provider_id,
+        route=route,
+        pass_number=pass_number,
+        metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
+        error=None,
+    )
+
+
 def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
     """A completed run must be written to disk even when restore_providers
     raises, and the failure must surface as WorkloadRunSavedButRestoreFailed carrying
@@ -52,16 +63,6 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
 
     def _fail_restore():
         raise BenchmarkError("omlx down")
-
-    def _fake_route(session, target, route, url, workload, pass_number):
-        return TargetResult(
-            model_id=target.model_id,
-            provider_id=target.provider_id,
-            route=route,
-            pass_number=pass_number,
-            metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
-            error=None,
-        )
 
     monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
     monkeypatch.setattr(runner_module, "restore_providers", _fail_restore)
@@ -198,7 +199,7 @@ def test_mlx_lm_server_pairing_args_normalizes_paths_but_not_repo_ids():
 def test_discover_targets_carries_mlx_lm_server_pairing():
     """discover_targets must resolve the target/draft repo|local_path fields
     onto Target, since isolate_provider() has nowhere else to get the pairing
-    from (mlx_lm_server has no default in bin/llm-isolate-provider)."""
+    from (the mlx_lm_server backend has no default pairing)."""
     registry = Registry(
         providers=[ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")],
         models=[
@@ -223,9 +224,9 @@ def test_discover_targets_carries_mlx_lm_server_pairing():
 
 def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monkeypatch):
     """An mlx_lm_server target's resolved target/draft strings must reach
-    isolate_provider() as extra_args — without this, bin/llm-isolate-provider
-    mlx_lm_server has no pairing to fall back to and errors out on every
-    mlx_lm_server benchmark row."""
+    isolate_provider() as extra_args — without this, the mlx_lm_server backend
+    has no pairing to fall back to and errors out on every mlx_lm_server
+    benchmark row."""
     import llmbench.benchmark.runner as runner_module
 
     registry = Registry(
@@ -247,16 +248,6 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
     def _fake_isolate(provider_id, *extra_args):
         calls.append((provider_id, *extra_args))
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8001"})()
-
-    def _fake_route(session, target, route, url, workload, pass_number):
-        return TargetResult(
-            model_id=target.model_id,
-            provider_id=target.provider_id,
-            route=route,
-            pass_number=pass_number,
-            metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
-            error=None,
-        )
 
     monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
@@ -307,16 +298,6 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
         calls.append((provider_id, *extra_args))
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8001"})()
 
-    def _fake_route(session, target, route, url, workload, pass_number):
-        return TargetResult(
-            model_id=target.model_id,
-            provider_id=target.provider_id,
-            route=route,
-            pass_number=pass_number,
-            metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
-            error=None,
-        )
-
     monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
@@ -360,16 +341,6 @@ def test_run_benchmark_forwards_mtplx_model_name_to_isolate(tmp_path, monkeypatc
         calls.append((provider_id, *extra_args))
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8003"})()
 
-    def _fake_route(session, target, route, url, workload, pass_number):
-        return TargetResult(
-            model_id=target.model_id,
-            provider_id=target.provider_id,
-            route=route,
-            pass_number=pass_number,
-            metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
-            error=None,
-        )
-
     monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
@@ -402,16 +373,6 @@ def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monke
     def _fake_isolate(provider_id, *extra_args):
         calls.append((provider_id, *extra_args))
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8003"})()
-
-    def _fake_route(session, target, route, url, workload, pass_number):
-        return TargetResult(
-            model_id=target.model_id,
-            provider_id=target.provider_id,
-            route=route,
-            pass_number=pass_number,
-            metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
-            error=None,
-        )
 
     monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)

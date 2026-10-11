@@ -15,6 +15,14 @@ from llmbench.providers.lifecycle.backends.mlx_lm_server import (
 from llmbench.providers.lifecycle.envelope import LifecycleError
 
 
+def _plan():
+    with patch(
+        "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
+        return_value="/bin/mlx_lm.server",
+    ):
+        return MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+
+
 def test_mlx_lm_server_registered_in_backends_registry():
     """The bottom-of-module `MLX_LM_SERVER = MlxLmServerBackend()` singleton
     must be the same object registered under "mlx_lm_server" in BACKENDS —
@@ -63,19 +71,17 @@ def test_check_available_returns_none_when_binary_resolves():
 
 
 @pytest.mark.parametrize(
-    "model,extra_args,env",
+    "model,extra_args",
     [
         # both missing entirely (no positionals, no env vars)
-        (None, (), {}),
+        (None, ()),
         # target given, draft missing (no second positional, no env var)
-        ("target-repo", ("target-repo",), {}),
+        ("target-repo", ("target-repo",)),
         # target missing, draft given via positional
-        (None, ("", "draft-repo"), {}),
+        (None, ("", "draft-repo")),
     ],
 )
-def test_resolve_validates_target_and_draft_with_no_side_effects(
-    model, extra_args, env, monkeypatch
-):
+def test_resolve_validates_target_and_draft_with_no_side_effects(model, extra_args, monkeypatch):
     """The bug this task exists to fix: bash's start path calls
     `stop_all_local mlx_lm_server` (tearing down every OTHER local
     provider) BEFORE validating that target+draft were supplied. resolve()
@@ -86,8 +92,6 @@ def test_resolve_validates_target_and_draft_with_no_side_effects(
     before any teardown happens."""
     monkeypatch.delenv(TARGET_ENV_VAR, raising=False)
     monkeypatch.delenv(DRAFT_ENV_VAR, raising=False)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
 
     with (
         patch(
@@ -223,13 +227,7 @@ def test_resolve_lets_lifecycle_error_from_bin_resolution_propagate():
 def test_start_stops_prior_instance_before_prebind_wait():
     """bash's mlx_lm_server_start calls mlx_lm_server_stop unconditionally
     before spawning — _PROC.stop() must run before the pre-bind wait."""
-    with (
-        patch(
-            "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
-            return_value="/bin/mlx_lm.server",
-        ),
-    ):
-        plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+    plan = _plan()
 
     with (
         patch("llmbench.providers.lifecycle.backends.mlx_lm_server._PROC") as mock_proc,
@@ -252,11 +250,7 @@ def test_start_raises_fatal_error_when_port_never_closes():
     and the benchmark measures stale weights — so a timed-out wait must
     raise LifecycleError with the exact bash-derived message, and must
     never call _PROC.spawn()."""
-    with patch(
-        "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
-        return_value="/bin/mlx_lm.server",
-    ):
-        plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+    plan = _plan()
 
     with (
         patch("llmbench.providers.lifecycle.backends.mlx_lm_server._PROC") as mock_proc,
@@ -277,11 +271,7 @@ def test_start_raises_fatal_error_when_port_never_closes():
 
 
 def test_start_spawns_with_exact_argv_when_port_closes_cleanly():
-    with patch(
-        "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
-        return_value="/bin/mlx_lm.server",
-    ):
-        plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+    plan = _plan()
 
     with (
         patch("llmbench.providers.lifecycle.backends.mlx_lm_server._PROC") as mock_proc,
@@ -315,11 +305,7 @@ def test_wait_ready_polls_for_bare_target_watching_spawned_proc():
     exhausts its full WARMUP_TIMEOUT against a dead port — the same
     protection MtplxBackend.wait_ready() has for its structurally
     identical single-process, pidfile-tracked case."""
-    with patch(
-        "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
-        return_value="/bin/mlx_lm.server",
-    ):
-        plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+    plan = _plan()
 
     fake_proc = object()
     with (
@@ -350,11 +336,7 @@ def test_warm_uses_bare_target_not_display_string():
     display string the base class's warm() would send) — a real
     behavioral requirement, since mlx_lm.server would not recognize the
     display string as a model name."""
-    with patch(
-        "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
-        return_value="/bin/mlx_lm.server",
-    ):
-        plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+    plan = _plan()
     assert plan.model == "target-repo (+draft draft-repo)"
 
     with patch("llmbench.providers.lifecycle.backends.mlx_lm_server.probe.warmup") as mock_warmup:
@@ -430,9 +412,5 @@ def test_already_serving_is_the_inherited_default():
     """No keep-loaded-weights fast path exists for this backend (that's
     mtplx-only) — already_serving() is always False, matching the base
     class default."""
-    with patch(
-        "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
-        return_value="/bin/mlx_lm.server",
-    ):
-        plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+    plan = _plan()
     assert MLX_LM_SERVER.already_serving(plan) is False
