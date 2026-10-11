@@ -674,7 +674,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 		},
 	}
 
-	if err := rotation.New().Record("claude/design-a"); err != nil {
+	if err := rotation.New().RecordFor("", "claude/design-a"); err != nil {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 

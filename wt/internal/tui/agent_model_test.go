@@ -36,7 +36,7 @@ func tempStateDir(t *testing.T) string {
 // launched model ID. Tests use this to simulate prior launches.
 func seedState(t *testing.T, dir, modelID string) {
 	t.Helper()
-	if err := rotation.NewAt(dir).Record(modelID); err != nil {
+	if err := rotation.NewAt(dir).RecordFor("", modelID); err != nil {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 }

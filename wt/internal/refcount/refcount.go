@@ -104,33 +104,7 @@ func (s *StoreImpl) Record(pid int, modelID string) error {
 // is dropped along with dead entries — Sweep favors a clean file over
 // surfacing a parse error, since callers treat it as best-effort.
 func (s *StoreImpl) Sweep() error {
-	return s.withLock(func() error {
-		data, err := os.ReadFile(s.path())
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		var out []byte
-		scanner := bufio.NewScanner(bytes.NewReader(data))
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			var e entry
-			if err := json.Unmarshal(line, &e); err != nil {
-				continue
-			}
-			if !pidAlive(e.Pid) {
-				continue
-			}
-			out = append(out, line...)
-			out = append(out, '\n')
-		}
-		if err := scanner.Err(); err != nil {
-			return err
-		}
-		return config.WriteFileAtomic(s.path(), out, 0o600)
-	})
+	return s.rewrite(func(e entry) bool { return !pidAlive(e.Pid) }, false)
 }
 
 // Release drops every entry recorded for pid. A wt session calls it once its
@@ -140,6 +114,14 @@ func (s *StoreImpl) Sweep() error {
 // (a command agent never records one), is a no-op that leaves the file
 // untouched; corrupt lines are dropped only when an entry is actually removed.
 func (s *StoreImpl) Release(pid int) error {
+	return s.rewrite(func(e entry) bool { return e.Pid == pid }, true)
+}
+
+// rewrite rewrites the state file, under the lock, without the entries drop
+// accepts and without the lines that do not parse. A missing file is left
+// missing. With onlyIfDropped, a pass in which drop accepted no entry writes
+// nothing, so the file keeps its corrupt lines too.
+func (s *StoreImpl) rewrite(drop func(entry) bool, onlyIfDropped bool) error {
 	return s.withLock(func() error {
 		data, err := os.ReadFile(s.path())
 		if err != nil {
@@ -149,7 +131,7 @@ func (s *StoreImpl) Release(pid int) error {
 			return err
 		}
 		var out []byte
-		removed := false
+		dropped := false
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -157,8 +139,8 @@ func (s *StoreImpl) Release(pid int) error {
 			if err := json.Unmarshal(line, &e); err != nil {
 				continue
 			}
-			if e.Pid == pid {
-				removed = true
+			if drop(e) {
+				dropped = true
 				continue
 			}
 			out = append(out, line...)
@@ -167,7 +149,7 @@ func (s *StoreImpl) Release(pid int) error {
 		if err := scanner.Err(); err != nil {
 			return err
 		}
-		if !removed {
+		if onlyIfDropped && !dropped {
 			return nil
 		}
 		return config.WriteFileAtomic(s.path(), out, 0o600)
@@ -179,29 +161,10 @@ func (s *StoreImpl) Release(pid int) error {
 // Sweep, not here, so a caller that wants fresh counts must have swept
 // first (runLaunchPath does, before the picker is built).
 func (s *StoreImpl) Counts(modelIDs []string) map[string]int {
+	live := s.Live()
 	out := make(map[string]int, len(modelIDs))
-	want := make(map[string]bool, len(modelIDs))
 	for _, id := range modelIDs {
-		out[id] = 0
-		want[id] = true
-	}
-
-	f, err := os.Open(s.path())
-	if err != nil {
-		return out
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		var e entry
-		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
-			continue
-		}
-		if !want[e.ModelID] {
-			continue
-		}
-		out[e.ModelID]++
+		out[id] = live[id]
 	}
 	return out
 }

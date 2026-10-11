@@ -1169,7 +1169,7 @@ func loadEntriesCmd() tea.Cmd {
 			return entriesLoadedMsg{err: err}
 		}
 		groups, err := worktree.Enumerate(root, root)
-		defaultBranch, _ := worktree.DefaultBranch(root)
+		defaultBranch := worktree.DefaultBranch(root)
 		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
 	}
 }
