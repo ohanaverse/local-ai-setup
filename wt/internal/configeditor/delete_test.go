@@ -10,13 +10,12 @@ import (
 // TestDelete_Agent_SucceedsAfterConfirm verifies that pressing 'd' then
 // 'y' removes the selected agent row and marks the config dirty.
 func TestDelete_Agent_SucceedsAfterConfirm(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{
 			{Name: "claude"},
 			{Name: "codex"},
 		},
-	}
+	}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
@@ -40,10 +39,9 @@ func TestDelete_Agent_SucceedsAfterConfirm(t *testing.T) {
 // TestDelete_Cancel_PreservesRow verifies that pressing 'n' on the delete
 // prompt returns to the list without removing anything.
 func TestDelete_Cancel_PreservesRow(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{{Name: "claude"}},
-	}
+	}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
@@ -62,14 +60,13 @@ func TestDelete_Cancel_PreservesRow(t *testing.T) {
 // on a sorted list targets the highlighted item, not the item matching the
 // slice index in cfg.
 func TestDelete_Key_TargetsSelectedItemInSortedList(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
 	// Config has zeta first, alpha second.
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{
 			{Name: "zeta"},
 			{Name: "alpha"},
 		},
-	}
+	}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 

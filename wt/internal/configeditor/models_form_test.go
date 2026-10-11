@@ -357,27 +357,29 @@ func TestModelFormRefusesBeforeItAsksOllama(t *testing.T) {
 	}
 }
 
+// savingAddForm fills the add form and presses ctrl+s, handing back the save,
+// not run.
+func savingAddForm(t *testing.T, price string) (*tabMachine, *model, tea.Cmd) {
+	t.Helper()
+	tm := newTabMachine(t, tabRegistry)
+	m := keys(t, modelsEditor(t, tm, 80, 24), "n", "right", "right") // ollama -> omlx -> openrouter
+	m = typeText(t, moveTo(t, m, mfName), "qwen/qwen3.8-27b")
+	m = typeText(t, moveTo(t, m, mfFamily), "qwen3.8")
+	m = typeText(t, moveTo(t, m, mfInput), price)
+	next, save := m.Update(keyMsg("ctrl+s"))
+	if save == nil {
+		t.Fatal("ctrl+s should hand the save to a command")
+	}
+	return tm, next.(*model), save
+}
+
 // TestQuitWaitsForAFormSaveInFlight is TestQuitWaitsForARegistryWriteInFlight
 // for the form, where the window is wider: an add of an ollama model runs
 // `ollama show` before it writes. ctrl+c while the save is out must not end
 // the program before the save has reported; a refused save calls the quit
 // off and stays on the form.
 func TestQuitWaitsForAFormSaveInFlight(t *testing.T) {
-	// saving fills the add form and presses ctrl+s, handing back the save,
-	// not run.
-	saving := func(t *testing.T, price string) (*tabMachine, *model, tea.Cmd) {
-		tm := newTabMachine(t, tabRegistry)
-		m := keys(t, modelsEditor(t, tm, 80, 24), "n", "right", "right") // ollama -> omlx -> openrouter
-		m = typeText(t, moveTo(t, m, mfName), "qwen/qwen3.8-27b")
-		m = typeText(t, moveTo(t, m, mfFamily), "qwen3.8")
-		m = typeText(t, moveTo(t, m, mfInput), price)
-		next, save := m.Update(keyMsg("ctrl+s"))
-		if save == nil {
-			t.Fatal("ctrl+s should hand the save to a command")
-		}
-		return tm, next.(*model), save
-	}
-	tm, m, save := saving(t, "0.5")
+	tm, m, save := savingAddForm(t, "0.5")
 	next, cmd := m.Update(keyMsg("ctrl+c"))
 	m = next.(*model)
 	if cmd != nil || !m.quitPending {
@@ -398,7 +400,7 @@ func TestQuitWaitsForAFormSaveInFlight(t *testing.T) {
 		t.Error("the command after a held quit should be the quit, not a re-probe")
 	}
 
-	tm, m, save = saving(t, "cheap")
+	tm, m, save = savingAddForm(t, "cheap")
 	next, _ = m.Update(keyMsg("ctrl+c"))
 	next, cmd = next.(*model).Update(save())
 	m = next.(*model)
@@ -617,6 +619,9 @@ func TestModelFormKeysAreTextNotCommands(t *testing.T) {
 }
 
 func isQuit(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
 	_, ok := cmd().(tea.QuitMsg)
 	return ok
 }
@@ -860,20 +865,8 @@ func TestModelFormRefusalTheFormCanRepairNamesNoFile(t *testing.T) {
 // and the save is then refused, the quit is off and those edits are unsaved
 // again: the next quit asks.
 func TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit(t *testing.T) {
-	saving := func(t *testing.T, price string) (*tabMachine, *model, tea.Cmd) {
-		tm := newTabMachine(t, tabRegistry)
-		m := keys(t, modelsEditor(t, tm, 80, 24), "n", "right", "right")
-		m = typeText(t, moveTo(t, m, mfName), "qwen/qwen3.8-27b")
-		m = typeText(t, moveTo(t, m, mfFamily), "qwen3.8")
-		m = typeText(t, moveTo(t, m, mfInput), price)
-		next, save := m.Update(keyMsg("ctrl+s"))
-		if save == nil {
-			t.Fatal("ctrl+s should hand the save to a command")
-		}
-		return tm, next.(*model), save
-	}
 	t.Run("agent edits not yet asked about", func(t *testing.T) {
-		tm, m, save := saving(t, "0.5")
+		tm, m, save := savingAddForm(t, "0.5")
 		next, _ := m.Update(keyMsg("ctrl+c"))
 		m = next.(*model)
 		// An edit the quit did not know of when it was taken.
@@ -892,7 +885,7 @@ func TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit(t *testing.T) {
 		}
 	})
 	t.Run("a refused save keeps the edits a held quit was to discard", func(t *testing.T) {
-		tm, m, save := saving(t, "cheap")
+		tm, m, save := savingAddForm(t, "cheap")
 		m.dirty = true
 		m = keys(t, m, "ctrl+c")
 		if m.phase != phaseQuit {

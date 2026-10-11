@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,10 +54,8 @@ func TestPassthroughModelProducesNoModelOverride(t *testing.T) {
 				t.Fatalf("%s driver not registered", agent)
 			}
 			lc := d.Build(passthroughModel(), false, Route{})
-			for _, a := range lc.Args {
-				if a == "--model" {
-					t.Errorf("%s: Args = %v, want no --model flag for the passthrough sentinel", agent, lc.Args)
-				}
+			if slices.Contains(lc.Args, "--model") {
+				t.Errorf("%s: Args = %v, want no --model flag for the passthrough sentinel", agent, lc.Args)
 			}
 			if len(lc.Env) != 0 {
 				t.Errorf("%s: Env = %v, want no env vars for the passthrough sentinel", agent, lc.Env)
@@ -68,8 +67,8 @@ func TestPassthroughModelProducesNoModelOverride(t *testing.T) {
 // BuildPassthroughCmd must build a bare launch command per driver: correct
 // binary resolution, the requested worktree as cmd.Dir, no --model flag, and
 // extraArgs appended. Skipped per-agent when the binary is not on PATH
-// (mirrors the skip pattern cmd/wt/launch_test.go and internal/agents'
-// resume tests already use for real-binary launcher tests).
+// (mirrors the skip pattern cmd/wt/launch_test.go uses for real-binary
+// launcher tests).
 func TestBuildPassthroughCmd(t *testing.T) {
 	for _, agent := range []string{"claude", "codex", "copilot", "opencode", "pi", "agy"} {
 		t.Run(agent, func(t *testing.T) {
@@ -83,10 +82,8 @@ func TestBuildPassthroughCmd(t *testing.T) {
 			if cmd.Dir != "/tmp/repo" {
 				t.Errorf("cmd.Dir = %q, want /tmp/repo", cmd.Dir)
 			}
-			for _, a := range cmd.Args {
-				if a == "--model" {
-					t.Errorf("args %v contain --model, want a bare launch", cmd.Args)
-				}
+			if slices.Contains(cmd.Args, "--model") {
+				t.Errorf("args %v contain --model, want a bare launch", cmd.Args)
 			}
 		})
 	}

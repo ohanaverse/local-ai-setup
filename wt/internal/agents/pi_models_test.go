@@ -161,30 +161,14 @@ func TestPiSyncModelsMissingFile(t *testing.T) {
 // "z-ai/glm-4.6") was silently resolved against provider "z-ai" instead
 // of "openrouter". Direct-mode launches must prefix the provider id.
 func TestPiDirectModelArgPrefixesProvider(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	piDir := filepath.Join(dir, ".pi", "agent")
-	if err := os.MkdirAll(piDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(piDir, "models.json")
-	writeFile(t, path, `{"providers":{"openrouter":{"apiKey":"sk-or","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"z-ai/glm-4.6"}]}}}`)
+	writePiModels(t, `{"providers":{"openrouter":{"apiKey":"sk-or","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"z-ai/glm-4.6"}]}}}`)
 
 	m := config.Model{ID: "openrouter/z-ai/glm-4.6", ModelName: "z-ai/glm-4.6", ProviderID: "openrouter"}
 	r := config.Route{ProviderID: "openrouter", ModelRef: "z-ai/glm-4.6", Litellm: false}
 	lc := piDriver{}.Build(m, false, r)
-	if !argsContain(lc.Args, "--model", "openrouter/z-ai/glm-4.6") {
+	if got, ok := argsFlagValue(lc.Args, "--model"); !ok || got != "openrouter/z-ai/glm-4.6" {
 		t.Errorf("args = %v, want --model openrouter/z-ai/glm-4.6", lc.Args)
 	}
-}
-
-func argsContain(args []string, flag, value string) bool {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == flag && args[i+1] == value {
-			return true
-		}
-	}
-	return false
 }
 
 // isLaunchable must return true only when the model is present under the
@@ -756,18 +740,10 @@ func TestSyncModelsLitellmCreatesMissingFile(t *testing.T) {
 // LiteLLM dispatches on. Passing the bare name or a bare "<id>" resolves to
 // the wrong entry and 400s at the gateway.
 func TestPiBuildLitellm(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	piDir := filepath.Join(dir, ".pi", "agent")
-	if err := os.MkdirAll(piDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(piDir, "models.json")
-	writeFile(t, path, `{"providers":{"litellm":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
+	writePiModels(t, `{"providers":{"litellm":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := piDriver{}.Build(m, false, routeFor(m, gw))
+	lc := piDriver{}.Build(m, false, litellmRoute(m))
 	if !slices.Equal(lc.Args, []string{"--model", "litellm/ollama/qwen3.8:27b-mlx"}) {
 		t.Fatalf("expected --model litellm/<registry id>, got %v", lc.Args)
 	}
@@ -777,17 +753,10 @@ func TestPiBuildLitellm(t *testing.T) {
 // warning when the gateway entry is not present/launchable in models.json —
 // for example before the first sync or when the user disabled the entry.
 func TestPiBuildLitellmNotConfigured(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	piDir := filepath.Join(dir, ".pi", "agent")
-	if err := os.MkdirAll(piDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(piDir, "models.json"), `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
+	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := piDriver{}.Build(m, false, routeFor(m, gw))
+	lc := piDriver{}.Build(m, false, litellmRoute(m))
 	if len(lc.Args) != 0 {
 		t.Fatalf("args = %v, want none (fallback to default)", lc.Args)
 	}
@@ -1077,6 +1046,22 @@ func TestSyncModelsDirectAddsDiscoveredTarget(t *testing.T) {
 	}
 }
 
+// syncedPiModelsText runs syncModels for target over a fresh, empty
+// models.json and returns the file it leaves.
+func syncedPiModelsText(t *testing.T, cfg *config.Config, target config.Model) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+	if err := syncModels(cfg, path, target, Route{}); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 // TestSyncModelsTargetAlreadyCoveredChangesNothing verifies the target only
 // ever ADDS a missing entry: a target that is a registry model, and the zero
 // config.Model (no launch in progress), both produce byte-for-byte the file a
@@ -1088,20 +1073,8 @@ func TestSyncModelsTargetAlreadyCoveredChangesNothing(t *testing.T) {
 		if litellm {
 			cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 		}
-		sync := func(target config.Model) string {
-			path := filepath.Join(t.TempDir(), "models.json")
-			writeFile(t, path, emptyPiModels)
-			if err := syncModels(cfg, path, target, Route{}); err != nil {
-				t.Fatalf("syncModels: %v", err)
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return string(data)
-		}
-		base := sync(config.Model{})
-		if got := sync(cfg.Models[0]); got != base {
+		base := syncedPiModelsText(t, cfg, config.Model{})
+		if got := syncedPiModelsText(t, cfg, cfg.Models[0]); got != base {
 			t.Errorf("litellm=%v: registry-model target changed the file:\nzero target: %s\nregistry:    %s", litellm, base, got)
 		}
 		if strings.Contains(base, "llama3.2:1b") {
@@ -1145,19 +1118,7 @@ func TestSyncedModelsAddsOnlyAnUncoveredTarget(t *testing.T) {
 	// The same rule, seen in the file: through LiteLLM an entry is keyed by
 	// id, so only the covered check keeps the alias from getting one.
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	sync := func(target config.Model) string {
-		path := filepath.Join(t.TempDir(), "models.json")
-		writeFile(t, path, emptyPiModels)
-		if err := syncModels(cfg, path, target, Route{}); err != nil {
-			t.Fatalf("syncModels: %v", err)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(data)
-	}
-	if base, got := sync(config.Model{}), sync(sameModelOtherID); got != base || strings.Contains(got, "ollama/alias") {
+	if base, got := syncedPiModelsText(t, cfg, config.Model{}), syncedPiModelsText(t, cfg, sameModelOtherID); got != base || strings.Contains(got, "ollama/alias") {
 		t.Errorf("a target the registry already serves under another id changed the file:\nno target: %s\nalias:     %s", base, got)
 	}
 }

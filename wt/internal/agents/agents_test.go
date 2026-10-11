@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,10 +26,6 @@ func cloudModel(id string) config.Model {
 	return config.Model{ID: id, ModelName: id, Location: config.LocationCloud}
 }
 
-func localModel(id string) config.Model {
-	return config.Model{ID: id, ModelName: id, Location: config.LocationLocal}
-}
-
 // directRoute returns a direct-mode Route for model m.
 func directRoute(m config.Model) config.Route {
 	return config.Route{
@@ -52,22 +47,6 @@ func litellmRoute(m config.Model) config.Route {
 		ProviderID: m.ProviderID,
 		Litellm:    true,
 	}
-}
-
-// routeFor converts a test LitellmState into the Route Build expects:
-// enabled routes through the proxy, disabled dials the (ollama) direct route.
-func routeFor(m config.Model, gw config.LitellmState) config.Route {
-	if gw.Enabled {
-		return config.Route{
-			BaseOrigin: strings.TrimRight(gw.URL, "/"),
-			APIKey:     gw.APIKey,
-			ModelRef:   m.ID,
-			Display:    m.ModelName,
-			ProviderID: m.ProviderID,
-			Litellm:    true,
-		}
-	}
-	return directRoute(m)
 }
 
 // ollamaCloudModel mirrors cloudModel but with a real ProviderID, so the
@@ -254,10 +233,6 @@ func TestCopilot(t *testing.T) {
 }
 
 // OpenCode receives its model configuration via a single
-// OPENCODE_CONFIG_CONTENT env var containing inline JSON. After the
-// native-provider alignment, opencode is ollama-only — there is no native
-// branch to test.
-// OpenCode receives its model configuration via a single
 // OPENCODE_CONFIG_CONTENT env var containing inline JSON. In direct mode
 // it declares the same @ai-sdk/openai-compatible custom provider as in
 // gateway mode, pointed at the resolved provider's /v1 endpoint. The model
@@ -276,24 +251,7 @@ func TestOpenCode(t *testing.T) {
 	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
 		t.Fatalf("env = %v, want OPENCODE_CONFIG_CONTENT", lc.Env)
 	}
-	content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
-	var parsed struct {
-		Model      string `json:"model"`
-		SmallModel string `json:"small_model"`
-		Provider   map[string]struct {
-			NPM     string `json:"npm"`
-			Options struct {
-				BaseURL string `json:"baseURL"`
-				APIKey  string `json:"apiKey"`
-			} `json:"options"`
-			Models map[string]struct {
-				Name string `json:"name"`
-			} `json:"models"`
-		} `json:"provider"`
-	}
-	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
-	}
+	parsed := parseOpenCodeConfig(t, lc.Env)
 	if parsed.Model != "agent-wt/deepseek-v4-pro:cloud" {
 		t.Errorf("model = %q, want agent-wt/deepseek-v4-pro:cloud", parsed.Model)
 	}
@@ -321,15 +279,7 @@ func TestOpenCode(t *testing.T) {
 // test fixture instead of the user's real catalog.
 func writePiModels(t *testing.T, content string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".pi", "agent")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, piHomeModelsPath(t), content)
 }
 
 // Pi has no yolo flag (the pi CLI doesn't support skipping permissions).
@@ -530,13 +480,7 @@ func (regularTestDriver) YoloFlag() string { return "" }
 
 // hasEnvKey reports whether env contains an entry for key (KEY=...).
 func hasEnvKey(env []string, key string) bool {
-	prefix := key + "="
-	for _, e := range env {
-		if strings.HasPrefix(e, prefix) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, key+"=") })
 }
 
 // clearEnvDriver is a test-only Driver that clears two env vars, used to
@@ -586,12 +530,7 @@ func TestCommandPrintsWarning(t *testing.T) {
 // both fields to the same string, masking bugs where the wrong field is
 // passed to the agent CLI. These regression tests use the real shape.
 func ollamaPrefixedModel() config.Model {
-	return config.Model{
-		ID:         "ollama/deepseek-v4-pro:cloud",
-		ModelName:  "deepseek-v4-pro:cloud",
-		ProviderID: "ollama",
-		Location:   config.LocationCloud,
-	}
+	return ollamaCloudModel("deepseek-v4-pro:cloud")
 }
 
 // Claude must pass --model with the bare ModelName, not the registry ID
@@ -621,9 +560,6 @@ func TestClaudeOllamaPrefix(t *testing.T) {
 	}
 }
 
-// Codex must pass --model with the bare ModelName. The ollama-launch
-// profile (see docs/wt-agents/codex-wt.md) routes through Ollama; passing
-// the prefixed id causes codex to ask Ollama for an unknown model.
 // Codex must pass --model with the bare ModelName. The ollama provider block
 // (see docs/wt-agents/codex-wt.md) routes through Ollama; passing the prefixed
 // id as the --model value would make codex ask Ollama for a model it cannot
@@ -689,24 +625,7 @@ func TestOpenCodeOllamaPrefix(t *testing.T) {
 	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
 		t.Fatalf("env = %v, want single OPENCODE_CONFIG_CONTENT entry", lc.Env)
 	}
-	payload := strings.TrimPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=")
-	var parsed struct {
-		Model      string `json:"model"`
-		SmallModel string `json:"small_model"`
-		Provider   map[string]struct {
-			NPM     string `json:"npm"`
-			Options struct {
-				BaseURL string `json:"baseURL"`
-				APIKey  string `json:"apiKey"`
-			} `json:"options"`
-			Models map[string]struct {
-				Name string `json:"name"`
-			} `json:"models"`
-		} `json:"provider"`
-	}
-	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
-		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\npayload=%s", err, payload)
-	}
+	parsed := parseOpenCodeConfig(t, lc.Env)
 	if got, want := parsed.Model, "agent-wt/deepseek-v4-pro:cloud"; got != want {
 		t.Errorf("model = %q, want %q (agent-wt/<ModelName>, bare ModelName not m.ID)", got, want)
 	}

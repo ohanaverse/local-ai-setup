@@ -110,14 +110,13 @@ func TestLoadedMsg_Error_SetsReadyAndStatus(t *testing.T) {
 // sorted list opens the form for the selected item, not the item matching the
 // slice index in cfg.
 func TestEnterKey_OpensEditFormForSelectedItem(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
 	// Config has zeta first, alpha second.
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{
 			{Name: "zeta", SupportedProviders: []string{"ollama"}},
 			{Name: "alpha", SupportedProviders: []string{"ollama"}},
 		},
-	}
+	}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
@@ -139,8 +138,7 @@ func TestEnterKey_OpensEditFormForSelectedItem(t *testing.T) {
 // on a registered-but-unconfigured agent driver opens the add form pre-populated
 // with that agent's name.
 func TestEnterKey_UnconfiguredAgent_OpensAddForm(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{Agents: []config.Agent{}}
+	m := newModel(testTheme(), &config.Config{Agents: []config.Agent{}}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
