@@ -40,7 +40,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// helperMtplx is the fake `mtplx serve` process (see file comment).
+// helperMtplx is the fake `mtplx serve` process.
 func helperMtplx() {
 	args := os.Args[1:]
 	opt := map[string]string{}

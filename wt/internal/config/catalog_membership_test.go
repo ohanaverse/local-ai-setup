@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -15,7 +14,6 @@ import (
 // inventory (internal/localmodels) through internal/catalog's row rules.
 func TestLoadModelExposureAcrossNativeLocalCloud(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
 
 	writeRegistry(t, dir, `
 [[providers]]
@@ -74,13 +72,7 @@ exposed = false
 ready = false
 `)
 
-	cfgDir := Dir()
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n")
 
 	cfg, err := Load()
 	if err != nil {
@@ -112,7 +104,6 @@ ready = false
 // predicate only decides catalog membership.
 func TestInCatalogPredicate(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
 
 	writeRegistry(t, dir, `
 [[providers]]
@@ -210,13 +201,7 @@ exposed = true
 exposed = true
 `)
 
-	cfgDir := Dir()
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n")
 
 	cfg, err := Load()
 	if err != nil {

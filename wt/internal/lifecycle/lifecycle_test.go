@@ -3,7 +3,6 @@ package lifecycle
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -63,24 +62,6 @@ func running(provider, id, name string) localmodels.Entry {
 // containsFold reports whether s contains sub, case-insensitively.
 func containsFold(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
-}
-
-// modelsServing is an OpenAI-compatible /v1/models server reporting the given
-// ids (none when called with no arguments).
-func modelsServing(t *testing.T, ids ...string) *httptest.Server {
-	t.Helper()
-	body := `{"data":[`
-	for i, id := range ids {
-		if i > 0 {
-			body += ","
-		}
-		body += `{"id":"` + id + `"}`
-	}
-	body += `]}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(body))
-	}))
-	return srv
 }
 
 // TestOccupantRules verifies who a start would replace: nobody for ollama
@@ -228,7 +209,7 @@ func TestTypedErrorMessages(t *testing.T) {
 	}
 }
 
-// TestOccupantDerivesSingleModelFromBackendRegistry verifies Occupant's
+// TestOccupantDerivesSingleModelFromBackendRegistry verifies Evictions'
 // single-model rule comes from the same registry defaultEnv builds, for every
 // registered family. The map comparison is the structural half: it pins the
 // registry's *contents* — which family maps to which backend — against an
@@ -267,7 +248,7 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 	}
 }
 
-// TestOccupantUnregisteredFamilyHasNoOccupant verifies Occupant reports no
+// TestOccupantUnregisteredFamilyHasNoOccupant verifies Evictions reports no
 // occupant for a family wt has no backend for, even when the snapshot carries a
 // running model of that very family that would otherwise be the target's
 // occupant. This is the arm that keeps a provider wt cannot start from reporting
@@ -321,14 +302,9 @@ func TestStartRefusesWhenListenerStalls(t *testing.T) {
 // errors is indeterminate rather than empty; reading it as "no occupant" would
 // silently replace a running model, exactly like the stalled-listener case.
 func TestStartRefusesWhenServerAnswersUnusably(t *testing.T) {
-	unusable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer unusable.Close()
-
 	var calls []string
 	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
-	cfg := provCfg("omlx", unusable.URL)
+	cfg := provCfg("omlx", errorSrv(t))
 
 	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
 	var unknown *OccupancyUnknownError
@@ -361,12 +337,9 @@ func TestStartProceedsWhenProviderIsDown(t *testing.T) {
 // model the inventory snapshot could not report, and returns the ordinary
 // *OccupiedError for it. Falling through to a start here is the eviction.
 func TestStartFindsOccupantTheSnapshotMissed(t *testing.T) {
-	serving := modelsServing(t, "a")
-	defer serving.Close()
-
 	var calls []string
 	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
-	cfg := provCfg("omlx", serving.URL)
+	cfg := provCfg("omlx", openaiSrv(t, []string{"a"}))
 
 	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
 	var occ *OccupiedError
@@ -385,12 +358,9 @@ func TestStartFindsOccupantTheSnapshotMissed(t *testing.T) {
 // an empty model list is started into normally. It answered, so it is neither
 // unknown nor occupied.
 func TestStartProceedsWhenServerReportsNoModel(t *testing.T) {
-	empty := modelsServing(t)
-	defer empty.Close()
-
 	var calls []string
 	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
-	cfg := provCfg("omlx", empty.URL)
+	cfg := provCfg("omlx", openaiSrv(t, nil))
 
 	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
 		t.Fatalf("start against an idle server = %v, want nil", err)
@@ -398,27 +368,6 @@ func TestStartProceedsWhenServerReportsNoModel(t *testing.T) {
 	if !reflect.DeepEqual(calls, []string{"start:b"}) {
 		t.Errorf("calls = %v, want [start:b]", calls)
 	}
-}
-
-// omlxListing is an omlx server whose /v1/models lists a and b — its whole
-// pool, as omlx does — with loaded of them loaded according to /health, and a
-// /v1/models/status that refuses to say which (the server has an API key wt
-// was not given).
-func omlxListing(t *testing.T, loaded int) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":[{"id":"a"},{"id":"b"}]}`)
-	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"engine_pool":{"model_count":2,"loaded_count":%d}}`, loaded)
-	})
-	mux.HandleFunc("/v1/models/status", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "API key required", http.StatusUnauthorized)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
 }
 
 // TestStartIntoAnIdleOmlxThatListsItsPool pins #201 for the occupancy check:
@@ -430,7 +379,7 @@ func omlxListing(t *testing.T, loaded int) *httptest.Server {
 func TestStartIntoAnIdleOmlxThatListsItsPool(t *testing.T) {
 	var calls []string
 	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
-	cfg := provCfg("omlx", omlxListing(t, 0).URL)
+	cfg := provCfg("omlx", (&fakePool{loaded: map[string]bool{"a": false, "b": false}, mgmtKey: "k"}).serve(t))
 	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
 		t.Fatalf("start into an idle omlx = %v, want nil: a listed, unloaded model is not an occupant", err)
 	}
@@ -447,7 +396,7 @@ func TestStartIntoAnIdleOmlxThatListsItsPool(t *testing.T) {
 func TestStartAsksWhenOmlxWillNotSayWhatIsLoaded(t *testing.T) {
 	var calls []string
 	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
-	cfg := provCfg("omlx", omlxListing(t, 1).URL)
+	cfg := provCfg("omlx", (&fakePool{loaded: map[string]bool{"a": true, "b": false}, mgmtKey: "k"}).serve(t))
 	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
 	var unknown *OccupancyUnknownError
 	if !errors.As(err, &unknown) {
@@ -460,7 +409,7 @@ func TestStartAsksWhenOmlxWillNotSayWhatIsLoaded(t *testing.T) {
 
 // TestStartUsesSnapshotWhenProbeIsTrustworthy verifies a trustworthy snapshot
 // still decides occupancy on its own, so the common path costs no extra HTTP
-// request and the existing Occupant rules keep governing.
+// request and the existing Evictions rules keep governing.
 func TestStartUsesSnapshotWhenProbeIsTrustworthy(t *testing.T) {
 	var calls []string
 	snap := localmodels.Snapshot{
@@ -487,14 +436,13 @@ func TestStartUsesSnapshotWhenProbeIsTrustworthy(t *testing.T) {
 // model between the snapshot and the start must still be found, or the start
 // replaces that model with no confirmation.
 func TestStartReprobesAServerTheSnapshotSawDown(t *testing.T) {
-	srv := modelsServing(t, "Org/M1")
 	var calls []string
 	e := fakeEnv(localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
 		Down:      map[string]bool{"mtplx": true},
 	}, true, &calls)
 
-	err := start(context.Background(), e, provCfg("mtplx", srv.URL), Target{ProviderID: "mtplx", ModelName: "Org/M2"}, Options{})
+	err := start(context.Background(), e, provCfg("mtplx", openaiSrv(t, []string{"Org/M1"})), Target{ProviderID: "mtplx", ModelName: "Org/M2"}, Options{})
 	var occ *OccupiedError
 	if !errors.As(err, &occ) || !reflect.DeepEqual(occ.IDs(), []string{"Org/M1"}) {
 		t.Fatalf("start = %v, want *OccupiedError naming the model the server is serving now", err)
@@ -504,7 +452,7 @@ func TestStartReprobesAServerTheSnapshotSawDown(t *testing.T) {
 	}
 }
 
-// TestOccupantIgnoresUntrustworthySnapshot verifies Occupant does not claim
+// TestOccupantIgnoresUntrustworthySnapshot verifies Evictions does not claim
 // "no occupant" from a probe it knows failed. Its contract is that the caller
 // may act on a false result, so it must not answer from untrustworthy data.
 func TestOccupantIgnoresUntrustworthySnapshot(t *testing.T) {

@@ -129,12 +129,7 @@ func TestApplyRemovesRow(t *testing.T) {
 	if err != nil || !res.Changed || *restarts != 1 {
 		t.Fatalf("err=%v changed=%v restarts=%d", err, res.Changed, *restarts)
 	}
-	var unrouted []string
-	for _, oc := range res.Outcomes {
-		if oc.Action == "unrouted" {
-			unrouted = append(unrouted, oc.ID)
-		}
-	}
+	unrouted := actionIDs(res.Outcomes, "unrouted")
 	if !slices.Equal(unrouted, []string{"ollama/gemma:9b", "gone/stale"}) || len(res.Outcomes) != 2 {
 		t.Fatalf("outcomes = %+v, want exactly the registry row and the stale marked row unrouted", res.Outcomes)
 	}
@@ -502,6 +497,17 @@ func readRows(t *testing.T, p string) []RowInfo {
 	return f.Rows()
 }
 
+// actionIDs returns the ids of the outcomes with action, in order.
+func actionIDs(outcomes []Outcome, action string) []string {
+	var ids []string
+	for _, oc := range outcomes {
+		if oc.Action == action {
+			ids = append(ids, oc.ID)
+		}
+	}
+	return ids
+}
+
 // TestSyncRoutesEveryCloudModel pins #179's core rule: configured means
 // exposed, so sync adds a marked route for every registry cloud model with no
 // opt-in step, and skips native models.
@@ -564,10 +570,8 @@ func TestSyncRemovesMarkedRowOfDeletedModel(t *testing.T) {
 	if _, err := Sync(testConfig(), nil, o); err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range readRows(t, p) {
-		if r.ID == "openrouter/gone" {
-			t.Fatalf("stale marked row survived: %v", readRows(t, p))
-		}
+	if rows := readRows(t, p); slices.ContainsFunc(rows, func(r RowInfo) bool { return r.ID == "openrouter/gone" }) {
+		t.Fatalf("stale marked row survived: %v", rows)
 	}
 }
 
@@ -748,10 +752,8 @@ func TestSyncRemovesLegacyUnmarkedLocalRoute(t *testing.T) {
 	if _, err := Sync(testConfig(), nil, o); err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range readRows(t, p) {
-		if r.ID == "ollama/gemma:9b" {
-			t.Fatalf("stopped local model kept its route: %v", readRows(t, p))
-		}
+	if rows := readRows(t, p); slices.ContainsFunc(rows, func(r RowInfo) bool { return r.ID == "ollama/gemma:9b" }) {
+		t.Fatalf("stopped local model kept its route: %v", rows)
 	}
 }
 
@@ -790,10 +792,8 @@ func TestSyncDeduplicatesRepeatedStaleRow(t *testing.T) {
 	if s := strings.Join(got, ","); s != id+":unrouted,openrouter/x/y:routed" {
 		t.Fatalf("outcomes = %s, want one unrouted line for the stale id", s)
 	}
-	for _, r := range readRows(t, p) {
-		if r.ID == id {
-			t.Fatalf("stale row survived: %v", readRows(t, p))
-		}
+	if rows := readRows(t, p); slices.ContainsFunc(rows, func(r RowInfo) bool { return r.ID == id }) {
+		t.Fatalf("stale row survived: %v", rows)
 	}
 }
 

@@ -27,41 +27,6 @@ import (
 // the hook, or dropping the hook from StopModelDeferred, would keep that suite
 // green.
 
-// wrapBackend is a provider backend that records its calls and can be told to
-// fail, so a wrapper test can drive start/stop without a real provider.
-type wrapBackend struct {
-	single   bool
-	pool     bool // Pool tenancy, as omlx has; overrides single
-	startErr error
-	stopErr  error
-	calls    *[]string
-}
-
-func (b wrapBackend) tenancy() Tenancy {
-	switch {
-	case b.pool:
-		return Pool
-	case b.single:
-		return Exclusive
-	}
-	return Shared
-}
-
-func (b wrapBackend) stop(context.Context, *env, *config.Config) error {
-	*b.calls = append(*b.calls, "stop")
-	return b.stopErr
-}
-
-func (b wrapBackend) stopModel(_ context.Context, _ *env, _ *config.Config, name string) error {
-	*b.calls = append(*b.calls, "stopModel:"+name)
-	return b.stopErr
-}
-
-func (b wrapBackend) start(_ context.Context, _ *env, _ *config.Config, t Target, _ func(Stage)) error {
-	*b.calls = append(*b.calls, "start:"+t.ModelName)
-	return b.startErr
-}
-
 // swapBackend installs b as family's backend for one test. defaultEnv clones
 // backendsByFamily, and TenancyOf reads it directly, so this is the single
 // switch that makes the public wrappers run against a fake provider.
@@ -199,7 +164,7 @@ litellm_settings:
 func TestStartWrapperAddsRouteOnSuccess(t *testing.T) {
 	path, restarts, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
@@ -227,7 +192,7 @@ func TestStartWrapperFailedStartLeavesConfigUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls, startErr: errors.New("out of memory")})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err == nil {
@@ -255,7 +220,7 @@ func TestStartWrapperFailedStartLeavesConfigUntouched(t *testing.T) {
 func TestStartWrapperAlreadyRunningStillFixesStaleRoutes(t *testing.T) {
 	path, restarts, warn := realRoutes(t, staleSiblingYAML)
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q35"}))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{}); err != nil {
@@ -295,8 +260,8 @@ func TestStopRouteRemovalSymmetry(t *testing.T) {
 `
 	path, restarts, warn := realRoutes(t, full)
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 
 	before, err := os.ReadFile(path)
@@ -335,7 +300,7 @@ func TestStopRouteRemovalSymmetry(t *testing.T) {
 func TestStartWrapperIsIdempotent(t *testing.T) {
 	path, restarts, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, []string{"a:1"}), openaiSrv(t, nil))
 
 	for i := range 3 {
@@ -361,7 +326,7 @@ func TestStartWrapperIsIdempotent(t *testing.T) {
 func TestStartWrapperReplaceThenFailDropsOccupantRoute(t *testing.T) {
 	path, _, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the occupant
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
 	err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true})
@@ -385,7 +350,7 @@ func TestStartWrapperReplaceThenFailDropsOccupantRoute(t *testing.T) {
 func TestStartWrapperReportsRoutingStage(t *testing.T) {
 	path, _, _ := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1", "b:1"}, nil), openaiSrv(t, nil))
 
 	var stages []Stage
@@ -411,7 +376,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 	}
 
 	stages = nil
-	swapBackend(t, "ollama", wrapBackend{calls: &calls, startErr: errors.New("boom")})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls, startErr: errors.New("boom")})
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "b:1"}, Options{Progress: report}); err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
@@ -435,7 +400,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
 	path, restarts, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -474,7 +439,7 @@ func TestStopRemovesOmlx6bitSibling(t *testing.T) {
 `
 	path, restarts, warn := realRoutes(t, both)
 	var calls []string
-	swapBackend(t, "omlx", wrapBackend{pool: true, calls: &calls})
+	swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls})
 	srv := openaiSrv(t, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -510,7 +475,7 @@ func TestStopRemovesOmlx6bitSibling(t *testing.T) {
 func TestStartWrapperReplaceBouncesProxyOnce(t *testing.T) {
 	path, restarts, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the occupant
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err != nil {
@@ -533,7 +498,7 @@ func TestStartWrapperReplaceBouncesProxyOnce(t *testing.T) {
 func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
 	_, restarts, _ := realRoutes(t, staleSiblingYAML)
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err == nil {
@@ -563,8 +528,8 @@ func TestStopModelDeferredBatchRestartsOnce(t *testing.T) {
 `
 	path, restarts, warn := realRoutes(t, full)
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 
 	owed := false
@@ -601,7 +566,7 @@ func TestStopModelDeferredNothingRoutedOwesNothing(t *testing.T) {
 	var calls []string
 	// mtplx, not ollama: an ollama stop never writes routes at all (#179), so
 	// it could not exercise the "write changed nothing" path this pins.
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 	// The first write may still change the file: every write ensures
 	// LiteLLM's launcher-required litellm_settings keys, which this minimal
@@ -629,7 +594,7 @@ func TestStopModelDeferredFailedStopWritesNothing(t *testing.T) {
 	const full = "model_list:\n  - model_name: mtplx/Y--Q35\n    litellm_params: {model: openai/Y/Q35, api_base: http://localhost:8003/v1, api_key: not-needed}\n"
 	path, _, _ := realRoutes(t, full)
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, stopErr: errors.New("boom")})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, stopErr: errors.New("boom")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 	owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"})
 	if err == nil || owed {
@@ -666,7 +631,7 @@ func TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten(t *testing.T) {
 `
 	path, _, warn := realRoutes(t, rows)
 	var calls []string
-	swapBackend(t, "omlx", wrapBackend{pool: true, calls: &calls})
+	swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls})
 	srv := openaiSrv(t, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -697,7 +662,7 @@ func TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten(t *testing.T) {
 func TestStartWrapperRoutesDiscoveredModel(t *testing.T) {
 	path, _, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"llama3.2:3b"}, nil), openaiSrv(t, nil))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "llama3.2:3b"}, Options{}); err != nil {

@@ -298,12 +298,7 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	if names, providers, err := seedAgents(); names != nil || providers != nil || err != nil {
 		t.Errorf("with no config.toml: agents = %v, providers = %v, err = %v, want none and no error", names, providers, err)
 	}
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\n")
 	names, providers, err := seedAgents()
 	if err != nil {
 		t.Fatal(err)
@@ -407,9 +402,6 @@ base_url = "https://openrouter.ai/api/v1"
 func TestSeedMakesAFreshConfigLoad(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	const agents = `default_tag = "code"
 
 [[agents]]
@@ -420,9 +412,7 @@ supported_providers = ["claude", "openrouter"]
 name = "opencode"
 supported_providers = ["opencode"]
 `
-	if err := os.WriteFile(Path(), []byte(agents), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), agents)
 	env := DefaultSeedEnv()
 	env.OnPath = nil // nothing is installed
 	if want := []string{"claude", "openrouter", "ollama", "agy"}; !slices.Equal(env.AgentProviders, want) {

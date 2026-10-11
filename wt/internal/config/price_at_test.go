@@ -557,8 +557,6 @@ output_price_per_million = 75.0
 // list` prints and the Models tab shows. A readable row beside it is still
 // applied.
 func TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, t.TempDir(), timedRegistry(`
 [[models.cost.time_prices]]
 label = "office"
@@ -596,8 +594,6 @@ windows = [{ days = ["sat", "sun"], start = "00:00", end = "24:00" }]
 // row's own zone. Before #322 such a row was in the file and applied by
 // nothing, and a write that touched its model was refused.
 func TestLoadAppliesAWindowPastMidnight(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, t.TempDir(), timedRegistry(`
 [[models.cost.time_prices]]
 label = "night"
@@ -651,8 +647,6 @@ func TestLoadStopsOnATimePricesValueOfTheWrongType(t *testing.T) {
 		"a timezone that is a number": {"timezone = 5\nwindows = []", "models.cost.time_prices.timezone"},
 		"days that are a string":      {"timezone = \"UTC\"\nwindows = [{ days = \"mon\", start = \"00:00\", end = \"24:00\" }]", "models.cost.time_prices.windows.days"},
 	} {
-		t.Setenv("WT_REGISTRY", "")
-		t.Setenv("MODELMAN_REGISTRY", "")
 		writeRegistry(t, t.TempDir(), timedRegistry("\n[[models.cost.time_prices]]\n"+c.row+"\n"))
 		_, err := Load()
 		if err == nil || !strings.Contains(err.Error(), c.key) || !strings.Contains(err.Error(), "incompatible types") {

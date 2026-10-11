@@ -55,12 +55,7 @@ func TestApplyChangeGivesOllamaRowsAnAPIBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var set []string
-	for _, oc := range res.Outcomes {
-		if oc.Action == "api_base set" {
-			set = append(set, oc.ID)
-		}
-	}
+	set := actionIDs(res.Outcomes, "api_base set")
 	if want := []string{"ollama/q8", "ollama/o35", "ollama/blank"}; !slices.Equal(set, want) || len(res.Outcomes) != len(want) {
 		t.Fatalf("outcomes = %+v, want exactly %v reported as \"api_base set\"", res.Outcomes, want)
 	}
@@ -252,12 +247,7 @@ func TestRepairLabelsARowWithNoModelName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
-	for _, oc := range res.Outcomes {
-		if oc.Action == ActionAPIBaseSet {
-			got = append(got, oc.ID)
-		}
-	}
+	got := actionIDs(res.Outcomes, ActionAPIBaseSet)
 	if !slices.Equal(got, want) {
 		t.Errorf("repaired = %q, want %q", got, want)
 	}
@@ -371,12 +361,7 @@ litellm_settings:
 	if err != nil {
 		t.Fatal(err)
 	}
-	var repaired []string
-	for _, oc := range res.Outcomes {
-		if oc.Action == ActionAPIBaseSet {
-			repaired = append(repaired, oc.ID)
-		}
-	}
+	repaired := actionIDs(res.Outcomes, ActionAPIBaseSet)
 	if want := []string{"ollama/mine"}; !slices.Equal(plan.Repair, want) || !slices.Equal(repaired, want) {
 		t.Fatalf("dry run planned repair %v, real sync repaired %v; want %v for both", plan.Repair, repaired, want)
 	}

@@ -53,7 +53,4 @@ func TestRegistryFixHint_ExpandHomeFailure(t *testing.T) {
 	if !strings.Contains(hint, "~/custom/registry.toml") {
 		t.Errorf("hint = %q should contain literal tilde path when HOME is unset", hint)
 	}
-
-	// Restore HOME
-	t.Setenv("HOME", "/tmp/restored")
 }

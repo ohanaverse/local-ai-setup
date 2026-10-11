@@ -401,8 +401,6 @@ output_price_per_million = 75.0
 // "06:00", never split at midnight or rewritten. From then on the row's
 // bytes do not change.
 func TestUpdateRegistryKeepsAHandTypedWindowPastMidnight(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	const typed = docRegistry + `
 [[models]]
 id = "ollama/night-owl"

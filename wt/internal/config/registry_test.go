@@ -12,13 +12,7 @@ import (
 // XDG_CONFIG_HOME at dir.
 func writeRegistry(t *testing.T, dir, content string) {
 	t.Helper()
-	regDir := filepath.Join(dir, "local-ai")
-	if err := os.MkdirAll(regDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, filepath.Join(dir, "local-ai", "registry.toml"), content)
 	t.Setenv("XDG_CONFIG_HOME", dir)
 }
 
@@ -93,14 +87,8 @@ func TestRegistryPathExpandsTildeInTheRegistryOverride(t *testing.T) {
 // two files.
 func TestLoad_JoinsRegistry(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
 	writeRegistry(t, dir, minimalRegistry)
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\n")
 
 	cfg, err := Load()
 	if err != nil {
@@ -154,7 +142,6 @@ func TestLoadRegistryMissingReturnsSentinel(t *testing.T) {
 // keys are ignored, so one unmodelled key does not stop every wt command.
 func TestLoad_RegistryExtraFieldsIgnored(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
 	writeRegistry(t, dir, `
 [[providers]]
 id = "ollama"
@@ -173,12 +160,7 @@ tags = ["code"]
 supports_function_calling = true
 
 `)
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -224,17 +206,11 @@ func TestSave_OmitsProvidersAndModels(t *testing.T) {
 // finalizeCfg's registry-join-last ordering.
 func TestLoad_LegacyConfigSectionsIgnored(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
 	writeRegistry(t, dir, minimalRegistry)
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	// A pre-Phase-4 config.toml still carries providers/models; they must be
 	// ignored (registry.toml is the source of truth) and never resurrected.
 	legacy := "default_tag = \"code\"\n[[providers]]\nid = \"stale\"\nname = \"Stale\"\n[[models]]\nid = \"stale/x\"\nprovider_id = \"stale\"\nmodel_name = \"x\"\n"
-	if err := os.WriteFile(Path(), []byte(legacy), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), legacy)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -298,7 +274,6 @@ func TestExpandHomeLeavesTildeUsernameLiteral(t *testing.T) {
 // dropping either would silently point discovery at the wrong place.
 func TestLoad_RegistryReadsProviderModelDirAndBaseURL(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
 	writeRegistry(t, dir, `
 [[providers]]
 id = "mtplx"
@@ -310,12 +285,7 @@ model_dir = "~/.mtplx/models"
 type = "none"
 base_url = "http://localhost:8003/v1"
 `)
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)

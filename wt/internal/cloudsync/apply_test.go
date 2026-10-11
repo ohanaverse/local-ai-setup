@@ -82,15 +82,7 @@ end = "24:00"
 // hand-added key on the row, a time_prices row of the user's), one to
 // re-tag, one off the page, and a local model that must come through
 // untouched.
-const catalogRegistry = `[[providers]]
-id = "ollama"
-name = "Ollama"
-location = "local"
-
-[providers.auth]
-type = "none"
-
-[[models]]
+const catalogRegistry = ollamaProviderRow + `[[models]]
 context_length = 131072
 id = "ollama/deepseek-v4-pro:cloud"
 family = "deepseek"
@@ -165,6 +157,18 @@ type = "none"
 
 `
 
+// openrouterProviderRow is the same for a model row that names openrouter.
+const openrouterProviderRow = `[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "OPENROUTER_API_KEY"
+
+`
+
 func applyCatalog(t *testing.T, catalog Catalog, pulled []string, resolved map[string]string) (CatalogApplied, bool) {
 	t.Helper()
 	var done CatalogApplied
@@ -177,6 +181,19 @@ func applyCatalog(t *testing.T, catalog Catalog, pulled []string, resolved map[s
 		t.Fatalf("UpdateRegistry: %v", err)
 	}
 	return done, changed
+}
+
+// applyPrices plans and applies the openrouter flow through the real registry
+// writer, as applyCatalog does for the ollama flow. The error is returned, not
+// failed on, so that each caller reports it in its own words.
+func applyPrices(api map[string]APIPrice, now time.Time) (PricesApplied, bool, error) {
+	var done PricesApplied
+	changed, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
+		var err error
+		done, err = PlanPrices(Entries(d.Models()), api).Apply(d, now)
+		return err
+	})
+	return done, changed, err
 }
 
 // TestStamp pins the pricing_updated_at format: UTC, whole seconds, a numeric
@@ -376,16 +393,7 @@ location = "cloud"
 // whether or not a price beside it moved (the openrouter flow owns no such row),
 // and that an unmatched model is not stamped.
 func TestPricesApplyStampsEveryMatchedModel(t *testing.T) {
-	path := scratchRegistry(t, `[[providers]]
-id = "openrouter"
-name = "OpenRouter"
-location = "cloud"
-
-[providers.auth]
-type = "api_key"
-secret_ref = "OPENROUTER_API_KEY"
-
-[[models]]
+	path := scratchRegistry(t, openrouterProviderRow+`[[models]]
 id = "openrouter/same"
 family = "x"
 provider_id = "openrouter"
@@ -433,12 +441,7 @@ location = "cloud"
 		{"id": "vendor/moved", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
 		{"id": "vendor/repriced", "pricing": {"prompt": "0.000003", "completion": "0.000015"}}
 	]}`)
-	var done PricesApplied
-	changed, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
-		var err error
-		done, err = PlanPrices(Entries(d.Models()), api).Apply(d, applyNow)
-		return err
-	})
+	done, changed, err := applyPrices(api, applyNow)
 	if err != nil || !changed {
 		t.Fatalf("UpdateRegistry: changed %v, err %v", changed, err)
 	}
@@ -473,24 +476,7 @@ location = "cloud"
 // openrouter flow (a matched model whose price is current, and one whose input
 // price moved) and in the ollama flow (an entry whose input price moved).
 func TestApplyWritesOnlyWhatThePlanShows(t *testing.T) {
-	const before = `[[providers]]
-id = "openrouter"
-name = "OpenRouter"
-location = "cloud"
-
-[providers.auth]
-type = "api_key"
-secret_ref = "OPENROUTER_API_KEY"
-
-[[providers]]
-id = "ollama"
-name = "Ollama"
-location = "local"
-
-[providers.auth]
-type = "none"
-
-[[models]]
+	const before = openrouterProviderRow + ollamaProviderRow + `[[models]]
 id = "openrouter/same"
 family = "x"
 provider_id = "openrouter"

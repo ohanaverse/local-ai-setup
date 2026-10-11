@@ -317,16 +317,7 @@ func TestPlanPricesLeavesItsRowsWhereAUserPutThem(t *testing.T) {
 // its off-peak price, with a row the user wrote; a model with no cost; and a
 // model with no schedule that holds a row of each owner, the openrouter flow's
 // from a schedule OpenRouter has since dropped.
-const scheduleRegistry = `[[providers]]
-id = "openrouter"
-name = "OpenRouter"
-location = "cloud"
-
-[providers.auth]
-type = "api_key"
-secret_ref = "OPENROUTER_API_KEY"
-
-[[models]]
+const scheduleRegistry = openrouterProviderRow + `[[models]]
 id = "openrouter/deepseek--deepseek-v4-pro-0813"
 family = "deepseek"
 provider_id = "openrouter"
@@ -424,13 +415,8 @@ func TestPricesApplyStoresAScheduleOnce(t *testing.T) {
 	path := scratchRegistry(t, scheduleRegistry)
 	apply := func(fetched, now time.Time) PricesApplied {
 		t.Helper()
-		api := apiOf(t, fetchedAt(t, fetched))
-		var done PricesApplied
-		if _, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
-			var err error
-			done, err = PlanPrices(Entries(d.Models()), api).Apply(d, now)
-			return err
-		}); err != nil {
+		done, _, err := applyPrices(apiOf(t, fetchedAt(t, fetched)), now)
+		if err != nil {
 			t.Fatalf("UpdateRegistry: %v", err)
 		}
 		return done
@@ -442,16 +428,7 @@ func TestPricesApplyStoresAScheduleOnce(t *testing.T) {
 		t.Errorf("first apply = %+v, want 3 stamped, 3 changed", done)
 	}
 	const stamp1, stamp2 = "2026-10-09T02:45:00+00:00", "2026-10-10T17:00:00+00:00"
-	want := `[[providers]]
-id = "openrouter"
-name = "OpenRouter"
-location = "cloud"
-
-[providers.auth]
-type = "api_key"
-secret_ref = "OPENROUTER_API_KEY"
-
-[[models]]
+	want := openrouterProviderRow + `[[models]]
 id = "openrouter/deepseek--deepseek-v4-pro-0813"
 family = "deepseek"
 provider_id = "openrouter"
@@ -614,24 +591,7 @@ end = "06:00"
 // price refresh. The picker then applies the user's row and the flow's row
 // side by side, first match first.
 func TestBothFlowsKeepAUsersWindowPastMidnight(t *testing.T) {
-	path := scratchRegistry(t, `[[providers]]
-id = "openrouter"
-name = "OpenRouter"
-location = "cloud"
-
-[providers.auth]
-type = "api_key"
-secret_ref = "OPENROUTER_API_KEY"
-
-[[providers]]
-id = "ollama"
-name = "Ollama"
-location = "local"
-
-[providers.auth]
-type = "none"
-
-[[models]]
+	path := scratchRegistry(t, openrouterProviderRow+ollamaProviderRow+`[[models]]
 id = "openrouter/tencent--hy3"
 family = "hy"
 provider_id = "openrouter"
@@ -657,12 +617,8 @@ input_price_per_million = 9.0
 `+nightTimePrice)
 
 	at := time.Date(2026, 10, 9, 2, 45, 0, 0, time.UTC)
-	var prices PricesApplied
-	if _, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
-		var err error
-		prices, err = PlanPrices(Entries(d.Models()), apiOf(t, fetchedAt(t, at))).Apply(d, at)
-		return err
-	}); err != nil {
+	prices, _, err := applyPrices(apiOf(t, fetchedAt(t, at)), at)
+	if err != nil {
 		t.Fatalf("the openrouter flow's apply: %v", err)
 	}
 	if prices != (PricesApplied{Stamped: 1, Changed: 1}) {

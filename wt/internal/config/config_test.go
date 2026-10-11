@@ -377,16 +377,14 @@ func TestLoad_FileNotExist(t *testing.T) {
 // follows.
 func TestLoad_ValidConfig(t *testing.T) {
 	tmp := t.TempDir()
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
-	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
+	must(t, filepath.Join(tmp, "agent-wt", "config.toml"), `
 default_tag = "design"
 
 [[agents]]
 name = "claude"
 supported_providers = ["ollama"]
 default_provider = "ollama"
-`), 0644)
+`)
 	writeRegistry(t, tmp, `
 [[providers]]
 id = "ollama"
@@ -454,9 +452,7 @@ tags = ["code", "design"]
 // surface the problem rather than silently using defaults.
 func TestLoad_BadTOML(t *testing.T) {
 	tmp := t.TempDir()
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
-	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`this is not toml {{{`), 0644)
+	must(t, filepath.Join(tmp, "agent-wt", "config.toml"), `this is not toml {{{`)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
 	_, err := Load()
@@ -949,16 +945,14 @@ func TestDeriveNative(t *testing.T) {
 // test pins the Load()-level wiring.
 func TestLoad_DerivesNativeFromRegistryAuth(t *testing.T) {
 	tmp := t.TempDir()
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
-	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
+	must(t, filepath.Join(tmp, "agent-wt", "config.toml"), `
 default_tag = "code"
 
 [[agents]]
 name = "claude"
 supported_providers = ["ollama"]
 default_provider = "ollama"
-`), 0644)
+`)
 	writeRegistry(t, tmp, `
 [[providers]]
 id = "ollama"
@@ -1254,15 +1248,8 @@ func TestInCatalogNonNativeAlwaysIncluded(t *testing.T) {
 // new control surface instead of silent data loss.
 func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
 	writeRegistry(t, dir, "providers = []\nmodels = []\n")
-	cfgDir := Dir()
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n\n[gateway]\nmode = \"litellm\"\nurl = \"http://localhost:4000\"\napi_key = \"sk-x\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n\n[gateway]\nmode = \"litellm\"\nurl = \"http://localhost:4000\"\napi_key = \"sk-x\"\n")
 
 	cfg, err := Load()
 	if err != nil {

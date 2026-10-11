@@ -75,8 +75,7 @@ func TestWaitReady(t *testing.T) {
 }
 
 // TestListeningHitsLivenessPath pins the shared health request: it dials
-// /health/liveliness (once, even with a trailing slash on the base URL), and
-// honors a cancelled caller ctx by reporting nothing listening.
+// /health/liveliness (once, even with a trailing slash on the base URL).
 func TestListeningHitsLivenessPath(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health/liveliness" {
