@@ -3,6 +3,7 @@ package profiles
 
 import (
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -52,10 +53,8 @@ func TestRestoreAndReattachDropsMutationsAndKeepsOneShotArgs(t *testing.T) {
 
 	RestoreAndReattach(cmd, origEnv, origArgs, []string{"exec", "the prompt"})
 
-	for _, e := range cmd.Env {
-		if e == "PROFILE_VAR=1" {
-			t.Errorf("cmd.Env = %v, still carries the profile's env mutation after revert", cmd.Env)
-		}
+	if slices.Contains(cmd.Env, "PROFILE_VAR=1") {
+		t.Errorf("cmd.Env = %v, still carries the profile's env mutation after revert", cmd.Env)
 	}
 	want := []string{"codex", "--model", "x", "exec", "the prompt"}
 	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {

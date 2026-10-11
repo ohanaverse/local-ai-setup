@@ -80,22 +80,29 @@ func eligibleFor(t *testing.T, cfg *config.Config) []config.Model {
 	return eligible
 }
 
-// TestNextReturnsFirstEligibleWhenEmpty returns the first agent-eligible
-// model when there is no prior launch.
-func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
-	cfg := &config.Config{
+// claudeCfg returns the config the TestNext* cases share: a local ollama
+// provider, a cloud claude provider, one claude agent that supports only the
+// claude provider, and the given models in the order rotation walks them.
+func claudeCfg(models ...config.Model) *config.Config {
+	return &config.Config{
 		Providers: []config.Provider{
 			{ID: "ollama", Location: config.LocationLocal},
 			{ID: "claude", Location: config.LocationCloud},
 		},
-		Models: []config.Model{
-			{ID: "ollama/a", ProviderID: "ollama"},
-			{ID: "claude/sonnet", ProviderID: "claude"},
-		},
+		Models: models,
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
+}
+
+// TestNextReturnsFirstEligibleWhenEmpty returns the first agent-eligible
+// model when there is no prior launch.
+func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
+	cfg := claudeCfg(
+		config.Model{ID: "ollama/a", ProviderID: "ollama"},
+		config.Model{ID: "claude/sonnet", ProviderID: "claude"},
+	)
 	r := NewAt(t.TempDir())
 	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
 	if !ok || got.ID != "claude/sonnet" {
@@ -109,20 +116,11 @@ func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
 // Without this advance, every launch would pick the same model
 // and rotation would be a no-op.
 func TestNextAdvancesAfterLast(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "ollama", Location: config.LocationLocal},
-			{ID: "claude", Location: config.LocationCloud},
-		},
-		Models: []config.Model{
-			{ID: "ollama/a", ProviderID: "ollama"},
-			{ID: "claude/sonnet", ProviderID: "claude"},
-			{ID: "claude/opus", ProviderID: "claude"},
-		},
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-		},
-	}
+	cfg := claudeCfg(
+		config.Model{ID: "ollama/a", ProviderID: "ollama"},
+		config.Model{ID: "claude/sonnet", ProviderID: "claude"},
+		config.Model{ID: "claude/opus", ProviderID: "claude"},
+	)
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "claude/sonnet")
@@ -135,20 +133,11 @@ func TestNextAdvancesAfterLast(t *testing.T) {
 // TestNextWrapsAround verifies rotation wraps from the end of the global
 // model list back to the first eligible model.
 func TestNextWrapsAround(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "ollama", Location: config.LocationLocal},
-			{ID: "claude", Location: config.LocationCloud},
-		},
-		Models: []config.Model{
-			{ID: "claude/sonnet", ProviderID: "claude"},
-			{ID: "ollama/a", ProviderID: "ollama"},
-			{ID: "claude/opus", ProviderID: "claude"},
-		},
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-		},
-	}
+	cfg := claudeCfg(
+		config.Model{ID: "claude/sonnet", ProviderID: "claude"},
+		config.Model{ID: "ollama/a", ProviderID: "ollama"},
+		config.Model{ID: "claude/opus", ProviderID: "claude"},
+	)
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "claude/opus")
@@ -161,20 +150,11 @@ func TestNextWrapsAround(t *testing.T) {
 // TestNextSkipsIneligibleModels verifies models not supported by the agent
 // are skipped when searching after the last launch.
 func TestNextSkipsIneligibleModels(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "ollama", Location: config.LocationLocal},
-			{ID: "claude", Location: config.LocationCloud},
-		},
-		Models: []config.Model{
-			{ID: "ollama/a", ProviderID: "ollama"},
-			{ID: "ollama/b", ProviderID: "ollama"},
-			{ID: "claude/sonnet", ProviderID: "claude"},
-		},
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-		},
-	}
+	cfg := claudeCfg(
+		config.Model{ID: "ollama/a", ProviderID: "ollama"},
+		config.Model{ID: "ollama/b", ProviderID: "ollama"},
+		config.Model{ID: "claude/sonnet", ProviderID: "claude"},
+	)
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "ollama/b")
@@ -208,19 +188,10 @@ func TestNextReturnsFalseWhenNoModels(t *testing.T) {
 // TestNextFallsBackToStartWhenLastUnknown starts from the beginning of the
 // global list if the saved last model is no longer in the config.
 func TestNextFallsBackToStartWhenLastUnknown(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "ollama", Location: config.LocationLocal},
-			{ID: "claude", Location: config.LocationCloud},
-		},
-		Models: []config.Model{
-			{ID: "claude/sonnet", ProviderID: "claude"},
-			{ID: "claude/opus", ProviderID: "claude"},
-		},
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-		},
-	}
+	cfg := claudeCfg(
+		config.Model{ID: "claude/sonnet", ProviderID: "claude"},
+		config.Model{ID: "claude/opus", ProviderID: "claude"},
+	)
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "claude/ghost")

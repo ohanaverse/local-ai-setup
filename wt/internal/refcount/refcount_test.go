@@ -166,7 +166,7 @@ func TestPidAliveDefaultDetectsCurrentProcess(t *testing.T) {
 }
 
 // TestRecordLockFileCreated verifies Record creates the sidecar lock file
-// in the same directory as refcount.jsonl, mirroring usage.Record's
+// in the same directory as refcount.jsonl, mirroring usage.RecordFor's
 // concurrency contract.
 func TestRecordLockFileCreated(t *testing.T) {
 	dir := t.TempDir()

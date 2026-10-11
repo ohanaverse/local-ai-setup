@@ -57,9 +57,6 @@ func TestScanOmlxModelsMatchesSharedFixture(t *testing.T) {
 			if err != nil {
 				t.Fatalf("case %q: %v", c.Name, err)
 			}
-			if len(got) == 0 && len(c.Expect) == 0 {
-				return
-			}
 			if !slices.Equal(got, c.Expect) {
 				t.Errorf("case %q: got %v, want %v", c.Name, got, c.Expect)
 			}

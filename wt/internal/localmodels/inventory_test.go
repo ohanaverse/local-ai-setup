@@ -730,7 +730,6 @@ func TestInventoryOmlxEmptyAnswerIsOK(t *testing.T) {
 	dir := t.TempDir()
 	mkOmlxModels(t, dir, "some-model")
 	up := modelsServer(t) // answers {"data":[]}
-	defer up.Close()
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("omlx", up.URL, dir)},
 		Models:    []config.Model{{ID: "omlx/some-model", ProviderID: "omlx", ModelName: "some-model"}},
