@@ -194,11 +194,6 @@ def run_benchmark(
                 isolation_key = (target.provider_id, extra_args)
                 if isolation_key != last_isolation_key:
                     isolate = isolate_provider(target.provider_id, *extra_args)
-                    if not isolate.ok:
-                        raise BenchmarkError(
-                            f"failed to isolate provider {target.provider_id}: "
-                            f"{isolate.error or 'unknown error'}"
-                        )
                     direct_url = isolate.direct_url
                     last_isolation_key = isolation_key
             except BenchmarkError as exc:

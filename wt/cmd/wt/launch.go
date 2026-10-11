@@ -146,7 +146,7 @@ func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, 
 }
 
 // launchFiltered is the wired-up launch path used by main.go for every
-// non-TUI launch (-w, --cwd, and outside-a-repo passthrough). It resolves
+// non-TUI launch (-W, --cwd, and outside-a-repo passthrough). It resolves
 // the eligible model list (via cfg.EligibleModels), resolves the -M pin
 // against all rows (a start row is started before this point), and
 // otherwise advances through the eligible list using the per-slot
@@ -342,28 +342,24 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 		return noop, nil
 	}
 
+	// A load error wins over a validation error, and a store that failed to
+	// load is not validated.
 	var store profiles.Store
+	var perr error
 	if pp != nil {
-		if pp.loadErr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.loadErr)
-			return noop, nil
+		store, perr = pp.store, pp.loadErr
+		if perr == nil {
+			perr = pp.validateErr
 		}
-		if pp.validateErr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.validateErr)
-			return noop, nil
-		}
-		store = pp.store
 	} else {
-		var loadErr error
-		store, loadErr = loadProfileStore()
-		if loadErr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", loadErr)
-			return noop, nil
+		store, perr = loadProfileStore()
+		if perr == nil {
+			perr = profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism)
 		}
-		if verr := profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism); verr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", verr)
-			return noop, nil
-		}
+	}
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", perr)
+		return noop, nil
 	}
 	if !store.Enabled {
 		return noop, nil

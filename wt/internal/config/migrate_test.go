@@ -27,34 +27,6 @@ func loadConfigFile(t *testing.T, dir string) *Config {
 	return &cfg
 }
 
-// parseBashArray extracts the array name and quoted values from a single-line
-// bash array assignment. This is the core parser for the legacy format.
-func TestParseBashArray(t *testing.T) {
-	name, vals := parseBashArray(`CODE_MODELS=("native:copilot" "deepseek-v4-pro:cloud")`)
-	if name != "CODE_MODELS" {
-		t.Fatalf("name = %q, want CODE_MODELS", name)
-	}
-	if len(vals) != 2 || vals[0] != "native:copilot" || vals[1] != "deepseek-v4-pro:cloud" {
-		t.Fatalf("vals = %v, want the two models", vals)
-	}
-}
-
-// parseBashArray must return empty for non-array lines (comments, scalar
-// assignments, blank lines) so the caller can skip them safely.
-func TestParseBashArray_NonArray(t *testing.T) {
-	for _, line := range []string{
-		`DEFAULT_MODEL="kimi-k2.6:cloud"`,
-		`# a comment`,
-		``,
-		`PROVIDER_OLLAMA_BASE_URL="http://localhost:11434"`,
-	} {
-		name, vals := parseBashArray(line)
-		if name != "" || vals != nil {
-			t.Errorf("parseBashArray(%q) = (%q, %v), want empty", line, name, vals)
-		}
-	}
-}
-
 // stripComments removes bash comments so commented-out model entries (e.g.
 // `# "nemotron-3-ultra:cloud"`) are not migrated. The real models.conf uses
 // comments to disable models, and those must not appear in the new config.

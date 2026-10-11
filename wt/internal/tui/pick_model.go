@@ -153,18 +153,15 @@ func (m pickModel) View() string {
 	return m.frame()(m.list.View())
 }
 
-// PickModel runs a standalone Bubble Tea program showing the selector
+// PickStartModel runs a standalone Bubble Tea program showing the selector
 // table — the same columns the wt agent flow's model picker uses — and returns the user's selection. ok is false when the user
 // canceled (Esc/q/Ctrl+C) rather than selecting a model. Unlike the agent
 // flow's picker, models is never filtered down to one agent's eligible set;
 // callers scoped to "any agent that can run this model" (e.g. wt smoke)
 // pass their own unfiltered union list. models may include start and blocked
 // rows (wt start); blocked rows are shown but not selectable.
-func PickModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
-	return runPick(newPickModel(cfg, models, theme, false))
-}
-
-// PickStartModel is PickModel for callers that do not launch an agent from the
+//
+// It is for callers that do not launch an agent from the
 // pick: `wt start` (starting is not launching) and `wt smoke` (its candidates
 // were already route-checked per agent), so the launch-route rules (a
 // cloud model not in LiteLLM, a route that fails to resolve) do not block

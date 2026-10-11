@@ -59,15 +59,12 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		lc.ModelFallback = true
 		return lc
 	}
-	modelArg := r.ProviderID + "/" + r.ModelRef
 	providerID := r.ProviderID
-	launchID := r.ModelRef
 	if r.Litellm {
-		modelArg = piLitellmProviderID + "/" + r.ModelRef
 		providerID = piLitellmProviderID
-		launchID = r.ModelRef
 	}
-	if isLaunchable(providerID, launchID, path) {
+	modelArg := providerID + "/" + r.ModelRef
+	if isLaunchable(providerID, r.ModelRef, path) {
 		lc.Args = append(lc.Args, "--model", modelArg)
 	} else {
 		lc.Warn = fmt.Sprintf("pi: model %q not configured for pi, using default model", modelArg)
@@ -95,8 +92,6 @@ func (piDriver) RequiredMechanism(m profiles.Mechanism) (profiles.Mechanism, boo
 	return "", false
 }
 
-// OneShotArgs runs a single prompt non-interactively and exits — used by
-// wt smoke to verify a model works through this agent.
 // piSessionDirChars are what pi's session manager turns into a dash when it
 // names a working directory's session directory.
 var piSessionDirChars = strings.NewReplacer("/", "-", `\`, "-", ":", "-")
@@ -115,4 +110,6 @@ func (piDriver) StateDir(path string) string {
 	return filepath.Join(agentDir, "sessions", "--"+piSessionDirChars.Replace(path)+"--")
 }
 
+// OneShotArgs runs a single prompt non-interactively and exits — used by
+// wt smoke to verify a model works through this agent.
 func (piDriver) OneShotArgs(prompt string) []string { return []string{"-p", prompt} }

@@ -39,7 +39,6 @@ type event struct {
 // purpose (#289): its one caller, `wt stats`, holds the concrete type, and a
 // member here is a method every test double has to implement.
 type Store interface {
-	Record(modelID string) error
 	RecordFor(agent, modelID string) error
 	Counts(modelIDs []string) map[string]UsageCounts
 	CountsForAgent(agent string, modelIDs []string) map[string]UsageCounts
@@ -66,10 +65,6 @@ func (s *StoreImpl) path() string {
 // Counts and CountsForAgent measure from. Overridable for tests. AllCounts
 // does not use it — its caller passes the instant.
 var now = time.Now
-
-// Record appends a launch event with no agent attribution. Prefer RecordFor;
-// Record remains for callers that only know the model.
-func (s *StoreImpl) Record(modelID string) error { return s.RecordFor("", modelID) }
 
 // RecordFor appends one launch event for agent+modelID atomically, first dropping
 // any existing events older than retentionWindow so the file doesn't grow
@@ -116,7 +111,7 @@ func (s *StoreImpl) RecordFor(agent, modelID string) error {
 // window of asOf. Lines that fail to parse as an event are dropped along
 // with expired ones. A scan error (e.g. a corrupt line exceeding bufio's
 // token limit) is surfaced rather than silently truncating the pruned
-// output, since the result overwrites the on-disk history in Record.
+// output, since the result overwrites the on-disk history in RecordFor.
 func pruneOlderThan(data []byte, asOf time.Time, window time.Duration) ([]byte, error) {
 	var out []byte
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -145,7 +140,7 @@ func (s *StoreImpl) Counts(modelIDs []string) map[string]UsageCounts {
 }
 
 // CountsForAgent is Counts scoped to one agent. Events without an agent
-// (legacy lines, or Record) never match, and an empty agent matches nothing.
+// (legacy lines, or RecordFor with no agent) never match, and an empty agent matches nothing.
 func (s *StoreImpl) CountsForAgent(agent string, modelIDs []string) map[string]UsageCounts {
 	return s.countsWhere(modelIDs, func(ev event) bool { return agent != "" && ev.Agent == agent })
 }

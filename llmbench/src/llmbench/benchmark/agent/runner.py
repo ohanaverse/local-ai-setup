@@ -433,8 +433,8 @@ def run_suite(
 ) -> tuple[Path, list[RowRunResult]]:
     """Phase 0 (preflight) + phase 1 (execute): group rows by provider,
     isolate once per group, run each row's agent + gates, restore at the
-    end. Judging (phase 2) and the rendered report (phase 3) are added by
-    Tasks 19-23."""
+    end. Then judging (phase 2, unless `skip_judge`) and the rendered report
+    (phase 3: summary.md, metrics.jsonl, run.toml)."""
     task = load_task(suite.task_path)
     preflight(suite, registry, task)
 
@@ -465,7 +465,8 @@ def run_suite(
         # Re-isolate within the provider group whenever the pairing changes.
         # For non-mlx providers the pairing is always () so this isolates once
         # for the group. A broken mlx_lm_server model (no pairing resolvable)
-        # raises here, before any isolate call, and is contained to its row.
+        # raises before any isolate call and is contained to its row, as is a
+        # failed isolate call.
         prev_extra: tuple[str, ...] | None = None
         for row in group_rows:
             try:
@@ -492,6 +493,15 @@ def run_suite(
                     extra_args = (row.mtplx_model_name,)
                 else:
                     extra_args = ()
+                if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
+                    # A cloud row contends with nothing on this machine, and
+                    # isolating it fails outright — the lifecycle's BACKENDS
+                    # registry knows only the local backends — which used to
+                    # mark every cloud row ISOLATION_ERROR before a single
+                    # request was made.
+                    isolation.isolate_provider(provider_id, *extra_args)
+                    isolated_any = True
+                    prev_extra = extra_args
             except BenchmarkError as exc:
                 index += 1
                 for pass_number in range(1, suite.passes + 1):
@@ -507,30 +517,6 @@ def run_suite(
                         )
                     )
                 continue
-            if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
-                # A cloud row contends with nothing on this machine, and
-                # isolating it fails outright — the lifecycle's BACKENDS registry
-                # knows only the local backends — which used to mark every cloud
-                # row ISOLATION_ERROR before a single request was made.
-                try:
-                    isolation.isolate_provider(provider_id, *extra_args)
-                    isolated_any = True
-                except BenchmarkError as exc2:
-                    index += 1
-                    for pass_number in range(1, suite.passes + 1):
-                        results.append(
-                            RowRunResult(
-                                row=row,
-                                pass_number=pass_number,
-                                row_dir=_row_dir(run_dir, index, row, pass_number),
-                                gates=None,
-                                metrics=None,
-                                diff_raw="",
-                                error=str(exc2),
-                            )
-                        )
-                    continue
-                prev_extra = extra_args
 
             index += 1
             for pass_number in range(1, suite.passes + 1):

@@ -539,7 +539,7 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 
 // TestLaunchFilteredUsesEligibleAndSlot verifies that the non-TUI launch path
 // (a) calls cfg.EligibleModels to resolve the model list, (b) consults the
-// global rotation via rotation.Last/rotation.Next (no per-slot state) to
+// global rotation via rotation.Last/rotation.NextFromEligible (no per-slot state) to
 // pick the next-to-use model when no -M pin is supplied, and (c) honors the
 // -M pin without consulting rotation. Rotation is global, not per
 // agent+tag+family, so the eligible list is the sole source of truth for
@@ -640,11 +640,10 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 // TestLaunchFilteredRotationRespectsTagFilter verifies that the rotation
 // fallback in launchFiltered (triggered when resolveModel's "multiple
 // models match" error fires) stays scoped to the -T filter instead of
-// walking the full agent-eligible list. Before this fix, rotation.Next
-// ignored tags/family and could select+record a model the user's -T
-// filter explicitly excluded — a regression from the pre-PR
-// EligibleModels(agent, tags, family)-scoped rotation, flagged in PR #82
-// review.
+// walking the full agent-eligible list: rotation.NextFromEligible is
+// handed the -T-filtered list, so the model it selects and
+// rotation.RecordFor records is never one the user's -T filter
+// explicitly excluded.
 func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -674,7 +673,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 		},
 	}
 
-	if err := rotation.New().Record("claude/design-a"); err != nil {
+	if err := rotation.New().RecordFor("", "claude/design-a"); err != nil {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 
@@ -694,7 +693,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 
 // TestLaunchFilteredRecordsRefcount verifies the non-TUI launch path
 // records a live-session refcount entry (this process's pid + the launched
-// model) at the same commit point as rotation.Record, so the picker's "in
+// model) at the same commit point as rotation.RecordFor, so the picker's "in
 // use" column can see a launch made through -W/--cwd/outside-repo, not
 // just the TUI.
 func TestLaunchFilteredRecordsRefcount(t *testing.T) {

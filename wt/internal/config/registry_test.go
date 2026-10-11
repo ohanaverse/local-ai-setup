@@ -270,25 +270,25 @@ func TestRegistryPathExpandsTildeInXDG(t *testing.T) {
 // HOME-unset error path cannot be reliably simulated on platforms where
 // os.UserHomeDir() falls back to the user database (most Unix); the
 // contract is exercised instead by RegistryPath() and baseConfigHome(),
-// which handle the error from expandHome.
+// which handle the error from ExpandHome.
 func TestExpandHomeHappyPath(t *testing.T) {
 	t.Setenv("HOME", "")
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skip("cannot simulate HOME-unset on this platform; error path tested at the call sites")
 	}
-	if got, err := expandHome("~/x"); err != nil || got != filepath.Join(home, "x") {
-		t.Errorf("expandHome(~/x) = (%q, %v), want (%q, nil)", got, err, filepath.Join(home, "x"))
+	if got, err := ExpandHome("~/x"); err != nil || got != filepath.Join(home, "x") {
+		t.Errorf("ExpandHome(~/x) = (%q, %v), want (%q, nil)", got, err, filepath.Join(home, "x"))
 	}
 }
 
 // A registry override (WT_REGISTRY or its alias) of the form "~username/..."
-// is left literal: Go has no portable getpwnam. expandHome's doc comment
+// is left literal: Go has no portable getpwnam. ExpandHome's doc comment
 // records the limitation; the alternative (silently expanding to the current
 // user's home) would read the wrong user's registry without a word.
 func TestExpandHomeLeavesTildeUsernameLiteral(t *testing.T) {
-	if got, err := expandHome("~ops/shared/registry.toml"); err != nil || got != "~ops/shared/registry.toml" {
-		t.Errorf("expandHome(~ops/...) = (%q, %v), want (literal, nil)", got, err)
+	if got, err := ExpandHome("~ops/shared/registry.toml"); err != nil || got != "~ops/shared/registry.toml" {
+		t.Errorf("ExpandHome(~ops/...) = (%q, %v), want (literal, nil)", got, err)
 	}
 }
 
@@ -332,7 +332,7 @@ base_url = "http://localhost:8003/v1"
 	}
 }
 
-// TestExpandHomeExported verifies the exported ExpandHome expands a leading
+// TestExpandHomeExported verifies ExpandHome expands a leading
 // ~/ against $HOME and leaves other paths alone — the inventory relies on it
 // to turn a registry model_dir like "~/.omlx/models" into a real directory.
 func TestExpandHomeExported(t *testing.T) {

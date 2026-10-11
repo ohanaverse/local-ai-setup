@@ -15,21 +15,18 @@ import (
 // second mechanism its agent requires alongside it; pass nil to skip that
 // check. It returns one combined error naming every offending profile, or
 // nil if all profiles pass.
-// validMatchTiers are the only values Resolve's tierRank recognizes; any
-// other value (typically a typo) makes a profile silently unmatchable
-// forever, with no error anywhere else in the package.
-var validMatchTiers = map[string]bool{"location": true, "provider": true, "model": true}
-
 func Validate(store Store, mechanismsFor func(agent string) []Mechanism, requiredMechanismFor func(agent string, m Mechanism) (Mechanism, bool)) error {
 	var problems []string
 	for i, p := range store.Profiles {
-		if !validMatchTiers[p.Match] {
+		// A match Resolve's tierRank does not recognize (typically a typo)
+		// would make the profile silently unmatchable forever.
+		if _, ok := tierRank[p.Match]; !ok {
 			problems = append(problems, fmt.Sprintf(
 				"profiles.toml[%d] (agent=%s): invalid match %q (must be \"location\", \"provider\", or \"model\")",
 				i, p.Agent, p.Match))
 			continue
 		}
-		if matchFieldEmpty(p) {
+		if matchValue(p) == "" {
 			problems = append(problems, fmt.Sprintf(
 				"profiles.toml[%d] (agent=%s, match=%s): empty %s value — a profile whose match tier has no value would match every launch",
 				i, p.Agent, p.Match, p.Match))
@@ -69,23 +66,6 @@ func Validate(store Store, mechanismsFor func(agent string) []Mechanism, require
 		return nil
 	}
 	return errors.New(strings.Join(problems, "; "))
-}
-
-// matchFieldEmpty reports whether p's match-tier field (Location/Provider/
-// Model, selected by p.Match) is empty — the same condition matchesTier
-// (resolve.go) guards against at resolution time. Called only after
-// validMatchTiers has already confirmed p.Match is one of the three known
-// values, so the switch has no default case of its own to worry about.
-func matchFieldEmpty(p Profile) bool {
-	switch p.Match {
-	case "location":
-		return p.Location == ""
-	case "provider":
-		return p.Provider == ""
-	case "model":
-		return p.Model == ""
-	}
-	return false
 }
 
 func usedMechanisms(p Profile) []Mechanism {

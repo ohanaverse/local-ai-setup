@@ -191,14 +191,7 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			if a.loadErr != nil {
 				return configError(a.loadErr)
 			}
-			if a.cfg == nil {
-				return errors.New("config not loaded")
-			}
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			return runCloudSync(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, o)
+			return runCloudSync(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, o)
 		},
 	}
 	cmd.Flags().StringVar(&only, "only", "", "Run only these flows: a comma list of "+strings.Join(cloudSyncFlows, ", ")+" (default: all)")

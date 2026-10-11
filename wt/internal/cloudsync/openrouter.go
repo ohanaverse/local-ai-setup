@@ -136,11 +136,6 @@ func ParseOpenRouter(body []byte) (map[string]APIPrice, error) {
 	return out, nil
 }
 
-// OpenRouterProvider is the provider_id of the models the openrouter flow
-// refreshes. config owns the value, so the openrouter flow and
-// config.Config.OpenRouterPriced are two readers of one rule, not two rules.
-const OpenRouterProvider = config.OpenRouterProvider
-
 // OpenRouterPriced reports whether e takes its price from OpenRouter: a
 // model whose provider_id is "openrouter", and no other. It is
 // config.Config.OpenRouterPriced over registry rows, and both are pinned by
@@ -150,7 +145,7 @@ const OpenRouterProvider = config.OpenRouterProvider
 // The ollama flow addresses only rows whose provider_id is "ollama"
 // (isOllamaCloud, findEntry), so no row is ever in both flows' scope:
 // TestTheTwoFlowsNeverShareAModel.
-func OpenRouterPriced(e Entry) bool { return e.ProviderID == OpenRouterProvider }
+func OpenRouterPriced(e Entry) bool { return e.ProviderID == config.OpenRouterProvider }
 
 // PriceChange is one registry model OpenRouter has a price for.
 type PriceChange struct {

@@ -40,7 +40,7 @@ func Check(cfg *config.Config, m config.Model) (bool, error) {
 	if cfg == nil || cfg.ProviderByID(m.ProviderID) == nil {
 		return false, fmt.Errorf("no %s provider in the registry, so no daemon to ask", m.ProviderID)
 	}
-	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
+	origin := localmodels.FamilyOrigin(cfg, "ollama")
 	if u, err := url.Parse(origin); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		// Short, with the value last: the picker shows this behind
 		// "ollama check failed: " on one status line that it cuts at the

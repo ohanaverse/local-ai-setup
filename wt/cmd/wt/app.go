@@ -76,9 +76,8 @@ func agentRequiredMechanism(agent string, m profiles.Mechanism) (profiles.Mechan
 // profiles store. Config and profiles validation errors are stored in the
 // returned app rather than returned as a fatal error, so `wt config`/
 // `wt profile` can still launch and let the user repair a broken file.
-// Live model discovery is deferred to the `models` subcommand so
-// flag-only paths (--version, --init, -w, --cwd) don't shell out to
-// ollama or hit the OpenRouter API.
+// newApp does no live model discovery, so flag-only paths (--version,
+// --init, -W, --cwd) don't shell out to ollama or hit the OpenRouter API.
 func newApp() (*app, error) {
 	cfg, cfgErr := config.Load()
 	loadErr := cfgErr

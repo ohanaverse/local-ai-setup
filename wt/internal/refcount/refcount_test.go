@@ -52,6 +52,23 @@ func TestCountsIgnoresUnrequestedModels(t *testing.T) {
 	}
 }
 
+// TestCountsCountsARequestedEmptyID verifies Counts counts the entries of
+// whatever id it is asked for, the empty one included: Record accepts an
+// empty model id, and Counts reads the file with its own scan, where Live
+// skips such an entry. Building Counts on Live would answer 0 here.
+func TestCountsCountsARequestedEmptyID(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	if err := store.Record(111, ""); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if got := store.Counts([]string{""}); len(got) != 1 || got[""] != 1 {
+		t.Fatalf("Counts = %v, want the one empty-id entry counted", got)
+	}
+	if got := store.Live(); len(got) != 0 {
+		t.Fatalf("Live = %v, want the empty-id entry skipped", got)
+	}
+}
+
 // TestCountsMultipleSessionsSameModel verifies two different pids recorded
 // against the same model both count — this is what lets a second concurrent
 // wt session show "2" instead of clobbering the first session's entry.

@@ -25,10 +25,10 @@ type themesFile struct {
 	Theme string `toml:"theme"`
 }
 
-// Path returns the absolute path to themes.toml. Computed from dir() so
+// Path returns the absolute path to themes.toml. Computed from dirFunc so
 // tests can redirect the directory.
 func Path() string {
-	return filepath.Join(dir(), "themes.toml")
+	return filepath.Join(dirFunc(), "themes.toml")
 }
 
 // Load reads the active theme from themes.toml. The second return value is

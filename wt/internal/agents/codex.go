@@ -45,26 +45,20 @@ func (codexDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	}
 
 	baseURL := r.BaseOrigin + "/v1/"
-	modelName := r.ModelRef
-	configArgs := []string{}
-	if r.Litellm {
-		// LiteLLM's v1 API needs a key; the local endpoint does not.
-		lc.Env = append(lc.Env, codexGatewayEnvKey+"="+r.APIKey)
-		configArgs = append(configArgs,
-			"-c", "model_providers."+ollamaProvider+".env_key=\""+codexGatewayEnvKey+"\"",
-		)
-	}
-
 	lc.Args = append(lc.Args,
 		"-c", "model_provider="+ollamaProvider,
 		"-c", "model_providers."+ollamaProvider+".name=\"Ollama\"",
 		"-c", "model_providers."+ollamaProvider+".base_url=\""+baseURL+"\"",
 		"-c", "model_providers."+ollamaProvider+".wire_api=\"responses\"",
 	)
-	lc.Args = append(lc.Args, configArgs...)
-	lc.Args = append(lc.Args,
-		"--model", modelName,
-	)
+	if r.Litellm {
+		// LiteLLM's v1 API needs a key; the local endpoint does not.
+		lc.Env = append(lc.Env, codexGatewayEnvKey+"="+r.APIKey)
+		lc.Args = append(lc.Args,
+			"-c", "model_providers."+ollamaProvider+".env_key=\""+codexGatewayEnvKey+"\"",
+		)
+	}
+	lc.Args = append(lc.Args, "--model", r.ModelRef)
 	return lc
 }
 

@@ -177,7 +177,6 @@ def render_turn(r, lines, turn_label):
         args = fmt_args(fn.get("arguments", ""))
         lines.append(f"**[tool call: `{name}`]**")
         lines.append(f"```json\n{args}\n```\n")
-    return model
 
 
 # ---- Pass 1: assign each successful turn to a thread ----
@@ -268,7 +267,7 @@ for tid, infos in thread_sizes:
     out.append(f"| {tid} | {len(infos)} | {fmt_ts(infos[0]['r']['startTime'])} | {', '.join(models)} |")
 out.append("")
 
-for rank, (tid, infos) in enumerate(main_threads, start=1):
+for tid, infos in main_threads:
     infos_sorted = sorted(infos, key=lambda i: i["r"]["startTime"])
     models = sorted({(i["r"].get("response") or {}).get("model") for i in infos_sorted} - {None})
     out.append(f"\n## Thread {tid} ({len(infos_sorted)} turns, models: {', '.join(models)})\n")

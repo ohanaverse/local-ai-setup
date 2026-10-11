@@ -240,20 +240,18 @@ func withCatalogPrices(existing *Cost, cm CatalogModel) Cost {
 	at, old := -1, (*tomlw.Table)(nil)
 	var rows []*tomlw.Table
 	for i, row := range base.TimePrices {
-		if !isOffpeak(row) {
-			rows = append(rows, row)
-		} else if old == nil {
+		if isOffpeak(row) && old == nil {
 			at, old = i, row
-		} else {
-			rows = append(rows, row)
+			continue
 		}
+		rows = append(rows, row)
 	}
 	if cm.Offpeak != nil {
 		var oldIn, oldCache, oldOut *float64
 		if old != nil {
 			oldIn, oldCache, oldOut = number(old, "input_price_per_million"), number(old, "cache_price_per_million"), number(old, "output_price_per_million")
 		}
-		if at < 0 || at > len(rows) {
+		if at < 0 {
 			at = len(rows)
 		}
 		rows = slices.Insert(rows, at, offpeakRow(merged(*cm.Offpeak, oldIn, oldCache, oldOut)))
@@ -471,9 +469,8 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 	return plan
 }
 
-// formatPrice prints a price as Python's `{v:g}` does, so a plan reads the
-// same from either tool: six significant digits, no trailing zeros, exponent
-// form from 1e+06 up and below 0.0001.
+// formatPrice prints a price as Python's `{v:g}` does: six significant
+// digits, no trailing zeros, exponent form from 1e+06 up and below 0.0001.
 func formatPrice(v *float64) string {
 	if v == nil {
 		return "-"

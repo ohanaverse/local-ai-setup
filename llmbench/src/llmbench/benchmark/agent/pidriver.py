@@ -252,7 +252,6 @@ def run_pi_process(
     events: list[dict] = []
     seen_message_end = False
     unparsed_lines = 0
-    exit_code: int | None = None
     timed_out = False
     aborted = False
 
@@ -372,11 +371,8 @@ def run_pi_process(
         with contextlib.suppress(Exception):
             proc.stdout.close()
 
-    if exit_code is None:
-        exit_code = proc.returncode
-
     return events, PiRunResult(
-        exit_code=exit_code,
+        exit_code=proc.returncode,
         timed_out=timed_out,
         aborted=aborted,
         seen_message_end=seen_message_end,
@@ -576,8 +572,7 @@ def compute_metrics(
         if len(m.ttfts_ms) >= 2 and m.ttft_first_ms >= 3 * m.ttft_subseq_median_ms:
             m.cold_first_token = True
 
-    # CACHE_ANOMALY — same relative check as compute_total_tokens() in
-    # llmbench/benchmark/runner.py, applied per-row.
+    # CACHE_ANOMALY, applied per-row.
     total_in = m.input_tok + m.cache_read_tok + m.cache_write_tok
     if total_in > 0:
         cache_ratio = (m.cache_read_tok + m.cache_write_tok) / total_in

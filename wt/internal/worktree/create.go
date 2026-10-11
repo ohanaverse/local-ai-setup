@@ -28,7 +28,7 @@ func EnsureForName(dir, name string) (string, error) {
 	// The default branch must never be a linked worktree. If it isn't
 	// already checked out (the reuse loop above found nothing), refuse
 	// rather than create .worktrees/<default>.
-	if db, _ := DefaultBranch(dir); db != "" && name == db {
+	if db := DefaultBranch(dir); db != "" && name == db {
 		return "", fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", name)
 	}
 
@@ -108,7 +108,7 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	// upstream/<default>, ...). isDefaultBranchSelection confirms the ref
 	// really lives under refs/remotes/ so a local branch that merely ends
 	// in "/<default>" (e.g. feature/main) is not falsely refused.
-	if db, _ := DefaultBranch(dir); db != "" && isDefaultBranchSelection(branch, db, dir) {
+	if db := DefaultBranch(dir); db != "" && isDefaultBranchSelection(branch, db, dir) {
 		return "", fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", db)
 	}
 	switch {

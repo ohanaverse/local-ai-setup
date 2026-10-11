@@ -63,51 +63,23 @@ func (r *Rotation) RecordFor(agent, modelID string) error {
 	return nil
 }
 
-// Record is RecordFor with no agent attribution.
-func (r *Rotation) Record(modelID string) error { return r.RecordFor("", modelID) }
-
-// cfgHasModels reports whether cfg is safe to rotate against, i.e. non-nil
-// with at least one model. Shared by Next and NextFromEligible so the guard
-// can't drift between the two copies.
-func cfgHasModels(cfg *config.Config) bool {
-	return cfg != nil && len(cfg.Models) > 0
-}
-
-// Next returns the first model after the last launched one that is eligible
-// for agent under the given tags/family filters. It computes the eligible
-// list via cfg.EligibleModels and delegates to NextFromEligible.
+// NextFromEligible returns the first model after the last launched one, in
+// the registry's order, that is in eligible. Callers already hold the
+// eligible slice (launchFilteredImpl from resolveModel; the TUI from its
+// table rows), so cfg.EligibleModels is not computed again here.
 //
 // Rotation never launches on its own authority: the non-TUI rotation
 // fallback picks only from the launchable list resolveModel returns —
 // cloud rows, or local rows the live probe reports as running — so an
 // auto-launched rotation pick can never target a server that is not up.
-// The TUI also calls NextFromEligible, but only to position the picker
-// cursor, on a slice that also includes start rows; Enter there drives
-// the visible start flow, so nothing starts unasked. Starting a local
-// model is the user's decision (-M pin, or Enter on a start row), never
-// rotation's. Next itself computes the eligible list via
-// cfg.EligibleModels (exposure and tag/family filters only, no running
-// check), so it has no production caller: launch callers
-// (cmd/wt/launch.go) hand NextFromEligible a slice resolved from live
-// rows instead, and a future auto-launch caller must do the same rather
-// than call Next.
-func (r *Rotation) Next(cfg *config.Config, agent, tags, family string) (config.Model, bool) {
-	if !cfgHasModels(cfg) {
-		return config.Model{}, false
-	}
-	eligible, err := cfg.EligibleModels(agent, tags, family)
-	if err != nil || len(eligible) == 0 {
-		return config.Model{}, false
-	}
-	return r.NextFromEligible(eligible, cfg)
-}
-
-// NextFromEligible is the rotation core without the expensive
-// cfg.EligibleModels call. Callers already hold the eligible slice
-// (launchFilteredImpl from resolveModel; the TUI from its table rows), so
-// this avoids recomputing it.
+// The TUI calls this only to position the picker cursor, on a slice that
+// also includes start rows; Enter there drives the visible start flow, so
+// nothing starts unasked. Starting a local model is the user's decision
+// (-M pin, or Enter on a start row), never rotation's. So an auto-launch
+// caller must pass a slice resolved from live rows, not cfg.EligibleModels,
+// which applies exposure and tag/family filters only, with no running check.
 func (r *Rotation) NextFromEligible(eligible []config.Model, cfg *config.Config) (config.Model, bool) {
-	if len(eligible) == 0 || !cfgHasModels(cfg) {
+	if len(eligible) == 0 || cfg == nil || len(cfg.Models) == 0 {
 		return config.Model{}, false
 	}
 	allowed := map[string]bool{}
@@ -158,10 +130,6 @@ func (r *Rotation) migrate() error {
 		if !strings.HasPrefix(name, "rotation-") || !strings.HasSuffix(name, ".state") {
 			continue
 		}
-		// Skip the new global file if it somehow matches.
-		if name == "rotation.state" {
-			continue
-		}
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -189,7 +157,7 @@ func (r *Rotation) migrate() error {
 	// Delete old files after successful migration.
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasPrefix(name, "rotation-") && strings.HasSuffix(name, ".state") && name != "rotation.state" {
+		if strings.HasPrefix(name, "rotation-") && strings.HasSuffix(name, ".state") {
 			_ = os.Remove(filepath.Join(r.dir, name))
 		}
 	}

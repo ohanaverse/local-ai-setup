@@ -1,6 +1,9 @@
 package profiles
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestValidateRejectsUnsupportedMechanism verifies a profile using a
 // mechanism its agent does not declare (e.g. config_content for an agent
@@ -73,7 +76,7 @@ func TestValidateMultipleOffendingProfiles(t *testing.T) {
 	}
 	errMsg := err.Error()
 	// Both profiles should be mentioned by index in the combined error message
-	if !contains(errMsg, "profiles.toml[0]") || !contains(errMsg, "profiles.toml[1]") {
+	if !strings.Contains(errMsg, "profiles.toml[0]") || !strings.Contains(errMsg, "profiles.toml[1]") {
 		t.Errorf("Validate() error message does not name both profiles: %v", errMsg)
 	}
 }
@@ -107,7 +110,7 @@ func TestValidateRejectsInvalidMatchTier(t *testing.T) {
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the invalid match tier")
 	}
-	if !contains(err.Error(), "invalid match") {
+	if !strings.Contains(err.Error(), "invalid match") {
 		t.Errorf("Validate() error = %v, want it to mention the invalid match value", err)
 	}
 }
@@ -127,7 +130,7 @@ func TestValidateRejectsEmptyMatchField(t *testing.T) {
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the empty model match field")
 	}
-	if !contains(err.Error(), "empty") {
+	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("Validate() error = %v, want it to mention the empty match field", err)
 	}
 }
@@ -145,7 +148,7 @@ func TestValidateRejectsWrapperArgsTemplateMissingPlaceholder(t *testing.T) {
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the missing {{args}} placeholder")
 	}
-	if !contains(err.Error(), "{{args}}") {
+	if !strings.Contains(err.Error(), "{{args}}") {
 		t.Errorf("Validate() error = %v, want it to mention the missing {{args}} placeholder", err)
 	}
 }
@@ -170,7 +173,7 @@ func TestValidateRejectsMechanismMissingRequiredPair(t *testing.T) {
 	if err == nil {
 		t.Fatal("Validate() = nil, want an error naming the env-without-wrapper mismatch")
 	}
-	if !contains(err.Error(), "no effect without") {
+	if !strings.Contains(err.Error(), "no effect without") {
 		t.Errorf("Validate() error = %v, want it to mention the missing required mechanism", err)
 	}
 }
@@ -196,14 +199,4 @@ func TestValidateAcceptsMechanismWithRequiredPair(t *testing.T) {
 	if err := Validate(store, mechs, requires); err != nil {
 		t.Errorf("Validate() = %v, want nil for env paired with wrapper", err)
 	}
-}
-
-// Helper function for test assertions
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

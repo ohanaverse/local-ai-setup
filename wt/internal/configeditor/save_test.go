@@ -337,11 +337,11 @@ func TestSave_JoinedErrors_RegistryHintPreferred(t *testing.T) {
 
 // TestSave_JoinedErrors_ConfigFirst_RegistryHintStillWins pins that even
 // when the config.toml error appears first in the joined error, the registry
-// hint is still shown. This is the exact bug fixed by RegistryFixHintFromAny.
+// hint is still shown: RegistryFixHint looks through the whole join.
 func TestSave_JoinedErrors_ConfigFirst_RegistryHintStillWins(t *testing.T) {
 	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	// Same config, but we're testing that the order in the joined error
-	// doesn't matter - RegistryFixHintFromAny checks all errors.
+	// doesn't matter - RegistryFixHint checks all errors.
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "", // config.toml problem
 		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},

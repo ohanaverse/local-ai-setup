@@ -27,15 +27,15 @@ var registryEnvNames = []string{"WT_REGISTRY", "MODELMAN_REGISTRY"}
 // a test of it.
 func RegistryPath() string {
 	// A named registry is the only branch with a side effect: it writes to
-	// stderr on expandHome failure. Acceptable because the path-resolution
+	// stderr on ExpandHome failure. Acceptable because the path-resolution
 	// failure must be visible to the user, and there is no logger to inject
-	// at this layer. See expandHome's docstring for the literal-fallback contract.
+	// at this layer. See ExpandHome's docstring for the literal-fallback contract.
 	for _, name := range registryEnvNames {
 		override := os.Getenv(name)
 		if override == "" {
 			continue
 		}
-		expanded, err := expandHome(override)
+		expanded, err := ExpandHome(override)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "wt: cannot expand %s (%v); using literal path\n", name, err)
 			return override
@@ -45,7 +45,7 @@ func RegistryPath() string {
 	return filepath.Join(baseConfigHome(), "local-ai", "registry.toml")
 }
 
-// expandHome expands a leading "~" or "~/" in path to the user's home
+// ExpandHome expands a leading "~" or "~/" in path to the user's home
 // directory, matching Python's Path.expanduser() as llmbench's registry_path
 // does, so WT_REGISTRY and MODELMAN_REGISTRY behave the same in both tools.
 // Paths that don't start with "~" are returned unchanged.
@@ -57,7 +57,7 @@ func RegistryPath() string {
 //
 // Returns the error from os.UserHomeDir() so callers can surface a
 // clearer message than "file not found" when HOME is unset.
-func expandHome(path string) (string, error) {
+func ExpandHome(path string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~/") {
 		return path, nil
 	}
@@ -70,10 +70,6 @@ func expandHome(path string) (string, error) {
 	}
 	return filepath.Join(home, path[2:]), nil
 }
-
-// ExpandHome expands a leading "~" or "~/" in path against the user's home
-// directory; other paths are returned unchanged.
-func ExpandHome(path string) (string, error) { return expandHome(path) }
 
 // ErrRegistryLink is returned when the registry path is a symbolic link that
 // cannot be followed to a file: its target does not exist, or the chain of
@@ -191,20 +187,12 @@ func resolveRegistryFile(path string) (target string, exists bool, err error) {
 func loadRegistry() ([]Provider, []Model, error) {
 	path := RegistryPath()
 	missing := fmt.Errorf("%w at %s — seed it with `wt model init`", ErrRegistryMissing, path)
-	target, exists, err := resolveRegistryFile(path)
+	_, data, exists, err := readRegistryFile(path)
 	if err != nil {
 		return nil, nil, err
 	}
 	if !exists {
 		return nil, nil, missing
-	}
-	data, err := os.ReadFile(target)
-	if os.IsNotExist(err) {
-		// Removed between the check and the read.
-		return nil, nil, missing
-	}
-	if err != nil {
-		return nil, nil, registryFileError(err)
 	}
 	var reg struct {
 		Providers []Provider `toml:"providers"`

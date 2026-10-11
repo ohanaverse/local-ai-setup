@@ -36,7 +36,7 @@ func tempStateDir(t *testing.T) string {
 // launched model ID. Tests use this to simulate prior launches.
 func seedState(t *testing.T, dir, modelID string) {
 	t.Helper()
-	if err := rotation.NewAt(dir).Record(modelID); err != nil {
+	if err := rotation.NewAt(dir).RecordFor("", modelID); err != nil {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 }
@@ -746,7 +746,7 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 // TestLaunchAndRecordWritesLast asserts that launchAndRecord —
 // the single commit point reached only after the ollama check is
 // satisfied — writes the launched model's ID
-// via rotation.Record to the global rotation state file. This is
+// via rotation.RecordFor to the global rotation state file. This is
 // the positive counterpart to
 // TestEnterInModelPhaseDoesNotRecordBeforeLaunch: the rotation
 // advances exactly when a launch commits, no sooner. It also asserts the

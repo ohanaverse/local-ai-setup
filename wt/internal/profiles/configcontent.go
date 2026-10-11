@@ -139,7 +139,7 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 }
 
 // mergeOpenCodeEnv merges content into the OPENCODE_CONFIG_CONTENT entry in
-// cmd.Env. It searches from the END of cmd.Env, not the start: Command()
+// cmd.Env. It searches from the END of cmd.Env, not the start: BuildLaunchCmd
 // (internal/agents) builds cmd.Env as os.Environ() (the inherited parent
 // environment) followed by the driver's own env entries, so if the parent
 // process already happens to export OPENCODE_CONFIG_CONTENT (e.g. wt was
@@ -410,6 +410,15 @@ func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing [
 // swallowing it here would let a caller proceed to overwrite a `.present`
 // backup that in fact still holds the true pre-write original, which is
 // exactly the data loss self-heal exists to prevent.
+func restoreIfBackedUp(target string) (restored bool, err error) {
+	err = withTargetLock(target, func() error {
+		var lockErr error
+		restored, _, lockErr = restoreIfBackedUpLocked(target)
+		return lockErr
+	})
+	return restored, err
+}
+
 // SelfHeal restores target from an orphaned config_content backup, if one
 // exists — the exported entry point for callers outside this package
 // (cmd/wt's applyProfileForLaunch) that want to self-heal a claude/codex
@@ -419,15 +428,6 @@ func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing [
 // covers). Safe to call with no backup present (a no-op, restored=false).
 func SelfHeal(target string) (restored bool, err error) {
 	return restoreIfBackedUp(target)
-}
-
-func restoreIfBackedUp(target string) (restored bool, err error) {
-	err = withTargetLock(target, func() error {
-		var lockErr error
-		restored, _, lockErr = restoreIfBackedUpLocked(target)
-		return lockErr
-	})
-	return restored, err
 }
 
 // statExists reports whether path exists, treating a not-exist error as

@@ -49,7 +49,7 @@ func compactModelList(t *testing.T, models []config.Model) list.Model {
 // developer's real ~/.config/agent-wt/usage.jsonl — whose event counts feed
 // the picker's 1d/7d/30d columns and the 7d-usage tie-break, making displayed
 // counts and row order depend on host state. Returns the stubbed store so a test can seed events via
-// Record; the seam is restored on cleanup.
+// RecordFor; the seam is restored on cleanup.
 func stubUsageStore(t *testing.T) usage.Store {
 	t.Helper()
 	store := usage.NewStoreAt(t.TempDir())

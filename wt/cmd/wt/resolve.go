@@ -179,7 +179,7 @@ func launchableModels(cfg *config.Config, agent string, rows []catalog.Row) []co
 // resolveModelFromEligible resolves the single model to launch from a
 // precomputed launchable list, applying the ambiguity rule without
 // recomputing anything. Callers that already hold the slice
-// (launchFilteredImpl, resolveModelForLaunch) use this to avoid a second
+// (launchFilteredImpl, runLaunchPath) use this to avoid a second
 // EligibleModels call. The list must be non-empty; the empty case is handled
 // by resolveModel before this is called.
 //

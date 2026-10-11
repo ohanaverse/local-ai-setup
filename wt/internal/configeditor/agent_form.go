@@ -22,7 +22,6 @@ func newTextInput(value, placeholder string) textinput.Model {
 // enterAgentForm transitions the model into the agent edit/add form.
 func enterAgentForm(m *model, ag config.Agent, isNew bool) {
 	m.phase = phaseForm
-	m.formKind = formAgent
 	m.formIsNew = isNew
 	m.formError = ""
 	m.formCursor = 0
@@ -55,7 +54,6 @@ func (m *model) handleAgentFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyEsc:
 			m.phase = phaseList
-			m.formKind = formNone
 			return m, nil
 		case tea.KeyCtrlS:
 			return m.saveAgentForm()
@@ -130,7 +128,6 @@ func (m *model) saveAgentForm() (tea.Model, tea.Cmd) {
 
 	m.dirty = true
 	m.phase = phaseList
-	m.formKind = formNone
 	m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 	return m, nil
 }

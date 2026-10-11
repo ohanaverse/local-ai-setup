@@ -594,23 +594,17 @@ func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
 	if ml == nil {
 		return nil
 	}
-	aliasGet := func(n *yaml.Node) *yaml.Node {
-		if n != nil && n.Kind == yaml.AliasNode && n.Alias != nil {
-			return n.Alias
-		}
-		return n
-	}
 	var out []string
 	for _, row := range ml.Content {
-		p := aliasGet(mapGet(row, "litellm_params"))
+		p := aliasValue(mapGet(row, "litellm_params"))
 		if p == nil || p.Kind != yaml.MappingNode {
 			continue
 		}
-		model := aliasGet(mergedGet(p, "model"))
+		model := aliasValue(mergedGet(p, "model"))
 		if model == nil || model.Kind != yaml.ScalarNode || !strings.Contains(model.Value, "ollama") {
 			continue
 		}
-		b := aliasGet(mergedGet(p, "api_base"))
+		b := aliasValue(mergedGet(p, "api_base"))
 		if b == nil || isNull(b) {
 			out = append(out, fmt.Sprintf(`row %q (model %s) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`, rowLabel(row, model.Value), model.Value))
 			continue
