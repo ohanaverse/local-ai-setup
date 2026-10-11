@@ -161,10 +161,29 @@ func (s *StoreImpl) rewrite(drop func(entry) bool, onlyIfDropped bool) error {
 // Sweep, not here, so a caller that wants fresh counts must have swept
 // first (runLaunchPath does, before the picker is built).
 func (s *StoreImpl) Counts(modelIDs []string) map[string]int {
-	live := s.Live()
 	out := make(map[string]int, len(modelIDs))
+	want := make(map[string]bool, len(modelIDs))
 	for _, id := range modelIDs {
-		out[id] = live[id]
+		out[id] = 0
+		want[id] = true
+	}
+
+	f, err := os.Open(s.path())
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var e entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			continue
+		}
+		if !want[e.ModelID] {
+			continue
+		}
+		out[e.ModelID]++
 	}
 	return out
 }
