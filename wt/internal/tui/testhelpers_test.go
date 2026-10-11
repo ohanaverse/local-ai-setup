@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
@@ -84,6 +85,10 @@ func TestMain(m *testing.M) {
 	// config.IsolateConfigHomeForTest carries the full rationale. A test that
 	// sets its own XDG_CONFIG_HOME still wins.
 	_, rmConfigHome := config.IsolateConfigHomeForTest()
+	// No test may find a git repository it did not make: the worktree tests
+	// build theirs in temp directories — gitenv.IsolateForTest carries the
+	// full rationale.
+	gitenv.IsolateForTest()
 	runInventory = localmodels.OnDiskSnapshotForTest
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")

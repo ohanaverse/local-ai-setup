@@ -82,26 +82,25 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
-- **Test seams** are package-level vars: production code calls the var, tests swap it. A new seam is a `var x = realX` plus a `realX` function. `internal/lifecycle` instead keeps every seam in one `env` struct (`defaultEnv()` / `testEnv()`).
+- **Test seams** are package-level vars (`var x = realX`): production code calls the var, tests swap it. `internal/lifecycle` keeps its seams in one `env` struct (`defaultEnv()` / `testEnv()`).
 - **No test reads the real mtplx pidfile or signals a process it did not start**: the `TestMain`s of `internal/lifecycle`, `internal/survey` and `cmd/wt` call `lifecycle.IsolateProcessesForTest()`.
-- **Tests stay off the developer's machine.** The `TestMain`s of the packages that reach `config.Dir()` call `config.IsolateConfigHomeForTest` (throwaway `XDG_CONFIG_HOME`, `WT_REGISTRY` and `MODELMAN_REGISTRY` cleared); `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts and no-op the route check, and no test runs `psql`. Tests name a scratch registry through `WT_REGISTRY`; in a package with no isolating `TestMain`, a test that sets it also sets `MODELMAN_REGISTRY` to `""`. A new package whose tests reach `config.Dir()` needs the same setup; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Tests stay off the developer's machine.** The `TestMain` of each package that reaches `config.Dir()` calls `config.IsolateConfigHomeForTest` (throwaway `XDG_CONFIG_HOME`; `WT_REGISTRY` and `MODELMAN_REGISTRY` cleared); `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts and no-op the route check, and no test runs `psql`. Tests name a scratch registry through `WT_REGISTRY`, and where no `TestMain` isolates also set `MODELMAN_REGISTRY` to `""`. A new package that reaches `config.Dir()` needs the same; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+- **Git finds only repositories a test made**: the `TestMain` of every package whose tests can run git (itself, or via `internal/worktree`, `guard` or `smoke`) calls `gitenv.IsolateForTest()` (`TestEveryPackageThatRunsGitIsolatesIt`).
 - **Assert on unexported functions directly** (e.g. `buildStatsRows`); parsing rendered lipgloss output flakes under forced-color ANSI.
 
-Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
+Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, runs git, starts a model, or touches routes — it lists every seam and what each `TestMain` stubs.
 
 ```bash
-go test ./...                        # all Go tests
-go test ./internal/worktree -v       # verbose, one package
-go test ./internal/agents -run TestOpenCodeOllamaPrefix -v   # one test
-go vet ./...                         # static analysis
-make check                           # shellcheck + shfmt check + go-format-check (gofmt -l gate wt-ci runs); `make format` writes both
+go test ./...
+go test ./internal/agents -run TestOpenCodeOllamaPrefix   # one test
+go vet ./...
+make check   # shellcheck, shfmt, gofmt -l (wt-ci's gate); `make format` writes both
+make -C .. test-all   # CI-equivalent: root lint + llmbench + wt
 ```
-
-From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint + llmbench + wt build/vet/test).
 
 ## Go module
 
-Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
 | Path | Purpose |
 |---|---|
@@ -147,6 +146,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/spend/` | per-model request, token and cost totals from the proxy's spend table: one aggregated query through `psql`, typed failures, no Postgres driver; the connection string is never a `psql` argument (#282) |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | repo detection, enumeration, creation |
+| `internal/gitenv/` | `IsolateForTest`: git isolation for test binaries |
 | `internal/initseed/` | `--init` seeding |
 | `internal/ollamacheck/` | pre-launch `ollama list` availability check, pinned to the registry's ollama address; `StubListForTest` is its seam (`fortest.go`) |
 | `internal/configeditor/` | the TUI behind `wt config`: the Agents tab (`config.toml`, saved with ctrl+s) and the Models tab (`registry.toml` through `internal/modeladmin`, each change written at once); `Run` reports `Result.RegistryChanged` |

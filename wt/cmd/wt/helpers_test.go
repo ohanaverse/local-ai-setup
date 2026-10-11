@@ -12,8 +12,53 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
+// expectDirectLaunch is for a test that runs the root command and expects it
+// to reach a launch the test has stubbed (launchFiltered, launchPassthrough)
+// without the TUI. It replaces the two seams such a test would otherwise
+// leave real with stubs that fail it:
+//
+//   - tuiRun, which opens /dev/tty: a hang in a developer's terminal, where
+//     there is one to open;
+//   - maybeInstallGuard, which appends the commit hook to whatever repository
+//     git finds from the working directory.
+//
+// Both are reached when the launch decision goes another way than the test
+// expects. TestMain (gitenv.IsolateForTest) already keeps a bare temp
+// directory from being taken for a repository; these stubs turn any other
+// wrong turn into a failure that names it. Both are restored on cleanup. A
+// test that launches inside a repository it built expects the guard: it
+// calls expectDirectLaunchInRepo instead. A test that means to reach the TUI
+// does not call either; it stubs tuiRun itself.
+func expectDirectLaunch(t *testing.T) {
+	t.Helper()
+	oldTUI, oldGuard := tuiRun, maybeInstallGuard
+	tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier) error {
+		t.Error("tuiRun was called: the command went to the TUI instead of the launch this test stubs")
+		return errors.New("tuiRun reached in a test that expects a direct launch")
+	}
+	maybeInstallGuard = func() {
+		t.Error("maybeInstallGuard was called: the command took the working directory for a git repository")
+	}
+	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
+}
+
+// expectDirectLaunchInRepo is expectDirectLaunch for a test that runs the
+// root command inside a repository its test built (initTestRepo): --cwd and
+// -W launch through the guard there, so maybeInstallGuard is a no-op rather
+// than a failure, while tuiRun still fails the test.
+func expectDirectLaunchInRepo(t *testing.T) {
+	t.Helper()
+	expectDirectLaunch(t)
+	maybeInstallGuard = func() {}
+}
+
+// gitInit makes dir a git repository with a committer identity of its own.
+// TestMain (gitenv.IsolateForTest) is what makes `git init <dir>` create it
+// in dir whatever the environment the tests were started from.
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
 	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {

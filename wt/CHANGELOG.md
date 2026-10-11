@@ -303,6 +303,14 @@
 
 ### Fixed
 
+- A command named `models` or `agents` given after `--` is now run (#353).
+  `shell-wt -- models` and `wt -A shell -- agents list` exited with
+  ``wt models is removed; use `wt config` to view models`` (or the `agents`
+  form), exit 1: the check that refuses the two removed subcommands looked
+  only at the first word, wherever it stood. After `--` every word is the
+  command, whatever its name. `wt models` and `wt agents` are refused as
+  before, and so is either word typed before a `--` or with none
+  (`wt models -- x`, `shell-wt agents`): put the `--` before the command.
 - `wt start` of an mtplx model no longer fails when the registry's mtplx
   `base_url` names no port (#348). With `base_url = "http://127.0.0.1/v1"`
   wt started mtplx on its default port, 8003, waited for it there, and then

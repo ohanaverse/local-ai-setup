@@ -13,6 +13,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
@@ -31,6 +32,10 @@ func TestMain(m *testing.M) {
 	// config.IsolateConfigHomeForTest carries the full rationale. A test that
 	// sets its own XDG_CONFIG_HOME still wins.
 	_, rmConfigHome := config.IsolateConfigHomeForTest()
+	// No test may find a git repository it did not make, whether it builds
+	// one in a temp directory or changes into a bare one to be outside any —
+	// gitenv.IsolateForTest carries the full rationale.
+	gitenv.IsolateForTest()
 	probeInventory = localmodels.OnDiskSnapshotForTest
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests

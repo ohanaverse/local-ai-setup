@@ -5,15 +5,18 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
 )
 
 // TestMain keeps this package's tests off the developer's machine. The Models
 // tab writes registry.toml through config.UpdateRegistry, so the package
 // needs the throwaway config home and the registry write guard it arms: a
 // test that forgot to redirect the registry would otherwise edit the real
-// one.
+// one. The package links internal/worktree through internal/tui, so git is
+// kept to the repositories a test makes (gitenv.IsolateForTest).
 func TestMain(m *testing.M) {
 	_, cleanup := config.IsolateConfigHomeForTest()
+	gitenv.IsolateForTest()
 	// The tab abbreviates a path under the home directory; the tests' paths
 	// are under this one, not the developer's.
 	userHome = func() (string, error) { return "/Users/dev", nil }
