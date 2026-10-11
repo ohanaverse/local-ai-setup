@@ -784,17 +784,17 @@ func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
 // port, and the default with no registry row, are FamilyOrigin's own origin.
 func TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot(t *testing.T) {
 	for _, id := range []string{"omlx", "omlx-6bit", "ollama", "mlx_lm_server"} {
-		family := familyOf(id)
+		family := Family(id)
 		bare := &config.Config{Providers: []config.Provider{localProvider(id, "http://127.0.0.1/v1", "")}}
 		if origin, port, err := FamilyOriginPort(bare, family); err == nil {
-			probe, _ := FamilyOrigin(bare, family)
+			probe := FamilyOrigin(bare, family)
 			t.Errorf("%s with no port: FamilyOriginPort = %q, %d; want an error (FamilyOrigin is %q)", id, origin, port, probe)
 		}
 		for _, cfg := range []*config.Config{
 			{},
 			{Providers: []config.Provider{localProvider(id, "http://127.0.0.1:9123/v1", "")}},
 		} {
-			probe, _ := FamilyOrigin(cfg, family)
+			probe := FamilyOrigin(cfg, family)
 			origin, port, err := FamilyOriginPort(cfg, family)
 			if err != nil || origin != probe || !strings.HasSuffix(origin, ":"+strconv.Itoa(port)) {
 				t.Errorf("%s: FamilyOriginPort = %q, %d, %v; want FamilyOrigin's %q and its port", id, origin, port, err, probe)
@@ -814,20 +814,25 @@ func TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot(t *testing.T) {
 func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
 	for _, base := range []string{"http://127.0.0.1/v1", "http://localhost", "http://0.0.0.0/v1", "http://localhost./v1", "http://127.0.0.1:9123/v1"} {
 		cfg := &config.Config{Providers: []config.Provider{localProvider("mtplx", base, "")}}
-		probe, fromRegistry := FamilyOrigin(cfg, "mtplx")
+		probe := FamilyOrigin(cfg, "mtplx")
 		start, port, err := FamilyOriginPort(cfg, "mtplx")
 		if err != nil {
 			t.Fatalf("%q: FamilyOriginPort: %v", base, err)
 		}
 		u, perr := url.Parse(probe)
-		if perr != nil || probe != start || u.Port() != strconv.Itoa(port) || !fromRegistry {
+		if perr != nil || probe != start || u.Port() != strconv.Itoa(port) {
 			t.Errorf("%q: probe origin %q, start origin %q on port %d; want one origin that names that port", base, probe, start, port)
 		}
+		// The origin is the registry row's, not the default's: it keeps
+		// the host the row names.
+		if b, berr := url.Parse(base); berr != nil || perr != nil || u.Hostname() != b.Hostname() {
+			t.Errorf("%q: probe origin %q; want the host the registry row names", base, probe)
+		}
 	}
-	if got, _ := FamilyOrigin(&config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1/v1", "")}}, "mtplx"); got != "http://127.0.0.1:"+strconv.Itoa(config.MtplxPort) {
+	if got := FamilyOrigin(&config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1/v1", "")}}, "mtplx"); got != "http://127.0.0.1:"+strconv.Itoa(config.MtplxPort) {
 		t.Errorf("FamilyOrigin = %q, want the port wt serves mtplx on (%d)", got, config.MtplxPort)
 	}
-	if got, _ := FamilyOrigin(&config.Config{}, "mtplx"); got != "http://localhost:"+strconv.Itoa(config.MtplxPort) {
+	if got := FamilyOrigin(&config.Config{}, "mtplx"); got != "http://localhost:"+strconv.Itoa(config.MtplxPort) {
 		t.Errorf("default mtplx origin = %q, want config.MtplxPort (%d): the two are one port", got, config.MtplxPort)
 	}
 	// As written: another host or https (not a server wt started), and the
@@ -842,12 +847,12 @@ func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
 		{"mlx_lm_server", "http://localhost/v1", "http://localhost"},
 	} {
 		cfg := &config.Config{Providers: []config.Provider{localProvider(c.id, c.base, "")}}
-		if got, _ := FamilyOrigin(cfg, familyOf(c.id)); got != c.want {
+		if got := FamilyOrigin(cfg, Family(c.id)); got != c.want {
 			t.Errorf("%s %q: FamilyOrigin = %q, want %q (as written)", c.id, c.base, got, c.want)
 		}
 		// No port on the probes' origin is no port for a start either: a
 		// second reading that added one is what #348 was.
-		if origin, port, err := FamilyOriginPort(cfg, familyOf(c.id)); err == nil {
+		if origin, port, err := FamilyOriginPort(cfg, Family(c.id)); err == nil {
 			t.Errorf("%s %q: FamilyOriginPort = %q, %d; want an error, FamilyOrigin names no port", c.id, c.base, origin, port)
 		}
 	}

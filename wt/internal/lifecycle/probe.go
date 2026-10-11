@@ -262,7 +262,7 @@ func trimTrailingPartialRune(s string) string {
 // refuses every cold start or permits the silent replacement this exists to
 // prevent.
 func (e *env) liveServed(ctx context.Context, cfg *config.Config, family string) (ids []string, known bool) {
-	origin, _ := localmodels.FamilyOrigin(cfg, family)
+	origin := localmodels.FamilyOrigin(cfg, family)
 	modelsURL := origin + "/v1/models"
 	responded, timedOut := e.probe(ctx, modelsURL, e.prebindTimeout)
 	switch {

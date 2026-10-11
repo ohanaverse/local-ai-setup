@@ -67,7 +67,7 @@ func (p Pool) Find(name string) (PoolModel, bool) {
 // reading supplies the loaded ids alone, with its errors unchanged: a pool
 // that will not say what is loaded is an error, never a guess.
 func OmlxPool(cfg *config.Config, client *http.Client) (Pool, error) {
-	origin, _ := FamilyOrigin(cfg, "omlx")
+	origin := FamilyOrigin(cfg, "omlx")
 	key := FamilyAPIKey(cfg, "omlx")
 	if p, ok := omlxStatusPool(client, origin, key); ok {
 		return p, nil

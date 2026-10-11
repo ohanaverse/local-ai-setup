@@ -953,7 +953,7 @@ func DiscoveredModelID(providerID, artifactName string) string {
 }
 
 // discoveredFamily maps a registry provider id to its probe family.
-// Mirrors internal/localmodels.familyOf: omlx and omlx-6bit share "omlx";
+// Mirrors internal/localmodels.Family: omlx and omlx-6bit share "omlx";
 // every other local provider is its own family.
 func discoveredFamily(providerID string) string {
 	if providerID == "omlx" || providerID == "omlx-6bit" {

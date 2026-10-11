@@ -110,7 +110,7 @@ func (e *env) startedGone(ctx context.Context, cfg *config.Config, t Target) str
 	if b == nil {
 		return ""
 	}
-	origin, _ := localmodels.FamilyOrigin(cfg, family)
+	origin := localmodels.FamilyOrigin(cfg, family)
 	down := fmt.Sprintf("%s no longer answers at %s", family, origin)
 	switch b.tenancy() {
 	case Shared:

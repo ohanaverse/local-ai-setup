@@ -25,7 +25,7 @@ list, start and stop needs all of them.
    in `installedProviderCommands`.
 3. **Inventory (local only).** `internal/localmodels` decides what is on disk
    and what is running. Map the provider id to a probe family in `familyIDs`
-   (`inventory.go`; `familyOf` reads it) and add the family's source in
+   (`inventory.go`; `Family` reads it) and add the family's source in
    `sources.go` (what is on disk, what the server says it is serving). Without this the provider's
    registry models are rows wt cannot probe: they are listed and never
    startable.

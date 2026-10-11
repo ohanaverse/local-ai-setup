@@ -29,7 +29,7 @@ func ServedIDs(cfg *config.Config, client *http.Client, family string) ([]string
 		}
 		return p.LoadedIDs(), nil
 	}
-	origin, _ := FamilyOrigin(cfg, family)
+	origin := FamilyOrigin(cfg, family)
 	return FetchModelIDsErr(client, origin+"/v1/models")
 }
 
