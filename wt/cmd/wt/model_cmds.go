@@ -828,16 +828,10 @@ func runWarm(ctx context.Context, out io.Writer, cfg *config.Config, provider, m
 	return nil
 }
 
-// localRows builds catalog rows for every local model the live inventory
+// localRowsSnap builds catalog rows for every local model the live inventory
 // lists (registry models on disk or running, plus detected ones) from one
-// snapshot — screen 1's row set.
-func localRows(cfg *config.Config) []catalog.Row {
-	rows, _ := localRowsSnap(cfg)
-	return rows
-}
-
-// localRowsSnap is localRows plus the snapshot the rows were built from, for
-// callers that must explain an id with no row (catalog.MissingReason).
+// snapshot — screen 1's row set. It also returns that snapshot, for callers
+// that must explain an id with no row (catalog.MissingReason).
 func localRowsSnap(cfg *config.Config) ([]catalog.Row, localmodels.Snapshot) {
 	snap := probeInventory(cfg)
 	var models []config.Model

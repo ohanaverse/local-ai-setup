@@ -211,7 +211,6 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	store, loadErr, validateErr := pp.store, pp.loadErr, pp.validateErr
 	if loadErr != nil {
 		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", loadErr)
-		store = profiles.Store{}
 	}
 	if validateErr != nil {
 		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", validateErr)

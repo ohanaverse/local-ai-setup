@@ -63,31 +63,6 @@ func needsModelPicker(agent, pinned string) bool {
 	return agent == "" || (pinned == "" && !agents.IsCommand(agent))
 }
 
-// resolveModelForLaunch wraps resolveModel with a "resolved" boolean so
-// callers can short-circuit on a single resolvable model (auto-launch)
-// without conflating "model is empty" with "error". A resolved return value
-// (true, model, launchable, nil) means launchFiltered would have a unique model
-// to use. A non-resolved return (false, zero, _, _) means the caller should
-// fall through to the picker. err is non-nil only when resolveModel itself
-// failed; the auto-launch path treats any error as "not resolved".
-//
-// The list returned is the LAUNCHABLE list (cloud models plus local models
-// already running — see resolveModel), not the raw eligible list, so the
-// caller can hand it to launchFiltered without recomputing it (the
-// auto-launch path would otherwise call EligibleModels twice: once here and
-// once inside launchFiltered) and rotation can never land on a local model
-// that is not up.
-func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinned string) (bool, config.Model, []config.Model, error) {
-	m, eligible, err := resolveModel(agent, cfg, tags, family, pinned)
-	if err != nil {
-		return false, config.Model{}, eligible, err
-	}
-	if m.ID == "" {
-		return false, config.Model{}, eligible, nil
-	}
-	return true, m, eligible, nil
-}
-
 func main() {
 	err := rootCmd().Execute()
 	// Never exit while an async LiteLLM proxy restart a route write kicked off
@@ -171,8 +146,12 @@ func runLaunchPath(
 	}
 
 	if needsModelPicker(agent, pinned) {
-		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
-		if err == nil && resolved {
+		// A single resolvable model launches without the picker. An error or
+		// an empty model with a nil error falls through to the picker. The
+		// list is resolveModel's launchable list, handed to launchFiltered so
+		// it is not computed a second time.
+		m, eligible, err := resolveModel(agent, a.cfg, tags, family, pinned)
+		if err == nil && m.ID != "" {
 			return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState()))
 		}
 		if !stdinTTY() {
@@ -343,10 +322,9 @@ func rootCmd() *cobra.Command {
 			// agent/command picker when no agent was provided.
 			agent := agentFlag
 
-			// Read the new filter flags (-M/-T/-F). They are plumbed through
-			// to launchFiltered even when empty so that the legacy
-			// defaultModel-based path is replaced uniformly. The TUI fallback
-			// below forwards them to tui.Run for the model picker.
+			// Read the filter flags (-M/-T/-F). They are plumbed through to
+			// launchFiltered even when empty. The TUI fallback below forwards
+			// them to tui.Run for the model picker.
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
@@ -368,8 +346,8 @@ func rootCmd() *cobra.Command {
 
 			// Fast-fail on unknown agent names. Without this, a typo'd -A surfaces
 			// as "pass -M <model> to launch without it" — a hint aimed at the picker
-			// path, not the actual problem. This mirrors the pre-PR launchFiltered
-			// fast-fail: the agent picker is only useful for known agents.
+			// path, not the actual problem. The agent picker is only useful for
+			// known agents.
 			if agent != "" && agents.ByName(agent) == nil {
 				return fmt.Errorf("unknown agent %q (known: %s)", agent, strings.Join(agents.Names(), ", "))
 			}
@@ -455,7 +433,7 @@ func rootCmd() *cobra.Command {
 	// Seed agent instruction files and exit (no agent binary required).
 	cmd.Flags().Bool("init", false, "Seed agent instruction files and exit")
 
-	// Guard management flags (legacy parity).
+	// Guard management flags.
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
