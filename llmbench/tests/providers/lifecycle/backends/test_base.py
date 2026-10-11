@@ -1,7 +1,4 @@
-import pytest
-
 from llmbench.providers.lifecycle.backends.base import Backend, StartPlan
-from llmbench.providers.lifecycle.envelope import LifecycleError
 
 
 class _FakeBackend(Backend):
@@ -60,22 +57,3 @@ def test_resolve_model_empty_env_var_falls_through_to_default(monkeypatch):
     monkeypatch.setenv("FAKE_MODEL_ENV", "")
     backend = _FakeBackend()
     assert backend._resolve_model(None) == "default-model"
-
-
-def test_resolve_model_required_raises_when_nothing_resolves(monkeypatch):
-    """required=True with no explicit arg, no env var, and no default
-    must raise LifecycleError with the caller-supplied message — this is
-    what lets each backend give its own actionable error text."""
-    monkeypatch.delenv("FAKE_MODEL_ENV", raising=False)
-    backend = _FakeBackend()
-    backend.default_model = None
-    with pytest.raises(LifecycleError, match="no model available"):
-        backend._resolve_model(None, required=True, required_message="no model available")
-
-
-def test_resolve_model_required_does_not_raise_when_default_resolves(monkeypatch):
-    """required=True must not raise when a default_model resolves the
-    model, even with no explicit arg or env var."""
-    monkeypatch.delenv("FAKE_MODEL_ENV", raising=False)
-    backend = _FakeBackend()
-    assert backend._resolve_model(None, required=True, required_message="unused") == "default-model"

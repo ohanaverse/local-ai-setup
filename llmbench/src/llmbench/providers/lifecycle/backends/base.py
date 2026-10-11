@@ -1,10 +1,8 @@
 """Backend abstract base class and the plan it resolves down to.
 
-Every concrete backend (ollama, omlx, mtplx, mlx_lm_server — each added in
-a later task) subclasses `Backend`. Exact method names matter:
-later tasks subclass this seeing only this file and its docstrings, not
-the discussion that produced them, so every docstring here must be
-self-sufficient.
+Every concrete backend (ollama, omlx, mtplx, mlx_lm_server) subclasses
+`Backend`. Exact method names matter, and every docstring here must be
+self-sufficient: a backend is written against this file alone.
 """
 
 from __future__ import annotations
@@ -50,7 +48,7 @@ class Backend(ABC):
       chat_url: the OpenAI-compatible chat-completions URL for this
         backend.
       cleanup_on_failure: whether a failed start should tear this backend
-        back down. True only for mtplx (a later task).
+        back down. True only for mtplx.
       restore_action: what `restore()` should do after a benchmark run
         releases exclusivity — "restart", "stop", or "skip" (default).
     """
@@ -78,25 +76,23 @@ class Backend(ABC):
         model resolvable and none required-default).
 
         PURE: must never have side effects (no subprocess calls, no
-        teardown) — later tasks depend on this being safe to call before
-        any teardown happens, so a bad request can be rejected before
-        anything else is touched.
+        teardown) — the orchestrator depends on this being safe to call
+        before any teardown happens, so a bad request can be rejected
+        before anything else is touched.
         """
         ...
 
     def already_serving(self, plan: StartPlan) -> bool:
         """True when this backend's live process is already serving
         `plan.model` (so start()/wait_ready() can be skipped and only
-        warm() need run). Default: never — mtplx overrides in a later
-        task to keep an already-loaded model instead of paying a full
-        restart."""
+        warm() need run). Default: never — mtplx overrides to keep an
+        already-loaded model instead of paying a full restart."""
         return False
 
     def replace_own_occupant(self, plan: StartPlan) -> None:  # noqa: B027 — intentional default no-op
         """Tear down this backend's own previous occupant (a different
         model on the same single-model-per-process backend) before
-        starting `plan`. Default: no-op — mtplx overrides in a later
-        task."""
+        starting `plan`. Default: no-op — mtplx overrides."""
 
     @abstractmethod
     def start(self, plan: StartPlan) -> None:
@@ -106,7 +102,7 @@ class Backend(ABC):
     def wait_ready(self, plan: StartPlan) -> None:  # noqa: B027 — intentional default no-op
         """Block until `plan` is ready to receive warmup traffic (e.g.
         the model is loaded and listed in /v1/models). Default: no-op —
-        mtplx overrides in a later task."""
+        mtplx and mlx_lm_server override."""
 
     def warm(self, plan: StartPlan) -> None:
         """Force `plan.model` into GPU/RAM with a 1-token chat completion,
@@ -126,7 +122,7 @@ class Backend(ABC):
     def restore(self) -> None:  # noqa: B027 — intentional default no-op
         """Restore this backend to its normal (non-benchmark) state after
         a benchmark run releases exclusivity. Default: no-op — backends
-        with restore_action="restart" override in later tasks."""
+        with restore_action="restart" override."""
 
     def _restart_if_down(self, *, restart: Callable[[], object]) -> None:
         """Shared shape for a restore_action="restart" backend's restore():
@@ -146,32 +142,22 @@ class Backend(ABC):
         if not wait_for_port_open(self.health_url, timeout=RESTORE_WAIT_TIMEOUT):
             raise LifecycleError(f"{self.id} did not come back up ({self.health_url})")
 
-    def _resolve_model(
-        self, explicit: str | None, *, required: bool = False, required_message: str = ""
-    ) -> str:
+    def _resolve_model(self, explicit: str | None) -> str:
         """The one place the explicit-arg > env-var > default precedence is
-        implemented; every backend's resolve() must call this rather than
-        reimplementing the precedence.
+        implemented; a backend whose resolve() follows that precedence
+        (ollama, omlx) calls this rather than reimplementing it.
 
         Returns `explicit` if truthy, else `os.environ.get(self.env_var,
         "")` if `self.env_var` is set and holds a non-empty string, else
-        `self.default_model` if that is not None, else "". If `required`
-        is True and the resolved result is empty, raises LifecycleError
-        with `required_message` (supplied by the caller, since only the
-        caller knows the right error text for its own missing-model
-        case).
+        `self.default_model` if that is not None, else "".
         """
         if explicit:
-            resolved = explicit
-        elif self.env_var and os.environ.get(self.env_var):
-            resolved = os.environ[self.env_var]
-        elif self.default_model is not None:
-            resolved = self.default_model
-        else:
-            resolved = ""
-        if required and not resolved:
-            raise LifecycleError(required_message)
-        return resolved
+            return explicit
+        if self.env_var and os.environ.get(self.env_var):
+            return os.environ[self.env_var]
+        if self.default_model is not None:
+            return self.default_model
+        return ""
 
     @staticmethod
     def _positional_arg(extra_args: tuple[str, ...], index: int) -> str:
