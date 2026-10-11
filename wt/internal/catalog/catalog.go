@@ -264,27 +264,23 @@ func Find(rows []Row, id string) (Row, bool) {
 	return Row{}, false
 }
 
-// startable reports whether wt has a lifecycle backend for the provider
-// family. It delegates to lifecycle.Startable — the single source of truth —
-// so adding a backend there updates every picker with no second edit here.
-func startable(providerID string) bool { return lifecycle.Startable(providerID) }
-
 // Ready reports whether the row's model can take a request now: running, and
 // not still loading. A cloud row is never Running, so it is never Ready; its
 // launch does not depend on this.
 func (r Row) Ready() bool { return r.Running && !r.Loading }
 
 // Action reports what selecting r does. A local row that is not Ready is
-// startable when its provider has a lifecycle backend (a model missing from
-// disk has no row at all). That includes a model omlx is still loading (#259):
-// starting it joins the load in progress and returns once the model is
-// loaded, where launching it would hand an agent a model that cannot answer
-// yet.
+// startable when its provider has a lifecycle backend (lifecycle.Startable,
+// the single source of truth, so a new backend needs no edit here; a model
+// missing from disk has no row at all). That includes a model omlx is still
+// loading (#259): starting it joins the load in progress and returns once the
+// model is loaded, where launching it would hand an agent a model that cannot
+// answer yet.
 func (r Row) Action() Action {
 	if r.Location != config.LocationLocal || r.Ready() {
 		return ActionLaunch
 	}
-	if !startable(r.Model.ProviderID) {
+	if !lifecycle.Startable(r.Model.ProviderID) {
 		return ActionBlock
 	}
 	return ActionStart

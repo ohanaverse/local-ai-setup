@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,10 +93,6 @@ func (c *Config) LitellmConfigured() bool { return c.litellm.URL != "" && c.lite
 // never starts, stops, or restarts the proxy — this is routing policy only.
 func (c *Config) IsLitellm() bool { return c.litellm.Enabled }
 
-// IsDirect reports whether agents dial providers directly where the
-// agent×provider protocol overlap allows it.
-func (c *Config) IsDirect() bool { return !c.litellm.Enabled }
-
 // LitellmBaseURL returns the proxy URL with any trailing
 // slashes removed. Drivers append their own protocol suffix (/v1, /v1/),
 // so a user URL like "http://localhost:4000/" must not produce a double
@@ -133,30 +130,17 @@ type Route struct {
 	ProviderID string   // registry provider id; meaningful only when !Litellm
 	Protocol   Protocol // chosen common protocol, meaningful only when !Litellm
 	Litellm    bool
-	Forced     bool // true if litellm was required regardless of the on/off setting (Task 5)
+	Forced     bool // true if litellm was required regardless of the on/off setting
 }
 
-// providerByID returns the provider with the given id and whether it was found.
-func (c *Config) providerByID(id string) (Provider, bool) {
-	for _, p := range c.Providers {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return Provider{}, false
-}
-
-// ResolveRoute resolves the Route for launching model m. In direct mode it
-// dials the model's own provider (auth.base_url, resolved through
-// Provider.Origin, and auth.secret_ref resolved through ResolveSecret), using
-// the provider-side model name (m.ModelName). In litellm mode it routes
-// through the configured LiteLLM gateway using the full registry id.
 // ResolveRoute resolves the Route for launching model m for an agent that
 // speaks agentProtocols. It first checks protocol overlap: an empty
 // intersection forces LiteLLM regardless of the on/off toggle. Otherwise,
-// if LiteLLM is on the route goes through the gateway, and if it is off
-// the route dials the provider directly using auth.base_url and
-// auth.secret_ref. Returns an error when direct mode is required (forced or
+// if LiteLLM is on the route goes through the gateway using the full
+// registry id, and if it is off the route dials the model's own provider
+// (auth.base_url, resolved through Provider.Origin, and auth.secret_ref,
+// resolved through ResolveSecret) using the provider-side model name
+// (m.ModelName). Returns an error when direct mode is required (forced or
 // chosen) but the provider has no base_url or LiteLLM is forced but
 // unconfigured.
 func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error) {
@@ -173,8 +157,8 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 	if providerID == "" && strings.Contains(m.ID, "/") {
 		providerID = strings.SplitN(m.ID, "/", 2)[0]
 	}
-	provider, ok := c.providerByID(providerID)
-	if !ok {
+	provider := c.ProviderByID(providerID)
+	if provider == nil {
 		return Route{}, fmt.Errorf("unknown provider %q for model %q", providerID, m.ID)
 	}
 	// Native providers never route through a gateway; this mirrors deriveNative
@@ -475,8 +459,8 @@ func resolveExecSecret(ref, cmdline string) (string, error) {
 
 // runExecSecret runs the command line for a single exec: ref (already
 // stripped of its "exec:" prefix) and returns its resolved value or error.
-// Held behind execSecretMu by its only caller, ResolveSecret, so the whole
-// run-and-cache sequence for one ref is atomic across concurrent callers.
+// Its caller, resolveExecSecret, dedupes concurrent callers per ref and does
+// not hold execSecretMu during the run.
 func runExecSecret(ref, cmdline string) (string, error) {
 	parts := strings.Fields(cmdline)
 	if len(parts) == 0 {
@@ -750,7 +734,7 @@ func Dir() string {
 }
 
 // baseConfigHome returns the XDG base config directory honoring
-// XDG_CONFIG_HOME (with a leading "~" or "~/" expanded via expandHome,
+// XDG_CONFIG_HOME (with a leading "~" or "~/" expanded via ExpandHome,
 // matching Python's Path.expanduser(), which llmbench uses). Falls back to
 // ~/.config when XDG_CONFIG_HOME is unset. Shared by Dir() and
 // RegistryPath() so the two agree on the XDG precedence rule.
@@ -763,7 +747,7 @@ func baseConfigHome() string {
 		}
 		return filepath.Join(home, ".config")
 	}
-	expanded, err := expandHome(base)
+	expanded, err := ExpandHome(base)
 	if err != nil {
 		return base
 	}
@@ -795,13 +779,6 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !exists {
-		providers, models, err := loadRegistry()
-		if err != nil {
-			return cfgOrNilOnMissingRegistry(cfg, err), err
-		}
-		return finalizeCfg(cfg, providers, models), nil
-	}
 
 	providers, models, err := loadRegistry()
 	if err != nil {
@@ -814,15 +791,16 @@ func Load() (*Config, error) {
 		// unconfigured-agent passthrough (issue #147's fail-open edge case).
 		return cfgOrNilOnMissingRegistry(cfg, err), err
 	}
+	if !exists {
+		return finalizeCfg(cfg, providers, models), nil
+	}
 
 	// migrateConfigSchema runs against a fresh, lock-protected read (via
 	// lockedApply) rather than the unlocked cfg read above: loadRegistry and
 	// the schema-migration probe both take real time, and a concurrent
 	// PatchSave-based writer landing in that window must not be clobbered by
 	// a stale whole-file save (issue #143 follow-up).
-	fresh, changed, err := lockedApply(func(fresh *Config) (bool, error) {
-		return migrateConfigSchema(fresh)
-	})
+	fresh, changed, err := lockedApply(migrateConfigSchema)
 	if err != nil {
 		return nil, fmt.Errorf("schema migration: %w", err)
 	}
@@ -953,17 +931,8 @@ func (c *Config) validate() []error {
 				errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))
 			}
 		}
-		if a.DefaultProvider != "" {
-			found := false
-			for _, pid := range a.SupportedProviders {
-				if pid == a.DefaultProvider {
-					found = true
-					break
-				}
-			}
-			if !found {
-				errs = append(errs, fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider))
-			}
+		if a.DefaultProvider != "" && !slices.Contains(a.SupportedProviders, a.DefaultProvider) {
+			errs = append(errs, fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider))
 		}
 	}
 
@@ -972,12 +941,7 @@ func (c *Config) validate() []error {
 
 // HasTag returns true if the model has the given tag.
 func (m Model) HasTag(tag string) bool {
-	for _, t := range m.Tags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.Tags, tag)
 }
 
 // DiscoveredModelID is the usage/survey id for a local model found on disk
@@ -1077,12 +1041,7 @@ func (c *Config) AgentSupportsProvider(agentName, providerID string) bool {
 	if err != nil {
 		return false
 	}
-	for _, pid := range a.SupportedProviders {
-		if pid == providerID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.SupportedProviders, providerID)
 }
 
 // ProviderByID returns the provider with the given id, or nil if not found.
@@ -1150,31 +1109,6 @@ func RegistryFixHint(err error) string {
 		return "fix the link or move it aside"
 	case errors.Is(err, ErrRegistryFile), errors.Is(err, ErrRegistryTopLevel):
 		return "fix that file by hand"
-	}
-	return ""
-}
-
-// RegistryFixHintFromAny checks every error in a joined error (from
-// ValidateAll) for a registry problem and returns the first hint found.
-// This ensures the correct repair location is shown even when a config.toml
-// error appears first in the join (e.g., empty default_tag + missing
-// model_name both present).
-func RegistryFixHintFromAny(err error) string {
-	if err == nil {
-		return ""
-	}
-	// errors.Join returns an error that implements Unwrap() []error
-	type unwrapper interface{ Unwrap() []error }
-	if u, ok := err.(unwrapper); ok {
-		for _, e := range u.Unwrap() {
-			if hint := RegistryFixHint(e); hint != "" {
-				return hint
-			}
-		}
-	}
-	// Also check the error itself in case it's not a joined error
-	if hint := RegistryFixHint(err); hint != "" {
-		return hint
 	}
 	return ""
 }
@@ -1270,17 +1204,8 @@ func (c *Config) UpsertAgent(a Agent, oldName string) error {
 			return fmt.Errorf("agent %q: provider %q does not exist", a.Name, pid)
 		}
 	}
-	if a.DefaultProvider != "" {
-		found := false
-		for _, pid := range a.SupportedProviders {
-			if pid == a.DefaultProvider {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider)
-		}
+	if a.DefaultProvider != "" && !slices.Contains(a.SupportedProviders, a.DefaultProvider) {
+		return fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider)
 	}
 	// Rename check: if oldName differs, ensure new name is not taken.
 	if oldName != "" && oldName != a.Name {
@@ -1469,10 +1394,10 @@ func (c *Config) ModelsForAgent(agentName string) ([]Model, error) {
 	return out, nil
 }
 
-// parseFilterList splits a comma-delimited string, trimming whitespace and
+// ParseFilterList splits a comma-delimited string, trimming whitespace and
 // dropping empty entries. Empty or whitespace-only input returns nil.
 // Used by the -T/--tags and -F/--family CLI flags.
-func parseFilterList(s string) []string {
+func ParseFilterList(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil
 	}
@@ -1486,11 +1411,6 @@ func parseFilterList(s string) []string {
 	}
 	return out
 }
-
-// ParseFilterList is the exported form of parseFilterList, used by callers
-// outside the config package (e.g. cmd/wt/launch.go). It trims whitespace,
-// drops empty entries, and returns nil for empty/whitespace-only input.
-func ParseFilterList(s string) []string { return parseFilterList(s) }
 
 // TagsToString joins a tag slice into a comma-delimited display string.
 // Returns "" for nil or empty slices.
@@ -1548,26 +1468,17 @@ func (c *Config) EligibleModelsIn(agentName string, ms []Model, tags, family str
 		}
 	}
 	tagSet := map[string]bool{}
-	for _, t := range parseFilterList(tags) {
+	for _, t := range ParseFilterList(tags) {
 		tagSet[t] = true
 	}
 	familySet := map[string]bool{}
-	for _, f := range parseFilterList(family) {
+	for _, f := range ParseFilterList(family) {
 		familySet[f] = true
 	}
 	var out []Model
 	for _, m := range ms {
-		if len(tagSet) > 0 {
-			hit := false
-			for _, t := range m.Tags {
-				if tagSet[t] {
-					hit = true
-					break
-				}
-			}
-			if !hit {
-				continue
-			}
+		if len(tagSet) > 0 && !slices.ContainsFunc(m.Tags, func(t string) bool { return tagSet[t] }) {
+			continue
 		}
 		if len(familySet) > 0 && !familySet[m.Family] {
 			continue

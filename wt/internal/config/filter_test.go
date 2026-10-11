@@ -27,25 +27,10 @@ func TestParseFilterList(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseFilterList(tc.in)
+			got := ParseFilterList(tc.in)
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("parseFilterList(%q) = %#v, want %#v", tc.in, got, tc.want)
+				t.Errorf("ParseFilterList(%q) = %#v, want %#v", tc.in, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestParseFilterListExported verifies that ParseFilterList (the exported
-// form used by callers outside the config package, e.g. cmd/wt/launch.go)
-// behaves identically to the private parseFilterList. Without this, the
-// public alias could drift from the implementation and silently break
-// launchFiltered's tag-derived rotation slot.
-func TestParseFilterListExported(t *testing.T) {
-	for _, in := range []string{"", "   ", "code", "code,design", " code , design ", "code,", ",code", "code,,design"} {
-		want := parseFilterList(in)
-		got := ParseFilterList(in)
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("ParseFilterList(%q) = %#v, want %#v", in, got, want)
-		}
 	}
 }
