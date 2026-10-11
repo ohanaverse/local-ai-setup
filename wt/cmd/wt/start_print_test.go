@@ -73,20 +73,15 @@ func TestSmokeCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 	runStopPicker = func(*config.Config) {}
 	stdinTTY = func() bool { return true }
 
-	c := smokeCmd(&app{cfg: cfg})
-	var out, errOut bytes.Buffer
-	c.SetOut(&out)
-	c.SetErr(&errOut)
-	c.SetArgs([]string{"ollama/not-eligible:x"})
-	err := c.Execute()
+	out, errOut, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x")
 	if err == nil || err.Error() != failedStartMessage {
 		t.Fatalf("err = %v, want the failed start handed back for main to print", err)
 	}
-	if strings.Contains(out.String()+errOut.String(), "failed to start") {
-		t.Errorf("the command printed the error itself (stdout %q, stderr %q); main prints it once", out.String(), errOut.String())
+	if strings.Contains(out+errOut, "failed to start") {
+		t.Errorf("the command printed the error itself (stdout %q, stderr %q); main prints it once", out, errOut)
 	}
-	if strings.Contains(out.String()+errOut.String(), "Usage:") {
-		t.Errorf("the command printed its usage after a failed start (stdout %q, stderr %q)", out.String(), errOut.String())
+	if strings.Contains(out+errOut, "Usage:") {
+		t.Errorf("the command printed its usage after a failed start (stdout %q, stderr %q)", out, errOut)
 	}
 }
 

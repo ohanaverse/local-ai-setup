@@ -628,17 +628,14 @@ func TestWarmRefusesOtherProviders(t *testing.T) {
 // so this is the one command that frees the server's memory.
 func TestStopBareOmlxHaltsTheService(t *testing.T) {
 	stopped := stubStop(t, nil)
-	var halted []string
-	old := stopProvider
-	stopProvider = func(_ context.Context, _ *config.Config, id string) error { halted = append(halted, id); return nil }
-	t.Cleanup(func() { stopProvider = old })
+	halted := stubHalt(t)
 	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal}}}
 	var out bytes.Buffer
 	if err := runStop(&out, cfg, "omlx", true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(halted, []string{"omlx"}) || len(*stopped) != 0 {
-		t.Errorf("halted = %v, per-model stops = %v; want [omlx] and none", halted, *stopped)
+	if !slices.Equal(*halted, []string{"omlx"}) || len(*stopped) != 0 {
+		t.Errorf("halted = %v, per-model stops = %v; want [omlx] and none", *halted, *stopped)
 	}
 }
 
@@ -657,6 +654,18 @@ func stubHalt(t *testing.T, fail ...string) *[]string {
 	}
 	t.Cleanup(func() { stopProvider = old })
 	return &halted
+}
+
+// runStopCmd runs `wt stop` with args, as the command, over cfg. It returns
+// stdout and stderr as one text, and the command's error.
+func runStopCmd(cfg *config.Config, args ...string) (string, error) {
+	var out bytes.Buffer
+	cmd := stopCmd(&app{cfg: cfg})
+	cmd.SetArgs(args)
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.Execute()
+	return out.String(), err
 }
 
 // TestStopAllStopsEveryModelThenHaltsThePool verifies `wt stop --all` stops
@@ -863,35 +872,25 @@ func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
 func TestStopAllYesFlagSkipsTheQuestion(t *testing.T) {
 	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2), cand("omlx", "omlx/c", "c", 1)})
 	halted := stubHalt(t)
-	old := confirmStop
-	t.Cleanup(func() { confirmStop = old })
-	asked := 0
-	confirmStop = func(string) (bool, error) { asked++; return false, nil }
-	run := func(args ...string) error {
-		cmd := stopCmd(&app{cfg: modelCmdConfig()})
-		cmd.SetArgs(args)
-		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
-		return cmd.Execute()
-	}
+	asked := stubStopConfirm(t, false)
 
-	if err := run("--all", "--yes"); err != nil {
+	if _, err := runStopCmd(modelCmdConfig(), "--all", "--yes"); err != nil {
 		t.Fatal(err)
 	}
-	if asked != 0 {
-		t.Errorf("--all --yes asked %d time(s), want none", asked)
+	if len(*asked) != 0 {
+		t.Errorf("--all --yes asked %d time(s), want none", len(*asked))
 	}
 	if len(*stopped) != 1 || (*stopped)[0].ModelID != "ollama/a:1" || !slices.Equal(*halted, []string{"omlx"}) {
 		t.Errorf("--all --yes: stopped = %v halted = %v, want ollama/a:1 and the omlx halt", *stopped, *halted)
 	}
 
 	*stopped, *halted = nil, nil
-	err := run("--all")
+	_, err := runStopCmd(modelCmdConfig(), "--all")
 	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") {
 		t.Fatalf("--all, declined: err = %v, want a cancellation", err)
 	}
-	if asked != 1 || len(*stopped) != 0 || len(*halted) != 0 {
-		t.Errorf("--all: asked = %d stopped = %v halted = %v, want one question and nothing stopped", asked, *stopped, *halted)
+	if len(*asked) != 1 || len(*stopped) != 0 || len(*halted) != 0 {
+		t.Errorf("--all: asked = %d stopped = %v halted = %v, want one question and nothing stopped", len(*asked), *stopped, *halted)
 	}
 }
 
@@ -901,11 +900,7 @@ func TestStopAllYesFlagSkipsTheQuestion(t *testing.T) {
 func TestStopAllTakesNoArgument(t *testing.T) {
 	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	halted := stubHalt(t)
-	cmd := stopCmd(&app{cfg: modelCmdConfig()})
-	cmd.SetArgs([]string{"--all", "ollama"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	err := cmd.Execute()
+	_, err := runStopCmd(modelCmdConfig(), "--all", "ollama")
 	if err == nil || !strings.Contains(err.Error(), "takes no model or provider") {
 		t.Fatalf("err = %v, want the --all usage error", err)
 	}
@@ -983,17 +978,8 @@ func TestStopBareOmlxCancelledReportsCancelled(t *testing.T) {
 func TestStopAllFailurePrintsNoUsage(t *testing.T) {
 	stubStop(t, nil)
 	stubHalt(t, "omlx")
-	run := func(args ...string) (string, error) {
-		var out bytes.Buffer
-		cmd := stopCmd(&app{cfg: modelCmdConfig()})
-		cmd.SetArgs(args)
-		cmd.SetOut(&out)
-		cmd.SetErr(&out)
-		err := cmd.Execute()
-		return out.String(), err
-	}
 
-	got, err := run("--all")
+	got, err := runStopCmd(modelCmdConfig(), "--all")
 	if err == nil || !strings.Contains(err.Error(), "omlx: still listening") {
 		t.Fatalf("err = %v, want the failed halt", err)
 	}
@@ -1001,7 +987,7 @@ func TestStopAllFailurePrintsNoUsage(t *testing.T) {
 		t.Errorf("out = %q, want the progress line and no usage text", got)
 	}
 
-	got, err = run("--all", "ollama")
+	got, err = runStopCmd(modelCmdConfig(), "--all", "ollama")
 	if err == nil || !strings.Contains(got, "Usage:") {
 		t.Errorf("err = %v out = %q, want the usage text for an argument mistake", err, got)
 	}

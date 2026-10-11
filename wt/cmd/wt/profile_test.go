@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -212,16 +211,8 @@ func TestProfileStatusOnOffTogglesEnabledFlag(t *testing.T) {
 // comment in the malformed file with just "enabled = false". The command
 // must return an error and leave the on-disk file byte-for-byte untouched.
 func TestProfileOnOffRefusesOnLoadError(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := "not [ valid toml, and a hand-written [[profiles]] entry the user cares about\n"
-	path := filepath.Join(dir, "agent-wt", "profiles.toml")
-	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeProfilesTOML(t, original)
 
 	a := &app{profilesLoadErr: errors.New("parse profiles.toml: simulated parse failure")}
 	off := profileCmd(a)
@@ -277,11 +268,6 @@ func TestProfileListShowStatusReportLoadError(t *testing.T) {
 // the same values back), since a lossy round-trip that happens to parse
 // identically would not be caught by re-parsing alone.
 func TestProfileTogglePreservesCommentsAndFormatting(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `enabled = true
 
 # my own hand-written comment explaining this profile
@@ -291,10 +277,7 @@ match = "location"
 location = "local"
 env = { MY_OWN_KEY = "my-own-value" }
 `
-	path := filepath.Join(dir, "agent-wt", "profiles.toml")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeProfilesTOML(t, body)
 
 	store, err := profiles.Load()
 	if err != nil {
@@ -343,20 +326,12 @@ env = { MY_OWN_KEY = "my-own-value" }
 // key is optional — Load defaults it to true) gets one inserted at the top
 // on toggle, rather than erroring or silently no-op'ing.
 func TestProfileToggleInsertsEnabledLineWhenAbsent(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `[[profiles]]
 agent = "claude"
 match = "location"
 location = "local"
 `
-	path := filepath.Join(dir, "agent-wt", "profiles.toml")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 
 	store, err := profiles.Load()
 	if err != nil {
@@ -390,11 +365,6 @@ location = "local"
 // leaving both in the file — which BurntSushi/toml then rejects as a
 // duplicate key on the next Load.
 func TestProfileToggleHandlesTrailingCommentOnEnabledLine(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `enabled = true  # keep local profiles on
 
 [[profiles]]
@@ -402,10 +372,7 @@ agent = "claude"
 match = "location"
 location = "local"
 `
-	path := filepath.Join(dir, "agent-wt", "profiles.toml")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeProfilesTOML(t, body)
 
 	store, err := profiles.Load()
 	if err != nil {
@@ -455,16 +422,8 @@ location = "local"
 // `([ \t]*#[^\n]*)?$` only allows whitespace when a comment follows), so
 // setEnabledLine fell through to prepending a duplicate `enabled` line.
 func TestProfileToggleHandlesTrailingWhitespaceOnEnabledLine(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := "enabled = true  \n\n[[profiles]]\nagent = \"claude\"\nmatch = \"location\"\nlocation = \"local\"\n"
-	path := filepath.Join(dir, "agent-wt", "profiles.toml")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeProfilesTOML(t, body)
 
 	store, err := profiles.Load()
 	if err != nil {
@@ -497,16 +456,8 @@ func TestProfileToggleHandlesTrailingWhitespaceOnEnabledLine(t *testing.T) {
 // trailing-comment fix's `$` never matches when a bare `\r` sits between
 // `true`/`false` and the `\n`, so this must also produce valid TOML.
 func TestProfileToggleHandlesCRLFEnabledLine(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := "enabled = true\r\n\r\n[[profiles]]\r\nagent = \"claude\"\r\nmatch = \"location\"\r\nlocation = \"local\"\r\n"
-	path := filepath.Join(dir, "agent-wt", "profiles.toml")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeProfilesTOML(t, body)
 
 	store, err := profiles.Load()
 	if err != nil {

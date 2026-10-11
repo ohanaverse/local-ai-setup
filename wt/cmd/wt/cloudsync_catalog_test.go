@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -386,8 +387,7 @@ func TestCloudSyncOllamaForceAppliesAMassRemoval(t *testing.T) {
 // run whose ollama flow is refused, the exit status is still the ollama flow's.
 func TestCloudSyncFlowsAreIndependent(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	pages := ollamaPages()
-	pages[cloudsync.OpenRouterModelsURL] = openRouterBody
+	pages := bothPages()
 	stubCloudFetch(t, pages)
 	ollama := stubOllama(t, ollamaPulled...)
 	synced := stubRouteSync(t, "")
@@ -1043,10 +1043,8 @@ func TestCloudSyncOllamaReadsASavedPage(t *testing.T) {
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "ollama: ollama.com/pricing: 5 models") {
 		t.Errorf("exit %d, stderr %q, stdout:\n%s", code, stderr, stdout)
 	}
-	for _, url := range got.all() {
-		if url == cloudsync.PricingURL {
-			t.Error("--html still fetched ollama.com/pricing")
-		}
+	if slices.Contains(got.all(), cloudsync.PricingURL) {
+		t.Error("--html still fetched ollama.com/pricing")
 	}
 }
 

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,6 +134,65 @@ func writeConfiguredAgent(t *testing.T, home, agentName, providerID string) {
 	}
 }
 
+// writeProfilesTOML points XDG_CONFIG_HOME at a fresh temp directory, writes
+// body there as agent-wt/profiles.toml, and returns the file's path.
+func writeProfilesTOML(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "agent-wt", "profiles.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// fakeAgentOnPath installs a script called name that exits 0 in a fresh temp
+// directory at the front of PATH, so a launch runs it and never a real agent
+// CLI of that name.
+func fakeAgentOnPath(t *testing.T, name string) {
+	t.Helper()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// captureFile runs fn with *f (os.Stdout or os.Stderr) replaced by a pipe and
+// returns what fn wrote to it. The file is put back as soon as fn returns, and
+// on cleanup too, so a fn that ends the test does not leave it redirected.
+func captureFile(t *testing.T, f **os.File, fn func()) string {
+	t.Helper()
+	old := *f
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	*f = w
+	t.Cleanup(func() { *f = old })
+	fn()
+	*f = old
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return string(out)
+}
+
+// stubStdinTTY makes wt see a terminal on stdin (tty true) or none, until the
+// test ends.
+func stubStdinTTY(t *testing.T, tty bool) {
+	t.Helper()
+	old := stdinTTY
+	stdinTTY = func() bool { return tty }
+	t.Cleanup(func() { stdinTTY = old })
+}
+
 // TestMaybeInstallGuardInRepo installs the guard in a temp repo and verifies
 // that a subsequent Check reports Installed. Without this, the launcher would
 // silently skip guard protection on normal launches.
@@ -141,9 +200,7 @@ func TestMaybeInstallGuardInRepo(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	maybeInstallGuard()
 
@@ -156,9 +213,7 @@ func TestMaybeInstallGuardInRepo(t *testing.T) {
 // inside a git repo. The passthrough path must remain safe outside version
 // control.
 func TestMaybeInstallGuardOutsideRepo(t *testing.T) {
-	oldWd, _ := os.Getwd()
-	os.Chdir(t.TempDir())
-	defer os.Chdir(oldWd)
+	t.Chdir(t.TempDir())
 
 	maybeInstallGuard() // should not panic or print fatal error
 }
@@ -169,9 +224,7 @@ func TestMaybeInstallGuardIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	maybeInstallGuard()
 	maybeInstallGuard()
@@ -188,9 +241,7 @@ func TestCheckGuardStatusInstalled(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	if _, err := guard.Install(); err != nil {
 		t.Fatalf("Install: %v", err)
@@ -210,9 +261,7 @@ func TestCheckGuardStatusNotInstalled(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	status, err := checkGuardStatus()
 	if err != nil {
@@ -229,9 +278,7 @@ func TestRemoveGuardUninstalls(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	if _, err := guard.Install(); err != nil {
 		t.Fatalf("Install: %v", err)
@@ -247,9 +294,7 @@ func TestRemoveGuardUninstalls(t *testing.T) {
 // TestGuardHelpersOutsideRepoError returns an error when not in a git repo so
 // the flags cannot be misused outside version control.
 func TestGuardHelpersOutsideRepoError(t *testing.T) {
-	oldWd, _ := os.Getwd()
-	os.Chdir(t.TempDir())
-	defer os.Chdir(oldWd)
+	t.Chdir(t.TempDir())
 
 	if _, err := checkGuardStatus(); err == nil {
 		t.Fatal("expected error outside repo for checkGuardStatus")
@@ -272,13 +317,8 @@ func TestGuardHelpersOutsideRepoError(t *testing.T) {
 func TestPickerSkippedOutsideTTY(t *testing.T) {
 	// Run from a non-git directory so the RunE path that would open the
 	// TUI is the outside-repo branch (the simplest one to trigger).
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	writeEmptyRegistry(t, home)
 
 	// Pipe stdin from /dev/null so isStdinTTY returns false.
@@ -291,12 +331,7 @@ func TestPickerSkippedOutsideTTY(t *testing.T) {
 	os.Stdin = devnull
 	t.Cleanup(func() { os.Stdin = oldStdin })
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{}) // no -A, so picker path is taken
-	err = root.Execute()
+	_, err = runWT(t) // no -A, so picker path is taken
 	if err == nil {
 		t.Fatal("expected TTY-needs error, got nil")
 	}

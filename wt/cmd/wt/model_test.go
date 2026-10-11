@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,14 +53,7 @@ func realRouteSync(t *testing.T) {
 }
 
 func onPath(commands ...string) func(string) bool {
-	return func(c string) bool {
-		for _, have := range commands {
-			if have == c {
-				return true
-			}
-		}
-		return false
-	}
+	return func(c string) bool { return slices.Contains(commands, c) }
 }
 
 // TestModelInitCreatesTheRegistryAndSaysWhatItAdded pins the first run on a
@@ -70,9 +64,7 @@ func onPath(commands ...string) func(string) bool {
 // "model registry not found" error sends people to, so it has to work with
 // no registry and no config at all.
 func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	registry := modelHome(t, "")
 	stubSeedEnv(t, config.SeedEnv{
 		Agents: []string{"claude"}, AgentProviders: []string{"claude", "corp-gateway"}, OnPath: onPath("ollama"),
 	})
@@ -120,9 +112,7 @@ func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 // `.providers_added | length` without guarding. The route sync's own lines
 // stay out of it.
 func TestModelInitJSON(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	registry := modelHome(t, "")
 	stubSeedEnv(t, config.SeedEnv{AgentProviders: []string{"corp-gateway"}, OnPath: onPath("mtplx")})
 	old := syncRoutesAfterWrite
 	syncRoutesAfterWrite = func(out, _ io.Writer) string {
@@ -167,9 +157,7 @@ func TestModelInitJSON(t *testing.T) {
 // agent lists openrouter — the two rows a user used to have to write by hand
 // before any wt command would start.
 func TestModelInitMakesAFreshConfigUsable(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	registry := modelHome(t, "")
 	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -219,8 +207,7 @@ supported_providers = ["ollama"]
 // empty"), and a set one is the key that is sent. The registry itself never
 // holds the key.
 func TestModelInitSeedsAnOpenRouterRowThatFailsLoudlyWithoutItsKey(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
+	modelHome(t, "")
 	stubSeedEnv(t, config.SeedEnv{AgentProviders: []string{"openrouter"}})
 	stubRouteSync(t, "")
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-test-not-a-real-key")
@@ -264,8 +251,7 @@ func TestModelInitSeedsAnOpenRouterRowThatFailsLoudlyWithoutItsKey(t *testing.T)
 // without the warning the output is the same "nothing to add" a healthy
 // machine prints, and the next wt command fails on the config.
 func TestModelInitWarnsWhenConfigTomlCannotBeRead(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
+	registry := modelHome(t, "")
 	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +268,6 @@ func TestModelInitWarnsWhenConfigTomlCannotBeRead(t *testing.T) {
 		t.Fatalf("runModelInit: %v", err)
 	}
 	// A first run that adds nothing still creates the registry, and says so.
-	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
 	if want := "registry: " + registry + " (created)\nnothing to add\n"; out.String() != want {
 		t.Errorf("stdout = %q, want %q", out.String(), want)
 	}
@@ -436,37 +421,25 @@ func TestModelInitReportsABrokenRegistryLink(t *testing.T) {
 // an error rather than a worktree name, and the removed `wt models` keeps its
 // own message.
 func TestModelCommandGroup(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
+	modelHome(t, "")
 	stubSeedEnv(t, config.SeedEnv{OnPath: onPath("ollama")})
 	stubRouteSync(t, "")
-	run := func(args ...string) (string, error) {
-		var buf bytes.Buffer
-		root := rootCmd()
-		root.SetOut(&buf)
-		root.SetErr(&buf)
-		root.SetArgs(args)
-		err := root.Execute()
-		return buf.String(), err
-	}
 
-	out, err := run("model", "init", "--json")
+	out, err := runWT(t, "model", "init", "--json")
 	if err != nil || !strings.Contains(out, `"providers_added":["ollama"]`) {
 		t.Errorf("wt model init --json = %q, %v", out, err)
 	}
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return false }
-	t.Cleanup(func() { stdinTTY = oldTTY })
-	if _, err = run("model"); err == nil || !strings.Contains(err.Error(), "wt model needs a terminal to open the Models tab") || !strings.Contains(err.Error(), "`wt model list`") {
+	stubStdinTTY(t, false)
+	if _, err = runWT(t, "model"); err == nil || !strings.Contains(err.Error(), "wt model needs a terminal to open the Models tab") || !strings.Contains(err.Error(), "`wt model list`") {
 		t.Errorf("bare `wt model` with no terminal: err = %v, want it to name the commands that need none", err)
 	}
-	if _, err = run("model", "bogus"); err == nil || !strings.Contains(err.Error(), `unknown command "bogus" for "wt model"`) {
+	if _, err = runWT(t, "model", "bogus"); err == nil || !strings.Contains(err.Error(), `unknown command "bogus" for "wt model"`) {
 		t.Errorf("wt model bogus: err = %v, want an unknown-command error", err)
 	}
-	if _, err = run("model", "init", "extra"); err == nil {
+	if _, err = runWT(t, "model", "init", "extra"); err == nil {
 		t.Error("wt model init takes no arguments")
 	}
-	if _, err = run("models"); err == nil || !strings.Contains(err.Error(), "wt models is removed") {
+	if _, err = runWT(t, "models"); err == nil || !strings.Contains(err.Error(), "wt models is removed") {
 		t.Errorf("wt models: err = %v, want the removed-subcommand message", err)
 	}
 }
@@ -490,9 +463,7 @@ func TestRegistryWriteGuardIsArmedHere(t *testing.T) {
 // can stand in for both.
 func TestBareModelOpensTheModelsTab(t *testing.T) {
 	modelHome(t, writeRegistry)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 	call := stubConfigEditor(t, configeditor.Result{}, nil)
 	syncs := stubRouteSync(t, "")
 	// Each seam is given an answer no real function would give, and the
@@ -533,9 +504,7 @@ func TestBareModelOpensTheModelsTab(t *testing.T) {
 // the proxy once for every model added in a sitting.
 func TestEditorSyncsRoutesOnceOnExit(t *testing.T) {
 	modelHome(t, writeRegistry)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 
 	for _, args := range [][]string{{"model"}, {"config"}} {
 		stubConfigEditor(t, configeditor.Result{}, nil)
@@ -569,9 +538,7 @@ func TestEditorSyncsRoutesOnceOnExit(t *testing.T) {
 func TestEditorExitSyncUnderARedirectedRegistry(t *testing.T) {
 	setup := func(t *testing.T) (registry, defaultYAML string) {
 		registry, defaultYAML = redirectedRegistry(t, writeRegistry)
-		oldTTY := stdinTTY
-		stdinTTY = func() bool { return true }
-		t.Cleanup(func() { stdinTTY = oldTTY })
+		stubStdinTTY(t, true)
 		// The editor itself needs a terminal; what it reports is a registry
 		// its Models tab wrote.
 		stubConfigEditor(t, configeditor.Result{RegistryChanged: true}, nil)

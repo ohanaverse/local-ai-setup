@@ -279,7 +279,7 @@ func TestConfigThemeList_PrintsAllThemes(t *testing.T) {
 // themes.toml, then runs `wt config theme` and confirms solarized shows
 // up as active.
 func TestConfigTheme_ShowsActive_WithNonDefault(t *testing.T) {
-	a, tmp := newTestApp(t)
+	_, tmp := newTestApp(t)
 	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"),
 		[]byte("theme = \"solarized\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -289,7 +289,6 @@ func TestConfigTheme_ShowsActive_WithNonDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newApp() error = %v", err)
 	}
-	_ = a // unused after second newApp()
 	var out bytes.Buffer
 	cmd := configCmd(a2)
 	cmd.SetArgs([]string{"theme"})

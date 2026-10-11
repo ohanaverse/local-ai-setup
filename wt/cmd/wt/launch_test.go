@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,14 +47,7 @@ func TestInitUsesAgentFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seed(claude): %v", err)
 	}
-	found := false
-	for _, name := range res.Created {
-		if name == "CLAUDE.md" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(res.Created, "CLAUDE.md") {
 		t.Fatalf("expected CLAUDE.md created, got %v", res.Created)
 	}
 }
@@ -229,22 +221,15 @@ func TestRunAgentCmdPrintsSummary(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
-	w.Close()
-	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "wt: claude · claude/sonnet ·") {
-		t.Errorf("stdout = %q, want summary line", string(out))
+	if !strings.Contains(out, "wt: claude · claude/sonnet ·") {
+		t.Errorf("stdout = %q, want summary line", out)
 	}
 }
 
@@ -264,29 +249,22 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
-	w.Close()
-	out, _ := io.ReadAll(r)
 	// The summary line must be preceded by a newline so the user's
 	// prior output (which may lack a trailing newline) doesn't glue
 	// to it. Find the summary and check the byte immediately before.
-	idx := strings.Index(string(out), "wt: claude · claude/sonnet ·")
+	idx := strings.Index(out, "wt: claude · claude/sonnet ·")
 	if idx <= 0 {
-		t.Fatalf("stdout = %q, want summary line", string(out))
+		t.Fatalf("stdout = %q, want summary line", out)
 	}
 	if out[idx-1] != '\n' {
-		t.Errorf("stdout[%d-1] = %q, want '\\n' before summary line. Full output: %q", idx, out[idx-1], string(out))
+		t.Errorf("stdout[%d-1] = %q, want '\\n' before summary line. Full output: %q", idx, out[idx-1], out)
 	}
 }
 
@@ -305,25 +283,18 @@ func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
-	w.Close()
-	out, _ := io.ReadAll(r)
-	if strings.Contains(string(out), "survey ·") {
-		t.Errorf("stdout = %q, should not contain survey prompts when stdin is not a TTY", string(out))
+	if strings.Contains(out, "survey ·") {
+		t.Errorf("stdout = %q, should not contain survey prompts when stdin is not a TTY", out)
 	}
-	if !strings.Contains(string(out), "wt: claude · claude/sonnet ·") {
-		t.Errorf("stdout = %q, want the summary line", string(out))
+	if !strings.Contains(out, "wt: claude · claude/sonnet ·") {
+		t.Errorf("stdout = %q, want the summary line", out)
 	}
 }
 
@@ -355,12 +326,7 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 
 	// Install a fake claude binary so launchFiltered can execute without
 	// requiring the real CLI on PATH.
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -414,11 +380,7 @@ func stubOllamaList(t *testing.T, names ...string) *[]string {
 func directOllamaLaunch(t *testing.T, baseURL string) error {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal,
@@ -495,12 +457,7 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	codexBin := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "codex")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -599,12 +556,7 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 
 	// Install a fake claude binary so launchFiltered can execute without
 	// requiring the real CLI on PATH.
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -649,12 +601,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	// Global model order interleaves a code-tagged model right after the
 	// last-launched design-tagged model, so a fallback that ignores the
@@ -701,12 +648,7 @@ func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -740,12 +682,7 @@ func TestLaunchFilteredRecordsUsageForAgent(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -813,8 +750,9 @@ func TestCommandAgentDoesNotRecordRefcount(t *testing.T) {
 // Note: a symmetric "no warning when -A is an agent" test is not added
 // here — exercising that branch through launchFiltered requires running
 // the actual agent binary, which hangs in the test environment. The
-// warning's only write site is the `if pinnedSupplied && IsCommand(agent)`
-// branch at launch.go:74-76; the inverse is locked by code review.
+// warning's only write site is the `if pinnedSupplied` check in the
+// command-agent branch of launchFilteredImpl; the inverse is locked by code
+// review.
 func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -827,27 +765,15 @@ func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	}
 
 	// Capture stderr.
-	oldStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	os.Stderr = w
-	defer func() { os.Stderr = oldStderr }()
-
+	//
 	// launchFiltered with -A shell -M claude/opus. The actual exec may
 	// fail (no TTY, no args), but the stderr note is printed before the
 	// exec, so it lands in our pipe regardless of the outcome.
-	_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil, nil, nil)
-
-	// Close the writer to flush the pipe and read.
-	_ = w.Close()
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(r); err != nil {
-		t.Fatalf("read pipe: %v", err)
-	}
-	if !strings.Contains(buf.String(), `wt: -M ignored for command "shell"`) {
-		t.Errorf("stderr = %q; want it to contain %q", buf.String(), `wt: -M ignored for command "shell"`)
+	out := captureFile(t, &os.Stderr, func() {
+		_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil, nil, nil)
+	})
+	if !strings.Contains(out, `wt: -M ignored for command "shell"`) {
+		t.Errorf("stderr = %q; want it to contain %q", out, `wt: -M ignored for command "shell"`)
 	}
 }
 
@@ -902,26 +828,17 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 		t.Skip("`true` not available")
 	}
 
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil); err != nil {
-		w.Close()
-		os.Stdout = old
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
-	w.Close()
-	os.Stdout = old
-	out, _ := io.ReadAll(r)
 
 	// Summary must be present.
-	if !strings.Contains(string(out), "wt: claude ·") {
-		t.Errorf("stdout missing summary line: %q", string(out))
+	if !strings.Contains(out, "wt: claude ·") {
+		t.Errorf("stdout missing summary line: %q", out)
 	}
 	// The notice seam was invoked after the summary.
 	if len(order) == 0 {
@@ -987,20 +904,13 @@ func TestRunAgentCmdPostExitOrder(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	runErr := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
-	w.Close()
-	os.Stdout = old
+	var runErr error
+	s := captureFile(t, &os.Stdout, func() {
+		runErr = runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+	})
 	if runErr != nil {
 		t.Fatalf("runAgentCmd: %v", runErr)
 	}
-	out, _ := io.ReadAll(r)
-	s := string(out)
 	if !strings.Contains(s, "wt: claude · ollama/qwen3.8 ·") {
 		t.Errorf("stdout = %q, want the summary line", s)
 	}
@@ -1060,11 +970,6 @@ func TestRunAgentCmdNativeModelSkipsStopPicker(t *testing.T) {
 // runAgentCmd itself (not just the internal/profiles unit tests) so a
 // wiring mistake in launch.go is caught here.
 func TestRunAgentCmdAppliesConfirmedProfile(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 [[profiles]]
 agent = "claude"
@@ -1072,9 +977,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return true, nil }
 	t.Cleanup(func() { confirmProfile = oldConfirm })
@@ -1085,13 +988,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
-	found := false
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
 		t.Errorf("cmd.Env = %v, want WT_TEST_PROFILE_APPLIED=1", cmd.Env)
 	}
 }
@@ -1101,11 +998,6 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 // of the prompt must actually skip application, not just skip the prompt
 // text.
 func TestRunAgentCmdSkipsProfileWhenDeclined(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 [[profiles]]
 agent = "claude"
@@ -1113,9 +1005,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return false, nil }
 	t.Cleanup(func() { confirmProfile = oldConfirm })
@@ -1126,10 +1016,8 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			t.Errorf("cmd.Env = %v, profile was declined but applied anyway", cmd.Env)
-		}
+	if slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+		t.Errorf("cmd.Env = %v, profile was declined but applied anyway", cmd.Env)
 	}
 }
 
@@ -1138,11 +1026,6 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 // must not even be called) and no application, even when a profile would
 // otherwise match.
 func TestRunAgentCmdGlobalOffSkipsPromptAndApplication(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 enabled = false
 
@@ -1152,9 +1035,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	promptCalled := false
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { promptCalled = true; return true, nil }
@@ -1203,14 +1084,7 @@ func TestRunAgentCmdSkipsProfileForCommandAndNativeModels(t *testing.T) {
 // normally — a user's typo in a hand-edited file must never block an
 // agent launch.
 func TestRunAgentCmdMalformedProfilesTomlDegradesGracefully(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte("not [ valid"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, "not [ valid")
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) {
 		t.Fatal("confirmProfile called despite a malformed profiles.toml")
@@ -1255,18 +1129,10 @@ func TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary(t *testing.T) {
 	sentinel := filepath.Join(sentinelDir, "should-not-exist")
 	cmd := exec.Command("touch", sentinel)
 
-	r, w, perr := os.Pipe()
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	oldStdout := os.Stdout
-	os.Stdout = w
-
-	err := runAgentCmd(cmd, "pi", m, cfg, pp)
-
-	w.Close()
-	os.Stdout = oldStdout
-	out, _ := io.ReadAll(r)
+	var err error
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "pi", m, cfg, pp)
+	})
 
 	if err == nil {
 		t.Fatal("runAgentCmd() error = nil, want the wrapper-not-installed error")
@@ -1280,7 +1146,7 @@ func TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary(t *testing.T) {
 	if !released {
 		t.Error("releaseSession() was not called on a pre-launch profile apply error")
 	}
-	if !strings.Contains(string(out), "wt: pi · ollama/x") {
+	if !strings.Contains(out, "wt: pi · ollama/x") {
 		t.Errorf("stdout = %q, want the summary line printed", out)
 	}
 }
@@ -1315,11 +1181,6 @@ func TestPromptProfileNoTTYDefaultsToApply(t *testing.T) {
 // PR-review finding that the original code returned the error and hard-
 // failed the whole launch.
 func TestApplyProfileForLaunchDegradesOnConfirmError(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 [[profiles]]
 agent = "claude"
@@ -1327,9 +1188,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return false, errors.New("tty write failed") }
 	t.Cleanup(func() { confirmProfile = oldConfirm })
@@ -1345,10 +1204,8 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	if cerr := cleanup(); cerr != nil {
 		t.Errorf("cleanup() error = %v, want nil (noop)", cerr)
 	}
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			t.Errorf("cmd.Env = %v, profile env applied despite a confirmProfile error", cmd.Env)
-		}
+	if slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+		t.Errorf("cmd.Env = %v, profile env applied despite a confirmProfile error", cmd.Env)
 	}
 }
 
@@ -1383,13 +1240,7 @@ func TestApplyProfileForLaunchUsesPrecomputedStoreWithoutReloading(t *testing.T)
 	}
 	t.Cleanup(func() { cleanup() })
 
-	found := false
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PRECOMPUTED=1" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Env, "WT_TEST_PRECOMPUTED=1") {
 		t.Errorf("cmd.Env = %v, want the precomputed store's profile applied", cmd.Env)
 	}
 }
@@ -1589,10 +1440,8 @@ func TestApplyResolvedProfileEnvArgsRevertedWhenConfigContentFails(t *testing.T)
 	}
 	t.Cleanup(func() { _ = cleanup() })
 
-	for _, e := range cmd.Env {
-		if e == "X=1" {
-			t.Errorf("cmd.Env = %v, contains profile Env \"X=1\" despite config_content failure — launch is half-profiled", cmd.Env)
-		}
+	if slices.Contains(cmd.Env, "X=1") {
+		t.Errorf("cmd.Env = %v, contains profile Env \"X=1\" despite config_content failure — launch is half-profiled", cmd.Env)
 	}
 	if strings.Join(cmd.Args, "|") != strings.Join(origArgs, "|") {
 		t.Errorf("cmd.Args = %v, want unchanged %v (ExtraArgs must be reverted when config_content fails)", cmd.Args, origArgs)
@@ -1738,23 +1587,18 @@ func TestApplyProfileForLaunchSelfHealPrintsNotice(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	oldStderr := os.Stderr
-	r, w, perr := os.Pipe()
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	os.Stderr = w
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
-	w.Close()
-	os.Stderr = oldStderr
+	var cleanup func() error
+	var err error
+	out := captureFile(t, &os.Stderr, func() {
+		cleanup, err = applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+	})
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v", err)
 	}
 	defer func() { _ = cleanup() }()
 
-	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "wt: restored a leftover profile-managed file from a previous session: "+target) {
-		t.Errorf("stderr = %q, want the self-heal notice naming %q", string(out), target)
+	if !strings.Contains(out, "wt: restored a leftover profile-managed file from a previous session: "+target) {
+		t.Errorf("stderr = %q, want the self-heal notice naming %q", out, target)
 	}
 }
 
@@ -1772,24 +1616,19 @@ func TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError(t *testing.T) {
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
 
-	oldStderr := os.Stderr
-	r, w, perr := os.Pipe()
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	os.Stderr = w
-	cleanup, err := applyProfileForLaunch(cmd, "codex", m, cfg, nil)
-	w.Close()
-	os.Stderr = oldStderr
+	var cleanup func() error
+	var err error
+	out := captureFile(t, &os.Stderr, func() {
+		cleanup, err = applyProfileForLaunch(cmd, "codex", m, cfg, nil)
+	})
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v, want nil (a self-heal ConfigFileTarget error must never fail the launch)", err)
 	}
 	if cerr := cleanup(); cerr != nil {
 		t.Errorf("cleanup() error = %v, want nil", cerr)
 	}
-	out, _ := io.ReadAll(r)
-	if strings.Contains(string(out), "restored a leftover") {
-		t.Errorf("stderr = %q, want no self-heal notice when the target couldn't even be resolved", string(out))
+	if strings.Contains(out, "restored a leftover") {
+		t.Errorf("stderr = %q, want no self-heal notice when the target couldn't even be resolved", out)
 	}
 }
 
@@ -1801,11 +1640,7 @@ func TestLaunchFilteredEnsuresRouteForRunningLocalModel(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	worktree := t.TempDir()
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -1843,11 +1678,7 @@ func TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	worktree := t.TempDir()
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "codex")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -1887,11 +1718,7 @@ func TestLaunchFilteredSkipsEnsureOnDirectRoute(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	worktree := t.TempDir()
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -1941,11 +1768,7 @@ func relativeArgFixture(t *testing.T) (launch, other string, notes *bytes.Buffer
 			t.Fatal(err)
 		}
 	}
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	notes = &bytes.Buffer{}

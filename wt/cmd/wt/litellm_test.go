@@ -21,6 +21,26 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
+// execLitellm runs `wt litellm <args>` over a, discarding both streams, and
+// returns the command's error.
+func execLitellm(a *app, args ...string) error {
+	c := litellmCmd(a)
+	c.SetOut(&bytes.Buffer{})
+	c.SetErr(&bytes.Buffer{})
+	c.SetArgs(args)
+	return c.Execute()
+}
+
+// routeRows opens the config.yaml at p and returns its rows.
+func routeRows(t *testing.T, p string) []litellm.RowInfo {
+	t.Helper()
+	f, err := litellm.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f.Rows()
+}
+
 func litellmTestConfig() *config.Config {
 	return &config.Config{
 		Providers: []config.Provider{
@@ -100,12 +120,7 @@ func TestLitellmSyncRefusesOnConfigError(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
 	for _, args := range [][]string{{"sync"}} {
-		c := litellmCmd(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")})
-		var out, errOut bytes.Buffer
-		c.SetOut(&out)
-		c.SetErr(&errOut)
-		c.SetArgs(args)
-		err := c.Execute()
+		err := execLitellm(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")}, args...)
 		if err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
 			t.Fatalf("%v: err = %v, want config error refusal", args, err)
 		}
@@ -216,13 +231,7 @@ func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
 // url/key independently, status never prints the key (only api_key_set), and
 // `on` warns when url/key are unset because agents would fail at launch.
 func TestLitellmStatusAndToggle(t *testing.T) {
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	writeEmptyRegistry(t, home)
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg, _ := litellmStateEnv(t)
 	var out, errOut bytes.Buffer
 	if err := runLitellmToggle(&out, &errOut, cfg, true); err != nil {
 		t.Fatal(err)
@@ -371,11 +380,7 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 		{"unexpose", "openrouter/x"},
 		{"unexpose", "openrouter/x", "--json"},
 	} {
-		c := litellmCmd(&app{cfg: litellmTestConfig()})
-		c.SetOut(&bytes.Buffer{})
-		c.SetErr(&bytes.Buffer{})
-		c.SetArgs(args)
-		err := c.Execute()
+		err := execLitellm(&app{cfg: litellmTestConfig()}, args...)
 		if err == nil || !strings.Contains(err.Error(), "wt litellm sync") || !strings.Contains(err.Error(), "removed") {
 			t.Errorf("%v: err = %v, want a removal error pointing to `wt litellm sync`", args, err)
 		}
@@ -404,11 +409,7 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 	cfg, path := litellmStateEnv(t)
 	for _, args := range [][]string{{"status"}, {"on"}, {"off"}, {"set", "--url", "http://x"}, {"sync"}} {
-		c := litellmCmd(&app{cfg: cfg, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")})
-		c.SetOut(&bytes.Buffer{})
-		c.SetErr(&bytes.Buffer{})
-		c.SetArgs(args)
-		if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
+		if err := execLitellm(&app{cfg: cfg, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")}, args...); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
 			t.Fatalf("%v: err = %v, want config error refusal", args, err)
 		}
 	}
@@ -416,11 +417,7 @@ func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 		t.Error("refused commands wrote config.toml")
 	}
 	// No-flag `set` on a healthy config is an error and leaves state alone.
-	c := litellmCmd(&app{cfg: cfg})
-	c.SetOut(&bytes.Buffer{})
-	c.SetErr(&bytes.Buffer{})
-	c.SetArgs([]string{"set"})
-	if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "nothing to set") {
+	if err := execLitellm(&app{cfg: cfg}, "set"); err == nil || !strings.Contains(err.Error(), "nothing to set") {
 		t.Fatalf("set with no flags: err = %v", err)
 	}
 	if _, err := os.Stat(path); err == nil {
@@ -434,25 +431,17 @@ func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 // it has a default for, any other is a hand edit of registry.toml).
 func validationOnlyApp(t *testing.T) (*app, string) {
 	t.Helper()
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
 	sample, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "contracts", "registry.sample.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	reg := string(sample) + "\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n"
-	regDir := filepath.Join(home, ".config", "local-ai")
-	if err := os.MkdirAll(regDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte(reg), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	registry := modelHome(t, reg)
 	a, err := newApp()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return a, filepath.Join(home, ".config", "agent-wt", "config.toml")
+	return a, filepath.Join(filepath.Dir(filepath.Dir(registry)), "agent-wt", "config.toml")
 }
 
 // TestLitellmRoutingCommandsWorkOnValidationOnlyError pins that
@@ -467,15 +456,8 @@ func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	if a.cfgErr == nil || a.loadErr != nil {
 		t.Fatalf("fixture: cfgErr=%v loadErr=%v, want validation-only error", a.cfgErr, a.loadErr)
 	}
-	run := func(args ...string) error {
-		c := litellmCmd(a)
-		c.SetOut(&bytes.Buffer{})
-		c.SetErr(&bytes.Buffer{})
-		c.SetArgs(args)
-		return c.Execute()
-	}
 	for _, args := range [][]string{{"set", "--url", "http://localhost:4000", "--api-key", "sk-abcdef"}, {"on"}, {"status"}, {"off"}, {"on"}} {
-		if err := run(args...); err != nil {
+		if err := execLitellm(a, args...); err != nil {
 			t.Fatalf("%v refused on validation-only error: %v", args, err)
 		}
 	}
@@ -509,11 +491,7 @@ func TestLitellmSyncWorksOnValidationOnlyError(t *testing.T) {
 		Entries: []localmodels.Entry{
 			{ProviderID: "ollama", ModelID: good, ModelName: "contract-fixture:local", Registered: true, Running: true},
 		}})
-	c := litellmCmd(a)
-	c.SetOut(&bytes.Buffer{})
-	c.SetErr(&bytes.Buffer{})
-	c.SetArgs([]string{"sync"})
-	if err := c.Execute(); err != nil {
+	if err := execLitellm(a, "sync"); err != nil {
 		t.Fatalf("sync refused: %v", err)
 	}
 	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) || strings.Contains(string(b), "ghost/m") {
@@ -529,11 +507,7 @@ func TestLitellmSyncGatesOnLoadErrOnly(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
 	for _, args := range [][]string{{"sync"}} {
-		c := litellmCmd(&app{cfg: &config.Config{}, loadErr: errors.New("bad toml")})
-		c.SetOut(&bytes.Buffer{})
-		c.SetErr(&bytes.Buffer{})
-		c.SetArgs(args)
-		if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
+		if err := execLitellm(&app{cfg: &config.Config{}, loadErr: errors.New("bad toml")}, args...); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
 			t.Fatalf("%v: err = %v, want refusal", args, err)
 		}
 		if b, _ := os.ReadFile(p); string(b) != body {
@@ -700,12 +674,9 @@ func TestLitellmSyncJSONMatchesContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(f.Rows(), litellm.RowInfo{ID: "ollama/llama3.2:3b", Managed: true}) {
-		t.Fatalf("rows = %v, want the discovered route written marked", f.Rows())
+	rows := routeRows(t, p)
+	if !slices.Contains(rows, litellm.RowInfo{ID: "ollama/llama3.2:3b", Managed: true}) {
+		t.Fatalf("rows = %v, want the discovered route written marked", rows)
 	}
 	var out, errOut bytes.Buffer
 	if err := reportLitellm(&out, &errOut, res, true); !errors.Is(err, errLitellmIDFailed) {
@@ -879,7 +850,7 @@ func TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant(t *testing.T) {
 	}{
 		{"nothing routed, no cloud models", "model_list: []\n", litellmTestConfig, nil},
 		{"local route present", "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n", litellmTestConfig,
-			[]string{`provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`}},
+			[]string{downProbeWarn}},
 		// #195: a family whose only route is a discovered model's marked row
 		// has no registry local model to notice, so the row was removed with
 		// no word. It is a local route treated as stale like any other.
@@ -887,7 +858,7 @@ func TestLitellmSyncRefusedProviderWarnsOnlyWhenRelevant(t *testing.T) {
 			cfg := litellmTestConfig()
 			cfg.Models = cfg.Models[1:] // drop the registry ollama model: nothing local is registered
 			return cfg
-		}, []string{`provider "ollama" refused the probe connection: nothing is listening there, so its local routes are treated as stale`}},
+		}, []string{downProbeWarn}},
 		// A hand-written row of the family is not wt's to remove, so a refused
 		// daemon says nothing about it.
 		{"only a hand-written row", "model_list:\n  - model_name: ollama/mine:1b\n    litellm_params: {model: ollama_chat/mine:1b}\n", func() *config.Config {
@@ -1037,68 +1008,55 @@ func TestSyncRoutesMlxLMServerByProbe(t *testing.T) {
 	}
 }
 
-// TestSyncRoutesMlxLMServerAmbiguousLeavesRoutes pins that with two or more
-// registered mlx_lm_server pairings whose "+draft-" names match none of the
-// served ids (mlx_lm.server lists HF repo ids, never the pairing name), sync
-// leaves every pairing's route alone with a warning saying why. wt cannot tell
-// which pairing is serving; treating the family as OK removed the serving
-// pairing's working route on every sync, silently.
-func TestSyncRoutesMlxLMServerAmbiguousLeavesRoutes(t *testing.T) {
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"mlx-community/Qwen3.8-27B-4bit"},{"id":"mlx-community/Qwen3.8-0.6B-4bit"}]}`))
-	}))
-	defer up.Close()
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: up.URL + "/v1"}}},
-		Models: []config.Model{
-			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-0.6B-4bit", Location: config.LocationLocal},
-			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-1.7B-4bit", Location: config.LocationLocal},
-		},
-	}
-	snap := localmodels.Inventory(cfg)
-	if got := desiredLocalIDs(cfg, snap); len(got) != 0 {
-		t.Errorf("desiredLocalIDs = %v, want none", got)
-	}
-	untouched, warns := syncUntouchedAndWarnings(cfg, snap, map[string]bool{"mlx_lm_server/a": true})
-	if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
-		t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
-	}
-	want := []string{`provider "mlx_lm_server" answered, but wt cannot tell which of its registered models it is serving (status "partial"); its model routes were left unchanged`}
-	if !slices.Equal(warns, want) {
-		t.Errorf("warnings = %v, want %v", warns, want)
-	}
-}
-
-// TestSyncRoutesMlxLMServerEmptyAnswerLeavesRoutes pins the same guarantee for
-// an EMPTY /v1/models body: with two registered pairings, "answered and listed
-// nothing" is no more attributable to a pairing than a foreign id is, so sync
-// must leave both routes alone and say so. Reporting OK there removed every
-// registered pairing's route silently — a real server lists the pairing it
-// loaded, so the only ways to get an empty list are a foreign listener on the
-// port or a server still starting up.
-func TestSyncRoutesMlxLMServerEmptyAnswerLeavesRoutes(t *testing.T) {
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[]}`))
-	}))
-	defer up.Close()
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: up.URL + "/v1"}}},
-		Models: []config.Model{
-			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a", Location: config.LocationLocal},
-			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b", Location: config.LocationLocal},
-		},
-	}
-	snap := localmodels.Inventory(cfg)
-	if got := desiredLocalIDs(cfg, snap); len(got) != 0 {
-		t.Errorf("desiredLocalIDs = %v, want none", got)
-	}
-	untouched, warns := syncUntouchedAndWarnings(cfg, snap, map[string]bool{"mlx_lm_server/a": true})
-	if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
-		t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
-	}
-	want := []string{`provider "mlx_lm_server" answered, but wt cannot tell which of its registered models it is serving (status "partial"); its model routes were left unchanged`}
-	if !slices.Equal(warns, want) {
-		t.Errorf("warnings = %v, want %v", warns, want)
+// TestSyncRoutesMlxLMServerUnattributableAnswerLeavesRoutes pins that with two
+// or more registered mlx_lm_server pairings and a /v1/models answer that names
+// none of them, sync leaves every pairing's route alone with a warning saying
+// why: wt cannot tell which pairing is serving.
+func TestSyncRoutesMlxLMServerUnattributableAnswerLeavesRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		name, served, nameA, nameB string
+	}{
+		// The pairings' "+draft-" names match none of the served ids
+		// (mlx_lm.server lists HF repo ids, never the pairing name). wt cannot
+		// tell which pairing is serving; treating the family as OK removed the
+		// serving pairing's working route on every sync, silently.
+		{"ambiguous", `{"data":[{"id":"mlx-community/Qwen3.8-27B-4bit"},{"id":"mlx-community/Qwen3.8-0.6B-4bit"}]}`,
+			"mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-0.6B-4bit",
+			"mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-1.7B-4bit"},
+		// The same guarantee for an EMPTY /v1/models body: with two registered
+		// pairings, "answered and listed nothing" is no more attributable to a
+		// pairing than a foreign id is, so sync must leave both routes alone
+		// and say so. Reporting OK there removed every registered pairing's
+		// route silently — a real server lists the pairing it loaded, so the
+		// only ways to get an empty list are a foreign listener on the port or
+		// a server still starting up.
+		{"empty answer", `{"data":[]}`, "pair-a", "pair-b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.served))
+			}))
+			defer up.Close()
+			cfg := &config.Config{
+				Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: up.URL + "/v1"}}},
+				Models: []config.Model{
+					{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: tc.nameA, Location: config.LocationLocal},
+					{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: tc.nameB, Location: config.LocationLocal},
+				},
+			}
+			snap := localmodels.Inventory(cfg)
+			if got := desiredLocalIDs(cfg, snap); len(got) != 0 {
+				t.Errorf("desiredLocalIDs = %v, want none", got)
+			}
+			untouched, warns := syncUntouchedAndWarnings(cfg, snap, map[string]bool{"mlx_lm_server/a": true})
+			if !slices.Equal(untouched, []string{"mlx_lm_server/a", "mlx_lm_server/b"}) {
+				t.Errorf("untouched = %v, want both pairings (routes kept)", untouched)
+			}
+			want := []string{`provider "mlx_lm_server" answered, but wt cannot tell which of its registered models it is serving (status "partial"); its model routes were left unchanged`}
+			if !slices.Equal(warns, want) {
+				t.Errorf("warnings = %v, want %v", warns, want)
+			}
+		})
 	}
 }
 
@@ -1133,12 +1091,8 @@ litellm_settings:
 	if err := runLitellmSync(&out, &errOut, cfg, false, false); err != nil {
 		t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
 	}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := []litellm.RowInfo{{ID: "omlx/stray-model", Managed: true}, {ID: "ollama/llama3.2:3b", Managed: true}, {ID: "mtplx/org/Qwen3.8-27B", Managed: true}}
-	if got := f.Rows(); !slices.Equal(got, want) {
+	if got := routeRows(t, p); !slices.Equal(got, want) {
 		t.Fatalf("rows = %v, want %v", got, want)
 	}
 }
@@ -1191,11 +1145,7 @@ litellm_settings:
 	if err := runLitellmSync(&out, &errOut, cfg, true, false); err != nil {
 		t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
 	}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := f.Rows(); len(got) != 0 {
+	if got := routeRows(t, p); len(got) != 0 {
 		t.Fatalf("rows = %v, want the ollama/foo route gone", got)
 	}
 }
@@ -1235,12 +1185,8 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 	if err != nil || !res.Changed {
 		t.Fatalf("hook write: changed=%v err=%v, want the route written", res.Changed, err)
 	}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := []litellm.RowInfo{{ID: row.Model.ID, Managed: true}}
-	if got := f.Rows(); !slices.Equal(got, want) {
+	if got := routeRows(t, p); !slices.Equal(got, want) {
 		t.Fatalf("rows after the hook = %v, want %v", got, want)
 	}
 
@@ -1272,10 +1218,7 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 	if b, err := os.ReadFile(restarts); err == nil {
 		t.Errorf("sync restarted the proxy: %q", b)
 	}
-	if f, err = litellm.Open(p); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.Rows(); !slices.Equal(got, want) {
+	if got := routeRows(t, p); !slices.Equal(got, want) {
 		t.Errorf("rows after sync = %v, want %v", got, want)
 	}
 }
@@ -1297,11 +1240,7 @@ func TestEnsureRouteChangeIsIdempotent(t *testing.T) {
 		t.Fatalf("first write: changed=%v err=%v, want the route written", res.Changed, err)
 	}
 	want := []litellm.RowInfo{{ID: "ollama/gemma:9b", Managed: true}}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := f.Rows(); !slices.Equal(got, want) {
+	if got := routeRows(t, p); !slices.Equal(got, want) {
 		t.Fatalf("rows after the first write = %v, want %v", got, want)
 	}
 	before, err := os.ReadFile(p)
@@ -1320,10 +1259,7 @@ func TestEnsureRouteChangeIsIdempotent(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Errorf("config.yaml changed on the second write:\n--- before\n%s\n--- after\n%s", before, after)
 	}
-	if f, err = litellm.Open(p); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.Rows(); !slices.Equal(got, want) {
+	if got := routeRows(t, p); !slices.Equal(got, want) {
 		t.Errorf("rows after the second write = %v, want %v", got, want)
 	}
 }
@@ -1397,11 +1333,7 @@ litellm_settings:
 	if len(real.Warnings) != 0 {
 		t.Errorf("warnings = %q, want none", real.Warnings)
 	}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := f.Rows(); !slices.Equal(got, []litellm.RowInfo{{ID: "mtplx/org/by-hand"}}) {
+	if got := routeRows(t, p); !slices.Equal(got, []litellm.RowInfo{{ID: "mtplx/org/by-hand"}}) {
 		t.Fatalf("rows = %v, want only the hand-written mtplx/org/by-hand", got)
 	}
 }
@@ -1498,11 +1430,7 @@ litellm_settings:
 			if b, err := os.ReadFile(restarts); err == nil {
 				t.Errorf("sync restarted the proxy: %q", b)
 			}
-			f, err := litellm.Open(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got, wantRows := f.Rows(), []litellm.RowInfo{{ID: "omlx/org/live", Managed: true}, {ID: "omlx/reg", Managed: true}}; !slices.Equal(got, wantRows) {
+			if got, wantRows := routeRows(t, p), []litellm.RowInfo{{ID: "omlx/org/live", Managed: true}, {ID: "omlx/reg", Managed: true}}; !slices.Equal(got, wantRows) {
 				t.Errorf("rows = %v, want %v", got, wantRows)
 			}
 		})
@@ -1551,11 +1479,7 @@ litellm_settings:
 					t.Errorf("dryRun=%v: stdout %q (%v), want only the warning %q", dryRun, out.String(), err, tc.want)
 				}
 			}
-			f, err := litellm.Open(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got, want := f.Rows(), []litellm.RowInfo{{ID: "omlx/reg", Managed: true}}; !slices.Equal(got, want) {
+			if got, want := routeRows(t, p), []litellm.RowInfo{{ID: "omlx/reg", Managed: true}}; !slices.Equal(got, want) {
 				t.Errorf("rows = %v, want the gap model's route kept %v", got, want)
 			}
 		})
@@ -1590,11 +1514,7 @@ litellm_settings:
 			t.Errorf("dryRun=%v: stdout %q (%v), want no warnings", dryRun, out.String(), err)
 		}
 	}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := f.Rows(); len(got) != 0 {
+	if got := routeRows(t, p); len(got) != 0 {
 		t.Fatalf("rows = %v, want the stale omlx route removed", got)
 	}
 }
@@ -1715,12 +1635,8 @@ litellm_settings:
 	if !slices.Equal(real.Warnings, dry.Warnings) || len(dry.Warnings) != 1 {
 		t.Errorf("warnings: real %q, dry run %q; want the same single omlx probe warning", real.Warnings, dry.Warnings)
 	}
-	f, err := litellm.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := []litellm.RowInfo{{ID: "omlx/stray-model", Managed: true}, {ID: "ollama/q8"}, {ID: "ollama/llama3.2:3b", Managed: true}}
-	if got := f.Rows(); !slices.Equal(got, want) {
+	if got := routeRows(t, p); !slices.Equal(got, want) {
 		t.Fatalf("rows = %v, want %v", got, want)
 	}
 }
@@ -1815,12 +1731,8 @@ func TestSyncAndStartHookAgreeWhenOmlxListsAnUnloadedSibling(t *testing.T) {
 	cfg.Providers = append(cfg.Providers, omlx)
 	rows := func() []string {
 		t.Helper()
-		f, err := litellm.Open(p)
-		if err != nil {
-			t.Fatal(err)
-		}
 		var ids []string
-		for _, r := range f.Rows() {
+		for _, r := range routeRows(t, p) {
 			ids = append(ids, r.ID)
 		}
 		slices.Sort(ids)

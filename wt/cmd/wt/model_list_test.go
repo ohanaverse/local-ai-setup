@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -356,11 +354,6 @@ func TestModelListCommandGate(t *testing.T) {
 // user finds the row to repair, and a load that failed on it would take the
 // listing — and every launch — away over a key wt only reads for display.
 func TestModelListListsARowWithAMalformedFetch(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, "local-ai"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	const registry = `
 [[providers]]
 id = "omlx"
@@ -390,9 +383,7 @@ draft = 7
 [models.fetch]
 repo = ["org/T"]
 `
-	if err := os.WriteFile(filepath.Join(home, "local-ai", "registry.toml"), []byte(registry), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	modelHome(t, registry)
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
@@ -501,15 +492,7 @@ model_name = "T+draft-D"
 // listing over it, returning stdout, stderr and the registry's path.
 func runModelListOver(t *testing.T, registry string, asJSON bool) (stdout, stderr, path string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	path = filepath.Join(home, "local-ai", "registry.toml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(registry), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path = modelHome(t, registry)
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
