@@ -124,6 +124,7 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 		{"wt agents with flags", []string{"agents", "-A", "codex"}, "wt agents is removed"},
 		{"wt models before a dash", []string{"models", "--", "x"}, "wt models is removed"},
 		{"wt agents before a dash", []string{"agents", "--", "list"}, "wt agents is removed"},
+		{"shell models with no dash", []string{"--agent", "shell", "models"}, "wt models is removed"},
 		{"shell models before a dash", []string{"-A", "shell", "models", "--", "x"}, "wt models is removed"},
 		{"shell agents with no dash", []string{"--agent", "shell", "agents", "list"}, "wt agents is removed"},
 	}
@@ -550,12 +551,7 @@ func TestNeedsModelPicker(t *testing.T) {
 // single entry. Without this fix, scripts and CI invocations of
 // `wt --cwd -A <agent>` force an interactive picker or fail with a TTY error.
 func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
-	expectDirectLaunch(t)
-	// --cwd inside a repository installs the guard; that is not what this
-	// test is about, so it is a no-op here.
-	oldGuard := maybeInstallGuard
-	maybeInstallGuard = func() {}
-	t.Cleanup(func() { maybeInstallGuard = oldGuard })
+	expectDirectLaunchInRepo(t)
 	dir := initTestRepo(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
@@ -1065,12 +1061,7 @@ func TestNoWtCommandIsHidden(t *testing.T) {
 // malformed config.toml/registry.toml still fails
 // (TestMalformedRegistryStillFailsClosed).
 func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
-	expectDirectLaunch(t)
-	// -W inside a repository installs the guard; that is not what this test
-	// is about, so it is a no-op here.
-	oldGuard := maybeInstallGuard
-	maybeInstallGuard = func() {}
-	t.Cleanup(func() { maybeInstallGuard = oldGuard })
+	expectDirectLaunchInRepo(t)
 	dir := initTestRepo(t)
 	oldWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })

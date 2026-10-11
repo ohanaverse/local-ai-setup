@@ -30,9 +30,9 @@ import (
 // expects. TestMain (gitenv.IsolateForTest) already keeps a bare temp
 // directory from being taken for a repository; these stubs turn any other
 // wrong turn into a failure that names it. Both are restored on cleanup. A
-// test that launches inside a repository it built expects the guard: it calls
-// this first and then installs its own maybeInstallGuard stub. A test that
-// means to reach the TUI does not call this; it stubs tuiRun itself.
+// test that launches inside a repository it built expects the guard: it
+// calls expectDirectLaunchInRepo instead. A test that means to reach the TUI
+// does not call either; it stubs tuiRun itself.
 func expectDirectLaunch(t *testing.T) {
 	t.Helper()
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
@@ -44,6 +44,16 @@ func expectDirectLaunch(t *testing.T) {
 		t.Error("maybeInstallGuard was called: the command took the working directory for a git repository")
 	}
 	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
+}
+
+// expectDirectLaunchInRepo is expectDirectLaunch for a test that runs the
+// root command inside a repository its test built (initTestRepo): --cwd and
+// -W launch through the guard there, so maybeInstallGuard is a no-op rather
+// than a failure, while tuiRun still fails the test.
+func expectDirectLaunchInRepo(t *testing.T) {
+	t.Helper()
+	expectDirectLaunch(t)
+	maybeInstallGuard = func() {}
 }
 
 // gitInit makes dir a git repository with a committer identity of its own.
