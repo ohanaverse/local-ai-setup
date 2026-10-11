@@ -408,9 +408,7 @@ func TestEnterSelectsEntry(t *testing.T) {
 	got, _ := m.Update(entriesLoadedMsg{groups: groups})
 	m = got.(model)
 	// Move down past the sentinel (index 0) to the first real entry.
-	var downCmd tea.Cmd
-	m.list, downCmd = m.list.Update(tea.KeyMsg{Type: tea.KeyDown})
-	_ = downCmd
+	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyDown})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Enter returned nil cmd, want selectedEntryMsg")
@@ -891,14 +889,7 @@ func TestNoOllamaWarnInLitellmMode(t *testing.T) {
 	// TestOllamaWarnShownWhenUnavailable.
 	tempStateDir(t)
 	stubUsageStore(t)
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-		Models: []config.Model{
-			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
-		},
-		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
+	cfg := ollamaCheckConfig("http://localhost:11434")
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	m := phaseModelWithList(t, cfg, "claude", "code")
 	m.selectedPath = "/repo"

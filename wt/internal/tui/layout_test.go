@@ -58,9 +58,6 @@ func rowsConfig(rows int) *config.Config {
 // row fails the launch and sets a status in that one Update.
 func rowsPicker(t *testing.T, rows, width, height int) model {
 	t.Helper()
-	tempStateDir(t)
-	stubUsageStore(t)
-	stubRefcountStore(t)
 	stubInventory(t, runningOmlxSnapshot())
 	cfg := rowsConfig(rows)
 	m := flowEnter(t, model{cfg: cfg, agent: "claude", selectedPath: t.TempDir(), width: width, height: height}, "claude")
@@ -349,7 +346,7 @@ func TestModelPickerFitsWithFullHelpOpen(t *testing.T) {
 		m := rowsPicker(t, 30, 80, height)
 		_, short := listExtent(m.models, 76)
 
-		next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+		next, _ := updateMsg(m, helpKey)
 
 		_, full := listExtent(next.models, 76)
 		if full <= short {
@@ -363,7 +360,7 @@ func TestModelPickerFitsWithFullHelpOpen(t *testing.T) {
 			t.Errorf("height %d (help needs %d): key hints shown = %t, want %t", height, full, got, want)
 		}
 
-		closed, _ := updateMsg(next, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+		closed, _ := updateMsg(next, helpKey)
 		assertFits(t, "help closed again", closed.View(), 80, height)
 		if closed.models.Height() != m.models.Height() {
 			t.Errorf("height %d: list height after closing the help = %d, want %d back", height, closed.models.Height(), m.models.Height())
@@ -887,9 +884,6 @@ func TestModelPickerWithTimePricedModelsFitsTheTerminal(t *testing.T) {
 		pickerNow = func() time.Time { return c.at }
 		for _, width := range layoutWidths {
 			for _, height := range layoutHeights {
-				tempStateDir(t)
-				stubUsageStore(t)
-				stubRefcountStore(t)
 				stubInventory(t, runningOmlxSnapshot())
 				cfg := timedPickerConfig()
 				check := func(picker, view string, cols *tuilayout.Columns) {
@@ -1045,9 +1039,6 @@ func TestModelPickerNamesTheHighlightedModelsPrice(t *testing.T) {
 			}
 			for _, size := range [][2]int{{80, 24}, {40, 12}, {120, 50}} {
 				width, height := size[0], size[1]
-				tempStateDir(t)
-				stubUsageStore(t)
-				stubRefcountStore(t)
 				stubInventory(t, runningOmlxSnapshot())
 				m := flowEnter(t, model{cfg: modeLinePickerConfig(litellm), agent: "claude", selectedPath: t.TempDir(), width: width, height: height}, "claude")
 				for id, n := range c.want {

@@ -634,15 +634,6 @@ func TestStartingViewShowsStageAndElapsed(t *testing.T) {
 	}
 }
 
-// e2eStubStartModel is a startModel fake for end-to-end tests: it records the
-// call and reports a successful start.
-func e2eStubStartModel(t *testing.T) *startCalls {
-	t.Helper()
-	return stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return nil
-	})
-}
-
 // TestEndToEndNonRunningOmlxRowStartsThenLaunches drives the real path —
 // stubbed inventory to enterModelPhase to Enter to the (stubbed) engine — to
 // verify a non-running omlx row is a start row (start == true, no hint), that
@@ -654,7 +645,7 @@ func TestEndToEndNonRunningOmlxRowStartsThenLaunches(t *testing.T) {
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true},
 	}})
-	calls := e2eStubStartModel(t)
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 
 	got := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
 	idx := indexOfID(got, "omlx/qwen3.8")
@@ -695,7 +686,7 @@ func TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold(t *testing.T) {
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "ollama", Artifact: "gemma4:9b", ModelID: "ollama/gemma4:9b", Registered: true, ArtifactKnown: true},
 	}})
-	calls := e2eStubStartModel(t)
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 
 	got := flowEnter(t, model{cfg: startCfg("ollama", "ollama/gemma4:9b", "gemma4:9b"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
 	idx := indexOfID(got, "ollama/gemma4:9b")
@@ -772,7 +763,7 @@ func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
 	if len(items) != 1 || !items[0].(*modelItem).start {
 		t.Errorf("row start = %v (items = %d), want a single start row", items[0].(*modelItem).start, len(items))
 	}
-	// As in TestEndToEndAbsentRowIsBlocked: a start that never began cannot be
+	// As in TestEndToEndAbsentRowIsHidden: a start that never began cannot be
 	// waited for, so assert the absent start state as well as the count.
 	if got.start != nil {
 		t.Error("the shortcut must not leave a start in flight")
@@ -909,9 +900,6 @@ func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
 // that Enter runs proceedToLaunch and then fails the launch observably.
 func launchRowFixture(t *testing.T, id string) model {
 	t.Helper()
-	tempStateDir(t)
-	stubUsageStore(t)
-	stubRefcountStore(t)
 	stubInventory(t, runningOmlxSnapshot())
 	m := flowEnter(t, model{cfg: modelTestConfig(), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
 	idx := indexOfID(m, id)

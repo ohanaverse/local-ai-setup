@@ -30,14 +30,21 @@ import (
 func compactModelList(t *testing.T, models []config.Model) list.Model {
 	t.Helper()
 	tbl := buildTable(tableInput{models: models, usage: newUsageStore()}, newRefcountStore(), "")
+	return tableList(tbl, 78, 22)
+}
+
+// tableList is the production picker's list over tbl at the given size:
+// ThemedListDelegate at ShowDescription=false and Spacing 0, the header as the
+// list title via styleTableTitle, and no status bar.
+func tableList(tbl modelTable, width, height int) list.Model {
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
-	listItems := make([]list.Item, len(tbl.items))
+	items := make([]list.Item, len(tbl.items))
 	for i, it := range tbl.items {
-		listItems[i] = it
+		items[i] = it
 	}
-	ml := list.New(listItems, delegate, 78, 22)
+	ml := list.New(items, delegate, width, height)
 	ml.Title = tbl.header
 	styleTableTitle(&ml, themes.Default)
 	ml.SetShowStatusBar(false)

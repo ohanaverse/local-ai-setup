@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,12 +14,7 @@ import (
 // runningCell reports whether a rendered row line shows the RUNNING column's
 // "run" flag (fields are checked whole so "run" cannot match another cell).
 func runningCell(line string) bool {
-	for _, f := range strings.Fields(line) {
-		if f == "run" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Fields(line), "run")
 }
 
 // TestRefreshTableReprobesAndKeepsCursor verifies refreshTable re-runs the
@@ -27,9 +23,10 @@ func runningCell(line string) bool {
 // no longer running; a table that still showed it as running would lie.
 func TestRefreshTableReprobesAndKeepsCursor(t *testing.T) {
 	// Arrange: a cfg with an omlx provider and two local models omlx/a and
-	// omlx/b (the fixture shape of TestEnterModelPhaseAllLocalNoneRunningShows
-	// BlockedRows); the FIRST probe reports omlx/a running, later probes report
-	// nothing running. The probe count is tracked in the stub closure.
+	// omlx/b (the fixture shape of
+	// TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows); the FIRST probe
+	// reports omlx/a running, later probes report nothing running. The probe
+	// count is tracked in the stub closure.
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
