@@ -50,7 +50,11 @@ done
 
 require_cmd ollama
 
-installed=$(ollama --version 2> /dev/null | sed -n 's/^ollama version is //p')
+# `ollama version is X` is the daemon's answer. With the daemon down the CLI
+# prints only "Warning: client version is X" (after a could-not-connect line),
+# so take that as the fallback rather than calling the version unknown.
+installed=$(ollama --version 2> /dev/null |
+    sed -n -e 's/^ollama version is //p' -e 's/^Warning: client version is //p' | head -1)
 installed=${installed:-unknown}
 update_note "installed: $installed"
 
@@ -89,15 +93,4 @@ if [ -z "$latest" ]; then
     update_finish manual "$installed installed — update through Ollama.app (guide 08 §4)"
 fi
 
-update_note "latest: $latest"
-
-if [ "$latest" = "$installed" ]; then
-    update_finish current "$installed"
-fi
-
-newest=$(printf '%s\n%s\n' "$installed" "$latest" | sort -V | tail -1)
-if [ "$newest" = "$installed" ]; then
-    update_finish current "$installed (ahead of the published $latest)"
-fi
-
-update_finish manual "$installed installed, $latest available — update through Ollama.app, then re-check"
+finish_against_published "$installed" "$latest" "update through Ollama.app, then re-check"

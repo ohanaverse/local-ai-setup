@@ -51,7 +51,7 @@ their script) are reported but do not fail the run.
 
   --only a,b   restrict to these tools (default: all, in the order below)
   --dry-run    pass --dry-run to each script: print commands, run nothing
-  --check      pass --check to each script: report versions, change nothing
+  --check      pass --check to each script: report versions, change no tool
   --yes        skip the confirmation prompt (required when stdin is not a tty)
 
 Tools, in order:
@@ -67,6 +67,7 @@ EOF
 }
 
 ONLY=""
+ONLY_GIVEN=""
 ASSUME_YES=""
 FORWARD=()
 
@@ -75,10 +76,12 @@ while [ $# -gt 0 ]; do
         --only)
             [ $# -ge 2 ] || { echo "update-tools: --only needs a value" >&2; exit 2; }
             ONLY="$2"
+            ONLY_GIVEN=1
             shift 2
             ;;
         --only=*)
             ONLY="${1#*=}"
+            ONLY_GIVEN=1
             shift
             ;;
         --dry-run)
@@ -104,6 +107,15 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# An empty --only is an error too, and for a sharper reason: an empty filter
+# reads as "no filter" below, so `--only "$unset_variable"` would otherwise
+# widen a run meant for one tool into a sweep of all of them.
+if [ -n "$ONLY_GIVEN" ] && [ -z "$ONLY" ]; then
+    echo "update-tools: --only needs at least one tool name" >&2
+    printf 'known tools: %s\n' "${TOOLS[*]}" >&2
+    exit 2
+fi
 
 # An unrecognised name in --only is an error rather than a silent omission: a
 # typo that quietly skips a tool is worse than being told, especially in a
@@ -163,7 +175,7 @@ for arg in ${FORWARD[@]+"${FORWARD[@]}"}; do
 done
 
 case "$dry" in
-    check) printf 'update-tools: checking %d tool(s) — nothing will be changed\n' "${#SELECTED[@]}" ;;
+    check) printf 'update-tools: checking %d tool(s) — no tool will be changed\n' "${#SELECTED[@]}" ;;
     dry-run) printf 'update-tools: dry run over %d tool(s) — nothing will be run\n' "${#SELECTED[@]}" ;;
     *) printf 'update-tools: updating %d tool(s)\n' "${#SELECTED[@]}" ;;
 esac
@@ -221,7 +233,7 @@ for i in "${!SELECTED[@]}"; do
 
     case "$status" in
         failed) failures=$((failures + 1)) ;;
-        manual) manual=$((manual + 1)) ;;
+        manual | not-installed) manual=$((manual + 1)) ;;
     esac
 
     STATUSES+=("$status")

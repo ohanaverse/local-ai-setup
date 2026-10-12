@@ -82,15 +82,4 @@ if [ -z "$latest" ]; then
     update_finish manual "$installed installed — update through MTPLX.app"
 fi
 
-update_note "latest: $latest"
-
-if [ "$latest" = "$installed" ]; then
-    update_finish current "$installed"
-fi
-
-newest=$(printf '%s\n%s\n' "$installed" "$latest" | sort -V | tail -1)
-if [ "$newest" = "$installed" ]; then
-    update_finish current "$installed (ahead of the published $latest)"
-fi
-
-update_finish manual "$installed installed, $latest available — open MTPLX.app to update"
+finish_against_published "$installed" "$latest" "open MTPLX.app to update"

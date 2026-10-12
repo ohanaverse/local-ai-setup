@@ -87,7 +87,11 @@ elif ! grep -q 'python = "3.11"' "$RECEIPT"; then
 fi
 
 # --- availability -----------------------------------------------------------
-outdated=$(uv tool list --outdated 2> /dev/null | grep '^litellm ' || true)
+# uv's "what would change" line for litellm, empty when current. A function
+# because it is asked twice: here, and again after the upgrade for the trailer.
+uv_outdated() { uv tool list --outdated 2> /dev/null | grep '^litellm ' || true; }
+
+outdated=$(uv_outdated)
 
 if [ "$UPDATE_CHECK" -eq 1 ]; then
     if [ "$receipt_ok" -eq 0 ]; then
@@ -157,14 +161,28 @@ run env PATH="$TOOL_BIN:$PATH" "$TOOL_BIN/python" -m prisma generate --schema="$
     update_fail "prisma generate failed"
 
 # --- restart + verify -------------------------------------------------------
-# `restarted` carries what was done, not how it went: the http code below is the
-# outcome, and a kickstart that leaves the proxy down should not be dressed up
-# in the status line as if the restart had succeeded.
+# `restarted` records that a restart was issued; whether the proxy came back is
+# the probe below, and a proxy that stays down fails the script there rather
+# than being dressed up in the status line as a restart that succeeded.
 restarted=""
 if [ -z "${NO_RESTART:-}" ]; then
     restart_cmd=${WT_LITELLM_RESTART_CMD:-${MODELMAN_LITELLM_RESTART_CMD:-}}
     if [ -n "$restart_cmd" ]; then
-        run bash -c "$restart_cmd" || update_fail "restart command failed: $restart_cmd"
+        # The command gets a file for its output and /dev/null for its input,
+        # never this script's own stdio: a command that leaves the proxy running
+        # in the background (`nohup litellm ... &`) hands the proxy every
+        # descriptor it inherited, and under update-tools stdout is the pipe
+        # into `tee` — which would then never see EOF, and the sweep would hang
+        # there for as long as the proxy lives. wt runs the same command with
+        # its stdio on /dev/null; the file keeps what wt throws away, so a
+        # failing command still shows why.
+        restart_log=$(mktemp)
+        update_note "run: bash -c $restart_cmd"
+        restart_rc=0
+        bash -c "$restart_cmd" > "$restart_log" 2>&1 < /dev/null || restart_rc=$?
+        sed 's/^/    | /' "$restart_log"
+        rm -f "$restart_log"
+        [ "$restart_rc" -eq 0 ] || update_fail "restart command exited $restart_rc: $restart_cmd"
         restarted="the proxy was restarted ($restart_cmd)"
     elif [ -f "$PLIST" ]; then
         run launchctl kickstart -k "gui/$(id -u)/local.litellm.proxy" ||
@@ -182,8 +200,19 @@ new_version=${new_version:-unknown}
 update_note "installed: $new_version"
 
 # A restart leaves the proxy down for ~10-20s, so poll rather than probing once.
-# A code of 401 means alive-and-unauthenticated; 000 means nothing answered yet.
-wait_for_http http://localhost:4000/v1/models
+# A code of 401 means alive-and-unauthenticated; 000 means nothing answered. If
+# this script restarted the proxy and nothing answers by the end of the wait,
+# that is a failure: the new code is installed and the thing every agent routes
+# through is down. Without a restart the probe is only a note — the script did
+# not touch the process, so its being down is not this run's doing.
+if [ -n "$restarted" ]; then
+    wait_for_http http://localhost:4000/v1/models "$RESTART_WAIT"
+else
+    wait_for_http http://localhost:4000/v1/models 3
+fi
 update_note "proxy http $HTTP_CODE (401 = alive and unauthenticated)"
+if [ -n "$restarted" ] && [ "$HTTP_CODE" = "000" ]; then
+    update_fail "LiteLLM $new_version is installed but the proxy did not answer within ${RESTART_WAIT}s of its restart"
+fi
 
-finish_after_upgrade "$installed_version" "$new_version" uv "$outdated" "$restarted"
+finish_after_upgrade "$installed_version" "$new_version" uv "$(uv_outdated)" "$restarted"
