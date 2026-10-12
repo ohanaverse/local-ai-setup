@@ -12,7 +12,9 @@ from typing import Any
 
 import pytest
 
+from modeltiers import contracts as contracts_mod
 from modeltiers import fetch, loader
+from modeltiers.contracts import Contracts
 from modeltiers.loader import SourceSpecs
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -99,3 +101,9 @@ def good_answers(
         fetch.arena_page_url(3): [read_fixture("arena_page2.json")],
         fetch.EPOCH_URL: [epoch_zip()],
     }
+
+
+@pytest.fixture
+def rule() -> Contracts:
+    """The fixture-local contracts.toml, never the committed one."""
+    return contracts_mod.load_contracts(FIXTURES / "contracts.toml")
