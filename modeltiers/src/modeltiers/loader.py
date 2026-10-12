@@ -108,10 +108,17 @@ def _from_snapshots[T](
     spec: SourceSpec[T], cache: Path, *, fallback: bool, warn: Warn
 ) -> SourceResult[T]:
     """The newest good snapshot that still parses. One that does not is
-    renamed `.bad` and the next is tried."""
+    renamed `.bad` and the next is tried. One whose file cannot be read — it
+    went away, or is not readable — is named and skipped, not renamed: a file
+    that cannot be read is not one we can judge."""
     for snapshot in snapshots.good_snapshots(cache, spec.name):
         try:
-            data = spec.parse(snapshot.path.read_bytes())
+            body = snapshot.path.read_bytes()
+        except OSError as exc:
+            warn(f"{spec.name}: cannot read the snapshot {snapshot.path}: {exc.strerror}")
+            continue
+        try:
+            data = spec.parse(body)
         except SourceParseError as exc:
             bad = snapshots.mark_bad(snapshot)
             warn(f"{exc}; snapshot set aside as {bad.path}")

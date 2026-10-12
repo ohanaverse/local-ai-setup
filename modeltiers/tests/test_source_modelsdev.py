@@ -68,7 +68,8 @@ def test_the_default_minimum_is_the_specs() -> None:
     [
         (b'{"ollama-cloud": ', "not JSON"),
         (b"[]", "expected an object of providers"),
-        (b'{"p": "x"}', "provider p has no models object"),
+        (b'{"p": "x"}', "provider p is not an object"),
+        (b'{"p": {}}', "provider p has no models object"),
         (b'{"p": {"models": {"m": 7}}}', "p/m is not an object"),
         (_doc({"canonical_model_id": 7}), "canonical_model_id is not a string"),
         (_doc({"tool_call": "yes"}), "tool_call is not a boolean"),

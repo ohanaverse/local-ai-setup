@@ -38,6 +38,15 @@ def test_mark_bad_renames_and_keeps_the_bytes(tmp_path: Path) -> None:
     assert not snap.path.exists()
 
 
+def test_mark_bad_twice_gives_the_same_bad_snapshot(tmp_path: Path) -> None:
+    """Two runs started in the same second share one stamped file. The second
+    to find it unparseable must not crash on the file the first has moved."""
+    snap = snapshots.save(tmp_path, "arena", "json", b"abc", T0)
+    bad = snapshots.mark_bad(snap)
+    assert snapshots.mark_bad(snap) == bad
+    assert bad.path.read_bytes() == b"abc"
+
+
 def test_list_is_newest_first_and_reads_bad_from_the_name(tmp_path: Path) -> None:
     first, second, third = _save_many(tmp_path, 3)
     snapshots.mark_bad(second)

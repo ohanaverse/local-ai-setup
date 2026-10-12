@@ -147,6 +147,24 @@ def test_a_good_snapshot_that_no_longer_parses_is_set_aside_and_the_next_is_used
     assert len(warnings.lines) == 1
 
 
+def test_a_snapshot_whose_file_is_gone_is_skipped_not_fatal(
+    specs: SourceSpecs, tmp_path: Path, read_fixture: Callable[[str], bytes]
+) -> None:
+    """A name can outlive its file: another run started in the same second can
+    set the stamped snapshot aside, and a file that cannot be read must send
+    the run on to the next newest good snapshot rather than fail it."""
+    _load_openrouter(specs, tmp_path, [read_fixture("openrouter.json")], now=T0)
+    gone = tmp_path / "openrouter" / "20261019T155800Z.json"
+    gone.symlink_to(tmp_path / "openrouter" / "not-there.json")
+    result, warnings, _ = _load_openrouter(specs, tmp_path, [], offline=True)
+    assert result.fetched_at == T0
+    assert result.snapshot == tmp_path / "openrouter" / "20261012T155800Z.json"
+    assert len(warnings.lines) == 1
+    assert warnings.lines[0].startswith(f"openrouter: cannot read the snapshot {gone}:")
+    # Nothing is renamed: a file we could not read is not a file we judge.
+    assert not (tmp_path / "openrouter" / "20261019T155800Z.bad.json").exists()
+
+
 def test_load_all_reads_the_four_sources(
     specs: SourceSpecs, tmp_path: Path, good_answers: Answers
 ) -> None:
