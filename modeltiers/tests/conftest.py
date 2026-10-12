@@ -2,6 +2,7 @@
 out of the real config and cache directories, plus the fixture-file helpers."""
 
 import io
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -16,7 +17,7 @@ from fakes import FakeFetcher, Sleeps
 
 from modeltiers import aliases as aliases_mod
 from modeltiers import contracts as contracts_mod
-from modeltiers import fetch, loader, pipeline
+from modeltiers import fetch, loader, output, pipeline
 from modeltiers import inventory as inventory_mod
 from modeltiers.aliases import Aliases
 from modeltiers.contracts import Contracts
@@ -27,6 +28,14 @@ from modeltiers.records import Inventory
 FIXTURES = Path(__file__).parent / "fixtures"
 EPOCH_MEMBER = "epoch_capabilities_index/eci_scores.csv"
 T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
+# The output contract: what `run` writes for the golden fixtures.
+SAMPLE = Path(__file__).parents[2] / "docs" / "contracts" / "tiers.sample.toml"
+_STAMPS = re.compile(r'^(generated_at|fetched_at) = "[^"]*"$', re.MULTILINE)
+
+
+def without_timestamps(text: str) -> str:
+    """`tiers.toml` text with every timestamp replaced by one placeholder."""
+    return _STAMPS.sub(r'\1 = "<time>"', text)
 
 
 def _no_network(*args: Any, **kwargs: Any) -> Any:
@@ -150,3 +159,9 @@ def assignment(
 ) -> Assignment:
     """The golden fixtures resolved and assigned: what `run` writes."""
     return pipeline.assign_all(pipeline.resolve_all(inventory, sources, fixture_aliases), rule)
+
+
+@pytest.fixture
+def document(assignment: Assignment, inventory: Inventory, sources: Sources) -> dict[str, Any]:
+    """`tiers.toml` for the golden fixtures, generated at T0, as a dict."""
+    return output.build_document(assignment, inventory, sources, T0)
