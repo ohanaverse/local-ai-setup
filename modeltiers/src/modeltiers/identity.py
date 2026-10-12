@@ -4,11 +4,11 @@ Three steps, the first that answers wins: an alias, the host's own row in
 models.dev, then normalization (the token function matching exactly one key).
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from modeltiers.aliases import Aliases
-from modeltiers.records import InventoryRow, ModelsDev, ModelsDevRow
+from modeltiers.records import InventoryRow, ModelsDev, ModelsDevRow, ScoreRecord
 from modeltiers.tokens import is_floating, tokens
 
 ALIAS = "alias"
@@ -151,4 +151,64 @@ def resolve_row(row: InventoryRow, index: Index, aliases: Aliases) -> RowIdentit
         resolved_by=NORMALIZED,
         host_row=host,
         notes=(HOST_NOTE,) if host is not None else (),
+    )
+
+
+@dataclass(frozen=True)
+class Match:
+    """The record a source contributes to one key."""
+
+    canonical: str  # in the stored spelling
+    resolved_by: str  # ALIAS | HOST | NORMALIZED
+    record: ScoreRecord
+
+
+@dataclass(frozen=True)
+class SourceIdentity:
+    """How one source's records resolved."""
+
+    source: str
+    records: int  # every record the source gave
+    best: Mapping[str, Match]  # lower-case key -> its best-scoring record
+    unresolved: tuple[ScoreRecord, ...]  # no step answered; source order
+    ignored: int  # records listed under [[ignore]]
+
+
+def resolve_record(record: ScoreRecord, index: Index, aliases: Aliases) -> Match | None:
+    """Resolve one source record: alias, host row (OpenRouter only, since
+    models.dev lists no Arena or Epoch ids), normalization."""
+    source_id = (record.source, record.source_id)
+    if source_id in aliases.source_alias:
+        return Match(_stored(index, aliases.source_alias[source_id]), ALIAS, record)
+    host = host_row(index, record.source, record.source_id)
+    if host is not None and host.canonical is not None:
+        return Match(_stored(index, host.canonical), HOST, record)
+    key = index.normalized(record.source_id)
+    return None if key is None else Match(key, NORMALIZED, record)
+
+
+def resolve_source(
+    source: str, records: Iterable[ScoreRecord], index: Index, aliases: Aliases
+) -> SourceIdentity:
+    """Resolve every record of one source. When several records reach one
+    key, the best-scoring one is kept whole, so its effort and its interval
+    are its own; on a tie the earlier record stays."""
+    best: dict[str, Match] = {}
+    unresolved: list[ScoreRecord] = []
+    ignored = 0
+    count = 0
+    for record in records:
+        count += 1
+        if (record.source, record.source_id) in aliases.source_ignore:
+            ignored += 1
+            continue
+        match = resolve_record(record, index, aliases)
+        if match is None:
+            unresolved.append(record)
+            continue
+        key = match.canonical.lower()
+        if key not in best or record.score > best[key].record.score:
+            best[key] = match
+    return SourceIdentity(
+        source=source, records=count, best=best, unresolved=tuple(unresolved), ignored=ignored
     )
