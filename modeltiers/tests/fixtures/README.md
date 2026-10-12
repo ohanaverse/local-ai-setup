@@ -10,12 +10,15 @@ Every file here is a trimmed copy of a public download made on 2026-10-12, cut d
 | `eci_scores.csv`, `eci_scores_too_few.csv`, `eci_scores_malformed.csv` | Epoch AI benchmark data, `https://epoch.ai/data/benchmark_data.zip`, member `epoch_capabilities_index/eci_scores.csv` | CC BY 4.0. Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks |
 | `inventory.json` | `wt model list --json` on the owner's machine | This repository. The registry path is made up; `size_bytes` and `path` are nulled. |
 | `aliases.toml` | Hand-written for the tests | This repository. The same shape as `src/modeltiers/data/aliases.toml`; its entries are chosen for the tests and are not calibration. |
+| `contracts.toml` | Hand-written for the tests | This repository. The same shape as `src/modeltiers/data/contracts.toml`, with four sentinels that the golden fixtures satisfy. Its floors are not kept in step with the committed file's. |
 
 Changes made to the copies:
 
-- **Rows removed.** Each file keeps between one and eleven rows.
+- **Rows removed.** Each file keeps between one and twelve rows.
 - **Fields removed.** models.dev rows keep `id`, `name`, `tool_call`, `open_weights`, `limit` and `canonical_model_id`. OpenRouter rows keep `id`, `name`, `context_length` and `benchmarks.artificial_analysis`. Arena rows keep `model_name`, `organization`, `score`, `score_ci_lower`, `score_ci_upper`, `rank` and `category`, and the page's `features` list is dropped. The Epoch CSV keeps every column.
-- **Page counts rewritten.** `num_rows_total` in the Arena pages is the fixture's own row count (5, or 1 in `arena_too_few.json`), and `row_idx` is renumbered.
+- **Page counts rewritten.** `num_rows_total` in the Arena pages is the fixture's own row count (6, or 1 in `arena_too_few.json`), and `row_idx` is renumbered.
 - **Broken on purpose.** The `*_malformed.*` files are in a shape the parser must refuse. `arena_error.json` is the error body the rows API returned during design, unchanged.
 
 The Epoch fixtures are CSV text so they can be read and diffed; the `epoch_zip` fixture in `tests/conftest.py` puts one in a ZIP archive in memory.
+
+`docs/contracts/tiers.sample.toml`, at the repo root, is what `modeltiers run` writes from the golden fixtures here with `aliases.toml` and `contracts.toml`. A change to any of them changes that file; `tests/test_output.py` and `tests/test_cli.py` compare against it apart from timestamps.
