@@ -93,7 +93,7 @@ It is run as `uv run --directory modeltiers modeltiers <command>`.
 
 **`explain` lookup.** The argument is tried as an exact `provider_id/model_name` first, then as a canonical key, compared without regard to case. A canonical key prints every `[[models]]` entry that resolved to it, or else the candidate. An unmapped row prints that it is unmapped and needs an alias. No match prints the file's generated date and exits 1.
 
-**Change report.** `run` prints it before writing, and `--dry-run` prints the same. It compares the new result with the existing output file, keyed on (`provider_id`, `model_name`): tier changes as old → new, rows added and removed, rows newly unmapped or newly resolved, and each source's status. Confidence-only changes and candidate changes are printed as counts. With no existing file it says so and prints the full table.
+**Change report.** `run` prints it before writing, and `--dry-run` prints the same. It compares the new result with the existing output file, keyed on (`provider_id`, `model_name`): tier changes as old → new, rows added and removed, rows newly unmapped, newly resolved or now ignored, and each source's status. Confidence-only changes and candidate changes are printed as counts. With no existing file it says so and prints the full table.
 
 ### Paths
 
@@ -104,7 +104,7 @@ It is run as `uv run --directory modeltiers modeltiers <command>`.
 | Contracts | `modeltiers/src/modeltiers/data/contracts.toml` (committed) | none |
 | Aliases | `modeltiers/src/modeltiers/data/aliases.toml` (committed) | none |
 
-**Redirected registry.** wt's inventory follows `WT_REGISTRY`; the output path does not. `wt model list --json` reports the registry path it read. When that path is not `registry.toml` in the output file's directory and `MODELTIERS_OUT` is unset, `run` refuses to write and exits 1. A scratch inventory can then never replace the real `tiers.toml`.
+**Redirected registry.** wt's inventory follows `WT_REGISTRY`; the output path does not. `wt model list --json` reports the registry path it read. When that path is not `registry.toml` in the output file's directory and `MODELTIERS_OUT` is unset, `run` refuses before any fetch and exits 1. A scratch inventory can then never replace the real `tiers.toml`. `--dry-run` writes nothing, so it is not refused: it runs, and warns that a real run would be.
 
 ### Pipeline
 
@@ -112,7 +112,7 @@ Each stage is one module with plain data in and out.
 
 1. **Inventory** (`inventory.py`). Runs `wt model list --json`, or reads `--inventory FILE`. The document is an object with `models`, `registry` and `providers`. From each row it keeps `provider_id`, `model_name`, `location` and `registered`. Rows whose `model_name` is `native` are dropped. Discovered rows (`registered = false`) and rows whose weights are missing are tiered like any other. The join key for everything downstream is the pair (`provider_id`, `model_name`), never the registry `id`. A provider whose probe status is not `ok` is named in a warning, because its discovered rows may be absent from this run.
 2. **Fetch** (`fetch.py`). One function per source behind a `Fetcher` seam (`Callable[[str], bytes]`). A request times out after 30 seconds and is retried once after 2 seconds on a timeout, a 5xx status or an Arena `error` body.
-3. **Parse** (`sources/modelsdev.py`, `openrouter.py`, `arena.py`, `epoch.py`). Pure functions from snapshot bytes to records. A shape the parser does not recognise raises `SourceParseError`; a parser never returns a short list. Each parser has a minimum row count: models.dev 1,000, OpenRouter 100, Arena 20, Epoch 100.
+3. **Parse** (`sources/modelsdev.py`, `openrouter.py`, `arena.py`, `epoch.py`). Pure functions from snapshot bytes to records. A shape the parser does not recognise raises `SourceParseError`; a parser never returns a short list. Each parser has a minimum row count: models.dev 1,000, OpenRouter 100, Arena 20, Epoch 100. OpenRouter's minimum counts models that carry Artificial Analysis scores, so a payload that loses its benchmarks fails the parse.
 4. **Resolve** (`identity.py`). Maps inventory rows and source records to canonical keys.
 5. **Assign** (`assign.py`). Votes, base tier, marathon promotion, sentinels, gates, confidence.
 6. **Write** (`output.py`). Builds the document and writes it atomically (temporary file in the same directory, then rename).
@@ -123,7 +123,7 @@ Each source has its own directory: `<cache>/<source>/<UTC stamp>.<ext>`. The fet
 
 - **Good and bad.** A snapshot that parses and meets its row minimum is good. One that does not is renamed `<UTC stamp>.bad.<ext>`, its path is printed, and it is never read again.
 - **Fallback.** When a source's download or parse fails, the run uses that source's newest good snapshot and marks the source `stale`, with the snapshot's own `fetched_at`. With no good snapshot the source is `unavailable`.
-- **`--offline`** reads each source's newest good snapshot, marks it `stale`, saves nothing and prunes nothing.
+- **`--offline`** reads each source's newest good snapshot, marks it `stale`, fetches nothing, saves nothing and prunes nothing. A snapshot that turns out not to parse is still renamed `.bad`, and the next newest is tried.
 - **Pruning.** After a successful write, each source keeps its four newest good snapshots and its two newest bad ones.
 
 ### Identity
@@ -182,8 +182,8 @@ reason = "floating name; no fixed model"
 ```
 
 - **`[[alias]]`** source keys are `inventory`, `openrouter`, `arena` and `epoch`. Source ids are matched exactly as the source spells them, apart from Arena's effort parenthesis.
-- **`[[ignore]]`** acknowledges a row that will never resolve. An ignored inventory row is written to `[[models]]` as `unrated` with `reason = "not_applicable"` and stays out of `[[unmapped]]`. An ignored source record stays out of `[[unresolved]]`. A non-empty `[[unmapped]]` or `[[unresolved]]` therefore always means work to do.
-- **Validation before any fetch:** two entries that claim the same inventory pair or the same source id are an error, and so is an `[[ignore]]` without a reason.
+- **`[[ignore]]`** acknowledges a row that will never resolve. An ignored inventory row is written to `[[models]]` as `unrated` with `reason = "not_applicable"` and stays out of `[[unmapped]]`. An ignored source record stays out of `[[unresolved]]`. An entry in `[[unmapped]]` or `[[unresolved]]` is therefore either new work or a row recorded as open for want of evidence.
+- **Validation before any fetch:** two entries that claim the same inventory pair or the same source id are an error, and so is an `[[ignore]]` without a reason. An unknown table or key is an error too, so a misspelt source name cannot be silently skipped.
 - **Validation once models.dev is parsed:** an alias `canonical` that is not a models.dev key must list at least one source id, or it is an error.
 - An alias that names a source id absent from this run's snapshot is a warning. Models leave leaderboards.
 
@@ -214,7 +214,7 @@ An `unrated` entry always carries a `reason`:
 The steps run in this order for every resolved key.
 
 1. **Votes.** Each of the three signals casts a tier, or abstains when its source has no record for the model. A score below the signal's quick floor is a vote of `unrated`. No vote is higher than the signal's `max_vote`.
-2. **Base tier.** The votes are sorted by rank, lowest first, and the base tier is the element at index `(n-1)//2`. With two votes it is the lower; with one it is that vote. With none the tier is `unrated` with reason `no_votes`, and the remaining steps are skipped.
+2. **Base tier.** The votes are sorted by rank, lowest first, and the base tier is the element at index `(n-1)//2`. With two votes it is the lower; with one it is that vote. With none the tier is `unrated` with reason `no_votes`. When the base tier is itself `unrated` the reason is `below_floor`. In both cases the gates are skipped, since there is no tier to lower.
 3. **Marathon promotion.** A model whose base tier is `deep` becomes `marathon` when its Arena record's `score_ci_lower` is at or above the marathon floor. No other route to `marathon` exists. The result is the pre-gate tier.
 4. **Sentinel check**, on the votes and the pre-gate tier.
 5. **Tool-calling gate.** If the key has models.dev rows and none reports `tool_call = true`, the tier is `unrated` with reason `gate_tool_call`.
@@ -266,13 +266,13 @@ Set from the 2026-10-12 snapshots, at gaps in each distribution. They live in `c
 | `deep` | 200,000 |
 | `marathon` | 400,000 |
 
-A throwaway implementation of these rules, run over the 2026-10-12 downloads, gave:
+These rules, run over the 2026-10-12 downloads, gave the list below. It was first made with a throwaway implementation and then corrected against a calibration run of the prototype built while planning, which found the `deep` line four models short.
 
 - `marathon`: Claude Opus 5.5, Claude Fable 5.1, GPT-6 Astra.
-- `deep`: Claude Sonnet 5.5, GPT-6.1 Sol, Claude Opus 5, Claude Fable 5.
+- `deep`: Claude Sonnet 5.5, GPT-6.1 Sol, Claude Opus 5, Claude Fable 5 (three `deep` votes each); GPT-6 Sol and GPT-5.6 Sol (votes `standard`, `deep`, `deep`: the lower median of three is the middle vote); GPT-5.5 Pro (one Epoch vote, confidence `low`); Gemini 4 Argon (one Arena vote, through a key declared in `aliases.toml` because models.dev has none, confidence `low`).
 - `standard`: GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4 Pro 0813, Qwen3.8 27B.
 - `quick`: MiniMax M3, Gemma 4 31B, gpt-oss-120b, Qwen3.6 27B.
-- About 190 keys had at least one vote. Neither gate changed any model named above; the tool-calling gate moved two candidates from `quick` to `unrated`.
+- 192 keys had at least one vote. Neither gate changed any model named above; the tool-calling gate moved two candidates from `quick` to `unrated`.
 
 **Known weaknesses, accepted.**
 
@@ -328,7 +328,7 @@ votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
 ```
 
 - The file has a `[tiers.*]` table for each of the four rated tiers, a `[signals.*]` table for each of the three signals and a `[sources.*]` table for each of the four sources.
-- It is validated on load: floors rise with the tier, every sentinel names a known tier and known signals, and exactly one signal carries `marathon_ci_lower`.
+- It is validated on load: floors rise with the tier, every sentinel names a known tier and known signals, exactly one signal carries `marathon_ci_lower`, `max_vote` is `quick`, `standard` or `deep`, and an unknown key is an error.
 - **Attribution strings.** One per source. OpenRouter's is the text its benchmark reference gives: "Source: Artificial Analysis (artificialanalysis.ai) via OpenRouter (openrouter.ai/rankings)." Epoch's is "Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks, CC BY 4.0". `run`, `show` and `explain` print the lines for the sources whose data they display.
 
 ### Output file
@@ -410,8 +410,9 @@ score = 0.0926
 | `[[unresolved]]` | Unresolved source records at or above their signal's standard floor | Source, then score descending |
 
 - `[[models]]` plus `[[unmapped]]` equals the inventory without its native rows.
-- Optional fields: `reason` (present when the tier is `unrated`), `context` (absent when unknown), `efforts` entries (present only for signals whose record named an effort), and any score the source did not provide. `tool_call` is absent for a key with no models.dev rows.
+- Optional fields: `reason` (present when the tier is `unrated`), `context` (absent when unknown), `efforts` entries (present only for signals whose record named an effort), and any score the source did not provide. `tool_call` is absent for a key with no models.dev rows. An ignored row has no `canonical` and no `resolved_by`. An array table with no entries is absent from the file.
 - `[[candidates]]` entries have the fields of `[[models]]` without `provider_id`, `model_name`, `registered` and `basis`, plus `open_weights`.
+- `[sources.*].unresolved` counts every unresolved record of that source, so it can exceed the number of that source's `[[unresolved]]` entries, which list one entry per source id at or above the standard floor. `[sources.modelsdev]` has no `unresolved` key.
 - A status of `unavailable` never appears, because such a run writes nothing.
 - **Contract for readers.** A model absent from the file, or in `[[unmapped]]`, is `unrated`. The file is advisory; a reader that cannot parse it behaves as if it were absent.
 - A sample lands in `docs/contracts/tiers.sample.toml` and the output tests compare against it.
@@ -451,7 +452,7 @@ When several apply, 1 takes precedence over 3 and 3 over 2. `--dry-run` writes n
 - **Fixture-local data.** Every test uses the `contracts.toml` and `aliases.toml` under `tests/fixtures/`. The committed data files are covered by one test that loads and validates them. Calibration can then change the committed values without changing a test.
 - **No live calls.** An autouse fixture makes `urllib.request.urlopen` raise and points `MODELTIERS_OUT`, `MODELTIERS_CACHE`, `HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` at a temporary directory. `subprocess.run` is stubbed, so no test runs wt.
 - **Quality bar.** ruff, mypy and a coverage floor of 90, as in llmbench.
-- **Live**, by hand: `modeltiers run --dry-run` against the real sources and the real inventory. Aliases and ignores are added until `[[unmapped]]` and `[[unresolved]]` are empty and every row in the review list of name-matched models has been checked. The sentinel table and the "run over the 2026-10-12 downloads" list above are confirmed or corrected against that run.
+- **Live**, by hand: `modeltiers run --dry-run` against the real sources and the real inventory. Aliases and ignores are added wherever evidence identifies the model: an id from the publisher, the distributor or the source that leads to one key. A name, a date or an architecture is not evidence. A row with no such evidence is left in `[[unmapped]]` or `[[unresolved]]` and recorded as open. The work is done when every listed row is either closed or recorded, and every row in the review list of name-matched models has been checked. The sentinel table and the "run over the 2026-10-12 downloads" list above are confirmed or corrected against that run.
 
 ## Docs
 
@@ -477,4 +478,4 @@ When several apply, 1 takes precedence over 3 and 3 over 2. `--dry-run` writes n
 1. **Skeleton, inventory, snapshots and parsers.** The package, its CI and Makefile wiring, the inventory reader, the snapshot store with fallback, and the four parsers with fixtures. Complete by itself: `modeltiers run --dry-run` prints each source's status and parsed record count.
 2. **Identity.** The token function, resolution, alias and ignore loading and validation, the unmapped, unresolved and review lists. Complete by itself: `run --dry-run` prints how every inventory row resolved.
 3. **Assignment, output and commands.** Votes, promotion, sentinels, gates, confidence, `tiers.toml`, the change report, `show`, `explain`, exit codes, the contract sample. The committed `contracts.toml` carries the starting floors and sentinels above. Complete by itself: `modeltiers run` writes a file, with whatever the uncalibrated aliases leave unmapped.
-4. **Calibration and docs.** The live run, the aliases and ignores it calls for, any floor or sentinel corrections, the guide and the `CLAUDE.md` updates. Complete by itself: `[[unmapped]]` and `[[unresolved]]` are empty on the owner's machine.
+4. **Calibration and docs.** The live run, the aliases and ignores it calls for, any floor or sentinel corrections, the guide and the `CLAUDE.md` updates. Complete by itself: every row in `[[unmapped]]` and `[[unresolved]]` on the owner's machine is closed or recorded as open.
