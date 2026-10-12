@@ -1,0 +1,7 @@
+{
+ "ollama-cloud": {
+  "id": "ollama-cloud",
+  "name": "Ollama Cloud",
+  "models": ["glm-5.3", "deepseek-v4-pro"]
+ }
+}
