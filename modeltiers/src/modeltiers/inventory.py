@@ -24,6 +24,7 @@ def run_wt() -> str:
             list(WT_COMMAND),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
             timeout=WT_TIMEOUT_SECONDS,
         )
@@ -95,6 +96,8 @@ def load_inventory(*, path: Path | None, run_wt: RunWt) -> Inventory:
         return parse_inventory(run_wt())
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise InventoryError(f"inventory: {path} is not UTF-8 text: {exc}") from exc
     except OSError as exc:
         raise InventoryError(f"inventory: cannot read {path}: {exc.strerror}") from exc
     return parse_inventory(text)

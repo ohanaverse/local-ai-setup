@@ -1,6 +1,7 @@
 """Shape checks the parsers share. Each raises SourceParseError."""
 
 import json
+import math
 from typing import Any
 
 from modeltiers.errors import SourceParseError
@@ -14,10 +15,16 @@ def load_json(source: str, data: bytes) -> Any:
 
 
 def number(source: str, where: str, value: Any) -> float:
-    """A JSON number as a float. A bool, a string or null is not a number."""
+    """A JSON number as a float. A bool, a string or null is not a number, and
+    neither is a non-finite float (`NaN`, `Infinity`): `json.loads` accepts
+    those spellings, and a score that is not a number would poison every
+    average or vote taken over it downstream."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise SourceParseError(f"{source}: {where} is not a number: {value!r}")
-    return float(value)
+    result = float(value)
+    if not math.isfinite(result):
+        raise SourceParseError(f"{source}: {where} is not a finite number: {value!r}")
+    return result
 
 
 def optional_number(source: str, where: str, value: Any) -> float | None:

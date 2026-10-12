@@ -171,6 +171,26 @@ def test_a_missing_inventory_file_exits_1(
     assert "cannot read" in capsys.readouterr().err
 
 
+def test_an_unwritable_cache_exits_1_with_a_message(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MODELTIERS_CACHE naming a file, a cache directory that cannot be
+    written, or a full disk: a snapshot cannot be saved, and that is a message
+    and exit 1 like any other failure, not a traceback."""
+    clash = tmp_path / "cache-is-a-file"
+    clash.write_text("not a directory")
+    monkeypatch.setenv("MODELTIERS_CACHE", str(clash))
+    code = cli.main(["run", "--inventory", str(INVENTORY)], deps=_deps(specs, good_answers)[0])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "modeltiers: [Errno 20]" in err
+    assert "Traceback" not in err
+
+
 def test_no_command_is_a_usage_error() -> None:
     with pytest.raises(SystemExit) as caught:
         cli.main([])

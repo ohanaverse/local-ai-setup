@@ -5,7 +5,7 @@ import re
 
 from modeltiers.errors import SourceParseError
 from modeltiers.records import ScoreRecord
-from modeltiers.sources._shape import load_json, number, require_rows
+from modeltiers.sources._shape import load_json, number, optional_number, require_rows
 
 SOURCE = "arena"
 MIN_ROWS = 20
@@ -69,7 +69,9 @@ def parse(data: bytes, *, min_rows: int = MIN_ROWS) -> tuple[ScoreRecord, ...]:
                     source=SOURCE,
                     source_id=name,
                     score=number(SOURCE, f"{where}.score", row.get("score")),
-                    ci_lower=number(SOURCE, f"{where}.score_ci_lower", row.get("score_ci_lower")),
+                    ci_lower=optional_number(
+                        SOURCE, f"{where}.score_ci_lower", row.get("score_ci_lower")
+                    ),
                     effort=effort,
                 )
             )

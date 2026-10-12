@@ -98,6 +98,9 @@ def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return _run(args, deps or Deps())
-    except ModelTiersError as exc:
+    # OSError covers the cache and the output paths: an unwritable, unreadable
+    # or non-directory MODELTIERS_CACHE (or a full disk) is a user-facing
+    # condition like any other, not a traceback.
+    except (ModelTiersError, OSError) as exc:
         print(f"modeltiers: {exc}", file=sys.stderr)
         return EXIT_ERROR

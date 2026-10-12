@@ -57,6 +57,14 @@ def test_golden_reads_both_pages_to_num_rows_total(arena_doc: Callable[..., byte
     assert records[4].score < 0  # the score is centred near zero
 
 
+def test_a_row_without_a_confidence_interval_keeps_none() -> None:
+    """`ScoreRecord.ci_lower` is optional, so a row the board published no
+    interval for must not fail its own row, let alone the whole source."""
+    data = _wrap({"rows": [_row(low=None)], "num_rows_total": 1})
+    (record,) = arena.parse(data, min_rows=1)
+    assert record.ci_lower is None
+
+
 def test_fewer_rows_than_num_rows_total_raises(arena_doc: Callable[..., bytes]) -> None:
     # Page 1 alone: 3 rows, and it says the dataset has 5.
     with pytest.raises(SourceParseError, match="read 3 rows of num_rows_total 5"):
@@ -98,6 +106,10 @@ def test_the_default_minimum_is_the_specs(arena_doc: Callable[..., bytes]) -> No
         (_wrap({"rows": [7], "num_rows_total": 1}), "a row with no model_name"),
         (_wrap({"rows": [_row(name=None)], "num_rows_total": 1}), "a row with no model_name"),
         (_wrap({"rows": [_row(score=None)], "num_rows_total": 1}), "M.score is not a number"),
+        (
+            _wrap({"rows": [_row(score=float("nan"))], "num_rows_total": 1}),
+            "M.score is not a finite number",
+        ),
         (
             _wrap({"rows": [_row(low="0.05")], "num_rows_total": 1}),
             "M.score_ci_lower is not a number",

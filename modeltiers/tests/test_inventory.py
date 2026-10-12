@@ -89,6 +89,15 @@ def test_a_missing_inventory_file_is_an_inventory_error(tmp_path: Path) -> None:
         inventory.load_inventory(path=tmp_path / "absent.json", run_wt=_never_run_wt)
 
 
+def test_an_inventory_file_that_is_not_utf8_is_an_inventory_error(tmp_path: Path) -> None:
+    """A saved copy written by, say, PowerShell is not text we can read: the
+    message must say so rather than a UnicodeDecodeError traceback."""
+    saved = tmp_path / "inventory.json"
+    saved.write_bytes(FIXTURE.read_text().encode("utf-16"))
+    with pytest.raises(InventoryError, match="is not UTF-8 text"):
+        inventory.load_inventory(path=saved, run_wt=_never_run_wt)
+
+
 def test_without_a_file_the_runner_is_called() -> None:
     inv = inventory.load_inventory(path=None, run_wt=FIXTURE.read_text)
     assert len(inv.rows) == 6

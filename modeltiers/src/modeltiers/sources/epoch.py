@@ -2,6 +2,7 @@
 
 import csv
 import io
+import math
 import zipfile
 import zlib
 
@@ -18,10 +19,16 @@ CI_LOW_COLUMN = "eci_ci_low"
 
 
 def _float(where: str, text: str) -> float:
+    """A CSV cell as a float. `nan` and `inf` are refused: `float` accepts
+    those spellings, and a score that is not a number would poison every
+    average or vote taken over it downstream."""
     try:
-        return float(text)
+        value = float(text)
     except ValueError as exc:
         raise SourceParseError(f"{SOURCE}: {where} is not a number: {text!r}") from exc
+    if not math.isfinite(value):
+        raise SourceParseError(f"{SOURCE}: {where} is not a finite number: {text!r}")
+    return value
 
 
 def parse(data: bytes, *, min_rows: int = MIN_ROWS) -> tuple[ScoreRecord, ...]:

@@ -119,12 +119,26 @@ def wrap_arena_pages(pages: list[bytes]) -> bytes:
 
 def fetch_arena(fetcher: Fetcher, sleep: Sleep) -> bytes:
     """Page the rows API until `num_rows_total` rows are read, and return the
-    pages as one wrapper document (`wrap_arena_pages`)."""
+    pages as one wrapper document (`wrap_arena_pages`).
+
+    `num_rows_total` is read from the first page and every later page must
+    report the same one. A leaderboard being edited while its pages are read
+    would otherwise raise the target on each request and page forever, and the
+    parse's row count check (`len(records) != total`) would compare a count
+    taken across the pages with a total from a different moment.
+    """
     pages: list[bytes] = []
     offset = 0
+    total: int | None = None
     while True:
         body = fetch_with_retry(fetcher, arena_page_url(offset), sleep, _check_arena_page)
-        rows, total = _arena_page(body)
+        rows, page_total = _arena_page(body)
+        if total is None:
+            total = page_total
+        elif page_total != total:
+            raise FetchError(
+                f"arena: num_rows_total moved from {total} to {page_total} while paging"
+            )
         pages.append(body)
         offset += rows
         if offset >= total:

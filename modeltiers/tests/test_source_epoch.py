@@ -78,6 +78,7 @@ def test_the_default_minimum_is_the_specs(epoch_zip: Callable[..., bytes]) -> No
         (_zip(epoch.MEMBER, b""), "has no 'Display name' column"),
         (_csv("M,high,149"), "M.eci is not a number"),
         (_csv("M,150,low"), "M.eci_ci_low is not a number"),
+        (_csv("M,nan,149"), "M.eci is not a finite number"),
     ],
 )
 def test_an_unrecognised_shape_raises(data: bytes, message: str) -> None:
