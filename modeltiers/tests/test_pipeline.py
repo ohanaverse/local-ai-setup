@@ -122,3 +122,11 @@ def test_an_alias_id_absent_from_this_run_is_a_warning_not_an_error(
         "which is not in this run's epoch data",
     )
     assert result.epoch.best["zhipuai/glm-5.3"].resolved_by == "alias"
+
+
+def test_a_declared_key_spelt_like_a_models_dev_key_is_refused(
+    inventory: Inventory, sources: Sources
+) -> None:
+    misspelt = aliases_mod.build([Alias("zhipuai/glm-5-3", epoch=("GLM-5.3",))], [])
+    with pytest.raises(ConfigError, match="reads the same as the key zhipuai/glm-5.3"):
+        pipeline.resolve_all(inventory, sources, misspelt)

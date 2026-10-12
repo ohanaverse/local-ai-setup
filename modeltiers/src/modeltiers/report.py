@@ -27,19 +27,20 @@ def identity_lines(result: Identity) -> list[str]:
     rows = result.rows
     resolved = sum(1 for r in rows if r.canonical is not None)
     ignored = sum(1 for r in rows if r.ignore_reason is not None)
+    unmapped = result.unmapped
+    review = result.review
     width = max((len(_name(r)) for r in rows), default=0)
     lines = [
         f"identity: {len(rows)} rows: {resolved} resolved, {ignored} ignored, "
-        f"{len(result.unmapped)} unmapped"
+        f"{len(unmapped)} unmapped"
     ]
     lines.extend(f"  {_name(r):<{width}}  {_outcome(r)}" for r in rows)
     lines.append(
-        f"unmapped: {len(result.unmapped)} (each needs an [[alias]] or an [[ignore]] "
-        "in aliases.toml)"
+        f"unmapped: {len(unmapped)} (each needs an [[alias]] or an [[ignore]] in aliases.toml)"
     )
-    lines.extend(f"  {_name(r)}" for r in result.unmapped)
-    lines.append(f"review: {len(result.review)} matched by name alone (check each)")
-    lines.extend(f"  {_name(r)} -> {r.canonical}" for r in result.review)
+    lines.extend(f"  {_name(r)}" for r in unmapped)
+    lines.append(f"review: {len(review)} matched by name alone (check each)")
+    lines.extend(f"  {_name(r)} -> {r.canonical}" for r in review)
     lines.append(
         "unresolved: source records no step resolved (counts only; "
         "listing those at or above a standard floor needs contracts.toml)"

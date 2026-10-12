@@ -74,6 +74,30 @@ reason = "only Arena ids carry an effort"
     assert ("epoch", "Gemini 2.5 Pro (Max)") in parsed.source_ignore
 
 
+def test_an_entry_built_in_code_loses_its_effort_parenthesis_too() -> None:
+    built = aliases.build(
+        [Alias("zhipuai/glm-5.3", arena=("GLM 5.3 (Max)",), epoch=("GLM-5.3 (Max)",))],
+        [
+            Ignore("no models.dev key yet", source="arena", id="Gemini 4 Argon (Max)"),
+            Ignore("only Arena ids carry an effort", source="epoch", id="Gemini 2.5 Pro (Max)"),
+        ],
+    )
+    assert built.aliases[0].arena == ("GLM 5.3",)
+    assert built.source_alias == {
+        ("arena", "GLM 5.3"): "zhipuai/glm-5.3",
+        ("epoch", "GLM-5.3 (Max)"): "zhipuai/glm-5.3",
+    }
+    assert set(built.source_ignore) == {
+        ("arena", "Gemini 4 Argon"),
+        ("epoch", "Gemini 2.5 Pro (Max)"),
+    }
+    # The warning names the id the records are compared with.
+    assert aliases.stale_ids(built, {"arena": frozenset({"GLM 5.3"})}) == [
+        "alias for zhipuai/glm-5.3 names epoch id 'GLM-5.3 (Max)', "
+        "which is not in this run's epoch data"
+    ]
+
+
 def test_a_duplicate_inventory_pair_is_an_error() -> None:
     text = (
         ALIAS
@@ -222,6 +246,44 @@ def test_the_message_names_the_file_it_was_given(tmp_path: Path) -> None:
         aliases.load_aliases(path)
 
 
+def test_a_file_that_is_not_utf8_is_a_config_error(tmp_path: Path) -> None:
+    path = tmp_path / "aliases.toml"
+    path.write_bytes(b"\xff\xfe[[alias]]")
+    with pytest.raises(ConfigError, match=r"aliases: .*aliases\.toml is not UTF-8 text"):
+        aliases.load_aliases(path)
+
+
 def test_a_missing_file_is_a_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="aliases: cannot read .*absent.toml"):
         aliases.load_aliases(tmp_path / "absent.toml")
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        (
+            '[[alias]]\ncanonical = " zhipuai/glm-5.3"',
+            "aliases.toml: [[alias]] #1: canonical ' zhipuai/glm-5.3' "
+            "has a space at its start or its end",
+        ),
+        (
+            '[[alias]]\ncanonical = "a/b"\n'
+            'inventory = [{ provider_id = "ollama ", model_name = "m" }]',
+            "aliases.toml: [[alias]] #1 (a/b) inventory[0]: provider_id 'ollama ' "
+            "has a space at its start or its end",
+        ),
+        (
+            '[[alias]]\ncanonical = "a/b"\nepoch = ["GLM-5.3\\t"]',
+            "aliases.toml: [[alias]] #1 (a/b): epoch id 'GLM-5.3\\t' "
+            "has a space at its start or its end",
+        ),
+        (
+            '[[ignore]]\nreason = "r"\nsource = "epoch"\nid = " GPT-5"',
+            "aliases.toml: [[ignore]] #1: id ' GPT-5' has a space at its start or its end",
+        ),
+    ],
+)
+def test_a_string_with_a_space_around_it_is_an_error(entry: str, message: str) -> None:
+    with pytest.raises(ConfigError) as caught:
+        aliases.parse_aliases(entry)
+    assert str(caught.value) == message

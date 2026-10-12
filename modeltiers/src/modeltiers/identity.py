@@ -19,7 +19,7 @@ INHERITED = "inherited"
 HOST_NOTE = "host row has no canonical id; matched by name"
 
 # inventory provider_id or source name -> (models.dev provider, suffixes the
-# host adds to a model id that models.dev does not list)
+# host adds to a model id; models.dev lists some ids with one and most without)
 _HOSTS: Mapping[str, tuple[str, tuple[str, ...]]] = {
     "ollama": ("ollama-cloud", (":cloud", "-cloud")),
     "openrouter": ("openrouter", (":free", ":batch")),
@@ -84,12 +84,18 @@ def build_index(modelsdev: ModelsDev, aliases: Aliases) -> Index:
 def host_row(index: Index, host: str, model_id: str) -> ModelsDevRow | None:
     """The models.dev row a host lists for one of its own model ids. `host` is
     an inventory provider_id or a source name; one models.dev does not carry
-    as a host has no rows. The host's serving suffix is removed first:
+    as a host has no rows. The id is tried as written first, because
+    models.dev lists some suffixed ids as rows of their own (an OpenRouter
+    `:free` row can be the only row of its model, or give another context
+    than the base row). Then the host's serving suffix is removed:
     `glm-5.3:cloud` is looked up as `glm-5.3`, `z-ai/glm-5.3:free` as
     `z-ai/glm-5.3`."""
     if host not in _HOSTS:
         return None
     provider, suffixes = _HOSTS[host]
+    exact = index.hosts.get((provider, model_id))
+    if exact is not None:
+        return exact
     for suffix in suffixes:
         if model_id.endswith(suffix):
             model_id = model_id.removesuffix(suffix)
@@ -101,7 +107,7 @@ def host_row(index: Index, host: str, model_id: str) -> ModelsDevRow | None:
 class RowIdentity:
     """How one inventory row resolved. Exactly one of three states: resolved
     (`canonical` and `resolved_by` set), ignored (`ignore_reason` set), or
-    unmapped (neither)."""
+    unmapped (neither). Building any other combination is a ValueError."""
 
     row: InventoryRow
     canonical: str | None = None  # in the stored spelling
@@ -109,6 +115,12 @@ class RowIdentity:
     ignore_reason: str | None = None
     host_row: ModelsDevRow | None = None  # a cloud row's models.dev host row, canonical or not
     notes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (self.canonical is None) != (self.resolved_by is None):
+            raise ValueError("RowIdentity: canonical and resolved_by are set together")
+        if self.canonical is not None and self.ignore_reason is not None:
+            raise ValueError("RowIdentity: an ignored row has no canonical")
 
     @property
     def basis(self) -> str:

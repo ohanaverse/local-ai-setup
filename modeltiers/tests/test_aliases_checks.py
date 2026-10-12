@@ -1,6 +1,8 @@
+import dataclasses
+
 import pytest
 
-from modeltiers import aliases
+from modeltiers import aliases, loader, pipeline
 from modeltiers.aliases import Alias
 from modeltiers.errors import ConfigError
 
@@ -67,3 +69,37 @@ def test_a_source_id_absent_from_this_run_is_a_warning() -> None:
 def test_ids_that_are_present_give_no_warning() -> None:
     entries = aliases.build([Alias("zhipuai/glm-5.3", epoch=("GLM-5.3",))], [])
     assert aliases.stale_ids(entries, {"epoch": frozenset({"GLM-5.3"})}) == []
+
+
+def _declared(*canonicals: str) -> aliases.Aliases:
+    return aliases.build([Alias(key, epoch=(f"id {n}",)) for n, key in enumerate(canonicals)], [])
+
+
+def test_a_declared_key_that_reads_like_a_models_dev_key_is_an_error() -> None:
+    with pytest.raises(ConfigError) as caught:
+        aliases.check_spelling(_declared("minimax/minimax-m-3"), KEYS)
+    assert str(caught.value) == (
+        "aliases.toml: [[alias]] #1 (minimax/minimax-m-3): canonical reads the same as "
+        "the key minimax/MiniMax-M3, so name matching could not tell the two apart; "
+        "use that key, or one that reads differently"
+    )
+
+
+def test_two_declared_keys_that_read_the_same_are_an_error() -> None:
+    with pytest.raises(ConfigError, match=r"#2 \(google/gemini_4_argon\): canonical reads"):
+        aliases.check_spelling(_declared("google/gemini-4-argon", "google/gemini_4_argon"), KEYS)
+
+
+def test_keys_that_cannot_confuse_name_matching_pass_the_spelling_check() -> None:
+    entries = _declared(
+        "MiniMax/minimax-m3",  # a models.dev key in another case
+        "google/gemini-4-argon",  # declared, and reads like no other key
+        "Google/Gemini-4-Argon",  # the same declared key again
+        "zhipuai/glm-5-3-latest",  # floating: never matched by name
+    )
+    aliases.check_spelling(entries, [*KEYS, "zhipuai/glm-latest"])
+
+
+def test_every_structure_keyed_by_source_has_a_field_per_source() -> None:
+    for structure in (Alias, loader.Sources, pipeline.Identity):
+        assert set(aliases.SOURCES) <= {f.name for f in dataclasses.fields(structure)}

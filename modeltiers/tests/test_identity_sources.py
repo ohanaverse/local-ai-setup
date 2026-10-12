@@ -83,6 +83,11 @@ def test_an_arena_alias_covers_every_effort_row() -> None:
         _arena("DeepSeek V4 Pro (0813)", 0.0134, -0.0032, "high"),
         _arena("DeepSeek V4 Pro (0813)", 0.0101, -0.0040, "max"),
     )
+    # Each row alone, so neither is hidden behind the other's better score.
+    # The name would match this key too; `alias` says the alias answered.
+    for row in rows:
+        match = identity.resolve_record(row, INDEX, pinned)
+        assert match == Match("deepseek/deepseek-v4-pro-0813", "alias", row)
     resolved = identity.resolve_source("arena", rows, INDEX, pinned)
     assert resolved.unresolved == ()
     assert list(resolved.best) == ["deepseek/deepseek-v4-pro-0813"]

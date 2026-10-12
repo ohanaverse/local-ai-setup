@@ -122,6 +122,38 @@ def test_host_row(host: str, model_id: str, found: tuple[str, str] | None) -> No
     assert (None if row is None else (row.provider, row.model_id)) == found
 
 
+def test_a_host_id_models_dev_lists_with_its_suffix_is_found_as_written() -> None:
+    # models.dev lists some OpenRouter `:free` ids as rows of their own: one
+    # that is the model's only row, and one whose context is not the base's.
+    index = identity.build_index(
+        ModelsDev(
+            rows=(
+                _md(
+                    "openrouter", "nvidia/nemotron-3-nano-omni:free", "nvidia/nemotron-3-nano-omni"
+                ),
+                _md("openrouter", "thinkingmachines/inkling", "thinkingmachines/inkling", 524288),
+                _md(
+                    "openrouter",
+                    "thinkingmachines/inkling:free",
+                    "thinkingmachines/inkling",
+                    1048576,
+                ),
+            )
+        ),
+        NO_ALIASES,
+    )
+    only = identity.resolve_row(
+        _cloud("openrouter", "nvidia/nemotron-3-nano-omni:free"), index, NO_ALIASES
+    )
+    assert (only.canonical, only.resolved_by) == ("nvidia/nemotron-3-nano-omni", "host")
+    free = identity.host_row(index, "openrouter", "thinkingmachines/inkling:free")
+    base = identity.host_row(index, "openrouter", "thinkingmachines/inkling")
+    batch = identity.host_row(index, "openrouter", "thinkingmachines/inkling:batch")
+    assert free is not None and free.context == 1048576
+    assert base is not None and base.context == 524288
+    assert batch is base  # no row of its own: the suffix is removed
+
+
 # --- inventory rows ----------------------------------------------------------
 
 
@@ -242,3 +274,21 @@ def test_an_ignore_wins_over_a_name_that_would_resolve() -> None:
         [], [Ignore("not for coding", inventory=(row.provider_id, row.model_name))]
     )
     assert identity.resolve_row(row, INDEX, ignoring).canonical is None
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"canonical": "zhipuai/glm-5.3"}, "canonical and resolved_by are set together"),
+        ({"resolved_by": "alias"}, "canonical and resolved_by are set together"),
+        (
+            {"canonical": "zhipuai/glm-5.3", "resolved_by": "alias", "ignore_reason": "r"},
+            "an ignored row has no canonical",
+        ),
+    ],
+)
+def test_a_row_identity_in_no_one_state_cannot_be_built(
+    fields: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        RowIdentity(row=_local("ollama", "m"), **fields)

@@ -6,15 +6,21 @@
 
 import tomllib
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 from modeltiers.errors import ConfigError
+from modeltiers.sources.arena import SOURCE as ARENA
 from modeltiers.sources.arena import split_effort
+from modeltiers.sources.epoch import SOURCE as EPOCH
+from modeltiers.sources.openrouter import SOURCE as OPENROUTER
+from modeltiers.tokens import is_floating, tokens
 
-SOURCES = ("openrouter", "arena", "epoch")
+# The benchmark sources, in the order the report lists them. `Alias`,
+# `loader.Sources` and `pipeline.Identity` each have a field of every name.
+SOURCES = (OPENROUTER, ARENA, EPOCH)
 Pair = tuple[str, str]  # (provider_id, model_name)
 SourceId = tuple[str, str]  # (source, the source's own id)
 
@@ -25,7 +31,8 @@ _PAIR_KEYS = frozenset({"provider_id", "model_name"})
 
 @dataclass(frozen=True)
 class Alias:
-    """One `[[alias]]` entry. Arena ids have their effort parenthesis removed."""
+    """One `[[alias]]` entry. `build` removes the effort parenthesis from its
+    Arena ids, so every entry of an `Aliases` holds them as the records do."""
 
     canonical: str
     note: str = ""
@@ -36,11 +43,7 @@ class Alias:
 
     def source_ids(self) -> tuple[SourceId, ...]:
         """Every (source, id) the entry lists, in the order of SOURCES."""
-        return (
-            *(("openrouter", sid) for sid in self.openrouter),
-            *(("arena", sid) for sid in self.arena),
-            *(("epoch", sid) for sid in self.epoch),
-        )
+        return tuple((source, sid) for source in SOURCES for sid in getattr(self, source))
 
 
 @dataclass(frozen=True)
@@ -74,10 +77,20 @@ def _alias_label(index: int, alias: Alias) -> str:
 def build(
     aliases: Iterable[Alias], ignores: Iterable[Ignore], *, origin: str = "aliases.toml"
 ) -> Aliases:
-    """Index the entries. Two claims on one inventory pair or one source id,
-    in two entries or in one, are a ConfigError that names both claimants."""
-    kept_aliases = tuple(aliases)
-    kept_ignores = tuple(ignores)
+    """Index the entries. An Arena id loses its effort parenthesis here, for
+    an entry read from the file and for one built in code alike, since the
+    records carry none. Two claims on one inventory pair or one source id, in
+    two entries or in one, are a ConfigError that names both claimants."""
+    kept_aliases = tuple(
+        replace(alias, arena=tuple(split_effort(sid)[0] for sid in alias.arena))
+        for alias in aliases
+    )
+    kept_ignores = tuple(
+        replace(ignore, id=split_effort(ignore.id)[0])
+        if ignore.source == ARENA and ignore.id is not None
+        else ignore
+        for ignore in ignores
+    )
     pair_owner: dict[Pair, str] = {}
     id_owner: dict[SourceId, str] = {}
 
@@ -132,6 +145,14 @@ def _text(where: str, entry: Mapping[str, Any], key: str) -> str:
     value = entry.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{where}: {key} is missing, empty or not a string")
+    return _unpadded(f"{where}: {key}", value)
+
+
+def _unpadded(where: str, value: str) -> str:
+    """A string that is matched exactly, so one with a space around it would
+    be accepted and then never match anything."""
+    if value != value.strip():
+        raise ConfigError(f"{where} {value!r} has a space at its start or its end")
     return value
 
 
@@ -155,9 +176,7 @@ def _id_list(where: str, entry: Mapping[str, Any], source: str) -> tuple[str, ..
     value = entry.get(source, [])
     if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
         raise ConfigError(f"{where}: {source} is not a list of non-empty strings")
-    if source == "arena":
-        return tuple(split_effort(v)[0] for v in value)
-    return tuple(value)
+    return tuple(_unpadded(f"{where}: {source} id", v) for v in value)
 
 
 def _tables(origin: str, doc: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
@@ -183,9 +202,7 @@ def _alias(where: str, entry: Mapping[str, Any]) -> Alias:
         inventory=tuple(
             _pair(f"{where} inventory[{position}]", pair) for position, pair in enumerate(pairs)
         ),
-        openrouter=_id_list(where, entry, "openrouter"),
-        arena=_id_list(where, entry, "arena"),
-        epoch=_id_list(where, entry, "epoch"),
+        **{source: _id_list(where, entry, source) for source in SOURCES},
     )
 
 
@@ -203,16 +220,13 @@ def _ignore(where: str, entry: Mapping[str, Any]) -> Ignore:
     source = _text(where, entry, "source")
     if source not in SOURCES:
         raise ConfigError(f"{where}: source {source!r} is not one of {', '.join(SOURCES)}")
-    source_id = _text(where, entry, "id")
-    if source == "arena":
-        source_id = split_effort(source_id)[0]
-    return Ignore(reason=reason, source=source, id=source_id)
+    return Ignore(reason=reason, source=source, id=_text(where, entry, "id"))
 
 
 def parse_aliases(text: str, *, origin: str = "aliases.toml") -> Aliases:
     """Read and validate the file's text. This is the validation that runs
-    before any fetch: shape, an `[[ignore]]` without a reason, and a pair or
-    an id claimed twice. `origin` names the file in every message."""
+    before any fetch: shape, a string with a space around it, an `[[ignore]]`
+    without a reason, and a pair or an id claimed twice. `origin` names the file in every message."""
     try:
         doc = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -238,6 +252,8 @@ def load_aliases(path: Path | None = None) -> Aliases:
         return parse_aliases(text, origin="aliases.toml")
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"aliases: {path} is not UTF-8 text: {exc}") from exc
     except OSError as exc:
         raise ConfigError(f"aliases: cannot read {path}: {exc.strerror}") from exc
     return parse_aliases(text, origin=path.name)
@@ -253,7 +269,34 @@ def check_anchored(aliases: Aliases, modelsdev_keys: Iterable[str]) -> None:
         if alias.canonical.lower() not in known and not alias.source_ids():
             raise ConfigError(
                 f"{aliases.origin}: {_alias_label(index, alias)}: canonical is not a models.dev key "
-                "and the entry lists no openrouter, arena or epoch id"
+                f"and the entry lists no {', '.join(SOURCES[:-1])} or {SOURCES[-1]} id"
+            )
+
+
+def check_spelling(aliases: Aliases, modelsdev_keys: Iterable[str]) -> None:
+    """The other validation that needs models.dev: a key an alias declares (a
+    canonical that is not a models.dev key) must not have the token sequence
+    of another key. It would be a second key for one model, such as
+    `anthropic/claude-opus-5.5` beside `anthropic/claude-opus-5-5`, and name
+    matching answers only when one key has the sequence, so it would stop
+    answering for both. A `-latest` key is never matched by name and is not
+    checked."""
+    known = {key.lower(): key for key in modelsdev_keys}
+    by_tokens: dict[tuple[str, ...], str] = {}
+    for lowered in sorted(known):
+        if not is_floating(lowered):
+            by_tokens.setdefault(tokens(lowered), known[lowered])
+    for index, alias in enumerate(aliases.aliases, start=1):
+        lowered = alias.canonical.lower()
+        sequence = tokens(lowered)
+        if lowered in known or is_floating(lowered) or not sequence:
+            continue
+        other = by_tokens.setdefault(sequence, alias.canonical)
+        if other.lower() != lowered:
+            raise ConfigError(
+                f"{aliases.origin}: {_alias_label(index, alias)}: canonical reads the same as "
+                f"the key {other}, so name matching could not tell the two apart; "
+                "use that key, or one that reads differently"
             )
 
 
