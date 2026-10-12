@@ -9,10 +9,11 @@ Every file here is a trimmed copy of a public download made on 2026-10-12, cut d
 | `arena_page1.json`, `arena_page2.json`, `arena_too_few.json`, `arena_malformed.json`, `arena_error.json` | Arena agent leaderboard, Hugging Face dataset `lmarena-ai/leaderboard-dataset`, config `agent`, split `latest`, read through the dataset viewer's rows API | CC BY 4.0. Arena (arena.ai), dataset lmarena-ai/leaderboard-dataset |
 | `eci_scores.csv`, `eci_scores_too_few.csv`, `eci_scores_malformed.csv` | Epoch AI benchmark data, `https://epoch.ai/data/benchmark_data.zip`, member `epoch_capabilities_index/eci_scores.csv` | CC BY 4.0. Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks |
 | `inventory.json` | `wt model list --json` on the owner's machine | This repository. The registry path is made up; `size_bytes` and `path` are nulled. |
+| `aliases.toml` | Hand-written for the tests | This repository. The same shape as `src/modeltiers/data/aliases.toml`; its entries are chosen for the tests and are not calibration. |
 
 Changes made to the copies:
 
-- **Rows removed.** Each file keeps between one and eight rows.
+- **Rows removed.** Each file keeps between one and eleven rows.
 - **Fields removed.** models.dev rows keep `id`, `name`, `tool_call`, `open_weights`, `limit` and `canonical_model_id`. OpenRouter rows keep `id`, `name`, `context_length` and `benchmarks.artificial_analysis`. Arena rows keep `model_name`, `organization`, `score`, `score_ci_lower`, `score_ci_upper`, `rank` and `category`, and the page's `features` list is dropped. The Epoch CSV keeps every column.
 - **Page counts rewritten.** `num_rows_total` in the Arena pages is the fixture's own row count (5, or 1 in `arena_too_few.json`), and `row_idx` is renumbered.
 - **Broken on purpose.** The `*_malformed.*` files are in a shape the parser must refuse. `arena_error.json` is the error body the rows API returned during design, unchanged.

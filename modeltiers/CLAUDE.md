@@ -4,7 +4,7 @@ Guidance for Claude Code when working in `modeltiers/`.
 
 ## Project overview
 
-`modeltiers` is a Python 3.13 CLI (argparse) that will write an advisory capability tier for every model wt lists, from four public sources. Design: `../docs/superpowers/specs/2026-10-12-model-tiers-design.md`. The spec's Delivery section lists four steps; this package is at step 1: it reads the inventory, downloads and parses the sources, and reports on them. It resolves no names, assigns no tiers and writes no output file yet.
+`modeltiers` is a Python 3.13 CLI (argparse) that will write an advisory capability tier for every model wt lists, from four public sources. Design: `../docs/superpowers/specs/2026-10-12-model-tiers-design.md`. The spec's Delivery section lists four steps; this package is at step 2: it reads the inventory, downloads and parses the sources, resolves every inventory row and every source record to a canonical key, and reports on that. It assigns no tiers and writes no output file yet.
 
 It never writes `registry.toml`, `config.yaml` or any wt state, and it never reads `registry.toml`: the inventory comes only from `wt model list --json`.
 
@@ -14,9 +14,9 @@ Run from the repo root as `uv run --directory modeltiers modeltiers <command>`, 
 
 | Command | Effect |
 |---|---|
-| `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Read the inventory, load the four sources, print one line for the inventory and one per source (status, record count, download time). `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt model list --json` output and does not run wt. At this step `run` writes no output file with or without `--dry-run`, and says so on its last line. |
+| `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Validate `aliases.toml`, read the inventory, load the four sources, resolve names. Prints one line for the inventory, one per source (status, record count, download time), then how every inventory row resolved, the unmapped list, the review list (rows matched by name alone) and each benchmark source's unresolved count. `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt model list --json` output and does not run wt. At this step `run` writes no output file with or without `--dry-run`, and says so on its last line. |
 
-Exit codes: 0 every source `ok` (or `stale` because of `--offline`); 1 the inventory could not be read, or a source failed and has no good snapshot; 2 a source failed and its last good snapshot was used.
+Exit codes: 0 every source `ok` (or `stale` because of `--offline`); 1 `aliases.toml` is invalid, the inventory could not be read, or a source failed and has no good snapshot; 2 a source failed and its last good snapshot was used. Unmapped rows and unresolved records do not change the exit code.
 
 Development: `make install` (`uv sync`), `make check` (ruff lint, `ruff format --check`, mypy strict on `src/`), `make test` (pytest with coverage; fails under the floor in `pyproject.toml`), `make all`. One test: `uv run pytest tests/test_loader.py::test_a_clean_fetch_is_ok_and_saved`.
 
@@ -26,6 +26,7 @@ Development: `make install` (`uv sync`), `make check` (ruff lint, `ruff format -
 |---|---|---|
 | Output file (not written yet) | `$XDG_CONFIG_HOME/local-ai/tiers.toml`, else `~/.config/local-ai/tiers.toml` | `MODELTIERS_OUT` |
 | Snapshots | `$XDG_CACHE_HOME/local-ai/modeltiers/`, else `~/.cache/local-ai/modeltiers/` | `MODELTIERS_CACHE` |
+| Aliases | `src/modeltiers/data/aliases.toml` (committed, package data) | none |
 
 ## Pipeline
 
@@ -38,7 +39,12 @@ One module per stage, plain frozen dataclasses (`records.py`) in and out.
 | `snapshots.py` | `<cache>/<source>/<UTC stamp>.<ext>`; `mark_bad` renames to `<stamp>.bad.<ext>`; `good_snapshots` newest first; `prune` keeps 4 good and 2 bad. `prune` is not called by any command yet. The store takes no lock: two runs started in the same second share a stamped file, and both `mark_bad` and a snapshot whose file has gone are tolerated rather than fatal. |
 | `sources/*.py` | Pure parsers, bytes to records. An unrecognised shape or a count under `min_rows` raises `SourceParseError`. `min_rows` defaults to the spec's floor (models.dev 1,000, OpenRouter 100, Arena 20, Epoch 100). |
 | `loader.py` | `load_source`: fetch, save, parse; on a failure fall back to the newest good snapshot (`status = "stale"`, `fallback = True`); with none, `SourceUnavailable`. `load_all` loads the four and names every unavailable source in one error. |
-| `cli.py` | `main(argv, *, deps=None)`. `Deps` carries every seam. |
+| `tokens.py` | `tokens(name)`: the token function, the same for a name and for a canonical key. `is_floating(key)`: a key ending in `-latest`. |
+| `aliases.py` | `load_aliases` / `parse_aliases`: `aliases.toml` to an `Aliases` with four lookups. Refuses, before any fetch, an unknown key, an `[[ignore]]` without a reason and a pair or source id claimed twice. `check_anchored` (needs models.dev) refuses an alias whose canonical is not a models.dev key and lists no source id. `stale_ids` gives a warning per alias source id absent from this run. |
+| `identity.py` | `build_index` (keys, models.dev rows per key, host rows, token sequences), `host_row`, `resolve_row` (inventory), `resolve_record` and `resolve_source` (benchmark records). Order: alias, host row, normalization; `resolved_by` records which. |
+| `pipeline.py` | `resolve_all(inventory, sources, aliases)` to one `Identity`: a `RowIdentity` per inventory row, a `SourceIdentity` per benchmark source, the warnings. |
+| `report.py` | `identity_lines`: the identity section `run` prints. |
+| `cli.py` | `main(argv, *, deps=None)`. `Deps` carries every seam, `aliases_path` included. |
 
 Parser details worth knowing:
 
@@ -47,9 +53,21 @@ Parser details worth knowing:
 - **Epoch** reads `epoch_capabilities_index/eci_scores.csv` from the ZIP, keyed on the `Display name` column.
 - **models.dev** keeps `canonical_model_id` in its own spelling (`minimax/MiniMax-M3`); a host row without one is kept with `canonical = None`. A *provider* entry with no `models` object — or that is not an object — is a shape change and fails the whole source, which then falls back to its newest good snapshot. It is not a provider with no models: no default would be true, and a parser here has no way to report a partial row set, so quietly dropping a provider's rows would be a short list nobody could see.
 
+## Identity
+
+- **Canonical key.** `vendor/model` exactly as models.dev spells `canonical_model_id` (`minimax/MiniMax-M3`). Stored in that spelling, compared in lower case: `Index.keys`, `Index.rows` and `SourceIdentity.best` are keyed by the lower-case key and hold the stored spelling as the value. An alias written in another case reaches the same key.
+- **Host rows.** Inventory `provider_id` `ollama` (cloud rows only) is looked up in models.dev's `ollama-cloud` provider with `:cloud` or `-cloud` removed; `openrouter` rows and OpenRouter records in the `openrouter` provider with `:free` or `:batch` removed. A host row with no canonical id does not answer, but stays on `RowIdentity.host_row`: the next step needs its context.
+- **Normalization** answers only when exactly one key has the name's token sequence. A `-latest` key is never in that index. A row resolved this way is on the review list; when it also passed a host row with no canonical id it carries the note `host row has no canonical id; matched by name`.
+- **Aliases** match the inventory pair or the source's own id exactly. Arena ids are compared with the effort parenthesis removed, in the file and in the records, so one alias covers every effort row.
+- **Three states for an inventory row:** resolved (`canonical`, `resolved_by`), ignored (`ignore_reason`), unmapped (neither). A local row has `basis == "inherited"`.
+- **Records that share a key** (effort rows, `:free` and `:batch`, dated and undated names): the best score is kept as a whole record, so its effort and interval are its own; a tie keeps the earlier record.
+- **Unresolved records** are kept in full on `SourceIdentity.unresolved` and only counted in the report. Listing those at or above a standard floor needs `contracts.toml`, which the next step adds.
+
 ## Testing patterns
 
 - **Nothing live.** The autouse `_hermetic` fixture in `tests/conftest.py` makes `urllib.request.urlopen` and `subprocess.run` raise and points `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `MODELTIERS_OUT` and `MODELTIERS_CACHE` under `tmp_path`. `tests/test_conftest_guards.py` fails if that stops holding. CI's `bin/check-config-dirs-untouched` covers the config home only; nothing but this fixture protects the real cache.
 - **Seams are parameters.** The network is a `Fetcher`, the wait is a `Sleep`, the clock is a `now`, wt is a `RunWt`. Tests pass `fakes.FakeFetcher` and `fakes.Sleeps` (`tests/fakes.py`), or a whole `cli.Deps`.
-- **Small fixtures.** `tests/fixtures/` holds a few rows per source, so tests pass small minimums: the `specs` fixture is `loader.build_specs(modelsdev_min=8, openrouter_min=4, arena_min=5, epoch_min=5)`. The Epoch fixtures are CSV text; the `epoch_zip` fixture zips one in memory. The Arena fixtures are single page bodies; `arena_doc` wraps them as `fetch_arena` would.
+- **Small fixtures.** `tests/fixtures/` holds a few rows per source, so tests pass small minimums: the `specs` fixture is `loader.build_specs(modelsdev_min=11, openrouter_min=4, arena_min=5, epoch_min=5)`. The Epoch fixtures are CSV text; the `epoch_zip` fixture zips one in memory. The Arena fixtures are single page bodies; `arena_doc` wraps them as `fetch_arena` would.
+- **Fixture-local aliases.** Tests pass `tests/fixtures/aliases.toml` as `Deps.aliases_path` or build an `Aliases` with `aliases.build`. Only `tests/test_data_files.py` reads the committed `src/modeltiers/data/aliases.toml`, and it asserts nothing about which entries the file holds.
+- **Identity tests build their own models.dev.** `tests/test_identity.py` and `tests/test_identity_sources.py` use hand-built `ModelsDev` rows; `tests/test_pipeline.py` and `tests/test_cli.py` use the golden fixtures.
 - `tests/fixtures/README.md` credits each source. Keep it current when a fixture is added.
