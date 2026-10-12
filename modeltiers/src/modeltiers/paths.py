@@ -40,3 +40,19 @@ def cache_dir(env: Mapping[str, str] | None = None) -> Path:
     if override:
         return Path(override)
     return _base(env, "XDG_CACHE_HOME", ".cache") / "local-ai" / "modeltiers"
+
+
+def out_is_overridden(env: Mapping[str, str] | None = None) -> bool:
+    """True when MODELTIERS_OUT names the output file."""
+    env = os.environ if env is None else env
+    return bool(env.get(OUT_ENV, ""))
+
+
+def registry_is_beside_output(registry: str, env: Mapping[str, str] | None = None) -> bool:
+    """True when `registry`, the path wt says it read, is `registry.toml` in
+    the output file's directory. Directories are compared resolved, so a
+    symlinked config directory still matches; the file itself is not
+    resolved, because wt's registry.toml may be a symlink into another tree."""
+    found = Path(registry).expanduser()
+    expected = output_path(env).parent
+    return found.name == "registry.toml" and found.parent.resolve() == expected.resolve()
