@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`; **`homebrew.mxcl.omlx.plist` is optional since the 2026-09-30 rebuild** — wt's and llmbench's lifecycle backends run `omlx start` on demand, and the rebuild omits it; `brew services start omlx` restores it if you want oMLX always-on) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
+- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `sh.brew.postgresql@16.plist`, `sh.brew.redis.plist`; **`sh.brew.omlx.plist` is optional since the 2026-09-30 rebuild** — wt's and llmbench's lifecycle backends run `omlx start` on demand, and the rebuild omits it; `brew services start omlx` restores it if you want oMLX always-on) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
 - This repo checked out — `llmbench` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `llmbench/`.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
 
@@ -29,9 +29,9 @@ redis-cli ping
 11434(ollama):200
 -	0	com.ollama.ollama
 96295	-15	local.litellm.proxy
-80374	0	homebrew.mxcl.postgresql@16
-97297	0	homebrew.mxcl.omlx
-88057	0	homebrew.mxcl.redis
+80374	0	sh.brew.postgresql@16
+97297	0	sh.brew.omlx
+88057	0	sh.brew.redis
 17810	0	application.com.electron.ollama.2312009772.2312009778.64DD861F-BA99-4B1C-A478-2478B317DA0D
 localhost:5432 - accepting connections
 PONG
@@ -54,7 +54,7 @@ Reading it fast:
 Read the plists, not memory. All four launchd jobs carry both keys (verified live on 2026-08-29):
 
 ```bash
-grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist
+grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/keith/Library/LaunchAgents/sh.brew.omlx.plist
 ```
 
 ```text
@@ -62,10 +62,10 @@ grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <key>KeepAlive</key>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
-/Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist:	<key>RunAtLoad</key>
-/Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist:	<true/>
-/Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist:	<key>KeepAlive</key>
-/Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist:	<true/>
+/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<key>RunAtLoad</key>
+/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<true/>
+/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<key>KeepAlive</key>
+/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<true/>
 ```
 
 (`postgresql@16` and `redis` plists also carry `RunAtLoad`/`KeepAlive` `true` — verified by reading those two files directly; same shape, skipped above for brevity.)
@@ -82,9 +82,9 @@ brew services list
 
 ```text
 Name          Status User  File
-omlx          started         keith ~/Library/LaunchAgents/homebrew.mxcl.omlx.plist
-postgresql@16 started         keith ~/Library/LaunchAgents/homebrew.mxcl.postgresql@16.plist
-redis         started         keith ~/Library/LaunchAgents/homebrew.mxcl.redis.plist
+omlx          started         keith ~/Library/LaunchAgents/sh.brew.omlx.plist
+postgresql@16 started         keith ~/Library/LaunchAgents/sh.brew.postgresql@16.plist
+redis         started         keith ~/Library/LaunchAgents/sh.brew.redis.plist
 ```
 
 Per-backend reference — commands and log paths verified against the live plists (`StandardErrorPath`/`StandardOutPath` keys) and the brew service list; only the LiteLLM restart has a measured end-to-end run (§2). All restarts are disruptive — see the UNVERIFIED note before using them blind:
@@ -262,9 +262,9 @@ launchctl list | grep -E 'litellm|omlx|postgresql|redis'
 
 ```text
 96295	-15	local.litellm.proxy
-80374	0	homebrew.mxcl.postgresql@16
-97297	0	homebrew.mxcl.omlx
-88057	0	homebrew.mxcl.redis
+80374	0	sh.brew.postgresql@16
+97297	0	sh.brew.omlx
+88057	0	sh.brew.redis
 ```
 
 - **Healthy running:** a PID + `0` (or `-15` right after a kickstart — see Gotchas). E.g. the `local.litellm.proxy` row above (live).
@@ -574,7 +574,7 @@ Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth
 - **A LiteLLM upgrade or reinstall leaves Prisma to redo** — `uv tool upgrade litellm` keeps the env with the receipt's extras and Python; a `--force` reinstall re-creates it, so always give it the full form, `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'`. After either, re-run `prisma generate` (guide 01 §1/§6; §4 above), or the Postgres-backed UI/auth features die on the next kickstart with one of: `ModuleNotFoundError: No module named 'prisma'` (Prisma ships in the `extra-proxy` extra on LiteLLM ≥1.98, not `[proxy]`) or `Unable to find Prisma binaries. Please run 'prisma generate' first.` (unpinned Python — uv picked 3.14 on the 2026-09-30 rebuild, where the engines are missing; 3.11 is known-good). Both symptoms verified 2026-09-30.
 - **Redis crash-loops on `redisearch.so` on this machine (2026-09-30).** The module file is unreadable system-wide (`dlopen ... errno=1` in `/opt/homebrew/var/log/redis.log`), even source-built; the bottle pour itself can also `EPERM` on it during `brew install`/`upgrade`, so use `--build-from-source`. Fix applied in `/opt/homebrew/etc/redis.conf`: only the `redisearch.so` `loadmodule` line is commented out (RedisBloom/ReJSON/Timeseries load fine; original at `redis.conf.bak-original`). LiteLLM needs plain Redis only.
 - **`Registry file not found` from llmbench with `XDG_CONFIG_HOME` set.** With that variable set, llmbench used to fall back to a registry at `~/.config/local-ai/registry.toml`. It now looks only at `$XDG_CONFIG_HOME/local-ai/registry.toml`, the file wt names in that case, and says `Registry file not found: <that path>` when it is missing. Move the file there, or name it with `WT_REGISTRY`.
-- **`homebrew.mxcl.omlx.plist` is optional (2026-09-30 rebuild omitted it).** wt's and llmbench's lifecycle backends run `omlx start` on demand when an omlx model starts, and wt's live probes keep `omlx/*` routes out of `config.yaml` while it's down — `omlx none` in `brew services list` is the *healthy* state now, not something to fix. `brew services start omlx` only if you want oMLX always-on; remember KeepAlive then fights `omlx stop` during benchmark isolation.
+- **`sh.brew.omlx.plist` is optional (2026-09-30 rebuild omitted it).** wt's and llmbench's lifecycle backends run `omlx start` on demand when an omlx model starts, and wt's live probes keep `omlx/*` routes out of `config.yaml` while it's down — `omlx none` in `brew services list` is the *healthy* state now, not something to fix. `brew services start omlx` only if you want oMLX always-on; remember KeepAlive then fights `omlx stop` during benchmark isolation.
 
 ## Going deeper
 
