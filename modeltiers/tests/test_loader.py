@@ -179,7 +179,7 @@ def test_load_all_reads_the_four_sources(
         warn=Warnings(),
     )
     assert [(r.name, r.status, r.records) for r in sources.results()] == [
-        ("modelsdev", "ok", 8),
+        ("modelsdev", "ok", 11),
         ("openrouter", "ok", 4),
         ("arena", "ok", 5),
         ("epoch", "ok", 5),

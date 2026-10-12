@@ -27,6 +27,8 @@ def test_reads_registry_providers_and_rows() -> None:
         ("openrouter", "z-ai/glm-5.3"),
         ("ollama", "qwen3.8:27b-mlx"),
         ("ollama", "medgemma:27b"),
+        ("ollama", "minimax-m3:cloud"),
+        ("ollama", "nomic-embed-text:latest"),
         ("ollama", "gemma4:31b-mlx"),
     ]
 
@@ -81,7 +83,7 @@ def test_a_document_in_another_shape_is_an_inventory_error(text: str, message: s
 
 def test_inventory_file_is_read_and_wt_is_not_run() -> None:
     inv = inventory.load_inventory(path=FIXTURE, run_wt=_never_run_wt)
-    assert len(inv.rows) == 6
+    assert len(inv.rows) == 8
 
 
 def test_a_missing_inventory_file_is_an_inventory_error(tmp_path: Path) -> None:
@@ -100,7 +102,7 @@ def test_an_inventory_file_that_is_not_utf8_is_an_inventory_error(tmp_path: Path
 
 def test_without_a_file_the_runner_is_called() -> None:
     inv = inventory.load_inventory(path=None, run_wt=FIXTURE.read_text)
-    assert len(inv.rows) == 6
+    assert len(inv.rows) == 8
 
 
 class FakeRun:

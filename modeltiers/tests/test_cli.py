@@ -15,8 +15,8 @@ INVENTORY = Path(__file__).parent / "fixtures" / "inventory.json"
 Answers = dict[str, list[bytes | Exception]]
 
 CLEAN_REPORT = """\
-inventory: 6 models (1 native rows dropped), registry /home/owner/.config/local-ai/registry.toml
-modelsdev: ok, 8 records, fetched 2026-10-12T15:58:00Z
+inventory: 8 models (1 native rows dropped), registry /home/owner/.config/local-ai/registry.toml
+modelsdev: ok, 11 records, fetched 2026-10-12T15:58:00Z
 openrouter: ok, 4 records, fetched 2026-10-12T15:58:00Z
 arena: ok, 5 records, fetched 2026-10-12T15:58:00Z
 epoch: ok, 5 records, fetched 2026-10-12T15:58:00Z
@@ -83,7 +83,7 @@ def test_without_inventory_flag_wt_is_asked(
 ) -> None:
     deps, _ = _deps(specs, good_answers, run_wt=INVENTORY.read_text)
     assert cli.main(["run", "--dry-run"], deps=deps) == 0
-    assert capsys.readouterr().out.startswith("inventory: 6 models")
+    assert capsys.readouterr().out.startswith("inventory: 8 models")
 
 
 def test_a_source_that_falls_back_is_stale_and_exits_2(
