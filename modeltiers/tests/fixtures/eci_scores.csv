@@ -1,0 +1,6 @@
+Model,Display name,eci,eci_ci_low,eci_ci_high,date,Organization,Country (of organization),Model accessibility,Accessibility group,model_versions
+Claude Opus 5.5,Claude Opus 5.5,167.33,164.06,171.68,2026-09-22,Anthropic,United States of America,API access,Closed weights,
+GLM-5.3,GLM-5.3,155.61,153.6,157.92,2026-08-14,Z.ai (Zhipu AI),China,API access,Closed weights,
+DeepSeek V4 Pro 0813,DeepSeek V4 Pro 0813,155.31,153.48,157.45,2026-08-13,DeepSeek,China,Open weights (unrestricted),Open weights,
+MiniMax-M3,MiniMax-M3,146.95,142.59,149.44,2026-06-01,MiniMax,China,Open weights (restricted use),Open weights,
+GPT-5,GPT-5,150.0,,,2025-08-07,OpenAI,United States of America,API access,Closed weights,
