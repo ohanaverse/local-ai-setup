@@ -282,3 +282,13 @@ def test_a_file_that_is_not_toml_reads_as_absent_for_the_change_report(tmp_path:
     with pytest.raises(OutputFileError, match="is not TOML"):
         output.read_document(path)
     assert output.read_previous(path) is None
+
+
+def test_a_file_that_is_not_utf8_reads_as_absent_for_the_change_report(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tiers.toml"
+    path.write_bytes(b"\xff\xfe")
+    with pytest.raises(OutputFileError, match="is not UTF-8 text"):
+        output.read_document(path)
+    assert output.read_previous(path) is None

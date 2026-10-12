@@ -136,3 +136,19 @@ def test_a_file_from_an_older_version_is_compared_by_the_fields_it_has(
         "  sources: modelsdev ok (was ?), openrouter ok (was ?), arena ok (was ?), "
         "epoch ok (was ?)",
     ]
+
+
+def test_a_shape_broken_file_is_compared_by_what_it_has(document: dict[str, Any]) -> None:
+    # [models] as a single table reads as no models at all, and a string under
+    # [sources.openrouter] is not a status table.
+    old = {
+        "generated_at": document["generated_at"],
+        "models": {"a": 1},
+        "sources": {"openrouter": "ok"},
+    }
+    lines = changes.change_lines(old, document, PATH)
+    assert lines[0] == f"changes since {document['generated_at']}:"
+    assert all(line.startswith("  added: ") for line in lines[1:-3])
+    assert lines[-1] == (
+        "  sources: modelsdev ok (was ?), openrouter ok (was ?), arena ok (was ?), epoch ok (was ?)"
+    )

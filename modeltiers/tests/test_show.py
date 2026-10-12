@@ -131,6 +131,16 @@ def test_a_pair_that_looks_like_a_key_is_tried_as_a_pair_first(document: dict[st
     assert "  identity:    minimax/MiniMax-M3, resolved by normalized" in lines
 
 
+def test_an_unmapped_pair_does_not_shadow_the_canonical_key(
+    document: dict[str, Any],
+) -> None:
+    doc = copy.deepcopy(document)
+    # An [[unmapped]] row whose pair is a canonical key other models resolved
+    # to: the key search still answers first.
+    doc["unmapped"].append({"provider_id": "zhipuai", "model_name": "glm-5.3"})
+    assert show.explain_lines(doc, "zhipuai/glm-5.3")[:9] == GLM_CLOUD
+
+
 def test_explain_a_candidate_by_its_key_in_any_case(document: dict[str, Any]) -> None:
     assert show.explain_lines(document, "anthropic/Claude-Opus-5-5") == [
         "candidate anthropic/claude-opus-5-5",
@@ -232,6 +242,15 @@ def test_an_entry_from_an_older_file_prints_question_marks() -> None:
         "  tool_call:   unknown",
         "  context:     unknown",
     ]
+
+
+def test_a_shape_broken_file_prints_like_an_empty_one() -> None:
+    # [models] as a single table, unmapped as a string and a non-table
+    # candidate entry: compared by whatever they have, as an absent array.
+    broken = {"models": {"a": 1}, "unmapped": "?", "candidates": [3]}
+    assert show.table_lines(broken) == show.table_lines({})
+    vote = {"models": [{"provider_id": "a", "model_name": "b", "votes": "high"}]}
+    assert "  votes:       high" in show.explain_lines(vote, "a/b")
 
 
 def test_show_imports_nothing_of_the_package_but_the_constants() -> None:

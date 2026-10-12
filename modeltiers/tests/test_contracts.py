@@ -227,3 +227,10 @@ def test_a_file_with_no_tiers_table_is_refused() -> None:
 def test_a_missing_file_is_a_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="contracts: cannot read .*absent.toml"):
         contracts.load_contracts(tmp_path / "absent.toml")
+
+
+def test_a_file_that_is_not_utf8_is_a_config_error(tmp_path: Path) -> None:
+    path = tmp_path / "contracts.toml"
+    path.write_bytes(b"\xff\xfe")
+    with pytest.raises(ConfigError, match=r"contracts: .*contracts\.toml is not UTF-8 text"):
+        contracts.load_contracts(path)

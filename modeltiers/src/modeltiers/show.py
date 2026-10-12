@@ -6,27 +6,35 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from modeltiers.contracts import SOURCES, STAMP
+from modeltiers.contracts import SIGNAL_SOURCE, SOURCES, STAMP
 
 STALE_AFTER_DAYS = 14
 
 Document = Mapping[str, Any]
 
-# Which source each score in an entry came from, for the attribution lines.
+# Which source each score in an entry came from, for the attribution lines:
+# the signal's source, plus the record fields the signal's source adds. A
+# recalibrated carrier (a signal gaining `marathon_ci_lower`) needs no edit
+# here, so no source's attribution line can silently drop out of `explain`.
 _SCORE_SOURCE: Mapping[str, str] = {
-    "intelligence_index": "openrouter",
-    "coding_index": "openrouter",
-    "agentic_index": "openrouter",
-    "arena_agent": "arena",
-    "arena_agent_ci_lower": "arena",
-    "eci": "epoch",
-}
+    key: source for name, source in SIGNAL_SOURCE.items() for key in (name, f"{name}_ci_lower")
+} | {"coding_index": "openrouter", "agentic_index": "openrouter"}
 
 
 def model_name(entry: Mapping[str, Any]) -> str:
     """`provider_id/model_name`, the name a `[[models]]` or `[[unmapped]]`
     entry is listed and looked up by."""
     return f"{entry.get('provider_id', '?')}/{entry.get('model_name', '?')}"
+
+
+def entries(doc: Document, name: str) -> list[Mapping[str, Any]]:
+    """The `[[name]]` array as a list of tables. A file that holds a single
+    table, or a list of non-tables, where an array belongs is compared by
+    whatever it has instead: those read as absent."""
+    value = doc.get(name, [])
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, dict)]
 
 
 def age_days(doc: Document, now: datetime) -> int | None:
@@ -67,14 +75,14 @@ def _row(entry: Mapping[str, Any], name: str, width: int, canonical: str | None)
 def table_lines(doc: Document, *, candidates: bool = False) -> list[str]:
     """The tier table: one line per `[[models]]` entry in file order, the
     unmapped rows, and with `candidates` one line per `[[candidates]]` entry."""
-    models = doc.get("models", [])
-    unmapped = doc.get("unmapped", [])
+    models = entries(doc, "models")
+    unmapped = entries(doc, "unmapped")
     width = max([len(model_name(m)) for m in models] + [len("model")])
     lines = [f"T  {'tier':<8}  {'conf':<6}  {'model':<{width}}  canonical"]
     lines.extend(_row(m, model_name(m), width, m.get("canonical", "-")) for m in models)
     lines.append(f"unmapped: {len(unmapped)} (unrated until aliased or ignored)")
     lines.extend(f"  {model_name(entry)}" for entry in unmapped)
-    found = doc.get("candidates", [])
+    found = entries(doc, "candidates")
     if candidates:
         lines.append(f"candidates: {len(found)} (scored by a source, not in the inventory)")
         lines.extend(_row(c, str(c.get("canonical", "?")), 0, None) for c in found)
@@ -86,11 +94,12 @@ def table_lines(doc: Document, *, candidates: bool = False) -> list[str]:
 def attribution_lines(doc: Document, sources: Iterable[str] = SOURCES) -> list[str]:
     """The attribution line of each named source the file has one for."""
     tables = doc.get("sources", {})
+    tables = tables if isinstance(tables, dict) else {}
     wanted = set(sources)
     return [
         f"{name}: {tables[name]['attribution']}"
         for name in SOURCES
-        if name in wanted and "attribution" in tables.get(name, {})
+        if name in wanted and isinstance(tables.get(name), dict) and "attribution" in tables[name]
     ]
 
 
@@ -102,6 +111,8 @@ def short(value: Any) -> str:
 
 
 def _pairs(table: Mapping[str, Any]) -> str:
+    if not isinstance(table, dict):
+        return str(table)
     return ", ".join(f"{key} {short(value)}" for key, value in table.items()) or "none"
 
 
@@ -151,11 +162,20 @@ def explain_lines(doc: Document, name: str) -> list[str] | None:
     """Everything the file says about one model, or None when nothing
     matches. `name` is tried as an exact `provider_id/model_name` first, then
     as a canonical key without regard to case: every `[[models]]` entry that
-    resolved to it, or else the candidate."""
-    models = doc.get("models", [])
+    resolved to it, or else the candidate. A row still under `[[unmapped]]`
+    says it needs an alias, after the key searches missed."""
+    models = entries(doc, "models")
     found = [(model_name(m), m) for m in models if model_name(m) == name]
     if not found:
-        for entry in doc.get("unmapped", []):
+        found = [(model_name(m), m) for m in models if _has_key(m, name)]
+    if not found:
+        found = [
+            (f"candidate {c['canonical']}", c)
+            for c in entries(doc, "candidates")
+            if _has_key(c, name)
+        ]
+    if not found:
+        for entry in entries(doc, "unmapped"):
             if model_name(entry) == name:
                 return [
                     f"{name} is unmapped: no alias, host row or name match gave it a "
@@ -163,14 +183,6 @@ def explain_lines(doc: Document, name: str) -> list[str] | None:
                     "Add an [[alias]] or an [[ignore]] for it in aliases.toml and run "
                     "`modeltiers run`.",
                 ]
-        found = [(model_name(m), m) for m in models if _has_key(m, name)]
-    if not found:
-        found = [
-            (f"candidate {c['canonical']}", c)
-            for c in doc.get("candidates", [])
-            if _has_key(c, name)
-        ]
-    if not found:
         return None
     lines: list[str] = []
     for title, entry in found:

@@ -7,28 +7,27 @@ from pathlib import Path
 from typing import Any
 
 from modeltiers.contracts import SOURCES
-from modeltiers.show import model_name, table_lines
+from modeltiers.pipeline import IGNORED_NOTE
+from modeltiers.show import entries, model_name, table_lines
 
 Document = Mapping[str, Any]
 UNMAPPED = "unmapped"
-# How an [[ignore]]d row's reason is written in its `notes`.
-IGNORED_NOTE = "ignored: "
 
 
 def _states(doc: Document) -> dict[str, tuple[str, str]]:
     """name -> (tier or "unmapped", confidence), in file order."""
     states = {
         model_name(m): (str(m.get("tier", "?")), str(m.get("confidence", "?")))
-        for m in doc.get("models", [])
+        for m in entries(doc, "models")
     }
-    states.update({model_name(entry): (UNMAPPED, "") for entry in doc.get("unmapped", [])})
+    states.update({model_name(entry): (UNMAPPED, "") for entry in entries(doc, "unmapped")})
     return states
 
 
 def _ignored(doc: Document) -> dict[str, str]:
     """name -> the reason, for every `[[models]]` entry an [[ignore]] covers."""
     reasons = {}
-    for model in doc.get("models", []):
+    for model in entries(doc, "models"):
         for note in model.get("notes", []):
             if str(note).startswith(IGNORED_NOTE):
                 reasons[model_name(model)] = str(note)[len(IGNORED_NOTE) :]
@@ -38,15 +37,19 @@ def _ignored(doc: Document) -> dict[str, str]:
 def _candidates(doc: Document) -> dict[str, str]:
     return {
         str(c.get("canonical", "?")).lower(): str(c.get("tier", "?"))
-        for c in doc.get("candidates", [])
+        for c in entries(doc, "candidates")
     }
 
 
 def _source_statuses(old: Document, new: Document) -> str:
+    def status(doc: Document, name: str) -> str:
+        sources = doc.get("sources", {})
+        entry = sources.get(name) if isinstance(sources, dict) else None
+        return str(entry.get("status", "?")) if isinstance(entry, dict) else "?"
+
     parts = []
     for name in SOURCES:
-        now = new.get("sources", {}).get(name, {}).get("status", "?")
-        was = old.get("sources", {}).get(name, {}).get("status", "?")
+        now, was = status(new, name), status(old, name)
         parts.append(f"{name} {now}" if now == was else f"{name} {now} (was {was})")
     return ", ".join(parts)
 

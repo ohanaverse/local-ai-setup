@@ -13,6 +13,10 @@ from modeltiers.identity import Index, Match, RowIdentity, SourceIdentity
 from modeltiers.loader import Sources
 from modeltiers.records import Inventory, ScoreRecord
 
+# How an [[ignore]]d row's reason is written into the entry's `notes`; the
+# change report matches an existing file's notes on this prefix.
+IGNORED_NOTE = "ignored: "
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -130,7 +134,9 @@ def _model(entry: RowIdentity, result: Identity, contracts: Contracts) -> ModelR
             identity=entry,
             evidence=_NO_EVIDENCE,
             facts=Facts(tool_call=None, context=None),
-            verdict=Verdict(UNRATED, assign.NOT_APPLICABLE, (f"ignored: {entry.ignore_reason}",)),
+            verdict=Verdict(
+                UNRATED, assign.NOT_APPLICABLE, (f"{IGNORED_NOTE}{entry.ignore_reason}",)
+            ),
         )
     evidence = _evidence(result, entry.canonical, contracts)
     facts = assign.gather(

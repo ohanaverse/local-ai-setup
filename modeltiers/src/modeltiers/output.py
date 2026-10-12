@@ -158,12 +158,16 @@ def write_document(path: Path, doc: Document) -> None:
 
 def read_document(path: Path) -> Document:
     """Read `tiers.toml` for `show` and `explain`. Raises OutputFileError when
-    it is missing or is not TOML."""
+    it is missing, is not TOML, or is not UTF-8 text."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise OutputFileError(
             f"cannot read {path}: {exc.strerror}; run `modeltiers run` to write it"
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise OutputFileError(
+            f"{path} is not UTF-8 text; run `modeltiers run` to write it again"
         ) from exc
     try:
         return tomllib.loads(text)

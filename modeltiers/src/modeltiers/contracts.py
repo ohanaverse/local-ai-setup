@@ -241,6 +241,8 @@ def load_contracts(path: Path | None = None) -> Contracts:
         return parse_contracts(text, origin="contracts.toml")
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"contracts: {path} is not UTF-8 text: {exc}") from exc
     except OSError as exc:
         raise ConfigError(f"contracts: cannot read {path}: {exc.strerror}") from exc
     return parse_contracts(text, origin=path.name)
