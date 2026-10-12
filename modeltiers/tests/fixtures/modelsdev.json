@@ -15,6 +15,7 @@
   "models": {
    "z-ai/glm-5.3": {"id": "z-ai/glm-5.3", "name": "GLM-5.3", "tool_call": true, "open_weights": true, "limit": {"context": 1048576, "output": 943718}, "canonical_model_id": "zhipuai/glm-5.3"},
    "anthropic/claude-opus-5.5": {"id": "anthropic/claude-opus-5.5", "name": "Claude Opus 5.5", "tool_call": true, "open_weights": false, "limit": {"context": 1000000, "output": 128000}, "canonical_model_id": "anthropic/claude-opus-5-5"},
+   "anthropic/claude-fable-5": {"id": "anthropic/claude-fable-5", "name": "Claude Fable 5", "tool_call": true, "open_weights": false, "limit": {"context": 1000000, "output": 128000}, "canonical_model_id": "anthropic/claude-fable-5"},
    "minimax/minimax-m3": {"id": "minimax/minimax-m3", "name": "MiniMax-M3", "tool_call": true, "open_weights": true, "limit": {"context": 1048576, "output": 512000}, "canonical_model_id": "minimax/MiniMax-M3"}
   }
  },

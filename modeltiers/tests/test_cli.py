@@ -18,10 +18,10 @@ Answers = dict[str, list[bytes | Exception]]
 
 CLEAN_REPORT = f"""\
 inventory: 8 models (1 native rows dropped), registry /home/owner/.config/local-ai/registry.toml
-modelsdev: ok, 11 records, fetched 2026-10-12T15:58:00Z
-openrouter: ok, 4 records, fetched 2026-10-12T15:58:00Z
-arena: ok, 5 records, fetched 2026-10-12T15:58:00Z
-epoch: ok, 5 records, fetched 2026-10-12T15:58:00Z
+modelsdev: ok, 12 records, fetched 2026-10-12T15:58:00Z
+openrouter: ok, 6 records, fetched 2026-10-12T15:58:00Z
+arena: ok, 6 records, fetched 2026-10-12T15:58:00Z
+epoch: ok, 6 records, fetched 2026-10-12T15:58:00Z
 identity: 8 rows: 6 resolved, 1 ignored, 1 unmapped
   ollama/glm-5.3:cloud            host        zhipuai/glm-5.3
   ollama/deepseek-v4-pro:cloud    alias       deepseek/deepseek-v4-pro-0813
@@ -38,9 +38,9 @@ review: 3 matched by name alone (check each)
   ollama/minimax-m3:cloud -> minimax/MiniMax-M3
   ollama/gemma4:31b-mlx -> google/gemma-4-31b-it
 unresolved: source records no step resolved (counts only; listing those at or above a standard floor needs contracts.toml)
-  openrouter: 1 of 4 records, 0 ignored, 2 keys resolved
-  arena: 1 of 5 records, 0 ignored, 4 keys resolved
-  epoch: 0 of 5 records, 1 ignored, 4 keys resolved
+  openrouter: 1 of 6 records, 0 ignored, 4 keys resolved
+  arena: 1 of 6 records, 0 ignored, 5 keys resolved
+  epoch: 0 of 6 records, 1 ignored, 5 keys resolved
 nothing written: this version stops after resolving names
 """
 
@@ -134,8 +134,8 @@ def test_a_source_that_falls_back_is_stale_and_exits_2(
     }
     assert cli.main(argv, deps=_deps(specs, second, now=T1)[0]) == 2
     captured = capsys.readouterr()
-    assert "arena: stale, 5 records, fetched 2026-10-12T15:58:00Z\n" in captured.out
-    assert "openrouter: ok, 4 records, fetched 2026-10-19T15:58:00Z\n" in captured.out
+    assert "arena: stale, 6 records, fetched 2026-10-12T15:58:00Z\n" in captured.out
+    assert "openrouter: ok, 6 records, fetched 2026-10-19T15:58:00Z\n" in captured.out
     assert (
         "warning: arena: download failed: arena: the rows API answered with an error"
         in captured.err
@@ -305,4 +305,4 @@ def test_with_no_aliases_every_row_falls_to_the_rules(
     assert "  ollama/deepseek-v4-pro:cloud -> deepseek/deepseek-v4-pro\n" in out
     assert "unmapped: 2 (each needs" in out
     assert "  ollama/nomic-embed-text:latest\n" in out
-    assert "  epoch: 1 of 5 records, 0 ignored, 4 keys resolved\n" in out
+    assert "  epoch: 1 of 6 records, 0 ignored, 5 keys resolved\n" in out

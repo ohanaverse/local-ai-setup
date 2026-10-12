@@ -53,6 +53,7 @@ def test_golden_reads_both_pages_to_num_rows_total(arena_doc: Callable[..., byte
         ("Qwen3.8 Max", None),
         ("DeepSeek V4 Pro (0813)", "high"),
         ("Minimax M3", None),
+        ("Claude Fable 5", "high"),
     ]
     assert records[4].score < 0  # the score is centred near zero
 
@@ -66,8 +67,8 @@ def test_a_row_without_a_confidence_interval_keeps_none() -> None:
 
 
 def test_fewer_rows_than_num_rows_total_raises(arena_doc: Callable[..., bytes]) -> None:
-    # Page 1 alone: 3 rows, and it says the dataset has 5.
-    with pytest.raises(SourceParseError, match="read 3 rows of num_rows_total 5"):
+    # Page 1 alone: 3 rows, and it says the dataset has 6.
+    with pytest.raises(SourceParseError, match="read 3 rows of num_rows_total 6"):
         arena.parse(arena_doc("arena_page1.json"), min_rows=1)
 
 

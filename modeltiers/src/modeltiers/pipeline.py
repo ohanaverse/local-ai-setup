@@ -1,14 +1,17 @@
 """The stages after loading, run in order over one inventory and one set of
-sources. Step 2 of the design stops at identity."""
+sources: `resolve_all` (identity), then `assign_all` (tiers)."""
 
 from dataclasses import dataclass
 
 from modeltiers import aliases as aliases_mod
-from modeltiers import identity
+from modeltiers import assign, identity
 from modeltiers.aliases import SOURCES, Aliases
-from modeltiers.identity import Index, RowIdentity, SourceIdentity
+from modeltiers.assign import Evidence, Facts, SentinelResult, Verdict
+from modeltiers.contracts import RANK, UNRATED, Contracts
+from modeltiers.errors import ConfigError
+from modeltiers.identity import Index, Match, RowIdentity, SourceIdentity
 from modeltiers.loader import Sources
-from modeltiers.records import Inventory
+from modeltiers.records import Inventory, ScoreRecord
 
 
 @dataclass(frozen=True)
@@ -57,4 +60,161 @@ def resolve_all(inventory: Inventory, sources: Sources, aliases: Aliases) -> Ide
             name: identity.resolve_source(name, records, index, aliases)
             for name, records in data.items()
         },
+    )
+
+
+@dataclass(frozen=True)
+class ModelResult:
+    """One resolved or ignored inventory row, with its tier."""
+
+    identity: RowIdentity
+    evidence: Evidence
+    facts: Facts
+    verdict: Verdict
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A key with at least one vote and no inventory row."""
+
+    canonical: str  # in the stored spelling
+    resolved_by: str  # the earliest of alias, host, normalized among its records
+    open_weights: bool | None  # None: the key has no models.dev rows
+    evidence: Evidence
+    facts: Facts
+    verdict: Verdict
+
+
+@dataclass(frozen=True)
+class Assignment:
+    """Everything `tiers.toml` is built from."""
+
+    identity: Identity
+    contracts: Contracts
+    models: tuple[ModelResult, ...]  # resolved and ignored rows, in wt's order
+    candidates: tuple[Candidate, ...]  # rank descending, then key
+    unresolved: tuple[ScoreRecord, ...]  # at or above a standard floor; source, then score
+    sentinels: tuple[SentinelResult, ...]
+
+    @property
+    def sentinels_ok(self) -> bool:
+        return all(result.ok for result in self.sentinels)
+
+
+_NO_EVIDENCE = Evidence(
+    votes={}, scores={}, efforts={}, base=UNRATED, pre_gate=UNRATED, confidence="none"
+)
+_RESOLUTION_ORDER = (identity.ALIAS, identity.HOST, identity.NORMALIZED)
+
+
+def _matches(result: Identity, key: str, contracts: Contracts) -> dict[str, Match]:
+    """The key's best record per signal, for the signals whose source has one."""
+    by_source = {source.source: source for source in result.sources()}
+    found: dict[str, Match] = {}
+    for name, signal in contracts.signals.items():
+        match = by_source[signal.source].best.get(key.lower())
+        if match is not None:
+            found[name] = match
+    return found
+
+
+def _evidence(result: Identity, key: str, contracts: Contracts) -> Evidence:
+    matches = _matches(result, key, contracts)
+    return assign.weigh({name: match.record for name, match in matches.items()}, contracts)
+
+
+def _model(entry: RowIdentity, result: Identity, contracts: Contracts) -> ModelResult:
+    if entry.canonical is None:
+        # Listed under [[ignore]]: unrated, and no gate has anything to read.
+        return ModelResult(
+            identity=entry,
+            evidence=_NO_EVIDENCE,
+            facts=Facts(tool_call=None, context=None),
+            verdict=Verdict(UNRATED, assign.NOT_APPLICABLE, (f"ignored: {entry.ignore_reason}",)),
+        )
+    evidence = _evidence(result, entry.canonical, contracts)
+    facts = assign.gather(
+        result.index.rows_for(entry.canonical),
+        location=entry.row.location,
+        host_row=entry.host_row,
+    )
+    return ModelResult(
+        identity=entry,
+        evidence=evidence,
+        facts=facts,
+        verdict=assign.decide(evidence, facts, contracts),
+    )
+
+
+def _candidates(result: Identity, contracts: Contracts) -> tuple[Candidate, ...]:
+    held = {entry.canonical.lower() for entry in result.rows if entry.canonical is not None}
+    keys: dict[str, str] = {}
+    for source in result.sources():
+        for lower, match in source.best.items():
+            if lower not in held:
+                keys.setdefault(lower, match.canonical)
+    found: list[Candidate] = []
+    for key in keys.values():
+        matches = _matches(result, key, contracts)
+        steps = {match.resolved_by for match in matches.values()}
+        evidence = assign.weigh({name: m.record for name, m in matches.items()}, contracts)
+        rows = result.index.rows_for(key)
+        facts = assign.gather(rows, location=None, host_row=None)
+        found.append(
+            Candidate(
+                canonical=key,
+                resolved_by=next(step for step in _RESOLUTION_ORDER if step in steps),
+                open_weights=any(row.open_weights for row in rows) if rows else None,
+                evidence=evidence,
+                facts=facts,
+                verdict=assign.decide(evidence, facts, contracts),
+            )
+        )
+    found.sort(key=lambda c: (-RANK[c.verdict.tier], c.canonical.lower()))
+    return tuple(found)
+
+
+def _unresolved(result: Identity, contracts: Contracts) -> tuple[ScoreRecord, ...]:
+    """Unresolved records at or above their signal's standard floor: the best
+    record of each id, in source order and then by score, highest first."""
+    floors = {signal.source: signal.floors["standard"] for signal in contracts.signals.values()}
+    listed: list[ScoreRecord] = []
+    for source in result.sources():
+        best: dict[str, ScoreRecord] = {}
+        for record in source.unresolved:
+            if record.score < floors[source.source]:
+                continue
+            if record.source_id not in best or record.score > best[record.source_id].score:
+                best[record.source_id] = record
+        listed.extend(sorted(best.values(), key=lambda record: -record.score))
+    return tuple(listed)
+
+
+def _sentinels(result: Identity, contracts: Contracts) -> tuple[SentinelResult, ...]:
+    checked: list[SentinelResult] = []
+    for number, sentinel in enumerate(contracts.sentinels, start=1):
+        key = result.index.spelling(sentinel.canonical)
+        if key is None:
+            raise ConfigError(
+                f"{contracts.origin}: [[sentinels]] #{number} ({sentinel.canonical}): "
+                "not a canonical key in this run's models.dev data or in aliases.toml"
+            )
+        checked.append(assign.check_sentinel(sentinel, key, _evidence(result, key, contracts)))
+    return tuple(checked)
+
+
+def assign_all(result: Identity, contracts: Contracts) -> Assignment:
+    """Give every resolved key its tier. Raises ConfigError for a sentinel
+    whose canonical is not a known key. A failed sentinel is not an error
+    here: it is in `Assignment.sentinels`, and the caller writes nothing."""
+    sentinels = _sentinels(result, contracts)
+    return Assignment(
+        identity=result,
+        contracts=contracts,
+        models=tuple(
+            _model(entry, result, contracts) for entry in result.rows if not entry.unmapped
+        ),
+        candidates=_candidates(result, contracts),
+        unresolved=_unresolved(result, contracts),
+        sentinels=sentinels,
     )
