@@ -5,7 +5,6 @@ for the unresolved record, and an alias for a model the inventory no longer
 has. The alias that gives the unmapped row a key instead is built in the test
 that needs it."""
 
-import json
 import tomllib
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -13,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import FIXTURES, T0
+from conftest import FIXTURES, T0, scaled_openrouter
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch
@@ -49,12 +48,6 @@ def _deps(
         aliases_path=aliases_path,
         contracts_path=contracts_path,
     )
-
-
-@pytest.fixture
-def out(tmp_path: Path) -> Path:
-    """Where conftest's MODELTIERS_OUT points."""
-    return tmp_path / "out" / "tiers.toml"
 
 
 def _written(out: Path) -> dict[str, Any]:
@@ -207,12 +200,8 @@ def test_editing_the_pinned_votes_is_what_clears_a_moved_sentinel(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Every intelligence index drops by a fifth, as in the sentinel tests.
-    doc = json.loads(read_fixture("openrouter.json"))
-    for model in doc["data"]:
-        indices = (model.get("benchmarks") or {}).get("artificial_analysis")
-        if indices:
-            indices["intelligence_index"] *= 0.8
-    good_answers[fetch.OPENROUTER_URL] = [json.dumps(doc).encode()]
+    drifted = scaled_openrouter(read_fixture("openrouter.json"), 0.8)
+    good_answers[fetch.OPENROUTER_URL] = [drifted]
 
     # The same data twice. With the old pins nothing is written.
     assert cli.main(RUN, deps=_deps(specs, good_answers)) == 3

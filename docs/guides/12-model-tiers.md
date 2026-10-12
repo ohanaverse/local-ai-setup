@@ -46,7 +46,7 @@ to read. No launch, rotation or route looks at it.
 - **Three signals vote.** The Artificial Analysis intelligence index (through OpenRouter), Arena's agent score and Epoch AI's capabilities index each vote a tier from a score floor, or abstain when they have no record of the model. The tier is the lower median of the votes: with two votes, the lower one.
 - **`marathon` has one route.** A model whose votes give `deep` becomes `marathon` when the lower bound of its Arena interval clears the marathon floor.
 - **Two gates can only lower a tier.** A model with no tool calling is `unrated`. A model whose context is under its tier's minimum drops to the highest tier it meets.
-- **Confidence** says how far the votes agree: `high` (two or more, all equal), `medium` (one tier apart), `low` (one vote, or two tiers apart), `none` (no votes).
+- **Confidence** says how far the votes agree: `high` (two or more, all equal), `medium` (one tier apart), `low` (one vote, or two or more tiers apart), `none` (no votes).
 - **A local build inherits.** Every public score describes a hosted serving of a model. A local row carries the tier of the model it resolves to, marked `basis = "inherited"`: the quantized build on your machine was never measured.
 - **`unrated` always has a reason:** `no_votes` (no source scores it), `below_floor` (the votes are under the quick floor), `gate_tool_call`, `gate_context`, or `not_applicable` (you listed it under `[[ignore]]`).
 - **Candidates** are models a source scores that are not in your inventory. They are tiered the same way, which makes the candidate list the shortlist of models worth adding.
@@ -249,7 +249,7 @@ Set these up once per shell. They read the snapshots the last run saved:
 CACHE="${MODELTIERS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/local-ai/modeltiers}"
 newest() { ls "$CACHE/$1"/*."$2" | grep -v '\.bad\.' | tail -1; }   # newest good snapshot: newest modelsdev json
 ollama_manifest() { curl -fsS -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' "https://registry.ollama.ai/v2/library/$1/manifests/$2"; }
-ollama_digest() { ollama_manifest "$1" "$2" | shasum -a 256 | cut -c1-12; }
+ollama_digest() { ollama_manifest "$1" "$2" | shasum -a 256 | cut -c1-12 | grep -v '^e3b0c44298fc$'; }   # e3b0c44298fc is the digest of no bytes: a fetch that failed prints nothing
 ollama_config() { curl -fsSL "https://registry.ollama.ai/v2/library/$1/blobs/$(ollama_manifest "$1" "$2" | jq -r .config.digest)"; }
 # a Hugging Face repo's base_model and how the repo relates to it (the card's base_model_relation, else the relation in the tag Hugging Face derives)
 hf_base() { curl -fsS "https://huggingface.co/api/models/$1" | jq -r '"\([.cardData.base_model // "(none)"] | flatten | join(" ")), relation \((.cardData.base_model_relation // ([.tags[]? | select(startswith("base_model:")) | split(":") | select(length == 3) | .[1]] | unique | join(" "))) | if . == "" then "(not stated)" else . end)"'; }
@@ -282,8 +282,9 @@ ollama_digest <name> <tag>
 ollama_digest <name> <the fully spelled tag you think it equals>
 ```
 
-Equal digests: find the fully spelled tag's key with (d). Different digests,
-or no fully spelled tag: read the library's own page
+Equal digests: find the fully spelled tag's key with (d). A command that
+prints no digest could not fetch its tag (curl says why) and compares with
+nothing. Different digests, or no fully spelled tag: read the library's own page
 (`https://ollama.com/library/<name>`) for a statement of which model each tag
 is. A `model_family` or a parameter count in the registry config is not such
 a statement.
@@ -437,23 +438,30 @@ tier, sorted, so that two files can be compared with `diff`.
 ladder() { uv run --directory modeltiers python - "$@" <<'PY'
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
 
-from modeltiers import aliases, cli, contracts, inventory, loader, paths, pipeline
+from modeltiers import aliases, cli, contracts, identity, loader, paths
 
-signal, low, high, saved = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4:]
+signal, low, high = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 name = signal.removesuffix("_ci_lower")
 field = "score" if name == signal else "ci_lower"
+source = contracts.SIGNAL_SOURCE[name]
 deps = cli.Deps()
 sources = loader.load_all(
     deps.specs, cache=paths.cache_dir(), fetcher=deps.fetcher, sleep=deps.sleep,
-    now=datetime.now(UTC), offline=True, warn=lambda line: None,
+    now=datetime.now(UTC), offline=True,
+    warn=lambda line: print(f"warning: {line}", file=sys.stderr),
 )
-rows = inventory.load_inventory(path=Path(saved[0]) if saved else None, run_wt=deps.run_wt)
-found = pipeline.resolve_all(rows, sources, aliases.load_aliases())
-best = getattr(found, contracts.SIGNAL_SOURCE[name]).best.values()
-scored = sorted(((getattr(m.record, field), m.canonical) for m in best), reverse=True)
-window = [(score, key) for score, key in scored if score is not None and low <= score <= high]
+known = aliases.load_aliases()
+index = identity.build_index(sources.modelsdev.data, known)
+best = identity.resolve_source(source, getattr(sources, source).data, index, known).best.values()
+scores = ((getattr(m.record, field), m.canonical) for m in best)
+# A record with no lower bound has nothing to place on an _ci_lower ladder.
+window = sorted(
+    ((score, key) for score, key in scores if score is not None and low <= score <= high),
+    reverse=True,
+)
+if not window:
+    sys.exit(f"ladder: no resolved {signal} score from {low} to {high}")
 for (score, key), (below, _) in zip(window, window[1:]):
     print(f"{score:9.4f}  gap below {score - below:7.4f}  midpoint {(score + below) / 2:9.4f}  {key}")
 print(f"{window[-1][0]:9.4f}  {window[-1][1]}")
@@ -473,8 +481,7 @@ for candidate in doc.get("candidates", []):
 2. **List the resolved scores in the window, with the gaps between them.**
 
    ```bash
-   ladder <signal> <low> <high>                    # reads the newest snapshots; runs wt model list --json
-   ladder <signal> <low> <high> <inventory file>   # the same, from a saved inventory (an absolute path)
+   ladder <signal> <low> <high>   # reads the newest snapshots; fetches nothing and does not run wt
    ```
 
    Each line is a score, the gap to the next score down, and that gap's midpoint. The first line is the sentinel at `<high>` and the last is the one at `<low>`. The report rounds scores to four places, so pass `<low>` a little lower and `<high>` a little higher than printed.

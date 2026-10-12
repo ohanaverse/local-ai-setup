@@ -1,10 +1,9 @@
-import json
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import FIXTURES, SAMPLE, T0, without_timestamps
+from conftest import FIXTURES, SAMPLE, T0, scaled_openrouter, without_timestamps
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch, snapshots
@@ -118,22 +117,6 @@ def _deps(
         contracts_path=contracts_path,
     )
     return deps, fetcher
-
-
-def _scaled(body: bytes, factor: float) -> bytes:
-    """An OpenRouter body with every intelligence index multiplied."""
-    doc = json.loads(body)
-    for model in doc["data"]:
-        indices = (model.get("benchmarks") or {}).get("artificial_analysis")
-        if indices:
-            indices["intelligence_index"] *= factor
-    return json.dumps(doc).encode()
-
-
-@pytest.fixture
-def out(tmp_path: Path) -> Path:
-    """Where conftest's MODELTIERS_OUT points."""
-    return tmp_path / "out" / "tiers.toml"
 
 
 # --- run: the clean path ------------------------------------------------------
@@ -593,7 +576,7 @@ def test_the_registry_beside_the_default_output_file_is_accepted(
 @pytest.fixture
 def drifted(good_answers: Answers, read_fixture: Callable[[str], bytes]) -> Answers:
     """Clean answers, with every intelligence index scaled by 0.8."""
-    good_answers[fetch.OPENROUTER_URL] = [_scaled(read_fixture("openrouter.json"), 0.8)]
+    good_answers[fetch.OPENROUTER_URL] = [scaled_openrouter(read_fixture("openrouter.json"), 0.8)]
     return good_answers
 
 
@@ -613,7 +596,7 @@ def test_a_failed_sentinel_writes_nothing_and_exits_3(
     capsys.readouterr()
     second: Answers = {
         fetch.MODELSDEV_URL: [read_fixture("modelsdev.json")],
-        fetch.OPENROUTER_URL: [_scaled(read_fixture("openrouter.json"), 0.8)],
+        fetch.OPENROUTER_URL: [scaled_openrouter(read_fixture("openrouter.json"), 0.8)],
         fetch.arena_page_url(0): [read_fixture("arena_page1.json")],
         fetch.arena_page_url(3): [read_fixture("arena_page2.json")],
         fetch.EPOCH_URL: [epoch_zip()],

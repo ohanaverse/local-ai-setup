@@ -3,12 +3,11 @@ package over the golden fixtures, word for word. Guides must not embed a real
 machine's models, so a sample is either a placeholder or a slice of what
 these tests can reproduce."""
 
-import json
 import re
 from collections.abc import Callable
 
 import pytest
-from conftest import FIXTURES, SAMPLE, T0
+from conftest import FIXTURES, SAMPLE, T0, scaled_openrouter
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch
@@ -22,8 +21,9 @@ Answers = dict[str, list[bytes | Exception]]
 
 
 def _blocks(text: str, language: str) -> list[str]:
-    """The body of every fenced block of one language, each ending in a newline."""
-    return re.findall(rf"^```{language}\n(.*?^)```$", text, re.M | re.S)
+    """The body of every fenced block of one language, each ending in a
+    newline. A block inside a list item is indented, fence and body alike."""
+    return re.findall(rf"^[ \t]*```{language}\n(.*?^)[ \t]*```$", text, re.M | re.S)
 
 
 def _deps(specs: SourceSpecs, answers: Answers) -> cli.Deps:
@@ -48,12 +48,8 @@ def printed(
     of one row, and a run whose intelligence indices dropped by a fifth."""
     assert cli.main(RUN, deps=_deps(specs, dict(good_answers))) == 0
     assert cli.main(["explain", "ollama/minimax-m3:cloud"], deps=_deps(specs, {})) == 0
-    doc = json.loads(read_fixture("openrouter.json"))
-    for model in doc["data"]:
-        indices = (model.get("benchmarks") or {}).get("artificial_analysis")
-        if indices:
-            indices["intelligence_index"] *= 0.8
-    drifted = {**good_answers, fetch.OPENROUTER_URL: [json.dumps(doc).encode()]}
+    lowered = scaled_openrouter(read_fixture("openrouter.json"), 0.8)
+    drifted = {**good_answers, fetch.OPENROUTER_URL: [lowered]}
     assert cli.main([*RUN, "--dry-run"], deps=_deps(specs, drifted)) == 3
     return capsys.readouterr().out
 
