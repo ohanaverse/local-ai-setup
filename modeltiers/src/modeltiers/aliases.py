@@ -241,3 +241,29 @@ def load_aliases(path: Path | None = None) -> Aliases:
     except OSError as exc:
         raise ConfigError(f"aliases: cannot read {path}: {exc.strerror}") from exc
     return parse_aliases(text, origin=path.name)
+
+
+def check_anchored(aliases: Aliases, modelsdev_keys: Iterable[str]) -> None:
+    """The validation that needs models.dev: an alias whose canonical is not
+    a models.dev key (compared without regard to case) must list at least one
+    source id. One that lists only inventory pairs would create a key no
+    source can ever score."""
+    known = {key.lower() for key in modelsdev_keys}
+    for index, alias in enumerate(aliases.aliases, start=1):
+        if alias.canonical.lower() not in known and not alias.source_ids():
+            raise ConfigError(
+                f"{aliases.origin}: {_alias_label(index, alias)}: canonical is not a models.dev key "
+                "and the entry lists no openrouter, arena or epoch id"
+            )
+
+
+def stale_ids(aliases: Aliases, present: Mapping[str, frozenset[str]]) -> list[str]:
+    """One warning per alias source id that this run's snapshot of the source
+    does not hold. Models leave leaderboards; the alias may be out of date."""
+    return [
+        f"alias for {alias.canonical} names {source} id {source_id!r}, "
+        f"which is not in this run's {source} data"
+        for alias in aliases.aliases
+        for source, source_id in alias.source_ids()
+        if source_id not in present.get(source, frozenset())
+    ]
