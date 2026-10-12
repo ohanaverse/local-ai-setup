@@ -1,5 +1,6 @@
 import io
 import zipfile
+import zlib
 from collections.abc import Callable
 
 import pytest
@@ -82,3 +83,23 @@ def test_the_default_minimum_is_the_specs(epoch_zip: Callable[..., bytes]) -> No
 def test_an_unrecognised_shape_raises(data: bytes, message: str) -> None:
     with pytest.raises(SourceParseError, match=message):
         epoch.parse(data, min_rows=1)
+
+
+def test_a_bare_carriage_return_ends_a_row_and_is_not_a_crash() -> None:
+    assert [r.source_id for r in epoch.parse(_csv("Odd\rName,9,8"), min_rows=1)] == ["Name"]
+
+
+def test_a_field_too_long_for_the_csv_reader_is_a_parse_error() -> None:
+    with pytest.raises(SourceParseError, match="epoch: .* is not readable CSV"):
+        epoch.parse(_csv("x" * 140_000 + ",9,8"), min_rows=1)
+
+
+def test_a_member_that_cannot_be_unpacked_is_a_parse_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def read(self: zipfile.ZipFile, name: str) -> bytes:
+        raise zlib.error("Error -3 while decompressing data")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", read)
+    with pytest.raises(SourceParseError, match="epoch: .* cannot be unpacked"):
+        epoch.parse(_csv("Model,150.0,148.0"), min_rows=1)

@@ -5,6 +5,7 @@ a fake; the CLI passes `http_fetcher`. Nothing here parses a source beyond
 what paging Arena needs.
 """
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -33,8 +34,8 @@ ARENA_URL = (
 
 
 def http_fetcher(url: str) -> bytes:
-    """GET `url` with a 30-second timeout. A timeout or a 5xx status is
-    retryable; any other failure is not."""
+    """GET `url` with a 30-second timeout. A timeout, a 5xx status or a body
+    cut short is retryable; any other failure is not."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
@@ -47,6 +48,9 @@ def http_fetcher(url: str) -> bytes:
     except urllib.error.URLError as exc:
         timed_out = isinstance(exc.reason, TimeoutError)
         raise FetchError(f"{url}: {exc.reason}", retryable=timed_out) from exc
+    except http.client.HTTPException as exc:
+        # A body cut short or a garbled status line: urllib passes these through raw.
+        raise FetchError(f"{url}: {exc!r}", retryable=True) from exc
     except OSError as exc:
         raise FetchError(f"{url}: {exc}") from exc
 

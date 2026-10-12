@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 import urllib.error
@@ -169,3 +170,20 @@ def test_http_fetcher_marks_only_timeouts_and_5xx_retryable(
     with pytest.raises(FetchError, match=message) as caught:
         fetch.http_fetcher("https://example.test/x")
     assert caught.value.retryable is retryable
+
+
+class _DroppedResponse(FakeResponse):
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(b"1234567890", 990)
+
+
+def test_http_fetcher_makes_a_body_cut_short_a_retryable_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def urlopen(request: urllib.request.Request, timeout: float) -> Any:
+        return _DroppedResponse(b"")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    with pytest.raises(FetchError, match="IncompleteRead") as caught:
+        fetch.http_fetcher("https://example.test/x")
+    assert caught.value.retryable is True

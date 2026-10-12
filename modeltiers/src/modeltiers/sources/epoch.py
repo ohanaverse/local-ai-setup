@@ -3,6 +3,7 @@
 import csv
 import io
 import zipfile
+import zlib
 
 from modeltiers.errors import SourceParseError
 from modeltiers.records import ScoreRecord
@@ -35,7 +36,16 @@ def parse(data: bytes, *, min_rows: int = MIN_ROWS) -> tuple[ScoreRecord, ...]:
         raise SourceParseError(f"{SOURCE}: the archive has no {MEMBER}") from exc
     except UnicodeDecodeError as exc:
         raise SourceParseError(f"{SOURCE}: {MEMBER} is not UTF-8") from exc
-    reader = csv.DictReader(io.StringIO(text))
+    except (zlib.error, NotImplementedError, RuntimeError, EOFError) as exc:
+        raise SourceParseError(f"{SOURCE}: {MEMBER} cannot be unpacked: {exc}") from exc
+    try:
+        return _records(text, min_rows)
+    except csv.Error as exc:
+        raise SourceParseError(f"{SOURCE}: {MEMBER} is not readable CSV: {exc}") from exc
+
+
+def _records(text: str, min_rows: int) -> tuple[ScoreRecord, ...]:
+    reader = csv.DictReader(io.StringIO(text, newline=""))
     columns = reader.fieldnames or []
     for column in (NAME_COLUMN, SCORE_COLUMN, CI_LOW_COLUMN):
         if column not in columns:
