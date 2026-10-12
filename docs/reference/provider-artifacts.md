@@ -136,11 +136,18 @@ the plist is installed, `launchctl unload` it by hand:
      `wt/internal/config/registry_seed.go` if wt should seed its row. wt has
      no lifecycle backend for it and never had: `wt start` cannot start it
    - `llama_cpp` entries back in `benchmarks/qwen3.8-benchmark` and
-     `benchmarks/ornith-1.5-benchmark` (`DIRECT_URLS`, `DIRECT_MODELS`,
-     `LITELLM_MODELS`, `ISOLATE_ID`, `display_key`,
-     `ensure_all_local_started`, backend loops; `ISOLATE_ID` and
-     `DIRECT_MODELS` hold the `llmbench provider` CLI's provider ids — see
-     `benchmarks/lib/benchmark-common.sh`)
+     `benchmarks/ornith-1.5-benchmark`: the `DIRECT_URLS`, `DIRECT_MODELS`,
+     `LITELLM_MODELS` and `ISOLATE_ID` maps (`ISOLATE_ID` and `DIRECT_MODELS`
+     hold the `llmbench provider` CLI's provider ids — see
+     `benchmarks/lib/benchmark-common.sh`), and the two explicit
+     `for backend in …` loop lists in each script, which do not pick up new
+     map keys on their own. ornith-1.5-benchmark additionally needs a
+     `llama_cpp` branch in its `display_key()` case; qwen3.8-benchmark labels
+     rows with `display_name="$backend"` inline and needs no display change.
+     Nothing to change in `ensure_all_local_started` — it just runs
+     `llmbench provider restore` (`benchmarks/lib/benchmark-common.sh`), which
+     covers llama.cpp again once the backend is registered with
+     `restore_action="restart"` above
    - drop the retirement notes from `docs/guides/` and root `CLAUDE.md`
 
 ## LiteLLM — active
