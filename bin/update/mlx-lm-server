@@ -1,0 +1,72 @@
+#!/bin/bash
+# update/mlx-lm-server — report which mlx_lm the stack serves with, and whose
+# upgrade delivers a new one.
+#
+# Why there is nothing to upgrade here: mlx_lm is not a dependency of this repo
+# and no mlx_lm.* console script is on PATH. The only working copy belongs to
+# the versioned omlx Homebrew keg —
+# /opt/homebrew/Cellar/omlx/<version>/libexec/bin/mlx_lm.server, built against
+# that keg's own pinned Python and mlx versions. bin/lib/mlx-lm-resolve.sh is
+# the one place that knows how to find it (and deliberately does not fall back
+# to a bare `command -v`, because nothing else on the system is guaranteed to
+# work). So `brew upgrade omlx` is what moves mlx_lm, and this script exists to
+# make that visible and to catch a resolution that has broken — a keg version
+# that no longer ships libexec/bin, say — before llmbench's mlx_lm_server
+# isolation fails somewhere less legible.
+#
+# Usage: update/mlx-lm-server [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+# shellcheck source=lib/mlx-lm-resolve.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/mlx-lm-resolve.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/mlx-lm-server [--dry-run] [--check]
+
+Report the mlx_lm.server that mlx-lm-resolve.sh picks out of the omlx keg.
+Upgrading mlx_lm is `brew upgrade omlx` — update/omlx does that.
+EOF
+}
+
+update_init mlx-lm-server "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    printf 'update/mlx-lm-server: unknown option %s (this script runs nothing)\n' "$arg" >&2
+    exit 2
+done
+
+server_bin=$(resolve_mlx_lm_bin server 2> /dev/null) || server_bin=""
+if [ -z "$server_bin" ]; then
+    update_finish not-installed "no mlx_lm.server in any omlx keg (brew install omlx)"
+fi
+
+update_note "resolved: $server_bin"
+
+# .../Cellar/omlx/<version>/libexec/bin/mlx_lm.server -> the keg root is two
+# levels up from the bin dir; the version is the directory name under Cellar/omlx.
+bin_dir=$(dirname "$server_bin")
+keg_root=$(cd "$bin_dir/../.." && pwd)
+keg_version=$(basename "$keg_root")
+if [ "$(basename "$(dirname "$keg_root")")" = "omlx" ]; then
+    update_note "keg: omlx $keg_version"
+else
+    update_note "source: $keg_root (not an omlx keg — MLX_LM_BIN_DIR override?)"
+fi
+
+keg_python="$bin_dir/python"
+if [ -x "$keg_python" ]; then
+    mlx_lm_version=$("$keg_python" -c 'import importlib.metadata as m; print(m.version("mlx-lm"))' 2> /dev/null || true)
+    update_note "mlx-lm: ${mlx_lm_version:-unknown}"
+fi
+
+omlx_version=$(omlx --version 2> /dev/null || true)
+[ -n "$omlx_version" ] && update_note "omlx: $omlx_version"
+
+# Resolution works, so there is nothing this script must do — and nothing it
+# may do, either: the upgrade belongs to update/omlx, which update-tools runs
+# earlier in the same sweep.
+update_finish delegated "mlx_lm ships in the omlx keg — update/omlx moves it"

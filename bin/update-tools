@@ -1,0 +1,239 @@
+#!/bin/bash
+# update-tools — run every bin/update/<tool> script, in dependency order, and
+# report what each one did.
+#
+# Why the order is what it is: the services are upgraded before the things that
+# talk to them. postgresql and redis first (LiteLLM's store and cache), then the
+# model backends (ollama, omlx and the mlx_lm inside its keg, mtplx), then
+# litellm — which depends on the first two and routes to the third group — and
+# wt last, because wt is this checkout and rebuilding it mid-sweep would swap
+# the tool out from under the run.
+#
+# The per-tool scripts are the whole implementation: this file decides order and
+# prints the summary, nothing more. What it reads back is the one-line trailer
+# each script prints (see lib/update-common.sh) — an ordinary stdout line, so a
+# script run by hand reports the same thing this summary does.
+#
+# Note there is no `set -o pipefail` here on purpose: each tool's output is
+# streamed through `tee` so it lands in the terminal as it happens, and the
+# tool's own exit status is read from PIPESTATUS instead of being allowed to
+# abort the sweep — a failed upgrade should get a FAILED line and a summary
+# entry, not kill the run half way through the list.
+#
+# Usage: update-tools [--only a,b] [--dry-run] [--check] [--yes]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/update-common.sh"
+
+UPDATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update"
+
+TOOLS=(postgresql redis ollama omlx mlx-lm-server mtplx litellm wt)
+PURPOSES=(
+    "the LiteLLM store (spend logs, admin state)"
+    "the LiteLLM cache/session store"
+    "the local model backend (app-managed)"
+    "the local model backend, and the mlx_lm keg"
+    "mlx_lm, which ships inside the omlx keg"
+    "the native-MTP local model backend (app-managed)"
+    "the proxy wt routes agents through"
+    "this checkout's launcher"
+)
+
+usage() {
+    cat <<'EOF'
+usage: update-tools [--only a,b] [--dry-run] [--check] [--yes]
+
+Run the bin/update/<tool> scripts in dependency order and print a summary.
+Exit status is 1 if any tool failed; tools that need a manual step (exit 3 from
+their script) are reported but do not fail the run.
+
+  --only a,b   restrict to these tools (default: all, in the order below)
+  --dry-run    pass --dry-run to each script: print commands, run nothing
+  --check      pass --check to each script: report versions, change nothing
+  --yes        skip the confirmation prompt (required when stdin is not a tty)
+
+Tools, in order:
+  postgresql     the LiteLLM store (spend logs, admin state)
+  redis          the LiteLLM cache/session store
+  ollama         the local model backend (app-managed)
+  omlx           the local model backend, and the mlx_lm keg
+  mlx-lm-server  mlx_lm, which ships inside the omlx keg
+  mtplx          the native-MTP local model backend (app-managed)
+  litellm        the proxy wt routes agents through
+  wt             this checkout's launcher
+EOF
+}
+
+ONLY=""
+ASSUME_YES=""
+FORWARD=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --only)
+            [ $# -ge 2 ] || { echo "update-tools: --only needs a value" >&2; exit 2; }
+            ONLY="$2"
+            shift 2
+            ;;
+        --only=*)
+            ONLY="${1#*=}"
+            shift
+            ;;
+        --dry-run)
+            FORWARD+=("--dry-run")
+            shift
+            ;;
+        --check)
+            FORWARD+=("--check")
+            shift
+            ;;
+        --yes | -y)
+            ASSUME_YES="1"
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf 'update-tools: unknown option %s\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+# An unrecognised name in --only is an error rather than a silent omission: a
+# typo that quietly skips a tool is worse than being told, especially in a
+# sweep someone started precisely because they were unsure of the tool list.
+if [ -n "$ONLY" ]; then
+    saved_ifs="$IFS"
+    IFS=','
+    for want in $ONLY; do
+        known=""
+        for tool in "${TOOLS[@]}"; do
+            if [ "$want" = "$tool" ]; then
+                known=1
+            fi
+        done
+        if [ -z "$known" ]; then
+            printf 'update-tools: unknown tool in --only: %s\n' "$want" >&2
+            printf 'known tools: %s\n' "${TOOLS[*]}" >&2
+            exit 2
+        fi
+    done
+    IFS="$saved_ifs"
+fi
+
+# --only filters TOOLS itself, keeping the canonical order rather than the
+# order given on the command line, and keeping the two arrays in step so the
+# run loop, the plan and the summary can all just iterate SELECTED.
+SELECTED=()
+SELECTED_PURPOSES=()
+for i in "${!TOOLS[@]}"; do
+    tool="${TOOLS[$i]}"
+    if [ -n "$ONLY" ]; then
+        case ",$ONLY," in
+            *",$tool,"*) ;;
+            *) continue ;;
+        esac
+    fi
+    SELECTED+=("$tool")
+    SELECTED_PURPOSES+=("${PURPOSES[$i]}")
+done
+
+if [ "${#SELECTED[@]}" -eq 0 ]; then
+    printf 'update-tools: nothing selected by --only %s\n' "$ONLY" >&2
+    exit 2
+fi
+
+for tool in "${SELECTED[@]}"; do
+    if [ ! -x "$UPDATE_DIR/$tool" ]; then
+        printf 'update-tools: no script at %s\n' "$UPDATE_DIR/$tool" >&2
+        exit 2
+    fi
+done
+
+dry=""
+for arg in ${FORWARD[@]+"${FORWARD[@]}"}; do
+    [ "$arg" = "--check" ] && dry="check"
+    [ "$arg" = "--dry-run" ] && dry="dry-run"
+done
+
+case "$dry" in
+    check) printf 'update-tools: checking %d tool(s) — nothing will be changed\n' "${#SELECTED[@]}" ;;
+    dry-run) printf 'update-tools: dry run over %d tool(s) — nothing will be run\n' "${#SELECTED[@]}" ;;
+    *) printf 'update-tools: updating %d tool(s)\n' "${#SELECTED[@]}" ;;
+esac
+
+for i in "${!SELECTED[@]}"; do
+    printf '  %-14s %s\n' "${SELECTED[$i]}" "${SELECTED_PURPOSES[$i]}"
+done
+
+if [ -z "$dry" ] && [ -z "$ASSUME_YES" ]; then
+    if [ ! -t 0 ]; then
+        printf 'update-tools: stdin is not a terminal; pass --yes to run unattended\n' >&2
+        exit 2
+    fi
+    printf 'Proceed? [y/N] '
+    read -r reply || reply=""
+    case "$reply" in
+        y | Y | yes | YES | Yes) ;;
+        *)
+            printf 'update-tools: aborted\n'
+            exit 0
+            ;;
+    esac
+fi
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+STATUSES=()
+DETAILS=()
+failures=0
+manual=0
+
+for i in "${!SELECTED[@]}"; do
+    tool="${SELECTED[$i]}"
+
+    : > "$tmp"
+    "$UPDATE_DIR/$tool" ${FORWARD[@]+"${FORWARD[@]}"} 2>&1 | tee "$tmp"
+    rc=${PIPESTATUS[0]}
+
+    trailer=$(grep -E '^\[update:' "$tmp" | tail -1 || true)
+    status=$(printf '%s\n' "$trailer" | sed -n 's/^\[update:[^]]*\] \([a-z-]*\).*/\1/p')
+    detail=$(printf '%s\n' "$trailer" | sed -n 's/^\[update:[^]]*\] [a-z-]*//p' | sed 's/^ — //')
+
+    if [ -z "$status" ]; then
+        # No trailer means the script died before it could report — the exit
+        # status is the only evidence left, so say that rather than guess.
+        if [ "$rc" -ne 0 ]; then
+            status=failed
+            detail="script exited $rc without reporting"
+        else
+            status=unknown
+            detail="script exited 0 without reporting"
+        fi
+    fi
+
+    case "$status" in
+        failed) failures=$((failures + 1)) ;;
+        manual) manual=$((manual + 1)) ;;
+    esac
+
+    STATUSES+=("$status")
+    DETAILS+=("$detail")
+done
+
+printf '\n--- update-tools summary\n'
+for i in "${!SELECTED[@]}"; do
+    printf '%-14s %-14s %s\n' "${SELECTED[$i]}" "${STATUSES[$i]}" "${DETAILS[$i]}"
+done
+
+printf '\n%d tool(s): %d failed, %d need a manual step\n' "${#SELECTED[@]}" "$failures" "$manual"
+
+[ "$failures" -eq 0 ] || exit 1
+exit 0

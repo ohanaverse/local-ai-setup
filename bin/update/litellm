@@ -1,0 +1,189 @@
+#!/bin/bash
+# update/litellm — upgrade the LiteLLM proxy tool env, its Prisma client, and
+# the running proxy.
+#
+# Why three steps and not one `uv tool upgrade`: LiteLLM's env holds more than
+# the package. On >=1.98 the Prisma DB stack lives in the `extra-proxy` extra
+# — bare `litellm[proxy]` boots, prints every route, then dies at startup with
+# `ModuleNotFoundError: No module named 'prisma'`. And the Prisma *client* is a
+# generated artifact built from the schema of whatever LiteLLM was installed
+# when it last ran, so it goes stale on every upgrade even though the package
+# is present. Then the proxy itself is a LaunchAgent that keeps serving the old
+# code until it is kicked. Guide 08 §4 and guide 01 §1/§6 carry the same
+# procedure in prose; this script is that procedure with the checks it needs.
+#
+# `uv tool upgrade` mutates the env in place: it keeps the venv, extras and
+# Python recorded in the receipt, and removes any package added to the env by
+# hand (verified against a scratch tool, uv 0.12.21, 2026-10-10). So the
+# receipt is read first — if it does not name `extra-proxy` and Python 3.11,
+# an in-place upgrade would preserve the wrong shape, and this script takes
+# the reinstall path instead. Python is pinned for the same reason: an
+# unpinned reinstall can land on 3.14, where Prisma's engine binaries are
+# missing ("Unable to find Prisma binaries").
+#
+# The kickstart honours WT_LITELLM_RESTART_CMD (wt's own override, legacy
+# alias MODELMAN_LITELLM_RESTART_CMD) so a redirected or non-launchd proxy
+# restarts the way the rest of the stack already restarts it.
+#
+# Usage: update/litellm [--reinstall] [--no-restart] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/litellm [--reinstall] [--no-restart] [--dry-run] [--check]
+
+Upgrade LiteLLM, regenerate its Prisma client, restart the proxy.
+
+  --reinstall   use the full `uv tool install --force --reinstall` form even
+                if the receipt looks right (the nuclear fallback)
+  --no-restart  leave the running proxy alone
+  --dry-run     print the commands without running them
+  --check       report the installed version and whether uv sees an update
+EOF
+}
+
+update_init litellm "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --reinstall) REINSTALL=1 ;;
+        --no-restart) NO_RESTART=1 ;;
+        *)
+            printf 'update/litellm: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+require_cmd uv
+require_cmd litellm
+
+TOOL_ROOT="$HOME/.local/share/uv/tools/litellm"
+TOOL_BIN="$TOOL_ROOT/bin"
+RECEIPT="$TOOL_ROOT/uv-receipt.toml"
+PLIST="${WT_LITELLM_PLIST:-$HOME/Library/LaunchAgents/local.litellm.proxy.plist}"
+
+installed_version=$(litellm --version 2> /dev/null | sed -n 's/^LiteLLM: Current Version = //p')
+installed_version=${installed_version:-unknown}
+update_note "installed: $installed_version"
+
+# --- receipt precheck -------------------------------------------------------
+# Two conditions decide between in-place upgrade and full reinstall.
+receipt_ok=1
+receipt_why=""
+if [ ! -f "$RECEIPT" ]; then
+    receipt_ok=0
+    receipt_why="no uv receipt at $RECEIPT"
+elif ! grep -q 'extra-proxy' "$RECEIPT"; then
+    receipt_ok=0
+    receipt_why="receipt does not name the extra-proxy extra (Prisma would be dropped)"
+elif ! grep -q 'python = "3.11"' "$RECEIPT"; then
+    receipt_ok=0
+    receipt_why="receipt does not pin Python 3.11 (Prisma binaries may be missing)"
+fi
+
+# --- availability -----------------------------------------------------------
+outdated=$(uv tool list --outdated 2> /dev/null | grep '^litellm ' || true)
+
+if [ "$UPDATE_CHECK" -eq 1 ]; then
+    if [ "$receipt_ok" -eq 0 ]; then
+        update_finish manual "$installed_version installed; $receipt_why"
+    fi
+    if [ -n "$outdated" ]; then
+        update_finish stale "$installed_version installed; uv has $outdated"
+    fi
+    update_finish current "$installed_version"
+fi
+
+# --- upgrade ----------------------------------------------------------------
+if [ "$receipt_ok" -eq 0 ] || [ -n "${REINSTALL:-}" ]; then
+    [ "$receipt_ok" -eq 0 ] && update_note "$receipt_why; using the reinstall form"
+    run uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]' ||
+        update_fail "uv tool install failed"
+else
+    update_note "receipt names extra-proxy and Python 3.11; upgrading in place"
+    run uv tool upgrade litellm || update_fail "uv tool upgrade failed"
+fi
+
+# The generated Prisma client lives inside the tool env and is built from the
+# schema of the installed LiteLLM, so it goes stale on every upgrade. Resolve
+# the schema here — after the upgrade, so the env is final, but before the
+# dry-run exit below, so `--dry-run` prints the command it would really run
+# rather than a placeholder. Glob the Python version rather than hardcoding one
+# (it has been 3.11, 3.13 and 3.14 on this machine), and glob site-packages
+# under it — a uv tool venv keeps site-packages one level further down
+# (lib/pythonX.Y/site-packages/). Getting that wrong is what an earlier version
+# of this script did, and `--dry-run` hid it: the placeholder it printed never
+# had to resolve.
+schema=$(ls "$TOOL_ROOT"/lib/python3.*/site-packages/litellm/proxy/schema.prisma 2> /dev/null | tail -1)
+[ -n "$schema" ] ||
+    update_fail "no litellm/proxy/schema.prisma under $TOOL_ROOT/lib/python3.*/site-packages"
+
+if dry_run_stop; then
+    update_note "would run: $TOOL_BIN/python -m prisma generate --schema=$schema"
+    if [ -z "${NO_RESTART:-}" ]; then
+        if [ -n "${WT_LITELLM_RESTART_CMD:-${MODELMAN_LITELLM_RESTART_CMD:-}}" ]; then
+            update_note "would run: ${WT_LITELLM_RESTART_CMD:-$MODELMAN_LITELLM_RESTART_CMD} (WT_LITELLM_RESTART_CMD)"
+        elif [ -f "$PLIST" ]; then
+            update_note "would run: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"
+        else
+            update_note "no $PLIST and no WT_LITELLM_RESTART_CMD; nothing to restart"
+        fi
+    fi
+    update_finish dry-run "$installed_version -> newest LiteLLM, then Prisma + proxy restart"
+fi
+
+# --- prisma: package present, then client regenerated -----------------------
+prisma_present=1
+for pkg in prisma prisma-client-py; do
+    [ -x "$TOOL_BIN/$pkg" ] || prisma_present=0
+done
+
+if [ "$prisma_present" -eq 0 ]; then
+    update_note "prisma/ is missing from the tool env after the upgrade; repairing with the reinstall form"
+    run uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]' ||
+        update_fail "uv tool install (Prisma repair) failed"
+    for pkg in prisma prisma-client-py; do
+        [ -x "$TOOL_BIN/$pkg" ] || update_fail "$pkg still missing after reinstall"
+    done
+fi
+update_note "prisma: $(ls "$TOOL_BIN" | grep -c prisma) client package(s) present"
+
+run env PATH="$TOOL_BIN:$PATH" "$TOOL_BIN/python" -m prisma generate --schema="$schema" ||
+    update_fail "prisma generate failed"
+
+# --- restart + verify -------------------------------------------------------
+# `restarted` carries what was done, not how it went: the http code below is the
+# outcome, and a kickstart that leaves the proxy down should not be dressed up
+# in the status line as if the restart had succeeded.
+restarted=""
+if [ -z "${NO_RESTART:-}" ]; then
+    restart_cmd=${WT_LITELLM_RESTART_CMD:-${MODELMAN_LITELLM_RESTART_CMD:-}}
+    if [ -n "$restart_cmd" ]; then
+        run bash -c "$restart_cmd" || update_fail "restart command failed: $restart_cmd"
+        restarted="the proxy was restarted ($restart_cmd)"
+    elif [ -f "$PLIST" ]; then
+        run launchctl kickstart -k "gui/$(id -u)/local.litellm.proxy" ||
+            update_fail "launchctl kickstart failed"
+        restarted="the proxy was kicked and re-read config.yaml"
+    else
+        update_note "no $PLIST and no WT_LITELLM_RESTART_CMD; proxy left running the old code"
+    fi
+else
+    update_note "restart skipped (--no-restart); the proxy is still running the old code"
+fi
+
+new_version=$(litellm --version 2> /dev/null | sed -n 's/^LiteLLM: Current Version = //p')
+new_version=${new_version:-unknown}
+update_note "installed: $new_version"
+
+# A restart leaves the proxy down for ~10-20s, so poll rather than probing once.
+# A code of 401 means alive-and-unauthenticated; 000 means nothing answered yet.
+wait_for_http http://localhost:4000/v1/models
+update_note "proxy http $HTTP_CODE (401 = alive and unauthenticated)"
+
+finish_after_upgrade "$installed_version" "$new_version" uv "$outdated" "$restarted"

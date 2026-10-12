@@ -290,20 +290,32 @@ Startup-fault lines worth reacting to: repeated `Error loading config`, YAML par
 
 **Redaction rule:** err logs can echo API keys, `Authorization` headers, and request bodies. Before pasting any log excerpt into an issue, a repo, or an agent transcript: strip anything `sk-…`, `Bearer …`, or base64-ish that isn't obviously a path. The LiteLLM plist env values themselves never appear in these logs, but never quote plist contents either — its `EnvironmentVariables` block is the secret store (guide 01 §7).
 
-### 4. Upgrades — command per tool, then verify
+### 4. Upgrades — one script per tool, then verify
 
-**wt** — rebuild over the PATH copy (`~/.local/bin/wt`), not GOPATH; the gotcha below explains why:
+Eight tools, one script each, under `bin/update/`: `wt`, `litellm`, `ollama`, `omlx`, `mlx-lm-server`, `mtplx`, `postgresql`, `redis`. `bin/update-tools` (also `make update-tools`) runs them in dependency order — the LiteLLM store and cache first, then the model backends, then litellm which depends on those, and wt last — prints the plan, asks before touching anything (`--yes` to skip, and required when stdin is not a terminal), and ends with a summary. Every script:
 
-<!-- UNVERIFIED — build not run in this session (writes a binary); checkout was bf98d14, 2026-08-29. -->
+- takes **`--check`** (report what is installed and whether an update is available; change nothing) and **`--dry-run`** (print the exact commands; run nothing);
+- prints one trailer line — `[update:omlx] updated — 0.7.0 -> 0.8.0` — which is what the umbrella's summary reads back, so a script run by hand and the sweep can never disagree. Its status is `updated` (a new version is installed), `restarted` (the version stood still but the running service was replaced with what is on disk — the normal outcome for litellm, whose proxy holds the code it imported at boot), `current` (nothing to do), `stale` (an update is available and was not applied), `delegated`, `dry-run`, `manual`, `not-installed`, or `failed`;
+- exits **0** for `updated`, `restarted`, `current`, `stale`, `delegated` and `dry-run`; **1** for `failed`; **3** for `manual` and `not-installed` ("nothing attempted, a human should act" — an app-managed tool, or one that is not installed). Only an exit 1 fails a `bin/update-tools` run.
+
+Start with the two modes that change nothing:
+
+<!-- run live, 2026-10-11; the versions printed are whatever is installed at the time, not a fixed inventory -->
+```bash
+bin/update-tools --check      # what is installed, and whether anything is newer
+bin/update-tools --dry-run    # exactly what a real run would execute
+```
+
+**wt** — `bin/update/wt`. Rebuilds and reinstalls over the PATH copy (`~/.local/bin/wt`) through `make -C wt install`, which is not just a `go build`: it builds to `wt/bin/wt`, re-seals the ad-hoc code signature, copies `bin/*` into `~/.local/bin`, and **re-seals the copy again**. Both seals matter — a stale or drifted signature is rejected by AMFI with "Taskgated Invalid Signature" and the binary is SIGKILLed on launch (exit 137), and a copied binary needs its own seal because `cp` does not reproduce one AMFI accepts. The script deliberately does **not** `git pull`: this checkout is shared with wt's own worktrees, and an unattended pull that moves `main` under a working tree is not something an update script should spring. Pass `--pull` to opt in.
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/wt
-# (in the merged monorepo; wt lives at local-ai-setup/wt/)
-cd /Users/keith/github/ohanaverse/local-ai-setup/wt
-git pull && go build -o /Users/keith/.local/bin/wt ./cmd/wt
+bin/update/wt --check    # installed version, and whether any .go file is newer
+bin/update/wt            # rebuild + reinstall from the current checkout
 ```
 
 Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before the first `wt model add|edit|rm`, `wt model init` or `wt cloud-sync` triggers the first real sync.
+
+**Gotcha (verified on this machine, 2026-08-29):** `go env GOPATH` is `/Users/keith/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so a fresh binary built without `-o` lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `/Users/keith/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). A binary built into GOPATH therefore leaves the stale `~/.local/bin/wt` answering `wt` — exactly what guide 06's "the installed binary is STALE" caveat describes, and why `bin/update/wt` goes through `make install` (which copies over the shadowing file) rather than a bare `go build`. If you build by hand instead, build straight over the shadowing copy or delete the stale one, then re-check `which wt`, `wt --version` **and** `ls -la` the file mtime.
 
 Verify — `wt --version` ran live, 2026-08-29:
 
@@ -315,17 +327,12 @@ wt --version
 wt 0.1.0
 ```
 
-**Gotcha (verified on this machine, 2026-08-29):** `go env GOPATH` is `/Users/keith/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so the fresh binary lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `/Users/keith/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). The stale binary is dated 2026-08-27 (guide 06's pre-registry-generation build). After rebuilding into GOPATH the shadowed stale binary keeps answering `wt` — this is exactly what guide 06's "the installed binary is STALE" caveat describes. The fix that actually changes what runs: build straight over the shadowing copy (`cd /Users/keith/github/ohanaverse/local-ai-setup/wt && go build -o /Users/keith/.local/bin/wt ./cmd/wt`) or delete the stale one and ensure the asdf GOPATH bin is on PATH; then re-check `which wt` and `wt --version` **and** `ls -la` the file mtime.
-
-**LiteLLM** — `uv tool upgrade` takes the tool's name (`uv tool upgrade --help`). The extras and the Python version are the ones recorded at install, in `~/.local/share/uv/tools/litellm/uv-receipt.toml`; check that file names `proxy`, `extra-proxy` and Python 3.11 before upgrading, and if it does not, use the reinstall form in item 1 instead:
-
-<!-- UNVERIFIED — the upgrade itself was not run when this was written; the receipt was read. -->
+**LiteLLM** — `bin/update/litellm`. Three steps, because LiteLLM's env holds more than the package: upgrade the tool, regenerate the Prisma client, kick the proxy. The script reads `~/.local/share/uv/tools/litellm/uv-receipt.toml` first — `uv tool upgrade` changes the env in place, keeping the venv, extras and Python the receipt records and removing any package added by hand — and if that receipt does not name `proxy`, `extra-proxy` and Python 3.11 it takes the reinstall form instead (`--reinstall` forces that path when the receipt looks fine but you want it rebuilt anyway). It honours `WT_LITELLM_RESTART_CMD` (legacy `MODELMAN_LITELLM_RESTART_CMD`) for the restart, falling back to the launchd kickstart; `--no-restart` leaves the proxy alone. It finds the Prisma schema by globbing the tool env (`lib/python3.*/site-packages/litellm/proxy/schema.prisma`) instead of assuming a Python version — `uv tool upgrade` mutates that venv in place, and the interpreter there has been 3.11, 3.13 and 3.14 on this machine. Because the proxy holds the code it imported at boot, an upgrade you ran from another terminal is not live until this script kicks it: that case reports `restarted` — the version stood still, the process did not — where `--no-restart` reports `current`.
 
 ```bash
-uv tool upgrade litellm
+bin/update/litellm --check      # installed version, plus whether uv sees an update
+bin/update/litellm --dry-run    # the upgrade, the prisma generate, the kickstart
 ```
-
-Verify, then expect the proxy to need a kickstart (item 2 below):
 
 ```bash
 litellm --version
@@ -333,13 +340,13 @@ curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "%{http_code}\n"   
 ```
 
 ```text
-LiteLLM: Current Version = 1.98.0
+LiteLLM: Current Version = 1.105.0
 401
 ```
 
 Two things upgrade can break (guide 01 §6/§7):
 
-1. **Prisma can be removed or left stale** — `uv tool upgrade` changes the tool env in place: it keeps the venv, the extras and the Python of the receipt, removes any package added to the env by hand, and replaces each package whose version changes (run against a scratch tool on uv 0.12.21, 2026-10-10; not against LiteLLM). A reinstall re-creates the env outright. The proxy needs `prisma` + `prisma-client-py` (verified present in `/Users/keith/.local/share/uv/tools/litellm/bin/`) and the client generated from LiteLLM's schema for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]'` (the nuclear fallback, with the extras and Python of guide 01 §1: bare `litellm[proxy]` drops Prisma; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
+1. **Prisma can be removed or left stale** — a reinstall re-creates the env outright, and an in-place `uv tool upgrade` replaces each package whose version changes (run against a scratch tool on uv 0.12.21, 2026-10-10; not against LiteLLM). The proxy needs `prisma` + `prisma-client-py` (verified present in `/Users/keith/.local/share/uv/tools/litellm/bin/`) and the client generated from LiteLLM's schema for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]'` (the nuclear fallback, with the extras and Python of guide 01 §1: bare `litellm[proxy]` drops Prisma; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
 
    ```bash
    ls /Users/keith/.local/share/uv/tools/litellm/bin/ | grep prisma
@@ -350,13 +357,13 @@ Two things upgrade can break (guide 01 §6/§7):
    prisma-client-py
    ```
 
-   Both names listed is not the whole check: the generated client lives inside the tool env too, and it is built from the schema of the LiteLLM that was installed when it ran, so re-run guide 01 §6's `prisma generate` after any upgrade or reinstall, then kickstart the proxy. Empty → Prisma was not installed through the `extra-proxy` extra (an upgrade removes a hand-installed copy); reinstall with the command above first.
+   Both names listed is not the whole check: the generated client lives inside the tool env too, and it is built from the schema of the LiteLLM that was installed when it ran, so re-run guide 01 §6's `prisma generate` after any upgrade or reinstall, then kickstart the proxy. Empty → Prisma was not installed through the `extra-proxy` extra (an upgrade removes a hand-installed copy); reinstall with the command above first. `bin/update/litellm` does all three — upgrade, `prisma generate`, restart — and repairs a missing Prisma by falling back to the reinstall form on its own.
 
-2. **The proxy must be restarted after upgrade + any config change** — `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` (§2 step 8 for the measured recovery).
+2. **The proxy must be restarted after upgrade + any config change** — `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` (§2 step 8 for the measured recovery). An upgrade with no restart leaves the proxy serving the old code from the new env; `bin/update/litellm` restarts by default for exactly that reason.
 
-**Ollama** — it is the app (`/usr/local/bin/ollama`, `com.ollama.ollama` login item), not a brew service, not a plist: update through Ollama.app's own update flow (or re-download from ollama.com), then verify the daemon came back:
+**Ollama** — `bin/update/ollama`. It is the app (`/Applications/Ollama.app`, a `com.ollama.ollama` login item), not a brew service and not a plist, and it has **no CLI update path** — `ollama --help` lists `serve`, `create`, `show`, `run`, `stop`, `pull`, `push`, `signin`, `signout`, `list`, `ps`, `cp`, `rm`, `launch` and nothing else. So the script cannot upgrade it; what it does is answer whether opening the app is worth your time: it prints the installed version, the app bundle's version, whether `/usr/local/bin/ollama` is still a symlink into the bundle, whether the daemon answers, and the latest published release (best-effort — `--no-network` skips that, and an unreachable network reports `latest: unknown` rather than failing). Update through Ollama.app's own flow, or re-download from ollama.com, then re-run it.
 
-<!-- UNVERIFIED — the app update itself not run in this session; the two checks below ran live, 2026-08-29, on current 0.33.2. -->
+The symlink check is the one real trap, and it is the same failure as wt's in a different costume: `ollama` is a symlink into the app bundle, so the CLI version always tracks the app — but if that link is ever replaced by a copied binary, the CLI keeps answering with the old version while the app updates underneath it.
 
 ```bash
 ollama --version
@@ -364,32 +371,31 @@ curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "%{http_code}\n"
 ```
 
 ```text
-ollama version is 0.33.2
+ollama version is 0.40.3
 200
 ```
 
-**brew-managed tools** — upgrade then restart the affected service:
+**MTPLX** — `bin/update/mtplx`. Also an app (`/Applications/MTPLX.app`), for the same reason and with the same shape of answer, except that MTPLX publishes a Sparkle appcast (`SUFeedURL` in its `Info.plist`), so the script reads the released version straight from that feed instead of guessing. `mtplx --help` has no update subcommand, and the `mtplx` on PATH is a shim that execs the venv the app maintains under `~/Library/Application Support/MTPLX/runtime-venv` — update by opening the app. Note that mtplx bundles its own `mlx_lm`, and that one is **not** what this stack serves with (see below).
 
-<!-- UNVERIFIED — upgrade not run in this session (mutates Homebrew state). -->
+**mlx_lm_server** — `bin/update/mlx-lm-server`. There is nothing to upgrade here: mlx_lm is not a dependency of this repo, no `mlx_lm.*` console script is on PATH, and the only working copy belongs to the versioned omlx keg (`/opt/homebrew/Cellar/omlx/<version>/libexec/bin/mlx_lm.server`), built against that keg's pinned Python and mlx versions. `bin/lib/mlx-lm-resolve.sh` is the one place that knows how to find it, and it deliberately does not fall back to a bare `command -v`, because nothing else on the system is guaranteed to work. So `brew upgrade omlx` is what moves mlx_lm, and this script's job is to make that visible and to catch a resolution that has broken before an llmbench isolation fails somewhere less legible. It reports the resolved binary, the keg and version it came from, and the `mlx-lm` distribution inside it — then exits `delegated`, because `bin/update/omlx` already ran in the same sweep.
 
-```bash
-brew upgrade omlx postgresql@16
-brew upgrade --build-from-source redis   # redisearch.so bottle pour EPERMs on this machine (Gotchas) — 2026-09-30
-```
-
-Verify after with a command run live, 2026-08-29 (current versions as of writing):
+**brew-managed tools** — `bin/update/omlx`, `bin/update/postgresql`, `bin/update/redis`: upgrade the formula, then restart the affected service. `brew upgrade` does not restart services it was not asked about, so the restart is explicit in each script (`--no-restart` skips it). Verify after with the versions command; new numbers should appear, the TL;DR block must be green again, and `brew services list` should still read `started` for omlx/postgresql@16/redis.
 
 ```bash
 brew list --versions omlx postgresql@16 redis
 ```
 
 ```text
-omlx 0.6.3rc3
-postgresql@16 16.15
-redis 8.10.1
+omlx 0.7.0
+postgresql@16 16.15_1
+redis 8.10.2_1
 ```
 
-New numbers should appear there, and the TL;DR block must be green again (`brew services list` should still read `started` for omlx/postgresql@16/redis).
+Three things each script encodes:
+
+- **redis builds from source by default.** The redis bottle pour fails on `redisearch.so` on this machine (`Errno::EPERM` reading the Mach-O), so `bin/update/redis` runs `brew upgrade --build-from-source redis`. Pass `--bottle` for the fast path once the bottle is known good again.
+- **postgresql@16 only ever moves within major version 16** — a Homebrew data directory is only readable by the major version that created it, so a jump to 17 is a manual `pg_upgrade` with the service stopped, which is exactly why no script here will do it silently.
+- **omlx carries mlx_lm.** Upgrading the keg moves the `mlx_lm.*` tools that `bin/mlx-quantize` and the `mlx_lm_server` provider resolve (guide 10), so an omlx upgrade is also a quantization-tooling upgrade.
 
 ### 5. Benchmark leftovers — restore the stack, recognize residue
 
