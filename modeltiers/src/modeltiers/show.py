@@ -1,0 +1,179 @@
+"""What `show` and `explain` print. Everything here reads the output document
+alone: a dict as `output.read_document` returns it. No source, no inventory,
+no contracts file. A field an older file lacks prints as `?`."""
+
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
+from typing import Any
+
+from modeltiers.contracts import SOURCES, STAMP
+
+STALE_AFTER_DAYS = 14
+
+Document = Mapping[str, Any]
+
+# Which source each score in an entry came from, for the attribution lines.
+_SCORE_SOURCE: Mapping[str, str] = {
+    "intelligence_index": "openrouter",
+    "coding_index": "openrouter",
+    "agentic_index": "openrouter",
+    "arena_agent": "arena",
+    "arena_agent_ci_lower": "arena",
+    "eci": "epoch",
+}
+
+
+def model_name(entry: Mapping[str, Any]) -> str:
+    """`provider_id/model_name`, the name a `[[models]]` or `[[unmapped]]`
+    entry is listed and looked up by."""
+    return f"{entry.get('provider_id', '?')}/{entry.get('model_name', '?')}"
+
+
+def age_days(doc: Document, now: datetime) -> int | None:
+    """Whole days since the file was generated; None when it does not say."""
+    try:
+        generated = datetime.strptime(str(doc.get("generated_at")), STAMP).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return max((now - generated).days, 0)
+
+
+def age_line(doc: Document, now: datetime) -> str:
+    days = age_days(doc, now)
+    age = "of unknown age" if days is None else f"{days} days old"
+    return (
+        f"tiers.toml generated {doc.get('generated_at', '?')} ({age}), "
+        f"contracts {doc.get('contracts_version', '?')}"
+    )
+
+
+def stale_warning(doc: Document, now: datetime) -> str | None:
+    """The warning for a file past STALE_AFTER_DAYS, else None."""
+    days = age_days(doc, now)
+    if days is None or days <= STALE_AFTER_DAYS:
+        return None
+    return f"tiers.toml is {days} days old; run `modeltiers run` to refresh it"
+
+
+def _row(entry: Mapping[str, Any], name: str, width: int, canonical: str | None) -> str:
+    reason = f"  ({entry['reason']})" if "reason" in entry else ""
+    tail = "" if canonical is None else f"  {canonical}"
+    return (
+        f"{entry.get('code', '?')}  {entry.get('tier', '?'):<8}  "
+        f"{entry.get('confidence', '?'):<6}  {name:<{width}}{tail}{reason}".rstrip()
+    )
+
+
+def table_lines(doc: Document, *, candidates: bool = False) -> list[str]:
+    """The tier table: one line per `[[models]]` entry in file order, the
+    unmapped rows, and with `candidates` one line per `[[candidates]]` entry."""
+    models = doc.get("models", [])
+    unmapped = doc.get("unmapped", [])
+    width = max([len(model_name(m)) for m in models] + [len("model")])
+    lines = [f"T  {'tier':<8}  {'conf':<6}  {'model':<{width}}  canonical"]
+    lines.extend(_row(m, model_name(m), width, m.get("canonical", "-")) for m in models)
+    lines.append(f"unmapped: {len(unmapped)} (unrated until aliased or ignored)")
+    lines.extend(f"  {model_name(entry)}" for entry in unmapped)
+    found = doc.get("candidates", [])
+    if candidates:
+        lines.append(f"candidates: {len(found)} (scored by a source, not in the inventory)")
+        lines.extend(_row(c, str(c.get("canonical", "?")), 0, None) for c in found)
+    else:
+        lines.append(f"candidates: {len(found)} (list them with --candidates)")
+    return lines
+
+
+def attribution_lines(doc: Document, sources: Iterable[str] = SOURCES) -> list[str]:
+    """The attribution line of each named source the file has one for."""
+    tables = doc.get("sources", {})
+    wanted = set(sources)
+    return [
+        f"{name}: {tables[name]['attribution']}"
+        for name in SOURCES
+        if name in wanted and "attribution" in tables.get(name, {})
+    ]
+
+
+def short(value: Any) -> str:
+    """A score for display: at most four decimal places, no trailing zeros."""
+    if isinstance(value, float):
+        return f"{value:.4f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _pairs(table: Mapping[str, Any]) -> str:
+    return ", ".join(f"{key} {short(value)}" for key, value in table.items()) or "none"
+
+
+def _entry_lines(title: str, entry: Mapping[str, Any]) -> list[str]:
+    tier = f"{entry.get('tier', '?')} ({entry.get('code', '?')})"
+    if "reason" in entry:
+        tier += f", reason {entry['reason']}"
+    basis = f", basis {entry['basis']}" if "basis" in entry else ""
+    identity = "not resolved (listed under [[ignore]])"
+    if "canonical" in entry:
+        identity = f"{entry['canonical']}, resolved by {entry.get('resolved_by', '?')}"
+    lines = [
+        title,
+        f"  identity:    {identity}",
+        f"  tier:        {tier}",
+        f"  confidence:  {entry.get('confidence', '?')}{basis}",
+        f"  votes:       {_pairs(entry.get('votes', {}))}",
+        f"  scores:      {_pairs(entry.get('scores', {}))}",
+        f"  efforts:     {_pairs(entry.get('efforts', {}))}",
+        f"  tool_call:   {str(entry['tool_call']).lower() if 'tool_call' in entry else 'unknown'}",
+        f"  context:     {entry.get('context', 'unknown')}",
+    ]
+    if "open_weights" in entry:
+        lines.append(f"  open_weights: {str(entry['open_weights']).lower()}")
+    lines.extend(f"  note:        {note}" for note in entry.get("notes", []))
+    return lines
+
+
+def _used_sources(entries: Iterable[Mapping[str, Any]]) -> set[str]:
+    used: set[str] = set()
+    for entry in entries:
+        if "canonical" in entry:
+            used.add("modelsdev")
+        used.update(
+            _SCORE_SOURCE[name] for name in entry.get("scores", {}) if name in _SCORE_SOURCE
+        )
+    return used
+
+
+def _has_key(entry: Mapping[str, Any], key: str) -> bool:
+    """True when the entry resolved to `key`, compared without regard to
+    case. An ignored row has no canonical and matches no key."""
+    return "canonical" in entry and str(entry["canonical"]).lower() == key.lower()
+
+
+def explain_lines(doc: Document, name: str) -> list[str] | None:
+    """Everything the file says about one model, or None when nothing
+    matches. `name` is tried as an exact `provider_id/model_name` first, then
+    as a canonical key without regard to case: every `[[models]]` entry that
+    resolved to it, or else the candidate."""
+    models = doc.get("models", [])
+    found = [(model_name(m), m) for m in models if model_name(m) == name]
+    if not found:
+        for entry in doc.get("unmapped", []):
+            if model_name(entry) == name:
+                return [
+                    f"{name} is unmapped: no alias, host row or name match gave it a "
+                    "canonical key, so it is unrated.",
+                    "Add an [[alias]] or an [[ignore]] for it in aliases.toml and run "
+                    "`modeltiers run`.",
+                ]
+        found = [(model_name(m), m) for m in models if _has_key(m, name)]
+    if not found:
+        found = [
+            (f"candidate {c['canonical']}", c)
+            for c in doc.get("candidates", [])
+            if _has_key(c, name)
+        ]
+    if not found:
+        return None
+    lines: list[str] = []
+    for title, entry in found:
+        lines.extend(_entry_lines(title, entry))
+    lines.extend(attribution_lines(doc, _used_sources(entry for _, entry in found)))
+    return lines
