@@ -85,11 +85,12 @@ def prune(
     cache: Path, source: str, *, keep_good: int = KEEP_GOOD, keep_bad: int = KEEP_BAD
 ) -> list[Path]:
     """Delete all but the newest `keep_good` good and `keep_bad` bad snapshots
-    of one source. Returns the deleted paths."""
+    of one source. Returns the deleted paths. A snapshot the other run has
+    meanwhile renamed is simply already deleted."""
     snapshots = list_snapshots(cache, source)
     good = [s for s in snapshots if not s.bad]
     bad = [s for s in snapshots if s.bad]
     removed = [s.path for s in good[keep_good:] + bad[keep_bad:]]
     for path in removed:
-        path.unlink()
+        path.unlink(missing_ok=True)
     return removed

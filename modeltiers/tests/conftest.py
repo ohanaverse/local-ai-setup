@@ -2,21 +2,40 @@
 out of the real config and cache directories, plus the fixture-file helpers."""
 
 import io
+import re
 import subprocess
 import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import FakeFetcher, Sleeps
 
-from modeltiers import fetch, loader
-from modeltiers.loader import SourceSpecs
+from modeltiers import aliases as aliases_mod
+from modeltiers import contracts as contracts_mod
+from modeltiers import fetch, loader, output, pipeline
+from modeltiers import inventory as inventory_mod
+from modeltiers.aliases import Aliases
+from modeltiers.contracts import Contracts
+from modeltiers.loader import Sources, SourceSpecs
+from modeltiers.pipeline import Assignment
+from modeltiers.records import Inventory
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EPOCH_MEMBER = "epoch_capabilities_index/eci_scores.csv"
+T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
+# The output contract: what `run` writes for the golden fixtures.
+SAMPLE = Path(__file__).parents[2] / "docs" / "contracts" / "tiers.sample.toml"
+_STAMPS = re.compile(r'^(generated_at|fetched_at) = "[^"]*"$', re.MULTILINE)
+
+
+def without_timestamps(text: str) -> str:
+    """`tiers.toml` text with every timestamp replaced by one placeholder."""
+    return _STAMPS.sub(r'\1 = "<time>"', text)
 
 
 def _no_network(*args: Any, **kwargs: Any) -> Any:
@@ -82,7 +101,7 @@ def arena_doc(read_fixture: Callable[[str], bytes]) -> Callable[..., bytes]:
 @pytest.fixture
 def specs() -> SourceSpecs:
     """The four sources with minimums that fit the golden fixtures."""
-    return loader.build_specs(modelsdev_min=11, openrouter_min=4, arena_min=5, epoch_min=5)
+    return loader.build_specs(modelsdev_min=12, openrouter_min=6, arena_min=6, epoch_min=6)
 
 
 @pytest.fixture
@@ -99,3 +118,50 @@ def good_answers(
         fetch.arena_page_url(3): [read_fixture("arena_page2.json")],
         fetch.EPOCH_URL: [epoch_zip()],
     }
+
+
+@pytest.fixture
+def rule() -> Contracts:
+    """The fixture-local contracts.toml, never the committed one."""
+    return contracts_mod.load_contracts(FIXTURES / "contracts.toml")
+
+
+@pytest.fixture
+def inventory() -> Inventory:
+    """The golden inventory fixture, parsed."""
+    return inventory_mod.parse_inventory((FIXTURES / "inventory.json").read_text())
+
+
+@pytest.fixture
+def sources(
+    specs: SourceSpecs, good_answers: dict[str, list[bytes | Exception]], tmp_path: Path
+) -> Sources:
+    """The four golden fixtures through the loader, fetched at T0."""
+    return loader.load_all(
+        specs,
+        cache=tmp_path / "cache",
+        fetcher=FakeFetcher(good_answers),
+        sleep=Sleeps(),
+        now=T0,
+        offline=False,
+        warn=lambda message: None,
+    )
+
+
+@pytest.fixture
+def fixture_aliases() -> Aliases:
+    return aliases_mod.load_aliases(FIXTURES / "aliases.toml")
+
+
+@pytest.fixture
+def assignment(
+    inventory: Inventory, sources: Sources, fixture_aliases: Aliases, rule: Contracts
+) -> Assignment:
+    """The golden fixtures resolved and assigned: what `run` writes."""
+    return pipeline.assign_all(pipeline.resolve_all(inventory, sources, fixture_aliases), rule)
+
+
+@pytest.fixture
+def document(assignment: Assignment, inventory: Inventory, sources: Sources) -> dict[str, Any]:
+    """`tiers.toml` for the golden fixtures, generated at T0, as a dict."""
+    return output.build_document(assignment, inventory, sources, T0)

@@ -33,3 +33,7 @@ class SourceUnavailable(ModelTiersError):
     def __init__(self, names: list[str]) -> None:
         super().__init__("no usable data and no good snapshot for: " + ", ".join(names))
         self.names = names
+
+
+class OutputFileError(ModelTiersError):
+    """`tiers.toml` is missing or unreadable when `show` or `explain` needs it."""

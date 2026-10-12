@@ -13,17 +13,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from modeltiers import aliases as aliases_mod
+from modeltiers import changes, loader, output, paths, pipeline, report, show, snapshots
+from modeltiers import contracts as contracts_mod
 from modeltiers import inventory as inventory_mod
-from modeltiers import loader, paths, pipeline, report
-from modeltiers.errors import ModelTiersError
+from modeltiers.errors import ConfigError, ModelTiersError
 from modeltiers.fetch import Fetcher, Sleep, http_fetcher
 from modeltiers.inventory import RunWt
 from modeltiers.loader import SourceSpecs
+from modeltiers.records import Inventory
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_STALE = 2
-STAMP = "%Y-%m-%dT%H:%M:%SZ"
+EXIT_SENTINEL = 3
+STAMP = contracts_mod.STAMP
 
 
 def _utc_now() -> datetime:
@@ -32,7 +35,7 @@ def _utc_now() -> datetime:
 
 @dataclass(frozen=True)
 class Deps:
-    """Everything `run` takes from outside the process."""
+    """Everything a command takes from outside the process."""
 
     fetcher: Fetcher = http_fetcher
     sleep: Sleep = time.sleep
@@ -40,6 +43,7 @@ class Deps:
     run_wt: RunWt = inventory_mod.run_wt
     specs: SourceSpecs = field(default_factory=loader.build_specs)
     aliases_path: Path | None = None  # None: the committed data/aliases.toml
+    contracts_path: Path | None = None  # None: the committed data/contracts.toml
 
 
 def _warn(message: str) -> None:
@@ -53,9 +57,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser(
-        "run", help="read the inventory and the four sources and report how each model resolved"
+        "run", help="fetch, resolve, assign, print the change report, write tiers.toml"
     )
-    run.add_argument("--dry-run", action="store_true", help="write no output file")
+    run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "do everything except write the output file; the exit code is the real run's, "
+            "except that a redirected registry, which the real run refuses with 1, only warns"
+        ),
+    )
     run.add_argument(
         "--offline",
         action="store_true",
@@ -67,28 +78,56 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="read saved `wt model list --json` output instead of running wt",
     )
+    shown = commands.add_parser("show", help="print the tier table from tiers.toml")
+    shown.add_argument("--candidates", action="store_true", help="list the candidates too")
+    explain = commands.add_parser(
+        "explain", help="print how one model was identified and why it has its tier"
+    )
+    explain.add_argument("model", help="provider_id/model_name, or a canonical key")
     return parser
 
 
+def _check_registry(inventory: Inventory, *, dry_run: bool) -> None:
+    """Refuse a run whose inventory came from a redirected registry: wt
+    follows WT_REGISTRY and the output path does not, so a scratch inventory
+    would replace the real tiers.toml. `--dry-run` writes nothing, so it goes
+    on and says that the same run without it would stop here."""
+    if paths.out_is_overridden() or paths.registry_is_beside_output(inventory.registry):
+        return
+    out = paths.output_path()
+    found = (
+        f"the inventory came from {inventory.registry}, which is not {out.parent / 'registry.toml'}"
+    )
+    remedy = f"Set {paths.OUT_ENV} to write somewhere else"
+    if not dry_run:
+        raise ConfigError(f"{found}; refusing to replace {out} from it. {remedy}")
+    _warn(f"{found}; without --dry-run this run is refused and exits 1. {remedy}")
+
+
 def _run(args: argparse.Namespace, deps: Deps) -> int:
-    # Before the inventory is read and before any fetch: a bad aliases.toml
+    # Before the inventory is read and before any fetch: a bad data file
     # costs no download.
     aliases = aliases_mod.load_aliases(deps.aliases_path)
+    contracts = contracts_mod.load_contracts(deps.contracts_path)
     inventory = inventory_mod.load_inventory(path=args.inventory, run_wt=deps.run_wt)
+    _check_registry(inventory, dry_run=args.dry_run)
     for line in inventory_mod.provider_warnings(inventory):
         _warn(line)
+    now = deps.now()
+    cache = paths.cache_dir()
     sources = loader.load_all(
         deps.specs,
-        cache=paths.cache_dir(),
+        cache=cache,
         fetcher=deps.fetcher,
         sleep=deps.sleep,
-        now=deps.now(),
+        now=now,
         offline=args.offline,
         warn=_warn,
     )
     identity = pipeline.resolve_all(inventory, sources, aliases)
     for line in identity.warnings:
         _warn(line)
+    assignment = pipeline.assign_all(identity, contracts)
     print(
         f"inventory: {len(inventory.rows)} models "
         f"({inventory.native_dropped} native rows dropped), registry {inventory.registry}"
@@ -98,16 +137,81 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
             f"{result.name}: {result.status}, {result.records} records, "
             f"fetched {result.fetched_at.strftime(STAMP)}"
         )
-    for line in report.identity_lines(identity):
+    for line in (
+        *report.identity_lines(identity),
+        *report.unresolved_lines(assignment),
+        *report.sentinel_lines(assignment),
+    ):
         print(line)
-    print("nothing written: this version stops after resolving names")
+    if not assignment.sentinels_ok:
+        print(
+            f"modeltiers: a sentinel moved; nothing written. If the move is real, "
+            f"edit {contracts.origin}",
+            file=sys.stderr,
+        )
+        return EXIT_SENTINEL
+    out = paths.output_path()
+    document = output.build_document(assignment, inventory, sources, now)
+    previous = output.read_previous(out)
+    if previous is None and out.exists():
+        _warn(f"{out} cannot be read as TOML; it is treated as absent")
+    for line in (
+        *changes.change_lines(previous, document, out),
+        *show.attribution_lines(document),
+    ):
+        print(line)
+    if args.dry_run:
+        print(f"dry run: {out} not written")
+    else:
+        output.write_document(out, document)
+        if not args.offline:
+            for result in sources.results():
+                snapshots.prune(cache, result.name)
+        print(f"wrote {out}")
     return EXIT_STALE if any(r.fallback for r in sources.results()) else EXIT_OK
+
+
+def _show(args: argparse.Namespace, deps: Deps) -> int:
+    document = output.read_document(paths.output_path())
+    now = deps.now()
+    warning = show.stale_warning(document, now)
+    if warning is not None:
+        _warn(warning)
+    for line in (
+        show.age_line(document, now),
+        *show.table_lines(document, candidates=args.candidates),
+        *show.attribution_lines(document),
+    ):
+        print(line)
+    return EXIT_OK
+
+
+def _explain(args: argparse.Namespace, deps: Deps) -> int:
+    document = output.read_document(paths.output_path())
+    lines = show.explain_lines(document, args.model)
+    if lines is None:
+        print(
+            f"modeltiers: no model or canonical key {args.model!r} in the file generated "
+            f"{document.get('generated_at', 'at an unknown time')}",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    for line in lines:
+        print(line)
+    return EXIT_OK
+
+
+_COMMANDS: dict[str, Callable[[argparse.Namespace, Deps], int]] = {
+    "run": _run,
+    "show": _show,
+    "explain": _explain,
+}
 
 
 def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        return _run(args, deps or Deps())
+        return _COMMANDS[args.command](args, deps or Deps())
     # OSError covers the cache and the output paths: an unwritable, unreadable
     # or non-directory MODELTIERS_CACHE (or a full disk) is a user-facing
     # condition like any other, not a traceback.

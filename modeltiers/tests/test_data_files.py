@@ -2,7 +2,7 @@
 the copies under tests/fixtures/, so calibration can change the committed
 values without changing a test."""
 
-from modeltiers import aliases
+from modeltiers import aliases, contracts
 
 
 def test_the_committed_aliases_file_loads_and_validates() -> None:
@@ -10,3 +10,14 @@ def test_the_committed_aliases_file_loads_and_validates() -> None:
     assert loaded.origin == "aliases.toml"
     assert loaded.aliases or loaded.ignores
     assert all("/" in alias.canonical for alias in loaded.aliases)
+
+
+def test_the_committed_contracts_file_loads_and_validates() -> None:
+    loaded = contracts.load_contracts()
+    assert loaded.origin == "contracts.toml"
+    assert loaded.version
+    assert set(loaded.tiers) == set(contracts.TIERS)
+    assert set(loaded.signals) == set(contracts.SIGNALS)
+    assert set(loaded.attribution) == set(contracts.SOURCES)
+    assert loaded.sentinels
+    assert all("/" in sentinel.canonical for sentinel in loaded.sentinels)

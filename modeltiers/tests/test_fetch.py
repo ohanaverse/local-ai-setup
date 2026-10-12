@@ -108,12 +108,12 @@ def test_an_arena_total_that_moves_while_paging_is_a_failed_download(
     read_fixture: Callable[[str], bytes],
 ) -> None:
     """A leaderboard edited between two page requests must not page forever."""
-    page1 = read_fixture("arena_page1.json")  # 3 rows of 5
-    grown = json.dumps({"rows": [{"row": {"model_name": "M", "score": 1.0}}], "num_rows_total": 6})
+    page1 = read_fixture("arena_page1.json")  # 3 rows of 6
+    grown = json.dumps({"rows": [{"row": {"model_name": "M", "score": 1.0}}], "num_rows_total": 7})
     fetcher = FakeFetcher(
         {fetch.arena_page_url(0): [page1], fetch.arena_page_url(3): [grown.encode()]}
     )
-    with pytest.raises(FetchError, match="num_rows_total moved from 5 to 6"):
+    with pytest.raises(FetchError, match="num_rows_total moved from 6 to 7"):
         fetch.fetch_arena(fetcher, Sleeps())
     assert fetcher.calls == [fetch.arena_page_url(0), fetch.arena_page_url(3)]
 

@@ -33,6 +33,7 @@ def test_golden(epoch_zip: Callable[..., bytes]) -> None:
         ("DeepSeek V4 Pro 0813", 155.31),
         ("MiniMax-M3", 146.95),
         ("GPT-5", 150.0),
+        ("Claude Fable 5", 162.06),
     ]
     assert all(r.effort is None for r in records)
 

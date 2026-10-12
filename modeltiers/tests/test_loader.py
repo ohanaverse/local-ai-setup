@@ -51,7 +51,7 @@ def test_a_clean_fetch_is_ok_and_saved(
     result, warnings, _ = _load_openrouter(specs, tmp_path, [body])
     assert (result.name, result.status, result.fallback) == ("openrouter", "ok", False)
     assert result.fetched_at == T0
-    assert result.records == 4
+    assert result.records == 6
     assert result.data[0].source_id == "z-ai/glm-5.3"
     assert result.snapshot == tmp_path / "openrouter" / "20261012T155800Z.json"
     assert result.snapshot.read_bytes() == body
@@ -65,7 +65,7 @@ def test_a_failed_download_falls_back_to_the_newest_good_snapshot(
     result, warnings, _ = _load_openrouter(specs, tmp_path, [FetchError("HTTP 404")], now=T1)
     assert (result.status, result.fallback) == ("stale", True)
     assert result.fetched_at == T0  # the snapshot's own time, not this run's
-    assert result.records == 4
+    assert result.records == 6
     assert result.snapshot == tmp_path / "openrouter" / "20261012T155800Z.json"
     assert warnings.lines == ["openrouter: download failed: HTTP 404"]
     # A failed download saves nothing.
@@ -95,7 +95,7 @@ def test_a_snapshot_under_its_row_minimum_is_bad(
     )
     assert (result.status, result.fallback) == ("stale", True)
     assert (tmp_path / "openrouter" / "20261019T155800Z.bad.json").exists()
-    assert "1 rows, under the minimum of 4" in warnings.lines[0]
+    assert "1 rows, under the minimum of 6" in warnings.lines[0]
 
 
 def test_a_failure_with_no_good_snapshot_is_unavailable(
@@ -179,10 +179,10 @@ def test_load_all_reads_the_four_sources(
         warn=Warnings(),
     )
     assert [(r.name, r.status, r.records) for r in sources.results()] == [
-        ("modelsdev", "ok", 11),
-        ("openrouter", "ok", 4),
-        ("arena", "ok", 5),
-        ("epoch", "ok", 5),
+        ("modelsdev", "ok", 12),
+        ("openrouter", "ok", 6),
+        ("arena", "ok", 6),
+        ("epoch", "ok", 6),
     ]
     assert sources.modelsdev.data.rows[0].canonical == "zhipuai/glm-5.3"
     assert sources.arena.data[0].effort == "high"

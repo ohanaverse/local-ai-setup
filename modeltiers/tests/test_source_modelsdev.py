@@ -14,8 +14,8 @@ def _doc(row: dict[str, Any]) -> bytes:
 
 
 def test_golden(read_fixture: Callable[[str], bytes]) -> None:
-    parsed = modelsdev.parse(read_fixture("modelsdev.json"), min_rows=11)
-    assert len(parsed.rows) == 11
+    parsed = modelsdev.parse(read_fixture("modelsdev.json"), min_rows=12)
+    assert len(parsed.rows) == 12
     assert parsed.rows[0] == ModelsDevRow(
         provider="ollama-cloud",
         model_id="glm-5.3",

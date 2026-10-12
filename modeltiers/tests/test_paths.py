@@ -46,3 +46,38 @@ def test_the_process_environment_is_the_default(tmp_path: Path) -> None:
 def test_home_falls_back_to_the_user_database_entry(tmp_path: Path) -> None:
     # No HOME in the mapping: Path.home() is asked, and conftest's HOME answers.
     assert paths.output_path({}) == tmp_path / "home" / ".config" / "local-ai" / "tiers.toml"
+
+
+def test_out_is_overridden_only_by_a_non_empty_variable() -> None:
+    assert paths.out_is_overridden({"MODELTIERS_OUT": "/o/t.toml"})
+    assert not paths.out_is_overridden({"MODELTIERS_OUT": ""})
+    assert not paths.out_is_overridden({"HOME": "/h"})
+    assert paths.out_is_overridden()  # conftest sets it
+
+
+def test_the_registry_beside_the_output_file_is_recognised() -> None:
+    env = {"HOME": "/h"}
+    assert paths.registry_is_beside_output("/h/.config/local-ai/registry.toml", env)
+    assert not paths.registry_is_beside_output("/tmp/scratch/registry.toml", env)
+    # The right directory and another file name is still a redirect.
+    assert not paths.registry_is_beside_output("/h/.config/local-ai/scratch.toml", env)
+    xdg = {"HOME": "/h", "XDG_CONFIG_HOME": "/x"}
+    assert paths.registry_is_beside_output("/x/local-ai/registry.toml", xdg)
+    assert not paths.registry_is_beside_output("/h/.config/local-ai/registry.toml", xdg)
+
+
+def test_a_symlinked_config_directory_still_matches(tmp_path: Path) -> None:
+    real = tmp_path / "dotfiles" / "local-ai"
+    real.mkdir(parents=True)
+    config = tmp_path / "home" / ".config"
+    config.mkdir()
+    (config / "local-ai").symlink_to(real)
+    env = {"HOME": str(tmp_path / "home")}
+    assert paths.registry_is_beside_output(str(real / "registry.toml"), env)
+    assert paths.registry_is_beside_output(str(config / "local-ai" / "registry.toml"), env)
+
+
+def test_a_registry_path_with_a_tilde_is_expanded(tmp_path: Path) -> None:
+    # conftest's HOME is tmp_path/home; expanduser reads the process environment.
+    env = {"HOME": str(tmp_path / "home")}
+    assert paths.registry_is_beside_output("~/.config/local-ai/registry.toml", env)

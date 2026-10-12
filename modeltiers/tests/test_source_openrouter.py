@@ -26,13 +26,15 @@ def test_golden(read_fixture: Callable[[str], bytes]) -> None:
         coding_index=74.8,
         agentic_index=53.1,
     )
-    # Six models; the one with no benchmarks and the one whose
+    # Eight models; the one with no benchmarks and the one whose
     # artificial_analysis is null have no score and give no record.
     assert [r.source_id for r in records] == [
         "z-ai/glm-5.3",
         "z-ai/glm-5.3:batch",
         "anthropic/claude-opus-5.5",
         "liquid/lfm-2.5-2.6b:free",
+        "anthropic/claude-fable-5",
+        "qwen/qwen3.8-27b",
     ]
 
 
