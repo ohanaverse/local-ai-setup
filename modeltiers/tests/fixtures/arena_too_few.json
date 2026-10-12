@@ -1,0 +1,8 @@
+{
+ "rows": [
+  {"row_idx": 0, "row": {"model_name": "Claude Opus 5.5 (High)", "organization": "anthropic", "score": 0.14331280058415052, "score_ci_lower": 0.12150663912969831, "score_ci_upper": 0.16511896203860274, "rank": 1, "category": "overall"}, "truncated_cells": []}
+ ],
+ "num_rows_total": 1,
+ "num_rows_per_page": 100,
+ "partial": false
+}

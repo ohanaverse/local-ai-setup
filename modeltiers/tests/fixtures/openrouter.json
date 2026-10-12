@@ -1,0 +1,10 @@
+{
+ "data": [
+  {"id": "z-ai/glm-5.3", "name": "Z.ai: GLM 5.3", "context_length": 1048576, "benchmarks": {"artificial_analysis": {"intelligence_index": 44.8, "coding_index": 74.8, "agentic_index": 53.1}}},
+  {"id": "z-ai/glm-5.3:batch", "name": "Z.ai: GLM 5.3 (batch)", "context_length": 1048576, "benchmarks": {"artificial_analysis": {"intelligence_index": 44.8, "coding_index": 74.8, "agentic_index": 53.1}}},
+  {"id": "anthropic/claude-opus-5.5", "name": "Anthropic: Claude Opus 5.5", "context_length": 1000000, "benchmarks": {"artificial_analysis": {"intelligence_index": 57.6, "coding_index": null, "agentic_index": null}}},
+  {"id": "liquid/lfm-2.5-2.6b:free", "name": "LiquidAI: LFM2.5-2.6B (free)", "context_length": 65536, "benchmarks": {"artificial_analysis": {"intelligence_index": 8.4, "coding_index": 7.7, "agentic_index": null}}},
+  {"id": "z-ai/glm-5.3-prime", "name": "Z.ai: GLM 5.3 Prime", "context_length": 1000000},
+  {"id": "mistralai/mistral-large-4-0", "name": "Mistral: Mistral Large 4", "context_length": 1048576, "benchmarks": {"artificial_analysis": null}}
+ ]
+}

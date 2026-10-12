@@ -37,11 +37,13 @@ check-links:
 # Aggregate local verification across all monorepo components (mirrors CI).
 test-all: lint
 	cd llmbench && uv sync && make check && make test
+	cd modeltiers && uv sync && make check && make test
 	cd wt && go build ./... && go vet ./... && go test -count=1 ./...
 
-install: ## Install all monorepo components (wt + llmbench).
+install: ## Install all monorepo components (wt + llmbench + modeltiers).
 	cd wt && make install
 	cd llmbench && make install
+	cd modeltiers && make install
 
 update-tools: ## Update every tool the wt stack runs (see bin/update-tools)
 	@bin/update-tools $(ARGS)
