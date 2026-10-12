@@ -692,3 +692,150 @@ def test_a_source_with_no_data_is_1_whatever_the_sentinels_would_say(
     drifted[fetch.EPOCH_URL] = [FetchError("HTTP 404")]
     assert cli.main(RUN, deps=_deps(specs, drifted)[0]) == 1
     assert not out.exists()
+
+
+# --- show ---------------------------------------------------------------------
+
+
+def _reader_deps(now: datetime) -> cli.Deps:
+    """Deps for `show` and `explain`: any fetch or wt call fails the test."""
+
+    def no_fetch(url: str) -> bytes:
+        raise AssertionError(f"show and explain never fetch: {url}")
+
+    return cli.Deps(fetcher=no_fetch, sleep=Sleeps(), now=lambda: now, run_wt=_never_run_wt)
+
+
+@pytest.fixture
+def written(specs: SourceSpecs, good_answers: Answers, capsys: pytest.CaptureFixture[str]) -> None:
+    """A `tiers.toml` generated at T0 from the golden fixtures."""
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    capsys.readouterr()
+
+
+@pytest.mark.usefixtures("written")
+def test_show_prints_the_age_the_table_and_the_attribution(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["show"], deps=_reader_deps(T1)) == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "tiers.toml generated 2026-10-12T15:58:00Z (7 days old), contracts fixture-1\n"
+        + TABLE
+        + "candidates: 2 (list them with --candidates)\n"
+        + ATTRIBUTION
+    )
+    assert captured.err == ""
+
+
+@pytest.mark.usefixtures("written")
+def test_show_candidates_lists_them_and_warns_past_fourteen_days(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["show", "--candidates"], deps=_reader_deps(T0 + timedelta(days=15))) == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "tiers.toml generated 2026-10-12T15:58:00Z (15 days old), contracts fixture-1\n"
+        + TABLE
+        + "candidates: 2 (scored by a source, not in the inventory)\n"
+        + "M  marathon  high    anthropic/claude-opus-5-5\n"
+        + "D  deep      high    anthropic/claude-fable-5\n"
+        + ATTRIBUTION
+    )
+    assert captured.err == (
+        "warning: tiers.toml is 15 days old; run `modeltiers run` to refresh it\n"
+    )
+
+
+@pytest.mark.parametrize("argv", [["show"], ["explain", "zhipuai/glm-5.3"]])
+def test_show_and_explain_without_a_file_name_the_run_command(
+    argv: list[str], out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(argv, deps=_reader_deps(T0)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        f"modeltiers: cannot read {out}: No such file or directory; "
+        "run `modeltiers run` to write it\n"
+    )
+
+
+@pytest.mark.parametrize("argv", [["show"], ["explain", "zhipuai/glm-5.3"]])
+def test_show_and_explain_with_a_file_that_is_not_toml_exit_1(
+    argv: list[str], out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out.parent.mkdir()
+    out.write_text("generated_at = \n")
+    assert cli.main(argv, deps=_reader_deps(T0)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"modeltiers: {out} is not TOML")
+    assert captured.err.endswith("run `modeltiers run` to write it again\n")
+
+
+# --- explain ------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("written")
+def test_explain_a_model_by_pair_and_by_key(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["explain", "ollama/minimax-m3:cloud"], deps=_reader_deps(T0)) == 0
+    assert capsys.readouterr().out == (
+        "ollama/minimax-m3:cloud\n"
+        "  identity:    minimax/MiniMax-M3, resolved by normalized\n"
+        "  tier:        quick (Q)\n"
+        "  confidence:  high, basis measured\n"
+        "  votes:       arena_agent quick, eci quick\n"
+        "  scores:      arena_agent -0.0695, arena_agent_ci_lower -0.0786, eci 146.95\n"
+        "  efforts:     none\n"
+        "  tool_call:   true\n"
+        "  context:     512000\n"
+        "  note:        host row has no canonical id; matched by name\n"
+        "modelsdev: models.dev (https://models.dev), MIT\n"
+        "arena: Arena (arena.ai), dataset lmarena-ai/leaderboard-dataset, CC BY 4.0\n"
+        "epoch: Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks, CC BY 4.0\n"
+    )
+    # A key, in another case: both inventory rows that resolved to it.
+    assert cli.main(["explain", "ZHIPUAI/GLM-5.3"], deps=_reader_deps(T0)) == 0
+    by_key = capsys.readouterr().out
+    assert by_key.startswith("ollama/glm-5.3:cloud\n")
+    assert "\nopenrouter/z-ai/glm-5.3\n" in by_key
+    # A key with no inventory row: the candidate.
+    assert cli.main(["explain", "anthropic/claude-fable-5"], deps=_reader_deps(T0)) == 0
+    assert capsys.readouterr().out.startswith("candidate anthropic/claude-fable-5\n")
+
+
+@pytest.mark.usefixtures("written")
+def test_explain_a_local_build_shows_the_tier_it_inherited(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["explain", "ollama/qwen3.8:27b-mlx"], deps=_reader_deps(T0)) == 0
+    assert capsys.readouterr().out == (
+        "ollama/qwen3.8:27b-mlx\n"
+        "  identity:    alibaba/qwen3.8-27b, resolved by normalized\n"
+        "  tier:        standard (S)\n"
+        "  confidence:  low, basis inherited\n"
+        "  votes:       intelligence_index standard\n"
+        "  scores:      intelligence_index 33.7, coding_index 68.1, agentic_index 45.8\n"
+        "  efforts:     none\n"
+        "  tool_call:   true\n"
+        "  context:     unknown\n"
+        "  note:        local build: served context unknown; context gate skipped\n"
+        "modelsdev: models.dev (https://models.dev), MIT\n"
+        "openrouter: Source: Artificial Analysis (artificialanalysis.ai) via OpenRouter "
+        "(openrouter.ai/rankings).\n"
+    )
+
+
+@pytest.mark.usefixtures("written")
+def test_explain_an_unmapped_row_and_a_name_that_matches_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["explain", "ollama/medgemma:27b"], deps=_reader_deps(T0)) == 0
+    assert capsys.readouterr().out.startswith("ollama/medgemma:27b is unmapped: ")
+    assert cli.main(["explain", "ollama/absent:cloud"], deps=_reader_deps(T0)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "modeltiers: no model or canonical key 'ollama/absent:cloud' in the file generated "
+        "2026-10-12T15:58:00Z\n"
+    )

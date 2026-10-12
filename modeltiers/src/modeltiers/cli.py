@@ -35,7 +35,7 @@ def _utc_now() -> datetime:
 
 @dataclass(frozen=True)
 class Deps:
-    """Everything `run` takes from outside the process."""
+    """Everything a command takes from outside the process."""
 
     fetcher: Fetcher = http_fetcher
     sleep: Sleep = time.sleep
@@ -78,6 +78,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="read saved `wt model list --json` output instead of running wt",
     )
+    shown = commands.add_parser("show", help="print the tier table from tiers.toml")
+    shown.add_argument("--candidates", action="store_true", help="list the candidates too")
+    explain = commands.add_parser(
+        "explain", help="print how one model was identified and why it has its tier"
+    )
+    explain.add_argument("model", help="provider_id/model_name, or a canonical key")
     return parser
 
 
@@ -165,10 +171,47 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
     return EXIT_STALE if any(r.fallback for r in sources.results()) else EXIT_OK
 
 
+def _show(args: argparse.Namespace, deps: Deps) -> int:
+    document = output.read_document(paths.output_path())
+    now = deps.now()
+    warning = show.stale_warning(document, now)
+    if warning is not None:
+        _warn(warning)
+    for line in (
+        show.age_line(document, now),
+        *show.table_lines(document, candidates=args.candidates),
+        *show.attribution_lines(document),
+    ):
+        print(line)
+    return EXIT_OK
+
+
+def _explain(args: argparse.Namespace, deps: Deps) -> int:
+    document = output.read_document(paths.output_path())
+    lines = show.explain_lines(document, args.model)
+    if lines is None:
+        print(
+            f"modeltiers: no model or canonical key {args.model!r} in the file generated "
+            f"{document.get('generated_at', 'at an unknown time')}",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    for line in lines:
+        print(line)
+    return EXIT_OK
+
+
+_COMMANDS: dict[str, Callable[[argparse.Namespace, Deps], int]] = {
+    "run": _run,
+    "show": _show,
+    "explain": _explain,
+}
+
+
 def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        return _run(args, deps or Deps())
+        return _COMMANDS[args.command](args, deps or Deps())
     # OSError covers the cache and the output paths: an unwritable, unreadable
     # or non-directory MODELTIERS_CACHE (or a full disk) is a user-facing
     # condition like any other, not a traceback.
