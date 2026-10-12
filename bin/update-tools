@@ -131,6 +131,9 @@ if [ -n "$ONLY" ]; then
             fi
         done
         if [ -z "$known" ]; then
+            # Back to the saved IFS first: "${TOOLS[*]}" joins on its first
+            # character, which inside this loop is the comma.
+            IFS="$saved_ifs"
             printf 'update-tools: unknown tool in --only: %s\n' "$want" >&2
             printf 'known tools: %s\n' "${TOOLS[*]}" >&2
             exit 2
