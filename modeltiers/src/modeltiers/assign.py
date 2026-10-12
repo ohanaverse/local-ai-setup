@@ -9,8 +9,8 @@ tier, (5) the tool-calling gate, (6) the context gate, (7) the final tier.
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from modeltiers.contracts import FLOOR_TIERS, RANK, UNRATED, Contracts, Sentinel, Signal
-from modeltiers.records import ScoreRecord
+from modeltiers.contracts import FLOOR_TIERS, RANK, TIERS, UNRATED, Contracts, Sentinel, Signal
+from modeltiers.records import ModelsDevRow, ScoreRecord
 
 NO_VOTES = "no_votes"
 BELOW_FLOOR = "below_floor"
@@ -130,3 +130,63 @@ def check_sentinel(sentinel: Sentinel, canonical: str, evidence: Evidence) -> Se
     return SentinelResult(
         sentinel=sentinel, canonical=canonical, evidence=evidence, problems=tuple(problems)
     )
+
+
+@dataclass(frozen=True)
+class Facts:
+    """What models.dev says about one entry, for the two gates."""
+
+    tool_call: bool | None  # None: the key has no models.dev rows
+    context: int | None  # None: unknown, and the context gate is skipped
+    notes: tuple[str, ...] = ()
+
+
+def gather(
+    rows: tuple[ModelsDevRow, ...], *, location: str | None, host_row: ModelsDevRow | None
+) -> Facts:
+    """The spec's context table. `rows` are the key's models.dev rows;
+    `location` is the inventory row's, or None for a candidate; `host_row` is
+    a cloud inventory row's own host row, with or without a canonical id."""
+    if not rows:
+        return Facts(tool_call=None, context=None, notes=(NOTE_NO_ROWS,))
+    tool_call = any(row.tool_call for row in rows)
+    if location == "local":
+        return Facts(tool_call=tool_call, context=None, notes=(NOTE_LOCAL,))
+    if host_row is not None and host_row.context is not None:
+        return Facts(tool_call=tool_call, context=host_row.context)
+    contexts = [row.context for row in rows if row.context is not None]
+    if not contexts:
+        return Facts(tool_call=tool_call, context=None, notes=(NOTE_NO_CONTEXT,))
+    return Facts(tool_call=tool_call, context=max(contexts), notes=(NOTE_LARGEST,))
+
+
+@dataclass(frozen=True)
+class Verdict:
+    tier: str  # the final tier
+    reason: str | None  # set exactly when the tier is unrated
+    notes: tuple[str, ...]
+
+
+def decide(evidence: Evidence, facts: Facts, contracts: Contracts) -> Verdict:
+    """Steps 5 to 7: the tool-calling gate, the context gate, the final tier.
+    With no votes, or votes under the quick floor, neither gate is applied."""
+    if not evidence.votes:
+        return Verdict(UNRATED, NO_VOTES, facts.notes)
+    if evidence.pre_gate == UNRATED:
+        return Verdict(UNRATED, BELOW_FLOOR, facts.notes)
+    if facts.tool_call is False:
+        return Verdict(UNRATED, GATE_TOOL_CALL, facts.notes)
+    tier = evidence.pre_gate
+    if facts.context is None or facts.context >= contracts.tiers[tier].context_min:
+        return Verdict(tier, None, facts.notes)
+    met = [
+        name
+        for name in TIERS
+        if RANK[name] < RANK[tier] and facts.context >= contracts.tiers[name].context_min
+    ]
+    lowered = met[-1] if met else UNRATED
+    note = (
+        f"{GATE_CONTEXT}: {tier} needs {contracts.tiers[tier].context_min}, "
+        f"context is {facts.context}; lowered to {lowered}"
+    )
+    return Verdict(lowered, None if met else GATE_CONTEXT, (*facts.notes, note))

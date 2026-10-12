@@ -3,9 +3,9 @@ from dataclasses import replace
 import pytest
 
 from modeltiers import assign
-from modeltiers.assign import Evidence
+from modeltiers.assign import Evidence, Facts
 from modeltiers.contracts import Contracts, Sentinel
-from modeltiers.records import ScoreRecord
+from modeltiers.records import ModelsDevRow, ScoreRecord
 
 
 def _records(
@@ -214,3 +214,125 @@ def test_a_signal_the_sentinel_does_not_pin_is_not_checked(rule: Contracts) -> N
     evidence = assign.weigh(_records(60.0, -0.0695, 146.95), rule)
     assert evidence.votes["intelligence_index"] == "deep"
     assert assign.check_sentinel(rule.sentinels[3], "minimax/MiniMax-M3", evidence).ok
+
+
+# --- the context table -------------------------------------------------------
+
+
+def _row(*, tool_call: bool = True, context: int | None = 1_000_000) -> ModelsDevRow:
+    return ModelsDevRow("vendor", "m", "vendor/m", tool_call, True, context)
+
+
+def test_a_cloud_row_uses_its_host_rows_context() -> None:
+    host = ModelsDevRow("ollama-cloud", "m", None, False, True, 512_000)
+    facts = assign.gather((_row(context=1_048_576),), location="cloud", host_row=host)
+    # The host row need not have a canonical id; tool_call comes from the
+    # key's rows, never from the host row.
+    assert facts == Facts(tool_call=True, context=512_000, notes=())
+
+
+def test_a_cloud_row_with_no_host_row_and_a_candidate_use_the_largest_context() -> None:
+    rows = (_row(context=131_072), _row(context=1_048_576), _row(context=None))
+    expected = Facts(tool_call=True, context=1_048_576, notes=(assign.NOTE_LARGEST,))
+    assert assign.gather(rows, location="cloud", host_row=None) == expected
+    assert assign.gather(rows, location=None, host_row=None) == expected
+    # A host row that gives no context is no better than none.
+    blank = ModelsDevRow("openrouter", "v/m", "vendor/m", True, True, None)
+    assert assign.gather(rows, location="cloud", host_row=blank) == expected
+
+
+def test_a_local_rows_context_is_unknown() -> None:
+    facts = assign.gather((_row(),), location="local", host_row=None)
+    assert facts == Facts(tool_call=True, context=None, notes=(assign.NOTE_LOCAL,))
+
+
+def test_a_key_with_no_models_dev_rows_skips_both_gates() -> None:
+    host = ModelsDevRow("ollama-cloud", "m", None, True, True, 512_000)
+    for location, host_row in (("cloud", host), ("local", None), (None, None)):
+        facts = assign.gather((), location=location, host_row=host_row)
+        assert facts == Facts(tool_call=None, context=None, notes=(assign.NOTE_NO_ROWS,))
+
+
+def test_rows_that_give_no_context_leave_it_unknown() -> None:
+    facts = assign.gather((_row(context=None),), location=None, host_row=None)
+    assert facts == Facts(tool_call=True, context=None, notes=(assign.NOTE_NO_CONTEXT,))
+
+
+def test_tool_call_is_true_when_any_row_of_the_key_reports_it() -> None:
+    rows = (_row(tool_call=False), _row(tool_call=True))
+    assert assign.gather(rows, location=None, host_row=None).tool_call is True
+    assert assign.gather(rows[:1], location=None, host_row=None).tool_call is False
+
+
+# --- steps 5 to 7: gates and the unrated reasons -----------------------------
+
+
+def _evidence(rule: Contracts, pre_gate: str) -> Evidence:
+    scores = {"marathon": 0.15, "deep": 0.06, "standard": 0.0, "quick": -0.05, "unrated": -0.2}
+    evidence = assign.weigh(_records(arena=scores[pre_gate], arena_lower=0.0), rule)
+    return replace(evidence, pre_gate=pre_gate)
+
+
+def test_no_votes_is_unrated_and_no_gate_is_applied(rule: Contracts) -> None:
+    facts = Facts(tool_call=False, context=10)
+    verdict = assign.decide(assign.weigh({}, rule), facts, rule)
+    assert (verdict.tier, verdict.reason) == ("unrated", "no_votes")
+
+
+def test_votes_under_the_quick_floor_are_below_floor(rule: Contracts) -> None:
+    evidence = assign.weigh(_records(ii=10.0), rule)  # gpt-oss:20b
+    assert evidence.votes == {"intelligence_index": "unrated"}
+    verdict = assign.decide(evidence, Facts(tool_call=False, context=10), rule)
+    assert (verdict.tier, verdict.reason) == ("unrated", "below_floor")
+
+
+def test_no_tool_calling_is_unrated(rule: Contracts) -> None:
+    verdict = assign.decide(_evidence(rule, "deep"), Facts(False, 1_000_000), rule)
+    assert (verdict.tier, verdict.reason, verdict.notes) == ("unrated", "gate_tool_call", ())
+
+
+def test_the_tool_calling_gate_is_skipped_for_a_key_with_no_rows(rule: Contracts) -> None:
+    facts = Facts(tool_call=None, context=None, notes=(assign.NOTE_NO_ROWS,))
+    verdict = assign.decide(_evidence(rule, "deep"), facts, rule)
+    assert (verdict.tier, verdict.reason, verdict.notes) == ("deep", None, (assign.NOTE_NO_ROWS,))
+
+
+@pytest.mark.parametrize(
+    ("pre_gate", "context", "tier", "reason"),
+    [
+        ("marathon", 400_000, "marathon", None),  # at the minimum: kept
+        ("marathon", 399_999, "deep", None),
+        ("marathon", 150_000, "standard", None),  # drops past deep
+        ("deep", 200_000, "deep", None),
+        ("deep", 199_999, "standard", None),
+        ("standard", 127_999, "quick", None),
+        ("standard", 31_999, "unrated", "gate_context"),
+        ("quick", 32_000, "quick", None),
+        ("quick", 31_999, "unrated", "gate_context"),
+    ],
+)
+def test_the_context_gate_drops_to_the_highest_tier_the_context_meets(
+    rule: Contracts, pre_gate: str, context: int, tier: str, reason: str | None
+) -> None:
+    verdict = assign.decide(_evidence(rule, pre_gate), Facts(True, context), rule)
+    assert (verdict.tier, verdict.reason) == (tier, reason)
+    if tier == pre_gate:
+        assert verdict.notes == ()
+    else:
+        need = rule.tiers[pre_gate].context_min
+        assert verdict.notes == (
+            f"gate_context: {pre_gate} needs {need}, context is {context}; lowered to {tier}",
+        )
+
+
+def test_an_unknown_context_skips_the_context_gate(rule: Contracts) -> None:
+    facts = Facts(tool_call=True, context=None, notes=(assign.NOTE_LOCAL,))
+    verdict = assign.decide(_evidence(rule, "marathon"), facts, rule)
+    assert (verdict.tier, verdict.reason, verdict.notes) == ("marathon", None, (assign.NOTE_LOCAL,))
+
+
+def test_a_gate_does_not_change_the_evidence(rule: Contracts) -> None:
+    evidence = _evidence(rule, "deep")
+    assign.decide(evidence, Facts(True, 50_000), rule)
+    assert evidence.pre_gate == "deep"
+    assert evidence.confidence == "low"
