@@ -12,7 +12,8 @@ from typing import Any
 
 import pytest
 
-from modeltiers import fetch
+from modeltiers import fetch, loader
+from modeltiers.loader import SourceSpecs
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EPOCH_MEMBER = "epoch_capabilities_index/eci_scores.csv"
@@ -76,3 +77,25 @@ def arena_doc(read_fixture: Callable[[str], bytes]) -> Callable[..., bytes]:
         return fetch.wrap_arena_pages([read_fixture(name) for name in names])
 
     return build
+
+
+@pytest.fixture
+def specs() -> SourceSpecs:
+    """The four sources with minimums that fit the golden fixtures."""
+    return loader.build_specs(modelsdev_min=8, openrouter_min=4, arena_min=5, epoch_min=5)
+
+
+@pytest.fixture
+def good_answers(
+    read_fixture: Callable[[str], bytes], epoch_zip: Callable[..., bytes]
+) -> dict[str, list[bytes | Exception]]:
+    """What a FakeFetcher needs for one clean run of all four sources: each
+    URL answered once from the golden fixtures. A test edits a queue to make
+    one source fail."""
+    return {
+        fetch.MODELSDEV_URL: [read_fixture("modelsdev.json")],
+        fetch.OPENROUTER_URL: [read_fixture("openrouter.json")],
+        fetch.arena_page_url(0): [read_fixture("arena_page1.json")],
+        fetch.arena_page_url(3): [read_fixture("arena_page2.json")],
+        fetch.EPOCH_URL: [epoch_zip()],
+    }
