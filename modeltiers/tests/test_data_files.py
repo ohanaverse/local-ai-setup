@@ -10,6 +10,8 @@ def test_the_committed_aliases_file_loads_and_validates() -> None:
     assert loaded.origin == "aliases.toml"
     assert loaded.aliases or loaded.ignores
     assert all("/" in alias.canonical for alias in loaded.aliases)
+    # Calibration's rule: an alias states the evidence it rests on.
+    assert [alias.canonical for alias in loaded.aliases if not alias.note.strip()] == []
 
 
 def test_the_committed_contracts_file_loads_and_validates() -> None:
