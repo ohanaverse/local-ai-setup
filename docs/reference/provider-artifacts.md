@@ -24,6 +24,11 @@ The litellm plist's redacted keys — re-fill each from the live plist or a
 secret store at restore time: `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`,
 `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL`.
 
+The "Source on host" column records where each file lived on 2026-09-07, so the
+omlx row keeps that day's `homebrew.mxcl.omlx` name. Homebrew now labels its
+services `sh.brew.<name>`, i.e. the live file today is
+`~/Library/LaunchAgents/sh.brew.omlx.plist`.
+
 ## llama.cpp — RETIRED 2026-09-07
 
 State at retirement: the LaunchAgent was loaded but crash-looping (exit 1)
@@ -155,8 +160,10 @@ the plist is installed, `launchctl unload` it by hand:
 ## oMLX — active
 
 - Server on `:8000` (`omlx start` / `omlx stop`), kept alive by
-  `~/Library/LaunchAgents/homebrew.mxcl.omlx.plist` (installed by Homebrew;
-  artifact: verbatim copy).
+  `~/Library/LaunchAgents/sh.brew.omlx.plist` (installed by Homebrew). The
+  artifact in the inventory above is a verbatim copy from 2026-09-07, when the
+  same service was labelled `homebrew.mxcl.omlx` — current Homebrew labels
+  services `sh.brew.<name>`.
 - Serves both the 4-bit and 6-bit MLX variants from one service — warmup
   must name the exact variant.
 - Setup: [01-initial-setup.md](../guides/01-initial-setup.md),

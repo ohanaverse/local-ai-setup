@@ -227,7 +227,7 @@ brew services list | grep omlx
 omlx          none            keith   # 2026-09-30 rebuild — deliberately NO service ("started" was the old machine)
 ```
 
-(It used to run as a brew service; since wt's lifecycle engine it's **optional**. Starting any omlx model — `wt start`, `llmbench provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `homebrew.mxcl.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
+(It used to run as a brew service; since wt's lifecycle engine it's **optional**. Starting any omlx model — `wt start`, `llmbench provider isolate omlx` — runs `omlx start` on demand, and wt's live probes keep `omlx/*` routes out of `config.yaml` while the daemon is down. The 2026-09-30 rebuild omits `sh.brew.omlx.plist` on purpose: cleaner for benchmark isolation, where `omlx stop` must not fight a launchd KeepAlive. `brew services start omlx` restores the always-on setup (worth it if you want the `:8000/admin` HF downloader permanently available); `omlx stop` halts it either way.)
 
 oMLX auto-discovers models in `~/.omlx/models/` (set via `~/.omlx/settings.json`, key `model.model_dirs`). Get a model in with the HF CLI:
 
@@ -422,9 +422,9 @@ launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'
 ```text
 -	0	com.ollama.ollama
 94146	0	local.litellm.proxy
-80374	0	homebrew.mxcl.postgresql@16
-97297	0	homebrew.mxcl.omlx
-88057	0	homebrew.mxcl.redis
+80374	0	sh.brew.postgresql@16
+97297	0	sh.brew.omlx
+88057	0	sh.brew.redis
 17810	0	application.com.electron.ollama.2312009772.2312009778.64DD861F-BA99-4B1C-A478-2478B317DA0D
 ```
 

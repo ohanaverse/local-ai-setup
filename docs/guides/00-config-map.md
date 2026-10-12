@@ -25,9 +25,9 @@ None — this is a reference doc, not a procedure.
 | `~/.config/agent-wt/survey.jsonl` | `wt` (the post-session survey, which is switched off) | `wt stats`, the model picker | Recorded survey answers ([07-usage-and-spend](07-usage-and-spend.md)) |
 | `~/.config/agent-wt/refcount.jsonl` | `wt` | `wt` | Which live wt sessions use which model; an entry lasts until its session's process is gone |
 | `~/Library/LaunchAgents/local.litellm.proxy.plist` | you (setup = `01-initial-setup.md`) | launchd | LiteLLM proxy on :4000 |
-| `~/Library/LaunchAgents/homebrew.mxcl.omlx.plist` | Homebrew (setup = `01-initial-setup.md`) — **optional**: wt's and llmbench's lifecycle backends run `omlx start` on demand; the 2026-09-30 rebuild omits it (`brew services start omlx` restores it) | launchd (when present) | oMLX server on :8000 |
-| `~/Library/LaunchAgents/homebrew.mxcl.redis.plist` | Homebrew | launchd | Redis for LiteLLM coordination |
-| `~/Library/LaunchAgents/homebrew.mxcl.postgresql@16.plist` | Homebrew | launchd | Postgres for LiteLLM (`localhost:5432/litellm`) |
+| `~/Library/LaunchAgents/sh.brew.omlx.plist` | Homebrew (setup = `01-initial-setup.md`) — **optional**: wt's and llmbench's lifecycle backends run `omlx start` on demand; the 2026-09-30 rebuild omits it (`brew services start omlx` restores it) | launchd (when present) | oMLX server on :8000 |
+| `~/Library/LaunchAgents/sh.brew.redis.plist` | Homebrew | launchd | Redis for LiteLLM coordination |
+| `~/Library/LaunchAgents/sh.brew.postgresql@16.plist` | Homebrew | launchd | Postgres for LiteLLM (`localhost:5432/litellm`) |
 
 Ollama has no LaunchAgent plist — it runs as the Ollama.app login item (`com.ollama.ollama` in `launchctl list`).
 
@@ -173,7 +173,7 @@ ollama/glm-5.3-flash:cloud
 
 ### `~/Library/LaunchAgents/` plists
 
-- **Owner:** you (service setup = `01-initial-setup.md`; the `homebrew.mxcl.*` ones came from Homebrew installs).
+- **Owner:** you (service setup = `01-initial-setup.md`; the `sh.brew.*` ones came from Homebrew installs).
 - **Consumers:** launchd (`RunAtLoad` + `KeepAlive` on each).
 - **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` — the latter may embed the local Postgres password) — redact before sharing.
 
@@ -213,9 +213,9 @@ launchctl list | grep -E 'litellm|omlx|redis|ollama|postgres'
 ```text
 -	0	com.ollama.ollama
 94146	0	local.litellm.proxy
-97297	0	homebrew.mxcl.omlx
-88057	0	homebrew.mxcl.redis
-80374	0	homebrew.mxcl.postgresql@16
+97297	0	sh.brew.omlx
+88057	0	sh.brew.redis
+80374	0	sh.brew.postgresql@16
 17810	0	application.com.electron.ollama.2312009772.2312009778.64DD861F-BA99-4B1C-A478-2478B317DA0D
 ```
 
