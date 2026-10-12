@@ -1,8 +1,10 @@
+import json
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from conftest import FIXTURES, SAMPLE, T0, without_timestamps
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch, snapshots
@@ -10,13 +12,15 @@ from modeltiers.errors import FetchError, InventoryError
 from modeltiers.identity import HOST_NOTE
 from modeltiers.loader import SourceSpecs
 
-T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
 T1 = T0 + timedelta(days=7)
-INVENTORY = Path(__file__).parent / "fixtures" / "inventory.json"
-ALIASES = Path(__file__).parent / "fixtures" / "aliases.toml"
+INVENTORY = FIXTURES / "inventory.json"
+ALIASES = FIXTURES / "aliases.toml"
+CONTRACTS = FIXTURES / "contracts.toml"
+RUN = ["run", "--inventory", str(INVENTORY)]
+DRY = [*RUN, "--dry-run"]
 Answers = dict[str, list[bytes | Exception]]
 
-CLEAN_REPORT = f"""\
+HEAD = f"""\
 inventory: 8 models (1 native rows dropped), registry /home/owner/.config/local-ai/registry.toml
 modelsdev: ok, 12 records, fetched 2026-10-12T15:58:00Z
 openrouter: ok, 6 records, fetched 2026-10-12T15:58:00Z
@@ -31,18 +35,63 @@ identity: 8 rows: 6 resolved, 1 ignored, 1 unmapped
   ollama/minimax-m3:cloud         normalized  minimax/MiniMax-M3  [{HOST_NOTE}]
   ollama/nomic-embed-text:latest  ignored     embedding model
   ollama/gemma4:31b-mlx           normalized  google/gemma-4-31b-it  [inherited]
-unmapped: 1 (each needs an [[alias]] or an [[ignore]] in aliases.toml)
+unmapped: 1 (each needs an [[alias]] or an [[ignore]] in aliases.toml, or is left open until evidence identifies it)
   ollama/medgemma:27b
 review: 3 matched by name alone (check each)
   ollama/qwen3.8:27b-mlx -> alibaba/qwen3.8-27b
   ollama/minimax-m3:cloud -> minimax/MiniMax-M3
   ollama/gemma4:31b-mlx -> google/gemma-4-31b-it
-unresolved: source records no step resolved (counts only; listing those at or above a standard floor needs contracts.toml)
-  openrouter: 1 of 6 records, 0 ignored, 4 keys resolved
-  arena: 1 of 6 records, 0 ignored, 5 keys resolved
-  epoch: 0 of 6 records, 1 ignored, 5 keys resolved
-nothing written: this version stops after resolving names
+unresolved: 1 at or above a standard floor (each needs an [[alias]] or an [[ignore]] in aliases.toml, or is left open until evidence identifies it)
+  arena  Qwen3.8 Max  0.0235
+  openrouter: 1 of 6 records unresolved, 0 ignored, 4 keys resolved
+  arena: 1 of 6 records unresolved, 0 ignored, 5 keys resolved
+  epoch: 0 of 6 records unresolved, 1 ignored, 5 keys resolved
 """
+
+TABLE = """\
+T  tier      conf    model                           canonical
+S  standard  high    ollama/glm-5.3:cloud            zhipuai/glm-5.3
+S  standard  high    ollama/deepseek-v4-pro:cloud    deepseek/deepseek-v4-pro-0813
+S  standard  high    openrouter/z-ai/glm-5.3         zhipuai/glm-5.3
+S  standard  low     ollama/qwen3.8:27b-mlx          alibaba/qwen3.8-27b
+Q  quick     high    ollama/minimax-m3:cloud         minimax/MiniMax-M3
+-  unrated   none    ollama/nomic-embed-text:latest  -  (not_applicable)
+-  unrated   none    ollama/gemma4:31b-mlx           google/gemma-4-31b-it  (no_votes)
+unmapped: 1 (unrated until aliased or ignored)
+  ollama/medgemma:27b
+"""
+
+ATTRIBUTION = """\
+modelsdev: models.dev (https://models.dev), MIT
+openrouter: Source: Artificial Analysis (artificialanalysis.ai) via OpenRouter (openrouter.ai/rankings).
+arena: Arena (arena.ai), dataset lmarena-ai/leaderboard-dataset, CC BY 4.0
+epoch: Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks, CC BY 4.0
+"""
+
+NO_CHANGES = """\
+  no model changed tier, was added or was removed
+  confidence only: 0
+  candidates: 0 added, 0 removed, 0 changed tier
+  sources: modelsdev ok, openrouter ok, arena ok, epoch ok
+"""
+
+MTPLX_WARNING = (
+    "warning: provider mtplx probe status is partial; "
+    "models it would have discovered may be absent from this run\n"
+)
+
+
+def first_report(out: Path, last: str) -> str:
+    """What `run` prints over the golden fixtures when no file exists yet."""
+    return (
+        HEAD
+        + "sentinels: 4 of 4 hold\n"
+        + f"changes: no existing file at {out}; the full table follows\n"
+        + TABLE
+        + "candidates: 2 (list them with --candidates)\n"
+        + ATTRIBUTION
+        + last
+    )
 
 
 def _never_run_wt() -> str:
@@ -56,6 +105,7 @@ def _deps(
     now: datetime = T0,
     run_wt: Callable[[], str] = _never_run_wt,
     aliases_path: Path = ALIASES,
+    contracts_path: Path = CONTRACTS,
 ) -> tuple[cli.Deps, FakeFetcher]:
     fetcher = FakeFetcher(answers)
     deps = cli.Deps(
@@ -65,40 +115,54 @@ def _deps(
         run_wt=run_wt,
         specs=specs,
         aliases_path=aliases_path,
+        contracts_path=contracts_path,
     )
     return deps, fetcher
 
 
-def test_dry_run_prints_each_source_and_the_inventory_count(
-    specs: SourceSpecs, good_answers: Answers, capsys: pytest.CaptureFixture[str]
+def _scaled(body: bytes, factor: float) -> bytes:
+    """An OpenRouter body with every intelligence index multiplied."""
+    doc = json.loads(body)
+    for model in doc["data"]:
+        indices = (model.get("benchmarks") or {}).get("artificial_analysis")
+        if indices:
+            indices["intelligence_index"] *= factor
+    return json.dumps(doc).encode()
+
+
+@pytest.fixture
+def out(tmp_path: Path) -> Path:
+    """Where conftest's MODELTIERS_OUT points."""
+    return tmp_path / "out" / "tiers.toml"
+
+
+# --- run: the clean path ------------------------------------------------------
+
+
+def test_run_writes_the_contract_sample_and_reports(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    argv = ["run", "--dry-run", "--inventory", str(INVENTORY)]
-    code = cli.main(argv, deps=_deps(specs, good_answers)[0])
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
     captured = capsys.readouterr()
-    assert code == 0
-    assert captured.out == CLEAN_REPORT
+    assert captured.out == first_report(out, f"wrote {out}\n")
     # The fixture's mtplx probe is "partial".
-    assert captured.err == (
-        "warning: provider mtplx probe status is partial; "
-        "models it would have discovered may be absent from this run\n"
-    )
+    assert captured.err == MTPLX_WARNING
+    assert without_timestamps(out.read_text()) == without_timestamps(SAMPLE.read_text())
+    assert [p.name for p in out.parent.iterdir()] == ["tiers.toml"]
 
 
-def test_plain_run_does_what_dry_run_does(
-    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_dry_run_prints_the_same_report_and_writes_nothing(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code = cli.main(["run", "--inventory", str(INVENTORY)], deps=_deps(specs, good_answers)[0])
-    assert code == 0
-    assert capsys.readouterr().out == CLEAN_REPORT
-    assert not (tmp_path / "out").exists()  # MODELTIERS_OUT's directory: nothing written
+    assert cli.main(DRY, deps=_deps(specs, good_answers)[0]) == 0
+    assert capsys.readouterr().out == first_report(out, f"dry run: {out} not written\n")
+    assert not out.parent.exists()
 
 
 def test_snapshots_go_under_modeltiers_cache(
     specs: SourceSpecs, good_answers: Answers, tmp_path: Path
 ) -> None:
-    cli.main(
-        ["run", "--dry-run", "--inventory", str(INVENTORY)], deps=_deps(specs, good_answers)[0]
-    )
+    cli.main(DRY, deps=_deps(specs, good_answers)[0])
     assert sorted(p.name for p in (tmp_path / "cache").iterdir()) == [
         "arena",
         "epoch",
@@ -115,15 +179,85 @@ def test_without_inventory_flag_wt_is_asked(
     assert capsys.readouterr().out.startswith("inventory: 8 models")
 
 
+# --- run: the change report ---------------------------------------------------
+
+
+def test_a_second_run_reports_against_the_existing_file(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli.main(RUN, deps=_deps(specs, good_answers)[0])
+    capsys.readouterr()
+    assert cli.main(RUN, deps=_deps(specs, good_answers, now=T1)[0]) == 0
+    report = capsys.readouterr().out
+    assert report.endswith(
+        "sentinels: 4 of 4 hold\n"
+        "changes since 2026-10-12T15:58:00Z:\n" + NO_CHANGES + ATTRIBUTION + f"wrote {out}\n"
+    )
+    assert 'generated_at = "2026-10-19T15:58:00Z"' in out.read_text()
+
+
+def test_a_tier_that_moved_is_reported_old_to_new(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli.main(RUN, deps=_deps(specs, good_answers)[0])
+    out.write_text(out.read_text().replace('tier = "quick"', 'tier = "standard"'))
+    capsys.readouterr()
+    cli.main(DRY, deps=_deps(specs, good_answers, now=T1)[0])
+    report = capsys.readouterr().out
+    assert "  tier: ollama/minimax-m3:cloud standard -> quick\n" in report
+    assert "no model changed tier" not in report
+    # --dry-run left the edited file alone.
+    assert 'tier = "standard"\ncode = "Q"' in out.read_text()
+
+
+def test_an_existing_file_from_an_older_version_is_compared_and_replaced(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out.parent.mkdir()
+    out.write_text(
+        "[[models]]\n"
+        'provider_id = "ollama"\n'
+        'model_name = "glm-5.3:cloud"\n'
+        'tier = "deep"\n'
+        "\n"
+        "[[models]]\n"
+        'provider_id = "ollama"\n'
+        'model_name = "retired:cloud"\n'
+    )
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    report = capsys.readouterr().out
+    assert "changes since an undated file:\n" in report
+    assert "  tier: ollama/glm-5.3:cloud deep -> standard\n" in report
+    assert "  removed: ollama/retired:cloud (was ?)\n" in report
+    assert without_timestamps(out.read_text()) == without_timestamps(SAMPLE.read_text())
+
+
+def test_an_existing_file_that_is_not_toml_is_treated_as_absent_and_replaced(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out.parent.mkdir()
+    out.write_text("generated_at = \n")
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == first_report(out, f"wrote {out}\n")
+    assert captured.err == (
+        MTPLX_WARNING + f"warning: {out} cannot be read as TOML; it is treated as absent\n"
+    )
+    assert without_timestamps(out.read_text()) == without_timestamps(SAMPLE.read_text())
+
+
+# --- run: sources -------------------------------------------------------------
+
+
 def test_a_source_that_falls_back_is_stale_and_exits_2(
     specs: SourceSpecs,
     good_answers: Answers,
     epoch_zip: Callable[..., bytes],
     read_fixture: Callable[[str], bytes],
+    out: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    argv = ["run", "--dry-run", "--inventory", str(INVENTORY)]
-    assert cli.main(argv, deps=_deps(specs, good_answers)[0]) == 0
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
     capsys.readouterr()
     second: Answers = {
         fetch.MODELSDEV_URL: [read_fixture("modelsdev.json")],
@@ -132,38 +266,55 @@ def test_a_source_that_falls_back_is_stale_and_exits_2(
         fetch.arena_page_url(0): [read_fixture("arena_error.json")] * 2,
         fetch.EPOCH_URL: [epoch_zip()],
     }
-    assert cli.main(argv, deps=_deps(specs, second, now=T1)[0]) == 2
+    assert cli.main(RUN, deps=_deps(specs, second, now=T1)[0]) == 2
     captured = capsys.readouterr()
     assert "arena: stale, 6 records, fetched 2026-10-12T15:58:00Z\n" in captured.out
     assert "openrouter: ok, 6 records, fetched 2026-10-19T15:58:00Z\n" in captured.out
     assert (
+        "  sources: modelsdev ok, openrouter ok, arena stale (was ok), epoch ok\n" in captured.out
+    )
+    assert captured.out.endswith(f"wrote {out}\n")
+    assert (
         "warning: arena: download failed: arena: the rows API answered with an error"
         in captured.err
     )
+    # Written, with the stale source and its snapshot's own time.
+    written = out.read_text()
+    assert '[sources.arena]\nstatus = "stale"\nfetched_at = "2026-10-12T15:58:00Z"' in written
+    assert '[sources.epoch]\nstatus = "ok"\nfetched_at = "2026-10-19T15:58:00Z"' in written
+
+
+def test_dry_run_with_a_fallback_returns_2_and_writes_nothing(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli.main(DRY, deps=_deps(specs, good_answers)[0])
+    good_answers[fetch.EPOCH_URL] = [FetchError("HTTP 404")]
+    assert cli.main(DRY, deps=_deps(specs, good_answers, now=T1)[0]) == 2
+    assert not out.exists()
 
 
 def test_a_source_with_no_good_snapshot_exits_1_and_names_it(
-    specs: SourceSpecs, good_answers: Answers, capsys: pytest.CaptureFixture[str]
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     good_answers[fetch.EPOCH_URL] = [FetchError("HTTP 404")]
-    argv = ["run", "--dry-run", "--inventory", str(INVENTORY)]
-    assert cli.main(argv, deps=_deps(specs, good_answers)[0]) == 1
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.endswith("modeltiers: no usable data and no good snapshot for: epoch\n")
+    assert not out.exists()
 
 
 def test_offline_reads_snapshots_fetches_nothing_and_exits_0(
-    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, out: Path
 ) -> None:
-    argv = ["run", "--dry-run", "--inventory", str(INVENTORY)]
-    cli.main(argv, deps=_deps(specs, good_answers)[0])
-    capsys.readouterr()
+    cli.main(DRY, deps=_deps(specs, good_answers)[0])
     deps, fetcher = _deps(specs, {}, now=T1)
-    assert cli.main([*argv, "--offline"], deps=deps) == 0
-    out = capsys.readouterr().out
-    assert out == CLEAN_REPORT.replace(": ok,", ": stale,")
+    assert cli.main([*RUN, "--offline"], deps=deps) == 0
     assert fetcher.calls == []
+    # Stale because --offline was given: written, and exit 0.
+    written = out.read_text()
+    assert written.count('status = "stale"') == 4
+    assert 'generated_at = "2026-10-19T15:58:00Z"' in written
     # Nothing saved by the offline run: still one snapshot per source.
     assert len(snapshots.list_snapshots(tmp_path / "cache", "arena")) == 1
 
@@ -171,11 +322,56 @@ def test_offline_reads_snapshots_fetches_nothing_and_exits_0(
 def test_offline_with_an_empty_cache_exits_1(
     specs: SourceSpecs, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    argv = ["run", "--dry-run", "--offline", "--inventory", str(INVENTORY)]
-    assert cli.main(argv, deps=_deps(specs, {})[0]) == 1
+    assert cli.main([*DRY, "--offline"], deps=_deps(specs, {})[0]) == 1
     assert capsys.readouterr().err.endswith(
         "modeltiers: no usable data and no good snapshot for: modelsdev, openrouter, arena, epoch\n"
     )
+
+
+# --- run: pruning -------------------------------------------------------------
+
+
+def _seed(cache: Path, count: int) -> None:
+    """`count` older good Arena snapshots and three bad ones."""
+    for day in range(count):
+        snapshots.save(cache, "arena", "json", b"{}", T0 - timedelta(days=day + 1))
+    for day in range(3):
+        bad = snapshots.save(cache, "arena", "json", b"{}", T0 - timedelta(days=day + 20))
+        snapshots.mark_bad(bad)
+
+
+def _arena(cache: Path) -> tuple[int, int]:
+    found = snapshots.list_snapshots(cache, "arena")
+    return sum(1 for s in found if not s.bad), sum(1 for s in found if s.bad)
+
+
+def test_a_successful_write_prunes_to_four_good_and_two_bad(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path
+) -> None:
+    _seed(tmp_path / "cache", 6)
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    assert _arena(tmp_path / "cache") == (4, 2)
+    # The newest good one is this run's.
+    assert snapshots.good_snapshots(tmp_path / "cache", "arena")[0].fetched_at == T0
+
+
+def test_dry_run_and_offline_prune_nothing(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path
+) -> None:
+    cache = tmp_path / "cache"
+    cli.main(DRY, deps=_deps(specs, good_answers)[0])  # one good snapshot per source
+    _seed(cache, 6)
+    assert cli.main(DRY, deps=_deps(specs, good_answers, now=T1)[0]) == 0
+    assert _arena(cache) == (8, 3)
+    # Every seeded Arena snapshot is `{}`; offline must read the two real ones.
+    for snapshot in snapshots.good_snapshots(cache, "arena"):
+        if snapshot.path.read_bytes() == b"{}":
+            snapshot.path.unlink()
+    assert cli.main([*RUN, "--offline"], deps=_deps(specs, {}, now=T1)[0]) == 0
+    assert _arena(cache) == (2, 3)
+
+
+# --- run: configuration and inventory errors ----------------------------------
 
 
 def test_an_inventory_error_exits_1_before_any_fetch(
@@ -230,8 +426,9 @@ def test_default_deps_are_the_real_seams() -> None:
     deps = cli.Deps()
     assert deps.fetcher is fetch.http_fetcher
     assert deps.specs.arena.name == "arena"
-    assert deps.now().tzinfo is UTC
+    assert deps.now().tzinfo is not None
     assert deps.aliases_path is None  # the committed data/aliases.toml
+    assert deps.contracts_path is None  # the committed data/contracts.toml
 
 
 def test_an_invalid_aliases_file_exits_1_before_wt_and_before_any_fetch(
@@ -251,6 +448,21 @@ def test_an_invalid_aliases_file_exits_1_before_wt_and_before_any_fetch(
     assert fetcher.calls == []
 
 
+def test_an_invalid_contracts_file_exits_1_before_wt_and_before_any_fetch(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "contracts.toml"
+    bad.write_text(CONTRACTS.read_text().replace("marathon_ci_lower = 0.097\n", ""))
+    deps, fetcher = _deps(specs, good_answers, contracts_path=bad)
+    assert cli.main(["run"], deps=deps) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "modeltiers: contracts.toml: exactly one signal must carry marathon_ci_lower; found none\n"
+    )
+    assert fetcher.calls == []
+
+
 def test_an_unanchored_alias_exits_1_once_models_dev_is_parsed(
     specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -261,7 +473,7 @@ def test_an_unanchored_alias_exits_1_once_models_dev_is_parsed(
         'inventory = [{ provider_id = "ollama", model_name = "medgemma:27b" }]\n'
     )
     deps, fetcher = _deps(specs, good_answers, aliases_path=unanchored)
-    assert cli.main(["run", "--dry-run", "--inventory", str(INVENTORY)], deps=deps) == 1
+    assert cli.main(DRY, deps=deps) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.endswith(
@@ -279,9 +491,9 @@ def test_a_stale_alias_id_is_a_warning_and_the_run_goes_on(
         ALIASES.read_text() + '\n[[alias]]\ncanonical = "zhipuai/glm-5.3"\narena = ["GLM 5.2"]\n'
     )
     deps, _ = _deps(specs, good_answers, aliases_path=stale)
-    assert cli.main(["run", "--dry-run", "--inventory", str(INVENTORY)], deps=deps) == 0
+    assert cli.main(DRY, deps=deps) == 0
     captured = capsys.readouterr()
-    assert captured.out == CLEAN_REPORT
+    assert captured.out.startswith(HEAD)
     assert captured.err.endswith(
         "warning: alias for zhipuai/glm-5.3 names arena id 'GLM 5.2', "
         "which is not in this run's arena data\n"
@@ -294,7 +506,7 @@ def test_with_no_aliases_every_row_falls_to_the_rules(
     empty = tmp_path / "aliases.toml"
     empty.write_text("")
     deps, _ = _deps(specs, good_answers, aliases_path=empty)
-    assert cli.main(["run", "--dry-run", "--inventory", str(INVENTORY)], deps=deps) == 0
+    assert cli.main(DRY, deps=deps) == 0
     out = capsys.readouterr().out
     assert "identity: 8 rows: 6 resolved, 0 ignored, 2 unmapped\n" in out
     # Joined by name to the April key, and listed for review with its note.
@@ -305,4 +517,178 @@ def test_with_no_aliases_every_row_falls_to_the_rules(
     assert "  ollama/deepseek-v4-pro:cloud -> deepseek/deepseek-v4-pro\n" in out
     assert "unmapped: 2 (each needs" in out
     assert "  ollama/nomic-embed-text:latest\n" in out
-    assert "  epoch: 1 of 6 records, 0 ignored, 5 keys resolved\n" in out
+    assert "  epoch: 1 of 6 records unresolved, 0 ignored, 5 keys resolved\n" in out
+    # The April key has no record: the row is rated on nothing.
+    assert "-  unrated   none    ollama/deepseek-v4-pro:cloud" in out
+
+
+# --- run: the redirected registry ---------------------------------------------
+
+
+def test_a_redirected_registry_is_refused_before_any_fetch(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # MODELTIERS_OUT unset: the output file is the default one, under
+    # conftest's XDG_CONFIG_HOME. The fixture inventory names another registry.
+    monkeypatch.delenv("MODELTIERS_OUT")
+    default = tmp_path / "xdg-config" / "local-ai"
+    deps, fetcher = _deps(specs, good_answers)
+    assert cli.main(RUN, deps=deps) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "modeltiers: the inventory came from /home/owner/.config/local-ai/registry.toml, "
+        f"which is not {default / 'registry.toml'}; refusing to replace "
+        f"{default / 'tiers.toml'} from it. Set MODELTIERS_OUT to write somewhere else\n"
+    )
+    assert fetcher.calls == []
+    assert not default.exists()
+
+
+def test_dry_run_with_a_redirected_registry_reports_and_warns(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --dry-run writes nothing, so there is nothing to refuse: the whole
+    # report, and a warning that the same run without the flag stops.
+    monkeypatch.delenv("MODELTIERS_OUT")
+    default = tmp_path / "xdg-config" / "local-ai"
+    assert cli.main(DRY, deps=_deps(specs, good_answers)[0]) == 0
+    captured = capsys.readouterr()
+    out = default / "tiers.toml"
+    assert captured.out == first_report(out, f"dry run: {out} not written\n")
+    assert captured.err == (
+        "warning: the inventory came from /home/owner/.config/local-ai/registry.toml, "
+        f"which is not {default / 'registry.toml'}; without --dry-run this run is refused "
+        "and exits 1. Set MODELTIERS_OUT to write somewhere else\n" + MTPLX_WARNING
+    )
+    assert not default.exists()
+
+
+def test_the_registry_beside_the_default_output_file_is_accepted(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MODELTIERS_OUT")
+    default = tmp_path / "xdg-config" / "local-ai"
+    saved = tmp_path / "inventory.json"
+    saved.write_text(
+        INVENTORY.read_text().replace(
+            "/home/owner/.config/local-ai/registry.toml", str(default / "registry.toml")
+        )
+    )
+    assert cli.main(["run", "--inventory", str(saved)], deps=_deps(specs, good_answers)[0]) == 0
+    assert (default / "tiers.toml").exists()
+
+
+# --- run: sentinels and exit-code precedence ----------------------------------
+
+
+@pytest.fixture
+def drifted(good_answers: Answers, read_fixture: Callable[[str], bytes]) -> Answers:
+    """Clean answers, with every intelligence index scaled by 0.8."""
+    good_answers[fetch.OPENROUTER_URL] = [_scaled(read_fixture("openrouter.json"), 0.8)]
+    return good_answers
+
+
+def test_a_failed_sentinel_writes_nothing_and_exits_3(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    read_fixture: Callable[[str], bytes],
+    epoch_zip: Callable[..., bytes],
+    out: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A good file from last week.
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    before = out.read_bytes()
+    _seed(tmp_path / "cache", 6)
+    capsys.readouterr()
+    second: Answers = {
+        fetch.MODELSDEV_URL: [read_fixture("modelsdev.json")],
+        fetch.OPENROUTER_URL: [_scaled(read_fixture("openrouter.json"), 0.8)],
+        fetch.arena_page_url(0): [read_fixture("arena_page1.json")],
+        fetch.arena_page_url(3): [read_fixture("arena_page2.json")],
+        fetch.EPOCH_URL: [epoch_zip()],
+    }
+    assert cli.main(RUN, deps=_deps(specs, second, now=T1)[0]) == 3
+    captured = capsys.readouterr()
+    assert out.read_bytes() == before  # the existing file is untouched
+    assert "sentinels: 2 of 4 FAILED\n" in captured.out
+    # Fable 5's vote moved from deep to standard; its tier is still deep.
+    assert (
+        "  FAIL  anthropic/claude-fable-5\n"
+        "        scores:  intelligence_index 39.68, coding_index 76.5, agentic_index 50.7, "
+        "arena_agent 0.0894, arena_agent_ci_lower 0.0767, eci 162.06\n"
+        "        votes:   intelligence_index standard, arena_agent deep, eci deep; "
+        "tier before the gates deep\n"
+        "        pinned:  intelligence_index deep, arena_agent deep, eci deep; tier deep\n"
+        "        differs: intelligence_index voted standard, pinned deep\n"
+    ) in captured.out
+    assert "  ok    zhipuai/glm-5.3\n" in captured.out
+    # No change report and no "wrote" line after a failed check.
+    assert "changes" not in captured.out
+    assert "wrote" not in captured.out
+    assert captured.err.endswith(
+        "modeltiers: a sentinel moved; nothing written. If the move is real, edit contracts.toml\n"
+    )
+    assert _arena(tmp_path / "cache") == (8, 3)  # and nothing pruned
+
+
+def test_dry_run_returns_3_for_a_failed_sentinel(
+    specs: SourceSpecs, drifted: Answers, out: Path
+) -> None:
+    assert cli.main(DRY, deps=_deps(specs, drifted)[0]) == 3
+    assert not out.exists()
+
+
+def test_3_takes_precedence_over_2(
+    specs: SourceSpecs, good_answers: Answers, drifted: Answers, out: Path
+) -> None:
+    cli.main(DRY, deps=_deps(specs, good_answers)[0])  # a good snapshot of every source
+    drifted[fetch.EPOCH_URL] = [FetchError("HTTP 404")]  # Epoch falls back: exit 2 alone
+    assert cli.main(RUN, deps=_deps(specs, drifted, now=T1)[0]) == 3
+    assert not out.exists()
+
+
+def test_1_takes_precedence_over_3(
+    specs: SourceSpecs, drifted: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # These downloads fail two sentinels: on their own the run exits 3.
+    assert cli.main(RUN, deps=_deps(specs, drifted)[0]) == 3
+    assert "sentinels: 2 of 4 FAILED\n" in capsys.readouterr().out
+    # The same downloads and the same four sentinels, plus a fifth that names
+    # an unknown key: a configuration error in the run whose sentinels fail.
+    unknown = tmp_path / "contracts.toml"
+    unknown.write_text(
+        CONTRACTS.read_text()
+        + '\n[[sentinels]]\ncanonical = "anthropic/claude-fable-9"\ntier = "deep"\nvotes = {}\n'
+    )
+    deps, fetcher = _deps(specs, drifted, contracts_path=unknown)
+    assert cli.main(RUN, deps=deps) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(
+        "modeltiers: contracts.toml: [[sentinels]] #5 (anthropic/claude-fable-9): "
+        "not a canonical key in this run's models.dev data or in aliases.toml\n"
+    )
+    # Every source was downloaded: the error came with the drifted data in hand.
+    assert fetch.OPENROUTER_URL in fetcher.calls
+    assert fetch.EPOCH_URL in fetcher.calls
+
+
+def test_a_source_with_no_data_is_1_whatever_the_sentinels_would_say(
+    specs: SourceSpecs, drifted: Answers, out: Path
+) -> None:
+    # The drifted OpenRouter data would fail two sentinels, and Epoch has no
+    # download and no snapshot: the source error ends the run first.
+    drifted[fetch.EPOCH_URL] = [FetchError("HTTP 404")]
+    assert cli.main(RUN, deps=_deps(specs, drifted)[0]) == 1
+    assert not out.exists()
