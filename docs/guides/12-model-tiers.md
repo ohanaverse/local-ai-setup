@@ -361,10 +361,24 @@ the note what the ids were. When the source ran the name under ids of two
 keys, or under an id no models.dev row has, the record does not identify one
 key: go to (f).
 
-**(f) Nothing fits.** Four outcomes, in this order:
+Arena publishes no model id, so the label is the only identifier it gives and
+an Arena record has its own test. Alias it in one case: the label itself
+carries a designation (a snapshot date or a version) that exactly one key
+carries in its own id, among every key `keys '<name>'` prints for that name.
+The note names the designation and the keys it was told apart from, and cites
+any id that agrees with it (another source's runs of the same designation).
+This is not the release-date comparison the rule above excludes: the
+designation is part of the name Arena gives the row and part of the key's id,
+not a date looked up beside them. A label with no such designation, where two
+or more keys share the name, identifies none of them: write nothing. With one
+key of that name, name matching has already resolved the record and it needs
+no alias. When no key could be the model, go to (f) and declare one.
+
+**(f) Nothing fits.** Five outcomes, in this order:
 
 - **The model is not in models.dev at all and no source scores it:** `[[ignore]]`, with a reason that says what you checked and ends `(checked <date>)`. This is a finding (there is nothing to resolve to), not a way to shorten the list. An embedding model or another model that takes no chat work is ignored the same way.
 - **A source scores the model and no models.dev key or row could be it:** declare a key. Write an `[[alias]]` whose `canonical` is a new `vendor/model` and which lists the source id. The model becomes a candidate; both gates are skipped, with a note, because models.dev knows nothing about it. Replace the entry with models.dev's key once it has one.
+- **A source scores the model, and models.dev has a row for the id the source ran but gives that row no key:** `[[ignore]]` with `source` and `id`. models.dev knows the model and has no key for it, so there is nothing to resolve to, and a declared key would stand beside whatever key the row gains later. The reason names the ids the source ran, says their row has no key, and ends `(checked <date>)`. Write it whenever the record's name is a bare family name that other keys also carry (dated or versioned ones, or a `-latest`): without the ignore, a later change to those keys could let name matching give the record's score to a different model. This is the one case in which a record with a score is ignored.
 - **The evidence leaves two readings** (two keys the id could mean, a source that ran one name under two models, a repo that names no origin): write nothing. Leave the row or the record listed, and say in the commit or the PR what you found, so the next person starts from it.
 - **The owner knows.** The person who installed or built the model may simply know what it is. That is evidence: write the alias with the note `owner-confirmed <date>` and what they confirmed.
 
@@ -428,45 +442,14 @@ for each floor of the signal that a `differs:` line crosses (the floor between
 the vote printed and the vote pinned). `marathon_ci_lower` is a floor on the
 Arena lower bound and is moved the same way, as signal `arena_agent_ci_lower`.
 
-Set up two more helpers for it. `ladder` prints a signal's resolved scores
-between two bounds, highest first: the best record of every key, which is what
-votes. It reads the newest snapshots and fetches nothing. `tierdump` prints
-one line per inventory model and per candidate of a `tiers.toml`, with its
-tier, sorted, so that two files can be compared with `diff`.
+`modeltiers ladder <signal>` prints a signal's resolved scores between two
+bounds, highest first: the best record of every key, which is what votes. It
+reads the newest snapshots of models.dev and of the signal's own source,
+fetches nothing and does not run wt. Set up one helper beside it: `tierdump`
+prints one line per inventory model and per candidate of a `tiers.toml`, with
+its tier, sorted, so that two files can be compared with `diff`.
 
 ```bash
-ladder() { uv run --directory modeltiers python - "$@" <<'PY'
-import sys
-from datetime import UTC, datetime
-
-from modeltiers import aliases, cli, contracts, identity, loader, paths
-
-signal, low, high = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
-name = signal.removesuffix("_ci_lower")
-field = "score" if name == signal else "ci_lower"
-source = contracts.SIGNAL_SOURCE[name]
-deps = cli.Deps()
-sources = loader.load_all(
-    deps.specs, cache=paths.cache_dir(), fetcher=deps.fetcher, sleep=deps.sleep,
-    now=datetime.now(UTC), offline=True,
-    warn=lambda line: print(f"warning: {line}", file=sys.stderr),
-)
-known = aliases.load_aliases()
-index = identity.build_index(sources.modelsdev.data, known)
-best = identity.resolve_source(source, getattr(sources, source).data, index, known).best.values()
-scores = ((getattr(m.record, field), m.canonical) for m in best)
-# A record with no lower bound has nothing to place on an _ci_lower ladder.
-window = sorted(
-    ((score, key) for score, key in scores if score is not None and low <= score <= high),
-    reverse=True,
-)
-if not window:
-    sys.exit(f"ladder: no resolved {signal} score from {low} to {high}")
-for (score, key), (below, _) in zip(window, window[1:]):
-    print(f"{score:9.4f}  gap below {score - below:7.4f}  midpoint {(score + below) / 2:9.4f}  {key}")
-print(f"{window[-1][0]:9.4f}  {window[-1][1]}")
-PY
-}
 tierdump() { uv run --directory modeltiers python -c 'import sys, tomllib
 doc = tomllib.load(open(sys.argv[1], "rb"))
 for model in doc.get("models", []):
@@ -477,14 +460,14 @@ for candidate in doc.get("candidates", []):
     print("candidate", candidate["canonical"], candidate["tier"])' "$1" | sort; }
 ```
 
-1. **Find the window the sentinels allow.** From the `scores:` lines of the failed report, take the signal's new score for every sentinel that pins a vote on it. `<low>` is the highest score among the sentinels pinned *below* the floor's tier; `<high>` is the lowest score among those pinned *at or above* it. Any floor above `<low>` and at or under `<high>` restores every pinned vote across this floor. When no sentinel is pinned on one side, use `-inf` or `inf` for that side. When `<low>` is not under `<high>`, the sentinels changed order: this is not a scale move, so re-pin the votes that differ instead (the first row of the table).
+1. **Find the window the sentinels allow.** From the `scores:` lines of the failed report, take the signal's new score for every sentinel that pins a vote on it. `<low>` is the highest score among the sentinels pinned *below* the floor's tier; `<high>` is the lowest score among those pinned *at or above* it. Any floor above `<low>` and at or under `<high>` restores every pinned vote across this floor. When no sentinel is pinned on one side, leave that side's flag out in the next step. When `<low>` is not under `<high>`, the sentinels changed order: this is not a scale move, so re-pin the votes that differ instead (the first row of the table).
 2. **List the resolved scores in the window, with the gaps between them.**
 
    ```bash
-   ladder <signal> <low> <high>   # reads the newest snapshots; fetches nothing and does not run wt
+   uv run --directory modeltiers modeltiers ladder <signal> --low <low> --high <high>
    ```
 
-   Each line is a score, the gap to the next score down, and that gap's midpoint. The first line is the sentinel at `<high>` and the last is the one at `<low>`. The report rounds scores to four places, so pass `<low>` a little lower and `<high>` a little higher than printed.
+   The first two lines name the snapshots that were read; their `fetched` times are the ones the failed run printed for those sources, unless something was downloaded since. Each line after them is a score, the gap to the next score down, and that gap's midpoint. The first is the sentinel at `<high>` and the last is the one at `<low>`. The report rounds scores to four places, so pass `<low>` a little lower and `<high>` a little higher than printed. A window with no resolved score in it is exit 1 with a message.
 3. **Choose the midpoint of the widest gap.** Two gaps of one width: take the one nearer the old floor. Round the midpoint to the precision the file already uses for that signal, and check that the rounded value is still above the lower score of its gap and not above the upper one. Write it as the floor.
 4. **Accept the edit only when all of these hold,** on the same downloads. The run that failed wrote nothing, so the table to compare with cannot come from it: the baseline is the `tiers.toml` the last passing run wrote. Write the new rule's table to a scratch file and compare the two, key by key, inventory models and candidates alike (the change report names only the inventory models that moved and gives the candidates as a count):
 

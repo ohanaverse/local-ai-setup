@@ -18,6 +18,12 @@
 # an architecture alone. A row or a record with no such evidence has no
 # entry here and stays listed by `run`. How to re-check an entry:
 # docs/guides/12-model-tiers.md, step 4.
+#
+# Two kinds of entry have a rule of their own there. Arena publishes no
+# model id: an Arena alias rests on a designation in Arena's own label that
+# one key alone carries in its id (step 4 (e)), or declares a key. A source
+# record with a score is ignored in one case: models.dev has a row for the
+# id the source ran and gives that row no key (step 4 (f)).
 
 [[alias]]
 canonical = "deepseek/deepseek-v4-pro-0813"
@@ -98,4 +104,4 @@ reason = "models.dev's OpenRouter row has no canonical id, no key exists for Nex
 [[ignore]]
 source = "epoch"
 id = "Mistral Large"
-reason = "Epoch's runs are under model_version mistral-large-2402 (2024-02-26); models.dev has no key for that version, and the bare name must never match a later Mistral Large (checked 2026-10-12)"
+reason = "Epoch's runs are under model_version mistral-large-2402 (2024-02-26); the one models.dev row with that id has no key, and the bare name must never match a later Mistral Large (checked 2026-10-12)"
