@@ -71,7 +71,7 @@
 | `CLAUDE.md` | Modify | Guides list, the `modeltiers run` Commands line, the `modeltiers/` Architecture bullet, a new "Tiers file" bullet |
 | `modeltiers/CLAUDE.md` | Replace | Final form: calibrated status, "The two data files" section, the calibration and guide-sample tests |
 
-Not changed: every file under `modeltiers/src/modeltiers/` except `data/aliases.toml`; `modeltiers/src/modeltiers/data/contracts.toml`; `docs/contracts/tiers.sample.toml`; the root `Makefile`; `.github/workflows/modeltiers-ci.yml`; the spec, `docs/superpowers/specs/2026-10-12-model-tiers-design.md`, which the owner corrects on the docs branch.
+Not changed: every file under `modeltiers/src/modeltiers/` except `data/aliases.toml`; `modeltiers/src/modeltiers/data/contracts.toml`; `docs/contracts/tiers.sample.toml`; the root `Makefile`; `.github/workflows/modeltiers-ci.yml` (step 1 already lists `docs/guides/12-model-tiers.md` and `docs/guides/00-config-map.md` among its paths, so a pull request that edits only a guide still runs `tests/test_guide_samples.py`); the spec, `docs/superpowers/specs/2026-10-12-model-tiers-design.md`, which the owner corrects on the docs branch.
 
 ---
 
@@ -690,7 +690,7 @@ Run: `uv run --directory modeltiers pytest tests/test_data_files.py -q`
 Expected: PASS, `2 passed`.
 
 Run: `make -C modeltiers test`
-Expected: PASS, `491 passed`, coverage 100%.
+Expected: PASS, `494 passed`, coverage 100%.
 
 - [ ] **Step 5: Commit**
 
@@ -2056,7 +2056,7 @@ Both are package data under `src/modeltiers/data/`, loaded with `importlib.resou
 - **Fixture-local data files.** Tests pass `tests/fixtures/aliases.toml` and `tests/fixtures/contracts.toml` (as `Deps.aliases_path` / `Deps.contracts_path`, or through the `fixture_aliases` and `rule` fixtures), or build an `Aliases` with `aliases.build`. Only `tests/test_data_files.py` reads the committed files under `src/modeltiers/data/`. It asserts that they load, that every alias has a note and nothing about which entries or values they hold, so calibration changes no test.
 - **Shared pipeline fixtures** in `tests/conftest.py`: `inventory`, `sources`, `fixture_aliases`, `rule`, `assignment` (the golden fixtures resolved and assigned) and `document` (`tiers.toml` for them, as a dict, generated at `T0`). `SAMPLE` and `without_timestamps` are there for the two tests that compare against `docs/contracts/tiers.sample.toml`.
 - **The calibration moves are pinned over the fixtures** by `tests/test_calibration.py`, which runs the CLI with `tests/fixtures/aliases_calibrated.toml` (the fixture `aliases.toml` plus an ignore for the unmapped row, a declared key for the unresolved record and an alias for a pair the inventory does not have), with a copy of `aliases.toml` that aliases the unmapped row instead (the change report then says `newly resolved: <pair> <tier>`), and with a re-pinned copy of `tests/fixtures/contracts.toml`. No other test reads that aliases file.
-- **The guide's samples are pinned too.** `tests/test_guide_samples.py` fails when a ```` ```text ```` block in `../docs/guides/12-model-tiers.md` is not a word-for-word slice of what the fixtures make `run` and `explain` print, when the `tiers.toml` example in `../docs/guides/00-config-map.md` is not a slice of `docs/contracts/tiers.sample.toml`, or when a command block in the guide names a fixture model. A change to a golden fixture, or to a line `run` prints, therefore needs the guide's sample updated in the same commit.
+- **The guide's samples are pinned too.** `tests/test_guide_samples.py` fails when a ```` ```text ```` block in `../docs/guides/12-model-tiers.md` is not a word-for-word slice of what the fixtures make `run` and `explain` print, when the `tiers.toml` example in `../docs/guides/00-config-map.md` is not a slice of `docs/contracts/tiers.sample.toml`, or when a command block in the guide names a fixture model. A change to a golden fixture, or to a line `run` prints, therefore needs the guide's sample updated in the same commit. Both guides are among `modeltiers-ci`'s path filters, so an edit to either one alone runs this suite too.
 - **Adding a row to a golden fixture** moves the counts pinned in `tests/test_source_*.py`, `tests/test_loader.py`, `tests/test_pipeline.py`, `tests/test_cli.py`, `tests/test_calibration.py`, the `specs` minimums, `docs/contracts/tiers.sample.toml`, and the samples in the two guides that `tests/test_guide_samples.py` checks.
 - **Identity tests build their own models.dev.** `tests/test_identity.py` and `tests/test_identity_sources.py` use hand-built `ModelsDev` rows; `tests/test_pipeline.py` and `tests/test_cli.py` use the golden fixtures.
 - `tests/fixtures/README.md` credits each source. Keep it current when a fixture is added.
@@ -2107,9 +2107,9 @@ Run: `make -C modeltiers test`
 Expected: PASS. The last lines are:
 
 ```
-TOTAL                                   1640      0   100%
+TOTAL                                   1644      0   100%
 Required test coverage of 90.0% reached. Total coverage: 100.00%
-============================= 494 passed in 0.95s ==============================
+============================= 497 passed in 0.95s ==============================
 ```
 
 The time varies; the counts do not. `TOTAL` is step 3's: no source line was added. The ten tests added here are the seven of `tests/test_calibration.py` and the three of `tests/test_guide_samples.py`.

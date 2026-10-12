@@ -463,7 +463,7 @@ When several apply, 1 takes precedence over 3 and 3 over 2. `--dry-run` writes n
 - `docs/guides/00-config-map.md`: `tiers.toml` and the snapshot directory, each with its owner.
 - `docs/contracts/tiers.sample.toml`: the output contract.
 - Root `Makefile`: `install` and `test-all` call the package's own `make install`, `make check` and `make test`, as they do for llmbench.
-- `.github/workflows/modeltiers-ci.yml`: lint, type-check and tests, then `bin/check-config-dirs-untouched`. It triggers on changes under `modeltiers/`, to `docs/contracts/tiers.sample.toml`, to `bin/check-config-dirs-untouched` and to the workflow file.
+- `.github/workflows/modeltiers-ci.yml`: lint, type-check and tests, then `bin/check-config-dirs-untouched`. It triggers on changes under `modeltiers/`, to `docs/contracts/tiers.sample.toml`, to the two guides whose sample blocks the suite checks (`docs/guides/12-model-tiers.md` and `docs/guides/00-config-map.md`), to `bin/check-config-dirs-untouched` and to the workflow file.
 
 ## Risks
 

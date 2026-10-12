@@ -38,7 +38,8 @@
   - The Arena snapshot is `{"pages": ["<page body>", ...]}`, each page a JSON string exactly as received.
   - When a source falls back, or under `--offline`, a snapshot not yet marked bad that fails to parse is renamed `.bad` and the next newest is tried. `--offline` therefore can rename a file; it still fetches, saves and prunes nothing.
   - All four sources are attempted even after one is found unavailable, so one run reports every failed source and still saves the good downloads.
-  - `http_fetcher` sends `User-Agent: modeltiers/0.1`. A 4xx status, a refused connection and a DNS failure are not retried.
+  - `http_fetcher` sends `User-Agent: modeltiers/0.1`. A 4xx status, a refused connection and a DNS failure are not retried. Neither is a body cut short or a malformed response (`http.client.HTTPException`, which is not an `OSError`): it is a `FetchError` like the others, so the run falls back to a snapshot instead of ending in a traceback (`test_http_fetcher_marks_only_timeouts_and_5xx_retryable`).
+  - A leading `~` in `MODELTIERS_OUT`, `MODELTIERS_CACHE`, `XDG_CONFIG_HOME` or `XDG_CACHE_HOME` is expanded, as wt's `config.ExpandHome` and llmbench expand it. wt reads `XDG_CONFIG_HOME=~/.config` as the home directory's, and step 3's registry check compares the two directories (`test_a_leading_tilde_is_expanded_as_wt_expands_it`).
   - `wt model list --json` gets 60 seconds.
 - Commits use the repo's conventional style (`feat(modeltiers): …`, lowercase after the type, no trailing period), with the attribution trailer your session is told to add, if any.
 - Work on one feature branch off `main`, for example `feat/modeltiers-step1-sources`. **Pushing the branch and opening the pull request need the owner's OK.**
@@ -399,6 +400,20 @@ def test_an_empty_variable_counts_as_unset() -> None:
     assert paths.cache_dir(env) == Path("/h/.cache/local-ai/modeltiers")
 
 
+def test_a_leading_tilde_is_expanded_as_wt_expands_it(tmp_path: Path) -> None:
+    # wt reads XDG_CONFIG_HOME="~/.config" as the home directory's .config
+    # (config.ExpandHome). modeltiers must name the same directory, or it
+    # writes under a directory literally called "~". expanduser reads the
+    # process's HOME, which conftest points at tmp_path/home.
+    home = tmp_path / "home"
+    xdg = {"XDG_CONFIG_HOME": "~/cfg", "XDG_CACHE_HOME": "~/c"}
+    assert paths.output_path(xdg) == home / "cfg" / "local-ai" / "tiers.toml"
+    assert paths.cache_dir(xdg) == home / "c" / "local-ai" / "modeltiers"
+    overrides = {"MODELTIERS_OUT": "~/t.toml", "MODELTIERS_CACHE": "~/m"}
+    assert paths.output_path(overrides) == home / "t.toml"
+    assert paths.cache_dir(overrides) == home / "m"
+
+
 def test_the_process_environment_is_the_default(tmp_path: Path) -> None:
     # conftest points both overrides under tmp_path.
     assert paths.output_path() == tmp_path / "out" / "tiers.toml"
@@ -463,7 +478,9 @@ Write `modeltiers/src/modeltiers/paths.py`:
 """Where modeltiers reads and writes.
 
 Both functions take the environment as a mapping, so a test passes its own
-and never depends on the process environment.
+and never depends on the process environment. A leading `~` in a variable is
+expanded (`Path.expanduser`), as wt and llmbench expand it: all three must
+name one config directory for `XDG_CONFIG_HOME=~/.config`.
 """
 
 import os
@@ -479,7 +496,7 @@ def _base(env: Mapping[str, str], xdg_var: str, home_dir: str) -> Path:
     unset or empty."""
     xdg = env.get(xdg_var, "")
     if xdg:
-        return Path(xdg)
+        return Path(xdg).expanduser()
     home = env.get("HOME", "")
     return (Path(home) if home else Path.home()) / home_dir
 
@@ -490,7 +507,7 @@ def output_path(env: Mapping[str, str] | None = None) -> Path:
     env = os.environ if env is None else env
     override = env.get(OUT_ENV, "")
     if override:
-        return Path(override)
+        return Path(override).expanduser()
     return _base(env, "XDG_CONFIG_HOME", ".config") / "local-ai" / "tiers.toml"
 
 
@@ -500,14 +517,14 @@ def cache_dir(env: Mapping[str, str] | None = None) -> Path:
     env = os.environ if env is None else env
     override = env.get(CACHE_ENV, "")
     if override:
-        return Path(override)
+        return Path(override).expanduser()
     return _base(env, "XDG_CACHE_HOME", ".cache") / "local-ai" / "modeltiers"
 ```
 
 - [ ] **Step 6: Run the tests and see them pass**
 
 Run: `uv run --directory modeltiers pytest tests/test_paths.py tests/test_conftest_guards.py -q`
-Expected: PASS, `12 passed`.
+Expected: PASS, `13 passed`.
 
 - [ ] **Step 7: Lint, format check and type check**
 
@@ -1012,6 +1029,7 @@ class Sleeps:
 Write `modeltiers/tests/test_fetch.py`:
 
 ```python
+import http.client
 import io
 import json
 import urllib.error
@@ -1174,6 +1192,8 @@ def _http_error(code: int) -> urllib.error.HTTPError:
         (urllib.error.URLError(TimeoutError("timed out")), True, "timed out"),
         (urllib.error.URLError("name not known"), False, "name not known"),
         (ConnectionResetError("reset by peer"), False, "reset by peer"),
+        # A body cut short mid-read is not an OSError; it must not escape.
+        (http.client.IncompleteRead(b"par", 100), False, "IncompleteRead"),
     ],
 )
 def test_http_fetcher_marks_only_timeouts_and_5xx_retryable(
@@ -1202,6 +1222,7 @@ a fake; the CLI passes `http_fetcher`. Nothing here parses a source beyond
 what paging Arena needs.
 """
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -1231,7 +1252,9 @@ ARENA_URL = (
 
 def http_fetcher(url: str) -> bytes:
     """GET `url` with a 30-second timeout. A timeout or a 5xx status is
-    retryable; any other failure is not."""
+    retryable; any other failure is not. Every failure is a FetchError: a
+    body cut short (`http.client.IncompleteRead`) is not an OSError, and left
+    alone it would end the run in a traceback instead of a snapshot fallback."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
@@ -1244,7 +1267,7 @@ def http_fetcher(url: str) -> bytes:
     except urllib.error.URLError as exc:
         timed_out = isinstance(exc.reason, TimeoutError)
         raise FetchError(f"{url}: {exc.reason}", retryable=timed_out) from exc
-    except OSError as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise FetchError(f"{url}: {exc}") from exc
 
 
@@ -1329,7 +1352,7 @@ def fetch_arena(fetcher: Fetcher, sleep: Sleep) -> bytes:
 - [ ] **Step 6: Run the test and see it pass**
 
 Run: `uv run --directory modeltiers pytest tests/test_fetch.py -q`
-Expected: PASS, `24 passed`.
+Expected: PASS, `25 passed`.
 
 - [ ] **Step 7: Lint, format check and type check**
 
@@ -2367,7 +2390,7 @@ import re
 
 from modeltiers.errors import SourceParseError
 from modeltiers.records import ScoreRecord
-from modeltiers.sources._shape import load_json, number, require_rows
+from modeltiers.sources._shape import load_json, number, optional_number, require_rows
 
 SOURCE = "arena"
 MIN_ROWS = 20
@@ -2431,7 +2454,9 @@ def parse(data: bytes, *, min_rows: int = MIN_ROWS) -> tuple[ScoreRecord, ...]:
                     source=SOURCE,
                     source_id=name,
                     score=number(SOURCE, f"{where}.score", row.get("score")),
-                    ci_lower=number(SOURCE, f"{where}.score_ci_lower", row.get("score_ci_lower")),
+                    ci_lower=optional_number(
+                        SOURCE, f"{where}.score_ci_lower", row.get("score_ci_lower")
+                    ),
                     effort=effort,
                 )
             )
@@ -3131,7 +3156,7 @@ Expected: PASS, `12 passed`.
 - [ ] **Step 6: Run the whole suite, since conftest changed**
 
 Run: `uv run --directory modeltiers pytest -q`
-Expected: PASS, `149 passed`.
+Expected: PASS, `151 passed`.
 
 - [ ] **Step 7: Lint, format check and type check**
 
@@ -3508,7 +3533,7 @@ git commit -m "feat(modeltiers): run prints each source's status and record coun
 
 - [ ] **Step 1: Add the CI workflow**
 
-The same job as `.github/workflows/llmbench-ci.yml`. `docs/contracts/tiers.sample.toml` does not exist until step 3; a path filter that matches nothing is harmless, and the spec lists it.
+The same job as `.github/workflows/llmbench-ci.yml`. `docs/contracts/tiers.sample.toml` does not exist until step 3; a path filter that matches nothing is harmless, and the spec lists it. The two guides are listed for step 4, whose `tests/test_guide_samples.py` reads both: without them a pull request that edits only a guide would break that suite with no CI run to say so. `docs/guides/12-model-tiers.md` does not exist until then; until then an edit to `docs/guides/00-config-map.md` runs a suite that does not read it, which costs one CI run and nothing else.
 
 Write `.github/workflows/modeltiers-ci.yml`:
 
@@ -3521,12 +3546,16 @@ on:
     paths:
       - "modeltiers/**"
       - "docs/contracts/tiers.sample.toml"
+      - "docs/guides/12-model-tiers.md"
+      - "docs/guides/00-config-map.md"
       - "bin/check-config-dirs-untouched"
       - ".github/workflows/modeltiers-ci.yml"
   pull_request:
     paths:
       - "modeltiers/**"
       - "docs/contracts/tiers.sample.toml"
+      - "docs/guides/12-model-tiers.md"
+      - "docs/guides/00-config-map.md"
       - "bin/check-config-dirs-untouched"
       - ".github/workflows/modeltiers-ci.yml"
 
@@ -3835,9 +3864,9 @@ Run: `make -C modeltiers test`
 Expected: PASS. The last lines are:
 
 ```
-TOTAL                                    585      0   100%
+TOTAL                                    586      0   100%
 Required test coverage of 90.0% reached. Total coverage: 100.00%
-============================= 161 passed in 0.24s ==============================
+============================= 163 passed in 0.24s ==============================
 ```
 
 The time varies; the counts do not.

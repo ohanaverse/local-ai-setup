@@ -38,7 +38,7 @@
 - **Not in this step:** `contracts.toml`, `assign.py`, `output.py`, `show`, `explain`, `tiers.toml`, `docs/contracts/tiers.sample.toml`, the `[[unresolved]]` list (it holds only records at or above a signal's standard floor, and the floors arrive with `contracts.toml` in step 3; this step keeps every unresolved record and prints counts), writing an ignored row as `unrated` with reason `not_applicable` (this step marks it ignored), the calibration aliases (step 4).
 - **Chosen where the spec is silent** (each is pinned by a test named in the task):
   - An `[[alias]]` and an `[[ignore]]` share one set of claims: a pair or a source id in both is "claimed twice". So is an id listed twice inside one entry. A source id is the pair (source, id), so one string under `arena` and under `epoch` is two ids.
-  - An unknown table or an unknown key in an entry is an error (`openroutr = [...]` would otherwise be silently ignored). `note` is optional. `[alias]` in place of `[[alias]]` is an error that says to write `[[alias]]`.
+  - An unknown table or an unknown key in an entry is an error (`openroutr = [...]` would otherwise be silently ignored). `note` is optional. `[alias]` in place of `[[alias]]` is an error that says to write `[[alias]]`. So is an `[[alias]]` that lists no inventory pair and no source id: it would load and change nothing, with no message.
   - An Arena id in `aliases.toml` has its effort parenthesis removed when the file is loaded, so `"GLM 5.3 (Max)"` and `"GLM 5.3"` are the same id there, as they are in the records.
   - An `[[ignore]]` is either `inventory = {…}` or `source` with `id`, never both and never neither; `source` is one of `openrouter`, `arena`, `epoch`.
   - A source-id alias is exact: an alias on OpenRouter id `x/y` does not cover `x/y:free`, which goes on to its host row.
@@ -506,6 +506,10 @@ def test_an_ignore_without_a_reason_is_an_error(entry: str) -> None:
         ("[[alias]]\nnote = 'x'\n", r"\[\[alias\]\] #1: canonical is missing, empty"),
         ("[[alias]]\ncanonical = 'a/b'\nopenroutr = ['x']\n", r"#1: unknown key 'openroutr'"),
         ("[[alias]]\ncanonical = 'a/b'\nnote = 7\n", r"#1 \(a/b\): note is not a string"),
+        (
+            "[[alias]]\ncanonical = 'a/b'\nnote = 'why'\ninventory = []\n",
+            r"#1 \(a/b\): lists no inventory pair and no openrouter, arena or epoch id",
+        ),
         ("[[alias]]\ncanonical = 'a/b'\narena = 'x'\n", "arena is not a list of non-empty"),
         ("[[alias]]\ncanonical = 'a/b'\nepoch = ['']\n", "epoch is not a list of non-empty"),
         (
@@ -775,7 +779,7 @@ def _alias(where: str, entry: Mapping[str, Any]) -> Alias:
         raise ConfigError(f"{where}: note is not a string")
     if not isinstance(pairs, list):
         raise ConfigError(f"{where}: inventory is not a list of pairs")
-    return Alias(
+    alias = Alias(
         canonical=canonical,
         note=note,
         inventory=tuple(
@@ -785,6 +789,10 @@ def _alias(where: str, entry: Mapping[str, Any]) -> Alias:
         arena=_id_list(where, entry, "arena"),
         epoch=_id_list(where, entry, "epoch"),
     )
+    if not alias.inventory and not alias.source_ids():
+        # It would load, validate and change nothing, with no message.
+        raise ConfigError(f"{where}: lists no inventory pair and no openrouter, arena or epoch id")
+    return alias
 
 
 def _ignore(where: str, entry: Mapping[str, Any]) -> Ignore:
@@ -882,7 +890,7 @@ reason = "floating name; no fixed model"
 - [ ] **Step 5: Run the tests and see them pass**
 
 Run: `uv run --directory modeltiers pytest tests/test_aliases.py tests/test_data_files.py -q`
-Expected: PASS, `33 passed`.
+Expected: PASS, `34 passed`.
 
 - [ ] **Step 6: Commit**
 
@@ -1020,7 +1028,7 @@ def stale_ids(aliases: Aliases, present: Mapping[str, frozenset[str]]) -> list[s
 - [ ] **Step 4: Run the test and see it pass**
 
 Run: `uv run --directory modeltiers pytest tests/test_aliases_checks.py tests/test_aliases.py -q`
-Expected: PASS, `40 passed`.
+Expected: PASS, `41 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1959,7 +1967,7 @@ with:
 - [ ] **Step 3: Run the whole suite and see it still pass**
 
 Run: `uv run --directory modeltiers pytest -q`
-Expected: PASS, `278 passed`.
+Expected: PASS, `281 passed`.
 
 - [ ] **Step 4: Write the failing test**
 
@@ -2253,7 +2261,7 @@ def test_the_name_column_is_as_wide_as_the_longest_name() -> None:
 
 - [ ] **Step 2: Change the CLI tests**
 
-Six replacements in `modeltiers/tests/test_cli.py`, then four tests added at its end.
+Five replacements in `modeltiers/tests/test_cli.py`, then four tests added at its end.
 
 In `modeltiers/tests/test_cli.py`, replace:
 
@@ -2843,9 +2851,9 @@ Run: `make -C modeltiers test`
 Expected: PASS. The last lines are:
 
 ```
-TOTAL                                    944      0   100%
+TOTAL                                    948      0   100%
 Required test coverage of 90.0% reached. Total coverage: 100.00%
-============================= 289 passed in 0.36s ==============================
+============================= 292 passed in 0.36s ==============================
 ```
 
 The time varies; the counts do not.

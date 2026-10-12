@@ -10,7 +10,7 @@
 
 **Spec:** docs/superpowers/specs/2026-10-12-model-tiers-design.md
 
-**Verified against:** main at 51887c0, and a working prototype of this step. Every code block below was extracted from this file into a clone that holds the seventeen commits of steps 1 and 2 and run in task order: each "Expected: FAIL" failed with the quoted message and each "Expected: PASS" passed, and the resulting tree equals the prototype file for file. The prototype was also run over the 2026-10-12 downloads and the owner's saved `wt model list --json` output with the committed `contracts.toml` and `aliases.toml`: all eight sentinels held; the three `marathon` keys were Claude Opus 5.5, Claude Fable 5.1 and GPT-6 Astra; the inventory split 14 `standard`, 17 `quick`, 5 `unrated`, 10 unmapped, none `deep` or `marathon`; the tool-calling gate moved two candidates from `quick` to `unrated` and the context gate moved nobody; no model's votes spanned two tiers. All of that is what the spec reports. One difference: seven keys came out `deep` where the spec's list names four (it adds GPT-6 Sol, GPT-5.6 Sol and GPT-5.5 Pro); step 4's live run is where the spec says that list is confirmed or corrected.
+**Verified against:** main at 51887c0, and a working prototype of this step. Every code block below was extracted from this file into a clone that holds the seventeen commits of steps 1 and 2 and run in task order: each "Expected: FAIL" failed with the quoted message and each "Expected: PASS" passed, and the resulting tree equals the prototype file for file. The prototype was also run over the 2026-10-12 downloads and the owner's saved `wt model list --json` output with the committed `contracts.toml` and `aliases.toml`: all eight sentinels held; the three `marathon` keys were Claude Opus 5.5, Claude Fable 5.1 and GPT-6 Astra; the inventory split 14 `standard`, 17 `quick`, 5 `unrated`, 10 unmapped, none `deep` or `marathon`; the tool-calling gate moved two candidates from `quick` to `unrated` and the context gate moved nobody; no model's votes spanned two tiers. All of that is what the spec reports. One difference from the spec's first list: seven keys came out `deep` where that list named four (the run adds GPT-6 Sol, GPT-5.6 Sol and GPT-5.5 Pro). The spec has since been corrected and names all seven, plus Gemini 4 Argon, which is `deep` only once step 4 declares its key; "For step 4", at the end of this plan, has the detail.
 
 **Depends on:** docs/superpowers/plans/2026-10-12-model-tiers-step2-identity.md, merged (and step 1's plan before it).
 
@@ -55,7 +55,7 @@
   - **Scores are written as the source gave them,** unrounded. `show`, `explain` and the report round to four places for display (Tasks 5 and 6).
   - **Layout.** Every table inside an entry is a sub-table (`[models.votes]`), where the spec's example writes two of them inline; the TOML is the same. An array with no entries is absent from the file. `tomli_w` formats the values; `output.render` lays out the blocks, because `tomli_w` writes a short table in an array inline (Task 5).
   - **The output file's mode** is what `tempfile.mkstemp` gives, `0600` (Task 5).
-  - **The existing file is advisory to `run` too.** One that is not TOML gives a warning, is treated as absent and is replaced. One written by another version is compared by the fields it has, with `?` for those it lacks (Tasks 7 and 9).
+  - **The existing file is advisory to `run` too.** One that is not TOML, or not UTF-8, gives a warning, is treated as absent and is replaced. One written by another version is compared by the fields it has, with `?` for those it lacks (Tasks 7 and 9).
   - **The registry check** runs right after the inventory is read, before any fetch. A plain `run` stops there. `--dry-run` "does everything except write", and with nothing to write there is nothing to refuse: it gets one `warning:` on stderr at that point, naming both registries and saying that the run without `--dry-run` is refused and exits 1, then goes on; its change report compares against the default output file, and its exit code is not changed by the warning. Directories are compared resolved; the registry file itself is not, because it may be a symlink (Tasks 8 and 9).
   - **What the two list headings say.** `unmapped: N` and `unresolved: N at or above a standard floor` each end `(each needs an [[alias]] or an [[ignore]] in aliases.toml, or is left open until evidence identifies it)`. The spec's "Live" paragraph leaves a row with no identifying evidence listed and recorded as open, so the tool does not tell its reader that every listed row needs an entry. Step 2 printed the `unmapped:` line without the last clause; Task 9 adds it (`test_an_empty_inventory_still_prints_every_section`, `test_unresolved_records_at_a_floor_are_named_and_the_rest_counted`, `test_run_writes_the_contract_sample_and_reports`).
   - **After a failed sentinel check** the change report is not printed and nothing is pruned (Task 9).
@@ -1902,7 +1902,7 @@ with:
 - [ ] **Step 3: Run the whole suite and see it still pass**
 
 Run: `uv run --directory modeltiers pytest -q`
-Expected: PASS, `394 passed`.
+Expected: PASS, `397 passed`.
 
 - [ ] **Step 4: Move the pipeline fixtures to `conftest.py` and write the failing tests**
 
@@ -3280,6 +3280,11 @@ def test_a_file_that_is_not_toml_reads_as_absent_for_the_change_report(tmp_path:
     with pytest.raises(OutputFileError, match="is not TOML"):
         output.read_document(path)
     assert output.read_previous(path) is None
+    # Bytes that are not UTF-8 are the same case, not a UnicodeDecodeError.
+    path.write_bytes(b'generated_at = "\xff\xfe"\n')
+    with pytest.raises(OutputFileError, match="is not TOML"):
+        output.read_document(path)
+    assert output.read_previous(path) is None
 ```
 
 - [ ] **Step 3: Run the test and see it fail**
@@ -3461,14 +3466,16 @@ def read_document(path: Path) -> Document:
     """Read `tiers.toml` for `show` and `explain`. Raises OutputFileError when
     it is missing or is not TOML."""
     try:
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
     except OSError as exc:
         raise OutputFileError(
             f"cannot read {path}: {exc.strerror}; run `modeltiers run` to write it"
         ) from exc
     try:
-        return tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
+        # Decoded here, not by read_text: bytes that are not UTF-8 are a file
+        # that is not TOML, and must not reach `run` as a UnicodeDecodeError.
+        return tomllib.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise OutputFileError(
             f"{path} is not TOML ({exc}); run `modeltiers run` to write it again"
         ) from exc
@@ -4323,7 +4330,7 @@ def test_a_registry_path_with_a_tilde_is_expanded(tmp_path: Path) -> None:
 - [ ] **Step 2: Run the test and see it fail**
 
 Run: `uv run --directory modeltiers pytest tests/test_paths.py -q`
-Expected: FAIL, `4 failed, 9 passed`: one test with `AttributeError: module 'modeltiers.paths' has no attribute 'out_is_overridden'` and three with `AttributeError: module 'modeltiers.paths' has no attribute 'registry_is_beside_output'`.
+Expected: FAIL, `4 failed, 10 passed`: one test with `AttributeError: module 'modeltiers.paths' has no attribute 'out_is_overridden'` and three with `AttributeError: module 'modeltiers.paths' has no attribute 'registry_is_beside_output'`.
 
 - [ ] **Step 3: Add the two functions**
 
@@ -4349,7 +4356,7 @@ def registry_is_beside_output(registry: str, env: Mapping[str, str] | None = Non
 - [ ] **Step 4: Run the test and see it pass**
 
 Run: `uv run --directory modeltiers pytest tests/test_paths.py -q`
-Expected: PASS, `13 passed`.
+Expected: PASS, `14 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -6031,9 +6038,9 @@ Run: `make -C modeltiers test`
 Expected: PASS. The last lines are:
 
 ```
-TOTAL                                   1640      0   100%
+TOTAL                                   1644      0   100%
 Required test coverage of 90.0% reached. Total coverage: 100.00%
-============================= 484 passed in 0.89s ==============================
+============================= 487 passed in 0.89s ==============================
 ```
 
 The time varies; the counts do not.
