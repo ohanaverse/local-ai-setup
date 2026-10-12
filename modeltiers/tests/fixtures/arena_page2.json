@@ -1,0 +1,10 @@
+{
+ "rows": [
+  {"row_idx": 3, "row": {"model_name": "DeepSeek V4 Pro (High) (0813)", "organization": "deepseek", "score": 0.013425874696272922, "score_ci_lower": -0.0031749129284354416, "score_ci_upper": 0.030026662320981286, "rank": 26, "category": "overall"}, "truncated_cells": []},
+  {"row_idx": 4, "row": {"model_name": "Minimax M3", "organization": "minimax", "score": -0.06954648731246331, "score_ci_lower": -0.07855233102193303, "score_ci_upper": -0.060540643602993584, "rank": 44, "category": "overall"}, "truncated_cells": []},
+  {"row_idx": 5, "row": {"model_name": "Claude Fable 5 (High)", "organization": "anthropic", "score": 0.08937936055727591, "score_ci_lower": 0.0766906485538394, "score_ci_upper": 0.10206807256071242, "rank": 8, "category": "overall"}, "truncated_cells": []}
+ ],
+ "num_rows_total": 6,
+ "num_rows_per_page": 100,
+ "partial": false
+}

@@ -15,6 +15,8 @@ None — this is a reference doc, not a procedure.
 | `~/.config/local-ai/registry.toml` | `wt` (`wt model add\|edit\|rm` and the Models tab of `wt config`: models; `wt model init`: creates it, adds provider rows; `wt cloud-sync`: cloud prices and the ollama cloud entries), and you by hand for the few things wt has no command for | `wt` (source of the LiteLLM routes), `llmbench` (read-only) | Canonical providers + models |
 | `~/.config/local-ai/modelman.toml`, `settings.yaml`, `config.yaml`, `families/` | nobody | nothing | Left by modelman; safe to remove ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §7) |
 | `~/.config/local-ai/benchmarks/latest.toml` | `llmbench` | `llmbench` | Latest-run pointers behind `--latest`; the run directories sit beside it |
+| `~/.config/local-ai/tiers.toml` | `modeltiers` (`modeltiers run`) | `modeltiers show` and `explain`; nothing else yet | Advisory capability tier per model, with the evidence ([12-model-tiers](12-model-tiers.md)) |
+| `~/.cache/local-ai/modeltiers/` | `modeltiers` (`modeltiers run`) | `modeltiers run` (fallback, and `--offline`) | Snapshots of the four public sources' downloads; safe to delete |
 | `~/.config/litellm/config.yaml` | `wt` (`wt litellm ...`), you by hand | LiteLLM proxy | `model_list`, general settings |
 | `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag, and the `[litellm]` routing state (enabled/url/api_key). (NO providers/models — those live in registry.toml) |
 | `~/.config/agent-wt/themes.toml` | `wt` (`wt config theme set`) | `wt` | Active theme |
@@ -54,6 +56,59 @@ location = "cloud"
 source = "discovered"
 tags = []
 ```
+
+### `~/.config/local-ai/tiers.toml`
+
+- **Owner:** `modeltiers`. `modeltiers run` replaces the whole file in one step (a temporary file beside it, then a rename); `--dry-run` leaves it alone. Never edit it by hand: the next run overwrites it. What a run decides is changed in the two committed data files, `modeltiers/src/modeltiers/data/aliases.toml` and `contracts.toml` ([12-model-tiers](12-model-tiers.md) steps 4 and 5).
+- **Consumers:** `modeltiers show` and `modeltiers explain`. Nothing routes on it: wt does not read it yet.
+- **Purpose:** one advisory tier (`marathon`, `deep`, `standard`, `quick` or `unrated`) for every model `wt model list --json` reports apart from the native agent rows, with the votes and scores behind it, plus the candidates: models a source scores that are not in the inventory. See yours with `uv run --directory modeltiers modeltiers show`.
+- **Contract for readers:** a model absent from the file, or under `[[unmapped]]`, is `unrated`; a file that cannot be parsed is treated as absent. The format is [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml).
+- **Env override:** `MODELTIERS_OUT` (a file path), else `$XDG_CONFIG_HOME/local-ai/tiers.toml`. It does **not** follow `WT_REGISTRY`: when the registry wt read is not `registry.toml` beside the output file and `MODELTIERS_OUT` is unset, `modeltiers run` refuses and exits 1, so an inventory from a scratch registry cannot replace this file (`run --dry-run` writes nothing, so it warns and goes on).
+- `modeltiers` reads the inventory only through `wt model list --json`. It never opens `registry.toml` and never writes it, `config.yaml` or any wt state.
+
+Illustrative example from the test fixtures, not from any machine: the first two lines and the first `[[models]]` entry of [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml), which the test suite regenerates from `modeltiers/tests/fixtures/`. Your models will differ.
+
+```toml
+generated_at = "2026-10-12T15:58:00Z"
+contracts_version = "fixture-1"
+
+[[models]]
+provider_id = "ollama"
+model_name = "glm-5.3:cloud"
+registered = true
+canonical = "zhipuai/glm-5.3"
+resolved_by = "host"
+tier = "standard"
+code = "S"
+confidence = "high"
+basis = "measured"
+tool_call = true
+context = 1048576
+notes = []
+
+[models.votes]
+intelligence_index = "standard"
+arena_agent = "standard"
+eci = "standard"
+
+[models.efforts]
+arena_agent = "max"
+
+[models.scores]
+intelligence_index = 44.8
+coding_index = 74.8
+agentic_index = 53.1
+arena_agent = 0.02147446416824893
+arena_agent_ci_lower = 0.014306504009895325
+eci = 155.61
+```
+
+### `~/.cache/local-ai/modeltiers/`
+
+- **Owner:** `modeltiers run`. Each source has a directory (`modelsdev/`, `openrouter/`, `arena/`, `epoch/`) holding its downloads as `<UTC stamp>.json` or `.zip`, saved before they are parsed. A download that fails to parse is renamed `<UTC stamp>.bad.<ext>` and is never read again. After a successful write each source keeps its four newest good snapshots and its two newest bad ones.
+- **Consumers:** `modeltiers run`: the newest good snapshot stands in when a source's download or parse fails (the source is marked `stale`, exit 2), and `--offline` reads nothing else.
+- **Purpose:** a cache. Deleting it loses only the fallback; the next run downloads everything again.
+- **Env override:** `MODELTIERS_CACHE`, else `$XDG_CACHE_HOME/local-ai/modeltiers/`.
 
 ### Left on disk, read by nothing
 
@@ -230,7 +285,7 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 - **`~/.config/agent-wt/config.toml` trap:** the `[[providers]]`/`[[models]]` blocks you see there are stale migration output that `wt` ignores. Only `default_tag`, `[[agents]]` and the `[litellm]` table are live; providers/models come from `registry.toml`.
 - **Legacy files are not config:** `~/.config/local-ai/config.yaml` and `~/.config/local-ai/families/*.yaml` are read by nothing (see "Left on disk, read by nothing" above), and `~/.config/agent-wt/models.conf` only by wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
 - **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist; the LiteLLM API key in modelman's leftover `~/.config/local-ai/modelman.toml` ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md), "Files modelman left behind"). Redact before pasting any of them into issues, docs, or chats.
-- **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme set <name>`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `llmbench run`. Don't create them by hand.
+- **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme set <name>`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `llmbench run`, `tiers.toml` and `~/.cache/local-ai/modeltiers/` after `modeltiers run`. Don't create them by hand.
 - Stray siblings are uninteresting: `config.toml.bak`, `*.plist.qwen3.8.bak`, `config.yaml.qwen3.8.bak` are manual backups; `usage.jsonl.lock`, `survey.jsonl.lock`, `refcount.jsonl.lock` and `config.toml.lock` are wt's lock files.
 
 ## Going deeper
@@ -241,3 +296,4 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 - Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
 - oMLX backend reference: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
 - Provider artifacts + llama.cpp re-enable procedure: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
+- Model tiers (`tiers.toml`, its two data files): [12-model-tiers](12-model-tiers.md)

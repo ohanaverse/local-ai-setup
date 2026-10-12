@@ -1,0 +1,107 @@
+# Hand-kept identity answers, tried before the host row and before name
+# matching. Read by modeltiers.aliases; validated on every run.
+#
+# [[alias]]   canonical = the key, as models.dev spells canonical_model_id
+#             inventory = [{ provider_id = "...", model_name = "..." }, ...]
+#             openrouter / arena / epoch = ["the source's own id", ...]
+#             note      = why the entry exists
+# [[ignore]]  inventory = { provider_id = "...", model_name = "..." }
+#             or source = "openrouter" | "arena" | "epoch" with id = "..."
+#             reason    = required
+#
+# An Arena id is written without its effort parenthesis: "GLM 5.3", not
+# "GLM 5.3 (Max)". Every other id is exactly as the source spells it.
+#
+# Calibrated against the live sources and the owner's inventory on
+# 2026-10-12. Every note states evidence that identifies the model, read
+# that day: an id the publisher or the source gives, never a name, a date or
+# an architecture alone. A row or a record with no such evidence has no
+# entry here and stays listed by `run`. How to re-check an entry:
+# docs/guides/12-model-tiers.md, step 4.
+#
+# Two kinds of entry have a rule of their own there. Arena publishes no
+# model id: an Arena alias rests on a designation in Arena's own label that
+# one key alone carries in its id (step 4 (e)), or declares a key. A source
+# record with a score is ignored in one case: models.dev has a row for the
+# id the source ran and gives that row no key (step 4 (f)).
+
+[[alias]]
+canonical = "deepseek/deepseek-v4-pro-0813"
+note = "ollama :cloud and :0813-cloud shared digest 6ed7420bc3a4 on 2026-10-12; the registry config for :cloud names remote_model deepseek-v4-pro:0813; Epoch's runs of DeepSeek V4 Pro 0813 are all under model_version deepseek-v4-pro-0813; Arena publishes no model id, so its row is matched on the snapshot date in Arena's own label, (0813), which this key alone carries among the three deepseek-v4-pro keys"
+inventory = [{ provider_id = "ollama", model_name = "deepseek-v4-pro:cloud" }]
+arena = ["DeepSeek V4 Pro (0813)"]
+epoch = ["DeepSeek V4 Pro 0813"]
+
+[[alias]]
+canonical = "google/gemma-4-31b-it"
+note = "the ollama registry config for gemma4:cloud names remote_model gemma4:31b, and its manifest is byte for byte :31b-cloud's (sha256 ef09f235533c), read 2026-10-12"
+inventory = [{ provider_id = "ollama", model_name = "gemma4:cloud" }]
+
+[[alias]]
+canonical = "mistral/mistral-large-2512"
+note = "the ollama registry config names remote_model mistral-large-3:675b, read 2026-10-12; models.dev's Bedrock row mistral.mistral-large-3-675b-instruct, the same model and size, carries this key"
+inventory = [{ provider_id = "ollama", model_name = "mistral-large-3:675b-cloud" }]
+
+[[alias]]
+canonical = "nvidia/nemotron-3.5-lightning"
+note = "ollama :30b-mlx and :30b-a3b-mlx shared digest 8b1474be6e54 on 2026-10-12; models.dev has one Nemotron 3.5 Lightning key, this one"
+inventory = [{ provider_id = "ollama", model_name = "nemotron-3.5-lightning:30b-mlx" }]
+
+[[alias]]
+canonical = "nvidia/nemotron-3-ultra-550b-a55b"
+note = "Epoch's runs of Nemotron 3 Ultra are all under model_version nemotron-3-ultra, read 2026-10-12; every models.dev row with that model id carries this key, and no other key is a Nemotron 3 Ultra"
+epoch = ["Nemotron 3 Ultra"]
+
+[[alias]]
+canonical = "deepreinforce/ornith-1.5-35b-a3b"
+note = "the ollama library ornith-1.5 has three tags, 397b, 35b and 9b, and its readme names three models, Ornith-1.5-397B, Ornith-1.5-35B-A3B and Ornith-1.5-9B, read 2026-10-12; this is models.dev's only Ornith 1.5 key"
+inventory = [{ provider_id = "ollama", model_name = "ornith-1.5:35b" }]
+
+[[alias]]
+canonical = "alibaba/qwen3.6-35b-a3b"
+note = "ollama :35b-mlx and :35b-a3b-nvfp4 shared digest e92a3e94bbca on 2026-10-12. The MTPLX repo's mtplx_runtime.json names base_trunk mlx-community/Qwen3.6-35B-A3B-6bit and a forge_recipe that is a quantization (body_bits 6, source_format mlx_affine); that repo's Hugging Face base_model is Qwen/Qwen3.6-35B-A3B, relation quantized"
+inventory = [
+    { provider_id = "ollama", model_name = "qwen3.6:35b-mlx" },
+    { provider_id = "mtplx", model_name = "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance" },
+]
+
+[[alias]]
+canonical = "alibaba/qwen3.8-27b"
+note = "Hugging Face base_model is Qwen/Qwen3.8-27B with base_model_relation quantized, read 2026-10-12"
+inventory = [{ provider_id = "mtplx", model_name = "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality" }]
+
+[[alias]]
+canonical = "google/gemini-3-pro-preview"
+note = "Epoch's runs of Gemini 3 Pro are all under model_version gemini-3-pro-preview, read 2026-10-12: this key's own id"
+epoch = ["Gemini 3 Pro"]
+
+[[alias]]
+canonical = "google/gemini-3-flash-preview"
+note = "Epoch's runs of Gemini 3 Flash are all under model_version gemini-3-flash-preview, read 2026-10-12: this key's own id"
+epoch = ["Gemini 3 Flash"]
+
+[[alias]]
+canonical = "google/gemini-4-argon"
+note = "declared here: Arena lists the model under organization google and models.dev had no key for it on 2026-10-12. Replace with models.dev's key once it has one"
+arena = ["Gemini 4 Argon"]
+
+[[ignore]]
+inventory = { provider_id = "ollama", model_name = "nomic-embed-text:latest" }
+reason = "embedding model"
+
+[[ignore]]
+inventory = { provider_id = "ollama", model_name = "medgemma:27b" }
+reason = "medical fine-tune of Gemma 3 (ollama arch gemma3, 27.4B); models.dev has no key for it and no source scores it (checked 2026-10-12)"
+
+[[ignore]]
+inventory = { provider_id = "ollama", model_name = "ornith-1.5:9b" }
+reason = "models.dev has an Ornith 1.5 key for the 35B only and no source scores the 9B (checked 2026-10-12)"
+
+[[ignore]]
+inventory = { provider_id = "openrouter", model_name = "nex-agi/nex-n2.5-pro:free" }
+reason = "models.dev's OpenRouter row has no canonical id, no key exists for Nex N2.5 and no source scores it (checked 2026-10-12)"
+
+[[ignore]]
+source = "epoch"
+id = "Mistral Large"
+reason = "Epoch's runs are under model_version mistral-large-2402 (2024-02-26); the one models.dev row with that id has no key, and the bare name must never match a later Mistral Large (checked 2026-10-12)"
