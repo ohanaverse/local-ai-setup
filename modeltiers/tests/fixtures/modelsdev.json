@@ -24,5 +24,14 @@
   "models": {
    "glm-5.3": {"id": "glm-5.3", "name": "GLM-5.3", "tool_call": true, "open_weights": true, "limit": {"context": 1000000, "output": 131072}, "canonical_model_id": "zhipuai/glm-5.3"}
   }
+ },
+ "deepinfra": {
+  "id": "deepinfra",
+  "name": "Deep Infra",
+  "models": {
+   "google/gemma-4-31B-it": {"id": "google/gemma-4-31B-it", "name": "Gemma 4 31B IT", "tool_call": true, "open_weights": true, "limit": {"context": 262144, "output": 32768}, "canonical_model_id": "google/gemma-4-31b-it"},
+   "Qwen/Qwen3.8-27B": {"id": "Qwen/Qwen3.8-27B", "name": "Qwen3.8 27B", "tool_call": true, "open_weights": true, "limit": {"context": 262144, "output": 32768}, "canonical_model_id": "alibaba/qwen3.8-27b"},
+   "deepseek-ai/DeepSeek-V4-Pro": {"id": "deepseek-ai/DeepSeek-V4-Pro", "name": "DeepSeek V4 Pro", "tool_call": true, "open_weights": true, "limit": {"context": 1048576, "output": 16384}, "canonical_model_id": "deepseek/deepseek-v4-pro"}
+  }
  }
 }

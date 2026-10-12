@@ -82,7 +82,7 @@ def arena_doc(read_fixture: Callable[[str], bytes]) -> Callable[..., bytes]:
 @pytest.fixture
 def specs() -> SourceSpecs:
     """The four sources with minimums that fit the golden fixtures."""
-    return loader.build_specs(modelsdev_min=8, openrouter_min=4, arena_min=5, epoch_min=5)
+    return loader.build_specs(modelsdev_min=11, openrouter_min=4, arena_min=5, epoch_min=5)
 
 
 @pytest.fixture

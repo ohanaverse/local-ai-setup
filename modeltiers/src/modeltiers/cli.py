@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from modeltiers import aliases as aliases_mod
 from modeltiers import inventory as inventory_mod
-from modeltiers import loader, paths
+from modeltiers import loader, paths, pipeline, report
 from modeltiers.errors import ModelTiersError
 from modeltiers.fetch import Fetcher, Sleep, http_fetcher
 from modeltiers.inventory import RunWt
@@ -38,6 +39,7 @@ class Deps:
     now: Callable[[], datetime] = _utc_now
     run_wt: RunWt = inventory_mod.run_wt
     specs: SourceSpecs = field(default_factory=loader.build_specs)
+    aliases_path: Path | None = None  # None: the committed data/aliases.toml
 
 
 def _warn(message: str) -> None:
@@ -51,7 +53,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser(
-        "run", help="read the inventory and the four sources and report on them"
+        "run", help="read the inventory and the four sources and report how each model resolved"
     )
     run.add_argument("--dry-run", action="store_true", help="write no output file")
     run.add_argument(
@@ -69,6 +71,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run(args: argparse.Namespace, deps: Deps) -> int:
+    # Before the inventory is read and before any fetch: a bad aliases.toml
+    # costs no download.
+    aliases = aliases_mod.load_aliases(deps.aliases_path)
     inventory = inventory_mod.load_inventory(path=args.inventory, run_wt=deps.run_wt)
     for line in inventory_mod.provider_warnings(inventory):
         _warn(line)
@@ -81,6 +86,9 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
         offline=args.offline,
         warn=_warn,
     )
+    identity = pipeline.resolve_all(inventory, sources, aliases)
+    for line in identity.warnings:
+        _warn(line)
     print(
         f"inventory: {len(inventory.rows)} models "
         f"({inventory.native_dropped} native rows dropped), registry {inventory.registry}"
@@ -90,7 +98,9 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
             f"{result.name}: {result.status}, {result.records} records, "
             f"fetched {result.fetched_at.strftime(STAMP)}"
         )
-    print("nothing written: this version stops after parsing the sources")
+    for line in report.identity_lines(identity):
+        print(line)
+    print("nothing written: this version stops after resolving names")
     return EXIT_STALE if any(r.fallback for r in sources.results()) else EXIT_OK
 
 

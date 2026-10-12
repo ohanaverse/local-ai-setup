@@ -7,20 +7,41 @@ from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch, snapshots
 from modeltiers.errors import FetchError, InventoryError
+from modeltiers.identity import HOST_NOTE
 from modeltiers.loader import SourceSpecs
 
 T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
 T1 = T0 + timedelta(days=7)
 INVENTORY = Path(__file__).parent / "fixtures" / "inventory.json"
+ALIASES = Path(__file__).parent / "fixtures" / "aliases.toml"
 Answers = dict[str, list[bytes | Exception]]
 
-CLEAN_REPORT = """\
-inventory: 6 models (1 native rows dropped), registry /home/owner/.config/local-ai/registry.toml
-modelsdev: ok, 8 records, fetched 2026-10-12T15:58:00Z
+CLEAN_REPORT = f"""\
+inventory: 8 models (1 native rows dropped), registry /home/owner/.config/local-ai/registry.toml
+modelsdev: ok, 11 records, fetched 2026-10-12T15:58:00Z
 openrouter: ok, 4 records, fetched 2026-10-12T15:58:00Z
 arena: ok, 5 records, fetched 2026-10-12T15:58:00Z
 epoch: ok, 5 records, fetched 2026-10-12T15:58:00Z
-nothing written: this version stops after parsing the sources
+identity: 8 rows: 6 resolved, 1 ignored, 1 unmapped
+  ollama/glm-5.3:cloud            host        zhipuai/glm-5.3
+  ollama/deepseek-v4-pro:cloud    alias       deepseek/deepseek-v4-pro-0813
+  openrouter/z-ai/glm-5.3         host        zhipuai/glm-5.3
+  ollama/qwen3.8:27b-mlx          normalized  alibaba/qwen3.8-27b  [inherited]
+  ollama/medgemma:27b             unmapped
+  ollama/minimax-m3:cloud         normalized  minimax/MiniMax-M3  [{HOST_NOTE}]
+  ollama/nomic-embed-text:latest  ignored     embedding model
+  ollama/gemma4:31b-mlx           normalized  google/gemma-4-31b-it  [inherited]
+unmapped: 1 (each needs an [[alias]] or an [[ignore]] in aliases.toml)
+  ollama/medgemma:27b
+review: 3 matched by name alone (check each)
+  ollama/qwen3.8:27b-mlx -> alibaba/qwen3.8-27b
+  ollama/minimax-m3:cloud -> minimax/MiniMax-M3
+  ollama/gemma4:31b-mlx -> google/gemma-4-31b-it
+unresolved: source records no step resolved (counts only; listing those at or above a standard floor needs contracts.toml)
+  openrouter: 1 of 4 records, 0 ignored, 2 keys resolved
+  arena: 1 of 5 records, 0 ignored, 4 keys resolved
+  epoch: 0 of 5 records, 1 ignored, 4 keys resolved
+nothing written: this version stops after resolving names
 """
 
 
@@ -34,9 +55,17 @@ def _deps(
     *,
     now: datetime = T0,
     run_wt: Callable[[], str] = _never_run_wt,
+    aliases_path: Path = ALIASES,
 ) -> tuple[cli.Deps, FakeFetcher]:
     fetcher = FakeFetcher(answers)
-    deps = cli.Deps(fetcher=fetcher, sleep=Sleeps(), now=lambda: now, run_wt=run_wt, specs=specs)
+    deps = cli.Deps(
+        fetcher=fetcher,
+        sleep=Sleeps(),
+        now=lambda: now,
+        run_wt=run_wt,
+        specs=specs,
+        aliases_path=aliases_path,
+    )
     return deps, fetcher
 
 
@@ -83,7 +112,7 @@ def test_without_inventory_flag_wt_is_asked(
 ) -> None:
     deps, _ = _deps(specs, good_answers, run_wt=INVENTORY.read_text)
     assert cli.main(["run", "--dry-run"], deps=deps) == 0
-    assert capsys.readouterr().out.startswith("inventory: 6 models")
+    assert capsys.readouterr().out.startswith("inventory: 8 models")
 
 
 def test_a_source_that_falls_back_is_stale_and_exits_2(
@@ -202,3 +231,78 @@ def test_default_deps_are_the_real_seams() -> None:
     assert deps.fetcher is fetch.http_fetcher
     assert deps.specs.arena.name == "arena"
     assert deps.now().tzinfo is UTC
+    assert deps.aliases_path is None  # the committed data/aliases.toml
+
+
+def test_an_invalid_aliases_file_exits_1_before_wt_and_before_any_fetch(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "aliases.toml"
+    bad.write_text(
+        "[[ignore]]\n"
+        'inventory = { provider_id = "ollama", model_name = "nomic-embed-text:latest" }\n'
+    )
+    # No --inventory: _never_run_wt fails the test if wt is asked.
+    deps, fetcher = _deps(specs, good_answers, aliases_path=bad)
+    assert cli.main(["run", "--dry-run"], deps=deps) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "modeltiers: aliases.toml: [[ignore]] #1: an ignore needs a reason\n"
+    assert fetcher.calls == []
+
+
+def test_an_unanchored_alias_exits_1_once_models_dev_is_parsed(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    unanchored = tmp_path / "aliases.toml"
+    unanchored.write_text(
+        "[[alias]]\n"
+        'canonical = "google/gemini-4-argon"\n'
+        'inventory = [{ provider_id = "ollama", model_name = "medgemma:27b" }]\n'
+    )
+    deps, fetcher = _deps(specs, good_answers, aliases_path=unanchored)
+    assert cli.main(["run", "--dry-run", "--inventory", str(INVENTORY)], deps=deps) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(
+        "modeltiers: aliases.toml: [[alias]] #1 (google/gemini-4-argon): canonical is not a "
+        "models.dev key and the entry lists no openrouter, arena or epoch id\n"
+    )
+    assert fetch.MODELSDEV_URL in fetcher.calls
+
+
+def test_a_stale_alias_id_is_a_warning_and_the_run_goes_on(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stale = tmp_path / "aliases.toml"
+    stale.write_text(
+        ALIASES.read_text() + '\n[[alias]]\ncanonical = "zhipuai/glm-5.3"\narena = ["GLM 5.2"]\n'
+    )
+    deps, _ = _deps(specs, good_answers, aliases_path=stale)
+    assert cli.main(["run", "--dry-run", "--inventory", str(INVENTORY)], deps=deps) == 0
+    captured = capsys.readouterr()
+    assert captured.out == CLEAN_REPORT
+    assert captured.err.endswith(
+        "warning: alias for zhipuai/glm-5.3 names arena id 'GLM 5.2', "
+        "which is not in this run's arena data\n"
+    )
+
+
+def test_with_no_aliases_every_row_falls_to_the_rules(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    empty = tmp_path / "aliases.toml"
+    empty.write_text("")
+    deps, _ = _deps(specs, good_answers, aliases_path=empty)
+    assert cli.main(["run", "--dry-run", "--inventory", str(INVENTORY)], deps=deps) == 0
+    out = capsys.readouterr().out
+    assert "identity: 8 rows: 6 resolved, 0 ignored, 2 unmapped\n" in out
+    # Joined by name to the April key, and listed for review with its note.
+    assert (
+        "  ollama/deepseek-v4-pro:cloud    normalized  deepseek/deepseek-v4-pro  "
+        f"[{HOST_NOTE}]\n" in out
+    )
+    assert "  ollama/deepseek-v4-pro:cloud -> deepseek/deepseek-v4-pro\n" in out
+    assert "unmapped: 2 (each needs" in out
+    assert "  ollama/nomic-embed-text:latest\n" in out
+    assert "  epoch: 1 of 5 records, 0 ignored, 4 keys resolved\n" in out
