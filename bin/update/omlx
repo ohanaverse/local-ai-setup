@@ -1,0 +1,97 @@
+#!/bin/bash
+# update/omlx — upgrade the omlx Homebrew keg and restart its service.
+#
+# Why the explicit service restart: `brew upgrade` does not restart services it
+# was not asked about (the upgrade help text says nothing about services), and
+# omlx is a long-running server — the freshly-installed keg sits unused until
+# the LaunchAgent is bounced. omlx's CLI has no `upgrade` or `update`
+# subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only), so
+# Homebrew is the only upgrade path.
+#
+# This keg is also where mlx_lm lives: bin/mlx-quantize and update/mlx-lm-server
+# both resolve mlx_lm.* out of /opt/homebrew/Cellar/omlx/*/libexec/bin (see
+# bin/lib/mlx-lm-resolve.sh). Upgrading omlx therefore upgrades mlx_lm too —
+# which is why update/mlx-lm-server delegates here rather than pretending to
+# have an update path of its own.
+#
+# Usage: update/omlx [--no-restart] [--restart] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/omlx [--no-restart] [--restart] [--dry-run] [--check]
+
+Upgrade omlx (Homebrew) and, if anything was upgraded, restart its brew
+service. Also upgrades mlx_lm, which ships inside the omlx keg.
+
+  --no-restart  upgrade but leave the running service alone
+  --restart     restart the service even when nothing was upgraded (it unloads
+                every model in the pool)
+  --dry-run     print the commands without running them
+  --check       report the installed version and whether brew sees an update;
+                runs `brew update` first, because omlx comes from a third-party
+                tap that is only as fresh as its last fetch
+EOF
+}
+
+update_init omlx "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --no-restart) NO_RESTART=1 ;;
+        --restart) FORCE_RESTART=1 ;;
+        *)
+            printf 'update/omlx: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+require_cmd brew
+require_cmd omlx
+
+installed_version=$(omlx --version 2> /dev/null || echo unknown)
+update_note "installed: $installed_version"
+
+# omlx is the one brew tool here that lives in a third-party tap (jundot/omlx),
+# so ask brew to fetch before asking it what is outdated — otherwise --check
+# reports `current` on a release the next real run would install. Skipped under
+# --dry-run, which runs nothing.
+dry_run_stop || brew_refresh
+outdated=$(brew_outdated omlx)
+
+if [ "$UPDATE_CHECK" -eq 1 ]; then
+    if [ -n "$outdated" ]; then
+        update_finish stale "$installed_version installed; brew has $outdated"
+    fi
+    update_finish current "$installed_version"
+fi
+
+brew_upgrade omlx
+
+if dry_run_stop; then
+    brew_dry_run_finish omlx "$outdated" "$installed_version"
+fi
+
+new_version=$(omlx --version 2> /dev/null || echo unknown)
+update_note "installed: $new_version"
+
+restarted=""
+if [ -n "${NO_RESTART:-}" ]; then
+    update_note "restart skipped (--no-restart); the server is still running the old keg"
+elif ! brew_restart_due "$outdated" "$installed_version" "$new_version"; then
+    update_note "nothing was upgraded, so the running server was left alone (--restart bounces it anyway)"
+else
+    brew_restart omlx
+    restarted="brew services restarted omlx"
+    wait_for_http http://localhost:8000/v1/models "$RESTART_WAIT"
+    update_note "server http $HTTP_CODE (200 = serving; real omlx allows keyless inference)"
+    [ "$HTTP_CODE" != "000" ] ||
+        update_fail "omlx $new_version did not answer within ${RESTART_WAIT}s of its restart"
+fi
+
+finish_after_upgrade "$installed_version" "$new_version" brew "$(brew_outdated omlx)" "$restarted"

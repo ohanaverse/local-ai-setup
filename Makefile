@@ -1,9 +1,12 @@
-.PHONY: lint lint-shell check-links test-all install
+.PHONY: lint lint-shell check-links test-all install update-tools
 
 SHELL_SCRIPTS := \
 	bin/lib/mlx-lm-resolve.sh \
+	bin/lib/update-common.sh \
 	bin/mlx-quantize \
 	bin/check-config-dirs-untouched \
+	bin/update/* \
+	bin/update-tools \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \
 	benchmarks/ornith-1.5-benchmark \
@@ -39,3 +42,6 @@ test-all: lint
 install: ## Install all monorepo components (wt + llmbench).
 	cd wt && make install
 	cd llmbench && make install
+
+update-tools: ## Update every tool the wt stack runs (see bin/update-tools)
+	@bin/update-tools $(ARGS)

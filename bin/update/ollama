@@ -1,0 +1,96 @@
+#!/bin/bash
+# update/ollama — check for an Ollama update and report how to apply it.
+#
+# Why this script does not upgrade anything: Ollama has no update path on the
+# command line. `ollama --help` lists serve/create/show/run/stop/pull/push/
+# signin/signout/list/ps/cp/rm/launch and nothing else, and the daemon is not a
+# brew service or a plist — it is the app (/Applications/Ollama.app, launched as
+# a login item). Updates come through the app's own flow (guide 08 §4). What
+# this script can do is answer the question that actually matters — do I need to
+# bother opening the app? — so it reads the installed version, the latest
+# published release, and whether the CLI binary is still the app's own.
+#
+# The symlink check is the one real trap here: /usr/local/bin/ollama is a
+# symlink into the app bundle, so the CLI version always tracks the app. If that
+# link is ever replaced by a copied binary, the CLI silently keeps answering
+# with the old version while the app updates underneath it — the "installed
+# binary is STALE" failure guide 08 warns about for wt, in a different costume.
+#
+# Usage: update/ollama [--no-network] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/ollama [--no-network] [--dry-run] [--check]
+
+Report the installed Ollama version, the latest published release, and how to
+apply an update (the app's own flow — there is no CLI updater).
+
+  --no-network  skip the release lookup and report only the local state
+  --dry-run     this script changes nothing anyway; kept for consistency
+  --check       report and exit (identical to the default; nothing is ever run)
+EOF
+}
+
+update_init ollama "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --no-network) NO_NETWORK=1 ;;
+        *)
+            printf 'update/ollama: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+require_cmd ollama
+
+# `ollama version is X` is the daemon's answer. With the daemon down the CLI
+# prints only "Warning: client version is X" (after a could-not-connect line),
+# so take that as the fallback rather than calling the version unknown.
+installed=$(ollama --version 2> /dev/null |
+    sed -n -e 's/^ollama version is //p' -e 's/^Warning: client version is //p' | head -1)
+installed=${installed:-unknown}
+update_note "installed: $installed"
+
+APP="/Applications/Ollama.app"
+app_version=""
+if [ -f "$APP/Contents/Info.plist" ]; then
+    app_version=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist" 2> /dev/null || true)
+    update_note "app: $APP (CFBundleShortVersionString ${app_version:-unknown})"
+else
+    update_note "no app bundle at $APP"
+fi
+
+cli=$(command -v ollama)
+if [ -L "$cli" ]; then
+    update_note "cli: $cli -> $(readlink "$cli")"
+elif [ -n "$app_version" ]; then
+    update_note "cli: $cli is a real file, not a symlink into the app — if it lags the"
+    update_note "     app version above, that copy is what answers 'ollama', not the app"
+fi
+
+daemon=$(curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w '%{http_code}' 2> /dev/null || true)
+update_note "daemon http ${daemon:-000} (200 = the daemon is answering)"
+
+# Best-effort: this is a convenience, not a check that should fail the script
+# when the network is unavailable. The `v?` is why this is a `sed -E`: BSD sed
+# has no `\?`, and a GNU-style basic regex here matches nothing at all (silently
+# reporting "latest: unknown" on a machine with a perfectly good network).
+latest=""
+if [ -z "${NO_NETWORK:-}" ]; then
+    latest=$(curl -fsSL -m 8 https://api.github.com/repos/ollama/ollama/releases/latest 2> /dev/null \
+        | sed -E -n 's/.*"tag_name": *"v?([^"]*)"?.*/\1/p' | head -1 || true)
+fi
+
+if [ -z "$latest" ]; then
+    update_note "latest: unknown (no network, or the release lookup failed)"
+    update_finish manual "$installed installed — update through Ollama.app (guide 08 §4)"
+fi
+
+finish_against_published "$installed" "$latest" "update through Ollama.app, then re-check"

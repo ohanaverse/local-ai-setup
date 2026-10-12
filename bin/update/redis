@@ -1,0 +1,106 @@
+#!/bin/bash
+# update/redis — upgrade redis and restart its brew service.
+#
+# Why --build-from-source is the default here: on this machine the redis bottle
+# pour fails on redisearch.so — `brew install`/`upgrade` aborts with
+# "Failed to read Mach-O binary ... redisearch.so ... Errno::EPERM" — and even
+# a source-built copy of that module is unreadable system-wide, which aborts
+# Redis at module load (`dlopen ... errno=1` in /opt/homebrew/var/log/redis.log).
+# No third-party antivirus is installed; it is a per-file read denial this box
+# applies to that one module (2026-09-30, guide 08 §6). Compiling the formula
+# means the bottle's redisearch.so is never poured, at the cost of build time.
+# RedisBloom/ReJSON/Timeseries load fine; only the redisearch.so line in
+# /opt/homebrew/etc/redis.conf is commented out, and LiteLLM needs plain Redis
+# only. Pass --bottle to take the fast path once the bottle is known good again.
+#
+# Usage: update/redis [--bottle] [--no-restart] [--restart] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/redis [--bottle] [--no-restart] [--restart] [--dry-run] [--check]
+
+Upgrade redis (compiled from source by default, see the header) and, if
+anything was upgraded, restart its brew service.
+
+  --bottle      use the plain `brew upgrade redis` (fast path, known to fail on
+                this machine's redisearch.so)
+  --no-restart  upgrade but leave the server alone
+  --restart     restart the server even when nothing was upgraded
+  --dry-run     print the commands without running them
+  --check       report the installed version and whether brew sees an update
+EOF
+}
+
+update_init redis "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --bottle) BOTTLE=1 ;;
+        --no-restart) NO_RESTART=1 ;;
+        --restart) FORCE_RESTART=1 ;;
+        *)
+            printf 'update/redis: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+require_cmd brew
+
+FORMULA=redis
+prefix=$(brew --prefix "$FORMULA" 2> /dev/null || true)
+if [ ! -x "$prefix/bin/redis-cli" ]; then
+    update_finish not-installed "no $FORMULA in the brew prefix (brew install $FORMULA)"
+fi
+
+installed_raw=$("$prefix/bin/redis-cli" --version 2> /dev/null || echo unknown)
+installed_version=${installed_raw#redis-cli }
+update_note "installed: $installed_raw"
+
+outdated=$(brew_outdated "$FORMULA")
+
+if [ "$UPDATE_CHECK" -eq 1 ]; then
+    if [ -n "$outdated" ]; then
+        update_finish stale "$installed_version installed; brew has $outdated"
+    fi
+    update_finish current "$installed_version"
+fi
+
+if [ -n "${BOTTLE:-}" ]; then
+    update_note "using the bottle (--bottle); this fails on redisearch.so on this machine"
+    brew_upgrade "$FORMULA"
+else
+    update_note "compiling from source to avoid the redisearch.so bottle pour"
+    brew_upgrade --build-from-source "$FORMULA"
+fi
+
+if dry_run_stop; then
+    brew_dry_run_finish "$FORMULA" "$outdated" "$installed_version"
+fi
+
+new_raw=$("$prefix/bin/redis-cli" --version 2> /dev/null || echo unknown)
+new_version=${new_raw#redis-cli }
+update_note "installed: $new_raw"
+
+restarted=""
+if [ -n "${NO_RESTART:-}" ]; then
+    update_note "restart skipped (--no-restart)"
+elif ! brew_restart_due "$outdated" "$installed_version" "$new_version"; then
+    update_note "nothing was upgraded, so the running server was left alone (--restart bounces it anyway)"
+else
+    brew_restart "$FORMULA"
+    restarted="brew services restarted $FORMULA"
+    if wait_for_cmd "$RESTART_WAIT" "$prefix/bin/redis-cli" ping; then
+        update_note "ping: $CMD_OUTPUT (PONG = serving)"
+    else
+        update_note "ping: $CMD_OUTPUT"
+        update_fail "$FORMULA $new_version is not answering ${RESTART_WAIT}s after its restart — check /opt/homebrew/var/log/redis.log for redisearch"
+    fi
+fi
+
+finish_after_upgrade "$installed_version" "$new_version" brew "$(brew_outdated "$FORMULA")" "$restarted"

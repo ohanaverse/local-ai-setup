@@ -1,0 +1,105 @@
+#!/bin/bash
+# update/wt — rebuild and reinstall the wt launcher from this repo.
+#
+# Why this is a rebuild rather than a download: wt is not published anywhere —
+# the checkout beside this script IS the source of truth. `make install` in
+# wt/ is the right entry point and not a shortcut: it builds to wt/bin/wt,
+# re-seals the ad-hoc code signature, then copies bin/* into ~/.local/bin and
+# re-seals the copy again. Both seals matter. A stale or drifted signature is
+# rejected by AMFI with "Taskgated Invalid Signature" and the binary is
+# SIGKILLed on launch (exit 137) — and the copy needs its own seal because
+# `cp` does not reproduce one AMFI will accept. Reimplementing that here would
+# only lose the two codesign steps, so this script shells out to it.
+#
+# `git pull` is NOT run by default: this checkout is shared with wt's own
+# worktrees and an unattended pull that moves main under a working tree is
+# exactly the kind of surprise a "update my tools" script must not spring.
+# Pass --pull to opt in.
+#
+# Usage: update/wt [--pull] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/wt [--pull] [--dry-run] [--check]
+
+Rebuild and reinstall wt from this checkout (wt/Makefile `install`).
+
+  --pull    run `git pull --ff-only` in the repo root first
+  --dry-run print the commands without running them
+  --check   report the installed version and whether any source (Go, embedded
+            files, go.mod/go.sum, the *-wt shims) is newer; change nothing
+EOF
+}
+
+update_init wt "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --pull) PULL=1 ;;
+        *)
+            printf 'update/wt: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+WT_DIR="$REPO_ROOT/wt"
+INSTALLED="$HOME/.local/bin/wt"
+
+if [ ! -x "$INSTALLED" ]; then
+    update_finish not-installed "no binary at $INSTALLED (run: make -C wt install)"
+fi
+
+installed_version=$("$INSTALLED" --version 2> /dev/null || echo unknown)
+update_note "installed: $installed_version ($INSTALLED)"
+
+# Staleness is "a source file is newer than the installed binary" — the
+# honest check for a binary with no version stamp that moves with the source.
+# "Source" is everything `make install` puts in ~/.local/bin, not just *.go:
+# the module files, whatever cmd/ and internal/ hold beside the Go (the guard's
+# hook.sh is compiled in through go:embed), and the *-wt shims it copies.
+find_stale_src() {
+    find "$WT_DIR/cmd" "$WT_DIR/internal" "$WT_DIR/go.mod" "$WT_DIR/go.sum" "$WT_DIR"/bin/*-wt \
+        -type f -newer "$INSTALLED" -print -quit 2> /dev/null || true
+}
+
+stale_src=$(find_stale_src)
+if [ -n "$stale_src" ]; then
+    update_note "stale: $(basename "$stale_src") is newer than the installed binary"
+else
+    update_note "no source newer than the installed binary"
+fi
+
+if [ "$UPDATE_CHECK" -eq 1 ]; then
+    if [ -n "$stale_src" ]; then
+        update_finish stale "$installed_version installed, $(basename "$stale_src") is newer"
+    fi
+    update_finish current "$installed_version"
+fi
+
+if [ -n "${PULL:-}" ]; then
+    run git -C "$REPO_ROOT" pull --ff-only || update_fail "git pull failed"
+    # The pull is what brings new source, so ask again: the answer from before
+    # it would report a rebuild of freshly pulled code as "source unchanged".
+    stale_src=$(find_stale_src)
+fi
+
+run make -C "$WT_DIR" install || update_fail "make -C wt install failed"
+
+if dry_run_stop; then
+    update_finish dry-run "would rebuild $installed_version from $WT_DIR"
+fi
+
+new_version=$("$INSTALLED" --version 2> /dev/null || echo unknown)
+update_note "installed: $new_version"
+
+if [ -n "$stale_src" ]; then
+    update_finish updated "$installed_version -> $new_version"
+fi
+update_finish current "$new_version (rebuilt, source unchanged)"
