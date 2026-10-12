@@ -11,7 +11,7 @@ from modeltiers.contracts import RANK, UNRATED, Contracts
 from modeltiers.errors import ConfigError
 from modeltiers.identity import Index, Match, RowIdentity, SourceIdentity
 from modeltiers.loader import Sources
-from modeltiers.records import Inventory, ScoreRecord
+from modeltiers.records import Inventory, ModelsDev, ScoreRecord
 
 # How an [[ignore]]d row's reason is written into the entry's `notes`; the
 # change report matches an existing file's notes on this prefix.
@@ -44,16 +44,22 @@ class Identity:
         return tuple(r for r in self.rows if r.resolved_by == identity.NORMALIZED)
 
 
-def resolve_all(inventory: Inventory, sources: Sources, aliases: Aliases) -> Identity:
-    """Resolve the inventory and the three benchmark sources against one
-    models.dev snapshot. Raises ConfigError for an alias whose canonical is
+def checked_index(modelsdev: ModelsDev, aliases: Aliases) -> Index:
+    """The index of one models.dev snapshot, once the aliases are checked
+    against its keys. Raises ConfigError for an alias whose canonical is
     neither a models.dev key nor anchored by a source id, and for one that
     declares a key reading the same as another."""
-    modelsdev = sources.modelsdev.data
     modelsdev_keys = tuple(r.canonical for r in modelsdev.rows if r.canonical)
     aliases_mod.check_anchored(aliases, modelsdev_keys)
     aliases_mod.check_spelling(aliases, modelsdev_keys)
-    index = identity.build_index(modelsdev, aliases)
+    return identity.build_index(modelsdev, aliases)
+
+
+def resolve_all(inventory: Inventory, sources: Sources, aliases: Aliases) -> Identity:
+    """Resolve the inventory and the three benchmark sources against one
+    models.dev snapshot. Raises ConfigError for an alias `checked_index`
+    refuses."""
+    index = checked_index(sources.modelsdev.data, aliases)
     data = {name: getattr(sources, name).data for name in SOURCES}
     present = {name: frozenset(r.source_id for r in records) for name, records in data.items()}
     return Identity(

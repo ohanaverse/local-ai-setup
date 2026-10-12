@@ -2,6 +2,7 @@
 out of the real config and cache directories, plus the fixture-file helpers."""
 
 import io
+import json
 import re
 import subprocess
 import urllib.error
@@ -38,6 +39,16 @@ def without_timestamps(text: str) -> str:
     return _STAMPS.sub(r'\1 = "<time>"', text)
 
 
+def scaled_openrouter(body: bytes, factor: float) -> bytes:
+    """An OpenRouter body with every intelligence index multiplied."""
+    doc = json.loads(body)
+    for model in doc["data"]:
+        indices = (model.get("benchmarks") or {}).get("artificial_analysis")
+        if indices:
+            indices["intelligence_index"] *= factor
+    return json.dumps(doc).encode()
+
+
 def _no_network(*args: Any, **kwargs: Any) -> Any:
     raise urllib.error.URLError("hermetic test: no network")
 
@@ -61,6 +72,12 @@ def _hermetic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     monkeypatch.setenv("MODELTIERS_OUT", str(tmp_path / "out" / "tiers.toml"))
     monkeypatch.setenv("MODELTIERS_CACHE", str(tmp_path / "cache"))
+
+
+@pytest.fixture
+def out(tmp_path: Path) -> Path:
+    """Where `_hermetic` points MODELTIERS_OUT."""
+    return tmp_path / "out" / "tiers.toml"
 
 
 @pytest.fixture

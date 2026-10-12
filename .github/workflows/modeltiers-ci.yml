@@ -6,12 +6,18 @@ on:
     paths:
       - "modeltiers/**"
       - "docs/contracts/tiers.sample.toml"
+      # tests/test_guide_samples.py pins the sample blocks of these two guides.
+      - "docs/guides/00-config-map.md"
+      - "docs/guides/12-model-tiers.md"
       - "bin/check-config-dirs-untouched"
       - ".github/workflows/modeltiers-ci.yml"
   pull_request:
     paths:
       - "modeltiers/**"
       - "docs/contracts/tiers.sample.toml"
+      # tests/test_guide_samples.py pins the sample blocks of these two guides.
+      - "docs/guides/00-config-map.md"
+      - "docs/guides/12-model-tiers.md"
       - "bin/check-config-dirs-untouched"
       - ".github/workflows/modeltiers-ci.yml"
 

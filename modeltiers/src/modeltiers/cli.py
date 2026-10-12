@@ -10,17 +10,30 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
+from math import inf
 from pathlib import Path
 
 from modeltiers import aliases as aliases_mod
-from modeltiers import changes, loader, output, paths, pipeline, report, show, snapshots
+from modeltiers import (
+    changes,
+    identity,
+    ladder,
+    loader,
+    output,
+    paths,
+    pipeline,
+    report,
+    show,
+    snapshots,
+)
 from modeltiers import contracts as contracts_mod
 from modeltiers import inventory as inventory_mod
 from modeltiers.errors import ConfigError, ModelTiersError
 from modeltiers.fetch import Fetcher, Sleep, http_fetcher
 from modeltiers.inventory import RunWt
-from modeltiers.loader import SourceSpecs
-from modeltiers.records import Inventory
+from modeltiers.loader import ScoreRecords, SourceResult, SourceSpec, SourceSpecs
+from modeltiers.records import Inventory, ModelsDev
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -48,6 +61,13 @@ class Deps:
 
 def _warn(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
+
+
+def _source_line(result: SourceResult[ModelsDev] | SourceResult[ScoreRecords]) -> str:
+    return (
+        f"{result.name}: {result.status}, {result.records} records, "
+        f"fetched {result.fetched_at.strftime(STAMP)}"
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -84,6 +104,20 @@ def _parser() -> argparse.ArgumentParser:
         "explain", help="print how one model was identified and why it has its tier"
     )
     explain.add_argument("model", help="provider_id/model_name, or a canonical key")
+    rungs = commands.add_parser(
+        "ladder",
+        help=(
+            "print one signal's resolved scores from the newest snapshots, highest first, "
+            "with the gap under each: where a floor can go"
+        ),
+    )
+    rungs.add_argument("signal", choices=ladder.CHOICES)
+    rungs.add_argument(
+        "--low", type=float, default=-inf, metavar="SCORE", help="leave out lower scores"
+    )
+    rungs.add_argument(
+        "--high", type=float, default=inf, metavar="SCORE", help="leave out higher scores"
+    )
     return parser
 
 
@@ -133,10 +167,7 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
         f"({inventory.native_dropped} native rows dropped), registry {inventory.registry}"
     )
     for result in sources.results():
-        print(
-            f"{result.name}: {result.status}, {result.records} records, "
-            f"fetched {result.fetched_at.strftime(STAMP)}"
-        )
+        print(_source_line(result))
     for line in (
         *report.identity_lines(identity),
         *report.unresolved_lines(assignment),
@@ -201,10 +232,44 @@ def _explain(args: argparse.Namespace, deps: Deps) -> int:
     return EXIT_OK
 
 
+def _ladder(args: argparse.Namespace, deps: Deps) -> int:
+    """Reads the newest good snapshot of models.dev and of the signal's own
+    source, and nothing else: no fetch, no wt, no output file."""
+    aliases = aliases_mod.load_aliases(deps.aliases_path)
+    source = contracts_mod.SIGNAL_SOURCE[args.signal.removesuffix(ladder.LOWER)]
+    spec: SourceSpec[ScoreRecords] = getattr(deps.specs, source)
+    load = partial(
+        loader.load_source,
+        cache=paths.cache_dir(),
+        fetcher=deps.fetcher,
+        sleep=deps.sleep,
+        now=deps.now(),
+        offline=True,
+        warn=_warn,
+    )
+    modelsdev = load(deps.specs.modelsdev)
+    scored = load(spec)
+    index = pipeline.checked_index(modelsdev.data, aliases)
+    best = identity.resolve_source(source, scored.data, index, aliases).best.values()
+    lines = ladder.ladder_lines(
+        best, lower_bound=args.signal.endswith(ladder.LOWER), low=args.low, high=args.high
+    )
+    if not lines:
+        print(
+            f"modeltiers: no resolved {args.signal} score from {args.low} to {args.high}",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    for line in (_source_line(modelsdev), _source_line(scored), *lines):
+        print(line)
+    return EXIT_OK
+
+
 _COMMANDS: dict[str, Callable[[argparse.Namespace, Deps], int]] = {
     "run": _run,
     "show": _show,
     "explain": _explain,
+    "ladder": _ladder,
 }
 
 

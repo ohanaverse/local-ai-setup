@@ -1,6 +1,6 @@
 # local-ai-setup
 
-Entry point for running local and routed LLMs on macOS. One monorepo, three
+Entry point for running local and routed LLMs on macOS. One monorepo, four
 components — fresh install starts at
 [docs/guides/01-initial-setup.md](docs/guides/01-initial-setup.md).
 
@@ -8,6 +8,7 @@ components — fresh install starts at
 |---|---|
 | Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
 | `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
+| `modeltiers/` | advisory capability tiers for the models wt lists, from public benchmark sources (`modeltiers` CLI) |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
 ## User guides (docs/guides/)
@@ -29,6 +30,7 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`09-agent-benchmarks.md`](docs/guides/09-agent-benchmarks.md) | agentic coding benchmark (`llmbench agent`) |
 | [`10-mlx-lm-quantization.md`](docs/guides/10-mlx-lm-quantization.md) | local mlx-lm quantization + `mlx_lm_server` speculative decoding |
 | [`11-capability-eval-benchmark.md`](docs/guides/11-capability-eval-benchmark.md) | cross-category capability benchmark (`llmbench eval`) |
+| [`12-model-tiers.md`](docs/guides/12-model-tiers.md) | which models suit which work: advisory tiers (`modeltiers`), aliases, re-calibration |
 
 ## 60-second health check
 
@@ -77,12 +79,13 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ├── docs/
 │   ├── guides/         # user playbooks — index above
 │   ├── reference/      # backend-specific guides
-│   ├── contracts/      # cross-language config-format fixtures (read by wt Go and llmbench Python tests)
+│   ├── contracts/      # cross-language config-format fixtures (read by wt Go and llmbench Python tests) + modeltiers' output sample
 │   ├── archive/        # superseded docs
 │   └── superpowers/    # plans + specs
 ├── llmbench/           # benchmarks + provider isolation (Python/uv) — has its own CLAUDE.md
+├── modeltiers/         # advisory capability tiers from public sources (Python/uv) — has its own CLAUDE.md
 ├── wt/                 # worktree agent launcher (Go) — has its own CLAUDE.md
-├── .github/workflows/ # CI: shell-ci, wt-ci, llmbench-ci
+├── .github/workflows/ # CI: shell-ci, wt-ci, llmbench-ci, modeltiers-ci
 ├── CLAUDE.md           # agent entry point
 ├── Makefile            # make lint (shellcheck), make check-links, make test-all
 └── README.md           # this file — index only

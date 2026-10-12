@@ -10,6 +10,7 @@ Every file here is a trimmed copy of a public download made on 2026-10-12, cut d
 | `eci_scores.csv`, `eci_scores_too_few.csv`, `eci_scores_malformed.csv` | Epoch AI benchmark data, `https://epoch.ai/data/benchmark_data.zip`, member `epoch_capabilities_index/eci_scores.csv` | CC BY 4.0. Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks |
 | `inventory.json` | `wt model list --json` on the owner's machine | This repository. The registry path is made up; `size_bytes` and `path` are nulled. |
 | `aliases.toml` | Hand-written for the tests | This repository. The same shape as `src/modeltiers/data/aliases.toml`; its entries are chosen for the tests and are not calibration. |
+| `aliases_calibrated.toml` | Hand-written for the tests | This repository. `aliases.toml` after one calibration pass: one more ignore and two more aliases. Read only by `tests/test_calibration.py`. |
 | `contracts.toml` | Hand-written for the tests | This repository. The same shape as `src/modeltiers/data/contracts.toml`, with four sentinels that the golden fixtures satisfy. Its floors are not kept in step with the committed file's. |
 
 Changes made to the copies:
@@ -21,4 +22,4 @@ Changes made to the copies:
 
 The Epoch fixtures are CSV text so they can be read and diffed; the `epoch_zip` fixture in `tests/conftest.py` puts one in a ZIP archive in memory.
 
-`docs/contracts/tiers.sample.toml`, at the repo root, is what `modeltiers run` writes from the golden fixtures here with `aliases.toml` and `contracts.toml`. A change to any of them changes that file; `tests/test_output.py` and `tests/test_cli.py` compare against it apart from timestamps.
+`docs/contracts/tiers.sample.toml`, at the repo root, is what `modeltiers run` writes from the golden fixtures here with `aliases.toml` and `contracts.toml` (not with `aliases_calibrated.toml`). A change to any of them changes that file; `tests/test_output.py` and `tests/test_cli.py` compare against it apart from timestamps.
