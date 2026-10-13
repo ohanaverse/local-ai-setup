@@ -63,6 +63,11 @@ type slotFileSchema struct {
 // SlotStore is slot-profiles.toml as parsed, in file order.
 type SlotStore struct {
 	Profiles []SlotProfile
+	// Unknown lists the keys of the file the schema does not name, as dotted
+	// paths in file order, each once: "profiles" for a [[profiles]] array,
+	// "profile.envs" for a misspelt table of a profile. Such a key is not an
+	// error, and what it holds is not read; wt warns about each.
+	Unknown []string
 }
 
 // SlotPath returns the slot-profiles.toml location, beside profiles.toml
@@ -70,14 +75,45 @@ type SlotStore struct {
 func SlotPath() string { return filepath.Join(config.Dir(), "slot-profiles.toml") }
 
 // ParseSlots decodes the file's bytes. It checks nothing but the TOML and
-// the field types; ValidateSlots judges each profile. A key the schema
-// does not name is ignored, as Load ignores one in profiles.toml.
+// the field types; ValidateSlots judges each profile. A value of the wrong
+// type anywhere fails the whole file. A key the schema does not name fails
+// nothing: it is listed in the store's Unknown (unknownSlotKeys).
 func ParseSlots(data []byte) (SlotStore, error) {
 	var fs slotFileSchema
-	if _, err := toml.Decode(string(data), &fs); err != nil {
+	md, err := toml.Decode(string(data), &fs)
+	if err != nil {
 		return SlotStore{}, fmt.Errorf("parse slot-profiles.toml: %w", err)
 	}
-	return SlotStore{Profiles: fs.Profiles}, nil
+	return SlotStore{Profiles: fs.Profiles, Unknown: unknownSlotKeys(md.Undecoded())}, nil
+}
+
+// unknownSlotKeys turns the decoder's undecoded keys into SlotStore.Unknown.
+// The decoder names an unknown table and then every key under it, names a
+// key once per [[profile]] entry that has it, and names the nested tables of
+// config_content although that table is free-form and was decoded whole. So
+// a key under config_content is dropped, as is a key under one already
+// listed and a key listed before.
+func unknownSlotKeys(undecoded []toml.Key) []string {
+	freeForm := toml.Key{"profile", "config_content"}
+	under := func(k, parent toml.Key) bool {
+		return len(k) > len(parent) && slices.Equal(k[:len(parent)], parent)
+	}
+	var kept []toml.Key
+	var out []string
+next:
+	for _, k := range undecoded {
+		if under(k, freeForm) {
+			continue
+		}
+		for _, have := range kept {
+			if slices.Equal(k, have) || under(k, have) {
+				continue next
+			}
+		}
+		kept = append(kept, k)
+		out = append(out, k.String())
+	}
+	return out
 }
 
 // LoadSlots reads SlotPath(). A missing file is not an error: it is an

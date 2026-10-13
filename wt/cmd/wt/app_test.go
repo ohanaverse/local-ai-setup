@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -155,6 +156,66 @@ func TestNewAppWithoutSlotProfilesFile(t *testing.T) {
 	}
 	if a.slotChecks != nil || a.slotLoadErr != nil {
 		t.Errorf("slotChecks = %+v, slotLoadErr = %v, want nil and nil", a.slotChecks, a.slotLoadErr)
+	}
+}
+
+// TestNewAppKeepsUnknownSlotKeys verifies newApp carries the keys
+// slot-profiles.toml has and the schema does not, also when the file gives no
+// profile at all: a file written with [[profiles]] for [[profile]] loads with
+// no error and no profile, and the key is all there is to warn about. If
+// newApp dropped it, that file would look exactly like no file.
+func TestNewAppKeepsUnknownSlotKeys(t *testing.T) {
+	writeSlotProfilesTOML(t, "[[profiles]]\nname = \"mixed\"\nagent = \"claude\"\n")
+	a, err := newApp()
+	if err != nil {
+		t.Fatalf("newApp() error = %v", err)
+	}
+	if a.slotLoadErr != nil || a.slotChecks != nil {
+		t.Fatalf("slotLoadErr = %v slotChecks = %+v, want a file that loads with no profile", a.slotLoadErr, a.slotChecks)
+	}
+	if want := []string{"profiles"}; !slices.Equal(a.slotUnknown, want) {
+		t.Fatalf("a.slotUnknown = %q, want %q", a.slotUnknown, want)
+	}
+	if got, want := slotWarnings(a), []string{`wt: slot-profiles.toml: unknown key "profiles" — ignored`}; !slices.Equal(got, want) {
+		t.Errorf("slotWarnings() = %q, want %q", got, want)
+	}
+}
+
+// TestWrongTypeInOneSlotProfileFailsTheWholeFile pins the rule for a value of
+// the wrong TOML type: the file does not parse, so no profile of it loads,
+// the valid one beside the bad one included, and the launch gets one warning
+// line that names the file and carries the decoder's error with its line
+// number. If the line lost either, a user whose profiles all vanished would
+// not know which file to open or where.
+func TestWrongTypeInOneSlotProfileFailsTheWholeFile(t *testing.T) {
+	writeSlotProfilesTOML(t, `[[profile]]
+name = "cloud"
+agent = "claude"
+default = "opus"
+
+[profile.slots]
+opus = "openrouter/a"
+
+[[profile]]
+name = "second"
+agent = "claude"
+default = 3
+`)
+	a, err := newApp()
+	if err != nil {
+		t.Fatalf("newApp() error = %v", err)
+	}
+	if a.slotChecks != nil {
+		t.Errorf("a.slotChecks = %+v, want none: a file that does not parse gives no profile", a.slotChecks)
+	}
+	got := slotWarnings(a)
+	if len(got) != 1 {
+		t.Fatalf("slotWarnings() = %q, want exactly one line", got)
+	}
+	for _, want := range []string{"wt: parse slot-profiles.toml: ", "line 12", "default", " — slot profiles are unavailable"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("warning = %q, want it to contain %q", got[0], want)
+		}
 	}
 }
 

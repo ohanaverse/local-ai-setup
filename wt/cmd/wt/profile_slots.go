@@ -32,7 +32,9 @@ func maskKey(key string) string {
 // its id and "ok" or its static error. A profile with no usable name or agent
 // is listed by its position in the file. The verdict is the static one only
 // (profiles.ValidateSlots): no provider is probed, so a profile that is "ok"
-// here may still be blocked in the picker; `wt profile show` says.
+// here may still be blocked in the picker; `wt profile show` says. After the
+// profiles comes one "warning:" line per key of the file the schema does not
+// name, also when the file gave no profile.
 //
 // It reads nothing of profiles.toml. It returns a.slotLoadErr after printing
 // it.
@@ -43,9 +45,9 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 	}
 	if len(a.slotChecks) == 0 {
 		fmt.Fprintln(w, "slot profiles: (none defined)")
-		return nil
+	} else {
+		fmt.Fprintln(w, "slot profiles:")
 	}
-	fmt.Fprintln(w, "slot profiles:")
 	for _, c := range a.slotChecks {
 		switch {
 		case !c.Usable:
@@ -55,6 +57,9 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 		default:
 			fmt.Fprintf(w, "  %s: %s ok\n", c.Profile.Agent, c.Label())
 		}
+	}
+	for _, key := range a.slotUnknown {
+		fmt.Fprintf(w, "  warning: %s\n", slotUnknownKeyNote(key))
 	}
 	return nil
 }

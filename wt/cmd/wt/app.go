@@ -37,6 +37,11 @@ type app struct {
 	// or did not load. A check that is not Usable is kept: `wt profile list`
 	// reports it by its position and a launch warns about it once.
 	slotChecks []profiles.SlotCheck
+	// slotUnknown is the keys of slot-profiles.toml the schema does not name
+	// (profiles.SlotStore.Unknown). The file loaded, and what such a key
+	// holds was not read: a launch warns about each once, and so does
+	// `wt profile list`. It can be set while slotChecks is nil.
+	slotUnknown []string
 	// slotLoadErr is profiles.LoadSlots' error: a parse or read failure.
 	// It never stops wt; a launch prints it once and shows no profile rows.
 	slotLoadErr error
@@ -119,9 +124,13 @@ func newApp() (*app, error) {
 	if slotLoadErr == nil && len(slotStore.Profiles) > 0 {
 		slotChecks = profiles.ValidateSlots(slotStore, agents.SlotDrivers())
 	}
+	var slotUnknown []string
+	if slotLoadErr == nil {
+		slotUnknown = slotStore.Unknown
+	}
 	return &app{
 		cfg: cfg, cfgErr: cfgErr, loadErr: loadErr, theme: theme,
 		profiles: store, profilesLoadErr: profilesLoadErr, profilesValidateErr: profilesValidateErr,
-		slotChecks: slotChecks, slotLoadErr: slotLoadErr,
+		slotChecks: slotChecks, slotUnknown: slotUnknown, slotLoadErr: slotLoadErr,
 	}, nil
 }

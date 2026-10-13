@@ -49,16 +49,28 @@ var (
 	buildSlotCmd     = agents.BuildSlotLaunchCmd
 )
 
+// slotUnknownKeyNote is what wt says about a key of slot-profiles.toml the
+// schema does not name: a launch prints it after "wt: ", and
+// `wt profile list` after "warning: ".
+func slotUnknownKeyNote(key string) string {
+	return fmt.Sprintf("slot-profiles.toml: unknown key %q — ignored", key)
+}
+
 // slotWarnings are the lines a launch prints once about slot-profiles.toml:
-// the load error; one line per profile that is not Usable (no usable name or
-// agent, so it has no row and cannot be pinned); and one line when the
-// registry has a provider with id "profile" while at least one profile is
-// Usable, since no profile row is then built. A Usable profile that fails
-// validation gets no line: its blocked row carries the reason.
+// the load error; one line per key the schema does not name (the file still
+// loaded, without what the key holds); one line per profile that is not
+// Usable (no usable name or agent, so it has no row and cannot be pinned);
+// and one line when the registry has a provider with id "profile" while at
+// least one profile is Usable, since no profile row is then built. A Usable
+// profile that fails validation gets no line: its blocked row carries the
+// reason.
 func slotWarnings(a *app) []string {
 	var out []string
 	if a.slotLoadErr != nil {
 		out = append(out, fmt.Sprintf("wt: %v — slot profiles are unavailable", a.slotLoadErr))
+	}
+	for _, key := range a.slotUnknown {
+		out = append(out, "wt: "+slotUnknownKeyNote(key))
 	}
 	usable := false
 	for _, c := range a.slotChecks {

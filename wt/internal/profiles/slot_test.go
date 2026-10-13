@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -144,7 +145,7 @@ func TestParseSlots(t *testing.T) {
 		{name: "comments only", body: "# nothing yet\n", want: 0},
 		{name: "one bare profile", body: "[[profile]]\nname = \"a\"\n", want: 1},
 		{name: "two profiles", body: "[[profile]]\nname = \"a\"\n[[profile]]\nname = \"b\"\n", want: 2},
-		{name: "an unknown key is ignored", body: "[[profile]]\nname = \"a\"\ncolour = \"red\"\n", want: 1},
+		{name: "an unknown key does not stop the load", body: "[[profile]]\nname = \"a\"\ncolour = \"red\"\n", want: 1},
 		{name: "a [[profiles]] table is another file's shape", body: "[[profiles]]\nagent = \"claude\"\n", want: 0},
 		{name: "syntax error", body: "[[profile]\n", wantErr: true},
 		{name: "a slot id is not a string", body: "[[profile]]\n[profile.slots]\nopus = 3\n", wantErr: true},
@@ -172,6 +173,53 @@ func TestParseSlots(t *testing.T) {
 			}
 			if len(store.Profiles) != tc.want {
 				t.Errorf("ParseSlots() gave %d profiles, want %d", len(store.Profiles), tc.want)
+			}
+		})
+	}
+}
+
+// TestParseSlotsReportsUnknownKeys checks that a key the schema does not name
+// is reported, once, while the file still loads. If it regresses, a file
+// written with [[profiles]] for [[profile]] gives no profile and no word of
+// why, and a misspelt table (envs for env) launches without what it held.
+func TestParseSlotsReportsUnknownKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string
+		n    int // number of profiles
+	}{
+		{name: "nothing unknown", body: "[[profile]]\nname = \"a\"\n[profile.slots]\nopus = \"x\"\n", n: 1},
+		{name: "the other file's array, once however many entries and keys it has",
+			body: "[[profiles]]\nname = \"a\"\n[profiles.slots]\nopus = \"x\"\n[[profiles]]\nname = \"b\"\n",
+			want: []string{"profiles"}},
+		{name: "a top-level key and a misspelt key in a profile",
+			body: "top = 1\n[[profile]]\nname = \"a\"\ncolour = \"red\"\n",
+			want: []string{"top", "profile.colour"}, n: 1},
+		{name: "a misspelt table is one key, and the same key in two profiles is one line",
+			body: "[[profile]]\nname = \"a\"\n[profile.envs]\nA = \"1\"\n[[profile]]\nname = \"b\"\n[profile.envs]\nB = \"2\"\n",
+			want: []string{"profile.envs"}, n: 2},
+		{name: "a misspelt wrapper key",
+			body: "[[profile]]\nname = \"a\"\n[profile.wrapper]\nbinary = \"x\"\nargs = [\"y\"]\n",
+			want: []string{"profile.wrapper.args"}, n: 1},
+		{name: "config_content is free-form, at any depth",
+			body: "[[profile]]\nname = \"a\"\n[profile.config_content]\nx = 1\n[profile.config_content.y]\nz = 2\n[profile.config_content.y.w]\nv = [1]\n",
+			n:    1},
+		{name: "env and slots take any key",
+			body: "[[profile]]\nname = \"a\"\n[profile.env]\nANY = \"1\"\n[profile.slots]\nany = \"x\"\n",
+			n:    1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := ParseSlots([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("ParseSlots() error = %v, want nil: an unknown key never fails the load", err)
+			}
+			if !slices.Equal(store.Unknown, tc.want) {
+				t.Errorf("ParseSlots() unknown keys = %q, want %q", store.Unknown, tc.want)
+			}
+			if len(store.Profiles) != tc.n {
+				t.Errorf("ParseSlots() gave %d profiles, want %d", len(store.Profiles), tc.n)
 			}
 		})
 	}

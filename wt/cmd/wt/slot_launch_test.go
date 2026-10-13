@@ -20,6 +20,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/spf13/cobra"
 )
@@ -930,6 +932,15 @@ func TestSlotWarnings(t *testing.T) {
 		{"a profile with no usable name",
 			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, unusable}},
 			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},
+		{"a file whose only content is under an unknown key",
+			&app{cfg: slotFixtureConfig(), slotUnknown: []string{"profiles"}},
+			[]string{`wt: slot-profiles.toml: unknown key "profiles" — ignored`}},
+		{"unknown keys beside a usable profile, one line each",
+			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable}, slotUnknown: []string{"top", "profile.envs"}},
+			[]string{
+				`wt: slot-profiles.toml: unknown key "top" — ignored`,
+				`wt: slot-profiles.toml: unknown key "profile.envs" — ignored`,
+			}},
 		{"the reserved provider id",
 			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{usable}},
 			[]string{`wt: the registry has a provider with id "profile" — slot profiles are unavailable`}},
@@ -977,6 +988,53 @@ func TestRunLaunchPathWarnsAboutSlotProfilesOncePerRun(t *testing.T) {
 
 			if got := strings.Count(stderr, "slot profiles are unavailable"); got != tc.want {
 				t.Errorf("warning printed %d times, want %d; stderr = %q", got, tc.want, stderr)
+			}
+		})
+	}
+}
+
+// TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI verifies the warnings on
+// the TUI path: they are printed before the TUI opens, where the alternate
+// screen then covers them, and the same lines are printed again once the TUI
+// has returned and the terminal is the user's again. Without the second
+// print a user with a typo in slot-profiles.toml sees a picker with no
+// profile rows and nothing on screen that says why. Both ways into the TUI
+// are covered: the worktree picker (no launch path) and the model picker.
+func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
+	const warning = "wt: parse slot-profiles.toml: toml: line 2: unexpected EOF — slot profiles are unavailable\n" +
+		"wt: slot-profiles.toml: unknown key \"top\" — ignored\n"
+	cases := []struct{ name, launchPath string }{
+		{"the worktree picker", ""},
+		{"the model picker", "."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreLaunchSlotChecks(t)
+			stubStdinTTY(t, true)
+			oldTUI, oldSweep, oldLaunch := tuiRun, sweepRefcounts, launchFiltered
+			launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+				t.Error("the launch went past the picker")
+				return nil
+			}
+			tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
+				fmt.Fprintln(os.Stderr, "<the TUI ran>")
+				return errors.New("the TUI's own error")
+			}
+			sweepRefcounts = func() {}
+			t.Cleanup(func() { tuiRun, sweepRefcounts, launchFiltered = oldTUI, oldSweep, oldLaunch })
+			a := &app{cfg: slotFixtureConfig(), slotUnknown: []string{"top"},
+				slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
+
+			var err error
+			stderr := captureFile(t, &os.Stderr, func() {
+				err = runLaunchPath(launchCobraCmd(), a, "claude", "", "", "", nil, tc.launchPath, "")
+			})
+
+			if want := warning + "<the TUI ran>\n" + warning; stderr != want {
+				t.Errorf("stderr =\n%s\nwant\n%s", stderr, want)
+			}
+			if err == nil || err.Error() != "the TUI's own error" {
+				t.Errorf("err = %v, want the TUI's own error passed through", err)
 			}
 		})
 	}

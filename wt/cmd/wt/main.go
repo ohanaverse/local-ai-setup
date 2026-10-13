@@ -105,22 +105,6 @@ func runLaunchPath(
 	// keep other concurrent sessions' counts accurate. Best-effort.
 	sweepRefcounts()
 
-	// Slot profiles are pin targets for resolveModel during this run. What is
-	// wrong with slot-profiles.toml is said once, here, before any picker
-	// opens, and only for a launch that could use a profile: no agent chosen
-	// yet, or an agent whose driver has slots.
-	launchSlotChecks = a.slotChecks
-	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
-		for _, line := range slotWarnings(a) {
-			fmt.Fprintln(os.Stderr, line)
-		}
-	}
-
-	// Install the guard once when inside any git repo.
-	if root != "" {
-		maybeInstallGuard()
-	}
-
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
 	// applies local-model launch profiles exactly like the non-TUI path
@@ -134,12 +118,41 @@ func runLaunchPath(
 		return applyProfileForLaunch(cmd, agentName, m, a.cfg, a.profileState())
 	}
 
+	// Slot profiles are pin targets for resolveModel during this run. What is
+	// wrong with slot-profiles.toml is said here, before any picker opens,
+	// and only for a launch that could use a profile: no agent chosen yet, or
+	// an agent whose driver has slots.
+	launchSlotChecks = a.slotChecks
+	var slotNotes []string
+	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
+		slotNotes = slotWarnings(a)
+	}
+	printSlotNotes := func() {
+		for _, line := range slotNotes {
+			fmt.Fprintln(os.Stderr, line)
+		}
+	}
+	printSlotNotes()
+	// The TUI's alternate screen covers what was just printed for as long as
+	// a picker is up, so a launch that went through the TUI says it again
+	// once the TUI has returned and the terminal is the user's.
+	runTUI := func() error {
+		err := tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
+		printSlotNotes()
+		return err
+	}
+
+	// Install the guard once when inside any git repo.
+	if root != "" {
+		maybeInstallGuard()
+	}
+
 	// launchPath == "" means the worktree picker should be shown; the launch
 	// directory is not known until the user picks inside the TUI, so never
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
 	if launchPath == "" {
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
+		return runTUI()
 	}
 
 	pinnedSupplied := cmd.Flags().Changed("model")
@@ -171,7 +184,7 @@ func runLaunchPath(
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
 		}
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
+		return runTUI()
 	}
 
 	return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))

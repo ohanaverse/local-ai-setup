@@ -88,6 +88,14 @@ func TestProfileListSlotSection(t *testing.T) {
 			"pi: match=location location=local\n" +
 				"warning: profiles.toml failed validation — profiles are disabled for every launch: agent does not support mechanism \"wrapper\"\n" +
 				section, ""},
+		{"an unknown key and no profile",
+			&app{profiles: profiles.Store{Enabled: true}, slotUnknown: []string{"profiles"}},
+			"(no profiles defined)\nslot profiles: (none defined)\n" +
+				"  warning: slot-profiles.toml: unknown key \"profiles\" — ignored\n", ""},
+		{"an unknown key beside profiles",
+			&app{profiles: profiles.Store{Enabled: true}, slotChecks: checks, slotUnknown: []string{"profile.envs"}},
+			"(no profiles defined)\n" + section +
+				"  warning: slot-profiles.toml: unknown key \"profile.envs\" — ignored\n", ""},
 		{"slot-profiles.toml does not parse",
 			&app{profiles: profiles.Store{Enabled: true}, slotLoadErr: slotErr},
 			"(no profiles defined)\nslot profiles: parse slot-profiles.toml: toml: line 2: unexpected EOF\n",
