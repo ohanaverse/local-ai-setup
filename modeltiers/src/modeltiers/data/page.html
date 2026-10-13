@@ -159,25 +159,36 @@
 (function () {
   const data = JSON.parse(document.getElementById("data").textContent);
   const NONE = "–";
+  // One descriptor per column, and everything the page does with a column is
+  // read from it: `sort` is the name `show --sort` gives it where that is not
+  // its key, `places` a fixed number of decimals, `grouped` thousands
+  // separators, `labels` what to say for a value, `cls` and `dim` its look,
+  // and `echoes` the column it is dimmed beside when the two say the same.
   const COLUMNS = [
-    { key: "kind", label: "rows", type: "text", title: "One of my models, or a candidate no inventory row uses" },
+    { key: "kind", label: "rows", type: "text", dim: true, labels: { model: "mine" }, title: "One of my models, or a candidate no inventory row uses" },
     { key: "tier", label: "tier", type: "tier", title: "Final tier, after the gates" },
     { key: "confidence", label: "conf", type: "text", title: "How far the votes agree" },
-    { key: "name", label: "model", type: "text", title: "provider/model, or the canonical key of a candidate" },
-    { key: "aligned_score", label: "aligned", type: "num", places: 1, title: "Every voting score put on the intelligence-index scale and averaged; an estimate, not a source's score" },
+    { key: "name", label: "model", type: "text", sort: "model", cls: "name", title: "provider/model, or the canonical key of a candidate" },
+    { key: "aligned_score", label: "aligned", type: "num", places: 1, sort: "aligned", title: "Every voting score put on the intelligence-index scale and averaged; an estimate, not a source's score" },
     { key: "aligned_sources", label: "src", type: "num", title: "How many scores the aligned score rests on: 1 to 3" },
     { key: "open_weights", label: "open", type: "flag", title: "Open weights, by any models.dev row of the key" },
-    { key: "context", label: "context", type: "num", title: "Context window the tier was gated on, in tokens" },
+    { key: "context", label: "context", type: "num", grouped: true, title: "Context window the tier was gated on, in tokens" },
     { key: "intelligence_index", label: "intel", type: "num", title: "Artificial Analysis intelligence index (votes)" },
     { key: "arena_agent", label: "arena", type: "num", title: "Arena agent score (votes)" },
     { key: "eci", label: "eci", type: "num", title: "Epoch Capabilities Index (votes)" },
     { key: "coding_index", label: "coding", type: "num", title: "Artificial Analysis coding index (does not vote)" },
     { key: "agentic_index", label: "agentic", type: "num", title: "Artificial Analysis agentic index (does not vote)" },
-    { key: "canonical", label: "canonical", type: "text", title: "The key the model resolved to" },
-    { key: "reason", label: "reason", type: "text", title: "Why an unrated row is unrated" },
+    { key: "canonical", label: "canonical", type: "text", cls: "name", echoes: "name", title: "The key the model resolved to" },
+    { key: "reason", label: "reason", type: "text", dim: true, title: "Why an unrated row is unrated" },
   ];
   const byKey = new Map(COLUMNS.map((column) => [column.key, column]));
-  const state = { key: null, descending: false, text: "", tier: "", kind: "" };
+  const state = { key: null, descending: false };
+  // The controls are the truth for what is filtered: they are read at every
+  // render and mirrored nowhere, so a browser that comes back to the page
+  // (history, a restored tab) and puts them back with no event is still right.
+  const filter = document.getElementById("filter");
+  const tier = document.getElementById("tier");
+  const kind = document.getElementById("kind");
 
   // What a row sorts by in one column: a number, a string, or null for nothing.
   function sortValue(row, column) {
@@ -192,10 +203,10 @@
   }
 
   function shown() {
-    const needle = state.text.trim().toLowerCase();
+    const needle = filter.value.trim().toLowerCase();
     const rows = data.rows.filter((row) => {
-      if (state.tier && row.tier !== state.tier) return false;
-      if (state.kind && row.kind !== state.kind) return false;
+      if (tier.value && row.tier !== tier.value) return false;
+      if (kind.value && row.kind !== kind.value) return false;
       if (!needle) return true;
       return [row.name, row.canonical].some(
         (text) => typeof text === "string" && text.toLowerCase().includes(needle)
@@ -220,11 +231,11 @@
     const value = row[column.key];
     if (value === null || value === undefined) return NONE;
     if (column.type === "flag") return value ? "T" : "F";
-    if (column.key === "context") return value.toLocaleString("en-US");
+    if (column.grouped) return value.toLocaleString("en-US");
     if (column.places !== undefined) return value.toFixed(column.places);
     if (column.type === "num") return String(Number(value.toFixed(4)));
-    if (column.key === "kind") return value === "model" ? "mine" : value;
-    return String(value);
+    const labels = column.labels || {};
+    return Object.prototype.hasOwnProperty.call(labels, value) ? labels[value] : String(value);
   }
 
   function cell(row, column) {
@@ -240,12 +251,10 @@
     }
     td.textContent = text;
     if (column.type === "num") td.classList.add("num");
-    if (column.key === "name" || column.key === "canonical") td.classList.add("name");
+    if (column.cls) td.classList.add(column.cls);
     // A candidate is named by its key: the second copy is only an echo.
-    const echo = column.key === "canonical" && row.canonical === row.name;
-    if (text === NONE || echo || column.key === "kind" || column.key === "reason") {
-      td.classList.add("dim");
-    }
+    const echo = column.echoes !== undefined && row[column.key] === row[column.echoes];
+    if (text === NONE || echo || column.dim) td.classList.add("dim");
     return td;
   }
 
@@ -309,27 +318,13 @@
     age.textContent = age.textContent.replace(/\(\d+ days old\)/, "(" + days + " days old)");
   }
 
-  // The controls are the truth. A browser that comes back to the page (history,
-  // a restored tab) puts them back as they were left and sends no event for it.
-  const filter = document.getElementById("filter");
-  const tier = document.getElementById("tier");
-  const kind = document.getElementById("kind");
-  function sync() {
-    state.text = filter.value;
-    state.tier = tier.value;
-    state.kind = kind.value;
-    render();
-  }
-  filter.addEventListener("input", sync);
-  tier.addEventListener("change", sync);
-  kind.addEventListener("change", sync);
-  window.addEventListener("pageshow", sync);
+  filter.addEventListener("input", render);
+  tier.addEventListener("change", render);
+  kind.addEventListener("change", render);
+  window.addEventListener("pageshow", render);
 
-  // `show --sort` names the file's columns; the page calls `model` its `name`
-  // and `aligned` its `aligned_score`.
-  const renamed = { model: "name", aligned: "aligned_score" };
-  const first = Object.prototype.hasOwnProperty.call(renamed, data.sort) ? renamed[data.sort] : data.sort;
-  if (byKey.has(first)) sortBy(first);
+  const first = COLUMNS.find((column) => (column.sort || column.key) === data.sort);
+  if (first) sortBy(first.key);
   else render();
 })();
 </script>

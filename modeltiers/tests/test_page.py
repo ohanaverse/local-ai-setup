@@ -278,6 +278,7 @@ def test_the_page_has_the_aligned_columns_beside_the_model_and_opens_on_them() -
         ("aligned_score", "aligned", "num"),
         ("aligned_sources", "src", "num"),
     ]
-    assert 'const renamed = { model: "name", aligned: "aligned_score" };' in text
+    assert 'key: "name", label: "model", type: "text", sort: "model"' in text
+    assert "(column.sort || column.key) === data.sort" in text
     # The aligned score keeps its one decimal on the page, as in the file.
-    assert 'key: "aligned_score", label: "aligned", type: "num", places: 1' in text
+    assert 'key: "aligned_score", label: "aligned", type: "num", places: 1, sort: "aligned"' in text
