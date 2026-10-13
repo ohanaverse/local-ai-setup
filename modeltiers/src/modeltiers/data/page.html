@@ -87,7 +87,7 @@
   .num, th.num button { text-align: right; }
   td.num { font-variant-numeric: tabular-nums; }
   td.name { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
-  td.dim, .none { color: var(--muted); }
+  td.dim { color: var(--muted); }
   .chip {
     display: inline-block; min-width: 78px; padding: 1px 8px;
     border-radius: 999px; font-size: 12px; font-weight: 600; text-align: center;
@@ -101,6 +101,13 @@
   footer { margin-top: 12px; color: var(--muted); font-size: 12px; }
   footer p { margin: 0 0 4px; }
   footer ul { margin: 0; padding-left: 18px; }
+  /* On paper there is no box to scroll: every row prints. */
+  @media print {
+    body, main { height: auto; }
+    .scroll { overflow: visible; min-height: 0; }
+    thead th { position: static; }
+    .controls { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -288,12 +295,31 @@
     head.appendChild(th);
   }
 
-  const filter = document.getElementById("filter");
-  filter.addEventListener("input", () => { state.text = filter.value; render(); });
-  for (const name of ["tier", "kind"]) {
-    const select = document.getElementById(name);
-    select.addEventListener("change", () => { state[name] = select.value; render(); });
+  // The file's age was right when the page was written; say what it is now.
+  // The words are `show.age_line`'s, and a stamp that does not read as a time
+  // leaves them as they are.
+  const generated = Date.parse(data.generated_at);
+  if (/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(data.generated_at) && Number.isFinite(generated)) {
+    const days = Math.max(Math.floor((Date.now() - generated) / 86400000), 0);
+    const age = document.querySelector(".age");
+    age.textContent = age.textContent.replace(/\(\d+ days old\)/, "(" + days + " days old)");
   }
+
+  // The controls are the truth. A browser that comes back to the page (history,
+  // a restored tab) puts them back as they were left and sends no event for it.
+  const filter = document.getElementById("filter");
+  const tier = document.getElementById("tier");
+  const kind = document.getElementById("kind");
+  function sync() {
+    state.text = filter.value;
+    state.tier = tier.value;
+    state.kind = kind.value;
+    render();
+  }
+  filter.addEventListener("input", sync);
+  tier.addEventListener("change", sync);
+  kind.addEventListener("change", sync);
+  window.addEventListener("pageshow", sync);
 
   // `show --sort` names the file's columns; the page calls `model` its `name`.
   const first = data.sort === "model" ? "name" : data.sort;

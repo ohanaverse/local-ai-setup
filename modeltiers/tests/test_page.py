@@ -46,7 +46,6 @@ def test_a_row_has_every_column_with_none_for_what_the_file_does_not_give(
         "name": "ollama/glm-5.3:cloud",
         "canonical": "zhipuai/glm-5.3",
         "tier": "standard",
-        "code": "S",
         "confidence": "high",
         "reason": None,
         "open_weights": True,
@@ -63,7 +62,6 @@ def test_a_row_has_every_column_with_none_for_what_the_file_does_not_give(
         "name": "ollama/nomic-embed-text:latest",
         "canonical": None,
         "tier": "unrated",
-        "code": "-",
         "confidence": "none",
         "reason": "not_applicable",
         "open_weights": None,
@@ -76,7 +74,7 @@ def test_a_row_has_every_column_with_none_for_what_the_file_does_not_give(
     }
     # An unmapped row is unrated, and says why.
     unmapped = rows["ollama/medgemma:27b"]
-    assert (unmapped["tier"], unmapped["code"], unmapped["reason"]) == ("unrated", "-", "unmapped")
+    assert (unmapped["tier"], unmapped["reason"]) == ("unrated", "unmapped")
     assert unmapped["confidence"] is None
     # A candidate is named by its key.
     opus = rows["anthropic/claude-opus-5-5"]
@@ -114,6 +112,8 @@ def test_the_page_carries_the_rows_the_ranks_and_the_first_sort(
     assert data["rows"] == page.page_rows(document)
     assert data["sort"] == "eci"
     assert data["ranks"] == {"unrated": 0, "quick": 1, "standard": 2, "deep": 3, "marathon": 4}
+    # The stamp the page's script works the file's age out from, when opened.
+    assert data["generated_at"] == "2026-10-12T15:58:00Z"
     assert _data(page.page_html(document, T0))["sort"] is None
 
 
@@ -169,6 +169,7 @@ def test_an_empty_file_still_makes_a_page() -> None:
         "rows": [],
         "sort": None,
         "ranks": {"unrated": 0, "quick": 1, "standard": 2, "deep": 3, "marathon": 4},
+        "generated_at": None,
     }
     assert "tiers.toml generated ? (of unknown age), contracts ?" in text
 

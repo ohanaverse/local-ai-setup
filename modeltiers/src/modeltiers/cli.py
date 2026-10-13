@@ -234,7 +234,9 @@ def _show(args: argparse.Namespace, deps: Deps) -> int:
         _warn(warning)
     if args.html is not None:
         target: Path = args.html.resolve()
-        if target == paths.output_path().resolve():
+        # The same file, not the same spelling: on a file system that ignores
+        # case `TIERS.toml` is tiers.toml, and the two paths differ.
+        if target.exists() and target.samefile(paths.output_path()):
             raise ConfigError(
                 f"--html {target} is tiers.toml itself; name another file for the page"
             )

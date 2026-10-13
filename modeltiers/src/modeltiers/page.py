@@ -16,7 +16,7 @@ from importlib import resources
 from typing import Any
 
 from modeltiers import show
-from modeltiers.contracts import RANK, UNRATED, UNRATED_CODE
+from modeltiers.contracts import RANK, UNRATED
 from modeltiers.show import SCORE_COLUMNS, Document
 
 # The reason the page gives an `[[unmapped]]` row, which the file gives none.
@@ -38,7 +38,6 @@ def _row(kind: str, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
         "name": name,
         "canonical": _text(entry.get("canonical")),
         "tier": _text(entry.get("tier")),
-        "code": _text(entry.get("code")),
         "confidence": _text(entry.get("confidence")),
         "reason": _text(entry.get("reason")),
         "open_weights": opened if isinstance(opened, bool) else None,
@@ -58,12 +57,12 @@ def page_rows(doc: Document) -> list[dict[str, Any]]:
         _row(
             "model",
             show.model_name(entry),
-            {"tier": UNRATED, "code": UNRATED_CODE, "reason": UNMAPPED},
+            {"tier": UNRATED, "reason": UNMAPPED},
         )
         for entry in show.entries(doc, "unmapped")
     )
     rows.extend(
-        _row("candidate", str(c.get("canonical", "?")), c) for c in show.entries(doc, "candidates")
+        _row("candidate", show.candidate_name(c), c) for c in show.entries(doc, "candidates")
     )
     return rows
 
@@ -77,14 +76,23 @@ def _embedded(data: Mapping[str, Any]) -> str:
 
 def page_html(doc: Document, now: datetime, *, sort: str | None = None) -> str:
     """The whole page. `sort` (a name from `show.SORT_COLUMNS`) is the order
-    it opens in; None is the file's order."""
+    it opens in; None is the file's order. The age line is the file's age at
+    `now`; the page's script has `generated_at` to say the age again whenever
+    the page is opened."""
     template = resources.files("modeltiers").joinpath("data/page.html").read_text("utf-8")
     values = {
         "age": html.escape(show.age_line(doc, now)),
         "attribution": "\n".join(
             f"      <li>{html.escape(line)}</li>" for line in show.attribution_lines(doc)
         ),
-        "data": _embedded({"rows": page_rows(doc), "sort": sort, "ranks": dict(RANK)}),
+        "data": _embedded(
+            {
+                "rows": page_rows(doc),
+                "sort": sort,
+                "ranks": dict(RANK),
+                "generated_at": _text(doc.get("generated_at")),
+            }
+        ),
     }
     # One pass: a value that happens to hold a placeholder is not filled again.
     return _PLACEHOLDER.sub(lambda found: values[found.group(1)], template)

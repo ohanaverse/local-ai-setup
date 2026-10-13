@@ -147,7 +147,8 @@ def _row(entry: Mapping[str, Any], name: str, width: int, canonical: str | None,
     )
 
 
-def _candidate_name(entry: Mapping[str, Any]) -> str:
+def candidate_name(entry: Mapping[str, Any]) -> str:
+    """The canonical key, the name a `[[candidates]]` entry is listed by."""
     return str(entry.get("canonical", "?"))
 
 
@@ -170,8 +171,7 @@ def table_lines(
     if candidates:
         lines.append(f"candidates: {len(found)} (scored by a source, not in the inventory)")
         lines.extend(
-            _row(c, _candidate_name(c), 0, None, wide)
-            for c in ordered(found, sort, _candidate_name)
+            _row(c, candidate_name(c), 0, None, wide) for c in ordered(found, sort, candidate_name)
         )
     else:
         lines.append(f"candidates: {len(found)} (list them with --candidates)")

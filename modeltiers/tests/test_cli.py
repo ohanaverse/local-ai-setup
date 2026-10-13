@@ -807,6 +807,23 @@ def test_show_html_refuses_to_replace_the_tiers_file_with_the_page(
     assert out.read_text() == before
 
 
+@pytest.mark.usefixtures("written")
+def test_show_html_refuses_another_name_for_the_tiers_file(
+    out: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = out.read_text()
+    link = tmp_path / "page.html"
+    link.symlink_to(out)
+    names = [link]
+    shouted = out.with_name(out.name.upper())
+    if shouted.exists():  # a file system that ignores case, as macOS has by default
+        names.append(shouted)
+    for name in names:
+        assert cli.main(["show", "--html", str(name)], deps=_reader_deps(T0)) == 1
+        assert "is tiers.toml itself" in capsys.readouterr().err
+        assert out.read_text() == before
+
+
 def test_show_html_without_a_tiers_file_writes_no_page(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
