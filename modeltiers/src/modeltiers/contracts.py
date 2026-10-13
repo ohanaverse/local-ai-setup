@@ -4,13 +4,12 @@ The floors each signal votes by, the context each tier needs, one attribution
 line per source, and the sentinel models whose votes and tier are pinned.
 """
 
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from modeltiers import configfile
 from modeltiers.errors import ConfigError
 
 UNRATED = "unrated"
@@ -80,9 +79,7 @@ def _table(where: str, value: Any, allowed: frozenset[str] | None = None) -> dic
     if not isinstance(value, dict):
         raise ConfigError(f"{where}: missing or not a table")
     if allowed is not None:
-        unknown = sorted(set(value) - allowed)
-        if unknown:
-            raise ConfigError(f"{where}: unknown key {unknown[0]!r}")
+        configfile.known_keys(where, value, allowed)
     return value
 
 
@@ -94,13 +91,6 @@ def _exactly(where: str, table: Mapping[str, Any], names: tuple[str, ...], kind:
     unknown = sorted(set(table) - set(names))
     if unknown:
         raise ConfigError(f"{where}: unknown {kind} entry {unknown[0]!r}")
-
-
-def _text(where: str, entry: Mapping[str, Any], key: str) -> str:
-    value = entry.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{where}: {key} is missing, empty or not a string")
-    return value
 
 
 def _number(where: str, value: Any) -> float:
@@ -116,7 +106,7 @@ def _tiers(origin: str, doc: Mapping[str, Any]) -> dict[str, Tier]:
     for name in TIERS:
         where = f"{origin}: [tiers.{name}]"
         entry = _table(where, table[name], _TIER_KEYS)
-        code = _text(where, entry, "code")
+        code = configfile.text(where, entry, "code")
         context_min = entry.get("context_min")
         if len(code) != 1 or code == UNRATED_CODE:
             raise ConfigError(f"{where}: code must be one character other than {UNRATED_CODE!r}")
@@ -132,10 +122,10 @@ def _tiers(origin: str, doc: Mapping[str, Any]) -> dict[str, Tier]:
 
 def _signal(where: str, name: str, value: Any) -> Signal:
     entry = _table(where, value, _SIGNAL_KEYS)
-    source = _text(where, entry, "source")
+    source = configfile.text(where, entry, "source")
     if source != SIGNAL_SOURCE[name]:
         raise ConfigError(f"{where}: source must be {SIGNAL_SOURCE[name]!r}, not {source!r}")
-    max_vote = _text(where, entry, "max_vote")
+    max_vote = configfile.text(where, entry, "max_vote")
     if max_vote not in FLOOR_TIERS:
         raise ConfigError(f"{where}: max_vote {max_vote!r} is not one of {', '.join(FLOOR_TIERS)}")
     table = _table(f"{where} floors", entry.get("floors"), frozenset(FLOOR_TIERS))
@@ -173,15 +163,17 @@ def _attribution(origin: str, doc: Mapping[str, Any]) -> dict[str, str]:
     lines: dict[str, str] = {}
     for name in SOURCES:
         where = f"{origin}: [sources.{name}]"
-        lines[name] = _text(where, _table(where, table[name], _SOURCE_KEYS), "attribution")
+        lines[name] = configfile.text(
+            where, _table(where, table[name], _SOURCE_KEYS), "attribution"
+        )
     return lines
 
 
 def _sentinel(where: str, value: dict[str, Any]) -> Sentinel:
     entry = _table(where, value, _SENTINEL_KEYS)
-    canonical = _text(where, entry, "canonical")
+    canonical = configfile.text(where, entry, "canonical")
     where = f"{where} ({canonical})"
-    tier = _text(where, entry, "tier")
+    tier = configfile.text(where, entry, "tier")
     if tier not in TIERS:
         raise ConfigError(f"{where}: tier {tier!r} is not one of {', '.join(TIERS)}")
     votes = _table(f"{where} votes", entry.get("votes"))
@@ -197,12 +189,9 @@ def _sentinel(where: str, value: dict[str, Any]) -> Sentinel:
 
 
 def _sentinels(origin: str, doc: Mapping[str, Any]) -> tuple[Sentinel, ...]:
-    value = doc.get("sentinels", [])
-    if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
-        raise ConfigError(f"{origin}: sentinels is not an array of tables; write [[sentinels]]")
     sentinels: list[Sentinel] = []
     seen: set[str] = set()
-    for index, entry in enumerate(value, start=1):
+    for index, entry in enumerate(configfile.tables(origin, doc, "sentinels"), start=1):
         sentinel = _sentinel(f"{origin}: [[sentinels]] #{index}", entry)
         if sentinel.canonical.lower() in seen:
             raise ConfigError(
@@ -217,15 +206,10 @@ def parse_contracts(text: str, *, origin: str = "contracts.toml") -> Contracts:
     """Read and validate the file's text. `origin` names the file in every
     message. Whether each sentinel names a known key needs models.dev and is
     checked later, by `pipeline.assign_all`."""
-    try:
-        doc = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"{origin}: not TOML: {exc}") from exc
-    unknown = sorted(set(doc) - _TOP_KEYS)
-    if unknown:
-        raise ConfigError(f"{origin}: unknown key {unknown[0]!r}")
+    doc = configfile.parse_toml(origin, text)
+    configfile.known_keys(origin, doc, _TOP_KEYS)
     return Contracts(
-        version=_text(origin, doc, "version"),
+        version=configfile.text(origin, doc, "version"),
         tiers=_tiers(origin, doc),
         signals=_signals(origin, doc),
         attribution=_attribution(origin, doc),
@@ -236,13 +220,4 @@ def parse_contracts(text: str, *, origin: str = "contracts.toml") -> Contracts:
 
 def load_contracts(path: Path | None = None) -> Contracts:
     """Read `path`, or the committed `data/contracts.toml` when it is None."""
-    if path is None:
-        text = resources.files("modeltiers").joinpath("data/contracts.toml").read_text("utf-8")
-        return parse_contracts(text, origin="contracts.toml")
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ConfigError(f"contracts: {path} is not UTF-8 text: {exc}") from exc
-    except OSError as exc:
-        raise ConfigError(f"contracts: cannot read {path}: {exc.strerror}") from exc
-    return parse_contracts(text, origin=path.name)
+    return configfile.load(path, "contracts", parse_contracts)

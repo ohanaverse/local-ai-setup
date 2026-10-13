@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from modeltiers import configfile
 from modeltiers.errors import InventoryError
 from modeltiers.records import Inventory, InventoryRow
 
@@ -94,13 +95,7 @@ def load_inventory(*, path: Path | None, run_wt: RunWt) -> Inventory:
     """Read `path` when given (and never run wt), else run wt."""
     if path is None:
         return parse_inventory(run_wt())
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise InventoryError(f"inventory: {path} is not UTF-8 text: {exc}") from exc
-    except OSError as exc:
-        raise InventoryError(f"inventory: cannot read {path}: {exc.strerror}") from exc
-    return parse_inventory(text)
+    return parse_inventory(configfile.read_text(path, "inventory", InventoryError))
 
 
 def provider_warnings(inventory: Inventory) -> list[str]:
