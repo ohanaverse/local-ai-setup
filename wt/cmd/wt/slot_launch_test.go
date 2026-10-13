@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -230,4 +234,252 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 		startSlotModel, buildSlotCmd, osStderr = oldStart, oldBuild, oldOut
 	})
 	return s
+}
+
+// slotLaunchEnv gives one test its own config home and worktree. It returns
+// wt's state directory inside that home (where usage.jsonl, rotation.state,
+// last-picked.state and refcount.jsonl would be written) and the worktree.
+func slotLaunchEnv(t *testing.T) (stateDir, worktree string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	return filepath.Join(home, "agent-wt"), t.TempDir()
+}
+
+// slotRow resolves check against cfg with no inventory probe, which is enough
+// for an all-cloud profile.
+func slotRow(cfg *config.Config, check profiles.SlotCheck) catalog.Row {
+	return catalog.ResolveSlotProfile(cfg, nil, check)
+}
+
+// TestApplySlotProfileAppliesArgsAndWrapper verifies the applier applies the
+// two mechanisms the slot build does not deliver: the profile's args are
+// appended to the command, and its wrapper then wraps the whole command line.
+// Claude allows neither today; an agent that does must not lose them.
+func TestApplySlotProfileAppliesArgsAndWrapper(t *testing.T) {
+	_, worktree := slotLaunchEnv(t)
+	fakeAgentOnPath(t, "wt-test-wrapper")
+	check := slotFixtureCheck(0, "cloud", "opus", slotCloud())
+	check.Profile.Args = []string{"--effort", "high"}
+	check.Profile.Wrapper = &profiles.WrapperSpec{Binary: "wt-test-wrapper", ArgsTemplate: []string{"run", "{{args}}"}}
+	check.Profile.Env = map[string]string{"FROM_PROFILE": "1"}
+	check.Profile.ConfigContent = map[string]any{"x": "1"}
+	row := slotRow(slotFixtureConfig(), check)
+	cmd := exec.Command("true", "--model", "opus")
+	cmd.Dir = worktree
+
+	cleanup, err := applySlotProfile(cmd, "claude", row)
+	if err != nil {
+		t.Fatalf("applySlotProfile() error = %v", err)
+	}
+	if cleanup == nil || cleanup() != nil {
+		t.Error("cleanup must be a non-nil no-op")
+	}
+	if got, want := strings.Join(cmd.Args[1:], " "), "run --model opus --effort high"; got != want {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+	if filepath.Base(cmd.Path) != "wt-test-wrapper" {
+		t.Errorf("cmd.Path = %q, want the wrapper binary", cmd.Path)
+	}
+	// env and config_content are the slot build's to deliver, not the
+	// applier's: applied here too they would be set twice, once as a file.
+	if slices.Contains(cmd.Env, "FROM_PROFILE=1") {
+		t.Errorf("cmd.Env = %v: the applier must not apply the profile's env", cmd.Env)
+	}
+	if _, statErr := os.Stat(filepath.Join(worktree, ".claude")); !os.IsNotExist(statErr) {
+		t.Error("the applier wrote under .claude in the worktree")
+	}
+}
+
+// TestApplySlotProfileFailsClosed verifies an apply error is returned, not
+// swallowed. The automatic-profile applier degrades to an unprofiled launch
+// on a config error; for a slot profile that would start Claude Code without
+// what the profile asked for, so the launch must stop.
+func TestApplySlotProfileFailsClosed(t *testing.T) {
+	_, worktree := slotLaunchEnv(t)
+	check := slotFixtureCheck(0, "cloud", "opus", slotCloud())
+	check.Profile.Wrapper = &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz", ArgsTemplate: []string{"{{args}}"}}
+	cmd := exec.Command("true")
+	cmd.Dir = worktree
+
+	cleanup, err := applySlotProfile(cmd, "claude", slotRow(slotFixtureConfig(), check))
+	if err == nil || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("err = %v, want the wrapper-not-installed error", err)
+	}
+	if cleanup == nil {
+		t.Error("cleanup must not be nil, even on an error")
+	}
+
+	if _, err := applySlotProfile(exec.Command("true"), "claude", catalog.Row{Model: config.Model{ID: "openrouter/a"}}); err == nil {
+		t.Error("a model row was accepted: the applier must refuse a row that is not a slot profile")
+	}
+}
+
+// TestApplySlotProfileSelfHealsALeftoverSettingsFile verifies the self-heal
+// of a settings.local.json left behind by an earlier automatic-profile
+// session still runs before a profile launch. Without it a profile session
+// would start with that stale file in the worktree, and its env block could
+// redirect the session.
+func TestApplySlotProfileSelfHealsALeftoverSettingsFile(t *testing.T) {
+	_, worktree := slotLaunchEnv(t)
+	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rp := profiles.ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := profiles.ApplyConfigContent(exec.Command("claude"), "claude", worktree, rp); err != nil {
+		t.Fatalf("seed an orphaned backup: %v", err)
+	}
+	cmd := exec.Command("true")
+	cmd.Dir = worktree
+	row := slotRow(slotFixtureConfig(), slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+
+	var err error
+	stderr := captureFile(t, &os.Stderr, func() {
+		_, err = applySlotProfile(cmd, "claude", row)
+	})
+	if err != nil {
+		t.Fatalf("applySlotProfile() error = %v", err)
+	}
+	if !strings.Contains(stderr, "wt: restored a leftover profile-managed file from a previous session: "+target) {
+		t.Errorf("stderr = %q, want the self-heal notice", stderr)
+	}
+	// The restore rewrites the file's JSON, so compare what it holds, not
+	// its bytes: the user's own key is back and the old profile's is gone.
+	data, rerr := os.ReadFile(target)
+	if rerr != nil || !strings.Contains(string(data), `"hooks"`) || strings.Contains(string(data), `"env"`) {
+		t.Errorf("target = %q (%v), want the user's hooks kept and the old profile's env block removed", data, rerr)
+	}
+}
+
+// TestSlotProfileWritesNoSettingsFile verifies a Claude profile with
+// config_content, run through the real slot build and the applier, writes
+// nothing: no .claude directory in the worktree, and nothing in the config
+// home except the self-heal check's lock file. config_content travels in the
+// inline --settings argument, so an interrupted session leaves no proxy-only
+// ids behind for a later bare `claude` run. The proxy key stays out of argv.
+func TestSlotProfileWritesNoSettingsFile(t *testing.T) {
+	stateDir, worktree := slotLaunchEnv(t)
+	fakeAgentOnPath(t, "claude")
+	cfg := slotFixtureConfig()
+	check := slotFixtureCheck(0, "cloud", "opus", slotCloud())
+	check.Profile.Env = map[string]string{"MAX_THINKING_TOKENS": "4096"}
+	check.Profile.ConfigContent = map[string]any{"modelOverrides": map[string]any{"claude-sonnet-4-6": "openrouter/b"}}
+	row := slotRow(cfg, check)
+	if row.Action() != catalog.ActionLaunch {
+		t.Fatalf("fixture: the row is not a launch row: %s", row.BlockReason())
+	}
+
+	cmd, err := agents.BuildSlotLaunchCmd(row.Profile.Launch(), worktree, false, cfg, nil)
+	if err != nil {
+		t.Fatalf("BuildSlotLaunchCmd() error = %v", err)
+	}
+	cleanup, err := applySlotProfile(cmd, "claude", row)
+	if err != nil {
+		t.Fatalf("applySlotProfile() error = %v", err)
+	}
+	if cerr := cleanup(); cerr != nil {
+		t.Fatalf("cleanup() error = %v", cerr)
+	}
+
+	i := slices.Index(cmd.Args, "--settings")
+	if i < 0 || i+1 >= len(cmd.Args) || !strings.Contains(cmd.Args[i+1], "modelOverrides") {
+		t.Errorf("args = %q, want config_content inside the --settings value", cmd.Args)
+	}
+	for _, a := range cmd.Args {
+		if strings.Contains(a, "sk-test-1234") {
+			t.Errorf("the proxy key is in argv: %q", a)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(worktree, ".claude")); !os.IsNotExist(statErr) {
+		t.Error("a .claude directory exists in the worktree: a settings file was written")
+	}
+	entries, _ := os.ReadDir(worktree)
+	if len(entries) != 0 {
+		t.Errorf("the worktree holds %d entries, want none", len(entries))
+	}
+	// The one thing the applier may leave in the config home is the lock file
+	// of the self-heal check (profile-backups/<key>.lock). A backup marker
+	// there would mean a file was rewritten.
+	_ = filepath.WalkDir(filepath.Dir(stateDir), func(path string, d os.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
+			return nil
+		}
+		if filepath.Base(filepath.Dir(path)) == "profile-backups" && strings.HasSuffix(path, ".lock") {
+			return nil
+		}
+		t.Errorf("the config home gained a file: %s", path)
+		return nil
+	})
+}
+
+// TestRunSlotAgentCmdPostExitFlow verifies what follows a profile session:
+// the refcount lines are released, then the stop picker runs, then the
+// summary line names the profile and the duration. There is no per-model
+// price notice and no survey, since neither belongs to one model here. A
+// stop picker that ran before the release would never offer the profile's
+// own local model.
+func TestRunSlotAgentCmdPostExitFlow(t *testing.T) {
+	slotLaunchEnv(t)
+	prevNotice, prevRelease, prevPicker := emitPriceNotice, releaseSession, runStopPicker
+	t.Cleanup(func() { emitPriceNotice, releaseSession, runStopPicker = prevNotice, prevRelease, prevPicker })
+	var order []string
+	releaseSession = func() { order = append(order, "release") }
+	runStopPicker = func(*config.Config) {
+		order = append(order, "picker")
+		fmt.Fprint(os.Stdout, "PICKER-MARKER\n")
+	}
+	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
+	cfg := slotFixtureConfig()
+	row := slotRow(cfg, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+	cleaned := false
+
+	var err error
+	stdout := captureFile(t, &os.Stdout, func() {
+		err = runSlotAgentCmd(exec.Command("true"), "claude", row, cfg, func() error { cleaned = true; return nil })
+	})
+
+	if err != nil {
+		t.Fatalf("runSlotAgentCmd() error = %v", err)
+	}
+	if !cleaned {
+		t.Error("the applier's cleanup was not called after the run")
+	}
+	if got := strings.Join(order, ","); got != "release,picker" {
+		t.Errorf("order = %s, want release,picker (and no price notice)", got)
+	}
+	i, j := strings.Index(stdout, "PICKER-MARKER"), strings.Index(stdout, "\nwt: claude · profile/cloud · ")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("stdout = %q, want the stop picker before a summary line naming the profile", stdout)
+	}
+	if strings.Contains(stdout, "survey ·") {
+		t.Errorf("stdout = %q, want no survey after a profile session", stdout)
+	}
+}
+
+// TestRunSlotAgentCmdReturnsARunError verifies an agent that could not be
+// run at all comes back as an error after the post-exit flow has run, so the
+// refcount lines recorded for the launch are not left behind.
+func TestRunSlotAgentCmdReturnsARunError(t *testing.T) {
+	slotLaunchEnv(t)
+	prevRelease := releaseSession
+	t.Cleanup(func() { releaseSession = prevRelease })
+	released := false
+	releaseSession = func() { released = true }
+	cfg := slotFixtureConfig()
+	row := slotRow(cfg, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+
+	var err error
+	captureFile(t, &os.Stdout, func() {
+		err = runSlotAgentCmd(exec.Command(filepath.Join(t.TempDir(), "no-such-agent")), "claude", row, cfg, func() error { return nil })
+	})
+	if err == nil {
+		t.Fatal("err = nil, want the run error")
+	}
+	if !released {
+		t.Error("the session's refcount lines were not released after a failed run")
+	}
 }
