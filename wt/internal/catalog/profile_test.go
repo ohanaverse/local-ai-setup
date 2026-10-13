@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
@@ -120,6 +121,45 @@ func TestResolveSlotProfileBlockReasons(t *testing.T) {
 	row := ResolveSlotProfile(slotTestCfg(), nil, static)
 	if row.Profile.Models != nil || row.Profile.Loc != "" {
 		t.Errorf("static failure: models = %v, loc = %q, want none", row.Profile.Models, row.Profile.Loc)
+	}
+}
+
+// TestResolveSlotProfileBlocksWhatTheRouteWriteWouldRefuse verifies that
+// resolved validation and the launch's route write agree. A cloud model can
+// pass every named rule (not native, provider in the registry, location
+// resolves, the provider has a LiteLLM mapping) and still be one wt writes no
+// route for: its provider's auth is native, so sync does not route it. The
+// row is blocked, naming the slot and the model. Otherwise the picker draws a
+// launchable row, `wt profile show` says ok, and every launch fails at the
+// route write. The second half pins the agreement itself, model by model:
+// whatever lifecycle.Routable refuses, the row refuses.
+func TestResolveSlotProfileBlocksWhatTheRouteWriteWouldRefuse(t *testing.T) {
+	cfg := slotTestCfg()
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID == "openrouter" {
+			cfg.Providers[i].Auth.Type = "native"
+		}
+	}
+
+	row := ResolveSlotProfile(cfg, nil, slotCheck(0, "p", "sonnet", map[string]string{"sonnet": "openrouter/a"}))
+	want := "slot sonnet: openrouter/a cannot be routed: wt has no LiteLLM route for this model"
+	if row.Action() != ActionBlock || row.BlockReason() != want {
+		t.Errorf("action = %v, reason = %q\nwant ActionBlock, %q", row.Action(), row.BlockReason(), want)
+	}
+
+	for _, m := range cfg.Models {
+		row := ResolveSlotProfile(cfg, nil, slotCheck(0, "p", "sonnet", map[string]string{"sonnet": m.ID}))
+		if !lifecycle.Routable(cfg, m) && row.Action() != ActionBlock {
+			t.Errorf("%s: the row is not blocked, and the launch's route write would refuse the model", m.ID)
+		}
+	}
+	// The same model under a provider sync routes is routable and launches.
+	plain := slotTestCfg()
+	if !lifecycle.Routable(plain, plain.Models[0]) {
+		t.Fatalf("%s is not routable in the plain fixture", plain.Models[0].ID)
+	}
+	if row := ResolveSlotProfile(plain, nil, slotCheck(0, "p", "sonnet", map[string]string{"sonnet": "openrouter/a"})); row.Action() != ActionLaunch {
+		t.Errorf("plain fixture: action = %v (%s), want ActionLaunch", row.Action(), row.BlockReason())
 	}
 }
 

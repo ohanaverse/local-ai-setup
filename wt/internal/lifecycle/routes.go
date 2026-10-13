@@ -312,6 +312,17 @@ func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool)
 	return litellm.Change{}, false
 }
 
+// Routable reports whether wt writes a LiteLLM route for m at launch: the
+// predicate of modelRouteChange, which EnsureModelRoute skips a model on and
+// EnsureModelRoutes fails on (ErrNotRoutable). It is exported so a slot
+// profile's resolved validation (internal/catalog) blocks the row by the
+// same rule its route write would fail by, instead of a copy of it. It
+// writes and probes nothing.
+func Routable(cfg *config.Config, m config.Model) bool {
+	_, ok := modelRouteChange(cfg, m)
+	return ok
+}
+
 // EnsureModelRoute is EnsureRoute for a launch row's model, the form the
 // launch paths call. It skips a model that is not wt's to route
 // (modelRouteChange) and bounds the config.yaml lock wait so a launch cannot

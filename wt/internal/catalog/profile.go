@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -63,6 +64,16 @@ var slotRules = []slotRule{
 	func(_ *config.Config, slot string, m config.Model) string {
 		if _, ok := litellm.PolicyFor(m.ProviderID); !ok {
 			return fmt.Sprintf("slot %s: %s cannot be routed: provider %q has no LiteLLM mapping", slot, m.ID, m.ProviderID)
+		}
+		return ""
+	},
+	// Last, the launch's own predicate (lifecycle.Routable): whatever the
+	// rules above let through and the route write would still refuse, such
+	// as a cloud model under a provider whose auth is native. The rule is
+	// shared, not copied, so the row and the route write cannot disagree.
+	func(cfg *config.Config, slot string, m config.Model) string {
+		if !lifecycle.Routable(cfg, m) {
+			return fmt.Sprintf("slot %s: %s cannot be routed: %v", slot, m.ID, lifecycle.ErrNotRoutable)
 		}
 		return ""
 	},
