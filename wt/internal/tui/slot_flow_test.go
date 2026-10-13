@@ -643,3 +643,176 @@ func TestSlotViewFitsTheTerminal(t *testing.T) {
 		assertFits(t, "slot preparing", preparing.View(), size[0], size[1])
 	}
 }
+
+// mixedStarting drives a mixed profile to the point where its local model's
+// start is in flight: Enter, then the first stage's message. owed scripts
+// whether the cloud-route write changed config.yaml.
+func mixedStarting(t *testing.T, owed bool) (model, *slotStub) {
+	t.Helper()
+	m := slotFlowFixture(t, idleOmlxSnapshot(), mixedProfile())
+	stub := stubSlotSeams(t)
+	stub.ensureOwed = owed
+	preparing, cmd := enterProfileRow(t, m, "profile/mixed")
+	starting, _ := updateMsg(preparing, slotStageFrom(t, cmd)())
+	if starting.phase != phaseStarting || starting.start == nil || starting.slot == nil {
+		t.Fatalf("phase = %v start = %v slot = %v, want the local model's start in flight with the flow kept", starting.phase, starting.start, starting.slot)
+	}
+	return starting, stub
+}
+
+var omlxTarget = lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", ModelID: "omlx/qwen3.8"}
+
+// TestStartProfileRowStartsItsLocalModelThenLaunches pins success criteria 4
+// and 5 for the picker: a profile whose local model is idle starts it through
+// the existing start flow, tells the engine a restart is owed for the cloud
+// route it just wrote, then probes and launches. The flow itself restarts
+// nothing, so the launch costs the start's one restart. Without RestartOwed
+// the cloud route would stay unpublished and its slot would fail at the proxy.
+func TestStartProfileRowStartsItsLocalModelThenLaunches(t *testing.T) {
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	starting, stub := mixedStarting(t, true)
+	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) {
+		return func() error { return nil }, nil
+	})
+
+	waitStartCalls(t, calls, 1)
+	c := calls.at(0)
+	if c.target != omlxTarget {
+		t.Errorf("start target = %+v, want the profile's local model", c.target)
+	}
+	if !c.opts.RestartOwed || c.opts.AllowReplace {
+		t.Errorf("start options = %+v, want RestartOwed and no AllowReplace", c.opts)
+	}
+
+	settling, cmd := updateMsg(starting, recvStart(t, starting))
+	if settling.phase != phaseSlot || settling.slot == nil || settling.slot.owed {
+		t.Fatalf("phase = %v slot = %+v, want the probe stage with nothing owed", settling.phase, settling.slot)
+	}
+	launching, launch := updateMsg(settling, slotStageFrom(t, cmd)())
+
+	if got, want := stub.got(), "ensure:openrouter/a:owed=false,probe,build"; got != want {
+		t.Fatalf("events = %q, want %q (no restart of the flow's own, no second route write)", got, want)
+	}
+	if launching.slot != nil || launch == nil {
+		t.Fatal("the flow did not end in a run command")
+	}
+	if _, ok := launch().(launchDoneMsg); !ok {
+		t.Fatal("the run command did not return launchDoneMsg")
+	}
+	counts := refcount.NewStore().Counts([]string{"openrouter/a", "omlx/qwen3.8"})
+	if counts["openrouter/a"] != 1 || counts["omlx/qwen3.8"] != 1 {
+		t.Errorf("refcounts = %v, want one line per distinct slot model, the local one included", counts)
+	}
+}
+
+// TestProfileStartRefusedKeepsTheOwedRestart pins the replace dialog for a
+// profile's start. A refusal touched nothing, so the owed restart is kept,
+// not spent: "Replace and start" passes it on to the second attempt, and
+// every way of backing out (Cancel, esc, quitting wt) settles it exactly
+// once. Spending it at the refusal would restart twice; dropping it would
+// leave the written cloud route unpublished.
+func TestProfileStartRefusedKeepsTheOwedRestart(t *testing.T) {
+	refused := func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}
+	}
+	dialog := func(t *testing.T, owed bool) (model, *slotStub, *startCalls) {
+		t.Helper()
+		calls := stubStartModel(t, refused)
+		starting, stub := mixedStarting(t, owed)
+		got, _ := updateMsg(starting, recvStart(t, starting))
+		if got.phase != phaseReplaceConfirm || got.slot == nil || got.slot.owed != owed {
+			t.Fatalf("phase = %v slot = %+v, want the replace dialog with the flow kept", got.phase, got.slot)
+		}
+		if strings.Contains(stub.got(), "settle") {
+			t.Fatal("the owed restart was settled at the refusal")
+		}
+		return got, stub, calls
+	}
+
+	t.Run("replace and start passes the owed restart on", func(t *testing.T) {
+		got, stub, calls := dialog(t, true)
+		got.replace.choices.Select(1)
+		next, _ := updateMsg(got, tea.KeyMsg{Type: tea.KeyEnter})
+		if next.start != nil && next.start.cancel != nil {
+			t.Cleanup(next.start.cancel)
+		}
+		waitStartCalls(t, calls, 2)
+		if c := calls.at(1); !c.opts.RestartOwed || !c.opts.AllowReplace || c.target != omlxTarget {
+			t.Errorf("second start = %+v, want AllowReplace and RestartOwed for the same model", c)
+		}
+		if next.phase != phaseStarting || next.slot == nil {
+			t.Errorf("phase = %v slot = %v, want the start in flight with the flow kept", next.phase, next.slot)
+		}
+		if strings.Contains(stub.got(), "settle") {
+			t.Error("the owed restart was settled although the retry carries it")
+		}
+	})
+
+	backOut := map[string]func(m model) model{
+		"cancel": func(m model) model {
+			next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Cancel is the default choice
+			return next
+		},
+		"esc": func(m model) model {
+			next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+			return next
+		},
+	}
+	for name, leave := range backOut {
+		t.Run(name+" settles it once", func(t *testing.T) {
+			got, stub, calls := dialog(t, true)
+			next := leave(got)
+			if next.phase != phaseModel || next.slot != nil {
+				t.Fatalf("phase = %v slot = %v, want the picker with the flow ended", next.phase, next.slot)
+			}
+			if got := stub.got(); got != "ensure:openrouter/a:owed=false,settle" {
+				t.Errorf("events = %q, want exactly one settle", got)
+			}
+			if calls.len() != 1 {
+				t.Errorf("startModel calls = %d, want 1", calls.len())
+			}
+			assertNothingRecorded(t)
+		})
+	}
+
+	t.Run("quitting wt on the dialog settles it once", func(t *testing.T) {
+		got, stub, _ := dialog(t, true)
+		var out bytes.Buffer
+		flushRouteNotesAfterRun(got, &out)
+		if got := stub.got(); got != "ensure:openrouter/a:owed=false,settle" {
+			t.Errorf("events = %q, want exactly one settle", got)
+		}
+	})
+
+	t.Run("nothing owed, nothing settled", func(t *testing.T) {
+		got, stub, _ := dialog(t, false)
+		next, _ := updateMsg(got, tea.KeyMsg{Type: tea.KeyEnter})
+		if next.slot != nil || strings.Contains(stub.got(), "settle") {
+			t.Errorf("slot = %v events = %q, want the flow ended and no restart", next.slot, stub.got())
+		}
+	})
+}
+
+// TestProfileStartFailureReturnsToThePicker pins the failure table's start
+// row: a start that fails returns to the picker with the start flow's own
+// error, ends the profile launch, builds no command and records nothing. The
+// engine settled the owed restart itself, so the flow must not start another.
+func TestProfileStartFailureReturnsToThePicker(t *testing.T) {
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		return errors.New("omlx refused the load")
+	})
+	starting, stub := mixedStarting(t, true)
+
+	back, _ := updateMsg(starting, recvStart(t, starting))
+
+	if back.phase != phaseModel || back.slot != nil {
+		t.Fatalf("phase = %v slot = %v, want the picker with the flow ended", back.phase, back.slot)
+	}
+	if want := "failed to start omlx/qwen3.8: omlx refused the load"; back.status != want {
+		t.Errorf("status = %q, want the start flow's own error, %q", back.status, want)
+	}
+	if got := stub.got(); got != "ensure:openrouter/a:owed=false" {
+		t.Errorf("events = %q, want no settle, probe or build after a failed start", got)
+	}
+	assertNothingRecorded(t)
+}

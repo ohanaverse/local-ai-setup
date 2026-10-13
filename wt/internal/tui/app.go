@@ -398,6 +398,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn || m.phase == phaseReplaceConfirm {
+				if m.phase == phaseReplaceConfirm {
+					m = m.dropSlot()
+				}
 				m.phase = phaseModel
 				m.status = ""
 				return m, nil
@@ -551,9 +554,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				if item, ok := m.replace.choices.SelectedItem().(choiceItem); ok {
 					switch item.choice {
 					case replaceCancelChoice:
+						// A profile launch that got this far ends here; a
+						// restart it still owes is settled (dropSlot).
+						m = m.dropSlot()
 						m.phase = phaseModel
 						return m, nil
 					case replaceProceedChoice:
+						if m.slot != nil {
+							return m.beginStartOwed(m.replace.item, true, m.slot.owed)
+						}
 						return m.beginStart(m.replace.item, true)
 					}
 				}

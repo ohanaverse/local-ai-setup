@@ -539,6 +539,15 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	// engine's lines are shown on every way out, not only after a success.
 	note := statusNote(msg.out)
 	back := func(status string) (model, tea.Cmd) {
+		if m.slot != nil {
+			// This start belonged to a profile launch, which ends here. The
+			// engine settled the owed restart on every error but a refusal;
+			// a refusal can only reach this way out under a cancel.
+			if m.slot.owed && lifecycle.RestartStillOwed(msg.err) {
+				settleRoutesNow(context.Background(), m.cfg)
+			}
+			m.slot = nil
+		}
 		m.status = withNote(note, status)
 		if msg.out != "" {
 			// The next key or launch replaces the status, and one too tall
@@ -569,6 +578,16 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	// the screen showed loading is not running.
 	if msg.err == nil {
 		m.phase = phaseModel
+		if m.slot != nil {
+			// The started model is a profile's local model. Its start wrote
+			// the route and restarted the proxy, which published the profile's
+			// cloud routes with it. The launch that follows is the profile's,
+			// never proceedToLaunch's single-model one: probe, then build.
+			if note != "" {
+				m.recordRouteNotes(msg.out)
+			}
+			return m.settleSlotAfterStart()
+		}
 		// The launch that follows routes through LiteLLM. The route hook's
 		// proxy restart is over and the server was still there after it:
 		// runStart's goroutine waited for the one and asked about the other
