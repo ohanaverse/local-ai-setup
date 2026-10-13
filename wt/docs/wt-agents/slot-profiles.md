@@ -112,6 +112,7 @@ Static reasons:
 | `agent "claude" does not support mechanism "wrapper"` | A field outside the agent's allow-list |
 | `mechanism "x" has no effect without "y" on the same profile` | The agent's driver requires field `y` whenever `x` is set, and the profile sets only `x`. No rule of this kind applies to Claude |
 | `env sets ANTHROPIC_BASE_URL, which wt sets for the launch` | A reserved key (also `config_content.env sets …`) |
+| `config_content.env must be a table` | `config_content.env` is a string, a number or an array. This is Claude's rule: Claude Code's settings take `env` as a table, and wt adds its own variables to it |
 | `wrapper args_template [...] has no "{{args}}" placeholder` | The agent's own arguments would be dropped |
 
 Resolved reasons:
@@ -190,7 +191,7 @@ some columns omitted.
 | MODEL | `profile/<name>` |
 | LOC | `cloud`, `local`, or `mixed` |
 | STATUS | `ok`. A start or blocked profile is shown as a start or blocked model row is, by its action and note |
-| RUNNING | The local model's state (`run`, `load` or `-`); `-` for an all-cloud profile |
+| RUNNING | The local model's state (`run`, `load` or `-`), on a blocked row too, whichever rule blocked it; `-` for an all-cloud profile, for a profile that names two local models, for one whose local model is not in the registry or has no row of its own, and for the one row of profiles sharing a name |
 | COST | The `default` slot model's price in force, with `~` when it is time-priced |
 | 1D / 7D / 30D | Launches of this profile |
 | In-use prefix, SURVEY | Blank |
@@ -345,7 +346,9 @@ The payload is illustrative and shown indented; wt passes it on one line.
 - **Merge order.** `config_content` is merged into the object as automatic
   profiles merge it: tables key by key, a scalar or an array replaced whole.
   In the `env` block the profile's `env` is lowest, `config_content.env`
-  next, wt's own variables highest.
+  next, wt's own variables highest. `config_content.env` must be a table; a
+  profile where it is anything else is a blocked row
+  ([When a profile is blocked](#when-a-profile-is-blocked)).
 - **The token stays out of the command line.** `ANTHROPIC_AUTH_TOKEN` is set
   in the process environment only, so the proxy key does not appear in the
   process list. An `env` block in your own Claude Code settings that sets

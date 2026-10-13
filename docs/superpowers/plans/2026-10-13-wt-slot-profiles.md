@@ -145,8 +145,8 @@ Where the plan departs from the spec's wording:
 
 Known gaps against the spec, not fixed in this plan:
 
-- **RUNNING on some blocked rows.** A row blocked before the local model is examined (for example, LiteLLM has no url) shows `-` in RUNNING even when its local model is running.
-- **`config_content.env` that is not a table.** The row is shown as launchable and the launch then fails closed at the slot build with `config_content.env must be a table`. The spec says such a profile should be a blocked row.
+- **RUNNING on some blocked rows.** A row blocked before the local model is examined (for example, LiteLLM has no url) shows `-` in RUNNING even when its local model is running. (Fixed 2026-10-13 after the merge.)
+- **`config_content.env` that is not a table.** The row is shown as launchable and the launch then fails closed at the slot build with `config_content.env must be a table`. The spec says such a profile should be a blocked row. (Fixed 2026-10-13 after the merge.)
 
 Decisions that wait on Task 1:
 
