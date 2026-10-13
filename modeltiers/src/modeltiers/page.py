@@ -44,6 +44,9 @@ def _row(kind: str, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
         "context": None if context is None else int(context),
     }
     row.update({column: show.score(entry, column) for column in SCORE_COLUMNS})
+    sources = entry.get("aligned_sources")
+    row["aligned_score"] = show.number(entry.get("aligned_score"))
+    row["aligned_sources"] = len(sources) if isinstance(sources, list) else None
     return row
 
 
@@ -67,6 +70,26 @@ def page_rows(doc: Document) -> list[dict[str, Any]]:
     return rows
 
 
+def _alignment_note(doc: Document) -> str:
+    """What the page says under the table about the aligned score: how far
+    the lines fitted for this file typically miss, in the file's own words."""
+    fits = doc.get("alignment")
+    misses = []
+    for signal, fit in fits.items() if isinstance(fits, dict) else ():
+        miss = show.number(fit.get("typical_miss")) if isinstance(fit, dict) else None
+        if miss is not None:
+            misses.append(f"{miss:.1f} points ({signal})")
+    if not misses:
+        return (
+            "No signal could be fitted for this file, so aligned is the "
+            "intelligence index alone and a model without one has none."
+        )
+    return (
+        f"The lines fitted for this file typically miss by {' and '.join(misses)}; "
+        "a smaller difference between two models means nothing."
+    )
+
+
 def _embedded(data: Mapping[str, Any]) -> str:
     """JSON that is safe inside a script element: no character that could
     end the element or start a comment survives as itself."""
@@ -82,6 +105,7 @@ def page_html(doc: Document, now: datetime, *, sort: str | None = None) -> str:
     template = resources.files("modeltiers").joinpath("data/page.html").read_text("utf-8")
     values = {
         "age": html.escape(show.age_line(doc, now)),
+        "alignment": html.escape(_alignment_note(doc)),
         "attribution": "\n".join(
             f"      <li>{html.escape(line)}</li>" for line in show.attribution_lines(doc)
         ),

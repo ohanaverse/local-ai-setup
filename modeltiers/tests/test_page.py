@@ -55,6 +55,8 @@ def test_a_row_has_every_column_with_none_for_what_the_file_does_not_give(
         "eci": 155.61,
         "coding_index": 74.8,
         "agentic_index": 53.1,
+        "aligned_score": 44.3,
+        "aligned_sources": 3,
     }
     # An ignored row: no key, no flag, no score.
     assert rows["ollama/nomic-embed-text:latest"] == {
@@ -71,6 +73,8 @@ def test_a_row_has_every_column_with_none_for_what_the_file_does_not_give(
         "eci": None,
         "coding_index": None,
         "agentic_index": None,
+        "aligned_score": None,
+        "aligned_sources": None,
     }
     # An unmapped row is unrated, and says why.
     unmapped = rows["ollama/medgemma:27b"]
@@ -200,3 +204,43 @@ def test_the_page_tells_a_file_with_no_rows_from_filters_that_match_none() -> No
     text = page.page_html({}, T0)
     assert "tiers.toml lists no model" in text
     assert "No row matches these filters." in text
+
+
+def test_a_row_has_its_aligned_score_and_how_many_scores_it_rests_on(
+    document: dict[str, Any],
+) -> None:
+    rows = {row["name"]: row for row in page.page_rows(document)}
+    glm = rows["ollama/glm-5.3:cloud"]
+    assert (glm["aligned_score"], glm["aligned_sources"]) == (44.3, 3)
+    deepseek = rows["ollama/deepseek-v4-pro:cloud"]
+    assert (deepseek["aligned_score"], deepseek["aligned_sources"]) == (43.5, 2)
+    ignored = rows["ollama/nomic-embed-text:latest"]
+    assert (ignored["aligned_score"], ignored["aligned_sources"]) == (None, None)
+    odd = page.page_rows(
+        {
+            "models": [
+                {
+                    "provider_id": "p",
+                    "model_name": "m",
+                    "aligned_score": "x",
+                    "aligned_sources": "all",
+                }
+            ]
+        }
+    )[0]
+    assert (odd["aligned_score"], odd["aligned_sources"]) == (None, None)
+
+
+def test_the_page_says_how_far_the_aligned_score_can_be_off(document: dict[str, Any]) -> None:
+    text = page.page_html(document, T0, sort="aligned")
+    assert _data(text)["sort"] == "aligned"
+    assert (
+        "The lines fitted for this file typically miss by 1.1 points (arena_agent) and "
+        "1.1 points (eci); a smaller difference between two models means nothing." in text
+    )
+    bare = copy.deepcopy(document)
+    del bare["alignment"]
+    assert "No signal could be fitted for this file" in page.page_html(bare, T0)
+    odd = copy.deepcopy(document)
+    odd["alignment"] = {"eci": {"typical_miss": "<b>big</b>"}, "arena_agent": 7}
+    assert "No signal could be fitted for this file" in page.page_html(odd, T0)

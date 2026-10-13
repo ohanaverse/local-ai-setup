@@ -98,6 +98,7 @@ GLM_CLOUD = [
     "  votes:       intelligence_index standard, arena_agent standard, eci standard",
     "  scores:      intelligence_index 44.8, coding_index 74.8, agentic_index 53.1, "
     "arena_agent 0.0215, arena_agent_ci_lower 0.0143, eci 155.61",
+    "  aligned:     44.3 (intelligence_index 44.8; arena_agent 0.0215 as 44.1; eci 155.61 as 44.1)",
     "  efforts:     arena_agent max",
     "  tool_call:   true",
     "  context:     1048576",
@@ -116,10 +117,10 @@ def test_explain_by_canonical_key_prints_every_model_that_resolved_to_it(
 ) -> None:
     lines = show.explain_lines(document, "ZhipuAI/GLM-5.3")
     assert lines is not None
-    assert lines[:10] == GLM_CLOUD
-    assert lines[10] == "openrouter/z-ai/glm-5.3"
+    assert lines[:11] == GLM_CLOUD
+    assert lines[11] == "openrouter/z-ai/glm-5.3"
     assert lines[-4:] == ATTRIBUTION
-    assert len(lines) == 10 + 10 + 4
+    assert len(lines) == 11 + 11 + 4
 
 
 def test_a_pair_that_looks_like_a_key_is_tried_as_a_pair_first(document: dict[str, Any]) -> None:
@@ -139,7 +140,7 @@ def test_an_unmapped_pair_does_not_shadow_the_canonical_key(
     # An [[unmapped]] row whose pair is a canonical key other models resolved
     # to: the key search still answers first.
     doc["unmapped"].append({"provider_id": "zhipuai", "model_name": "glm-5.3"})
-    assert show.explain_lines(doc, "zhipuai/glm-5.3")[:10] == GLM_CLOUD
+    assert show.explain_lines(doc, "zhipuai/glm-5.3")[:11] == GLM_CLOUD
 
 
 def test_explain_a_candidate_by_its_key_in_any_case(document: dict[str, Any]) -> None:
@@ -151,6 +152,7 @@ def test_explain_a_candidate_by_its_key_in_any_case(document: dict[str, Any]) ->
         "  votes:       intelligence_index deep, arena_agent deep, eci deep",
         "  scores:      intelligence_index 57.6, arena_agent 0.1433, "
         "arena_agent_ci_lower 0.1215, eci 167.33",
+        "  aligned:     57 (intelligence_index 57.6; arena_agent 0.1433 as 56.7; eci 167.33 as 56.8)",
         "  efforts:     arena_agent high",
         "  tool_call:   true",
         "  context:     1000000",
@@ -171,6 +173,7 @@ def test_explain_shows_the_reason_the_notes_and_only_the_sources_used(
         "  confidence:  none, basis inherited",
         "  votes:       none",
         "  scores:      none",
+        "  aligned:     none",
         "  efforts:     none",
         "  tool_call:   true",
         "  context:     unknown",
@@ -192,6 +195,7 @@ def test_explain_a_local_build_rated_through_inheritance(document: dict[str, Any
         "  confidence:  low, basis inherited",
         "  votes:       intelligence_index standard",
         "  scores:      intelligence_index 33.7, coding_index 68.1, agentic_index 45.8",
+        "  aligned:     33.7 (intelligence_index 33.7)",
         "  efforts:     none",
         "  tool_call:   true",
         "  context:     unknown",
@@ -210,6 +214,7 @@ def test_explain_an_ignored_row(document: dict[str, Any]) -> None:
         "  confidence:  none, basis inherited",
         "  votes:       none",
         "  scores:      none",
+        "  aligned:     none",
         "  efforts:     none",
         "  tool_call:   unknown",
         "  context:     unknown",
@@ -241,6 +246,7 @@ def test_an_entry_from_an_older_file_prints_question_marks() -> None:
         "  confidence:  ?",
         "  votes:       none",
         "  scores:      none",
+        "  aligned:     none",
         "  efforts:     none",
         "  tool_call:   unknown",
         "  context:     unknown",
@@ -258,8 +264,8 @@ def test_a_shape_broken_file_prints_like_an_empty_one() -> None:
 
 def test_show_imports_nothing_of_the_package_but_the_constants() -> None:
     """`show` and `explain` work from the file alone: the module that prints
-    them takes two constants from `contracts` and nothing from the pipeline,
-    the sources or the writer."""
+    them takes constants from `contracts` and the name of the anchor signal
+    from `align`, and nothing from the pipeline, the sources or the writer."""
     assert show.__file__ is not None
     tree = ast.parse(Path(show.__file__).read_text())
     imported = {
@@ -267,7 +273,14 @@ def test_show_imports_nothing_of_the_package_but_the_constants() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("modeltiers")
     }
-    assert imported == {"modeltiers.contracts"}
+    assert imported == {"modeltiers.contracts", "modeltiers.align"}
+    names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "modeltiers.align"
+        for alias in node.names
+    }
+    assert names == {"ANCHOR"}
     assert not [
         alias.name
         for node in ast.walk(tree)
@@ -427,11 +440,11 @@ def test_sorting_by_model_ignores_case_and_candidates_follow_the_score() -> None
 
 WIDE = [
     "T  tier      conf    open   context     intel     arena       eci    coding   agentic"
-    "  model                           canonical",
+    "   aligned  src  model                           canonical",
     "S  standard  high    T      1048576      44.8    0.0215    155.61      74.8      53.1"
-    "  ollama/glm-5.3:cloud            zhipuai/glm-5.3",
+    "      44.3    3  ollama/glm-5.3:cloud            zhipuai/glm-5.3",
     "S  standard  high    T      1048576         -    0.0134    155.31         -         -"
-    "  ollama/deepseek-v4-pro:cloud    deepseek/deepseek-v4-pro-0813",
+    "      43.5    2  ollama/deepseek-v4-pro:cloud    deepseek/deepseek-v4-pro-0813",
 ]
 
 
@@ -443,13 +456,13 @@ def test_the_wide_table_adds_open_weights_context_and_the_scores(
     # An ignored row knows none of them; a local build has no served context.
     assert lines[6] == (
         "-  unrated   none    -            -         -         -         -         -         -"
-        "  ollama/nomic-embed-text:latest  -  (not_applicable)"
+        "         -    -  ollama/nomic-embed-text:latest  -  (not_applicable)"
     )
     assert lines[4].split()[3:6] == ["T", "-", "33.7"]
     # A candidate row has the same columns before its key.
     assert lines[-2] == (
         "M  marathon  high    F      1000000      57.6    0.1433    167.33"
-        "         -         -  anthropic/claude-opus-5-5"
+        "         -         -        57    3  anthropic/claude-opus-5-5"
     )
     assert len(lines) == len(show.table_lines(document, candidates=True))
 
@@ -457,5 +470,87 @@ def test_the_wide_table_adds_open_weights_context_and_the_scores(
 def test_the_wide_table_of_an_empty_file_is_its_header() -> None:
     assert show.table_lines({}, wide=True)[0] == (
         "T  tier      conf    open   context     intel     arena       eci    coding   agentic"
-        "  model  canonical"
+        "   aligned  src  model  canonical"
     )
+
+
+# --- the aligned score ------------------------------------------------------------
+
+
+def test_sorting_by_aligned_ranks_models_that_different_sources_scored(
+    document: dict[str, Any],
+) -> None:
+    assert _models(show.table_lines(document, sort="aligned")) == [
+        "ollama/glm-5.3:cloud",  # 44.3
+        "openrouter/z-ai/glm-5.3",  # 44.3
+        "ollama/deepseek-v4-pro:cloud",  # 43.5, with no index of its own
+        "ollama/minimax-m3:cloud",  # 34.7, likewise
+        "ollama/qwen3.8:27b-mlx",  # 33.7
+        "ollama/nomic-embed-text:latest",  # none: the file's order
+        "ollama/gemma4:31b-mlx",
+    ]
+    assert "aligned" in show.SORT_COLUMNS
+
+
+def test_the_wide_table_ends_its_scores_with_the_aligned_score_and_its_source_count(
+    document: dict[str, Any],
+) -> None:
+    lines = show.table_lines(document, candidates=True, wide=True)
+    heading, glm, deepseek = (line.split() for line in lines[:3])
+    assert heading[10:12] == ["aligned", "src"]
+    assert glm[10:12] == ["44.3", "3"]
+    assert deepseek[10:12] == ["43.5", "2"]
+    assert lines[6].split()[10:12] == ["-", "-"]  # the ignored row
+    assert lines[-2].split()[10:12] == ["57", "3"]  # Opus 5.5, a candidate
+
+
+def test_an_aligned_score_of_the_wrong_type_is_a_dash_and_sorts_last() -> None:
+    doc = {
+        "models": [
+            {"provider_id": "p", "model_name": "text", "aligned_score": "high"},
+            {"provider_id": "p", "model_name": "bare", "aligned_score": 40.0},
+            {"provider_id": "p", "model_name": "odd", "aligned_score": 50.0, "aligned_sources": 3},
+        ]
+    }
+    lines = show.table_lines(doc, sort="aligned", wide=True)
+    assert [line.split()[-2] for line in lines[1:4]] == ["p/odd", "p/bare", "p/text"]
+    assert [line.split()[10:12] for line in lines[1:4]] == [["50", "-"], ["40", "-"], ["-", "-"]]
+
+
+def test_explain_says_what_the_aligned_score_is_made_of(document: dict[str, Any]) -> None:
+    lines = show.explain_lines(document, "ollama/deepseek-v4-pro:cloud")
+    assert lines is not None
+    assert "  aligned:     43.5 (arena_agent 0.0134 as 43.3; eci 155.31 as 43.8)" in lines
+    glm = show.explain_lines(document, "ollama/glm-5.3:cloud")
+    assert glm is not None
+    assert (
+        "  aligned:     44.3 (intelligence_index 44.8; arena_agent 0.0215 as 44.1; "
+        "eci 155.61 as 44.1)" in glm
+    )
+    # It follows the scores it was made from.
+    assert glm.index(next(line for line in glm if line.startswith("  aligned:"))) == (
+        glm.index(next(line for line in glm if line.startswith("  scores:"))) + 1
+    )
+    ignored = show.explain_lines(document, "ollama/nomic-embed-text:latest")
+    assert ignored is not None
+    assert "  aligned:     none" in ignored
+
+
+def test_explain_without_the_files_fits_names_the_sources_alone(
+    document: dict[str, Any],
+) -> None:
+    doc = copy.deepcopy(document)
+    del doc["alignment"]["arena_agent"]
+    doc["alignment"]["eci"] = "gone"
+    lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
+    assert lines is not None
+    assert "  aligned:     44.3 (intelligence_index 44.8; arena_agent; eci)" in lines
+    # A source the entry lists and has no score for is still named.
+    del doc["models"][0]["scores"]["eci"]
+    lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
+    assert lines is not None
+    assert "  aligned:     44.3 (intelligence_index 44.8; arena_agent; eci)" in lines
+    doc["models"][0]["aligned_sources"] = "all"
+    lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
+    assert lines is not None
+    assert "  aligned:     44.3" in lines

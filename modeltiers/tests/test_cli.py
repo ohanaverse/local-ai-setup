@@ -773,7 +773,7 @@ def test_show_sort_and_wide_reorder_and_widen_the_table(
     assert lines[1].startswith(
         "T  tier      conf    open   context     intel     arena       eci    coding   agentic"
     )
-    assert [line.split()[10] for line in lines[2:5]] == [
+    assert [line.split()[12] for line in lines[2:5]] == [
         "ollama/deepseek-v4-pro:cloud",
         "ollama/gemma4:31b-mlx",
         "ollama/glm-5.3:cloud",
@@ -915,6 +915,7 @@ def test_explain_a_model_by_pair_and_by_key(capsys: pytest.CaptureFixture[str]) 
         "  confidence:  high, basis measured\n"
         "  votes:       arena_agent quick, eci quick\n"
         "  scores:      arena_agent -0.0695, arena_agent_ci_lower -0.0786, eci 146.95\n"
+        "  aligned:     34.7 (arena_agent -0.0695 as 34.7; eci 146.95 as 34.8)\n"
         "  efforts:     none\n"
         "  tool_call:   true\n"
         "  context:     512000\n"
@@ -946,6 +947,7 @@ def test_explain_a_local_build_shows_the_tier_it_inherited(
         "  confidence:  low, basis inherited\n"
         "  votes:       intelligence_index standard\n"
         "  scores:      intelligence_index 33.7, coding_index 68.1, agentic_index 45.8\n"
+        "  aligned:     33.7 (intelligence_index 33.7)\n"
         "  efforts:     none\n"
         "  tool_call:   true\n"
         "  context:     unknown\n"

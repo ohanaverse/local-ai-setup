@@ -193,6 +193,7 @@ ollama/minimax-m3:cloud
   confidence:  high, basis measured
   votes:       arena_agent quick, eci quick
   scores:      arena_agent -0.0695, arena_agent_ci_lower -0.0786, eci 146.95
+  aligned:     34.7 (arena_agent -0.0695 as 34.7; eci 146.95 as 34.8)
   efforts:     none
   tool_call:   true
   context:     512000

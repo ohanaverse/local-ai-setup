@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from math import isfinite
 from typing import Any
 
+from modeltiers.align import ANCHOR
 from modeltiers.contracts import RANK, SIGNAL_SOURCE, SOURCES, STAMP
 
 STALE_AFTER_DAYS = 14
@@ -30,7 +31,7 @@ SCORE_COLUMNS: Mapping[str, str] = {
     "agentic_index": "agentic",
 }
 # What `show --sort` takes. `model` is alphabetical; the rest are highest first.
-SORT_COLUMNS = ("tier", "model", "context", *SCORE_COLUMNS)
+SORT_COLUMNS = ("tier", "model", "context", *SCORE_COLUMNS, "aligned")
 
 
 def model_name(entry: Mapping[str, Any]) -> str:
@@ -112,6 +113,8 @@ def ordered(
             return float(RANK[tier]) if isinstance(tier, str) and tier in RANK else None
         if column == "context":
             return number(entry.get("context"))
+        if column == "aligned":
+            return number(entry.get("aligned_score"))
         return score(entry, column)
 
     def key(entry: Mapping[str, Any]) -> tuple[bool, float]:
@@ -122,19 +125,21 @@ def ordered(
 
 
 def _wide_heading() -> str:
-    scores = "  ".join(f"{heading:>8}" for heading in SCORE_COLUMNS.values())
-    return f"{'open':<4}  {'context':>8}  {scores}  "
+    scores = "  ".join(f"{heading:>8}" for heading in (*SCORE_COLUMNS.values(), "aligned"))
+    return f"{'open':<4}  {'context':>8}  {scores}  {'src':>3}  "
 
 
 def _wide_cells(entry: Mapping[str, Any]) -> str:
-    """Open weights, context and the scores of one entry; `-` for each the
-    file does not give."""
+    """Open weights, context, the scores, the aligned score and the number
+    of scores it rests on, for one entry; `-` for each the file does not give."""
     opened = entry.get("open_weights")
     flag = "T" if opened is True else "F" if opened is False else "-"
     context = number(entry.get("context"))
-    values = (score(entry, name) for name in SCORE_COLUMNS)
+    values = (*(score(entry, name) for name in SCORE_COLUMNS), number(entry.get("aligned_score")))
     scores = "  ".join(f"{'-' if v is None else short(v):>8}" for v in values)
-    return f"{flag:<4}  {'-' if context is None else int(context):>8}  {scores}  "
+    sources = entry.get("aligned_sources")
+    count = len(sources) if isinstance(sources, list) else "-"
+    return f"{flag:<4}  {'-' if context is None else int(context):>8}  {scores}  {count:>3}  "
 
 
 def _row(entry: Mapping[str, Any], name: str, width: int, canonical: str | None, wide: bool) -> str:
@@ -205,7 +210,34 @@ def _pairs(table: Mapping[str, Any]) -> str:
     return ", ".join(f"{key} {short(value)}" for key, value in table.items()) or "none"
 
 
-def _entry_lines(title: str, entry: Mapping[str, Any]) -> list[str]:
+def _aligned(entry: Mapping[str, Any], fits: Any) -> str:
+    """The aligned score and what it is the mean of: the index as it is, and
+    each other score with the index points the file's line turns it into. A
+    source whose line the file does not give is named alone."""
+    found = number(entry.get("aligned_score"))
+    if found is None:
+        return "none"
+    sources = entry.get("aligned_sources")
+    if not isinstance(sources, list):
+        return short(found)
+    parts = []
+    for name in sources:
+        raw = score(entry, str(name))
+        fit = fits.get(name) if isinstance(fits, dict) and isinstance(name, str) else None
+        slope = number(fit.get("slope")) if isinstance(fit, dict) else None
+        intercept = number(fit.get("intercept")) if isinstance(fit, dict) else None
+        if raw is None:
+            parts.append(str(name))
+        elif name == ANCHOR:
+            parts.append(f"{name} {short(raw)}")
+        elif slope is None or intercept is None:
+            parts.append(str(name))
+        else:
+            parts.append(f"{name} {short(raw)} as {slope * raw + intercept:.1f}")
+    return f"{short(found)} ({'; '.join(parts)})"
+
+
+def _entry_lines(title: str, entry: Mapping[str, Any], fits: Any = None) -> list[str]:
     tier = f"{entry.get('tier', '?')} ({entry.get('code', '?')})"
     if "reason" in entry:
         tier += f", reason {entry['reason']}"
@@ -220,6 +252,7 @@ def _entry_lines(title: str, entry: Mapping[str, Any]) -> list[str]:
         f"  confidence:  {entry.get('confidence', '?')}{basis}",
         f"  votes:       {_pairs(entry.get('votes', {}))}",
         f"  scores:      {_pairs(entry.get('scores', {}))}",
+        f"  aligned:     {_aligned(entry, fits)}",
         f"  efforts:     {_pairs(entry.get('efforts', {}))}",
         f"  tool_call:   {str(entry['tool_call']).lower() if 'tool_call' in entry else 'unknown'}",
         f"  context:     {entry.get('context', 'unknown')}",
@@ -275,6 +308,6 @@ def explain_lines(doc: Document, name: str) -> list[str] | None:
         return None
     lines: list[str] = []
     for title, entry in found:
-        lines.extend(_entry_lines(title, entry))
+        lines.extend(_entry_lines(title, entry, doc.get("alignment")))
     lines.extend(attribution_lines(doc, _used_sources(entry for _, entry in found)))
     return lines
