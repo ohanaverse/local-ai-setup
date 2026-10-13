@@ -38,6 +38,16 @@ type tableRow struct {
 	timed bool
 }
 
+// costModel is the model a row is priced as: its own, or for a slot-profile
+// row the default slot's model. A profile row whose default slot did not
+// resolve (a blocked row) has the zero Model, which has no price.
+func (r tableRow) costModel() config.Model {
+	if r.Profile == nil {
+		return r.Model
+	}
+	return r.Profile.Models[r.Profile.Check.Profile.Default]
+}
+
 // pricedAt is the row with its clock set to at and its price resolved for
 // that instant: the model's flat prices, or those of the cost.time_prices
 // row whose window holds it (config.ModelCost.PriceAt). The zero time gives
@@ -45,7 +55,8 @@ type tableRow struct {
 func (r tableRow) pricedAt(at time.Time) tableRow {
 	r.at, r.in, r.timed = at, config.PriceInForce{}, false
 	if !at.IsZero() {
-		r.in, r.timed = r.Model.Cost.PriceAt(at), r.Model.Cost.TimePriced()
+		cost := r.costModel().Cost
+		r.in, r.timed = cost.PriceAt(at), cost.TimePriced()
 	}
 	return r
 }
@@ -56,7 +67,7 @@ func (r tableRow) pricedAt(at time.Time) tableRow {
 // prices.
 func (r tableRow) price() config.PriceInForce {
 	if r.at.IsZero() {
-		return r.Model.Cost.Flat()
+		return r.costModel().Cost.Flat()
 	}
 	return r.in
 }
@@ -66,7 +77,7 @@ func (r tableRow) price() config.PriceInForce {
 // what marks the row's price with "~". A row with no clock asks its model.
 func (r tableRow) timePriced() bool {
 	if r.at.IsZero() {
-		return r.Model.Cost.TimePriced()
+		return r.costModel().Cost.TimePriced()
 	}
 	return r.timed
 }

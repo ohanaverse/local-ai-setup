@@ -187,3 +187,83 @@ func TestRefreshedTableKeepsProfileRows(t *testing.T) {
 		t.Errorf("rows after a refresh = %s, want %s", got, before)
 	}
 }
+
+// TestProfileRowCells pins what a slot profile's row shows in each column,
+// and that the row is judged by resolved validation alone. FAMILY is
+// "profile", LOC says cloud, local or mixed, RUNNING is the local model's,
+// COST is the default slot model's price, and the usage columns count
+// launches recorded under the profile's own id. A profile row has no route
+// of its own, so asking ResolveRoute about it fails with "unknown provider":
+// the row would be marked "(unavailable)", and a start profile would be
+// turned into a blocked one that Enter refuses.
+func TestProfileRowCells(t *testing.T) {
+	for _, c := range []struct {
+		name, id               string
+		snap                   localmodels.Snapshot
+		loc, running, cost, d7 string
+		start                  bool
+		blocked                string
+	}{
+		{"all cloud", "profile/cloud", runningOmlxSnapshot(), "cloud", "-", " 0.4000  0.0400  1.6000", "2", false, ""},
+		{"mixed, local running", "profile/mixed", runningOmlxSnapshot(), "mixed", "run", " 0.4000  0.0400  1.6000", "0", false, ""},
+		{"mixed, local idle", "profile/mixed", idleOmlxSnapshot(), "mixed", "-", " 0.4000  0.0400  1.6000", "0", true, ""},
+		{"blocked", "profile/broken", runningOmlxSnapshot(), "cloud", "-", " 0.4000  0.0400  1.6000", "0", false,
+			"slot haiku: openrouter/gone is not in the registry"},
+	} {
+		tbl := slotTable(t, slotTestConfig(), c.snap, slotRowChecks())
+		it := tableItem(t, tbl, c.id)
+		cell := func(col int) string { return strings.TrimRight(it.cells[col], " ") }
+		for _, want := range []struct {
+			col       int
+			name, val string
+		}{
+			{colFamily, "FAMILY", "profile"}, {colModel, "MODEL", c.id}, {colLoc, "LOC", c.loc},
+			{colStatus, "STATUS", "ok"}, {colRunning, "RUNNING", c.running}, {colCost, "COST", c.cost},
+			{col7D, "7D", c.d7}, {colSurvey, "SURVEY", ""},
+		} {
+			if got := cell(want.col); got != want.val {
+				t.Errorf("%s: %s = %q, want %q", c.name, want.name, got, want.val)
+			}
+		}
+		if it.profile == nil || it.cost != "" || it.ref != 0 {
+			t.Errorf("%s: profile set = %t, cost note = %q, ref = %d; want the profile carried, no price note and no in-use count", c.name, it.profile != nil, it.cost, it.ref)
+		}
+		if it.exception != "" || it.start != c.start || it.blocked != c.blocked {
+			t.Errorf("%s: exception = %q start = %t blocked = %q, want no route note, start = %t and blocked = %q",
+				c.name, it.exception, it.start, it.blocked, c.start, c.blocked)
+		}
+	}
+
+	// A profile whose slots resolve to nothing has no location to name.
+	none := []profiles.SlotCheck{slotCheckFor(0, "none", "opus", map[string]string{"opus": "openrouter/gone"})}
+	it := tableItem(t, slotTable(t, slotTestConfig(), runningOmlxSnapshot(), none), "profile/none")
+	if loc, cost := strings.TrimSpace(it.cells[colLoc]), strings.TrimSpace(it.cells[colCost]); loc != "-" || cost != "-" {
+		t.Errorf("unresolved profile: LOC = %q COST = %q, want a dash in each", loc, cost)
+	}
+}
+
+// TestProfileRowCostFollowsTheDefaultSlotsClock pins that a profile row is
+// priced as its default slot's model at the table's own instant, with the
+// "~" mark when that model is priced by time of day. Priced from the row's
+// own (empty) model it would show a dash for every profile.
+func TestProfileRowCostFollowsTheDefaultSlotsClock(t *testing.T) {
+	cfg := slotTestConfig()
+	cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/a")].Cost = timedTableRows(deepseekDear)[0].Model.Cost
+	models, _ := cfg.EligibleModels("claude", "", "")
+	snap := runningOmlxSnapshot()
+	for _, c := range []struct {
+		name string
+		in   tableInput
+		want string
+	}{
+		{"dear window", tableInput{now: deepseekDear}, " 1.3200  0.0440  3.9600~"},
+		{"cheap window", tableInput{now: ollamaPeak}, " 0.6600  0.0220  1.9800~"},
+	} {
+		in := c.in
+		in.cfg, in.agent, in.models, in.inventory, in.slots = cfg, "claude", models, &snap, slotRowChecks()
+		it := tableItem(t, buildTable(in, nil, ""), "profile/cloud")
+		if got := strings.TrimRight(it.cells[colCost], " "); got != c.want {
+			t.Errorf("%s: COST = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
