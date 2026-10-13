@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // startCall is what one engine call of a start carried.
@@ -102,4 +106,128 @@ func TestStartForLaunchOwed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// slotFixtureConfig is a config with agent "claude" (providers "openrouter",
+// "omlx"), cloud models "openrouter/a" and "openrouter/b", local model
+// "omlx/q" (model_name "q"), and [litellm] url "http://localhost:4000",
+// key "sk-test-1234", enabled false. Under TestMain's inventory stub
+// (localmodels.OnDiskSnapshotForTest) "omlx/q" is on disk and not running:
+// a start row.
+func slotFixtureConfig() *config.Config {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/a", ProviderID: "openrouter", ModelName: "a", Family: "a", Tags: []string{"code"}},
+			{ID: "openrouter/b", ProviderID: "openrouter", ModelName: "b", Family: "b", Tags: []string{"code"}},
+			{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Family: "q", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter", "omlx"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-test-1234"})
+	return cfg
+}
+
+// slotFixtureCheck is a Usable check "profile/<name>" for agent "claude",
+// with claude's four slots declared and no static error.
+func slotFixtureCheck(index int, name, def string, slots map[string]string) profiles.SlotCheck {
+	return profiles.SlotCheck{
+		Index:    index,
+		Profile:  profiles.SlotProfile{Name: name, Agent: "claude", Default: def, Slots: slots},
+		Usable:   true,
+		Declared: []string{"fable", "opus", "sonnet", "haiku"},
+	}
+}
+
+// slotCloud and slotMixed are the two slot maps most tests use. The default
+// slot is "opus" in both, so the distinct models come out in the order
+// written here: openrouter/a first.
+func slotCloud() map[string]string {
+	return map[string]string{"opus": "openrouter/a", "haiku": "openrouter/b"}
+}
+
+func slotMixed() map[string]string {
+	return map[string]string{"opus": "openrouter/a", "haiku": "omlx/q"}
+}
+
+// stubSlotChecks sets launchSlotChecks for one test.
+func stubSlotChecks(t *testing.T, checks ...profiles.SlotCheck) {
+	t.Helper()
+	old := launchSlotChecks
+	launchSlotChecks = checks
+	t.Cleanup(func() { launchSlotChecks = old })
+}
+
+// slotSeams records, in order, what a profile launch asked of the engine:
+// "ensure:<id>,<id>", "start:<id>:owed=<bool>", "restart", "probe",
+// "settle", "build". Its fields script each seam's result.
+type slotSeams struct {
+	events     []string
+	ensureOwed bool // what ensureSlotRoutes reports as owed when it adds nothing to owedIn
+	ensureErr  error
+	startStill bool
+	startErr   error
+	restartErr error
+	probeErr   error
+	buildErr   error
+	cmd        *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
+}
+
+// log is the recorded events joined with ";".
+func (s *slotSeams) log() string { return strings.Join(s.events, ";") }
+
+// stubSlotSeams swaps the six seams of slot_launch.go for recorders and
+// silences osStderr. The command buildSlotCmd hands back runs in the launch's
+// worktree, as the real one does.
+func stubSlotSeams(t *testing.T) *slotSeams {
+	t.Helper()
+	s := &slotSeams{}
+	oldEnsure, oldRestart, oldProbe, oldSettle := ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow
+	oldStart, oldBuild, oldOut := startSlotModel, buildSlotCmd, osStderr
+	ensureSlotRoutes = func(_ context.Context, _ io.Writer, _ *config.Config, models []config.Model, owedIn bool) (bool, error) {
+		ids := make([]string, len(models))
+		for i, m := range models {
+			ids[i] = m.ID
+		}
+		s.events = append(s.events, "ensure:"+strings.Join(ids, ","))
+		if s.ensureErr != nil {
+			return false, s.ensureErr
+		}
+		return owedIn || s.ensureOwed, nil
+	}
+	restartProxyNow = func(context.Context, *config.Config) error {
+		s.events = append(s.events, "restart")
+		return s.restartErr
+	}
+	probeProxyNow = func(context.Context, *config.Config) error {
+		s.events = append(s.events, "probe")
+		return s.probeErr
+	}
+	settleRoutesNow = func(context.Context, *config.Config) { s.events = append(s.events, "settle") }
+	startSlotModel = func(_ *config.Config, row catalog.Row, _ bool, owed bool) (bool, error) {
+		s.events = append(s.events, fmt.Sprintf("start:%s:owed=%t", row.Model.ID, owed))
+		return s.startStill, s.startErr
+	}
+	buildSlotCmd = func(_ profiles.SlotLaunch, worktreePath string, _ bool, _ *config.Config, _ []string) (*exec.Cmd, error) {
+		s.events = append(s.events, "build")
+		if s.buildErr != nil {
+			return nil, s.buildErr
+		}
+		cmd := s.cmd
+		if cmd == nil {
+			cmd = exec.Command("true")
+		}
+		cmd.Dir = worktreePath
+		return cmd, nil
+	}
+	osStderr = io.Discard
+	t.Cleanup(func() {
+		ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow = oldEnsure, oldRestart, oldProbe, oldSettle
+		startSlotModel, buildSlotCmd, osStderr = oldStart, oldBuild, oldOut
+	})
+	return s
 }
