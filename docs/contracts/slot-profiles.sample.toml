@@ -1,0 +1,27 @@
+# Contract fixture for ~/.config/agent-wt/slot-profiles.toml, read by
+# wt/internal/profiles/slot_fixture_test.go and wt/internal/agents/slots_test.go.
+# The model ids are illustrative.
+
+[[profile]]
+name    = "mixed"
+agent   = "claude"
+default = "sonnet"
+
+[profile.slots]
+opus   = "openrouter/z-ai/glm-5.3-flash"
+sonnet = "ollama/glm-5.3-flash:cloud"
+haiku  = "omlx/mlx-community--Qwen3.8-27B-4bit"
+
+[profile.env]
+MAX_THINKING_TOKENS = "4096"
+
+[profile.config_content.modelOverrides]
+"claude-sonnet-4-6" = "ollama/deepseek-v4-pro:cloud"
+
+[[profile]]
+name    = "one-slot"
+agent   = "claude"
+default = "opus"
+
+[profile.slots]
+opus = "ollama/glm-5.2:cloud"
