@@ -240,6 +240,7 @@ Each agent registers a `Driver`. `BuildLaunchCmd(agent, m, worktreePath, yolo, c
 - **Protocols.** Agents declare wire protocols (claude `anthropic`; codex `openai-responses`; copilot, opencode, pi `openai-chat`; agy, shell none); providers declare what they serve. An empty intersection forces LiteLLM regardless of the toggle — so **codex always routes through LiteLLM**.
 - **Model id contract** (`ResolveRoute`): litellm/forced routes use the registry id (`m.ID`); direct routes use the provider-side name (`m.ModelName`).
 - **copilot uses the chat-completions wire (`WIRE_API=completions`)** — its `responses` wire drops leading characters.
+- **claude maps all four model slots on every non-native single-model launch**: `Build` sets `ANTHROPIC_DEFAULT_<SLOT>_MODEL` to the `--model` reference and `…_MODEL_NAME` to `m.ModelName`, and clears the inherited values. An applied automatic profile's `env` is appended later, so its value for one of them wins. The names come from `claudeSlotVars`, shared with the slot-profile build.
 - agy is a native passthrough but not a command agent: `-A agy` without `-M` errors when more than one agy model is eligible.
 
 Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driver, `Route`, the optional capabilities (`Seeder`, `Syncer`, `ArgSetter`, `OneShotRunner`, `StateDirer`), or the pre-launch `ollamacheck.Check`. Per-agent env/args: [docs/wt-agents/](docs/wt-agents/). New driver: the `adding-a-wt-agent` skill.

@@ -253,12 +253,21 @@ the same entry matches an `ollama`, `omlx`, or `mtplx` model.
   rejects. Use `["{{args}}"]`. A missing wrapper binary is the one fatal
   profile error — a requested wrapper must actually run — so `little-coder`
   must be on `PATH`.
-- **Mapping claude's model slots is a slot profile's job, not this file's.**
-  The `ANTHROPIC_DEFAULT_*_MODEL` variables need the registry id the proxy
-  routes, and the only placeholder here, `{{model_name}}`, is the
-  provider-side name. A slot profile names a registry model per slot and wt
-  passes the ids itself: see [slot-profiles.md](slot-profiles.md). Do not
-  set those variables in an automatic profile.
+- **wt maps claude's model slots itself; a profile's `env` can still
+  override one.** On every single-model launch that is not native, wt sets
+  `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for all four slots (`fable`, `opus`,
+  `sonnet`, `haiku`) to the reference it passes as `--model`, and
+  `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` to the model's provider-side name
+  (see [claude-wt.md](claude-wt.md#model-slots-on-a-single-model-launch)).
+  A profile does not need to set them. One that does keeps working: a value
+  an applied profile sets in `env` for one of these eight variables wins
+  over wt's, and the others keep wt's values. A value exported in your shell
+  never reaches claude; wt replaces it. A value has to be what the endpoint
+  routes: the registry id through LiteLLM, the provider-side name on a
+  direct route. The only placeholder here, `{{model_name}}`, is the
+  provider-side name, so through LiteLLM write the registry id out. To give
+  each slot its own model, use a slot profile, which names a registry model
+  per slot: see [slot-profiles.md](slot-profiles.md).
 - **The claude attribution header belongs in `config_content`, not
   `env`.** A shell environment variable does not stick for
   `CLAUDE_CODE_ATTRIBUTION_HEADER`; it has to be set in Claude Code's
