@@ -179,6 +179,11 @@ type slotSeams struct {
 	events     []string
 	ensureOwed bool // what ensureSlotRoutes reports as owed when it adds nothing to owedIn
 	ensureErr  error
+	// ensureErrOn, when set, scripts the error of one ensure call by the ids
+	// it was given, so a test can fail the second call and not the first.
+	ensureErrOn func(ids []string) error
+	// startReplace is the replace argument of each startSlotModel call.
+	startReplace []bool
 	// startedOwed and startedErr script the ensure made after the start stub
 	// ran: the check of the started local model's route.
 	startedOwed bool
@@ -211,6 +216,11 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 			ids[i] = m.ID
 		}
 		s.events = append(s.events, "ensure:"+strings.Join(ids, ","))
+		if s.ensureErrOn != nil {
+			if err := s.ensureErrOn(ids); err != nil {
+				return false, err
+			}
+		}
 		if s.started {
 			if s.startedErr != nil {
 				return false, s.startedErr
@@ -231,8 +241,9 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 		return s.probeErr
 	}
 	settleRoutesNow = func(context.Context, *config.Config) { s.events = append(s.events, "settle") }
-	startSlotModel = func(_ *config.Config, row catalog.Row, _ bool, owed bool) (bool, error) {
+	startSlotModel = func(_ *config.Config, row catalog.Row, replace bool, owed bool) (bool, error) {
 		s.events = append(s.events, fmt.Sprintf("start:%s:owed=%t", row.Model.ID, owed))
+		s.startReplace = append(s.startReplace, replace)
 		s.started = true
 		return s.startStill, s.startErr
 	}
@@ -592,6 +603,37 @@ func TestLaunchSlotProfileSteps(t *testing.T) {
 	}
 }
 
+// TestLaunchSlotProfilePassesReplaceToTheStart verifies the non-TUI launch
+// hands the process-wide --replace to the start of the profile's local model,
+// and hands false without it. If it always passed false,
+// `claude-wt -W x -M profile/mixed --replace` against an occupied server
+// would be refused for want of the flag it was given; if it always passed
+// true, a launch without the flag would stop a running model unasked.
+func TestLaunchSlotProfilePassesReplaceToTheStart(t *testing.T) {
+	for _, replace := range []bool{true, false} {
+		t.Run(fmt.Sprintf("replace=%t", replace), func(t *testing.T) {
+			_, worktree := slotLaunchEnv(t)
+			old := allowReplace
+			allowReplace = replace
+			t.Cleanup(func() { allowReplace = old })
+			seams := stubSlotSeams(t)
+			stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotMixed()))
+
+			var err error
+			captureFile(t, &os.Stdout, func() {
+				err = pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
+			})
+
+			if err != nil {
+				t.Fatalf("launch error = %v", err)
+			}
+			if !slices.Equal(seams.startReplace, []bool{replace}) {
+				t.Errorf("start replace arguments = %v, want one start given %t", seams.startReplace, replace)
+			}
+		})
+	}
+}
+
 // TestLaunchSlotProfileRecordsTheProfile verifies the bookkeeping of a profile
 // launch: one usage event under the profile's id, last-picked.state naming
 // the profile, rotation.state byte-identical, and one refcount line per
@@ -652,9 +694,12 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 		checks func() []profiles.SlotCheck // nil: no profile loaded
 		cfg    func(*config.Config)
 		seams  func(*slotSeams)
-		args   []string
-		want   string // a substring of the error
-		steps  string // the engine steps that ran before the abort
+		// running: the profile's local model is already running, so the
+		// launch takes step 5 and no start.
+		running bool
+		args    []string
+		want    string // a substring of the error
+		steps   string // the engine steps that ran before the abort
 	}{
 		{name: "slot-profiles.toml does not parse", want: notEligible},
 		{name: "a profile has no usable name",
@@ -739,6 +784,19 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 			},
 			want:  "slot haiku: LiteLLM route for omlx/q not written: LiteLLM config not found",
 			steps: "ensure:openrouter/a;start:omlx/q:owed=false;ensure:omlx/q"},
+		{name: "a running local model's route cannot be written (step 5)",
+			checks: one(mixed()), running: true,
+			seams: func(s *slotSeams) {
+				s.ensureOwed = true
+				s.ensureErrOn = func(ids []string) error {
+					if slices.Contains(ids, "omlx/q") {
+						return &lifecycle.RouteEnsureError{ModelID: "omlx/q", Err: litellm.ErrMissing}
+					}
+					return nil
+				}
+			},
+			want:  "slot haiku: LiteLLM route for omlx/q not written: LiteLLM config not found",
+			steps: "ensure:openrouter/a;ensure:omlx/q"},
 		{name: "the proxy restart fails",
 			checks: one(cloud()),
 			seams: func(s *slotSeams) {
@@ -771,6 +829,9 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir, worktree := slotLaunchEnv(t)
+			if tc.running {
+				stubProbeInventory(t, runningQ())
+			}
 			seams := stubSlotSeams(t)
 			sentinel := filepath.Join(t.TempDir(), "agent-ran")
 			seams.cmd = exec.Command("touch", sentinel)
@@ -1082,13 +1143,13 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 			sweepRefcounts = func() {}
 			t.Cleanup(func() { sweepRefcounts = oldSweep })
 
-			// The app's slot state, loaded the way newApp loads it.
-			a := &app{cfg: slotFixtureConfig()}
-			store, lerr := loadSlotStore()
-			a.slotLoadErr = lerr
-			if lerr == nil && len(store.Profiles) > 0 {
-				a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
+			// The app as wt builds it: newApp reads the slot file from the
+			// test's config home. Only the registry is the fixture's.
+			a, aerr := newApp()
+			if aerr != nil {
+				t.Fatalf("newApp() error = %v: a broken slot file must not stop wt", aerr)
 			}
+			a.cfg = slotFixtureConfig()
 
 			rotationState := func() string {
 				data, _ := os.ReadFile(filepath.Join(stateDir, "rotation.state"))

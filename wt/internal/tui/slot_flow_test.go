@@ -106,10 +106,13 @@ type slotStub struct {
 	ensureOwed   bool   // a write here changed config.yaml
 	ensureOutput string // written to the writer the stage handed in
 	ensureErr    error
-	restartErr   error
-	probeErr     error
-	buildErr     error
-	cmd          *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
+	// ensureErrOn, when set, scripts the error of one route write by the ids
+	// it was given, so a test can fail the second write and not the first.
+	ensureErrOn func(ids []string) error
+	restartErr  error
+	probeErr    error
+	buildErr    error
+	cmd         *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
 
 	// ensureEntered and ensureRelease, when set, hold the first route write
 	// open: ensureEntered is closed once it is inside, and it returns only
@@ -166,6 +169,11 @@ func stubSlotSeams(t *testing.T) *slotStub {
 		}
 		if s.ensureErr != nil {
 			return false, s.ensureErr
+		}
+		if s.ensureErrOn != nil {
+			if err := s.ensureErrOn(ids); err != nil {
+				return false, err
+			}
 		}
 		return owedIn || s.ensureOwed, nil
 	}
@@ -455,6 +463,43 @@ func TestSlotStageFailuresReturnToThePicker(t *testing.T) {
 			assertNothingRecorded(t)
 		})
 	}
+}
+
+// TestRunningLocalModelRouteFailureAbortsTheLaunch pins step 5 failing: the
+// profile's local model is already running, the cloud routes were written,
+// and the local model's own route cannot be. The launch aborts naming the
+// local slot, with no restart of the flow's own (the failed write settled
+// what the cloud write owed), no probe, no command and nothing recorded.
+// The other failure rows fail the first write, which never reaches this
+// branch; were it to carry on, Claude Code would launch with its local slot
+// unrouted.
+func TestRunningLocalModelRouteFailureAbortsTheLaunch(t *testing.T) {
+	m := slotFlowFixture(t, runningOmlxSnapshot(), mixedProfile())
+	stub := stubSlotSeams(t)
+	stub.ensureOwed = true
+	stub.ensureErrOn = func(ids []string) error {
+		if slices.Contains(ids, "omlx/qwen3.8") {
+			return &lifecycle.RouteEnsureError{ModelID: "omlx/qwen3.8", Err: errors.New("LiteLLM config not found")}
+		}
+		return nil
+	}
+
+	preparing, cmd := enterProfileRow(t, m, "profile/mixed")
+	back, after := updateMsg(preparing, slotStageFrom(t, cmd)())
+
+	if back.phase != phaseModel || back.slot != nil {
+		t.Fatalf("phase = %v slot = %v, want the picker with the flow ended", back.phase, back.slot)
+	}
+	if want := "slot haiku: LiteLLM route for omlx/qwen3.8 not written: LiteLLM config not found"; back.status != want {
+		t.Errorf("status = %q, want %q", back.status, want)
+	}
+	if got, want := stub.got(), "ensure:openrouter/a:owed=false,ensure:omlx/qwen3.8:owed=true,wait"; got != want {
+		t.Errorf("events = %q, want %q (the cloud write's owed restart handed to the local write, then only the wait for the restart that write settled it with)", got, want)
+	}
+	if after == nil {
+		t.Fatal("no command: the picker must re-probe after an aborted launch")
+	}
+	assertNothingRecorded(t)
 }
 
 // TestSlotApplierErrorAbortsTheLaunch pins fail-closed at step 9: an applier
