@@ -487,3 +487,31 @@ func TestProfileToggleHandlesCRLFEnabledLine(t *testing.T) {
 		t.Error("reloaded.Enabled = true, want false")
 	}
 }
+
+// TestProfileShowReservedPrefixIsARegistryModel verifies the one case where a
+// -M value starting with "profile/" is not a slot profile: the registry has a
+// provider with id "profile". No slot-profile row exists then, so the id is a
+// registry model's and `wt profile show` resolves automatic profiles for it,
+// as it does for any model id. Taking the slot branch would report an
+// existing model as "not defined".
+func TestProfileShowReservedPrefixIsARegistryModel(t *testing.T) {
+	a := &app{
+		cfg: &config.Config{
+			Providers: []config.Provider{{ID: "profile", Location: config.LocationCloud}},
+			Models:    []config.Model{{ID: "profile/x", ProviderID: "profile", ModelName: "x"}},
+		},
+		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+			{Agent: "claude", Match: "model", Model: "profile/x", Env: map[string]string{"X": "1"}},
+		}},
+	}
+	var out bytes.Buffer
+	cmd := profileCmd(a)
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"show", "-A", "claude", "-M", "profile/x"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute error = %v", err)
+	}
+	if !strings.Contains(out.String(), "env: X=1") {
+		t.Errorf("output = %q, want the automatic profile resolved for the registry model", out.String())
+	}
+}
