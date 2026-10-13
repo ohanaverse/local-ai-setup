@@ -426,13 +426,23 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 
 // settleQuitSlot is the slot flow's part of flushRouteNotesAfterRun: what wt
 // still owes a profile launch the user quit out of, once the alt screen is
-// gone. A stage in flight is settled first, announced when there is really
-// something to wait for, and its notes join the pending ones. A restart that
-// is then still owed is started: by a start row's first stage, which left it
-// to a start that will not happen now, or on the replace dialog. main() waits
-// for that restart before the process exits. While the local model is
-// starting the engine holds the owed restart, and the start's own settle
-// covers it.
+// gone. Every way out that leaves a restart owed ends in one settleRoutesNow,
+// so no route stays written and unpublished; main() waits for that restart
+// before the process exits.
+//
+//   - A stage in flight is settled first, announced when there is really
+//     something to wait for, and its notes join the pending ones. A restart
+//     it then still owes is started: a start row's first stage left it to a
+//     start that will not happen now.
+//   - On the replace dialog the refused start touched nothing, so the
+//     restart is started.
+//   - While the local model starts, the engine holds the owed restart. A quit
+//     while a cancel drains does not wait for that start, so whether its
+//     engine ever restarts is unknown (a refusal never does): the restart is
+//     started here. If the engine makes its own as well, the proxy restarts
+//     twice for a launch nobody is waiting for.
+//   - A quit at the start's routing stage is waited for, and is settled after
+//     that wait by settleQuitSlotStart, which knows how the start ended.
 func settleQuitSlot(fm model, w io.Writer) {
 	st := fm.slot
 	if st == nil {
@@ -447,10 +457,30 @@ func settleQuitSlot(fm model, w io.Writer) {
 		res := st.settle()
 		pendingRouteNotes += res.notes
 		owed = res.owed
-	case fm.phase != phaseReplaceConfirm:
+	case fm.phase == phaseReplaceConfirm:
+	case fm.start != nil && !fm.start.quitting:
+	default:
 		return
 	}
 	if owed {
 		settleRoutesNow(context.Background(), fm.cfg)
 	}
+}
+
+// settleQuitSlotStart is settleQuitSlot for a profile whose local model's
+// start the user quit out of at the routing stage. flushRouteNotesAfterRun
+// calls it once that start's goroutine has finished (settleQuitStart). The
+// start was told a restart is owed, and its result was dropped by the
+// quitting flow, so finishStart never settled a refusal: the restart is
+// started here when the start left it (lifecycle.RestartStillOwed). Every
+// other outcome made the one restart itself. A start that somehow has not
+// finished is treated as one that left it.
+func settleQuitSlotStart(fm model) {
+	if fm.slot == nil || !fm.slot.owed || fm.start == nil || fm.start.result == nil {
+		return
+	}
+	if err, done := fm.start.result.get(); done && !lifecycle.RestartStillOwed(err) {
+		return
+	}
+	settleRoutesNow(context.Background(), fm.cfg)
 }

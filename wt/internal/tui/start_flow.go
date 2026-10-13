@@ -267,6 +267,10 @@ type startState struct {
 	ch         <-chan tea.Msg
 	// out is what the engine has printed so far (lifecycle.Options.Out).
 	out *startOutput
+	// result is what became of the start, once its goroutine has finished.
+	// It is for Run()'s flush after a quit, when the startDoneMsg was dropped
+	// or never read.
+	result *startResult
 	// quitting is set once ctrl+c at the routing stage asked wt to quit.
 	// tea.Quit is a command: its QuitMsg comes back through the message
 	// channel, so the start's startDoneMsg can still be delivered in between,
@@ -288,6 +292,28 @@ type startState struct {
 // place: esc and q were ignored and ctrl+c quit there already.
 func (s *startState) pastCancel() bool {
 	return s.stage == lifecycle.StageRouting
+}
+
+// startResult holds a start's outcome where the goroutine that ran it and
+// the flush after a quit can both reach it. The goroutine sets it before it
+// sends its startDoneMsg, so it is set by the time the channel is closed.
+type startResult struct {
+	mu   sync.Mutex
+	done bool
+	err  error
+}
+
+func (r *startResult) set(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.done, r.err = true, err
+}
+
+// get returns the start's error and whether the start has finished.
+func (r *startResult) get() (err error, done bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err, r.done
 }
 
 // replaceState is the replace-confirm dialog for the row that could not start.
@@ -331,7 +357,8 @@ func buildReplaceChoices() []list.Item {
 
 // runStart runs the engine in a goroutine and streams its stages, then its
 // result, on the returned channel (closed after the result). What the engine
-// prints is collected in the returned startOutput (#275).
+// prints is collected in the returned startOutput (#275), and the result is
+// also kept in the returned startResult.
 //
 // The goroutine also waits for the proxy restart the start may have left
 // running, before it reports. Two things rest on that: the launch that
@@ -365,10 +392,11 @@ func buildReplaceChoices() []list.Item {
 //
 // The seams are read HERE, on the caller's goroutine, so a test seam swap
 // never races the goroutine's late first read.
-func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow, restartOwed bool, id int) (<-chan tea.Msg, *startOutput) {
+func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow, restartOwed bool, id int) (<-chan tea.Msg, *startOutput, *startResult) {
 	ch := make(chan tea.Msg, 16)
 	start, wait, pending, settle := startModel, waitPendingRoutes, routesPending, settleStart
 	out := &startOutput{}
+	result := &startResult{}
 	go func() {
 		defer close(ch)
 		stage := func(s lifecycle.Stage) {
@@ -388,9 +416,10 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 		} else {
 			wait()
 		}
+		result.set(err)
 		ch <- startDoneMsg{id: id, err: err, out: out.text()}
 	}()
-	return ch, out
+	return ch, out, result
 }
 
 // waitForStart turns the next channel message into a tea message; it must be
@@ -423,8 +452,8 @@ func (m model) beginStartOwed(it *modelItem, allowReplace, restartOwed bool) (mo
 	// Any refresh still in flight predates this start; finishStart issues its own.
 	m.refreshGen++
 	id := m.startRun
-	ch, out := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, restartOwed, id)
-	m.start = &startState{id: id, item: it, began: time.Now(), cancel: cancel, ch: ch, out: out}
+	ch, out, result := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, restartOwed, id)
+	m.start = &startState{id: id, item: it, began: time.Now(), cancel: cancel, ch: ch, out: out, result: result}
 	m.phase = phaseStarting
 	m.status = ""
 	return m, tea.Batch(waitForStart(ch), startTick(id))

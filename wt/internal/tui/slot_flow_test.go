@@ -858,6 +858,126 @@ func TestProfileStartRefusedKeepsTheOwedRestart(t *testing.T) {
 	})
 }
 
+// TestQuitWhileAProfileStartDrainsSettlesTheOwedRestart pins the quit the
+// start screen allows while a cancel drains (ctrl+c twice). The first stage
+// wrote a cloud route and left the restart to the start. That start is not
+// waited for on this way out, since the quit is the escape from a teardown
+// that hangs; whether its engine ever reaches the restart is unknown, and a
+// refusal never does. So the after-run flush starts the restart itself, once,
+// and does not wait for the start. Without it config.yaml keeps a route the
+// proxy never loaded, the next launch finds the row in place and restarts
+// nothing, and that slot answers "Invalid model name".
+func TestQuitWhileAProfileStartDrainsSettlesTheOwedRestart(t *testing.T) {
+	quitMidCancel := func(t *testing.T, owed bool) (model, *slotStub) {
+		t.Helper()
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+			<-release // a teardown that hangs: the cancel is never answered
+			return context.Canceled
+		})
+		starting, stub := mixedStarting(t, owed)
+		waitStartCalls(t, calls, 1)
+		cancelling, _ := updateMsg(starting, tea.KeyMsg{Type: tea.KeyCtrlC})
+		quit, cmd := updateMsg(cancelling, tea.KeyMsg{Type: tea.KeyCtrlC})
+		if cmd == nil {
+			t.Fatal("the second ctrl+c returned no command, want tea.Quit")
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Fatal("the second ctrl+c did not quit")
+		}
+		if quit.slot == nil || quit.start == nil || quit.start.quitting {
+			t.Fatalf("slot = %v start = %+v, want the flow and its unwaited start kept", quit.slot, quit.start)
+		}
+		return quit, stub
+	}
+	flush := func(t *testing.T, m model) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			flushRouteNotesAfterRun(m, io.Discard)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the flush waited for a start whose teardown hangs")
+		}
+	}
+
+	t.Run("a restart is owed", func(t *testing.T) {
+		quit, stub := quitMidCancel(t, true)
+		flush(t, quit)
+		if got, want := stub.got(), "ensure:openrouter/a:owed=false,settle"; got != want {
+			t.Errorf("events = %q, want %q (the written route published, once)", got, want)
+		}
+		assertNothingRecorded(t)
+	})
+
+	t.Run("nothing owed, nothing settled", func(t *testing.T) {
+		quit, stub := quitMidCancel(t, false)
+		flush(t, quit)
+		if got, want := stub.got(), "ensure:openrouter/a:owed=false"; got != want {
+			t.Errorf("events = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestQuitAtTheRoutingStageOfAProfileStartSettlesWhatTheStartLeft pins the
+// quit at the start's routing stage (one ctrl+c, nothing left to cancel).
+// The start is waited for there, and it was told a restart is owed. A start
+// that got as far as the engine's own restart settled it. A start that was
+// refused touched nothing and restarted nothing, and reaches the routing
+// stage all the same when a restart from earlier in the session is still in
+// flight; its result is dropped because the user quit, so the flush has to
+// settle what it left. Without that the cloud route stays written and
+// unpublished. A start whose engine made the restart gets no second one.
+func TestQuitAtTheRoutingStageOfAProfileStartSettlesWhatTheStartLeft(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"the start was refused", &lifecycle.OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}},
+			"ensure:openrouter/a:owed=false,wait,settle"},
+		{"the start failed after the engine settled the restart", errors.New("omlx refused the load"),
+			"ensure:openrouter/a:owed=false,wait"},
+		{"the start succeeded", nil, "ensure:openrouter/a:owed=false"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldPending := routesPending
+			routesPending = func() bool { return true }
+			t.Cleanup(func() { routesPending = oldPending })
+			stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return tc.err })
+			starting, stub := mixedStarting(t, true)
+
+			routing, _ := updateMsg(starting, recvStart(t, starting))
+			if routing.start == nil || !routing.start.pastCancel() {
+				t.Fatalf("start = %+v, want it at the routing stage", routing.start)
+			}
+			quit, cmd := updateMsg(routing, tea.KeyMsg{Type: tea.KeyCtrlC})
+			if cmd == nil || !quit.start.quitting {
+				t.Fatal("ctrl+c at the routing stage did not quit wt")
+			}
+			// The runtime's own read of the channel takes the start's result
+			// and the quitting flow drops it, as it would in the gap before
+			// the QuitMsg: the flush cannot count on reading it.
+			dropped, after := updateMsg(quit, recvStart(t, quit))
+			if after != nil || dropped.slot == nil {
+				t.Fatalf("command nil = %v slot = %v, want the result dropped and the flow kept", after == nil, dropped.slot)
+			}
+
+			flushRouteNotesAfterRun(dropped, io.Discard)
+
+			if got := stub.got(); got != tc.want {
+				t.Errorf("events = %q, want %q", got, tc.want)
+			}
+			assertNothingRecorded(t)
+		})
+	}
+}
+
 // TestProfileStartFailureReturnsToThePicker pins the failure table's start
 // row: a start that fails returns to the picker with the start flow's own
 // error, ends the profile launch, builds no command and records nothing. The

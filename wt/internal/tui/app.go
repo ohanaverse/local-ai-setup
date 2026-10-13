@@ -1425,10 +1425,15 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	// or config.yaml rewritten and the proxy never restarted. The quit while
 	// a cancel drains is not waited for: that ctrl+c is the way out of a
 	// teardown that hangs.
+	//
+	// The start of a profile's local model was told a restart is owed. The
+	// quit that is waited for settles it after the wait (settleQuitSlotStart);
+	// the one that is not was settled above (settleQuitSlot).
 	if fm, ok := final.(model); ok && fm.start != nil && fm.start.out != nil {
 		fm.start.out.release(w)
 		if fm.start.quitting {
 			settleQuitStart(fm.start.ch, w)
+			settleQuitSlotStart(fm)
 		}
 	}
 }
