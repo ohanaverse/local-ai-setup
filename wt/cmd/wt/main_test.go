@@ -1161,3 +1161,32 @@ func TestBrokenRegistryLinkIsNotAPassthrough(t *testing.T) {
 		t.Error("launchPassthrough was called for a broken registry link")
 	}
 }
+
+// TestRunLaunchPathHandsTheTUIItsSlotProfiles pins the one line that turns
+// slot profiles on in the picker: runLaunchPath gives tui.Run the profiles
+// newApp loaded and the fail-closed applier. With the zero value the picker
+// shows no profile row and says nothing about why.
+func TestRunLaunchPathHandsTheTUIItsSlotProfiles(t *testing.T) {
+	// runLaunchPath sets the process-wide launchSlotChecks; this restores it.
+	stubSlotChecks(t)
+	var got tui.SlotProfiles
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, slots tui.SlotProfiles) error {
+		got = slots
+		return nil
+	}
+	t.Cleanup(func() { tuiRun = oldTuiRun })
+
+	a := &app{cfg: &config.Config{}}
+	a.slotChecks = []profiles.SlotCheck{slotFixtureCheck(0, "cloud", "opus", map[string]string{"opus": "openrouter/a"})}
+
+	if err := runLaunchPath(&cobra.Command{}, a, "", "", "", "", nil, "", ""); err != nil {
+		t.Fatalf("runLaunchPath() error = %v", err)
+	}
+	if len(got.Checks) != 1 || got.Checks[0].Label() != "profile/cloud" {
+		t.Errorf("Checks = %+v, want the app's one slot profile", got.Checks)
+	}
+	if got.Apply == nil {
+		t.Error("Apply is nil: every profile launch from the picker would abort with \"no slot-profile applier\"")
+	}
+}

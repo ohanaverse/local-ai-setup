@@ -127,6 +127,9 @@ func runLaunchPath(
 	// does, via the same applyProfileForLaunch — internal/tui cannot call
 	// it directly (import-cycle/package-boundary reasons documented on
 	// tui.ProfileApplier), so it is handed in as a closure instead.
+	// A slot-profile launch never reaches applyProfile. The TUI is handed
+	// the loaded slot profiles and applySlotProfile, the fail-closed applier
+	// the non-TUI path calls directly, as tui.SlotProfiles.
 	applyProfile := func(cmd *exec.Cmd, agentName string, m config.Model) (func() error, error) {
 		return applyProfileForLaunch(cmd, agentName, m, a.cfg, a.profileState())
 	}
@@ -136,7 +139,7 @@ func runLaunchPath(
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
 	if launchPath == "" {
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{})
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
 	}
 
 	pinnedSupplied := cmd.Flags().Changed("model")
@@ -168,7 +171,7 @@ func runLaunchPath(
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
 		}
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{})
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
 	}
 
 	return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))
