@@ -41,12 +41,15 @@
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 24px 16px 40px;
+    padding: 20px 16px 16px;
+    height: 100vh;
     background: var(--bg);
     color: var(--text);
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  main { max-width: 1500px; margin: 0 auto; }
+  /* The page is one screen tall: the table takes what the rest leaves and
+     scrolls inside its own box, both ways, so its heading row stays in view. */
+  main { max-width: 1500px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; }
   h1 { margin: 0 0 4px; font-size: 20px; font-weight: 650; }
   .age { margin: 0 0 16px; color: var(--muted); }
   .controls {
@@ -61,7 +64,7 @@
   .controls input { width: min(320px, 80vw); }
   #count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
   .scroll {
-    overflow-x: auto; background: var(--panel);
+    flex: 1 1 auto; min-height: 260px; overflow: auto; background: var(--panel);
     border: 1px solid var(--line); border-radius: 8px;
   }
   table { border-collapse: collapse; width: 100%; white-space: nowrap; }
@@ -95,7 +98,7 @@
   .chip.quick { background: var(--quick-bg); color: var(--quick-fg); }
   .chip.unrated { background: var(--unrated-bg); color: var(--unrated-fg); }
   #empty, #noscript { padding: 28px; text-align: center; color: var(--muted); }
-  footer { margin-top: 20px; color: var(--muted); font-size: 12px; }
+  footer { margin-top: 12px; color: var(--muted); font-size: 12px; }
   footer p { margin: 0 0 4px; }
   footer ul { margin: 0; padding-left: 18px; }
 </style>
