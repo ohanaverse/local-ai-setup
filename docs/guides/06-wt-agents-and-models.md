@@ -285,7 +285,7 @@ A profile may mix cloud and local models and providers. It may name one distinct
 **Step 2 — check it.**
 
 ```bash
-wt profile list                                # from: any dir, read-only — the file's own errors
+wt profile list                                # from: any dir, read-only — the file's own errors and unknown keys
 wt profile show -A claude -M profile/<name>    # from: any dir — launch, start or blocked, and what claude would be given
 ```
 

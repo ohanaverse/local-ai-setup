@@ -38,7 +38,8 @@ launch of Claude Code, are outside that support.
 
 `~/.config/agent-wt/slot-profiles.toml`, beside `profiles.toml`. You write
 it by hand. wt reads it and never writes it. A missing file means no profile
-rows.
+rows. The array is `[[profile]]`, singular; `profiles.toml` uses
+`[[profiles]]`.
 
 ```toml
 [[profile]]
@@ -109,6 +110,7 @@ Static reasons:
 | `slot "opus" names no model` | An empty id |
 | `default is missing` / `default "x" is not a slot this profile fills` | `default` must name a filled slot |
 | `agent "claude" does not support mechanism "wrapper"` | A field outside the agent's allow-list |
+| `mechanism "x" has no effect without "y" on the same profile` | The agent's driver requires field `y` whenever `x` is set, and the profile sets only `x`. No rule of this kind applies to Claude |
 | `env sets ANTHROPIC_BASE_URL, which wt sets for the launch` | A reserved key (also `config_content.env sets …`) |
 | `wrapper args_template [...] has no "{{args}}" placeholder` | The agent's own arguments would be dropped |
 
@@ -118,13 +120,16 @@ Resolved reasons:
 |---|---|
 | `slot haiku: <id> is not in the registry` | The id is not a registry model. This is what a profile shows after `wt cloud-sync` or `wt model rm` removed a model it names |
 | `slot opus: <id> is a native model, which has no LiteLLM route` | A slot cannot use the native Anthropic subscription |
+| `slot opus: <id> names provider "x", which is not in the registry` | The model's `provider_id` has no provider row |
+| `slot opus: model "<id>" has location "…"; expected "local" or "cloud"` | The model's location does not resolve |
 | `slot opus: <id> cannot be routed: provider "x" has no LiteLLM mapping` | wt has no route policy for the provider |
+| `slot opus: <id> cannot be routed: wt has no LiteLLM route for this model` | The launch's route write would refuse the model, for a reason no row above names: for example a cloud model under a provider whose auth is `native`. The row asks the same function the route write does, so the two cannot disagree |
 | `slots name two local models (<id> and <id>); a slot profile may name one` | More than one distinct local model |
 | `a slot profile always uses the LiteLLM proxy, but no URL is configured — run 'wt litellm set --url ... --api-key ...'` | `[litellm]` has no url (or, with `no API key`, no key) |
 | `slot haiku: <id> is not on disk or running`, or the pull hint `wt model list` gives | The local model has no row |
 | `slot haiku: …` and the local model's own block reason | The local model cannot be started by wt |
 
-Three problems produce no usable row:
+Three problems produce no usable row, and a fourth loses part of the file:
 
 - **No usable name or agent.** A profile whose `name` is missing or
   malformed, or whose `agent` is missing, unknown or without slots, has no
@@ -132,13 +137,35 @@ Three problems produce no usable row:
   `wt: slot-profiles.toml[<n>]: <reason> — skipped (see 'wt profile list')`,
   where `<n>` is the profile's position in the file, from 0.
 - **A file that does not parse.** No profile rows; one line,
-  `wt: parse slot-profiles.toml: … — slot profiles are unavailable`.
-- **A registry provider with id `profile`.** `profile/` is a reserved id
-  prefix. wt shows no profile rows and prints
-  `wt: the registry has a provider with id "profile" — slot profiles are unavailable`.
+  `wt: parse slot-profiles.toml: … — slot profiles are unavailable`, which
+  carries the TOML error and its line number. A value of the wrong TOML type
+  is a parse failure too, and it fails the whole file: with `default = 3` or
+  `args = "x"` in one profile, the valid profiles beside it lose their rows
+  as well. Fix the line the warning names.
+- **The `profile/` prefix is taken.** `profile/` is a reserved id prefix. It
+  is taken when the registry has a provider with id `profile`, or a model
+  whose id begins with `profile/` under any provider. wt then shows no
+  profile rows and prints
+  `wt: the registry has a provider with id "profile" — slot profiles are unavailable`,
+  or
+  `wt: the registry has a model whose id begins with "profile/" (<id>) — slot profiles are unavailable`.
+  `wt profile list` prints the same sentence as a `warning:` line.
+- **A key wt does not know.** The file still loads, without what the key
+  holds, and wt prints one line per key:
+  `wt: slot-profiles.toml: unknown key "profiles" — ignored`. The key is a
+  dotted path: `profiles` for an array written `[[profiles]]`,
+  `profile.envs` for a misspelt table, `profile.wrapper.args` for a misspelt
+  wrapper field. A file whose only content is under an unknown key gives no
+  profile and this warning. Keys under `config_content` are free-form and
+  are never reported.
 
-None of these affects a single-model launch, another profile or an
-automatic profile.
+None of these affects a single-model launch or an automatic profile. Only
+the parse failure affects another profile.
+
+**Where the warning lines appear.** wt prints them to stderr once per launch
+of an agent that has slots, before any picker opens. The picker's screen
+then covers them, so a launch that went through the picker prints the same
+lines again when the picker has closed: after the session, or when you quit.
 
 ## In the picker
 
@@ -239,6 +266,24 @@ stands until a later restart succeeds or a new wt process starts.
 **A profile launch restarts the proxy at most once**, and not at all when
 every slot's route already exists. A local model started in step 4 stays
 running if a later step fails.
+
+**Quitting mid-launch.** Ctrl+C in the picker while a profile launch is
+under way quits wt, starts no agent and records nothing. A route the launch
+had already written is published before wt exits: wt restarts the proxy once
+and waits for it, so no route is left in `config.yaml` that the proxy never
+loaded. That holds while the routes are being written, on the replace
+dialog, and while the profile's local model is starting. Quitting with a
+second Ctrl+C while a cancelled start is still stopping does not wait for
+that start; wt restarts the proxy itself, and the proxy can restart a second
+time if the start also gets that far.
+
+**After a restart that failed.** The refusal in step 7 lasts for the wt
+process that saw the failure. A new wt process finds every route in place,
+writes nothing, restarts nothing, and the old proxy answers the check; the
+slot whose route was written but never loaded then answers
+`Invalid model name`. Restart the proxy by hand before trying again:
+`launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, or your
+`WT_LITELLM_RESTART_CMD`.
 
 **Passthrough arguments.** wt refuses `--settings` and `--model` after
 `--`, in either form (`--model opus` or `--model=opus`). Either would
@@ -368,7 +413,11 @@ slot profiles:
   slot-profiles.toml[2]: error: name is missing
 ```
 
-With no profile it prints `slot profiles: (none defined)`. A file that does
+With no profile it prints `slot profiles: (none defined)`. After the
+profiles it prints one `warning:` line per unknown key
+(`warning: slot-profiles.toml: unknown key "profiles" — ignored`), also when
+there is no profile, and one when the `profile/` prefix is taken, since no
+profile it lists as `ok` has a row then. A file that does
 not parse is one line, `slot profiles: <error>`, and the command exits
 non-zero. `list` reports the static check only. A profile it calls `ok` can
 still be blocked by the registry or the proxy; `show` says.
@@ -407,7 +456,9 @@ without the profile.
 
 | Failure | What you see |
 |---|---|
-| The file does not parse | No profile rows; one warning line |
+| The file does not parse, or a value has the wrong TOML type | No profile rows; one warning line with the TOML error |
+| The file has a key wt does not know | The file loads without it; one warning line per key |
+| The registry has a provider `profile`, or a model id that begins with `profile/` | No profile rows; one warning line |
 | A profile has no usable name or agent | No row for it; one warning line; listed by `wt profile list` |
 | Two profiles share a name | One blocked row, `duplicate profile name` |
 | A profile fails a check | A blocked row with the reason |
