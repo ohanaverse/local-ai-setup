@@ -328,19 +328,19 @@ def test_a_file_that_is_not_utf8_reads_as_absent_for_the_change_report(
 def test_the_file_holds_each_fitted_line_so_a_score_can_be_worked_out_again(
     document: dict[str, Any],
 ) -> None:
-    assert list(document["alignment"]) == ["arena_agent", "eci"]
-    eci = document["alignment"]["eci"]
-    assert list(eci) == ["slope", "intercept", "shared", "typical_miss", "floor", "ceiling"]
-    assert eci["shared"] == 3
+    fits = document["alignment"]
+    assert list(fits) == ["floor", "ceiling", "arena_agent", "eci"]
     # The lowest and highest index any fixture key has: Qwen3.8 27B and Opus 5.5.
-    assert (eci["floor"], eci["ceiling"]) == (33.7, 57.6)
+    assert (fits["floor"], fits["ceiling"]) == (33.7, 57.6)
+    assert list(fits["eci"]) == ["slope", "intercept", "shared", "typical_miss"]
+    assert fits["eci"]["shared"] == 3
     # DeepSeek has no index: its score is the mean of its two translated scores.
     deepseek = document["models"][1]
     parts = []
     for name in deepseek["aligned_sources"]:
-        line = document["alignment"][name]
+        line = fits[name]
         points = line["slope"] * deepseek["scores"][name] + line["intercept"]
-        parts.append(min(max(points, line["floor"]), line["ceiling"]))
+        parts.append(min(max(points, fits["floor"]), fits["ceiling"]))
     assert deepseek["aligned_sources"] == ["arena_agent", "eci"]
     assert deepseek["aligned_score"] == round(sum(parts) / len(parts), 1) == 43.5
     assert tomllib.loads(output.render(document))["alignment"] == document["alignment"]

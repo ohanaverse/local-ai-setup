@@ -32,24 +32,26 @@ class Fit:
     intercept: float
     shared: int  # the models the line was fitted on
     typical_miss: float  # root mean square of what the line leaves, in index points
-    floor: float  # the lowest index any model of the run has
-    ceiling: float  # the highest
-
-    def translate(self, score: float) -> float:
-        """The score in index points, never under `floor` or over `ceiling`.
-        The sources do not stay on one line at the ends of the scale, so a
-        line read far enough gives an index no model has: a weak model's
-        Epoch score comes out below zero."""
-        return min(max(self.slope * score + self.intercept, self.floor), self.ceiling)
 
 
 @dataclass(frozen=True)
 class Alignment:
-    """This run's fits. A signal some model has, and no line was fitted for,
-    is in `refused` with the reason; its scores then add to no aligned score."""
+    """This run's fits, and the bounds every one of them answers within. A
+    signal some model has, and no line was fitted for, is in `refused` with
+    the reason; its scores then add to no aligned score."""
 
     fits: Mapping[str, Fit]
     refused: Mapping[str, str]
+    floor: float  # the lowest index any model of the run has
+    ceiling: float  # the highest
+
+    def translate(self, signal: str, score: float) -> float:
+        """The score in index points by `signal`'s line, never under `floor`
+        or over `ceiling`. The sources do not stay on one line at the ends of
+        the scale, so a line read far enough gives an index no model has: a
+        weak model's Epoch score comes out below zero."""
+        fit = self.fits[signal]
+        return min(max(fit.slope * score + fit.intercept, self.floor), self.ceiling)
 
 
 @dataclass(frozen=True)
@@ -58,14 +60,11 @@ class Aligned:
 
     score: float  # index points, to DECIMALS places
     sources: tuple[str, ...]  # the signals averaged, in SIGNALS order
-    parts: Mapping[str, float]  # signal -> its estimate in index points, unrounded
 
 
-def _fit(
-    signal: str, pairs: list[tuple[float, float]], min_shared: int, floor: float, ceiling: float
-) -> Fit | str:
+def _fit(signal: str, pairs: list[tuple[float, float]], min_shared: int) -> Fit | str:
     """The least-squares line over (signal score, anchor score) pairs, or why
-    there is none. `floor` and `ceiling` bound what the line may answer."""
+    there is none."""
     count = len(pairs)
     if count < min_shared:
         return f"{count} models have both it and {ANCHOR}, under the minimum of {min_shared}"
@@ -91,8 +90,6 @@ def _fit(
         intercept=intercept,
         shared=count,
         typical_miss=typical_miss,
-        floor=floor,
-        ceiling=ceiling,
     )
 
 
@@ -113,13 +110,19 @@ def fit_all(
             for found in scores.values()
             if signal in found and ANCHOR in found
         ]
-        # With no index at all there are no pairs, and the fit is refused.
-        result = _fit(signal, pairs, min_shared, min(every, default=0.0), max(every, default=0.0))
+        result = _fit(signal, pairs, min_shared)
         if isinstance(result, Fit):
             fits[signal] = result
         else:
             refused[signal] = result
-    return Alignment(fits=fits, refused=refused)
+    # With no index at all there are no pairs, every fit is refused and the
+    # bounds are never read.
+    return Alignment(
+        fits=fits,
+        refused=refused,
+        floor=min(every, default=0.0),
+        ceiling=max(every, default=0.0),
+    )
 
 
 def aligned(scores: Mapping[str, float], alignment: Alignment) -> Aligned | None:
@@ -133,7 +136,7 @@ def aligned(scores: Mapping[str, float], alignment: Alignment) -> Aligned | None
         if signal == ANCHOR:
             parts[signal] = scores[signal]
         elif signal in alignment.fits:
-            parts[signal] = alignment.fits[signal].translate(scores[signal])
+            parts[signal] = alignment.translate(signal, scores[signal])
     if not parts:
         return None
-    return Aligned(score=round(fmean(parts.values()), DECIMALS), sources=tuple(parts), parts=parts)
+    return Aligned(score=round(fmean(parts.values()), DECIMALS), sources=tuple(parts))

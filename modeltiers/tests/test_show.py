@@ -4,9 +4,11 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from conftest import T0
 
 from modeltiers import show
+from modeltiers.pipeline import Assignment
 
 ATTRIBUTION = [
     "modelsdev: models.dev (https://models.dev), MIT",
@@ -564,10 +566,12 @@ def test_explain_without_the_files_fits_names_the_sources_alone(
     lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
     assert lines is not None
     assert "  aligned:     44.3 (intelligence_index 44.8; arena_agent; eci)" in lines
-    doc["models"][0]["aligned_sources"] = "all"
-    lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
-    assert lines is not None
-    assert "  aligned:     44.3" in lines
+    # Anything but a list of names, and a list that names nothing: the score alone.
+    for sources in ("all", []):
+        doc["models"][0]["aligned_sources"] = sources
+        lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
+        assert lines is not None
+        assert "  aligned:     44.3" in lines
 
 
 def test_candidates_are_sorted_by_their_aligned_scores_too() -> None:
@@ -582,23 +586,40 @@ def test_candidates_are_sorted_by_their_aligned_scores_too() -> None:
     assert [line.split()[-1] for line in lines[-3:]] == ["v/high", "v/low", "v/none"]
 
 
+@pytest.mark.parametrize("raw", [60.0, 150.0, 155.61, 167.33, 400.0])
+def test_explain_translates_a_score_as_the_run_that_wrote_the_file_did(
+    assignment: Assignment, document: dict[str, Any], raw: float
+) -> None:
+    """`show` reads the file alone, so it works the line and its bounds out
+    itself. This holds it to `Alignment.translate`: under the bounds, inside
+    them and over."""
+    doc = copy.deepcopy(document)
+    doc["models"][0]["scores"]["eci"] = raw
+    lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
+    assert lines is not None
+    points = assignment.alignment.translate("eci", raw)
+    aligned = next(line for line in lines if "aligned:" in line)
+    assert f"eci {show.short(raw)} as {points:.1f})" in aligned
+
+
 def test_explain_holds_a_translated_score_inside_the_files_bounds(
     document: dict[str, Any],
 ) -> None:
     doc = copy.deepcopy(document)
-    doc["alignment"]["eci"].update(floor=44.5, ceiling=50.0)
+    doc["alignment"].update(floor=44.5, ceiling=50.0)
     lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
     assert lines is not None
-    # The line alone gives 44.1; the file says nothing under 44.5.
+    # Each line alone gives 44.1; the file says nothing under 44.5. The index
+    # is the model's own and is not held.
     assert (
-        "  aligned:     44.3 (intelligence_index 44.8; arena_agent 0.0215 as 44.1; "
+        "  aligned:     44.3 (intelligence_index 44.8; arena_agent 0.0215 as 44.5; "
         "eci 155.61 as 44.5)" in lines
     )
     opus = show.explain_lines(doc, "anthropic/claude-opus-5-5")
     assert opus is not None
     assert "eci 167.33 as 50.0)" in next(line for line in opus if "aligned:" in line)
     # Bounds of another type are no bounds.
-    doc["alignment"]["eci"].update(floor="low", ceiling=True)
+    doc["alignment"].update(floor="low", ceiling=True)
     lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
     assert lines is not None
     assert "eci 155.61 as 44.1)" in next(line for line in lines if "aligned:" in line)

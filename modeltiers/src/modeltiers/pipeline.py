@@ -151,15 +151,13 @@ def _voting_scores(evidence: Evidence, contracts: Contracts) -> dict[str, float]
 
 
 def _alignment(result: Identity, contracts: Contracts, min_shared: int) -> Alignment:
-    """The fits over every key any source scored, inventory row or not."""
-    keys: dict[str, str] = {}
-    for source in result.sources():
-        for lower, match in source.best.items():
-            keys.setdefault(lower, match.canonical)
-    scores = {
-        lower: _voting_scores(_evidence(result, key, contracts), contracts)
-        for lower, key in keys.items()
-    }
+    """The fits over every key any source scored, inventory row or not. A
+    key's voting score is its best record's, as `assign.weigh` takes it."""
+    by_source = {source.source: source for source in result.sources()}
+    scores: dict[str, dict[str, float]] = {}
+    for name, signal in contracts.signals.items():
+        for lower, match in by_source[signal.source].best.items():
+            scores.setdefault(lower, {})[name] = match.record.score
     return align.fit_all(scores, min_shared=min_shared)
 
 

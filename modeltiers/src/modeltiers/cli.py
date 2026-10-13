@@ -115,7 +115,10 @@ def _parser() -> argparse.ArgumentParser:
     shown.add_argument(
         "--wide",
         action="store_true",
-        help="add open weights, context and the scores to the table",
+        help=(
+            "add open weights, context, the scores, the aligned score and the number "
+            "of scores it rests on to the table"
+        ),
     )
     shown.add_argument(
         "--html",

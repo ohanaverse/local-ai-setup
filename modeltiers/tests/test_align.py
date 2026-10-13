@@ -24,9 +24,9 @@ def test_a_line_through_exact_points_is_found_and_misses_nothing() -> None:
     assert fit.slope == pytest.approx(0.5)
     assert fit.intercept == pytest.approx(-50.0)
     assert fit.typical_miss == pytest.approx(0.0)
-    assert fit.translate(150.0) == pytest.approx(25.0)
+    assert alignment.translate("eci", 150.0) == pytest.approx(25.0)
     # The index values the run's models have: it answers with nothing outside them.
-    assert (fit.floor, fit.ceiling) == (10.0, 40.0)
+    assert (alignment.floor, alignment.ceiling) == (10.0, 40.0)
     assert alignment.refused == {}
 
 
@@ -34,13 +34,13 @@ def test_a_line_never_answers_outside_the_index_values_the_run_has() -> None:
     """The sources do not stay on one line at the ends of the scale. Read far
     enough, a line gives an index no model has."""
     scores = _keys(intelligence_index=[10.0, 20.0, 30.0, 40.0], eci=[120.0, 140.0, 160.0, 180.0])
-    fit = align.fit_all(scores, min_shared=4).fits["eci"]
-    assert fit.translate(60.0) == 10.0  # the line alone says -20
-    assert fit.translate(120.0) == pytest.approx(10.0)
-    assert fit.translate(260.0) == 40.0  # the line alone says 80
-    weak = align.aligned({"intelligence_index": 4.0, "eci": 60.0}, Alignment({"eci": fit}, {}))
-    assert weak is not None
-    assert (weak.score, weak.parts) == (7.0, {"intelligence_index": 4.0, "eci": 10.0})
+    alignment = align.fit_all(scores, min_shared=4)
+    assert alignment.translate("eci", 60.0) == 10.0  # the line alone says -20
+    assert alignment.translate("eci", 120.0) == pytest.approx(10.0)
+    assert alignment.translate("eci", 260.0) == 40.0  # the line alone says 80
+    # The mean of the index as it is and the held 10, not the line's -20.
+    weak = align.aligned({"intelligence_index": 4.0, "eci": 60.0}, alignment)
+    assert weak == Aligned(score=7.0, sources=("intelligence_index", "eci"))
 
 
 def test_the_typical_miss_is_the_root_mean_square_of_what_the_line_leaves() -> None:
@@ -58,11 +58,12 @@ def test_only_keys_with_both_scores_are_fitted_on() -> None:
         intelligence_index=[10.0, 20.0, 30.0, None, 50.0],
         eci=[120.0, 140.0, 160.0, 999.0, None],
     )
-    fit = align.fit_all(scores, min_shared=3).fits["eci"]
+    alignment = align.fit_all(scores, min_shared=3)
+    fit = alignment.fits["eci"]
     assert fit.shared == 3
     assert fit.slope == pytest.approx(0.5)
     # The bounds are every model's index, shared with this signal or not.
-    assert (fit.floor, fit.ceiling) == (10.0, 50.0)
+    assert (alignment.floor, alignment.ceiling) == (10.0, 50.0)
 
 
 def test_too_few_shared_keys_is_refused_with_the_count() -> None:
@@ -141,28 +142,24 @@ def test_a_signal_no_key_has_is_neither_fitted_nor_refused() -> None:
 
 FITS = Alignment(
     fits={
-        "arena_agent": Fit(
-            "arena_agent", 100.0, 40.0, shared=30, typical_miss=3.0, floor=5.0, ceiling=60.0
-        ),
-        "eci": Fit("eci", 0.5, -50.0, shared=90, typical_miss=4.0, floor=5.0, ceiling=60.0),
+        "arena_agent": Fit("arena_agent", 100.0, 40.0, shared=30, typical_miss=3.0),
+        "eci": Fit("eci", 0.5, -50.0, shared=90, typical_miss=4.0),
     },
     refused={},
+    floor=5.0,
+    ceiling=60.0,
 )
 
 
 def test_the_aligned_score_is_the_mean_of_the_index_and_each_translated_score() -> None:
     found = align.aligned({"intelligence_index": 44.0, "arena_agent": 0.02, "eci": 190.0}, FITS)
     # 44, 100 * 0.02 + 40 = 42, 190 / 2 - 50 = 45: mean 43.666..., one decimal.
-    assert found == Aligned(
-        score=43.7,
-        sources=("intelligence_index", "arena_agent", "eci"),
-        parts={"intelligence_index": 44.0, "arena_agent": 42.0, "eci": 45.0},
-    )
+    assert found == Aligned(score=43.7, sources=("intelligence_index", "arena_agent", "eci"))
 
 
 def test_a_model_is_aligned_on_whatever_it_has() -> None:
     assert align.aligned({"intelligence_index": 33.7}, FITS) == Aligned(
-        score=33.7, sources=("intelligence_index",), parts={"intelligence_index": 33.7}
+        score=33.7, sources=("intelligence_index",)
     )
     arena_only = align.aligned({"arena_agent": -0.05}, FITS)
     assert arena_only is not None
@@ -174,7 +171,9 @@ def test_a_model_is_aligned_on_whatever_it_has() -> None:
 
 
 def test_a_score_whose_source_was_not_fitted_adds_nothing() -> None:
-    only_eci = Alignment(fits={"eci": FITS.fits["eci"]}, refused={"arena_agent": "too few"})
+    only_eci = Alignment(
+        fits={"eci": FITS.fits["eci"]}, refused={"arena_agent": "too few"}, floor=5.0, ceiling=60.0
+    )
     found = align.aligned({"intelligence_index": 44.0, "arena_agent": 0.02}, only_eci)
     assert found is not None
     assert (found.score, found.sources) == (44.0, ("intelligence_index",))

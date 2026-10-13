@@ -36,21 +36,21 @@ records = 6
 unresolved = 0
 attribution = "Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks, CC BY 4.0"
 
+[alignment]
+floor = 33.7
+ceiling = 57.6
+
 [alignment.arena_agent]
 slope = 103.59921841274206
 intercept = 41.88951209043778
 shared = 3
 typical_miss = 1.0978083098775118
-floor = 33.7
-ceiling = 57.6
 
 [alignment.eci]
 slope = 1.0793397112615362
 intercept = -123.82658665394834
 shared = 3
 typical_miss = 1.056222524320934
-floor = 33.7
-ceiling = 57.6
 
 [[models]]
 provider_id = "ollama"

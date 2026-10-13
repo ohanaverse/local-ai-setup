@@ -254,7 +254,7 @@ Two inventory rows for one key can end in different tiers because their hosts se
 Added 2026-10-12, after delivery. A tier is coarse and the three voting scores are on scales of their own, each over a different set of models, so nothing in the file ranked two models that different sources scored. A percentile within each source does not either: Arena lists only strong models, so the same model is near the middle there and near the top of OpenRouter's longer list.
 
 - **Fit.** Each run fits, for `arena_agent` and for `eci`, the least-squares line from that signal's score to `intelligence_index` over every resolved key that has both. A signal with fewer than 20 shared keys, with no variation, with no finite line, or whose line does not slope up is not fitted: `run` warns and that signal is in no aligned score.
-- **Bounds.** A line's answer is held between the lowest and the highest intelligence index any key of the run has (`floor` and `ceiling`). The sources do not stay on one line at the ends of the scale: unbounded, the Epoch line gave the weakest models an index below zero and pulled a model under its own measured index.
+- **Bounds.** A line's answer is held between the lowest and the highest intelligence index any key of the run has (`floor` and `ceiling`, one pair for the run, the same for every line). The sources do not stay on one line at the ends of the scale: unbounded, the Epoch line gave the weakest models an index below zero and pulled a model under its own measured index.
 - **Score.** A key's aligned score is the plain mean of its intelligence index and of each of its other voting scores put through its line, in index points to one decimal. `coding_index` and `agentic_index` are not part of it. A key with nothing usable has none. A local row takes its key's score.
 - **Advisory.** No vote, tier, gate, sentinel or exit code reads it. The lines are fitted again on every run.
 - **Reported.** `run` prints `alignment: <signal> on N shared models, typical miss M points` per fit, where the typical miss is the root mean square of what the line leaves. `show --wide` and the page show `aligned` and `src` (how many scores it rests on); `show --sort aligned` orders by it; `explain` prints its parts.
@@ -358,13 +358,15 @@ records = 52
 unresolved = 1
 attribution = "Arena (arena.ai), dataset lmarena-ai/leaderboard-dataset, CC BY 4.0"
 
-[alignment.arena_agent]             # one per fitted signal; see "Aligned score"
+[alignment]                         # the bounds of every line; see "Aligned score"
+floor = 3.8
+ceiling = 57.6
+
+[alignment.arena_agent]             # one per fitted signal
 slope = 109.33
 intercept = 38.75
 shared = 42
 typical_miss = 3.61
-floor = 3.8
-ceiling = 57.6
 
 [[models]]
 provider_id = "ollama"
@@ -427,7 +429,7 @@ score = 0.0926
 |---|---|---|
 | `[inventory]` | The registry path and provider probe statuses wt reported | — |
 | `[sources.*]` | One table each for `modelsdev`, `openrouter`, `arena` and `epoch` | — |
-| `[alignment.*]` | One table per signal fitted to the intelligence index; absent when none was | — |
+| `[alignment]` | `floor` and `ceiling`, then one `[alignment.<signal>]` table per signal fitted to the intelligence index; absent when none was | — |
 | `[[models]]` | One entry per resolved or ignored inventory row | As wt lists them |
 | `[[candidates]]` | One entry per key with at least one vote and no inventory row | Rank descending, then key |
 | `[[unmapped]]` | Inventory rows no step resolved | As wt lists them |
@@ -435,7 +437,7 @@ score = 0.0926
 
 - `[[models]]` plus `[[unmapped]]` equals the inventory without its native rows.
 - Optional fields: `reason` (present when the tier is `unrated`), `context` (absent when unknown), `efforts` entries (present only for signals whose record named an effort), and any score the source did not provide. `tool_call` and `open_weights` are absent for a key with no models.dev rows. `open_weights` is true when any models.dev row of the key says so. An ignored row has no `canonical`, no `resolved_by` and no `open_weights`. An array table with no entries is absent from the file.
-- `aligned_score` and `aligned_sources` (the signals averaged) are on every `[[models]]` and `[[candidates]]` entry with a usable score, after `context`, and absent otherwise. `[alignment.<signal>]`, after `[sources.*]`, holds each fitted line's `slope`, `intercept`, `shared`, `typical_miss`, `floor` and `ceiling`; the table is absent when no signal was fitted.
+- `aligned_score` and `aligned_sources` (the signals averaged) are on every `[[models]]` and `[[candidates]]` entry with a usable score, after `context`, and absent otherwise. `[alignment]`, after `[sources.*]`, holds the run's `floor` and `ceiling`, and `[alignment.<signal>]` under it each fitted line's `slope`, `intercept`, `shared` and `typical_miss`; the whole table is absent when no signal was fitted.
 - `[[candidates]]` entries have the fields of `[[models]]` without `provider_id`, `model_name`, `registered` and `basis`.
 - `[sources.*].unresolved` counts every unresolved record of that source, so it can exceed the number of that source's `[[unresolved]]` entries, which list one entry per source id at or above the standard floor. `[sources.modelsdev]` has no `unresolved` key.
 - A status of `unavailable` never appears, because such a run writes nothing.

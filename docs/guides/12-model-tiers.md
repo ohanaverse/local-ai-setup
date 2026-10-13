@@ -197,7 +197,7 @@ different sources scored. `aligned` is the one column that does:
 - `src` is how many scores it rests on, from 1 to 3. `explain` prints the
   parts: `arena_agent <score> as <index points>`.
 
-Read it with three cautions:
+Read it with these cautions:
 
 - **It is an estimate.** Two models closer than the typical miss the run
   printed are not told apart by it. The page says the figure under its table.
@@ -209,8 +209,10 @@ Read it with three cautions:
 - **A local build has its hosted model's score.** No source scores your
   quantized copy. Like its tier, its aligned score is the one the model's key
   has, and `explain` says `basis inherited`.
-- **The bottom of the scale is flat.** The weakest models all come out near
-  the lowest index of the run, because the lines are not read below it.
+- **Both ends of the scale are flat.** The weakest models all come out near
+  the lowest index of the run, and a model whose line would put it above the
+  highest index comes out at that index, so the strongest can tie: the lines
+  are not read past either end.
 
 A signal is left out of every aligned score when the run cannot fit it, and
 `run` says so on stderr: `warning: alignment: <signal> is in no aligned

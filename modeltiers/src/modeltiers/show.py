@@ -176,7 +176,8 @@ def table_lines(
     """The tier table: one line per `[[models]]` entry, the unmapped rows,
     and with `candidates` one line per `[[candidates]]` entry. The models and
     the candidates are each in file order, or in `sort` order (a name from
-    SORT_COLUMNS). `wide` adds open weights, context and the scores."""
+    SORT_COLUMNS). `wide` adds open weights, context, the scores, the aligned
+    score and the number of scores it rests on."""
     models = ordered(entries(doc, "models"), sort, model_name)
     unmapped = entries(doc, "unmapped")
     width = max([len(model_name(m)) for m in models] + [len("model")])
@@ -223,21 +224,23 @@ def _pairs(table: Mapping[str, Any]) -> str:
     return ", ".join(f"{key} {short(value)}" for key, value in table.items()) or "none"
 
 
-def _aligned(entry: Mapping[str, Any], fits: Any) -> str:
+def _aligned(entry: Mapping[str, Any], alignment: Any) -> str:
     """The aligned score and what it is the mean of: the index as it is, and
     each other score with the index points the file's line turns it into,
-    held within the line's bounds. A source whose line the file does not give
+    held within the file's bounds. A source whose line the file does not give
     is named alone."""
+    fits: Mapping[str, Any] = alignment if isinstance(alignment, dict) else {}
+    floor, ceiling = number(fits.get("floor")), number(fits.get("ceiling"))
     found = number(entry.get("aligned_score"))
     if found is None:
         return "none"
     sources = entry.get("aligned_sources")
-    if not isinstance(sources, list):
+    if not isinstance(sources, list) or not sources:
         return f"{found:.1f}"
     parts = []
     for name in sources:
         raw = score(entry, str(name))
-        found_fit = fits.get(name) if isinstance(fits, dict) and isinstance(name, str) else None
+        found_fit = fits.get(name) if isinstance(name, str) else None
         fit: Mapping[str, Any] = found_fit if isinstance(found_fit, dict) else {}
         slope, intercept = number(fit.get("slope")), number(fit.get("intercept"))
         if raw is None:
@@ -247,7 +250,6 @@ def _aligned(entry: Mapping[str, Any], fits: Any) -> str:
         elif slope is None or intercept is None:
             parts.append(str(name))
         else:
-            floor, ceiling = number(fit.get("floor")), number(fit.get("ceiling"))
             points = slope * raw + intercept
             points = points if floor is None else max(points, floor)
             points = points if ceiling is None else min(points, ceiling)
@@ -255,7 +257,7 @@ def _aligned(entry: Mapping[str, Any], fits: Any) -> str:
     return f"{found:.1f} ({'; '.join(parts)})"
 
 
-def _entry_lines(title: str, entry: Mapping[str, Any], fits: Any = None) -> list[str]:
+def _entry_lines(title: str, entry: Mapping[str, Any], alignment: Any = None) -> list[str]:
     tier = f"{entry.get('tier', '?')} ({entry.get('code', '?')})"
     if "reason" in entry:
         tier += f", reason {entry['reason']}"
@@ -270,7 +272,7 @@ def _entry_lines(title: str, entry: Mapping[str, Any], fits: Any = None) -> list
         f"  confidence:  {entry.get('confidence', '?')}{basis}",
         f"  votes:       {_pairs(entry.get('votes', {}))}",
         f"  scores:      {_pairs(entry.get('scores', {}))}",
-        f"  aligned:     {_aligned(entry, fits)}",
+        f"  aligned:     {_aligned(entry, alignment)}",
         f"  efforts:     {_pairs(entry.get('efforts', {}))}",
         f"  tool_call:   {str(entry['tool_call']).lower() if 'tool_call' in entry else 'unknown'}",
         f"  context:     {entry.get('context', 'unknown')}",

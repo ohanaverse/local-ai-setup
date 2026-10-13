@@ -115,19 +115,25 @@ def _sources(assignment: Assignment, sources: Sources) -> Document:
 
 
 def _alignment(assignment: Assignment) -> Document:
-    """One table per fitted signal: the line that turns its score into index
-    points and the bounds its answer is held within, so a reader of the file
-    alone can work an aligned score out again."""
+    """The bounds every line's answer is held within, then one table per
+    fitted signal with the line that turns its score into index points, so a
+    reader of the file alone can work an aligned score out again. Empty when
+    no signal was fitted."""
+    alignment = assignment.alignment
+    if not alignment.fits:
+        return {}
     return {
-        signal: {
-            "slope": fit.slope,
-            "intercept": fit.intercept,
-            "shared": fit.shared,
-            "typical_miss": fit.typical_miss,
-            "floor": fit.floor,
-            "ceiling": fit.ceiling,
-        }
-        for signal, fit in assignment.alignment.fits.items()
+        "floor": alignment.floor,
+        "ceiling": alignment.ceiling,
+        **{
+            signal: {
+                "slope": fit.slope,
+                "intercept": fit.intercept,
+                "shared": fit.shared,
+                "typical_miss": fit.typical_miss,
+            }
+            for signal, fit in alignment.fits.items()
+        },
     }
 
 
@@ -164,8 +170,8 @@ def build_document(
 
 
 def render(doc: Document) -> str:
-    """The document as TOML text: the plain keys, `[inventory]` and
-    `[sources.*]` first, then one block per entry of each array in ARRAYS. A
+    """The document as TOML text: the plain keys, `[inventory]`, `[sources.*]`
+    `[alignment]` and `[alignment.*]` first, then one block per entry of each array in ARRAYS. A
     table inside an entry (`votes`, `efforts`, `scores`) follows the entry's
     plain values as `[models.votes]`; an empty one is a bare header."""
     parts = [tomli_w.dumps({key: value for key, value in doc.items() if key not in ARRAYS})]

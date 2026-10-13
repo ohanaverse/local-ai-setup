@@ -29,10 +29,10 @@ from modeltiers.records import Inventory
 FIXTURES = Path(__file__).parent / "fixtures"
 EPOCH_MEMBER = "epoch_capabilities_index/eci_scores.csv"
 T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
-# The output contract: what `run` writes for the golden fixtures.
 # The fixtures share three models between the intelligence index and each of
 # the other two signals: the fewest an alignment is fitted on in the tests.
 ALIGN_MIN = 3
+# The output contract: what `run` writes for the golden fixtures.
 SAMPLE = Path(__file__).parents[2] / "docs" / "contracts" / "tiers.sample.toml"
 _STAMPS = re.compile(r'^(generated_at|fetched_at) = "[^"]*"$', re.MULTILINE)
 
