@@ -76,6 +76,15 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		"ANTHROPIC_BASE_URL="+r.BaseOrigin,
 	)
 	lc.Args = append(lc.Args, "--model", r.ModelRef)
+	// Every model slot is mapped to the same reference --model carries, so a
+	// request Claude Code makes on a tier of its own choosing reaches this
+	// model instead of an Anthropic id the endpoint rejects. The inherited
+	// values are cleared so the command holds one entry per variable: an
+	// applied automatic profile appends its env after this (see
+	// profiles.ApplyEnvAndArgs), and the last entry wins, so a profile that
+	// sets one of these still overrides wt's value.
+	lc.ClearEnv = claudeSlotKeys()
+	lc.Env = append(lc.Env, claudeSingleModelSlotEnv(r.ModelRef, m)...)
 	return lc
 }
 
