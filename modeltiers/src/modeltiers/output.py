@@ -15,12 +15,10 @@ from typing import Any
 
 import tomli_w
 
-from modeltiers.align import Aligned
-from modeltiers.assign import Evidence, Facts, Verdict
 from modeltiers.contracts import STAMP, Contracts
 from modeltiers.errors import OutputFileError
 from modeltiers.loader import Sources
-from modeltiers.pipeline import Assignment, Candidate, ModelResult
+from modeltiers.pipeline import Assignment, Candidate, ModelResult, Rated
 from modeltiers.records import Inventory
 
 ARRAYS = ("models", "candidates", "unmapped", "unresolved")  # in the order written
@@ -28,24 +26,22 @@ ARRAYS = ("models", "candidates", "unmapped", "unresolved")  # in the order writ
 Document = dict[str, Any]
 
 
-def _rating(
-    evidence: Evidence,
-    facts: Facts,
-    verdict: Verdict,
-    contracts: Contracts,
-    aligned: Aligned | None,
-    **extra: Any,
-) -> Document:
+def _rating(rated: Rated, contracts: Contracts, *, basis: str | None = None) -> Document:
     """The fields a `[[models]]` and a `[[candidates]]` entry share, from
-    `tier` on. `extra` (basis, open_weights) goes after `confidence`. A field
-    whose value is unknown is left out: `reason` on a rated entry, `tool_call`
-    for a key with no models.dev rows, `context` when no row gives one, and
-    `aligned_score` with `aligned_sources` when no score could be aligned."""
+    `tier` on. `basis` is an inventory row's alone. A field whose value is
+    unknown is left out: `reason` on a rated entry, `open_weights` and
+    `tool_call` for a key with no models.dev rows, `context` when no row
+    gives one, and `aligned_score` with `aligned_sources` when no score could
+    be aligned."""
+    evidence, facts, verdict, aligned = rated.evidence, rated.facts, rated.verdict, rated.aligned
     entry: Document = {"tier": verdict.tier, "code": contracts.code(verdict.tier)}
     if verdict.reason is not None:
         entry["reason"] = verdict.reason
     entry["confidence"] = evidence.confidence
-    entry.update({key: value for key, value in extra.items() if value is not None})
+    if basis is not None:
+        entry["basis"] = basis
+    if rated.open_weights is not None:
+        entry["open_weights"] = rated.open_weights
     if facts.tool_call is not None:
         entry["tool_call"] = facts.tool_call
     if facts.context is not None:
@@ -71,30 +67,14 @@ def _model(model: ModelResult, contracts: Contracts) -> Document:
         entry["canonical"] = found.canonical
         entry["resolved_by"] = found.resolved_by
     notes = (*found.notes, *model.verdict.notes)
-    rating = _rating(
-        model.evidence,
-        model.facts,
-        model.verdict,
-        contracts,
-        model.aligned,
-        basis=found.basis,
-        open_weights=model.open_weights,
-    )
-    return {**entry, **rating, "notes": list(notes)}
+    return {**entry, **_rating(model, contracts, basis=found.basis), "notes": list(notes)}
 
 
 def _candidate(candidate: Candidate, contracts: Contracts) -> Document:
     return {
         "canonical": candidate.canonical,
         "resolved_by": candidate.resolved_by,
-        **_rating(
-            candidate.evidence,
-            candidate.facts,
-            candidate.verdict,
-            contracts,
-            candidate.aligned,
-            open_weights=candidate.open_weights,
-        ),
+        **_rating(candidate, contracts),
     }
 
 

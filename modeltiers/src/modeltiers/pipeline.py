@@ -1,7 +1,7 @@
 """The stages after loading, run in order over one inventory and one set of
 sources: `resolve_all` (identity), then `assign_all` (tiers)."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from modeltiers import aliases as aliases_mod
@@ -33,7 +33,11 @@ class Identity:
 
     def sources(self) -> tuple[SourceIdentity, ...]:
         """The three benchmark sources, in the order the report lists them."""
-        return tuple(getattr(self, name) for name in SOURCES)
+        return tuple(self.source(name) for name in SOURCES)
+
+    def source(self, name: str) -> SourceIdentity:
+        found: SourceIdentity = getattr(self, name)
+        return found
 
     @property
     def unmapped(self) -> tuple[RowIdentity, ...]:
@@ -75,11 +79,11 @@ def resolve_all(inventory: Inventory, sources: Sources, aliases: Aliases) -> Ide
     )
 
 
-@dataclass(frozen=True)
-class ModelResult:
-    """One resolved or ignored inventory row, with its tier."""
+@dataclass(frozen=True, kw_only=True)
+class Rated:
+    """What a key's records and models.dev rows come to: the part an
+    inventory model's entry and a candidate's have in common."""
 
-    identity: RowIdentity
     open_weights: bool | None  # None: ignored, or the key has no models.dev rows
     aligned: Aligned | None  # None: ignored, or no score the alignment can use
     evidence: Evidence
@@ -87,17 +91,19 @@ class ModelResult:
     verdict: Verdict
 
 
-@dataclass(frozen=True)
-class Candidate:
+@dataclass(frozen=True, kw_only=True)
+class ModelResult(Rated):
+    """One resolved or ignored inventory row, with its tier."""
+
+    identity: RowIdentity
+
+
+@dataclass(frozen=True, kw_only=True)
+class Candidate(Rated):
     """A key with at least one vote and no inventory row."""
 
     canonical: str  # in the stored spelling
     resolved_by: str  # the earliest of alias, host, normalized among its records
-    open_weights: bool | None  # None: the key has no models.dev rows
-    aligned: Aligned | None  # None: no score the alignment can use
-    evidence: Evidence
-    facts: Facts
-    verdict: Verdict
 
 
 @dataclass(frozen=True)
@@ -125,17 +131,15 @@ _RESOLUTION_ORDER = (identity.ALIAS, identity.HOST, identity.NORMALIZED)
 
 def _matches(result: Identity, key: str, contracts: Contracts) -> dict[str, Match]:
     """The key's best record per signal, for the signals whose source has one."""
-    by_source = {source.source: source for source in result.sources()}
     found: dict[str, Match] = {}
     for name, signal in contracts.signals.items():
-        match = by_source[signal.source].best.get(key.lower())
+        match = result.source(signal.source).best.get(key.lower())
         if match is not None:
             found[name] = match
     return found
 
 
-def _evidence(result: Identity, key: str, contracts: Contracts) -> Evidence:
-    matches = _matches(result, key, contracts)
+def _weigh(matches: Mapping[str, Match], contracts: Contracts) -> Evidence:
     return assign.weigh({name: match.record for name, match in matches.items()}, contracts)
 
 
@@ -153,12 +157,36 @@ def _voting_scores(evidence: Evidence, contracts: Contracts) -> dict[str, float]
 def _alignment(result: Identity, contracts: Contracts, min_shared: int) -> Alignment:
     """The fits over every key any source scored, inventory row or not. A
     key's voting score is its best record's, as `assign.weigh` takes it."""
-    by_source = {source.source: source for source in result.sources()}
     scores: dict[str, dict[str, float]] = {}
     for name, signal in contracts.signals.items():
-        for lower, match in by_source[signal.source].best.items():
+        for lower, match in result.source(signal.source).best.items():
             scores.setdefault(lower, {})[name] = match.record.score
     return align.fit_all(scores, min_shared=min_shared)
+
+
+def _rate(
+    result: Identity,
+    key: str,
+    matches: Mapping[str, Match],
+    contracts: Contracts,
+    alignment: Alignment,
+    *,
+    location: str | None,
+    host_row: ModelsDevRow | None,
+) -> Rated:
+    """Everything a key's best records and models.dev rows decide, the same
+    for an inventory row and for a candidate. `location` and `host_row` are
+    the inventory row's; a candidate has neither."""
+    evidence = _weigh(matches, contracts)
+    rows = result.index.rows_for(key)
+    facts = assign.gather(rows, location=location, host_row=host_row)
+    return Rated(
+        open_weights=_open_weights(rows),
+        aligned=align.aligned(_voting_scores(evidence, contracts), alignment),
+        evidence=evidence,
+        facts=facts,
+        verdict=assign.decide(evidence, facts, contracts),
+    )
 
 
 def _model(
@@ -176,17 +204,16 @@ def _model(
                 UNRATED, assign.NOT_APPLICABLE, (f"{IGNORED_NOTE}{entry.ignore_reason}",)
             ),
         )
-    evidence = _evidence(result, entry.canonical, contracts)
-    rows = result.index.rows_for(entry.canonical)
-    facts = assign.gather(rows, location=entry.row.location, host_row=entry.host_row)
-    return ModelResult(
-        identity=entry,
-        open_weights=_open_weights(rows),
-        aligned=align.aligned(_voting_scores(evidence, contracts), alignment),
-        evidence=evidence,
-        facts=facts,
-        verdict=assign.decide(evidence, facts, contracts),
+    rated = _rate(
+        result,
+        entry.canonical,
+        _matches(result, entry.canonical, contracts),
+        contracts,
+        alignment,
+        location=entry.row.location,
+        host_row=entry.host_row,
     )
+    return ModelResult(identity=entry, **vars(rated))
 
 
 def _candidates(
@@ -202,18 +229,12 @@ def _candidates(
     for key in keys.values():
         matches = _matches(result, key, contracts)
         steps = {match.resolved_by for match in matches.values()}
-        evidence = assign.weigh({name: m.record for name, m in matches.items()}, contracts)
-        rows = result.index.rows_for(key)
-        facts = assign.gather(rows, location=None, host_row=None)
+        rated = _rate(result, key, matches, contracts, alignment, location=None, host_row=None)
         found.append(
             Candidate(
                 canonical=key,
                 resolved_by=next(step for step in _RESOLUTION_ORDER if step in steps),
-                open_weights=_open_weights(rows),
-                aligned=align.aligned(_voting_scores(evidence, contracts), alignment),
-                evidence=evidence,
-                facts=facts,
-                verdict=assign.decide(evidence, facts, contracts),
+                **vars(rated),
             )
         )
     found.sort(key=lambda c: (-RANK[c.verdict.tier], c.canonical.lower()))
@@ -245,7 +266,8 @@ def _sentinels(result: Identity, contracts: Contracts) -> tuple[SentinelResult, 
                 f"{contracts.origin}: [[sentinels]] #{number} ({sentinel.canonical}): "
                 "not a canonical key in this run's models.dev data or in aliases.toml"
             )
-        checked.append(assign.check_sentinel(sentinel, key, _evidence(result, key, contracts)))
+        evidence = _weigh(_matches(result, key, contracts), contracts)
+        checked.append(assign.check_sentinel(sentinel, key, evidence))
     return tuple(checked)
 
 
