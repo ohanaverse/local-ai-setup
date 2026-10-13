@@ -361,3 +361,191 @@ func TestNextFromEligibleNeverPicksDiscovered(t *testing.T) {
 		t.Fatalf("NextFromEligible(discovered only) = %q, want no pick", m.ID)
 	}
 }
+
+// TestLastPicked verifies which id the picker's marker reads: the one in
+// last-picked.state, and the one in rotation.state when that file is missing
+// or empty. Without the fallback, a user upgrading wt would lose the marker
+// until their next launch; without the preference, a slot-profile launch
+// could never move the marker, since rotation.state never names a profile.
+func TestLastPicked(t *testing.T) {
+	missing := "\x00" // a file that is not written
+	tests := []struct {
+		name             string
+		rotation, picked string
+		want             string
+		wantOK           bool
+	}{
+		{name: "no state at all", rotation: missing, picked: missing, want: "", wantOK: false},
+		{name: "state from before last-picked.state existed", rotation: "ollama/a\n", picked: missing, want: "ollama/a", wantOK: true},
+		{name: "a profile was launched after a model", rotation: "ollama/a\n", picked: "profile/mixed\n", want: "profile/mixed", wantOK: true},
+		{name: "an empty last-picked.state falls back", rotation: "ollama/a\n", picked: " \n", want: "ollama/a", wantOK: true},
+		{name: "a profile is the only launch so far", rotation: missing, picked: "profile/mixed\n", want: "profile/mixed", wantOK: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, content := range map[string]string{"rotation.state": tt.rotation, "last-picked.state": tt.picked} {
+				if content == missing {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+					t.Fatalf("seed %s: %v", name, err)
+				}
+			}
+			got, ok := NewAt(dir).LastPicked()
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("LastPicked = %q, %v; want %q, %v", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestRecordForWritesLastPicked verifies a single-model launch writes both
+// state files, each one line and mode 0600. If it wrote rotation.state alone,
+// the picker's marker would stay on a slot profile launched earlier, pointing
+// at a row the user did not launch last.
+func TestRecordForWritesLastPicked(t *testing.T) {
+	dir := t.TempDir()
+	r := NewAt(dir)
+	if err := r.RecordProfile("claude", "profile/mixed"); err != nil {
+		t.Fatalf("RecordProfile: %v", err)
+	}
+	if err := r.RecordFor("claude", "ollama/a"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
+	}
+	for _, name := range []string{"rotation.state", "last-picked.state"} {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(data) != "ollama/a\n" {
+			t.Errorf("%s = %q, want %q", name, data, "ollama/a\n")
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s perm = %o, want 0600", name, perm)
+		}
+	}
+	if got, ok := r.LastPicked(); !ok || got != "ollama/a" {
+		t.Errorf("LastPicked = %q, %v; want ollama/a, true", got, ok)
+	}
+}
+
+// TestRecordProfileLeavesRotationStateAlone verifies a slot-profile launch
+// moves the marker and counts as a launch of the profile, and leaves
+// rotation.state byte for byte as it was. rotation.state is one bare registry
+// id that an older wt binary reads whole; a profile id in it would make that
+// binary, and rotation itself, treat the state as stale and restart rotation
+// from the first model.
+func TestRecordProfileLeavesRotationStateAlone(t *testing.T) {
+	cfg := claudeCfg(
+		config.Model{ID: "claude/sonnet", ProviderID: "claude"},
+		config.Model{ID: "claude/opus", ProviderID: "claude"},
+	)
+	dir := t.TempDir()
+	r := NewAt(dir)
+	if err := r.RecordFor("claude", "claude/sonnet"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
+	}
+	before, err := os.ReadFile(r.statePath())
+	if err != nil {
+		t.Fatalf("read rotation.state: %v", err)
+	}
+
+	if err := r.RecordProfile("claude", "profile/mixed"); err != nil {
+		t.Fatalf("RecordProfile: %v", err)
+	}
+
+	after, err := os.ReadFile(r.statePath())
+	if err != nil {
+		t.Fatalf("read rotation.state after the profile launch: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("rotation.state = %q after a profile launch, want it unchanged (%q)", after, before)
+	}
+	if got, _ := r.Last(); got != "claude/sonnet" {
+		t.Errorf("Last = %q, want claude/sonnet", got)
+	}
+	if got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg); !ok || got.ID != "claude/opus" {
+		t.Errorf("NextFromEligible = %q, %v; want claude/opus, true (rotation did not move)", got.ID, ok)
+	}
+	if got, ok := r.LastPicked(); !ok || got != "profile/mixed" {
+		t.Errorf("LastPicked = %q, %v; want profile/mixed, true", got, ok)
+	}
+	picked, err := os.ReadFile(r.pickedPath())
+	if err != nil {
+		t.Fatalf("read last-picked.state: %v", err)
+	}
+	if string(picked) != "profile/mixed\n" {
+		t.Errorf("last-picked.state = %q, want %q", picked, "profile/mixed\n")
+	}
+	info, err := os.Stat(r.pickedPath())
+	if err != nil {
+		t.Fatalf("stat last-picked.state: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("last-picked.state perm = %o, want 0600", perm)
+	}
+	store := usage.NewStoreAt(dir)
+	if got := store.CountsForAgent("claude", []string{"profile/mixed"})["profile/mixed"].ThirtyDay; got != 1 {
+		t.Errorf("claude launches of profile/mixed = %d, want 1", got)
+	}
+	if got := store.CountsForAgent("claude", []string{"claude/sonnet"})["claude/sonnet"].ThirtyDay; got != 1 {
+		t.Errorf("claude launches of claude/sonnet = %d, want 1 (the profile launch is not a launch of a model)", got)
+	}
+}
+
+// TestRecordProfileDoesNotCreateRotationState verifies a slot-profile launch
+// on a fresh install writes no rotation.state. A file created there would
+// have to hold something, and anything but a registry id breaks the next
+// single-model rotation.
+func TestRecordProfileDoesNotCreateRotationState(t *testing.T) {
+	dir := t.TempDir()
+	r := NewAt(dir)
+	if err := r.RecordProfile("claude", "profile/mixed"); err != nil {
+		t.Fatalf("RecordProfile: %v", err)
+	}
+	if _, err := os.Stat(r.statePath()); !os.IsNotExist(err) {
+		t.Errorf("rotation.state exists after a profile launch (stat err = %v), want it absent", err)
+	}
+	if got, ok := r.Last(); ok {
+		t.Errorf("Last = %q, true; want no last-launched model", got)
+	}
+	if got, ok := r.LastPicked(); !ok || got != "profile/mixed" {
+		t.Errorf("LastPicked = %q, %v; want profile/mixed, true", got, ok)
+	}
+}
+
+// TestRecordKeepsUsageWhenLastPickedFails verifies a last-picked.state that
+// cannot be written is reported and costs nothing else: rotation still
+// advances and the launch is still counted. Both launch paths print the error
+// as a note and launch anyway, so a launch dropped from usage.jsonl here
+// would be missing from the picker's counts and from `wt stats`.
+func TestRecordKeepsUsageWhenLastPickedFails(t *testing.T) {
+	dir := t.TempDir()
+	r := NewAt(dir)
+	// A directory where the file belongs: the atomic rename onto it fails.
+	if err := os.Mkdir(r.pickedPath(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := r.RecordFor("claude", "ollama/a"); err == nil {
+		t.Error("RecordFor = nil, want the last-picked.state write error")
+	}
+	if got, _ := r.Last(); got != "ollama/a" {
+		t.Errorf("Last = %q, want ollama/a (rotation.state is written first)", got)
+	}
+	if err := r.RecordProfile("claude", "profile/mixed"); err == nil {
+		t.Error("RecordProfile = nil, want the last-picked.state write error")
+	}
+	counts := usage.NewStoreAt(dir).CountsForAgent("claude", []string{"ollama/a", "profile/mixed"})
+	for _, id := range []string{"ollama/a", "profile/mixed"} {
+		if counts[id].ThirtyDay != 1 {
+			t.Errorf("launches of %s = %d, want 1", id, counts[id].ThirtyDay)
+		}
+	}
+}
