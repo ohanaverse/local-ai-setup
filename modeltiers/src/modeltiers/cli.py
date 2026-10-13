@@ -41,7 +41,6 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_STALE = 2
 EXIT_SENTINEL = 3
-STAMP = contracts_mod.STAMP
 
 
 def _utc_now() -> datetime:
@@ -69,7 +68,7 @@ def _warn(message: str) -> None:
 def _source_line(result: SourceResult[ModelsDev] | SourceResult[ScoreRecords]) -> str:
     return (
         f"{result.name}: {result.status}, {result.records} records, "
-        f"fetched {result.fetched_at.strftime(STAMP)}"
+        f"fetched {result.fetched_at.strftime(contracts_mod.STAMP)}"
     )
 
 
@@ -279,7 +278,7 @@ def _ladder(args: argparse.Namespace, deps: Deps) -> int:
     """Reads the newest good snapshot of models.dev and of the signal's own
     source, and nothing else: no fetch, no wt, no output file."""
     aliases = aliases_mod.load_aliases(deps.aliases_path)
-    source = contracts_mod.SIGNAL_SOURCE[args.signal.removesuffix(ladder.LOWER)]
+    source = contracts_mod.SIGNAL_SOURCE[args.signal.removesuffix(contracts_mod.CI_LOWER)]
     spec: SourceSpec[ScoreRecords] = getattr(deps.specs, source)
     load = partial(
         loader.load_source,
@@ -295,7 +294,7 @@ def _ladder(args: argparse.Namespace, deps: Deps) -> int:
     index = pipeline.checked_index(modelsdev.data, aliases)
     best = identity.resolve_source(source, scored.data, index, aliases).best.values()
     lines = ladder.ladder_lines(
-        best, lower_bound=args.signal.endswith(ladder.LOWER), low=args.low, high=args.high
+        best, lower_bound=args.signal.endswith(contracts_mod.CI_LOWER), low=args.low, high=args.high
     )
     if not lines:
         print(

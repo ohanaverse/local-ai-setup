@@ -8,18 +8,20 @@ from math import isfinite
 from typing import Any
 
 from modeltiers.align import ANCHOR
-from modeltiers.contracts import RANK, SIGNAL_SOURCE, SOURCES, STAMP
+from modeltiers.contracts import CI_LOWER, RANK, SIGNAL_SOURCE, SOURCES, STAMP
 
 STALE_AFTER_DAYS = 14
 
 Document = Mapping[str, Any]
+# What a row under `[[unmapped]]` is called where a tier or a reason goes.
+UNMAPPED = "unmapped"
 
 # Which source each score in an entry came from, for the attribution lines:
 # the signal's source, plus the record fields the signal's source adds. A
 # recalibrated carrier (a signal gaining `marathon_ci_lower`) needs no edit
 # here, so no source's attribution line can silently drop out of `explain`.
 _SCORE_SOURCE: Mapping[str, str] = {
-    key: source for name, source in SIGNAL_SOURCE.items() for key in (name, f"{name}_ci_lower")
+    key: source for name, source in SIGNAL_SOURCE.items() for key in (name, f"{name}{CI_LOWER}")
 } | {"coding_index": "openrouter", "agentic_index": "openrouter"}
 
 # The scores the wide table and the page show, with the table's heading for each.

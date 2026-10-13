@@ -61,9 +61,8 @@ def mark_bad(snapshot: Snapshot) -> Snapshot:
     """
     stamp, ext = snapshot.path.name.split(".", 1)
     target = snapshot.path.with_name(f"{stamp}.bad.{ext}")
-    if target.exists() and not snapshot.path.exists():
-        return Snapshot(path=target, fetched_at=snapshot.fetched_at, bad=True)
-    snapshot.path.replace(target)
+    if snapshot.path.exists() or not target.exists():
+        snapshot.path.replace(target)
     return Snapshot(path=target, fetched_at=snapshot.fetched_at, bad=True)
 
 
@@ -81,16 +80,14 @@ def good_snapshots(cache: Path, source: str) -> list[Snapshot]:
     return [s for s in list_snapshots(cache, source) if not s.bad]
 
 
-def prune(
-    cache: Path, source: str, *, keep_good: int = KEEP_GOOD, keep_bad: int = KEEP_BAD
-) -> list[Path]:
-    """Delete all but the newest `keep_good` good and `keep_bad` bad snapshots
+def prune(cache: Path, source: str) -> list[Path]:
+    """Delete all but the newest KEEP_GOOD good and KEEP_BAD bad snapshots
     of one source. Returns the deleted paths. A snapshot the other run has
     meanwhile renamed is simply already deleted."""
     snapshots = list_snapshots(cache, source)
     good = [s for s in snapshots if not s.bad]
     bad = [s for s in snapshots if s.bad]
-    removed = [s.path for s in good[keep_good:] + bad[keep_bad:]]
+    removed = [s.path for s in good[KEEP_GOOD:] + bad[KEEP_BAD:]]
     for path in removed:
         path.unlink(missing_ok=True)
     return removed

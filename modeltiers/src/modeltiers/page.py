@@ -17,10 +17,7 @@ from typing import Any
 
 from modeltiers import show
 from modeltiers.contracts import RANK, UNRATED
-from modeltiers.show import SCORE_COLUMNS, Document
-
-# The reason the page gives an `[[unmapped]]` row, which the file gives none.
-UNMAPPED = "unmapped"
+from modeltiers.show import SCORE_COLUMNS, UNMAPPED, Document
 
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 _JSON_ESCAPES = {"<": "\\u003c", ">": "\\u003e", "&": "\\u0026"}

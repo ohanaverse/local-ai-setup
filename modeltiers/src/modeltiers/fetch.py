@@ -16,7 +16,7 @@ from modeltiers.errors import FetchError
 Fetcher = Callable[[str], bytes]
 Sleep = Callable[[float], None]
 # Raises FetchError(retryable=True) when a body that arrived is a failed download.
-BodyCheck = Callable[[bytes], None]
+BodyCheck = Callable[[bytes], object]
 
 TIMEOUT_SECONDS = 30
 RETRY_DELAY_SECONDS = 2
@@ -59,17 +59,20 @@ def fetch_with_retry(
     fetcher: Fetcher, url: str, sleep: Sleep, check: BodyCheck | None = None
 ) -> bytes:
     """Fetch `url`; after a retryable failure wait 2 seconds and try once more."""
-    for attempt in (1, 2):
-        try:
-            body = fetcher(url)
-            if check is not None:
-                check(body)
-            return body
-        except FetchError as exc:
-            if attempt == 2 or not exc.retryable:
-                raise
-            sleep(RETRY_DELAY_SECONDS)
-    raise AssertionError("unreachable")  # pragma: no cover
+
+    def attempt() -> bytes:
+        body = fetcher(url)
+        if check is not None:
+            check(body)
+        return body
+
+    try:
+        return attempt()
+    except FetchError as exc:
+        if not exc.retryable:
+            raise
+    sleep(RETRY_DELAY_SECONDS)
+    return attempt()
 
 
 def fetch_modelsdev(fetcher: Fetcher, sleep: Sleep) -> bytes:
@@ -107,10 +110,6 @@ def _arena_page(body: bytes) -> tuple[int, int]:
     return len(rows), total
 
 
-def _check_arena_page(body: bytes) -> None:
-    _arena_page(body)
-
-
 def wrap_arena_pages(pages: list[bytes]) -> bytes:
     """The one document an Arena snapshot is: each page body, unparsed."""
     doc = {"pages": [page.decode("utf-8") for page in pages]}
@@ -131,7 +130,7 @@ def fetch_arena(fetcher: Fetcher, sleep: Sleep) -> bytes:
     offset = 0
     total: int | None = None
     while True:
-        body = fetch_with_retry(fetcher, arena_page_url(offset), sleep, _check_arena_page)
+        body = fetch_with_retry(fetcher, arena_page_url(offset), sleep, _arena_page)
         rows, page_total = _arena_page(body)
         if total is None:
             total = page_total

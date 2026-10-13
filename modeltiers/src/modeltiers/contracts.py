@@ -15,14 +15,17 @@ from modeltiers.errors import ConfigError
 UNRATED = "unrated"
 UNRATED_CODE = "-"
 TIERS = ("quick", "standard", "deep", "marathon")  # the rated tiers, lowest first
-RANK: Mapping[str, int] = {UNRATED: 0, "quick": 1, "standard": 2, "deep": 3, "marathon": 4}
-FLOOR_TIERS = ("quick", "standard", "deep")  # the tiers a signal can vote
-SIGNALS = ("intelligence_index", "arena_agent", "eci")
+RANK: Mapping[str, int] = {tier: rank for rank, tier in enumerate((UNRATED, *TIERS))}
+FLOOR_TIERS = TIERS[:-1]  # the tiers a signal can vote: marathon is a promotion
 SIGNAL_SOURCE: Mapping[str, str] = {
     "intelligence_index": "openrouter",
     "arena_agent": "arena",
     "eci": "epoch",
 }
+SIGNALS = tuple(SIGNAL_SOURCE)
+# A signal's lower bound is written beside its score under the signal's name
+# and this suffix, in an entry's `scores` and as a `ladder` choice.
+CI_LOWER = "_ci_lower"
 SOURCES = ("modelsdev", "openrouter", "arena", "epoch")
 STAMP = "%Y-%m-%dT%H:%M:%SZ"  # timestamps as written to tiers.toml and as printed
 
