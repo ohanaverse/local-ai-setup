@@ -244,6 +244,34 @@ func TestProfileRowCells(t *testing.T) {
 	}
 }
 
+// TestBlockedProfileRowShowsItsLocalModelsState pins the RUNNING cell of a
+// profile blocked before its local model is judged: with no [litellm] url the
+// row is blocked, and the cell still reads "run" while the profile's one
+// local model is serving and "-" once it is idle. A dash on a blocked row
+// would tell the user the model was stopped when it was holding memory. The
+// row stays blocked with the rule's own reason and is not a start row.
+func TestBlockedProfileRowShowsItsLocalModelsState(t *testing.T) {
+	const reason = "a slot profile always uses the LiteLLM proxy, but no URL is configured — run 'wt litellm set --url ... --api-key ...'"
+	for _, c := range []struct {
+		name    string
+		snap    localmodels.Snapshot
+		running string
+	}{
+		{"local running", runningOmlxSnapshot(), "run"},
+		{"local idle", idleOmlxSnapshot(), "-"},
+	} {
+		cfg := slotTestConfig()
+		cfg.SetLitellmForTest(config.LitellmState{APIKey: "sk-test"})
+		it := tableItem(t, slotTable(t, cfg, c.snap, slotRowChecks()), "profile/mixed")
+		if got := strings.TrimRight(it.cells[colRunning], " "); got != c.running {
+			t.Errorf("%s: RUNNING = %q, want %q", c.name, got, c.running)
+		}
+		if it.blocked != reason || it.start {
+			t.Errorf("%s: blocked = %q start = %t, want the row blocked with %q", c.name, it.blocked, it.start, reason)
+		}
+	}
+}
+
 // TestProfileRowCostFollowsTheDefaultSlotsClock pins that a profile row is
 // priced as its default slot's model at the table's own instant, with the
 // "~" mark when that model is priced by time of day. Priced from the row's

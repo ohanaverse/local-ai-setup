@@ -165,6 +165,11 @@ type SlotCapable interface {
 	SlotNames() []string
 	// ReservedEnvKeys are the env keys wt owns for a slot-profile launch.
 	ReservedEnvKeys() []string
+	// CheckConfigContent is the agent's own static rule for a profile's
+	// config_content: nil when the slot build would accept cc, else the
+	// error it would return. Static validation asks it, so a profile the
+	// build would refuse is a blocked row and never a launch row.
+	CheckConfigContent(cc map[string]any) error
 	// BuildSlots builds the command for one resolved profile.
 	BuildSlots(in SlotBuildInput) (SlotCommand, error)
 }

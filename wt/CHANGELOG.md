@@ -317,6 +317,20 @@
 
 ### Fixed
 
+- Two gaps between slot profiles and their design. A blocked profile row now
+  shows its local model's state in RUNNING (`run`, `load` or `-`) whichever
+  rule blocked it; a profile blocked by a missing `[litellm]` url or api key,
+  by another slot's model or by a static error showed `-` while its local
+  model was serving. A profile with no local model, with two, or whose local
+  model has no row still shows `-`. And a Claude profile whose
+  `config_content.env` is not a table is now a blocked row with the reason
+  `config_content.env must be a table`, reported by `wt profile list` and
+  `wt profile show`; it was drawn as a launch row and failed at the launch
+  with that message. A claude profile whose `config_content` holds a value
+  the `--settings` JSON cannot carry (a TOML nan or inf) is now the same
+  kind of blocked row (`config_content cannot be encoded as the --settings
+  JSON`); its launch failed at the slot build's encode, after the routes
+  were written.
 - A command named `models` or `agents` given after `--` is now run (#353).
   `shell-wt -- models` and `wt -A shell -- agents list` exited with
   ``wt models is removed; use `wt config` to view models`` (or the `agents`

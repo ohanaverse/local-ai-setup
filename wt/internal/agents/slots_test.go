@@ -77,6 +77,20 @@ func TestSlotDriversAnswersFromTheRegisteredDrivers(t *testing.T) {
 	if _, ok := d.Required("no-such-agent", profiles.MechanismEnv); ok {
 		t.Error("Required(no-such-agent, env) reported a partner")
 	}
+	// The config_content rule is claude's own: the same content is refused
+	// for claude and passes for an agent whose driver has no such rule.
+	notATable := map[string]any{"env": "x"}
+	if err := d.ConfigContent("claude", notATable); err == nil || err.Error() != "config_content.env must be a table" {
+		t.Errorf("ConfigContent(claude, env = \"x\") = %v, want \"config_content.env must be a table\"", err)
+	}
+	if err := d.ConfigContent("claude", map[string]any{"env": map[string]any{"A": "1"}}); err != nil {
+		t.Errorf("ConfigContent(claude, env table) = %v, want nil", err)
+	}
+	for _, agent := range []string{"codex", "no-such-agent"} {
+		if err := d.ConfigContent(agent, notATable); err != nil {
+			t.Errorf("ConfigContent(%s, env = \"x\") = %v, want nil: the rule is claude's", agent, err)
+		}
+	}
 }
 
 // TestSlotFixtureIsValidForTheRealClaudeDriver reads the documented sample
@@ -107,10 +121,12 @@ func TestSlotFixtureIsValidForTheRealClaudeDriver(t *testing.T) {
 }
 
 // TestSlotDriversRejectsWhatClaudeDoesNotAllow runs static validation with
-// the real drivers over three profiles only the driver can refuse. If it
-// regresses, a claude profile with args, a reserved env key or an unknown
-// slot passes validation, and its launch drops the setting silently or
-// overrides the slot mapping.
+// the real drivers over the profiles only the driver can refuse. If it
+// regresses, a claude profile with args, a reserved env key, an unknown slot,
+// a config_content.env that is not a table or a nan under config_content
+// passes validation, and its launch drops the setting silently, overrides
+// the slot mapping or fails at the slot build after the picker offered it as
+// a launch row.
 func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 	const head = "[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\n"
 	for _, tc := range []struct {
@@ -125,6 +141,12 @@ func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 		{"unknown slot",
 			head + "[profile.slots]\nopus = \"ollama/a\"\nturbo = \"ollama/a\"\n",
 			`slot "turbo" is not a slot of agent "claude" (slots: fable, opus, sonnet, haiku)`},
+		{"config_content.env is a string",
+			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content]\nenv = \"x\"\n",
+			"config_content.env must be a table"},
+		{"config_content.env holds a nan",
+			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content.env]\nTHRESHOLD = nan\n",
+			"config_content cannot be encoded as the --settings JSON: json: unsupported value: NaN"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, err := profiles.ParseSlots([]byte(tc.toml))
@@ -420,5 +442,21 @@ func TestBuildSlotLaunchCmdErrors(t *testing.T) {
 				t.Errorf("a failed build returned a command: %v", cmd.Args)
 			}
 		})
+	}
+}
+
+// TestSlotDriversAcceptsAConfigContentEnvTable is the passing side of the
+// config_content.env rule, through the real drivers: a table of ordinary
+// keys passes static validation. If the rule refused every env key, no
+// claude profile could set a variable through config_content.
+func TestSlotDriversAcceptsAConfigContentEnvTable(t *testing.T) {
+	store, err := profiles.ParseSlots([]byte("[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\n" +
+		"[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content.env]\nMAX_THINKING_TOKENS = \"4096\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := profiles.ValidateSlots(store, SlotDrivers())
+	if len(checks) != 1 || !checks[0].Usable || checks[0].Err != nil {
+		t.Fatalf("checks = %+v, want one passing check", checks)
 	}
 }

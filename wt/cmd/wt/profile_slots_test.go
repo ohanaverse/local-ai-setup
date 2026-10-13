@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -288,5 +289,69 @@ func TestProfileShowSlotProfileIgnoresProfilesToml(t *testing.T) {
 				t.Errorf("show = (%q, %v), want the profile shown", out, err)
 			}
 		})
+	}
+}
+
+// TestProfileCommandsReportAConfigContentEnvThatIsNotATable follows a file
+// through the real pipeline (ParseSlots, ValidateSlots with the registered
+// drivers) into `wt profile list` and `wt profile show`. A claude profile
+// whose config_content.env is a string is listed with the static error, and
+// show prints it as the block reason and exits non-zero without printing a
+// command. The profile beside it, whose config_content.env is a table, is
+// listed ok and shown as a launch row with the table's key in the settings.
+// Without the static rule both commands said the first profile would launch,
+// and the launch failed at the slot build.
+func TestProfileCommandsReportAConfigContentEnvThatIsNotATable(t *testing.T) {
+	const file = `
+[[profile]]
+name = "string-env"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+[profile.config_content]
+env = "x"
+
+[[profile]]
+name = "table-env"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+[profile.config_content.env]
+MAX_THINKING_TOKENS = "4096"
+`
+	store, err := profiles.ParseSlots([]byte(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newApp := func() *app {
+		return &app{cfg: slotFixtureConfig(), profiles: profiles.Store{Enabled: true},
+			slotChecks: profiles.ValidateSlots(store, agents.SlotDrivers())}
+	}
+	seams := stubSlotSeams(t)
+	started := stubStartDriver(t, nil)
+
+	out, err := runProfileCmd(t, newApp(), "list")
+	wantList := "(no profiles defined)\nslot profiles:\n" +
+		"  claude: profile/string-env error: config_content.env must be a table\n" +
+		"  claude: profile/table-env ok\n"
+	if err != nil || out != wantList {
+		t.Errorf("list = (%q, %v)\nwant %q, nil", out, err, wantList)
+	}
+
+	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/string-env")
+	wantShow := "profile/string-env (claude): blocked\nreason: config_content.env must be a table\n"
+	const wantErr = "profile/string-env is blocked: config_content.env must be a table"
+	if out != wantShow || err == nil || err.Error() != wantErr {
+		t.Errorf("show string-env = (%q, %v)\nwant %q, %q", out, err, wantShow, wantErr)
+	}
+
+	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/table-env")
+	if err != nil || !strings.HasPrefix(out, "profile/table-env (claude): launch\n") || !strings.Contains(out, `"MAX_THINKING_TOKENS": "4096"`) {
+		t.Errorf("show table-env = (%q, %v), want a launch row whose settings carry the table", out, err)
+	}
+	if seams.log() != "" || started.called {
+		t.Errorf("the profile commands drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
 	}
 }

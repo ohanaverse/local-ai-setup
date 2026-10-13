@@ -33,6 +33,55 @@ func (claudeDriver) ReservedEnvKeys() []string {
 	return keys
 }
 
+// CheckConfigContent is claude's static rule for a profile's config_content:
+// an env key, when present, is a table, and the content can be encoded as
+// the --settings JSON. They are claudeConfigEnv's and claudeEncodable's
+// rules, the ones the slot build applies, so validation and the build cannot
+// disagree.
+func (claudeDriver) CheckConfigContent(cc map[string]any) error {
+	if _, err := claudeConfigEnv(cc); err != nil {
+		return err
+	}
+	return claudeEncodable(cc)
+}
+
+// claudeEncodable refuses a config_content the --settings JSON cannot hold.
+// A TOML nan or inf decodes to a float json.Marshal refuses, and only the
+// build's encode would find that out — at the launch, after the routes were
+// written. json.Marshal is the one judge of it: static validation asks it
+// here, and the build's encode re-wraps its own failure with the same
+// wording (encodeContentErr) as a second line of defence.
+func claudeEncodable(cc map[string]any) error {
+	if _, err := json.Marshal(cc); err != nil {
+		return encodeContentErr(err)
+	}
+	return nil
+}
+
+// encodeContentErr words one failure of encoding a config_content into the
+// --settings JSON. One wording, for static validation (claudeEncodable) and
+// for the slot build (claudeSlotSettings), so the two cannot disagree.
+func encodeContentErr(err error) error {
+	return fmt.Errorf("config_content cannot be encoded as the --settings JSON: %w", err)
+}
+
+// claudeConfigEnv returns the env table of a profile's config_content, nil
+// when it has none. A config_content.env that is not a table is an error:
+// Claude Code's settings take env as an object, and wt merges its own
+// variables into it. It is the one statement of that rule, for static
+// validation (CheckConfigContent) and for the slot build (claudeSlotSettings).
+func claudeConfigEnv(cc map[string]any) (map[string]any, error) {
+	raw, ok := cc["env"]
+	if !ok {
+		return nil, nil
+	}
+	table, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("config_content.env must be a table")
+	}
+	return table, nil
+}
+
 // RefusedSlotPassthrough names the flags that, passed after `--`, would
 // replace the slot mapping: --settings carries it and --model picks the slot.
 func (claudeDriver) RefusedSlotPassthrough() []string { return []string{"--settings", "--model"} }
@@ -78,14 +127,15 @@ func claudeSlotSettings(in profiles.SlotBuildInput) (string, error) {
 	for k, v := range in.Env {
 		env[k] = v
 	}
-	if raw, ok := in.ConfigContent["env"]; ok {
-		table, ok := raw.(map[string]any)
-		if !ok {
-			return "", errors.New("config_content.env must be a table")
-		}
-		for k, v := range table {
-			env[k] = v
-		}
+	// Static validation already refused a config_content.env that is not a
+	// table (CheckConfigContent); the build asks again, for a caller that
+	// reached it another way.
+	table, err := claudeConfigEnv(in.ConfigContent)
+	if err != nil {
+		return "", err
+	}
+	for k, v := range table {
+		env[k] = v
 	}
 	for _, slot := range claudeSlots {
 		m, ok := in.Models[slot]
@@ -107,7 +157,10 @@ func claudeSlotSettings(in profiles.SlotBuildInput) (string, error) {
 	obj["env"] = env
 	payload, err := json.Marshal(obj)
 	if err != nil {
-		return "", fmt.Errorf("encode --settings: %w", err)
+		// Static validation already refused a config_content that cannot be
+		// encoded (claudeEncodable); the build asks again, for a caller that
+		// reached it another way.
+		return "", encodeContentErr(err)
 	}
 	return string(payload), nil
 }

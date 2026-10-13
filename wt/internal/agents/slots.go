@@ -54,6 +54,13 @@ func SlotDrivers() profiles.SlotDrivers {
 			}
 			return pc.ProfileMechanisms()
 		},
+		ConfigContent: func(agent string, cc map[string]any) error {
+			sc, ok := SlotsFor(agent)
+			if !ok {
+				return nil
+			}
+			return sc.CheckConfigContent(cc)
+		},
 		Required: func(agent string, m profiles.Mechanism) (profiles.Mechanism, bool) {
 			mr, ok := ByName(agent).(profiles.MechanismRequirer)
 			if !ok {

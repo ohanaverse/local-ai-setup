@@ -23,7 +23,8 @@ type ProfileRow struct {
 	Models map[string]config.Model
 	// Local is the one distinct local slot model's own row. It is nil for an
 	// all-cloud profile, when that model has no row, and on a row blocked
-	// before the local model was judged.
+	// before the local model was judged. Such a row still carries that
+	// model's Running and Loading (slotLocalState), for the RUNNING cell.
 	Local *Row
 	// Verdict is ActionLaunch, ActionStart or ActionBlock.
 	Verdict Action
@@ -96,8 +97,15 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 	}
 	p := &ProfileRow{Check: c, Verdict: ActionLaunch}
 	row := Row{Model: config.Model{ID: c.Profile.ID()}, Status: StatusOK, Profile: p}
+	// judged is set once the last rule has built the local model's own row
+	// and copied its state; a row blocked by any earlier rule looks the state
+	// up here, so RUNNING does not depend on which rule blocked the row.
+	judged := false
 	block := func(reason string) Row {
 		p.Verdict, p.Reason = ActionBlock, reason
+		if !judged && !c.Duplicate {
+			row.Running, row.Loading = slotLocalState(cfg, snap, c.Profile)
+		}
 		return row
 	}
 	if c.Err != nil {
@@ -156,7 +164,7 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 
 	var locals []config.Model
 	for _, m := range p.Distinct() {
-		if loc, _ := cfg.ResolveLocation(m); loc == config.LocationLocal {
+		if slotIsLocal(cfg, m) {
 			locals = append(locals, m)
 		}
 	}
@@ -179,7 +187,8 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 	// and -T/-F say.
 	m := locals[0]
 	slot := p.SlotOf(m.ID)
-	own, ok := Find(Build(Input{Config: cfg, Models: []config.Model{m}, Inventory: snap, HideDiscovered: true}), m.ID)
+	own, ok := slotLocalRow(cfg, snap, m)
+	judged = true
 	if !ok {
 		if reason := MissingReason(cfg, snap, m.ID); reason != "" {
 			return block(reason)
@@ -195,6 +204,56 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 		p.Verdict = ActionStart
 	}
 	return row
+}
+
+// slotIsLocal is the one statement of "this profile's slot model is local":
+// cfg resolves m to a local location. The resolved rules and slotLocalState
+// (a row blocked before the local model was judged) share it, so a blocked
+// row's RUNNING cell cannot disagree with the row the profile would have got.
+func slotIsLocal(cfg *config.Config, m config.Model) bool {
+	loc, err := cfg.ResolveLocation(m)
+	return err == nil && loc == config.LocationLocal
+}
+
+// slotLocalRow is the catalog's own row for a profile's local model m: one
+// row built for it alone from snap, whatever the agent's eligible list and
+// -T/-F say. ok is false when the model has no row (confirmed not on disk, a
+// stopped mlx_lm_server pairing, no inventory entry).
+func slotLocalRow(cfg *config.Config, snap *localmodels.Snapshot, m config.Model) (Row, bool) {
+	return Find(Build(Input{Config: cfg, Models: []config.Model{m}, Inventory: snap, HideDiscovered: true}), m.ID)
+}
+
+// slotLocalState is the running state of the one local model sp's slots
+// name, for a row blocked before that model was judged: the Running and
+// Loading of the model's own row (slotLocalRow), the values the row would
+// carry were it not blocked. It reads the file's slots, not the resolved
+// ones, so it answers for a profile that failed static validation too. Both
+// are false when the slots name no local model that is in the registry, more
+// than one distinct local model, or one that has no row.
+func slotLocalState(cfg *config.Config, snap *localmodels.Snapshot, sp profiles.SlotProfile) (running, loading bool) {
+	var local *config.Model
+	for _, id := range sp.Slots {
+		i := config.IndexModelByID(cfg.Models, id)
+		if i < 0 {
+			continue
+		}
+		m := cfg.Models[i]
+		if !slotIsLocal(cfg, m) {
+			continue
+		}
+		if local != nil && local.ID != m.ID {
+			return false, false
+		}
+		local = &m
+	}
+	if local == nil {
+		return false, false
+	}
+	own, ok := slotLocalRow(cfg, snap, *local)
+	if !ok {
+		return false, false
+	}
+	return own.Running, own.Loading
 }
 
 // Distinct lists the resolved slot models once each, in the order of

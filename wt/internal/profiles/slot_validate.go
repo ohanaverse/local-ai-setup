@@ -10,13 +10,21 @@ import (
 )
 
 // SlotDrivers is how ValidateSlots asks about agents without importing
-// internal/agents. Required may be nil; the other four must be set.
+// internal/agents. Known, Slots, ReservedEnv and Mechanisms must be set.
+// Required may be nil: no mechanism then needs a partner. ConfigContent may
+// be nil too, and that fails closed: a profile that sets config_content is
+// refused, since nothing can say whether its agent accepts the content.
 type SlotDrivers struct {
 	Known       func(agent string) bool
 	Slots       func(agent string) []string // nil: the agent has no slot support
 	ReservedEnv func(agent string) []string
 	Mechanisms  func(agent string) []Mechanism
 	Required    func(agent string, m Mechanism) (Mechanism, bool)
+	// ConfigContent is the agent's own rule for a profile's config_content
+	// (SlotCapable.CheckConfigContent): nil when the agent accepts cc, else
+	// the error that blocks the profile. It is asked only about a profile
+	// that sets config_content.
+	ConfigContent func(agent string, cc map[string]any) error
 }
 
 // ErrSlotDuplicate is the static error of every profile that shares its
@@ -149,8 +157,16 @@ func slotBodyErr(p SlotProfile, declared []string, d SlotDrivers) error {
 			return fmt.Errorf("env sets %s, which wt sets for the launch", key)
 		}
 	}
-	// A config_content.env that is not a table is not judged here: the
-	// agent's slot build refuses it.
+	// What config_content may hold is the agent's rule, not this package's:
+	// claude's, for one, is that an env key is a table.
+	if len(p.ConfigContent) > 0 {
+		if d.ConfigContent == nil {
+			return fmt.Errorf("config_content cannot be checked for agent %q", p.Agent)
+		}
+		if err := d.ConfigContent(p.Agent, p.ConfigContent); err != nil {
+			return err
+		}
+	}
 	if env, ok := p.ConfigContent["env"].(map[string]any); ok {
 		for _, key := range slices.Sorted(maps.Keys(env)) {
 			if slices.Contains(reserved, key) {
