@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -265,5 +266,87 @@ func TestProfileRowCostFollowsTheDefaultSlotsClock(t *testing.T) {
 		if got := strings.TrimRight(it.cells[colCost], " "); got != c.want {
 			t.Errorf("%s: COST = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// slotLineRow is a four-slot profile with names of the length real ones
+// have: the default is opus, so it is listed first, ahead of fable.
+func slotLineRow() *catalog.ProfileRow {
+	c := slotCheckFor(0, "ollama-cloud", "opus", map[string]string{
+		"fable": "ollama/kimi-k3:cloud", "opus": "ollama/glm-5.2:cloud",
+		"sonnet": "ollama/glm-5.3-flash:cloud", "haiku": "omlx/qwen3.8",
+	})
+	models := map[string]config.Model{}
+	for slot, id := range c.Profile.Slots {
+		_, name, _ := strings.Cut(id, "/")
+		models[slot] = config.Model{ID: id, ModelName: name}
+	}
+	return &catalog.ProfileRow{Check: c, Models: models, Verdict: catalog.ActionLaunch, Loc: "mixed"}
+}
+
+// TestSlotLine pins the line under the table for a highlighted profile row:
+// the filled slots, the default first and marked, each with its model's
+// provider-side name; whole entries only, with the ones that do not fit
+// counted as "+N more"; and a blocked row's reason in its place. The footer
+// is clipped at the terminal's edge with no sign of the cut, so an entry cut
+// there would read as another model's name.
+func TestSlotLine(t *testing.T) {
+	const (
+		opus   = "opus* glm-5.2:cloud"
+		fable  = "fable kimi-k3:cloud"
+		sonnet = "sonnet glm-5.3-flash:cloud"
+		haiku  = "haiku qwen3.8"
+	)
+	all := opus + " · " + fable + " · " + sonnet + " · " + haiku
+	if lipgloss.Width(all) != 86 {
+		t.Fatalf("the fixture's full line is %d columns, want 86: the widths below are counted from it", lipgloss.Width(all))
+	}
+	for _, c := range []struct {
+		width int
+		want  string
+	}{
+		{0, all},
+		{116, all},
+		{86, all},
+		{85, opus + " · " + fable + " · " + sonnet + " · +1 more"},
+		{80, opus + " · " + fable + " · " + sonnet + " · +1 more"},
+		{79, opus + " · " + fable + " · +2 more"},
+		{76, opus + " · " + fable + " · +2 more"},
+		{51, opus + " · " + fable + " · +2 more"},
+		{50, opus + " · +3 more"},
+		{36, opus + " · +3 more"},
+		{29, opus + " · +3 more"},
+		{28, "+4 more"},
+		{7, "+4 more"},
+		{6, ""},
+	} {
+		got := slotLine(slotLineRow(), c.width)
+		if got != c.want {
+			t.Errorf("slotLine(width %d) = %q, want %q", c.width, got, c.want)
+		}
+		if c.width > 0 && lipgloss.Width(got) > c.width {
+			t.Errorf("slotLine(width %d) is %d columns wide", c.width, lipgloss.Width(got))
+		}
+	}
+
+	// Only the slots the profile fills are listed; the others fall back to
+	// the default's model and would repeat it.
+	two := slotLineRow()
+	two.Check.Profile.Default = "sonnet"
+	two.Check.Profile.Slots = map[string]string{"sonnet": "ollama/glm-5.3-flash:cloud", "opus": "ollama/glm-5.2:cloud"}
+	if got, want := slotLine(two, 76), "sonnet* glm-5.3-flash:cloud · opus glm-5.2:cloud"; got != want {
+		t.Errorf("two filled slots: slotLine = %q, want %q", got, want)
+	}
+
+	// A blocked row shows its reason, and says so when it is cut.
+	blocked := &catalog.ProfileRow{Check: two.Check, Verdict: catalog.ActionBlock, Reason: "slot haiku: ollama/gemma4:31b-cloud is not in the registry"}
+	if got := slotLine(blocked, 76); got != blocked.Reason {
+		t.Errorf("blocked row: slotLine = %q, want the reason", got)
+	}
+	if got, want := slotLine(blocked, 36), "slot haiku: ollama/gemma4:31b-cloud…"; got != want {
+		t.Errorf("blocked row at 36 columns: slotLine = %q, want %q", got, want)
+	}
+	if got := slotLine(nil, 76); got != "" {
+		t.Errorf("slotLine(nil) = %q, want nothing", got)
 	}
 }
