@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
@@ -90,6 +91,10 @@ type model struct {
 	// forwarded to the model screen so the picker can pre-filter the catalog.
 	activeTags   string // comma-delimited tag filter from -T/--tags; "" = no filter
 	activeFamily string // comma-delimited family filter from -F/--family; "" = no filter
+
+	// slotChecks are the statically validated slot profiles
+	// (profiles.ValidateSlots). nil means the picker shows no profile row.
+	slotChecks []profiles.SlotCheck
 
 	// default-branch guard warning (title-only; the confirm prompt was removed)
 	defaultBranch string // repo default branch (e.g. main)
@@ -941,6 +946,7 @@ func (m model) tableFor(agent string, models []config.Model, snap *localmodels.S
 		cfg: m.cfg, agent: agent, models: models, inventory: snap,
 		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
 		usage:          newUsageStore(), stats: surveyStats,
+		slots: m.slotChecks,
 	}, newRefcountStore(), lastID)
 	return tbl, lastID
 }
@@ -974,11 +980,11 @@ func (m model) refreshTable() (model, tea.Cmd) {
 	}
 	m.refreshGen++
 	gen := m.refreshGen
-	// The command captures only the values tableFor reads (cfg and the active
-	// -T/-F filters), never the live model: the goroutine must not touch it,
-	// and copying the whole struct would pin its lists and inputs for the
-	// duration of the probe.
-	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily}
+	// The command captures only the values tableFor reads (cfg, the active
+	// -T/-F filters and the slot profiles), never the live model: the
+	// goroutine must not touch it, and copying the whole struct would pin its
+	// lists and inputs for the duration of the probe.
+	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily, slotChecks: m.slotChecks}
 	agent, models := m.agent, m.tableModels
 	return m, func() tea.Msg {
 		inv := runInventory(src.cfg)

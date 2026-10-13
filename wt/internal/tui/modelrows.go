@@ -7,6 +7,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -88,6 +89,10 @@ type tableInput struct {
 	// now is the instant the rows are priced at. The zero time means the
 	// picker's clock (pickerNow), which is what both pickers leave it at.
 	now time.Time
+	// slots opts in to slot-profile rows (catalog.Input.SlotProfiles): the
+	// statically validated profiles. nil, which is what the picker of
+	// `wt start` and `wt smoke` leaves it at, means no profile rows.
+	slots []profiles.SlotCheck
 }
 
 // buildRows builds the shared catalog rows and decorates them with the
@@ -101,6 +106,7 @@ func buildRows(in tableInput) []tableRow {
 		Models:         in.models,
 		Inventory:      in.inventory,
 		HideDiscovered: in.hideDiscovered,
+		SlotProfiles:   in.slots,
 	})
 	// One reading of the clock for the whole table: the rows are sorted by
 	// the price in force, and two rows priced on two sides of a window
@@ -172,6 +178,10 @@ func rowCostKey(r tableRow) costKey {
 // native row that resolves local and is not running still sorts after the
 // native group-1 rows, by id, not "in group-1 order".
 //
+// Slot-profile rows are a band of their own between the two halves:
+// native rows, then profile rows in the order of slot-profiles.toml, then
+// every other row. A profile row is never compared by cost, usage or id.
+//
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and
 // enterModelPhase's no-rotation fallback picks the first actionable row. A
@@ -181,10 +191,24 @@ func sortRows(rows []tableRow) {
 	// and sorts with them, so it is never the default pick while it cannot
 	// answer.
 	group1 := func(r tableRow) bool { return r.Location != config.LocationLocal || r.Ready() }
+	// band is the first thing compared: 0 for a native row, 1 for a
+	// slot-profile row, 2 for every other row. A lower band sorts first.
+	band := func(r tableRow) int {
+		switch {
+		case r.Profile != nil:
+			return 1
+		case r.Model.Native:
+			return 0
+		}
+		return 2
+	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
-		if a.Model.Native != b.Model.Native {
-			return a.Model.Native
+		if ba, bb := band(a), band(b); ba != bb {
+			return ba < bb
+		}
+		if a.Profile != nil {
+			return a.Profile.Check.Index < b.Profile.Check.Index
 		}
 		ga, gb := group1(a), group1(b)
 		if ga != gb {
