@@ -179,7 +179,9 @@ def load_source[T](
         return _from_snapshots(spec, cache, fallback=True, warn=warn)
     snapshot = snapshots.save(cache, spec.name, spec.ext, body, now)
     result = _parsed(spec, snapshot, body, status="ok", fallback=False, warn=warn)
-    return result or _from_snapshots(spec, cache, fallback=True, warn=warn)
+    if result is None:
+        return _from_snapshots(spec, cache, fallback=True, warn=warn)
+    return result
 
 
 def load_all(

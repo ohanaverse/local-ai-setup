@@ -57,11 +57,14 @@ def mark_bad(snapshot: Snapshot) -> Snapshot:
     The store is not locked, so two runs started in the same second work on the
     same stamped file. When the other run has already set it aside, this run's
     source file is gone and the bad one is there: the rename has happened, and
-    the bad snapshot is returned rather than raising on a missing file.
+    the bad snapshot is returned rather than raising on a missing file. That is
+    the one case the rename is skipped in. With neither file there nothing named
+    this snapshot exists to rename, and `replace` raises for it, as `save` would.
     """
     stamp, ext = snapshot.path.name.split(".", 1)
     target = snapshot.path.with_name(f"{stamp}.bad.{ext}")
-    if snapshot.path.exists() or not target.exists():
+    moved_by_the_other_run = not snapshot.path.exists() and target.exists()
+    if not moved_by_the_other_run:
         snapshot.path.replace(target)
     return Snapshot(path=target, fetched_at=snapshot.fetched_at, bad=True)
 

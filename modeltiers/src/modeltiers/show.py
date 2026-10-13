@@ -136,13 +136,15 @@ def ordered(
 ) -> list[Mapping[str, Any]]:
     """The entries in `show --sort` order: by `name` for `model`, else
     highest first with the entries that have no value last. Entries that
-    compare equal keep the order the file has them in; None keeps it whole."""
+    compare equal keep the order the file has them in; None keeps it whole. A
+    column that is not one of SORT_COLUMNS is read as a score of that name,
+    which the file gives no entry for: the order it came in."""
     if column is None:
         return found
     if column == "model":
         return sorted(found, key=lambda entry: name(entry).lower())
 
-    value = _SORT_VALUES[column]
+    value = _SORT_VALUES.get(column, partial(score, name=column))
 
     def key(entry: Mapping[str, Any]) -> tuple[bool, float]:
         found_value = value(entry)

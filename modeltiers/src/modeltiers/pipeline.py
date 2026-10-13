@@ -213,7 +213,14 @@ def _model(
         location=entry.row.location,
         host_row=entry.host_row,
     )
-    return ModelResult(identity=entry, **vars(rated))
+    return ModelResult(
+        identity=entry,
+        open_weights=rated.open_weights,
+        aligned=rated.aligned,
+        evidence=rated.evidence,
+        facts=rated.facts,
+        verdict=rated.verdict,
+    )
 
 
 def _candidates(
@@ -234,7 +241,11 @@ def _candidates(
             Candidate(
                 canonical=key,
                 resolved_by=next(step for step in _RESOLUTION_ORDER if step in steps),
-                **vars(rated),
+                open_weights=rated.open_weights,
+                aligned=rated.aligned,
+                evidence=rated.evidence,
+                facts=rated.facts,
+                verdict=rated.verdict,
             )
         )
     found.sort(key=lambda c: (-RANK[c.verdict.tier], c.canonical.lower()))
