@@ -101,6 +101,7 @@ GLM_CLOUD = [
     "  efforts:     arena_agent max",
     "  tool_call:   true",
     "  context:     1048576",
+    "  open_weights: true",
 ]
 
 
@@ -115,10 +116,10 @@ def test_explain_by_canonical_key_prints_every_model_that_resolved_to_it(
 ) -> None:
     lines = show.explain_lines(document, "ZhipuAI/GLM-5.3")
     assert lines is not None
-    assert lines[:9] == GLM_CLOUD
-    assert lines[9] == "openrouter/z-ai/glm-5.3"
+    assert lines[:10] == GLM_CLOUD
+    assert lines[10] == "openrouter/z-ai/glm-5.3"
     assert lines[-4:] == ATTRIBUTION
-    assert len(lines) == 9 + 9 + 4
+    assert len(lines) == 10 + 10 + 4
 
 
 def test_a_pair_that_looks_like_a_key_is_tried_as_a_pair_first(document: dict[str, Any]) -> None:
@@ -138,7 +139,7 @@ def test_an_unmapped_pair_does_not_shadow_the_canonical_key(
     # An [[unmapped]] row whose pair is a canonical key other models resolved
     # to: the key search still answers first.
     doc["unmapped"].append({"provider_id": "zhipuai", "model_name": "glm-5.3"})
-    assert show.explain_lines(doc, "zhipuai/glm-5.3")[:9] == GLM_CLOUD
+    assert show.explain_lines(doc, "zhipuai/glm-5.3")[:10] == GLM_CLOUD
 
 
 def test_explain_a_candidate_by_its_key_in_any_case(document: dict[str, Any]) -> None:
@@ -173,6 +174,7 @@ def test_explain_shows_the_reason_the_notes_and_only_the_sources_used(
         "  efforts:     none",
         "  tool_call:   true",
         "  context:     unknown",
+        "  open_weights: true",
         "  note:        local build: served context unknown; context gate skipped",
         ATTRIBUTION[0],
     ]
@@ -193,6 +195,7 @@ def test_explain_a_local_build_rated_through_inheritance(document: dict[str, Any
         "  efforts:     none",
         "  tool_call:   true",
         "  context:     unknown",
+        "  open_weights: true",
         "  note:        local build: served context unknown; context gate skipped",
         ATTRIBUTION[0],
         ATTRIBUTION[1],

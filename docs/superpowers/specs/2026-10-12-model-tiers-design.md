@@ -358,6 +358,7 @@ tier = "standard"
 code = "S"
 confidence = "high"
 basis = "measured"                  # measured | inherited
+open_weights = true
 tool_call = true
 context = 1048576
 votes = { intelligence_index = "standard", arena_agent = "standard", eci = "standard" }
@@ -410,8 +411,8 @@ score = 0.0926
 | `[[unresolved]]` | Unresolved source records at or above their signal's standard floor | Source, then score descending |
 
 - `[[models]]` plus `[[unmapped]]` equals the inventory without its native rows.
-- Optional fields: `reason` (present when the tier is `unrated`), `context` (absent when unknown), `efforts` entries (present only for signals whose record named an effort), and any score the source did not provide. `tool_call` is absent for a key with no models.dev rows. An ignored row has no `canonical` and no `resolved_by`. An array table with no entries is absent from the file.
-- `[[candidates]]` entries have the fields of `[[models]]` without `provider_id`, `model_name`, `registered` and `basis`, plus `open_weights`.
+- Optional fields: `reason` (present when the tier is `unrated`), `context` (absent when unknown), `efforts` entries (present only for signals whose record named an effort), and any score the source did not provide. `tool_call` and `open_weights` are absent for a key with no models.dev rows. `open_weights` is true when any models.dev row of the key says so. An ignored row has no `canonical`, no `resolved_by` and no `open_weights`. An array table with no entries is absent from the file.
+- `[[candidates]]` entries have the fields of `[[models]]` without `provider_id`, `model_name`, `registered` and `basis`.
 - `[sources.*].unresolved` counts every unresolved record of that source, so it can exceed the number of that source's `[[unresolved]]` entries, which list one entry per source id at or above the standard floor. `[sources.modelsdev]` has no `unresolved` key.
 - A status of `unavailable` never appears, because such a run writes nothing.
 - **Contract for readers.** A model absent from the file, or in `[[unmapped]]`, is `unrated`. The file is advisory; a reader that cannot parse it behaves as if it were absent.

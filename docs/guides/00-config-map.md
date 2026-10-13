@@ -82,6 +82,7 @@ tier = "standard"
 code = "S"
 confidence = "high"
 basis = "measured"
+open_weights = true
 tool_call = true
 context = 1048576
 notes = []

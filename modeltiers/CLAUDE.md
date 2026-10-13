@@ -125,7 +125,7 @@ Both are package data under `src/modeltiers/data/`, loaded with `importlib.resou
 `docs/contracts/tiers.sample.toml` is the contract: it is what `run` writes from the test fixtures, and two tests compare against it apart from timestamps. Regenerate it after a deliberate format change with `MODELTIERS_OUT` and `MODELTIERS_CACHE` pointed at scratch paths; never hand-edit it.
 
 - Top level: `generated_at`, `contracts_version`, `[inventory]`, `[sources.<name>]`, then `[[models]]`, `[[candidates]]`, `[[unmapped]]`, `[[unresolved]]`. An array with no entries is absent.
-- Left out when unknown: `reason` (rated entries), `tool_call` (a key with no models.dev rows), `context`, any score a source did not give, `canonical` and `resolved_by` (an ignored row), `unresolved` under `[sources.modelsdev]`. `open_weights` is not a `[[models]]` field: the spec gives it to `[[candidates]]` entries only.
+- Left out when unknown: `reason` (rated entries), `tool_call` and `open_weights` (a key with no models.dev rows, and `open_weights` for an ignored row), `context`, any score a source did not give, `canonical` and `resolved_by` (an ignored row), `unresolved` under `[sources.modelsdev]`. `open_weights` is true when any models.dev row of the key says so, for `[[models]]` and `[[candidates]]` alike.
 - Scores are written as the source gave them; `show` and `explain` round to four places for display only.
 - **Contract for readers:** a model absent from the file, or in `[[unmapped]]`, is `unrated`; a file that cannot be parsed is treated as absent. `run` applies the same rule to the existing file when it builds the change report.
 

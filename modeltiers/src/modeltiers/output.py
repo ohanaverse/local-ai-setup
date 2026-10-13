@@ -61,7 +61,14 @@ def _model(model: ModelResult, contracts: Contracts) -> Document:
         entry["canonical"] = found.canonical
         entry["resolved_by"] = found.resolved_by
     notes = (*found.notes, *model.verdict.notes)
-    rating = _rating(model.evidence, model.facts, model.verdict, contracts, basis=found.basis)
+    rating = _rating(
+        model.evidence,
+        model.facts,
+        model.verdict,
+        contracts,
+        basis=found.basis,
+        open_weights=model.open_weights,
+    )
     return {**entry, **rating, "notes": list(notes)}
 
 

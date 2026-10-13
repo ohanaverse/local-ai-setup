@@ -168,6 +168,7 @@ ollama/minimax-m3:cloud
   efforts:     none
   tool_call:   true
   context:     512000
+  open_weights: true
   note:        host row has no canonical id; matched by name
 ```
 
