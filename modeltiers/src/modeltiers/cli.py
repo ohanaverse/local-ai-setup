@@ -100,6 +100,20 @@ def _parser() -> argparse.ArgumentParser:
     )
     shown = commands.add_parser("show", help="print the tier table from tiers.toml")
     shown.add_argument("--candidates", action="store_true", help="list the candidates too")
+    shown.add_argument(
+        "--sort",
+        choices=show.SORT_COLUMNS,
+        metavar="COLUMN",
+        help=(
+            f"order the rows by one of {', '.join(show.SORT_COLUMNS)}: highest first, "
+            "rows with no value last; `model` is alphabetical"
+        ),
+    )
+    shown.add_argument(
+        "--wide",
+        action="store_true",
+        help="add open weights, context and the scores to the table",
+    )
     explain = commands.add_parser(
         "explain", help="print how one model was identified and why it has its tier"
     )
@@ -210,7 +224,7 @@ def _show(args: argparse.Namespace, deps: Deps) -> int:
         _warn(warning)
     for line in (
         show.age_line(document, now),
-        *show.table_lines(document, candidates=args.candidates),
+        *show.table_lines(document, candidates=args.candidates, sort=args.sort, wide=args.wide),
         *show.attribution_lines(document),
     ):
         print(line)

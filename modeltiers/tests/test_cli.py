@@ -730,6 +730,36 @@ def test_show_candidates_lists_them_and_warns_past_fourteen_days(
     )
 
 
+@pytest.mark.usefixtures("written")
+def test_show_sort_and_wide_reorder_and_widen_the_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["show", "--sort", "model", "--wide"], deps=_reader_deps(T0)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].startswith(
+        "T  tier      conf    open   context     intel     arena       eci    coding   agentic"
+    )
+    assert [line.split()[10] for line in lines[2:5]] == [
+        "ollama/deepseek-v4-pro:cloud",
+        "ollama/gemma4:31b-mlx",
+        "ollama/glm-5.3:cloud",
+    ]
+    # Without --wide the sorted table has today's columns.
+    assert cli.main(["show", "--sort", "intelligence_index"], deps=_reader_deps(T0)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1:3] == TABLE.splitlines()[:2]
+    assert lines[4].split()[3] == "ollama/qwen3.8:27b-mlx"
+
+
+def test_show_refuses_a_sort_column_it_does_not_have(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["show", "--sort", "price"], deps=_reader_deps(T0))
+    assert stopped.value.code == 2
+    assert "invalid choice: 'price'" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("argv", [["show"], ["explain", "zhipuai/glm-5.3"]])
 def test_show_and_explain_without_a_file_name_the_run_command(
     argv: list[str], out: Path, capsys: pytest.CaptureFixture[str]

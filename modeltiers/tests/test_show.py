@@ -286,3 +286,131 @@ def test_short_scores() -> None:
         "7",
         "x",
     ]
+
+
+# --- sort and wide --------------------------------------------------------------
+
+
+def _models(lines: list[str]) -> list[str]:
+    """The model column of the inventory rows of a plain table."""
+    end = next(i for i, line in enumerate(lines) if line.startswith("unmapped:"))
+    return [line.split()[3] for line in lines[1:end]]
+
+
+def test_sorting_by_a_score_puts_the_highest_first_and_the_unscored_last(
+    document: dict[str, Any],
+) -> None:
+    assert _models(show.table_lines(document, sort="intelligence_index")) == [
+        "ollama/glm-5.3:cloud",  # 44.8
+        "openrouter/z-ai/glm-5.3",  # 44.8: a tie keeps the file's order
+        "ollama/qwen3.8:27b-mlx",  # 33.7
+        "ollama/deepseek-v4-pro:cloud",  # no index: the file's order from here
+        "ollama/minimax-m3:cloud",
+        "ollama/nomic-embed-text:latest",
+        "ollama/gemma4:31b-mlx",
+    ]
+    assert _models(show.table_lines(document, sort="eci"))[:2] == [
+        "ollama/glm-5.3:cloud",  # 155.61
+        "openrouter/z-ai/glm-5.3",
+    ]
+
+
+def test_sorting_by_model_is_alphabetical_and_by_context_is_largest_first(
+    document: dict[str, Any],
+) -> None:
+    assert _models(show.table_lines(document, sort="model")) == [
+        "ollama/deepseek-v4-pro:cloud",
+        "ollama/gemma4:31b-mlx",
+        "ollama/glm-5.3:cloud",
+        "ollama/minimax-m3:cloud",
+        "ollama/nomic-embed-text:latest",
+        "ollama/qwen3.8:27b-mlx",
+        "openrouter/z-ai/glm-5.3",
+    ]
+    by_context = _models(show.table_lines(document, sort="context"))
+    assert by_context[:4] == [
+        "ollama/glm-5.3:cloud",  # 1048576
+        "ollama/deepseek-v4-pro:cloud",  # 1048576
+        "openrouter/z-ai/glm-5.3",  # 1048576
+        "ollama/minimax-m3:cloud",  # 512000
+    ]
+
+
+def test_sorting_by_tier_puts_the_highest_rank_first(document: dict[str, Any]) -> None:
+    doc = copy.deepcopy(document)
+    doc["models"].reverse()
+    doc["models"][0]["tier"] = "no such tier"  # an unknown tier sorts last
+    lines = show.table_lines(doc, sort="tier")
+    end = next(i for i, line in enumerate(lines) if line.startswith("unmapped:"))
+    assert [line.split()[1] for line in lines[1:end]] == [
+        "standard",
+        "standard",
+        "standard",
+        "standard",
+        "quick",
+        "unrated",
+        "no",
+    ]
+
+
+def test_candidates_are_sorted_among_themselves(document: dict[str, Any]) -> None:
+    lines = show.table_lines(document, candidates=True, sort="model")
+    assert lines[-2:] == [
+        "D  deep      high    anthropic/claude-fable-5",
+        "M  marathon  high    anthropic/claude-opus-5-5",
+    ]
+    lines = show.table_lines(document, candidates=True, sort="eci")
+    assert [line.split()[-1] for line in lines[-2:]] == [
+        "anthropic/claude-opus-5-5",  # 167.33
+        "anthropic/claude-fable-5",  # 162.06
+    ]
+    # The inventory rows above them are sorted on their own.
+    assert _models(lines)[0] == "ollama/glm-5.3:cloud"
+
+
+def test_a_value_that_is_not_a_number_sorts_as_missing() -> None:
+    doc = {
+        "models": [
+            {"provider_id": "p", "model_name": "text", "scores": {"eci": "high"}},
+            {"provider_id": "p", "model_name": "flag", "scores": {"eci": True}},
+            {"provider_id": "p", "model_name": "table", "scores": "none"},
+            {"provider_id": "p", "model_name": "scored", "scores": {"eci": 150.0}},
+        ]
+    }
+    assert _models(show.table_lines(doc, sort="eci")) == ["p/scored", "p/text", "p/flag", "p/table"]
+
+
+WIDE = [
+    "T  tier      conf    open   context     intel     arena       eci    coding   agentic"
+    "  model                           canonical",
+    "S  standard  high    T      1048576      44.8    0.0215    155.61      74.8      53.1"
+    "  ollama/glm-5.3:cloud            zhipuai/glm-5.3",
+    "S  standard  high    T      1048576         -    0.0134    155.31         -         -"
+    "  ollama/deepseek-v4-pro:cloud    deepseek/deepseek-v4-pro-0813",
+]
+
+
+def test_the_wide_table_adds_open_weights_context_and_the_scores(
+    document: dict[str, Any],
+) -> None:
+    lines = show.table_lines(document, candidates=True, wide=True)
+    assert lines[:3] == WIDE
+    # An ignored row knows none of them; a local build has no served context.
+    assert lines[6] == (
+        "-  unrated   none    -            -         -         -         -         -         -"
+        "  ollama/nomic-embed-text:latest  -  (not_applicable)"
+    )
+    assert lines[4].split()[3:6] == ["T", "-", "33.7"]
+    # A candidate row has the same columns before its key.
+    assert lines[-2] == (
+        "M  marathon  high    F      1000000      57.6    0.1433    167.33"
+        "         -         -  anthropic/claude-opus-5-5"
+    )
+    assert len(lines) == len(show.table_lines(document, candidates=True))
+
+
+def test_the_wide_table_of_an_empty_file_is_its_header() -> None:
+    assert show.table_lines({}, wide=True)[0] == (
+        "T  tier      conf    open   context     intel     arena       eci    coding   agentic"
+        "  model  canonical"
+    )
