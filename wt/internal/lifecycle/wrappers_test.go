@@ -68,7 +68,13 @@ func realRoutes(t *testing.T, yaml string) (cfgPath string, restarts func() int,
 	waitProxy = func(context.Context, string, time.Duration) error { return nil }
 	probeProxy = func(context.Context, string, time.Duration) bool { return false }
 	routesWarn = &buf
-	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn = oa, ow, op, ww })
+	// As in stubRoutes: the remembered restart outcome is cleared going in and
+	// after this test's last restart has finished.
+	setLastRestartErr(nil)
+	t.Cleanup(func() {
+		applyRoutes, waitProxy, probeProxy, routesWarn = oa, ow, op, ww
+		setLastRestartErr(nil)
+	})
 	// Registered last, so it runs FIRST: settle any in-flight restart before
 	// the seams, WT_LITELLM_* env and the temp dir are torn down under it.
 	t.Cleanup(WaitPendingRoutes)

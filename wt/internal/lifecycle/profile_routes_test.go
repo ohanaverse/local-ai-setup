@@ -560,6 +560,211 @@ func TestProbeProxyAgainstARealListener(t *testing.T) {
 	}
 }
 
+// restartFailed is the error ProbeProxy returns for a remembered failed
+// restart whose cause reads cause.
+func restartFailed(cause string) string {
+	return "the last LiteLLM proxy restart failed, so routes written since may not be live: " + cause
+}
+
+// TestProbeProxyFailsAfterAFailedAsyncRestart pins "fail closed" on the
+// Start path. A start given Options.RestartOwed settles the profile's owed
+// restart through the asynchronous bounce, which only prints a failure. The
+// old proxy is then still up and answers the liveness probe with a 200, but
+// it knows none of the routes written since: without the remembered outcome
+// the profile would launch and its cloud slot would answer "Invalid model
+// name". Both ways the bounce can fail are covered, and each still prints
+// exactly the line it printed before.
+func TestProbeProxyFailsAfterAFailedAsyncRestart(t *testing.T) {
+	const cmdFailed = "failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart"
+	notReady := errors.New("LiteLLM proxy not ready at http://localhost:4000/health/liveliness: context deadline exceeded")
+	tests := []struct {
+		name     string
+		warnings []string
+		readyErr error
+		wantErr  string
+		wantOut  string
+	}{
+		{name: "the restart command fails", warnings: []string{cmdFailed}, wantErr: restartFailed(cmdFailed), wantOut: "wt: " + cmdFailed + "\n"},
+		{name: "several warnings are joined", warnings: []string{cmdFailed, "second"}, wantErr: restartFailed(cmdFailed + "; second"), wantOut: "wt: " + cmdFailed + "\nwt: second\n"},
+		{name: "the readiness wait fails", readyErr: notReady, wantErr: restartFailed(notReady.Error()), wantOut: "wt: " + notReady.Error() + "\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, warn := stubRoutes(t, litellm.Result{}, nil)
+			restartProxy = func(context.Context) []string { return tc.warnings }
+			var probes atomic.Int32
+			waitProxy = func(_ context.Context, _ string, d time.Duration) error {
+				if d == proxyProbeTimeout {
+					probes.Add(1)
+					return nil // the old proxy is still up: its liveness endpoint answers 200
+				}
+				return tc.readyErr
+			}
+			cfg := profileCfg()
+
+			bounceRoutes(context.Background(), cfg) // what a start with RestartOwed runs
+			WaitPendingRoutes()
+
+			for i := 0; i < 2; i++ { // the probe does not clear what it reports
+				err := ProbeProxy(context.Background(), cfg)
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("ProbeProxy (call %d) = %v, want %q", i+1, err, tc.wantErr)
+				}
+			}
+			if tc.readyErr != nil {
+				if err := ProbeProxy(context.Background(), cfg); !errors.Is(err, notReady) {
+					t.Errorf("err = %v, want it to wrap the readiness error", err)
+				}
+			}
+			if n := probes.Load(); n != 0 {
+				t.Errorf("liveness probes = %d, want 0: the remembered failure is returned before probing", n)
+			}
+			if got := warn.String(); got != tc.wantOut {
+				t.Errorf("output = %q, want %q: the asynchronous restart prints what it always printed", got, tc.wantOut)
+			}
+		})
+	}
+}
+
+// TestProbeProxyFailsThroughAStartWithRestartOwed runs the same failure
+// through Start itself, against the real config.yaml writer: a cloud route
+// is written, the idle local model starts with RestartOwed, the restart
+// command fails, and the launch's probe must stop it.
+func TestProbeProxyFailsThroughAStartWithRestartOwed(t *testing.T) {
+	realRoutes(t, "model_list: []\n")
+	oldRestart := restartProxy
+	restartProxy = func(context.Context) []string { return []string{"restart command failed"} }
+	t.Cleanup(func() {
+		WaitPendingRoutes()
+		restartProxy = oldRestart
+	})
+	var calls []string
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key", SecretRef: "sk-test", BaseURL: "https://openrouter.ai/api/v1"}})
+	cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud})
+	cfg.SetLitellmForTest(config.LitellmState{URL: proxyURL, APIKey: "sk-test-1234"})
+	ctx := context.Background()
+
+	owed, err := EnsureModelRoutes(ctx, nil, cfg, modelsByID(t, cfg, "openrouter/x"), false)
+	if err != nil || !owed {
+		t.Fatalf("cloud route = (%v, %v), want (true, nil)", owed, err)
+	}
+	if err := Start(ctx, cfg, Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}, Options{RestartOwed: owed}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	WaitPendingRoutes()
+
+	err = ProbeProxy(ctx, cfg) // realRoutes' readiness stub answers: the old proxy is up
+	if want := restartFailed("restart command failed"); err == nil || err.Error() != want {
+		t.Fatalf("ProbeProxy = %v, want %q", err, want)
+	}
+}
+
+// TestALaterSuccessfulRestartClearsTheFailure pins how long the failure
+// lasts: until a restart attempt works, by either path. A failure that never
+// cleared would refuse every profile launch for the rest of a long-lived
+// process (the TUI) after one bad restart, though the proxy has since been
+// restarted and knows every route.
+func TestALaterSuccessfulRestartClearsTheFailure(t *testing.T) {
+	later := map[string]func(*testing.T, *config.Config){
+		"RestartProxy": func(t *testing.T, cfg *config.Config) {
+			if err := RestartProxy(context.Background(), cfg); err != nil {
+				t.Fatalf("RestartProxy = %v, want nil", err)
+			}
+		},
+		"an asynchronous restart": func(_ *testing.T, cfg *config.Config) {
+			bounceRoutes(context.Background(), cfg)
+			WaitPendingRoutes()
+		},
+		"an asynchronous restart with nothing listening before it": func(_ *testing.T, cfg *config.Config) {
+			probeProxy = func(context.Context, string, time.Duration) bool { return false }
+			bounceRoutes(context.Background(), cfg)
+			WaitPendingRoutes()
+		},
+	}
+	for name, restart := range later {
+		t.Run(name, func(t *testing.T) {
+			stubRoutes(t, litellm.Result{}, nil)
+			warnings := []string{"restart command failed"}
+			restartProxy = func(context.Context) []string { return warnings }
+			cfg := profileCfg()
+
+			bounceRoutes(context.Background(), cfg)
+			WaitPendingRoutes()
+			if err := ProbeProxy(context.Background(), cfg); err == nil {
+				t.Fatal("ProbeProxy = nil after a failed restart, want the failure")
+			}
+
+			warnings = nil // the restart command works again
+			restart(t, cfg)
+			if err := ProbeProxy(context.Background(), cfg); err != nil {
+				t.Fatalf("ProbeProxy = %v after a successful restart, want nil", err)
+			}
+		})
+	}
+}
+
+// TestRestartProxyFailureFailsTheNextProbe pins that the synchronous restart
+// records its outcome as the asynchronous one does. Its caller has the error
+// already; a later probe in the same process (the next profile launch from
+// the TUI) must still not trust a proxy whose last restart failed.
+func TestRestartProxyFailureFailsTheNextProbe(t *testing.T) {
+	notReady := errors.New("LiteLLM proxy not ready at http://localhost:4000/health/liveliness: context deadline exceeded")
+	tests := []struct {
+		name     string
+		warnings []string
+		readyErr error
+		cause    string
+	}{
+		{name: "restart command failed", warnings: []string{"restart command failed", "second"}, cause: "restart command failed; second"},
+		{name: "readiness timeout", readyErr: notReady, cause: notReady.Error()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stubRoutes(t, litellm.Result{}, nil)
+			restartProxy = func(context.Context) []string { return tc.warnings }
+			waitProxy = func(_ context.Context, _ string, d time.Duration) error {
+				if d == proxyProbeTimeout {
+					return nil
+				}
+				return tc.readyErr
+			}
+			cfg := profileCfg()
+
+			if err := RestartProxy(context.Background(), cfg); err == nil || err.Error() != tc.cause {
+				t.Fatalf("RestartProxy = %v, want %q", err, tc.cause)
+			}
+			err := ProbeProxy(context.Background(), cfg)
+			if want := restartFailed(tc.cause); err == nil || err.Error() != want {
+				t.Fatalf("ProbeProxy = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// TestRestartProxyWithoutAURLRecordsNothing pins that the unconfigured
+// refusal is not a restart attempt: nothing was restarted, so it neither
+// records a failure nor clears one.
+func TestRestartProxyWithoutAURLRecordsNothing(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	if err := RestartProxy(context.Background(), routesCfg()); err == nil {
+		t.Fatal("RestartProxy = nil without a url")
+	}
+	if err := ProbeProxy(context.Background(), profileCfg()); err != nil {
+		t.Fatalf("ProbeProxy = %v, want nil: no restart was attempted", err)
+	}
+	restartProxy = func(context.Context) []string { return []string{"restart command failed"} }
+	bounceRoutes(context.Background(), profileCfg())
+	WaitPendingRoutes()
+	if err := RestartProxy(context.Background(), routesCfg()); err == nil {
+		t.Fatal("RestartProxy = nil without a url")
+	}
+	if err := ProbeProxy(context.Background(), profileCfg()); err == nil {
+		t.Fatal("ProbeProxy = nil, want the earlier failure: the refusal restarted nothing")
+	}
+}
+
 // TestProfileRoutesRestartCounts pins the restart budget of a profile
 // launch against the real config.yaml writer, with the route calls made in
 // the order the launch makes them: the cloud slots' routes, then the local

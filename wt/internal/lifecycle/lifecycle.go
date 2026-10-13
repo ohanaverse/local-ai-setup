@@ -54,9 +54,11 @@ type Options struct {
 	// RestartOwed says config.yaml was already changed for this launch and
 	// the proxy has not been restarted for it. Start's one restart then
 	// publishes that change too: on success the route hook restarts even when
-	// its own write changed nothing, and a start that fails after touching
-	// anything restarts on its way out. A refusal that touched nothing
-	// (RestartStillOwed) leaves the restart with the caller.
+	// its own write changed nothing, and a start that returns any error other
+	// than a refusal restarts on its way out, whether or not it had touched
+	// anything by then. Only the two refusals RestartStillOwed names, an
+	// *OccupiedError and an *OccupancyUnknownError, leave the restart with
+	// the caller.
 	RestartOwed bool
 }
 

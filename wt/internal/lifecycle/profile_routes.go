@@ -54,8 +54,10 @@ func (e *RouteEnsureError) Unwrap() error { return e.Err }
 // owed == false. A caller about to exit still owes WaitPendingRoutes.
 //
 // What it prints goes to out (nil: stderr) through routePrintf: the
-// "wt: LiteLLM route for <id> updated" line for a row it wrote and the
-// "api_base set" line of a repaired row.
+// "wt: LiteLLM route for <id> updated" line for a row it wrote, the
+// "api_base set" line of a repaired row, and "wt: LiteLLM config.yaml
+// updated" for a write that changed the file without writing the model's
+// row or printing either of those (reportEnsured).
 func EnsureModelRoutes(ctx context.Context, out io.Writer, cfg *config.Config, models []config.Model, owedIn bool) (owed bool, err error) {
 	ctx = withRouteOutput(ctx, out)
 	owed = owedIn
@@ -122,9 +124,14 @@ const proxyProbeTimeout = 5 * time.Second
 // cancellation is dropped (context.WithoutCancel), because a restart
 // cannot be called off.
 //
+// What it returns is also remembered as the outcome of the last restart
+// attempt (lastRestart), nil included: a restart that worked clears an
+// earlier failure, and one that failed fails the next ProbeProxy.
+//
 // An empty [litellm] url is an error wrapping config.ErrLitellmUnconfigured,
 // returned before anything is restarted: there is no address to wait for.
-func RestartProxy(ctx context.Context, cfg *config.Config) error {
+// That is no restart attempt, so it is not remembered.
+func RestartProxy(ctx context.Context, cfg *config.Config) (err error) {
 	url := cfg.LitellmBaseURL()
 	if url == "" {
 		return fmt.Errorf("the LiteLLM proxy was not restarted: %w", config.ErrLitellmUnconfigured)
@@ -134,6 +141,7 @@ func RestartProxy(ctx context.Context, cfg *config.Config) error {
 	routesInFlight.Add(1)
 	defer routeWG.Done()
 	defer routesInFlight.Add(-1)
+	defer func() { setLastRestartErr(err) }()
 	bg := context.WithoutCancel(ctx)
 	if warnings := restartProxy(bg); len(warnings) > 0 {
 		return errors.New(strings.Join(warnings, "; "))
@@ -141,14 +149,34 @@ func RestartProxy(ctx context.Context, cfg *config.Config) error {
 	return waitProxy(bg, url, proxyReadyTimeout)
 }
 
-// ProbeProxy checks that the proxy at cfg's [litellm] url answers 200 on
-// its liveness endpoint within proxyProbeTimeout (one waitProxy call).
-// Error: fmt.Errorf("the LiteLLM proxy does not answer at %s: %w", url, err).
-// An empty url is an error wrapping config.ErrLitellmUnconfigured.
+// ProbeProxy is the last check before a slot-profile launch hands the proxy
+// to an agent. It fails in three ways:
+//
+//   - An empty [litellm] url: an error wrapping config.ErrLitellmUnconfigured.
+//   - The most recent proxy restart this process attempted failed (its
+//     command failed, or the proxy did not answer afterwards), whether it was
+//     RestartProxy or an asynchronous restart, such as the one a Start given
+//     Options.RestartOwed settles the owed restart with. Error:
+//     fmt.Errorf("the last LiteLLM proxy restart failed, so routes written
+//     since may not be live: %w", err). It is returned before anything is
+//     probed, because the probe cannot see this: the proxy that was not
+//     restarted is usually still up and answers 200, while it answers
+//     "Invalid model name" for every route written since it booted. The
+//     failure is not cleared by being reported; it stands until a later
+//     restart attempt succeeds.
+//   - The proxy does not answer 200 on its liveness endpoint within
+//     proxyProbeTimeout (one waitProxy call). Error:
+//     fmt.Errorf("the LiteLLM proxy does not answer at %s: %w", url, err).
+//
+// It does not wait for a restart still in flight, whose outcome is not
+// recorded until it finishes: the caller calls WaitPendingRoutes first.
 func ProbeProxy(ctx context.Context, cfg *config.Config) error {
 	url := cfg.LitellmBaseURL()
 	if url == "" {
 		return fmt.Errorf("the LiteLLM proxy cannot be probed: %w", config.ErrLitellmUnconfigured)
+	}
+	if err := lastRestartErr(); err != nil {
+		return fmt.Errorf("the last LiteLLM proxy restart failed, so routes written since may not be live: %w", err)
 	}
 	if err := waitProxy(ctx, url, proxyProbeTimeout); err != nil {
 		return fmt.Errorf("the LiteLLM proxy does not answer at %s: %w", url, err)
