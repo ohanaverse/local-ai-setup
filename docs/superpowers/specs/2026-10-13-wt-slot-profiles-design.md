@@ -226,9 +226,9 @@ A profile launch runs these steps in order. A failure at any step aborts: the TU
 2. **Check passthrough args.** If the user's arguments after `--` contain `--settings` or `--model`, abort naming the flag. Either could replace the slot mapping.
 3. **Write the cloud slots' missing routes, restart deferred.** Each distinct cloud slot model gets an add-if-missing change. Record whether any write changed `config.yaml`.
 4. **Start the local model if its row is a start row.** The TUI uses the existing start flow; the pin path uses the existing pin start. Both go through `lifecycle.Start` with one target. `Start` writes the local model's route and restarts the proxy itself; when step 3 changed `config.yaml`, it is told a restart is owed, so its one restart also publishes the cloud routes.
-5. **Ensure the local route when no start ran.** A local model that was already running gets its add change, restart deferred.
+5. **Ensure the local route when no start ran.** A local model that was already running gets its add change, restart deferred. (Amended after the whole-branch review, 2026-10-13: the same ensure also runs after a step-4 start, because the start's own route write only prints a failure; a row the start already wrote is no change and costs no restart.)
 6. **Restart once if still owed.** When steps 3 or 5 changed `config.yaml` and no start restarted the proxy, wt restarts it once and waits.
-7. **Probe the proxy.** wt checks that the proxy answers, on every launch, including one that restarted nothing. No answer aborts, naming the proxy url.
+7. **Probe the proxy.** wt checks that the proxy answers, on every launch, including one that restarted nothing. No answer aborts, naming the proxy url. (Amended after the task and whole-branch reviews, 2026-10-13: wt first waits for any proxy restart still in flight, and the probe also refuses the launch while the most recent restart attempt in this wt process failed, since routes written since may not be live.)
 8. **Build the command** through the driver's slot build (below).
 9. **Apply `args` and `wrapper`**, for agents that allow them, through the slot-profile applier (below).
 10. **Run the agent**, then do the post-exit bookkeeping.
