@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // TestNewAppLoadsProfilesStore verifies newApp populates a.profiles from
 // profiles.toml (via the same XDG_CONFIG_HOME resolution config.Dir()
@@ -78,5 +83,98 @@ func TestNewAppLoadFailureLeavesProfilesEmpty(t *testing.T) {
 	}
 	if len(a.profiles.Profiles) != 0 || a.profiles.Enabled {
 		t.Errorf("a.profiles = %+v, want the zero-value Store{} (Load failed, nothing to populate it with)", a.profiles)
+	}
+}
+
+// writeSlotProfilesTOML points XDG_CONFIG_HOME at a fresh temp directory,
+// writes body there as agent-wt/slot-profiles.toml, and returns the file's
+// path.
+func writeSlotProfilesTOML(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "agent-wt", "slot-profiles.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestNewAppLoadsSlotProfiles verifies newApp reads slot-profiles.toml and
+// keeps one static verdict per profile, in file order, against the real agent
+// drivers. A profile with a malformed name stays in the list as not usable, so
+// `wt profile list` can report it by position and the launch can warn once. If
+// newApp dropped it, a typo in one profile would vanish without a word.
+func TestNewAppLoadsSlotProfiles(t *testing.T) {
+	writeSlotProfilesTOML(t, `
+[[profile]]
+name    = "mixed"
+agent   = "claude"
+default = "opus"
+
+[profile.slots]
+opus = "openrouter/a"
+
+[[profile]]
+name    = "Bad_Name"
+agent   = "claude"
+default = "opus"
+
+[profile.slots]
+opus = "openrouter/a"
+`)
+	a, err := newApp()
+	if err != nil {
+		t.Fatalf("newApp() error = %v", err)
+	}
+	if a.slotLoadErr != nil {
+		t.Fatalf("a.slotLoadErr = %v, want nil", a.slotLoadErr)
+	}
+	if len(a.slotChecks) != 2 {
+		t.Fatalf("a.slotChecks = %+v, want 2 checks", a.slotChecks)
+	}
+	if c := a.slotChecks[0]; !c.Usable || c.Err != nil || c.Label() != "profile/mixed" {
+		t.Errorf("slotChecks[0] = %+v, want the usable profile/mixed with no error", c)
+	}
+	if c := a.slotChecks[1]; c.Usable || c.Err == nil || c.Label() != "slot-profiles.toml[1]" {
+		t.Errorf("slotChecks[1] = %+v, want a not-usable check labelled by its position", c)
+	}
+}
+
+// TestNewAppWithoutSlotProfilesFile verifies a machine with no
+// slot-profiles.toml gets no checks and no error: the file is optional, and
+// its absence must not print a warning on every launch.
+func TestNewAppWithoutSlotProfilesFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a, err := newApp()
+	if err != nil {
+		t.Fatalf("newApp() error = %v", err)
+	}
+	if a.slotChecks != nil || a.slotLoadErr != nil {
+		t.Errorf("slotChecks = %+v, slotLoadErr = %v, want nil and nil", a.slotChecks, a.slotLoadErr)
+	}
+}
+
+// TestNewAppSlotParseErrorDoesNotStopWt verifies a TOML typo in
+// slot-profiles.toml is stored, not returned: wt still starts, automatic
+// profiles still load, and the launch path can say what is wrong. Returning
+// the error would make one bad hand-written file break every wt command.
+func TestNewAppSlotParseErrorDoesNotStopWt(t *testing.T) {
+	writeSlotProfilesTOML(t, "[[profile]]\nname = \"mixed\n")
+	a, err := newApp()
+	if err != nil {
+		t.Fatalf("newApp() error = %v, want nil (slotLoadErr carries the problem)", err)
+	}
+	if a.slotLoadErr == nil || !strings.Contains(a.slotLoadErr.Error(), "parse slot-profiles.toml") {
+		t.Fatalf("a.slotLoadErr = %v, want the parse error", a.slotLoadErr)
+	}
+	if a.slotChecks != nil {
+		t.Errorf("a.slotChecks = %+v, want nil when the file did not load", a.slotChecks)
+	}
+	if a.profilesLoadErr != nil || !a.profiles.Enabled {
+		t.Errorf("profiles.toml state = (%+v, %v), want it untouched by the slot file's error", a.profiles, a.profilesLoadErr)
 	}
 }
