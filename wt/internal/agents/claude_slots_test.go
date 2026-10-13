@@ -3,6 +3,7 @@ package agents
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -263,6 +264,13 @@ func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 		{"env is a string", map[string]any{"env": "x"}, "config_content.env must be a table"},
 		{"env is an array", map[string]any{"env": []any{"A=1"}}, "config_content.env must be a table"},
 		{"env is a number", map[string]any{"env": int64(1)}, "config_content.env must be a table"},
+		// A nan where the --settings JSON is built holds nothing: without the
+		// rule, TOML's `nan` decodes and the build's encode fails at the
+		// launch, after the routes were written.
+		{"env holds a nan", map[string]any{"env": map[string]any{"THRESHOLD": math.NaN()}},
+			"config_content cannot be encoded as the --settings JSON: json: unsupported value: NaN"},
+		{"a nan outside env", map[string]any{"threshold": math.Inf(1)},
+			"config_content cannot be encoded as the --settings JSON: json: unsupported value: +Inf"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			checkErr := claudeDriver{}.CheckConfigContent(tc.cc)

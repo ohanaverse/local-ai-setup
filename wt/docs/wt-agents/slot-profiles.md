@@ -113,6 +113,7 @@ Static reasons:
 | `mechanism "x" has no effect without "y" on the same profile` | The agent's driver requires field `y` whenever `x` is set, and the profile sets only `x`. No rule of this kind applies to Claude |
 | `env sets ANTHROPIC_BASE_URL, which wt sets for the launch` | A reserved key (also `config_content.env sets …`) |
 | `config_content.env must be a table` | `config_content.env` is a string, a number or an array. This is Claude's rule: Claude Code's settings take `env` as a table, and wt adds its own variables to it |
+| `config_content cannot be encoded as the --settings JSON` | A number in `config_content` is nan or inf, which the `--settings` payload cannot hold (the reason names what the value is). Also Claude's rule |
 | `wrapper args_template [...] has no "{{args}}" placeholder` | The agent's own arguments would be dropped |
 
 Resolved reasons:

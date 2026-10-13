@@ -164,7 +164,7 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 
 	var locals []config.Model
 	for _, m := range p.Distinct() {
-		if loc, _ := cfg.ResolveLocation(m); loc == config.LocationLocal {
+		if slotIsLocal(cfg, m) {
 			locals = append(locals, m)
 		}
 	}
@@ -206,6 +206,15 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 	return row
 }
 
+// slotIsLocal is the one statement of "this profile's slot model is local":
+// cfg resolves m to a local location. The resolved rules and slotLocalState
+// (a row blocked before the local model was judged) share it, so a blocked
+// row's RUNNING cell cannot disagree with the row the profile would have got.
+func slotIsLocal(cfg *config.Config, m config.Model) bool {
+	loc, err := cfg.ResolveLocation(m)
+	return err == nil && loc == config.LocationLocal
+}
+
 // slotLocalRow is the catalog's own row for a profile's local model m: one
 // row built for it alone from snap, whatever the agent's eligible list and
 // -T/-F say. ok is false when the model has no row (confirmed not on disk, a
@@ -229,7 +238,7 @@ func slotLocalState(cfg *config.Config, snap *localmodels.Snapshot, sp profiles.
 			continue
 		}
 		m := cfg.Models[i]
-		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+		if !slotIsLocal(cfg, m) {
 			continue
 		}
 		if local != nil && local.ID != m.ID {

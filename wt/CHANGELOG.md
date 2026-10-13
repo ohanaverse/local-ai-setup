@@ -326,7 +326,11 @@
   `config_content.env` is not a table is now a blocked row with the reason
   `config_content.env must be a table`, reported by `wt profile list` and
   `wt profile show`; it was drawn as a launch row and failed at the launch
-  with that message.
+  with that message. A claude profile whose `config_content` holds a value
+  the `--settings` JSON cannot carry (a TOML nan or inf) is now the same
+  kind of blocked row (`config_content cannot be encoded as the --settings
+  JSON`); its launch failed at the slot build's encode, after the routes
+  were written.
 - A command named `models` or `agents` given after `--` is now run (#353).
   `shell-wt -- models` and `wt -A shell -- agents list` exited with
   ``wt models is removed; use `wt config` to view models`` (or the `agents`

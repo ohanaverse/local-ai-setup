@@ -122,10 +122,11 @@ func TestSlotFixtureIsValidForTheRealClaudeDriver(t *testing.T) {
 
 // TestSlotDriversRejectsWhatClaudeDoesNotAllow runs static validation with
 // the real drivers over the profiles only the driver can refuse. If it
-// regresses, a claude profile with args, a reserved env key, an unknown slot
-// or a config_content.env that is not a table passes validation, and its
-// launch drops the setting silently, overrides the slot mapping or fails at
-// the slot build after the picker offered it as a launch row.
+// regresses, a claude profile with args, a reserved env key, an unknown slot,
+// a config_content.env that is not a table or a nan under config_content
+// passes validation, and its launch drops the setting silently, overrides
+// the slot mapping or fails at the slot build after the picker offered it as
+// a launch row.
 func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 	const head = "[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\n"
 	for _, tc := range []struct {
@@ -143,6 +144,9 @@ func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 		{"config_content.env is a string",
 			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content]\nenv = \"x\"\n",
 			"config_content.env must be a table"},
+		{"config_content.env holds a nan",
+			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content.env]\nTHRESHOLD = nan\n",
+			"config_content cannot be encoded as the --settings JSON: json: unsupported value: NaN"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, err := profiles.ParseSlots([]byte(tc.toml))
