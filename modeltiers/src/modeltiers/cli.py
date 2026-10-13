@@ -16,6 +16,7 @@ from pathlib import Path
 
 from modeltiers import aliases as aliases_mod
 from modeltiers import (
+    align,
     changes,
     identity,
     ladder,
@@ -58,6 +59,7 @@ class Deps:
     specs: SourceSpecs = field(default_factory=loader.build_specs)
     aliases_path: Path | None = None  # None: the committed data/aliases.toml
     contracts_path: Path | None = None  # None: the committed data/contracts.toml
+    align_min: int = align.MIN_SHARED  # the fewest shared models a signal is aligned on
 
 
 def _warn(message: str) -> None:
@@ -113,7 +115,10 @@ def _parser() -> argparse.ArgumentParser:
     shown.add_argument(
         "--wide",
         action="store_true",
-        help="add open weights, context and the scores to the table",
+        help=(
+            "add open weights, context, the scores, the aligned score and the number "
+            "of scores it rests on to the table"
+        ),
     )
     shown.add_argument(
         "--html",
@@ -185,7 +190,9 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
     identity = pipeline.resolve_all(inventory, sources, aliases)
     for line in identity.warnings:
         _warn(line)
-    assignment = pipeline.assign_all(identity, contracts)
+    assignment = pipeline.assign_all(identity, contracts, min_shared=deps.align_min)
+    for line in report.alignment_warnings(assignment):
+        _warn(line)
     print(
         f"inventory: {len(inventory.rows)} models "
         f"({inventory.native_dropped} native rows dropped), registry {inventory.registry}"
@@ -196,6 +203,7 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
         *report.identity_lines(identity),
         *report.unresolved_lines(assignment),
         *report.sentinel_lines(assignment),
+        *report.alignment_lines(assignment),
     ):
         print(line)
     if not assignment.sentinels_ok:

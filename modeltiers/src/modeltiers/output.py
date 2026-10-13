@@ -15,6 +15,7 @@ from typing import Any
 
 import tomli_w
 
+from modeltiers.align import Aligned
 from modeltiers.assign import Evidence, Facts, Verdict
 from modeltiers.contracts import STAMP, Contracts
 from modeltiers.errors import OutputFileError
@@ -28,12 +29,18 @@ Document = dict[str, Any]
 
 
 def _rating(
-    evidence: Evidence, facts: Facts, verdict: Verdict, contracts: Contracts, **extra: Any
+    evidence: Evidence,
+    facts: Facts,
+    verdict: Verdict,
+    contracts: Contracts,
+    aligned: Aligned | None,
+    **extra: Any,
 ) -> Document:
     """The fields a `[[models]]` and a `[[candidates]]` entry share, from
     `tier` on. `extra` (basis, open_weights) goes after `confidence`. A field
     whose value is unknown is left out: `reason` on a rated entry, `tool_call`
-    for a key with no models.dev rows, `context` when no row gives one."""
+    for a key with no models.dev rows, `context` when no row gives one, and
+    `aligned_score` with `aligned_sources` when no score could be aligned."""
     entry: Document = {"tier": verdict.tier, "code": contracts.code(verdict.tier)}
     if verdict.reason is not None:
         entry["reason"] = verdict.reason
@@ -43,6 +50,9 @@ def _rating(
         entry["tool_call"] = facts.tool_call
     if facts.context is not None:
         entry["context"] = facts.context
+    if aligned is not None:
+        entry["aligned_score"] = aligned.score
+        entry["aligned_sources"] = list(aligned.sources)
     entry["votes"] = dict(evidence.votes)
     entry["efforts"] = dict(evidence.efforts)
     entry["notes"] = list(verdict.notes)
@@ -66,6 +76,7 @@ def _model(model: ModelResult, contracts: Contracts) -> Document:
         model.facts,
         model.verdict,
         contracts,
+        model.aligned,
         basis=found.basis,
         open_weights=model.open_weights,
     )
@@ -81,6 +92,7 @@ def _candidate(candidate: Candidate, contracts: Contracts) -> Document:
             candidate.facts,
             candidate.verdict,
             contracts,
+            candidate.aligned,
             open_weights=candidate.open_weights,
         ),
     }
@@ -102,11 +114,35 @@ def _sources(assignment: Assignment, sources: Sources) -> Document:
     return tables
 
 
+def _alignment(assignment: Assignment) -> Document:
+    """The bounds every line's answer is held within, then one table per
+    fitted signal with the line that turns its score into index points, so a
+    reader of the file alone can work an aligned score out again. Empty when
+    no signal was fitted."""
+    alignment = assignment.alignment
+    if not alignment.fits:
+        return {}
+    return {
+        "floor": alignment.floor,
+        "ceiling": alignment.ceiling,
+        **{
+            signal: {
+                "slope": fit.slope,
+                "intercept": fit.intercept,
+                "shared": fit.shared,
+                "typical_miss": fit.typical_miss,
+            }
+            for signal, fit in alignment.fits.items()
+        },
+    }
+
+
 def build_document(
     assignment: Assignment, inventory: Inventory, sources: Sources, now: datetime
 ) -> Document:
     """The whole of `tiers.toml`. An array with no entries is left out: an
-    absent `[[unmapped]]` is an empty one."""
+    absent `[[unmapped]]` is an empty one. So is `[alignment]` when no signal
+    was fitted."""
     contracts = assignment.contracts
     doc: Document = {
         "generated_at": now.strftime(STAMP),
@@ -114,6 +150,9 @@ def build_document(
         "inventory": {"registry": inventory.registry, "providers": dict(inventory.providers)},
         "sources": _sources(assignment, sources),
     }
+    alignment = _alignment(assignment)
+    if alignment:
+        doc["alignment"] = alignment
     arrays: Document = {
         "models": [_model(model, contracts) for model in assignment.models],
         "candidates": [_candidate(c, contracts) for c in assignment.candidates],
@@ -131,8 +170,8 @@ def build_document(
 
 
 def render(doc: Document) -> str:
-    """The document as TOML text: the plain keys, `[inventory]` and
-    `[sources.*]` first, then one block per entry of each array in ARRAYS. A
+    """The document as TOML text: the plain keys, `[inventory]`, `[sources.*]`
+    `[alignment]` and `[alignment.*]` first, then one block per entry of each array in ARRAYS. A
     table inside an entry (`votes`, `efforts`, `scores`) follows the entry's
     plain values as `[models.votes]`; an empty one is a bare header."""
     parts = [tomli_w.dumps({key: value for key, value in doc.items() if key not in ARRAYS})]

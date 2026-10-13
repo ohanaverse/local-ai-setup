@@ -10,7 +10,7 @@ from conftest import SAMPLE, T0, without_timestamps
 
 from modeltiers import aliases as aliases_mod
 from modeltiers import output, pipeline
-from modeltiers.aliases import Alias
+from modeltiers.aliases import Alias, Aliases
 from modeltiers.contracts import Contracts
 from modeltiers.errors import OutputFileError
 from modeltiers.loader import Sources
@@ -34,6 +34,7 @@ def test_tables_are_written_in_the_specs_order(document: dict[str, Any]) -> None
         "contracts_version",
         "inventory",
         "sources",
+        "alignment",
         "models",
         "candidates",
         "unmapped",
@@ -43,6 +44,7 @@ def test_tables_are_written_in_the_specs_order(document: dict[str, Any]) -> None
     assert list(dict.fromkeys(headers)) == [
         "[inventory",
         "[sources",
+        "[alignment",
         "[[models",
         "[models",
         "[[candidates",
@@ -85,6 +87,8 @@ def test_a_rated_model_entry_has_every_field(document: dict[str, Any]) -> None:
         "open_weights": True,
         "tool_call": True,
         "context": 1048576,
+        "aligned_score": 44.3,
+        "aligned_sources": ["intelligence_index", "arena_agent", "eci"],
         "votes": {
             "intelligence_index": "standard",
             "arena_agent": "standard",
@@ -114,6 +118,8 @@ def test_a_rated_model_entry_has_every_field(document: dict[str, Any]) -> None:
         "open_weights",
         "tool_call",
         "context",
+        "aligned_score",
+        "aligned_sources",
         "votes",
         "efforts",
         "notes",
@@ -159,6 +165,8 @@ def test_a_local_build_is_written_with_its_keys_tier_votes_and_tool_call(
         "basis": "inherited",
         "open_weights": True,
         "tool_call": True,
+        "aligned_score": 33.7,
+        "aligned_sources": ["intelligence_index"],
         "votes": {"intelligence_index": "standard"},
         "efforts": {},
         "notes": ["local build: served context unknown; context gate skipped"],
@@ -225,6 +233,8 @@ def test_a_candidate_has_open_weights_and_no_inventory_fields(document: dict[str
         "open_weights",
         "tool_call",
         "context",
+        "aligned_score",
+        "aligned_sources",
         "votes",
         "efforts",
         "notes",
@@ -313,3 +323,40 @@ def test_a_file_that_is_not_utf8_reads_as_absent_for_the_change_report(
     with pytest.raises(OutputFileError, match="is not UTF-8 text"):
         output.read_document(path)
     assert output.read_previous(path) is None
+
+
+def test_the_file_holds_each_fitted_line_so_a_score_can_be_worked_out_again(
+    document: dict[str, Any],
+) -> None:
+    fits = document["alignment"]
+    assert list(fits) == ["floor", "ceiling", "arena_agent", "eci"]
+    # The lowest and highest index any fixture key has: Qwen3.8 27B and Opus 5.5.
+    assert (fits["floor"], fits["ceiling"]) == (33.7, 57.6)
+    assert list(fits["eci"]) == ["slope", "intercept", "shared", "typical_miss"]
+    assert fits["eci"]["shared"] == 3
+    # DeepSeek has no index: its score is the mean of its two translated scores.
+    deepseek = document["models"][1]
+    parts = []
+    for name in deepseek["aligned_sources"]:
+        line = fits[name]
+        points = line["slope"] * deepseek["scores"][name] + line["intercept"]
+        parts.append(min(max(points, fits["floor"]), fits["ceiling"]))
+    assert deepseek["aligned_sources"] == ["arena_agent", "eci"]
+    assert deepseek["aligned_score"] == round(sum(parts) / len(parts), 1) == 43.5
+    assert tomllib.loads(output.render(document))["alignment"] == document["alignment"]
+
+
+def test_an_entry_with_nothing_to_align_has_neither_field_and_no_fit_means_no_table(
+    assignment: Assignment,
+    inventory: Inventory,
+    sources: Sources,
+    fixture_aliases: Aliases,
+    rule: Contracts,
+) -> None:
+    document = output.build_document(assignment, inventory, sources, T0)
+    ignored = next(m for m in document["models"] if m["model_name"] == "nomic-embed-text:latest")
+    assert not {"aligned_score", "aligned_sources"} & set(ignored)
+    unfitted = pipeline.assign_all(pipeline.resolve_all(inventory, sources, fixture_aliases), rule)
+    bare = output.build_document(unfitted, inventory, sources, T0)
+    assert "alignment" not in bare
+    assert "[alignment" not in output.render(bare)

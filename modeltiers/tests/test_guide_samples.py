@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 
 import pytest
-from conftest import FIXTURES, SAMPLE, T0, scaled_openrouter
+from conftest import ALIGN_MIN, FIXTURES, SAMPLE, T0, scaled_openrouter
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch
@@ -34,6 +34,7 @@ def _deps(specs: SourceSpecs, answers: Answers) -> cli.Deps:
         specs=specs,
         aliases_path=FIXTURES / "aliases.toml",
         contracts_path=FIXTURES / "contracts.toml",
+        align_min=ALIGN_MIN,
     )
 
 

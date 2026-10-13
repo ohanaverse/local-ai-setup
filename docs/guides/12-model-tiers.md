@@ -74,7 +74,8 @@ again without the flag.
 The report, in order: the inventory line; one line per source; how every
 inventory row was identified; the `unmapped:` list; the `review:` list of rows
 matched by name alone; the `unresolved:` benchmark records; the sentinel
-check; what changed since the last file (or the whole table when there is no
+check; one `alignment:` line per signal fitted for the aligned score (step 2);
+what changed since the last file (or the whole table when there is no
 file yet); the attribution lines; `wrote <path>` or `dry run: <path> not
 written`.
 
@@ -160,13 +161,14 @@ with the attribution lines of the sources whose data they print.
 
 `show` has three ways to show more:
 
-- **`--wide`** adds seven columns to the table: `open` (open weights: `T`,
-  `F`, or `-` when models.dev has no row for the key or the row is ignored), `context`, and the
-  scores `intel`, `arena`, `eci`, `coding` and `agentic`. A `-` is a value the
-  file does not have. The table is then about 150 columns wide.
+- **`--wide`** adds nine columns to the table: `open` (open weights: `T`,
+  `F`, or `-` when models.dev has no row for the key or the row is ignored), `context`, the
+  scores `intel`, `arena`, `eci`, `coding` and `agentic`, then `aligned` and
+  `src` (below). A `-` is a value the file does not have. The table is then
+  wider than most terminal windows: widen yours, or use the page.
 - **`--sort COLUMN`** orders the rows by `tier`, `model`, `context`,
-  `intelligence_index`, `arena_agent`, `eci`, `coding_index` or
-  `agentic_index`. `model` is alphabetical; every other column puts the
+  `intelligence_index`, `arena_agent`, `eci`, `coding_index`,
+  `agentic_index` or `aligned`. `model` is alphabetical; every other column puts the
   highest value first and the rows with no value last. In the terminal your
   models and the candidates are sorted separately; the page sorts them
   together. Without it the order is the file's.
@@ -180,8 +182,46 @@ with the attribution lines of the sources whose data they print.
   It is a copy of `tiers.toml` at that moment: write it again after a run.
   `FILE` cannot be `tiers.toml` itself.
 
-The three scores that vote are on different scales, so there is no single
-score to rank by: sort by the one you trust for the job, or by `tier`.
+**One ranking: the aligned score.** The three scores that vote are on
+different scales, and each source scores a different set of models, so
+neither the raw scores nor a rank within one source compares two models that
+different sources scored. `aligned` is the one column that does:
+
+- Each run fits a straight line from Arena's score to the intelligence index,
+  and another from Epoch's, over the models that have both. `run` prints each
+  fit: `alignment: <signal> on N shared models, typical miss M points`.
+- A model's aligned score is the plain average of its own intelligence index
+  and of each of its other voting scores put through its line. It is in
+  intelligence-index points. A line's answer is never lower than the lowest
+  index any model has in that run, nor higher than the highest.
+- `src` is how many scores it rests on, from 1 to 3. `explain` prints the
+  parts: `arena_agent <score> as <index points>`.
+
+Read it with these cautions:
+
+- **It is an estimate.** Two models closer than the typical miss the run
+  printed are not told apart by it. The page says the figure under its table.
+- **One source is thin.** A score with `src` 1 that is not the model's own
+  index is a single source's score put through a line.
+- **It decides nothing.** No tier, gate or sentinel reads it, and the lines
+  are fitted again on every run, so a score can move a little when nothing
+  about the model changed.
+- **A local build has its hosted model's score.** No source scores your
+  quantized copy. Like its tier, its aligned score is the one the model's key
+  has, and `explain` says `basis inherited`.
+- **Both ends of the scale are flat.** The weakest models all come out near
+  the lowest index of the run, and a model whose line would put it above the
+  highest index comes out at that index, so the strongest can tie: the lines
+  are not read past either end.
+
+A signal is left out of every aligned score when the run cannot fit it, and
+`run` says so on stderr: `warning: alignment: <signal> is in no aligned
+score: <why>`. The reasons: fewer than 20 models have both it and the
+intelligence index; those models do not vary in one of the two; no finite
+line fits them; or the line does not slope up, which means the source ranks
+the shared models against the index. None of these needs an action from you
+and none changes a tier. Models with their own index keep it as their score;
+a model that source alone scored has none until a later run fits it.
 
 Illustrative example from the test fixtures: what `explain` prints for one
 fixture row, before its attribution lines.
@@ -193,6 +233,7 @@ ollama/minimax-m3:cloud
   confidence:  high, basis measured
   votes:       arena_agent quick, eci quick
   scores:      arena_agent -0.0695, arena_agent_ci_lower -0.0786, eci 146.95
+  aligned:     34.7 (arena_agent -0.0695 as 34.7; eci 146.95 as 34.8)
   efforts:     none
   tool_call:   true
   context:     512000
@@ -202,7 +243,8 @@ ollama/minimax-m3:cloud
 
 - `identity` is the canonical key (models.dev's spelling) and how the row reached it: `alias` (you said so in `aliases.toml`), `host` (models.dev lists the host's own id beside the key) or `normalized` (the name alone matched exactly one key).
 - `efforts` names the reasoning effort of the Arena row that was used. A tier describes the best-scoring effort row, which may not be what a default launch gives you.
-- `coding_index` and `agentic_index` appear under `scores` as evidence. They do not vote.
+- `coding_index` and `agentic_index` appear under `scores` as evidence. They do not vote, and they are not part of `aligned`.
+- `aligned` is the aligned score and what it is the average of: the index as it is, and each other score with the index points its line gives.
 
 To read the file directly, its format is
 [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml). A model

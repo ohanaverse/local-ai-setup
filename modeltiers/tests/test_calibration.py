@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import FIXTURES, T0, scaled_openrouter
+from conftest import ALIGN_MIN, FIXTURES, T0, scaled_openrouter
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch
@@ -47,6 +47,7 @@ def _deps(
         specs=specs,
         aliases_path=aliases_path,
         contracts_path=contracts_path,
+        align_min=ALIGN_MIN,
     )
 
 

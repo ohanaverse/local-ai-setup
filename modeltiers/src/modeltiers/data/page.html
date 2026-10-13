@@ -147,6 +147,7 @@
   </div>
   <footer>
     <p>Tiers are advisory. Scores are as each source published them; a dash means the source gave none.</p>
+    <p>aligned is an estimate: each voting score put on the intelligence-index scale by a fitted line, then averaged. src is how many scores it rests on. {{alignment}}</p>
     <ul>
 {{attribution}}
     </ul>
@@ -163,6 +164,8 @@
     { key: "tier", label: "tier", type: "tier", title: "Final tier, after the gates" },
     { key: "confidence", label: "conf", type: "text", title: "How far the votes agree" },
     { key: "name", label: "model", type: "text", title: "provider/model, or the canonical key of a candidate" },
+    { key: "aligned_score", label: "aligned", type: "num", places: 1, title: "Every voting score put on the intelligence-index scale and averaged; an estimate, not a source's score" },
+    { key: "aligned_sources", label: "src", type: "num", title: "How many scores the aligned score rests on: 1 to 3" },
     { key: "open_weights", label: "open", type: "flag", title: "Open weights, by any models.dev row of the key" },
     { key: "context", label: "context", type: "num", title: "Context window the tier was gated on, in tokens" },
     { key: "intelligence_index", label: "intel", type: "num", title: "Artificial Analysis intelligence index (votes)" },
@@ -218,6 +221,7 @@
     if (value === null || value === undefined) return NONE;
     if (column.type === "flag") return value ? "T" : "F";
     if (column.key === "context") return value.toLocaleString("en-US");
+    if (column.places !== undefined) return value.toFixed(column.places);
     if (column.type === "num") return String(Number(value.toFixed(4)));
     if (column.key === "kind") return value === "model" ? "mine" : value;
     return String(value);
@@ -321,8 +325,10 @@
   kind.addEventListener("change", sync);
   window.addEventListener("pageshow", sync);
 
-  // `show --sort` names the file's columns; the page calls `model` its `name`.
-  const first = data.sort === "model" ? "name" : data.sort;
+  // `show --sort` names the file's columns; the page calls `model` its `name`
+  // and `aligned` its `aligned_score`.
+  const renamed = { model: "name", aligned: "aligned_score" };
+  const first = Object.prototype.hasOwnProperty.call(renamed, data.sort) ? renamed[data.sort] : data.sort;
   if (byKey.has(first)) sortBy(first);
   else render();
 })();

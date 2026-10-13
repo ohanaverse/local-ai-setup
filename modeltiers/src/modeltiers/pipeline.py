@@ -5,8 +5,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from modeltiers import aliases as aliases_mod
-from modeltiers import assign, identity
+from modeltiers import align, assign, identity
 from modeltiers.aliases import SOURCES, Aliases
+from modeltiers.align import Aligned, Alignment
 from modeltiers.assign import Evidence, Facts, SentinelResult, Verdict
 from modeltiers.contracts import RANK, UNRATED, Contracts
 from modeltiers.errors import ConfigError
@@ -80,6 +81,7 @@ class ModelResult:
 
     identity: RowIdentity
     open_weights: bool | None  # None: ignored, or the key has no models.dev rows
+    aligned: Aligned | None  # None: ignored, or no score the alignment can use
     evidence: Evidence
     facts: Facts
     verdict: Verdict
@@ -92,6 +94,7 @@ class Candidate:
     canonical: str  # in the stored spelling
     resolved_by: str  # the earliest of alias, host, normalized among its records
     open_weights: bool | None  # None: the key has no models.dev rows
+    aligned: Aligned | None  # None: no score the alignment can use
     evidence: Evidence
     facts: Facts
     verdict: Verdict
@@ -105,6 +108,7 @@ class Assignment:
     contracts: Contracts
     models: tuple[ModelResult, ...]  # resolved and ignored rows, in wt's order
     candidates: tuple[Candidate, ...]  # rank descending, then key
+    alignment: Alignment  # this run's fits, which every `aligned` was made with
     unresolved: tuple[ScoreRecord, ...]  # at or above a standard floor; source, then score
     sentinels: tuple[SentinelResult, ...]
 
@@ -141,12 +145,31 @@ def _open_weights(rows: Sequence[ModelsDevRow]) -> bool | None:
     return any(row.open_weights for row in rows) if rows else None
 
 
-def _model(entry: RowIdentity, result: Identity, contracts: Contracts) -> ModelResult:
+def _voting_scores(evidence: Evidence, contracts: Contracts) -> dict[str, float]:
+    """The scores that vote, without the evidence-only ones beside them."""
+    return {name: evidence.scores[name] for name in contracts.signals if name in evidence.scores}
+
+
+def _alignment(result: Identity, contracts: Contracts, min_shared: int) -> Alignment:
+    """The fits over every key any source scored, inventory row or not. A
+    key's voting score is its best record's, as `assign.weigh` takes it."""
+    by_source = {source.source: source for source in result.sources()}
+    scores: dict[str, dict[str, float]] = {}
+    for name, signal in contracts.signals.items():
+        for lower, match in by_source[signal.source].best.items():
+            scores.setdefault(lower, {})[name] = match.record.score
+    return align.fit_all(scores, min_shared=min_shared)
+
+
+def _model(
+    entry: RowIdentity, result: Identity, contracts: Contracts, alignment: Alignment
+) -> ModelResult:
     if entry.canonical is None:
         # Listed under [[ignore]]: unrated, and no gate has anything to read.
         return ModelResult(
             identity=entry,
             open_weights=None,
+            aligned=None,
             evidence=_NO_EVIDENCE,
             facts=Facts(tool_call=None, context=None),
             verdict=Verdict(
@@ -159,13 +182,16 @@ def _model(entry: RowIdentity, result: Identity, contracts: Contracts) -> ModelR
     return ModelResult(
         identity=entry,
         open_weights=_open_weights(rows),
+        aligned=align.aligned(_voting_scores(evidence, contracts), alignment),
         evidence=evidence,
         facts=facts,
         verdict=assign.decide(evidence, facts, contracts),
     )
 
 
-def _candidates(result: Identity, contracts: Contracts) -> tuple[Candidate, ...]:
+def _candidates(
+    result: Identity, contracts: Contracts, alignment: Alignment
+) -> tuple[Candidate, ...]:
     held = {entry.canonical.lower() for entry in result.rows if entry.canonical is not None}
     keys: dict[str, str] = {}
     for source in result.sources():
@@ -184,6 +210,7 @@ def _candidates(result: Identity, contracts: Contracts) -> tuple[Candidate, ...]
                 canonical=key,
                 resolved_by=next(step for step in _RESOLUTION_ORDER if step in steps),
                 open_weights=_open_weights(rows),
+                aligned=align.aligned(_voting_scores(evidence, contracts), alignment),
                 evidence=evidence,
                 facts=facts,
                 verdict=assign.decide(evidence, facts, contracts),
@@ -222,18 +249,26 @@ def _sentinels(result: Identity, contracts: Contracts) -> tuple[SentinelResult, 
     return tuple(checked)
 
 
-def assign_all(result: Identity, contracts: Contracts) -> Assignment:
-    """Give every resolved key its tier. Raises ConfigError for a sentinel
-    whose canonical is not a known key. A failed sentinel is not an error
-    here: it is in `Assignment.sentinels`, and the caller writes nothing."""
+def assign_all(
+    result: Identity, contracts: Contracts, *, min_shared: int = align.MIN_SHARED
+) -> Assignment:
+    """Give every resolved key its tier and its aligned score. Raises
+    ConfigError for a sentinel whose canonical is not a known key. A failed
+    sentinel is not an error here: it is in `Assignment.sentinels`, and the
+    caller writes nothing. `min_shared` is the fewest shared models a signal
+    is fitted to the intelligence index on."""
     sentinels = _sentinels(result, contracts)
+    alignment = _alignment(result, contracts, min_shared)
     return Assignment(
         identity=result,
         contracts=contracts,
         models=tuple(
-            _model(entry, result, contracts) for entry in result.rows if not entry.unmapped
+            _model(entry, result, contracts, alignment)
+            for entry in result.rows
+            if not entry.unmapped
         ),
-        candidates=_candidates(result, contracts),
+        candidates=_candidates(result, contracts, alignment),
+        alignment=alignment,
         unresolved=_unresolved(result, contracts),
         sentinels=sentinels,
     )

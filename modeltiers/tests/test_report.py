@@ -107,3 +107,25 @@ def test_a_sentinel_with_no_record_prints_none(assignment: Assignment, rule: Con
         "        pinned:  none; tier quick",
         "        differs: tier before the gates is unrated, pinned quick",
     ]
+
+
+def test_a_line_per_fitted_signal_and_a_warning_per_refused_one(
+    assignment: Assignment,
+    inventory: Inventory,
+    sources: Sources,
+    fixture_aliases: Aliases,
+    rule: Contracts,
+) -> None:
+    assert report.alignment_lines(assignment) == [
+        "alignment: arena_agent on 3 shared models, typical miss 1.1 points",
+        "alignment: eci on 3 shared models, typical miss 1.1 points",
+    ]
+    assert report.alignment_warnings(assignment) == []
+    unfitted = pipeline.assign_all(pipeline.resolve_all(inventory, sources, fixture_aliases), rule)
+    assert report.alignment_lines(unfitted) == []
+    assert report.alignment_warnings(unfitted) == [
+        "alignment: arena_agent is in no aligned score: 3 models have both it and "
+        "intelligence_index, under the minimum of 20",
+        "alignment: eci is in no aligned score: 3 models have both it and "
+        "intelligence_index, under the minimum of 20",
+    ]
