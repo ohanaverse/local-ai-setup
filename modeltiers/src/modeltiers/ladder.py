@@ -5,12 +5,11 @@ the widest gap, so the gaps are what a re-calibration reads."""
 from collections.abc import Iterable
 from math import inf
 
-from modeltiers.contracts import SIGNALS
+from modeltiers.contracts import CI_LOWER, SIGNALS
 from modeltiers.identity import Match
 
-LOWER = "_ci_lower"
 # Every signal, and the lower bound of its interval.
-CHOICES = tuple(key for name in SIGNALS for key in (name, f"{name}{LOWER}"))
+CHOICES = tuple(key for name in SIGNALS for key in (name, f"{name}{CI_LOWER}"))
 
 
 def ladder_lines(

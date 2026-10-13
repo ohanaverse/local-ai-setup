@@ -6,9 +6,10 @@ from typing import Any
 
 from conftest import T0
 
-from modeltiers import page
+from modeltiers import page, show
 
 _DATA = re.compile(r'<script id="data" type="application/json">(.*?)</script>', re.DOTALL)
+_COLUMNS = re.compile(r"const COLUMNS = \[(.*?)^\s*\];", re.DOTALL | re.MULTILINE)
 
 
 def _data(text: str) -> dict[str, Any]:
@@ -17,6 +18,20 @@ def _data(text: str) -> dict[str, Any]:
     loaded = json.loads(found)
     assert isinstance(loaded, dict)
     return loaded
+
+
+def _page_sort_names(text: str) -> set[str]:
+    """Every name the page's script matches `data.sort` against: a column's own
+    `sort`, or its key where it names no other (`(column.sort || column.key)`)."""
+    (block,) = _COLUMNS.findall(text)
+    names: set[str] = set()
+    for line in block.splitlines():
+        key = re.search(r'\bkey: "(\w+)"', line)
+        if key is None:
+            continue
+        sort = re.search(r'\bsort: "(\w+)"', line)
+        names.add(sort.group(1) if sort else key.group(1))
+    return names
 
 
 def test_a_row_per_model_unmapped_row_and_candidate_in_file_order(
@@ -278,6 +293,17 @@ def test_the_page_has_the_aligned_columns_beside_the_model_and_opens_on_them() -
         ("aligned_score", "aligned", "num"),
         ("aligned_sources", "src", "num"),
     ]
-    assert 'const renamed = { model: "name", aligned: "aligned_score" };' in text
+    assert 'key: "name", label: "model", type: "text", sort: "model"' in text
+    assert "(column.sort || column.key) === data.sort" in text
     # The aligned score keeps its one decimal on the page, as in the file.
-    assert 'key: "aligned_score", label: "aligned", type: "num", places: 1' in text
+    assert 'key: "aligned_score", label: "aligned", type: "num", places: 1, sort: "aligned"' in text
+
+
+def test_every_name_the_cli_sorts_the_table_by_is_a_column_the_page_sorts_by() -> None:
+    """What holds the CLI's sort names and the page's columns together: nothing
+    at runtime does. The page looks a name up among its columns and falls back to
+    the file's own order when none has it, so a name added to `show.SORT_COLUMNS`
+    alone would leave `show --sort X` sorting the text table while
+    `show --html --sort X` wrote an unsorted page, with no error on either side."""
+    names = _page_sort_names(page.page_html({}, T0))
+    assert set(show.SORT_COLUMNS) <= names

@@ -49,6 +49,45 @@ def test_a_failure_that_is_not_retryable_is_raised_at_once() -> None:
     assert sleeps.calls == []
 
 
+def test_a_check_that_reads_the_body_gives_its_answer_back_reading_it_once() -> None:
+    fetcher = FakeFetcher({"u": [b"body"]})
+    reads: list[bytes] = []
+
+    def check(body: bytes) -> str:
+        reads.append(body)
+        return body.decode().upper()
+
+    assert fetch.fetch_checked(fetcher, "u", Sleeps(), check) == (b"body", "BODY")
+    assert reads == [b"body"]
+
+
+def test_a_check_that_reads_a_body_is_retried_on_a_retryable_failure() -> None:
+    """The whole point of a check: a body that arrived but is a failed download
+    is worth one more request. The answer comes from the body that was kept."""
+    fetcher = FakeFetcher({"u": [b"502", b"good"]})
+
+    def check(body: bytes) -> str:
+        if body == b"502":
+            raise FetchError("u: 502", retryable=True)
+        return body.decode()
+
+    sleeps = Sleeps()
+    assert fetch.fetch_checked(fetcher, "u", sleeps, check) == (b"good", "good")
+    assert fetcher.calls == ["u", "u"]
+    assert sleeps.calls == [2]
+
+
+def test_a_check_error_raised_twice_reaches_the_caller() -> None:
+    fetcher = FakeFetcher({"u": [b"502", b"502"]})
+
+    def check(body: bytes) -> str:
+        raise FetchError("u: 502", retryable=True)
+
+    with pytest.raises(FetchError, match="502"):
+        fetch.fetch_checked(fetcher, "u", Sleeps(), check)
+    assert fetcher.calls == ["u", "u"]
+
+
 @pytest.mark.parametrize(
     ("function", "url"),
     [
@@ -93,6 +132,30 @@ def test_an_arena_error_body_is_retried_once(read_fixture: Callable[[str], bytes
     doc = json.loads(fetch.fetch_arena(fetcher, sleeps))
     assert doc == {"pages": [page.decode()]}
     assert sleeps.calls == [2]
+
+
+def test_every_arena_page_is_parsed_exactly_once(
+    read_fixture: Callable[[str], bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parsing a page is the check that makes a bad one retryable, so it happens
+    inside the retry; the caller gets that same reading rather than taking the
+    body apart a second time. Paging a leaderboard of 5,000 rows means 50
+    downloads, and doubling their parse is the largest cost in the Arena fetch."""
+    page1 = read_fixture("arena_page1.json")  # 3 rows of 5
+    page2 = read_fixture("arena_page2.json")  # 2 rows of 5
+    read: list[bytes] = []
+    parse = fetch._arena_page
+
+    def counting(body: bytes) -> tuple[int, int]:
+        read.append(body)
+        return parse(body)
+
+    monkeypatch.setattr(fetch, "_arena_page", counting)
+    fetcher = FakeFetcher({fetch.arena_page_url(0): [page1], fetch.arena_page_url(3): [page2]})
+    assert json.loads(fetch.fetch_arena(fetcher, Sleeps())) == {
+        "pages": [page1.decode(), page2.decode()]
+    }
+    assert read == [page1, page2]
 
 
 def test_two_arena_error_bodies_are_a_failed_download(

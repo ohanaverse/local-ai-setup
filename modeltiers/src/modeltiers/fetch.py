@@ -15,8 +15,9 @@ from modeltiers.errors import FetchError
 
 Fetcher = Callable[[str], bytes]
 Sleep = Callable[[float], None]
-# Raises FetchError(retryable=True) when a body that arrived is a failed download.
-BodyCheck = Callable[[bytes], None]
+# Raises FetchError(retryable=True) when a body that arrived is a failed download,
+# and reads the body on the way: `fetch_checked` returns what it read.
+type BodyCheck[T] = Callable[[bytes], T]
 
 TIMEOUT_SECONDS = 30
 RETRY_DELAY_SECONDS = 2
@@ -55,21 +56,39 @@ def http_fetcher(url: str) -> bytes:
         raise FetchError(f"{url}: {exc}") from exc
 
 
-def fetch_with_retry(
-    fetcher: Fetcher, url: str, sleep: Sleep, check: BodyCheck | None = None
-) -> bytes:
-    """Fetch `url`; after a retryable failure wait 2 seconds and try once more."""
-    for attempt in (1, 2):
-        try:
-            body = fetcher(url)
-            if check is not None:
-                check(body)
-            return body
-        except FetchError as exc:
-            if attempt == 2 or not exc.retryable:
-                raise
-            sleep(RETRY_DELAY_SECONDS)
-    raise AssertionError("unreachable")  # pragma: no cover
+def _retrying[T](attempt: Callable[[], T], sleep: Sleep) -> T:
+    """`attempt`, tried once more after 2 seconds if it raised a FetchError
+    with `retryable` set. Any other failure reaches the caller as it is."""
+    try:
+        return attempt()
+    except FetchError as exc:
+        if not exc.retryable:
+            raise
+    sleep(RETRY_DELAY_SECONDS)
+    return attempt()
+
+
+def fetch_with_retry(fetcher: Fetcher, url: str, sleep: Sleep) -> bytes:
+    """Fetch `url`; after a retryable failure wait 2 seconds and try once more.
+    For a body the caller can judge only by reading it, `fetch_checked` is the
+    same call with the reading kept."""
+    return _retrying(lambda: fetcher(url), sleep)
+
+
+def fetch_checked[T](
+    fetcher: Fetcher, url: str, sleep: Sleep, check: BodyCheck[T]
+) -> tuple[bytes, T]:
+    """Fetch `url` and what `check` made of the body, parsing it once.
+
+    For a source that has to parse a body to know whether it downloaded at all:
+    the parse is the retry check, so it belongs inside the retry, and its answer
+    belongs to the caller rather than being worked out a second time."""
+
+    def attempt() -> tuple[bytes, T]:
+        body = fetcher(url)
+        return body, check(body)
+
+    return _retrying(attempt, sleep)
 
 
 def fetch_modelsdev(fetcher: Fetcher, sleep: Sleep) -> bytes:
@@ -107,10 +126,6 @@ def _arena_page(body: bytes) -> tuple[int, int]:
     return len(rows), total
 
 
-def _check_arena_page(body: bytes) -> None:
-    _arena_page(body)
-
-
 def wrap_arena_pages(pages: list[bytes]) -> bytes:
     """The one document an Arena snapshot is: each page body, unparsed."""
     doc = {"pages": [page.decode("utf-8") for page in pages]}
@@ -125,14 +140,15 @@ def fetch_arena(fetcher: Fetcher, sleep: Sleep) -> bytes:
     report the same one. A leaderboard being edited while its pages are read
     would otherwise raise the target on each request and page forever, and the
     parse's row count check (`len(records) != total`) would compare a count
-    taken across the pages with a total from a different moment.
+    taken across the pages with a total from a different moment. Each page is
+    parsed once, by its own retry check.
     """
     pages: list[bytes] = []
     offset = 0
     total: int | None = None
     while True:
-        body = fetch_with_retry(fetcher, arena_page_url(offset), sleep, _check_arena_page)
-        rows, page_total = _arena_page(body)
+        url = arena_page_url(offset)
+        body, (rows, page_total) = fetch_checked(fetcher, url, sleep, _arena_page)
         if total is None:
             total = page_total
         elif page_total != total:

@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from modeltiers import snapshots
 
 T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
@@ -45,6 +47,16 @@ def test_mark_bad_twice_gives_the_same_bad_snapshot(tmp_path: Path) -> None:
     bad = snapshots.mark_bad(snap)
     assert snapshots.mark_bad(snap) == bad
     assert bad.path.read_bytes() == b"abc"
+
+
+def test_mark_bad_with_neither_file_there_raises(tmp_path: Path) -> None:
+    """Only the other run's rename is tolerated. A snapshot whose file is gone
+    and whose bad one was never made is not a snapshot to hand back: `replace`
+    raises for it, as `save` would for a file that is not there."""
+    snap = snapshots.save(tmp_path, "arena", "json", b"abc", T0)
+    snap.path.unlink()
+    with pytest.raises(FileNotFoundError):
+        snapshots.mark_bad(snap)
 
 
 def test_list_is_newest_first_and_reads_bad_from_the_name(tmp_path: Path) -> None:

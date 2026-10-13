@@ -4,13 +4,12 @@
 `[[ignore]]` acknowledges a row or a record that will never resolve.
 """
 
-import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from modeltiers import configfile
 from modeltiers.errors import ConfigError
 from modeltiers.sources.arena import SOURCE as ARENA
 from modeltiers.sources.arena import split_effort
@@ -142,10 +141,7 @@ def build(
 
 
 def _text(where: str, entry: Mapping[str, Any], key: str) -> str:
-    value = entry.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{where}: {key} is missing, empty or not a string")
-    return _unpadded(f"{where}: {key}", value)
+    return _unpadded(f"{where}: {key}", configfile.text(where, entry, key))
 
 
 def _unpadded(where: str, value: str) -> str:
@@ -156,16 +152,10 @@ def _unpadded(where: str, value: str) -> str:
     return value
 
 
-def _known_keys(where: str, entry: Mapping[str, Any], allowed: frozenset[str]) -> None:
-    unknown = sorted(set(entry) - allowed)
-    if unknown:
-        raise ConfigError(f"{where}: unknown key {unknown[0]!r}")
-
-
 def _pair(where: str, value: Any) -> Pair:
     if not isinstance(value, dict):
         raise ConfigError(f"{where}: expected {{ provider_id = ..., model_name = ... }}")
-    _known_keys(where, value, _PAIR_KEYS)
+    configfile.known_keys(where, value, _PAIR_KEYS)
     return (
         _text(where, value, "provider_id"),
         _text(where, value, "model_name"),
@@ -179,15 +169,8 @@ def _id_list(where: str, entry: Mapping[str, Any], source: str) -> tuple[str, ..
     return tuple(_unpadded(f"{where}: {source} id", v) for v in value)
 
 
-def _tables(origin: str, doc: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
-    value = doc.get(key, [])
-    if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
-        raise ConfigError(f"{origin}: {key} is not an array of tables; write [[{key}]]")
-    return value
-
-
 def _alias(where: str, entry: Mapping[str, Any]) -> Alias:
-    _known_keys(where, entry, _ALIAS_KEYS)
+    configfile.known_keys(where, entry, _ALIAS_KEYS)
     canonical = _text(where, entry, "canonical")
     where = f"{where} ({canonical})"
     note = entry.get("note", "")
@@ -207,7 +190,7 @@ def _alias(where: str, entry: Mapping[str, Any]) -> Alias:
 
 
 def _ignore(where: str, entry: Mapping[str, Any]) -> Ignore:
-    _known_keys(where, entry, _IGNORE_KEYS)
+    configfile.known_keys(where, entry, _IGNORE_KEYS)
     reason = entry.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ConfigError(f"{where}: an ignore needs a reason")
@@ -227,36 +210,24 @@ def parse_aliases(text: str, *, origin: str = "aliases.toml") -> Aliases:
     """Read and validate the file's text. This is the validation that runs
     before any fetch: shape, a string with a space around it, an `[[ignore]]`
     without a reason, and a pair or an id claimed twice. `origin` names the file in every message."""
-    try:
-        doc = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"{origin}: not TOML: {exc}") from exc
+    doc = configfile.parse_toml(origin, text)
     unknown = sorted(set(doc) - {"alias", "ignore"})
     if unknown:
         raise ConfigError(f"{origin}: unknown table {unknown[0]!r}")
     aliases = [
         _alias(f"{origin}: [[alias]] #{index}", entry)
-        for index, entry in enumerate(_tables(origin, doc, "alias"), start=1)
+        for index, entry in enumerate(configfile.tables(origin, doc, "alias"), start=1)
     ]
     ignores = [
         _ignore(f"{origin}: [[ignore]] #{index}", entry)
-        for index, entry in enumerate(_tables(origin, doc, "ignore"), start=1)
+        for index, entry in enumerate(configfile.tables(origin, doc, "ignore"), start=1)
     ]
     return build(aliases, ignores, origin=origin)
 
 
 def load_aliases(path: Path | None = None) -> Aliases:
     """Read `path`, or the committed `data/aliases.toml` when it is None."""
-    if path is None:
-        text = resources.files("modeltiers").joinpath("data/aliases.toml").read_text("utf-8")
-        return parse_aliases(text, origin="aliases.toml")
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ConfigError(f"aliases: {path} is not UTF-8 text: {exc}") from exc
-    except OSError as exc:
-        raise ConfigError(f"aliases: cannot read {path}: {exc.strerror}") from exc
-    return parse_aliases(text, origin=path.name)
+    return configfile.load(path, "aliases", parse_aliases)
 
 
 def check_anchored(aliases: Aliases, modelsdev_keys: Iterable[str]) -> None:

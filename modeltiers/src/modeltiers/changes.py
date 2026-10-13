@@ -2,16 +2,19 @@
 keyed on (provider_id, model_name). Both sides are plain documents, so a file
 written by an older version is compared by whatever fields it has."""
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from modeltiers.contracts import SOURCES
 from modeltiers.pipeline import IGNORED_NOTE
-from modeltiers.show import entries, model_name, table_lines
-
-Document = Mapping[str, Any]
-UNMAPPED = "unmapped"
+from modeltiers.show import (
+    UNMAPPED,
+    Document,
+    candidate_name,
+    entries,
+    model_name,
+    table,
+    table_lines,
+)
 
 
 def _states(doc: Document) -> dict[str, tuple[str, str]]:
@@ -35,17 +38,12 @@ def _ignored(doc: Document) -> dict[str, str]:
 
 
 def _candidates(doc: Document) -> dict[str, str]:
-    return {
-        str(c.get("canonical", "?")).lower(): str(c.get("tier", "?"))
-        for c in entries(doc, "candidates")
-    }
+    return {candidate_name(c).lower(): str(c.get("tier", "?")) for c in entries(doc, "candidates")}
 
 
 def _source_statuses(old: Document, new: Document) -> str:
     def status(doc: Document, name: str) -> str:
-        sources = doc.get("sources", {})
-        entry = sources.get(name) if isinstance(sources, dict) else None
-        return str(entry.get("status", "?")) if isinstance(entry, dict) else "?"
+        return str(table(table(doc.get("sources")).get(name)).get("status", "?"))
 
     parts = []
     for name in SOURCES:

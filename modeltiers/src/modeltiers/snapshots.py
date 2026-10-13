@@ -57,13 +57,15 @@ def mark_bad(snapshot: Snapshot) -> Snapshot:
     The store is not locked, so two runs started in the same second work on the
     same stamped file. When the other run has already set it aside, this run's
     source file is gone and the bad one is there: the rename has happened, and
-    the bad snapshot is returned rather than raising on a missing file.
+    the bad snapshot is returned rather than raising on a missing file. That is
+    the one case the rename is skipped in. With neither file there nothing named
+    this snapshot exists to rename, and `replace` raises for it, as `save` would.
     """
     stamp, ext = snapshot.path.name.split(".", 1)
     target = snapshot.path.with_name(f"{stamp}.bad.{ext}")
-    if target.exists() and not snapshot.path.exists():
-        return Snapshot(path=target, fetched_at=snapshot.fetched_at, bad=True)
-    snapshot.path.replace(target)
+    moved_by_the_other_run = not snapshot.path.exists() and target.exists()
+    if not moved_by_the_other_run:
+        snapshot.path.replace(target)
     return Snapshot(path=target, fetched_at=snapshot.fetched_at, bad=True)
 
 
@@ -81,16 +83,14 @@ def good_snapshots(cache: Path, source: str) -> list[Snapshot]:
     return [s for s in list_snapshots(cache, source) if not s.bad]
 
 
-def prune(
-    cache: Path, source: str, *, keep_good: int = KEEP_GOOD, keep_bad: int = KEEP_BAD
-) -> list[Path]:
-    """Delete all but the newest `keep_good` good and `keep_bad` bad snapshots
+def prune(cache: Path, source: str) -> list[Path]:
+    """Delete all but the newest KEEP_GOOD good and KEEP_BAD bad snapshots
     of one source. Returns the deleted paths. A snapshot the other run has
     meanwhile renamed is simply already deleted."""
     snapshots = list_snapshots(cache, source)
     good = [s for s in snapshots if not s.bad]
     bad = [s for s in snapshots if s.bad]
-    removed = [s.path for s in good[keep_good:] + bad[keep_bad:]]
+    removed = [s.path for s in good[KEEP_GOOD:] + bad[KEEP_BAD:]]
     for path in removed:
         path.unlink(missing_ok=True)
     return removed

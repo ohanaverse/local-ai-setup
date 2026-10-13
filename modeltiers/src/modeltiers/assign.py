@@ -9,7 +9,16 @@ tier, (5) the tool-calling gate, (6) the context gate, (7) the final tier.
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from modeltiers.contracts import FLOOR_TIERS, RANK, TIERS, UNRATED, Contracts, Sentinel, Signal
+from modeltiers.contracts import (
+    CI_LOWER,
+    FLOOR_TIERS,
+    RANK,
+    TIERS,
+    UNRATED,
+    Contracts,
+    Sentinel,
+    Signal,
+)
 from modeltiers.records import ModelsDevRow, ScoreRecord
 
 NO_VOTES = "no_votes"
@@ -82,12 +91,12 @@ def weigh(records: Mapping[str, ScoreRecord], contracts: Contracts) -> Evidence:
         if record.agentic_index is not None:
             scores["agentic_index"] = record.agentic_index
         if signal.marathon_ci_lower is not None and record.ci_lower is not None:
-            scores[f"{name}_ci_lower"] = record.ci_lower
+            scores[f"{name}{CI_LOWER}"] = record.ci_lower
         if record.effort is not None:
             efforts[name] = record.effort
     base = base_tier(votes.values())
     marathon = contracts.marathon
-    lower = scores.get(f"{marathon.name}_ci_lower")
+    lower = scores.get(f"{marathon.name}{CI_LOWER}")
     promoted = (
         base == "deep"
         and lower is not None

@@ -4,22 +4,25 @@ no contracts file. A field an older file lacks prints as `?`."""
 
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from math import isfinite
 from typing import Any
 
 from modeltiers.align import ANCHOR
-from modeltiers.contracts import RANK, SIGNAL_SOURCE, SOURCES, STAMP
+from modeltiers.contracts import CI_LOWER, RANK, SIGNAL_SOURCE, SOURCES, STAMP
 
 STALE_AFTER_DAYS = 14
 
 Document = Mapping[str, Any]
+# What a row under `[[unmapped]]` is called where a tier or a reason goes.
+UNMAPPED = "unmapped"
 
 # Which source each score in an entry came from, for the attribution lines:
 # the signal's source, plus the record fields the signal's source adds. A
 # recalibrated carrier (a signal gaining `marathon_ci_lower`) needs no edit
 # here, so no source's attribution line can silently drop out of `explain`.
 _SCORE_SOURCE: Mapping[str, str] = {
-    key: source for name, source in SIGNAL_SOURCE.items() for key in (name, f"{name}_ci_lower")
+    key: source for name, source in SIGNAL_SOURCE.items() for key in (name, f"{name}{CI_LOWER}")
 } | {"coding_index": "openrouter", "agentic_index": "openrouter"}
 
 # The scores the wide table and the page show, with the table's heading for each.
@@ -30,8 +33,6 @@ SCORE_COLUMNS: Mapping[str, str] = {
     "coding_index": "coding",
     "agentic_index": "agentic",
 }
-# What `show --sort` takes. `model` is alphabetical; the rest are highest first.
-SORT_COLUMNS = ("tier", "model", "context", *SCORE_COLUMNS, "aligned")
 
 
 def model_name(entry: Mapping[str, Any]) -> str:
@@ -48,6 +49,12 @@ def entries(doc: Document, name: str) -> list[Mapping[str, Any]]:
     if not isinstance(value, list):
         return []
     return [entry for entry in value if isinstance(entry, dict)]
+
+
+def table(value: Any) -> Mapping[str, Any]:
+    """A table of the file, or an empty one when the file holds something
+    else where a table belongs: every reader then finds nothing in it."""
+    return value if isinstance(value, dict) else {}
 
 
 def age_days(doc: Document, now: datetime) -> int | None:
@@ -92,17 +99,36 @@ def number(value: Any) -> float | None:
 
 def score(entry: Mapping[str, Any], name: str) -> float | None:
     """One of an entry's scores, or None when the file gives no number for it."""
-    scores = entry.get("scores")
-    return number(scores.get(name)) if isinstance(scores, dict) else None
+    return number(table(entry.get("scores")).get(name))
+
+
+def aligned_score(entry: Mapping[str, Any]) -> float | None:
+    return number(entry.get("aligned_score"))
 
 
 def aligned_count(entry: Mapping[str, Any]) -> int | None:
     """How many scores an entry's aligned score rests on: None without a
     score, and for anything but a list of signal names beside it."""
     sources = entry.get("aligned_sources")
-    if number(entry.get("aligned_score")) is None or not isinstance(sources, list):
+    if aligned_score(entry) is None or not isinstance(sources, list):
         return None
     return len(sources) if all(isinstance(name, str) for name in sources) else None
+
+
+def _rank(entry: Mapping[str, Any]) -> float | None:
+    tier = entry.get("tier")
+    return float(RANK[tier]) if isinstance(tier, str) and tier in RANK else None
+
+
+# What each numeric column of `show --sort` orders an entry by.
+_SORT_VALUES: Mapping[str, Callable[[Mapping[str, Any]], float | None]] = {
+    "tier": _rank,
+    "context": lambda entry: number(entry.get("context")),
+    **{name: partial(score, name=name) for name in SCORE_COLUMNS},
+    "aligned": aligned_score,
+}
+# What `show --sort` takes. `model` is alphabetical; the rest are highest first.
+SORT_COLUMNS = ("tier", "model", *(name for name in _SORT_VALUES if name != "tier"))
 
 
 def ordered(
@@ -110,21 +136,15 @@ def ordered(
 ) -> list[Mapping[str, Any]]:
     """The entries in `show --sort` order: by `name` for `model`, else
     highest first with the entries that have no value last. Entries that
-    compare equal keep the order the file has them in; None keeps it whole."""
+    compare equal keep the order the file has them in; None keeps it whole. A
+    column that is not one of SORT_COLUMNS is read as a score of that name,
+    which the file gives no entry for: the order it came in."""
     if column is None:
         return found
     if column == "model":
         return sorted(found, key=lambda entry: name(entry).lower())
 
-    def value(entry: Mapping[str, Any]) -> float | None:
-        if column == "tier":
-            tier = entry.get("tier")
-            return float(RANK[tier]) if isinstance(tier, str) and tier in RANK else None
-        if column == "context":
-            return number(entry.get("context"))
-        if column == "aligned":
-            return number(entry.get("aligned_score"))
-        return score(entry, column)
+    value = _SORT_VALUES.get(column, partial(score, name=column))
 
     def key(entry: Mapping[str, Any]) -> tuple[bool, float]:
         found_value = value(entry)
@@ -146,7 +166,7 @@ def _wide_cells(entry: Mapping[str, Any]) -> str:
     context = number(entry.get("context"))
     values = (score(entry, name) for name in SCORE_COLUMNS)
     scores = "  ".join(f"{'-' if v is None else short(v):>8}" for v in values)
-    aligned = number(entry.get("aligned_score"))
+    aligned = aligned_score(entry)
     count = aligned_count(entry)
     return (
         f"{flag:<4}  {'-' if context is None else int(context):>8}  {scores}  "
@@ -199,13 +219,12 @@ def table_lines(
 
 def attribution_lines(doc: Document, sources: Iterable[str] = SOURCES) -> list[str]:
     """The attribution line of each named source the file has one for."""
-    tables = doc.get("sources", {})
-    tables = tables if isinstance(tables, dict) else {}
+    tables = table(doc.get("sources"))
     wanted = set(sources)
     return [
-        f"{name}: {tables[name]['attribution']}"
+        f"{name}: {table(tables.get(name))['attribution']}"
         for name in SOURCES
-        if name in wanted and isinstance(tables.get(name), dict) and "attribution" in tables[name]
+        if name in wanted and "attribution" in table(tables.get(name))
     ]
 
 
@@ -229,9 +248,9 @@ def _aligned(entry: Mapping[str, Any], alignment: Any) -> str:
     each other score with the index points the file's line turns it into,
     held within the file's bounds. A source whose line the file does not give
     is named alone."""
-    fits: Mapping[str, Any] = alignment if isinstance(alignment, dict) else {}
+    fits = table(alignment)
     floor, ceiling = number(fits.get("floor")), number(fits.get("ceiling"))
-    found = number(entry.get("aligned_score"))
+    found = aligned_score(entry)
     if found is None:
         return "none"
     sources = entry.get("aligned_sources")
@@ -240,14 +259,11 @@ def _aligned(entry: Mapping[str, Any], alignment: Any) -> str:
     parts = []
     for name in sources:
         raw = score(entry, str(name))
-        found_fit = fits.get(name) if isinstance(name, str) else None
-        fit: Mapping[str, Any] = found_fit if isinstance(found_fit, dict) else {}
+        fit = table(fits.get(name) if isinstance(name, str) else None)
         slope, intercept = number(fit.get("slope")), number(fit.get("intercept"))
-        if raw is None:
-            parts.append(str(name))
-        elif name == ANCHOR:
+        if raw is not None and name == ANCHOR:
             parts.append(f"{name} {short(raw)}")
-        elif slope is None or intercept is None:
+        elif raw is None or slope is None or intercept is None:
             parts.append(str(name))
         else:
             points = slope * raw + intercept
@@ -257,7 +273,7 @@ def _aligned(entry: Mapping[str, Any], alignment: Any) -> str:
     return f"{found:.1f} ({'; '.join(parts)})"
 
 
-def _entry_lines(title: str, entry: Mapping[str, Any], alignment: Any = None) -> list[str]:
+def _entry_lines(title: str, entry: Mapping[str, Any], alignment: Any) -> list[str]:
     tier = f"{entry.get('tier', '?')} ({entry.get('code', '?')})"
     if "reason" in entry:
         tier += f", reason {entry['reason']}"

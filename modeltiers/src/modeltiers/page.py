@@ -17,10 +17,7 @@ from typing import Any
 
 from modeltiers import show
 from modeltiers.contracts import RANK, UNRATED
-from modeltiers.show import SCORE_COLUMNS, Document
-
-# The reason the page gives an `[[unmapped]]` row, which the file gives none.
-UNMAPPED = "unmapped"
+from modeltiers.show import SCORE_COLUMNS, UNMAPPED, Document
 
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 _JSON_ESCAPES = {"<": "\\u003c", ">": "\\u003e", "&": "\\u0026"}
@@ -44,7 +41,7 @@ def _row(kind: str, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
         "context": None if context is None else int(context),
     }
     row.update({column: show.score(entry, column) for column in SCORE_COLUMNS})
-    row["aligned_score"] = show.number(entry.get("aligned_score"))
+    row["aligned_score"] = show.aligned_score(entry)
     row["aligned_sources"] = show.aligned_count(entry)
     return row
 
@@ -72,10 +69,9 @@ def page_rows(doc: Document) -> list[dict[str, Any]]:
 def _alignment_note(doc: Document) -> str:
     """What the page says under the table about the aligned score: how far
     the lines fitted for this file typically miss, in the file's own words."""
-    fits = doc.get("alignment")
     misses = []
-    for signal, fit in fits.items() if isinstance(fits, dict) else ():
-        miss = show.number(fit.get("typical_miss")) if isinstance(fit, dict) else None
+    for signal, fit in show.table(doc.get("alignment")).items():
+        miss = show.number(show.table(fit).get("typical_miss"))
         if miss is not None:
             misses.append(f"{miss:.1f} points ({signal})")
     if not misses:
