@@ -164,6 +164,8 @@
     { key: "tier", label: "tier", type: "tier", title: "Final tier, after the gates" },
     { key: "confidence", label: "conf", type: "text", title: "How far the votes agree" },
     { key: "name", label: "model", type: "text", title: "provider/model, or the canonical key of a candidate" },
+    { key: "aligned_score", label: "aligned", type: "num", title: "Every voting score put on the intelligence-index scale and averaged; an estimate, not a source's score" },
+    { key: "aligned_sources", label: "src", type: "num", title: "How many scores the aligned score rests on: 1 to 3" },
     { key: "open_weights", label: "open", type: "flag", title: "Open weights, by any models.dev row of the key" },
     { key: "context", label: "context", type: "num", title: "Context window the tier was gated on, in tokens" },
     { key: "intelligence_index", label: "intel", type: "num", title: "Artificial Analysis intelligence index (votes)" },
@@ -171,8 +173,6 @@
     { key: "eci", label: "eci", type: "num", title: "Epoch Capabilities Index (votes)" },
     { key: "coding_index", label: "coding", type: "num", title: "Artificial Analysis coding index (does not vote)" },
     { key: "agentic_index", label: "agentic", type: "num", title: "Artificial Analysis agentic index (does not vote)" },
-    { key: "aligned_score", label: "aligned", type: "num", title: "Every voting score put on the intelligence-index scale and averaged; an estimate, not a source's score" },
-    { key: "aligned_sources", label: "src", type: "num", title: "How many scores the aligned score rests on: 1 to 3" },
     { key: "canonical", label: "canonical", type: "text", title: "The key the model resolved to" },
     { key: "reason", label: "reason", type: "text", title: "Why an unrated row is unrated" },
   ];

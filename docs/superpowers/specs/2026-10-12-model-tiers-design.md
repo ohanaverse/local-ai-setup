@@ -86,7 +86,7 @@ It is run as `uv run --directory modeltiers modeltiers <command>`.
 | Command | Effect |
 |---|---|
 | `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Fetch, resolve, assign, print the change report, write. `--dry-run` does everything except write the output file. `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt model list --json` output and does not run wt. |
-| `modeltiers show [--candidates] [--sort COLUMN] [--wide] [--html FILE]` | Print the tier table from the output file: inventory models by default, candidates too with `--candidates`. Prints the file's age in days, with a warning line past 14 days, and the attribution lines. `--sort` orders the rows by tier, model, context or a score; `--wide` adds open weights, context and the scores; `--html FILE` writes the whole table, candidates included, as one self-contained page and prints only where it wrote. |
+| `modeltiers show [--candidates] [--sort COLUMN] [--wide] [--html FILE]` | Print the tier table from the output file: inventory models by default, candidates too with `--candidates`. Prints the file's age in days, with a warning line past 14 days, and the attribution lines. `--sort` orders the rows by tier, model, context, a score or the aligned score; `--wide` adds open weights, context, the scores and the aligned score; `--html FILE` writes the whole table, candidates included, as one self-contained page and prints only where it wrote. |
 | `modeltiers explain <model>` | Print an entry's identity, votes, scores, efforts, gates, notes and the attribution lines, from the output file. |
 
 `show` and `explain` read only the output file. They never fetch and never run wt.
@@ -248,6 +248,15 @@ Two inventory rows for one key can end in different tiers because their hosts se
 | `none` | No votes |
 
 **Evidence only.** `coding_index` and `agentic_index` are written to the entry's scores and shown by `explain`. They do not vote.
+
+### Aligned score
+
+Added 2026-10-12, after delivery. A tier is coarse and the three voting scores are on scales of their own, each over a different set of models, so nothing in the file ranked two models that different sources scored. A percentile within each source does not either: Arena lists only strong models, so the same model is near the middle there and near the top of OpenRouter's longer list.
+
+- **Fit.** Each run fits, for `arena_agent` and for `eci`, the least-squares line from that signal's score to `intelligence_index` over every resolved key that has both. A signal with fewer than 20 shared keys, with no variation, or whose line slopes down is not fitted: `run` warns and that signal is in no aligned score.
+- **Score.** A key's aligned score is the plain mean of its intelligence index and of each of its other voting scores put through its line, in index points to one decimal. `coding_index` and `agentic_index` are not part of it. A key with nothing usable has none. A local row takes its key's score.
+- **Advisory.** No vote, tier, gate, sentinel or exit code reads it. The lines are fitted again on every run.
+- **Reported.** `run` prints `alignment: <signal> on N shared models, typical miss M points` per fit, where the typical miss is the root mean square of what the line leaves. `show --wide` and the page show `aligned` and `src` (how many scores it rests on); `show --sort aligned` orders by it; `explain` prints its parts.
 
 ### Starting floors
 
@@ -412,6 +421,7 @@ score = 0.0926
 
 - `[[models]]` plus `[[unmapped]]` equals the inventory without its native rows.
 - Optional fields: `reason` (present when the tier is `unrated`), `context` (absent when unknown), `efforts` entries (present only for signals whose record named an effort), and any score the source did not provide. `tool_call` and `open_weights` are absent for a key with no models.dev rows. `open_weights` is true when any models.dev row of the key says so. An ignored row has no `canonical`, no `resolved_by` and no `open_weights`. An array table with no entries is absent from the file.
+- `aligned_score` and `aligned_sources` (the signals averaged) are on every `[[models]]` and `[[candidates]]` entry with a usable score, after `context`, and absent otherwise. `[alignment.<signal>]`, after `[sources.*]`, holds each fitted line's `slope`, `intercept`, `shared` and `typical_miss`; the table is absent when no signal was fitted.
 - `[[candidates]]` entries have the fields of `[[models]]` without `provider_id`, `model_name`, `registered` and `basis`.
 - `[sources.*].unresolved` counts every unresolved record of that source, so it can exceed the number of that source's `[[unresolved]]` entries, which list one entry per source id at or above the standard floor. `[sources.modelsdev]` has no `unresolved` key.
 - A status of `unavailable` never appears, because such a run writes nothing.
