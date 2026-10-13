@@ -687,6 +687,12 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 				c.Providers = append(c.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
 			},
 			want: notEligible},
+		{name: "a registry model id begins with profile/",
+			checks: one(cloud()),
+			cfg: func(c *config.Config) {
+				c.Models = append(c.Models, config.Model{ID: "profile/other", ProviderID: "openrouter", ModelName: "other"})
+			},
+			want: notEligible},
 		{name: "LiteLLM has no url",
 			checks: one(cloud()),
 			cfg:    func(c *config.Config) { c.SetLitellmForTest(config.LitellmState{APIKey: "sk-test-1234"}) },
@@ -919,6 +925,8 @@ func TestSlotWarnings(t *testing.T) {
 	unusable := profiles.SlotCheck{Index: 2, Profile: profiles.SlotProfile{Agent: "claude"}, Err: errors.New("name is missing")}
 	reserved := slotFixtureConfig()
 	reserved.Providers = append(reserved.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
+	prefixed := slotFixtureConfig()
+	prefixed.Models = append(prefixed.Models, config.Model{ID: "profile/mixed", ProviderID: "openrouter", ModelName: "mixed"})
 	cases := []struct {
 		name string
 		a    *app
@@ -944,6 +952,9 @@ func TestSlotWarnings(t *testing.T) {
 		{"the reserved provider id",
 			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{usable}},
 			[]string{`wt: the registry has a provider with id "profile" — slot profiles are unavailable`}},
+		{"a registry model id with the reserved prefix",
+			&app{cfg: prefixed, slotChecks: []profiles.SlotCheck{usable}},
+			[]string{`wt: the registry has a model whose id begins with "profile/" (profile/mixed) — slot profiles are unavailable`}},
 		{"the reserved provider id with no usable profile",
 			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{unusable}},
 			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},

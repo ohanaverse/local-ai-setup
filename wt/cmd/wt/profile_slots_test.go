@@ -65,6 +65,11 @@ func TestProfileListSlotSection(t *testing.T) {
 	profilesErr := errors.New("parse profiles.toml: simulated parse failure")
 	slotErr := errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")
 
+	reservedProvider := slotFixtureConfig()
+	reservedProvider.Providers = append(reservedProvider.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
+	reservedModel := slotFixtureConfig()
+	reservedModel.Models = append(reservedModel.Models, config.Model{ID: "profile/mixed", ProviderID: "openrouter", ModelName: "mixed"})
+
 	cases := []struct {
 		name    string
 		a       *app
@@ -96,6 +101,14 @@ func TestProfileListSlotSection(t *testing.T) {
 			&app{profiles: profiles.Store{Enabled: true}, slotChecks: checks, slotUnknown: []string{"profile.envs"}},
 			"(no profiles defined)\n" + section +
 				"  warning: slot-profiles.toml: unknown key \"profile.envs\" — ignored\n", ""},
+		{"the registry has a provider with id profile",
+			&app{cfg: reservedProvider, profiles: profiles.Store{Enabled: true}, slotChecks: checks},
+			"(no profiles defined)\n" + section +
+				"  warning: the registry has a provider with id \"profile\" — slot profiles are unavailable\n", ""},
+		{"a registry model id begins with profile/",
+			&app{cfg: reservedModel, profiles: profiles.Store{Enabled: true}, slotChecks: checks},
+			"(no profiles defined)\n" + section +
+				"  warning: the registry has a model whose id begins with \"profile/\" (profile/mixed) — slot profiles are unavailable\n", ""},
 		{"slot-profiles.toml does not parse",
 			&app{profiles: profiles.Store{Enabled: true}, slotLoadErr: slotErr},
 			"(no profiles defined)\nslot profiles: parse slot-profiles.toml: toml: line 2: unexpected EOF\n",

@@ -34,7 +34,9 @@ func maskKey(key string) string {
 // (profiles.ValidateSlots): no provider is probed, so a profile that is "ok"
 // here may still be blocked in the picker; `wt profile show` says. After the
 // profiles comes one "warning:" line per key of the file the schema does not
-// name, also when the file gave no profile.
+// name, also when the file gave no profile, and one when the registry holds
+// the "profile/" prefix (slotReservedNote), since every profile listed as
+// "ok" is then without a row.
 //
 // It reads nothing of profiles.toml. It returns a.slotLoadErr after printing
 // it.
@@ -60,6 +62,9 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 	}
 	for _, key := range a.slotUnknown {
 		fmt.Fprintf(w, "  warning: %s\n", slotUnknownKeyNote(key))
+	}
+	if note := slotReservedNote(a); note != "" {
+		fmt.Fprintf(w, "  warning: %s\n", note)
 	}
 	return nil
 }

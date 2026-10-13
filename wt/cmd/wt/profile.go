@@ -70,9 +70,10 @@ func profileCmd(a *app) *cobra.Command {
 			}
 			// A -M value with the profile/ prefix names a slot profile. That
 			// branch reads slot-profiles.toml only, so it runs before any
-			// profiles.toml check. When the registry has a provider with id
-			// "profile" no slot-profile row exists and the id is a registry
-			// model's: the automatic branch below handles it.
+			// profiles.toml check. When the registry holds the prefix (a
+			// provider with id "profile", or a model whose id begins with
+			// "profile/") no slot-profile row exists and the id is a
+			// registry model's: the automatic branch below handles it.
 			if strings.HasPrefix(showModel, profiles.SlotIDPrefix) && !catalog.SlotPrefixReserved(a.cfg) {
 				return showSlotProfile(cmd.OutOrStdout(), a, showAgent, showModel)
 			}

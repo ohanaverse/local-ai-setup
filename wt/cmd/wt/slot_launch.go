@@ -60,10 +60,10 @@ func slotUnknownKeyNote(key string) string {
 // the load error; one line per key the schema does not name (the file still
 // loaded, without what the key holds); one line per profile that is not
 // Usable (no usable name or agent, so it has no row and cannot be pinned);
-// and one line when the registry has a provider with id "profile" while at
-// least one profile is Usable, since no profile row is then built. A Usable
-// profile that fails validation gets no line: its blocked row carries the
-// reason.
+// and one line when the registry holds the "profile/" prefix (slotReservedNote)
+// while at least one profile is Usable, since no profile row is then built.
+// A Usable profile that fails validation gets no line: its blocked row
+// carries the reason.
 func slotWarnings(a *app) []string {
 	var out []string
 	if a.slotLoadErr != nil {
@@ -72,18 +72,33 @@ func slotWarnings(a *app) []string {
 	for _, key := range a.slotUnknown {
 		out = append(out, "wt: "+slotUnknownKeyNote(key))
 	}
-	usable := false
 	for _, c := range a.slotChecks {
-		if c.Usable {
-			usable = true
-			continue
+		if !c.Usable {
+			out = append(out, fmt.Sprintf("wt: %s: %v — skipped (see 'wt profile list')", c.Label(), c.Err))
 		}
-		out = append(out, fmt.Sprintf("wt: %s: %v — skipped (see 'wt profile list')", c.Label(), c.Err))
 	}
-	if usable && catalog.SlotPrefixReserved(a.cfg) {
-		out = append(out, `wt: the registry has a provider with id "profile" — slot profiles are unavailable`)
+	if note := slotReservedNote(a); note != "" {
+		out = append(out, "wt: "+note)
 	}
 	return out
+}
+
+// slotReservedNote is what wt says when the registry holds the "profile/"
+// prefix (catalog.SlotPrefixHolder: a provider with id "profile", or a model
+// whose id begins with "profile/") while at least one profile is Usable; ""
+// otherwise. No profile row is built then. A launch prints it after "wt: ",
+// and `wt profile list` after "warning: ".
+func slotReservedNote(a *app) string {
+	holder := catalog.SlotPrefixHolder(a.cfg)
+	if holder == "" {
+		return ""
+	}
+	for _, c := range a.slotChecks {
+		if c.Usable {
+			return "the registry has " + holder + " — slot profiles are unavailable"
+		}
+	}
+	return ""
 }
 
 // slotRouteError words a route that could not be ensured by the slot it

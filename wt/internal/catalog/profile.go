@@ -3,6 +3,7 @@ package catalog
 import (
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
@@ -235,18 +236,39 @@ func (p *ProfileRow) Launch() profiles.SlotLaunch {
 	}
 }
 
-// SlotPrefixReserved reports whether the registry has a provider with id
-// profiles.SlotReservedProvider. Such a provider's model ids start with
-// "profile/", the prefix of every profile row id, so Build emits no profile
-// rows while it exists. cfg may be nil (false).
-func SlotPrefixReserved(cfg *config.Config) bool {
-	return cfg != nil && cfg.ProviderByID(profiles.SlotReservedProvider) != nil
+// SlotPrefixReserved reports whether something in the registry holds the
+// "profile/" prefix of every profile row id (SlotPrefixHolder). Build emits
+// no profile rows while it does, so a row id stays unique. It is the one
+// predicate for the reserved prefix: the catalog, the launch warning,
+// `wt profile list` and `wt profile show` all ask it. cfg may be nil (false).
+func SlotPrefixReserved(cfg *config.Config) bool { return SlotPrefixHolder(cfg) != "" }
+
+// SlotPrefixHolder names what in the registry holds the "profile/" prefix,
+// worded to follow "the registry has "; "" while the prefix is free. A
+// provider with id profiles.SlotReservedProvider holds it, since its models'
+// ids start with it. So does any model whose id starts with it, under
+// whatever provider: registry validation does not tie a model's id to its
+// provider, so a hand-written row can have such an id. The provider is named
+// when both exist, else the first such model.
+func SlotPrefixHolder(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.ProviderByID(profiles.SlotReservedProvider) != nil {
+		return fmt.Sprintf("a provider with id %q", profiles.SlotReservedProvider)
+	}
+	for _, m := range cfg.Models {
+		if strings.HasPrefix(m.ID, profiles.SlotIDPrefix) {
+			return fmt.Sprintf("a model whose id begins with %q (%s)", profiles.SlotIDPrefix, m.ID)
+		}
+	}
+	return ""
 }
 
 // slotRows is Build's profile half: one row per Usable profile of in.Agent,
 // in file order. It returns nil unless the caller opted in (SlotProfiles),
 // named an agent and a config, applied no -T/-F filter (HideDiscovered), and
-// the registry leaves the "profile" prefix free. A group of profiles sharing
+// the registry leaves the "profile/" prefix free (SlotPrefixReserved). A group of profiles sharing
 // a name gets one row, blocked by the duplicate error every member carries,
 // so row ids stay unique.
 func slotRows(in Input) []Row {

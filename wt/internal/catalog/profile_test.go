@@ -434,6 +434,44 @@ func TestBuildYieldsToAProfileProvider(t *testing.T) {
 	}
 }
 
+// TestBuildYieldsToAProfilePrefixedModel verifies the reserved prefix for a
+// model: registry validation does not tie a model's id to its provider, so a
+// hand-written row can have the id profile/<name> under any provider. It is
+// treated as a provider named "profile" is: no profile row is built, so the
+// id stays the model's alone. With both rows, catalog.Find (first match) and
+// the TUI's id index (last match) would launch different things for one pin.
+func TestBuildYieldsToAProfilePrefixedModel(t *testing.T) {
+	cfg := slotTestCfg()
+	checks := []profiles.SlotCheck{slotCheck(0, "mixed", "sonnet", map[string]string{"sonnet": "openrouter/a"})}
+	if got := SlotPrefixHolder(cfg); got != "" {
+		t.Fatalf("SlotPrefixHolder = %q for a registry that leaves the prefix free", got)
+	}
+	registryModel := config.Model{ID: "profile/mixed", ProviderID: "ollama", ModelName: "mixed"}
+	cfg.Models = append(cfg.Models, registryModel)
+	if !SlotPrefixReserved(cfg) {
+		t.Fatal("SlotPrefixReserved is false for a registry with a model id that begins with profile/")
+	}
+	if got, want := SlotPrefixHolder(cfg), `a model whose id begins with "profile/" (profile/mixed)`; got != want {
+		t.Errorf("SlotPrefixHolder = %q, want %q", got, want)
+	}
+	rows := Build(Input{Config: cfg, Agent: "claude", Models: []config.Model{registryModel}, SlotProfiles: checks})
+	if len(rows) != 1 || rows[0].IsProfile() || rows[0].Model.ProviderID != "ollama" {
+		t.Errorf("rows = %+v, want the one registry row and no profile row", rows)
+	}
+	if r, ok := Find(rows, "profile/mixed"); !ok || r.IsProfile() {
+		t.Errorf("Find(profile/mixed): found = %v, IsProfile = %v, want the registry model's row", ok, r.IsProfile())
+	}
+
+	// A provider with the id holds the prefix as before, and is named first.
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
+	if got, want := SlotPrefixHolder(cfg), `a provider with id "profile"`; got != want {
+		t.Errorf("SlotPrefixHolder = %q, want %q", got, want)
+	}
+	if SlotPrefixHolder(nil) != "" {
+		t.Error("SlotPrefixHolder(nil) is not empty")
+	}
+}
+
 // TestFindResolvesAProfilePin verifies that a -M profile/<name> pin finds the
 // profile's row among an agent's rows, with the verdict the picker shows, and
 // that a profile written for another agent is not found, so the caller gives
