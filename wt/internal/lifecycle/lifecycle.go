@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -50,6 +51,25 @@ type Options struct {
 	// is complete only once WaitPendingRoutes has returned (SettleStart, for
 	// a start that succeeded).
 	Out io.Writer
+	// RestartOwed says config.yaml was already changed for this launch and
+	// the proxy has not been restarted for it. Start's one restart then
+	// publishes that change too: on success the route hook restarts even when
+	// its own write changed nothing, and a start that fails after touching
+	// anything restarts on its way out. A refusal that touched nothing
+	// (RestartStillOwed) leaves the restart with the caller.
+	RestartOwed bool
+}
+
+// RestartStillOwed reports whether a Start that was given RestartOwed and
+// returned err left that restart unsettled: err is, or wraps, an
+// *OccupiedError or an *OccupancyUnknownError, the two refusals that touch
+// nothing. The caller then retries with RestartOwed set again, or calls
+// SettleRoutes when it gives up. Every other outcome of such a Start, nil
+// included, has started the one restart.
+func RestartStillOwed(err error) bool {
+	var occupied *OccupiedError
+	var unknown *OccupancyUnknownError
+	return errors.As(err, &occupied) || errors.As(err, &unknown)
 }
 
 // OccupiedError means starting the target would displace running models and
@@ -286,10 +306,13 @@ func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) erro
 func startWith(ctx context.Context, e *env, cfg *config.Config, t Target, opts Options) error {
 	ctx = withRouteOutput(ctx, opts.Out)
 	if err := start(ctx, e, cfg, t, opts); err != nil {
-		if e.restartOwed {
+		if e.restartOwed || (opts.RestartOwed && !RestartStillOwed(err)) {
 			// A stopped occupant's or an evicted model's route was already
-			// dropped from config.yaml; the proxy still serves the old list
-			// until it is bounced.
+			// dropped from config.yaml, or the caller wrote a route before
+			// this start (Options.RestartOwed); the proxy still serves the
+			// old list until it is bounced. A refusal that touched nothing
+			// does not spend the caller's restart: the retry after a
+			// confirmed replace would then restart a second time.
 			bounceRoutes(ctx, cfg)
 		}
 		return err
@@ -297,7 +320,7 @@ func startWith(ctx context.Context, e *env, cfg *config.Config, t Target, opts O
 	if opts.Progress != nil {
 		opts.Progress(StageRouting)
 	}
-	routeAfterStart(ctx, cfg, t, e.restartOwed)
+	routeAfterStart(ctx, cfg, t, e.restartOwed || opts.RestartOwed)
 	return nil
 }
 
