@@ -1,6 +1,7 @@
 """The stages after loading, run in order over one inventory and one set of
 sources: `resolve_all` (identity), then `assign_all` (tiers)."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from modeltiers import aliases as aliases_mod
@@ -11,7 +12,7 @@ from modeltiers.contracts import RANK, UNRATED, Contracts
 from modeltiers.errors import ConfigError
 from modeltiers.identity import Index, Match, RowIdentity, SourceIdentity
 from modeltiers.loader import Sources
-from modeltiers.records import Inventory, ModelsDev, ScoreRecord
+from modeltiers.records import Inventory, ModelsDev, ModelsDevRow, ScoreRecord
 
 # How an [[ignore]]d row's reason is written into the entry's `notes`; the
 # change report matches an existing file's notes on this prefix.
@@ -78,6 +79,7 @@ class ModelResult:
     """One resolved or ignored inventory row, with its tier."""
 
     identity: RowIdentity
+    open_weights: bool | None  # None: ignored, or the key has no models.dev rows
     evidence: Evidence
     facts: Facts
     verdict: Verdict
@@ -133,11 +135,18 @@ def _evidence(result: Identity, key: str, contracts: Contracts) -> Evidence:
     return assign.weigh({name: match.record for name, match in matches.items()}, contracts)
 
 
+def _open_weights(rows: Sequence[ModelsDevRow]) -> bool | None:
+    """True when any models.dev row of a key says its weights are open; None
+    when the key has no rows to say either way."""
+    return any(row.open_weights for row in rows) if rows else None
+
+
 def _model(entry: RowIdentity, result: Identity, contracts: Contracts) -> ModelResult:
     if entry.canonical is None:
         # Listed under [[ignore]]: unrated, and no gate has anything to read.
         return ModelResult(
             identity=entry,
+            open_weights=None,
             evidence=_NO_EVIDENCE,
             facts=Facts(tool_call=None, context=None),
             verdict=Verdict(
@@ -145,13 +154,11 @@ def _model(entry: RowIdentity, result: Identity, contracts: Contracts) -> ModelR
             ),
         )
     evidence = _evidence(result, entry.canonical, contracts)
-    facts = assign.gather(
-        result.index.rows_for(entry.canonical),
-        location=entry.row.location,
-        host_row=entry.host_row,
-    )
+    rows = result.index.rows_for(entry.canonical)
+    facts = assign.gather(rows, location=entry.row.location, host_row=entry.host_row)
     return ModelResult(
         identity=entry,
+        open_weights=_open_weights(rows),
         evidence=evidence,
         facts=facts,
         verdict=assign.decide(evidence, facts, contracts),
@@ -176,7 +183,7 @@ def _candidates(result: Identity, contracts: Contracts) -> tuple[Candidate, ...]
             Candidate(
                 canonical=key,
                 resolved_by=next(step for step in _RESOLUTION_ORDER if step in steps),
-                open_weights=any(row.open_weights for row in rows) if rows else None,
+                open_weights=_open_weights(rows),
                 evidence=evidence,
                 facts=facts,
                 verdict=assign.decide(evidence, facts, contracts),

@@ -23,6 +23,7 @@ Design rationale: `docs/superpowers/specs/2026-10-12-model-tiers-design.md`.
 uv run --directory modeltiers modeltiers run --dry-run   # fetch, resolve, assign, report; no tiers.toml written
 uv run --directory modeltiers modeltiers run             # the same, then write tiers.toml
 uv run --directory modeltiers modeltiers show            # the tier table, from the file
+uv run --directory modeltiers modeltiers show --html "$HOME/tiers.html"   # the same, with scores, to sort in a browser
 uv run --directory modeltiers modeltiers explain <provider_id/model_name>
 ```
 
@@ -144,6 +145,8 @@ Two more flags:
 ```bash
 uv run --directory modeltiers modeltiers show                             # inventory models
 uv run --directory modeltiers modeltiers show --candidates                # and the candidates
+uv run --directory modeltiers modeltiers show --wide --sort eci           # more columns, ordered by one of them
+uv run --directory modeltiers modeltiers show --html "$HOME/tiers.html"   # the whole table as a page for a browser
 uv run --directory modeltiers modeltiers explain <provider>/<model>       # one row, by provider_id/model_name
 uv run --directory modeltiers modeltiers explain <canonical key>          # every row of a canonical key, or the candidate
 ```
@@ -154,6 +157,31 @@ with the attribution lines of the sources whose data they print.
 
 `<provider>/<model>` is a row as `show` prints it in its `model` column;
 `<canonical key>` is the value in its `canonical` column.
+
+`show` has three ways to show more:
+
+- **`--wide`** adds seven columns to the table: `open` (open weights: `T`,
+  `F`, or `-` when models.dev has no row for the key or the row is ignored), `context`, and the
+  scores `intel`, `arena`, `eci`, `coding` and `agentic`. A `-` is a value the
+  file does not have. The table is then about 150 columns wide.
+- **`--sort COLUMN`** orders the rows by `tier`, `model`, `context`,
+  `intelligence_index`, `arena_agent`, `eci`, `coding_index` or
+  `agentic_index`. `model` is alphabetical; every other column puts the
+  highest value first and the rows with no value last. In the terminal your
+  models and the candidates are sorted separately; the page sorts them
+  together. Without it the order is the file's.
+- **`--html FILE`** writes one page and prints only `wrote <path>`. The page
+  lists your models, the unmapped rows and every candidate together, with
+  every `--wide` column, the canonical key and the reason an unrated row is
+  unrated. Click a column heading to sort by it, and again to reverse; the
+  filters narrow the rows by name, tier, and yours or candidates. `--sort`
+  sets the order the page opens in. The file holds everything it needs and
+  requests nothing, so it opens straight from disk (`open "$HOME/tiers.html"`).
+  It is a copy of `tiers.toml` at that moment: write it again after a run.
+  `FILE` cannot be `tiers.toml` itself.
+
+The three scores that vote are on different scales, so there is no single
+score to rank by: sort by the one you trust for the job, or by `tier`.
 
 Illustrative example from the test fixtures: what `explain` prints for one
 fixture row, before its attribution lines.
@@ -168,6 +196,7 @@ ollama/minimax-m3:cloud
   efforts:     none
   tool_call:   true
   context:     512000
+  open_weights: true
   note:        host row has no canonical id; matched by name
 ```
 
@@ -515,7 +544,7 @@ MODELTIERS_OUT="$SCRATCH/tiers.toml" uv run --directory modeltiers modeltiers sh
 - **Low floors are rough.** Sources often disagree by one tier near a floor, which is what `medium` confidence shows. A two-vote model takes the lower vote, so thin evidence cannot promote a model.
 - **A redirected registry stops the write.** wt's inventory follows `WT_REGISTRY`; the output path does not. When the registry wt read is not `registry.toml` beside the output file and `MODELTIERS_OUT` is unset, `run` exits 1 before any fetch, so a scratch inventory can never replace the real `tiers.toml`. `run --dry-run` writes nothing, so it goes on: it prints a `warning:` that the same run without the flag is refused, then its whole report, and its exit code is the one the report gives (0, 2 or 3) where the real run's is 1. This is the only case in which `--dry-run` does not return the real run's code. Set `MODELTIERS_OUT` (step 6).
 - **`--dry-run` still writes snapshots.** It skips `tiers.toml` only. Use `MODELTIERS_CACHE` to keep a trial run out of the real cache.
-- **`--directory modeltiers` moves the working directory.** A relative `--inventory` or `MODELTIERS_OUT` path resolves from `modeltiers/`. Use absolute paths.
+- **`--directory modeltiers` moves the working directory.** A relative `--inventory`, `--html` or `MODELTIERS_OUT` path resolves from `modeltiers/`. Use absolute paths. `show --html` prints the full path it wrote.
 - **An ignore is never re-examined.** `[[ignore]]` is checked before any other step, so an ignored row stays `unrated` after models.dev gains a key for it. When you re-calibrate, re-check each entry whose reason ends `(checked <date>)` with step 4 (d).
 - **A row left listed is not forgotten.** A row under `unmapped:` or a record under `unresolved:` that step 4 found no evidence for is printed by every run. It needs nothing until evidence turns up; do not alias or ignore it to make the list empty.
 - **An alias for a model you removed is silent.** An `inventory` pair that is no longer in the inventory is not reported. Delete the pair when you notice it; it does no harm.

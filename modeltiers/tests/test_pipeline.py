@@ -271,6 +271,36 @@ def test_a_cloud_rows_own_host_context_decides_its_final_tier(
     assert (openrouter.verdict.tier, openrouter.verdict.notes) == ("standard", ())
 
 
+def test_a_model_takes_open_weights_from_its_keys_rows(
+    inventory: Inventory, sources: Sources, fixture_aliases: Aliases, rule: Contracts
+) -> None:
+    def closed(row: ModelsDevRow) -> ModelsDevRow:
+        return replace(row, open_weights=False) if row.canonical == "zhipuai/glm-5.3" else row
+
+    def result(data: Sources) -> dict[str, bool | None]:
+        identity = pipeline.resolve_all(inventory, data, fixture_aliases)
+        models = pipeline.assign_all(identity, rule).models
+        return {m.identity.row.model_name: m.open_weights for m in models}
+
+    assert result(sources)["glm-5.3:cloud"] is True
+    # Every row of the key says closed: both inventory rows of the key do.
+    shut = result(_with_rows(sources, closed))
+    assert (shut["glm-5.3:cloud"], shut["z-ai/glm-5.3"]) == (False, False)
+    assert shut["deepseek-v4-pro:cloud"] is True
+    # An ignored row has no key, so nothing is known.
+    assert shut["nomic-embed-text:latest"] is None
+
+    # One row of the key is enough, whichever it is: first, last or between.
+    glm = [row for row in sources.modelsdev.data.rows if row.canonical == "zhipuai/glm-5.3"]
+    assert len(glm) >= 3
+    for keep in (glm[0], glm[-1], glm[1]):
+
+        def only(row: ModelsDevRow, keep: ModelsDevRow = keep) -> ModelsDevRow:
+            return closed(row) if row is not keep else row
+
+        assert result(_with_rows(sources, only))["glm-5.3:cloud"] is True
+
+
 def test_an_ignored_row_is_unrated_not_applicable(assignment: Assignment) -> None:
     ignored = assignment.models[5]
     assert ignored.identity.canonical is None

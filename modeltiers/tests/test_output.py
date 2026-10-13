@@ -82,6 +82,7 @@ def test_a_rated_model_entry_has_every_field(document: dict[str, Any]) -> None:
         "code": "S",
         "confidence": "high",
         "basis": "measured",
+        "open_weights": True,
         "tool_call": True,
         "context": 1048576,
         "votes": {
@@ -110,6 +111,7 @@ def test_a_rated_model_entry_has_every_field(document: dict[str, Any]) -> None:
         "code",
         "confidence",
         "basis",
+        "open_weights",
         "tool_call",
         "context",
         "votes",
@@ -155,6 +157,7 @@ def test_a_local_build_is_written_with_its_keys_tier_votes_and_tool_call(
         "code": "S",
         "confidence": "low",
         "basis": "inherited",
+        "open_weights": True,
         "tool_call": True,
         "votes": {"intelligence_index": "standard"},
         "efforts": {},
@@ -191,6 +194,24 @@ def test_an_ignored_row_is_in_models_as_not_applicable(document: dict[str, Any])
         "scores": {},
     }
     assert document["unmapped"] == [{"provider_id": "ollama", "model_name": "medgemma:27b"}]
+
+
+def test_a_model_has_open_weights_when_its_key_has_models_dev_rows(
+    document: dict[str, Any],
+) -> None:
+    """True when any models.dev row of the key says so; left out for an
+    ignored row, which has no key to ask about."""
+    assert [(m["model_name"], m.get("open_weights")) for m in document["models"]] == [
+        ("glm-5.3:cloud", True),
+        ("deepseek-v4-pro:cloud", True),
+        ("z-ai/glm-5.3", True),
+        ("qwen3.8:27b-mlx", True),
+        ("minimax-m3:cloud", True),
+        ("nomic-embed-text:latest", None),
+        ("gemma4:31b-mlx", True),
+    ]
+    glm = document["models"][0]
+    assert list(glm)[list(glm).index("basis") + 1] == "open_weights"
 
 
 def test_a_candidate_has_open_weights_and_no_inventory_fields(document: dict[str, Any]) -> None:

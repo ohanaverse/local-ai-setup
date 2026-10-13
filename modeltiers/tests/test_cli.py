@@ -730,6 +730,118 @@ def test_show_candidates_lists_them_and_warns_past_fourteen_days(
     )
 
 
+@pytest.mark.usefixtures("written")
+def test_show_sort_and_wide_reorder_and_widen_the_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["show", "--sort", "model", "--wide"], deps=_reader_deps(T0)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].startswith(
+        "T  tier      conf    open   context     intel     arena       eci    coding   agentic"
+    )
+    assert [line.split()[10] for line in lines[2:5]] == [
+        "ollama/deepseek-v4-pro:cloud",
+        "ollama/gemma4:31b-mlx",
+        "ollama/glm-5.3:cloud",
+    ]
+    # Without --wide the sorted table has today's columns.
+    assert cli.main(["show", "--sort", "intelligence_index"], deps=_reader_deps(T0)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1:3] == TABLE.splitlines()[:2]
+    assert lines[4].split()[3] == "ollama/qwen3.8:27b-mlx"
+
+
+@pytest.mark.usefixtures("written")
+def test_show_html_writes_the_page_and_prints_only_where(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "pages" / "tiers.html"  # the directory does not exist yet
+    late = _reader_deps(T0 + timedelta(days=15))
+    assert cli.main(["show", "--html", str(target), "--sort", "eci"], deps=late) == 0
+    captured = capsys.readouterr()
+    assert captured.out == f"wrote {target}\n"
+    assert captured.err == (
+        "warning: tiers.toml is 15 days old; run `modeltiers run` to refresh it\n"
+    )
+    text = target.read_text(encoding="utf-8")
+    assert text.startswith("<!doctype html>")
+    assert "(15 days old), contracts fixture-1" in text
+    assert '"sort": "eci"' in text
+    assert "ollama/glm-5.3:cloud" in text
+    assert "anthropic/claude-opus-5-5" in text  # the candidates are always there
+    assert [p.name for p in target.parent.iterdir()] == ["tiers.html"]
+
+
+@pytest.mark.usefixtures("written")
+def test_show_html_names_the_whole_path_of_a_relative_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["show", "--html", "tiers.html"], deps=_reader_deps(T0)) == 0
+    assert capsys.readouterr().out == f"wrote {tmp_path.resolve() / 'tiers.html'}\n"
+
+
+@pytest.mark.usefixtures("written")
+def test_show_html_that_cannot_be_written_exits_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["show", "--html", str(tmp_path)], deps=_reader_deps(T0)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("modeltiers: ")
+    # The half-written copy beside it is gone.
+    assert [p.name for p in tmp_path.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+@pytest.mark.usefixtures("written")
+def test_show_html_refuses_to_replace_the_tiers_file_with_the_page(
+    out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = out.read_text()
+    assert cli.main(["show", "--html", str(out)], deps=_reader_deps(T0)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        f"modeltiers: --html {out} is tiers.toml itself; name another file for the page\n"
+    )
+    assert out.read_text() == before
+
+
+@pytest.mark.usefixtures("written")
+def test_show_html_refuses_another_name_for_the_tiers_file(
+    out: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = out.read_text()
+    link = tmp_path / "page.html"
+    link.symlink_to(out)
+    names = [link]
+    shouted = out.with_name(out.name.upper())
+    if shouted.exists():  # a file system that ignores case, as macOS has by default
+        names.append(shouted)
+    for name in names:
+        assert cli.main(["show", "--html", str(name)], deps=_reader_deps(T0)) == 1
+        assert "is tiers.toml itself" in capsys.readouterr().err
+        assert out.read_text() == before
+
+
+def test_show_html_without_a_tiers_file_writes_no_page(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "tiers.html"
+    assert cli.main(["show", "--html", str(target)], deps=_reader_deps(T0)) == 1
+    assert "run `modeltiers run` to write it" in capsys.readouterr().err
+    assert not target.exists()
+
+
+def test_show_refuses_a_sort_column_it_does_not_have(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["show", "--sort", "price"], deps=_reader_deps(T0))
+    assert stopped.value.code == 2
+    assert "invalid choice: 'price'" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("argv", [["show"], ["explain", "zhipuai/glm-5.3"]])
 def test_show_and_explain_without_a_file_name_the_run_command(
     argv: list[str], out: Path, capsys: pytest.CaptureFixture[str]
@@ -772,6 +884,7 @@ def test_explain_a_model_by_pair_and_by_key(capsys: pytest.CaptureFixture[str]) 
         "  efforts:     none\n"
         "  tool_call:   true\n"
         "  context:     512000\n"
+        "  open_weights: true\n"
         "  note:        host row has no canonical id; matched by name\n"
         "modelsdev: models.dev (https://models.dev), MIT\n"
         "arena: Arena (arena.ai), dataset lmarena-ai/leaderboard-dataset, CC BY 4.0\n"
@@ -802,6 +915,7 @@ def test_explain_a_local_build_shows_the_tier_it_inherited(
         "  efforts:     none\n"
         "  tool_call:   true\n"
         "  context:     unknown\n"
+        "  open_weights: true\n"
         "  note:        local build: served context unknown; context gate skipped\n"
         "modelsdev: models.dev (https://models.dev), MIT\n"
         "openrouter: Source: Artificial Analysis (artificialanalysis.ai) via OpenRouter "

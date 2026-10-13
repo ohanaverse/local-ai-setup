@@ -21,6 +21,7 @@ from modeltiers import (
     ladder,
     loader,
     output,
+    page,
     paths,
     pipeline,
     report,
@@ -100,6 +101,29 @@ def _parser() -> argparse.ArgumentParser:
     )
     shown = commands.add_parser("show", help="print the tier table from tiers.toml")
     shown.add_argument("--candidates", action="store_true", help="list the candidates too")
+    shown.add_argument(
+        "--sort",
+        choices=show.SORT_COLUMNS,
+        metavar="COLUMN",
+        help=(
+            f"order the rows by one of {', '.join(show.SORT_COLUMNS)}: highest first, "
+            "rows with no value last; `model` is alphabetical"
+        ),
+    )
+    shown.add_argument(
+        "--wide",
+        action="store_true",
+        help="add open weights, context and the scores to the table",
+    )
+    shown.add_argument(
+        "--html",
+        metavar="FILE",
+        type=Path,
+        help=(
+            "write the table as one self-contained page, every model and candidate with "
+            "every column, to sort and filter in a browser; prints only where it wrote"
+        ),
+    )
     explain = commands.add_parser(
         "explain", help="print how one model was identified and why it has its tier"
     )
@@ -208,9 +232,20 @@ def _show(args: argparse.Namespace, deps: Deps) -> int:
     warning = show.stale_warning(document, now)
     if warning is not None:
         _warn(warning)
+    if args.html is not None:
+        target: Path = args.html.resolve()
+        # The same file, not the same spelling: on a file system that ignores
+        # case `TIERS.toml` is tiers.toml, and the two paths differ.
+        if target.exists() and target.samefile(paths.output_path()):
+            raise ConfigError(
+                f"--html {target} is tiers.toml itself; name another file for the page"
+            )
+        output.write_text(target, page.page_html(document, now, sort=args.sort))
+        print(f"wrote {target}")
+        return EXIT_OK
     for line in (
         show.age_line(document, now),
-        *show.table_lines(document, candidates=args.candidates),
+        *show.table_lines(document, candidates=args.candidates, sort=args.sort, wide=args.wide),
         *show.attribution_lines(document),
     ):
         print(line)
