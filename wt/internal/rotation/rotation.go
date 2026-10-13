@@ -4,6 +4,7 @@
 package rotation
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,14 +81,17 @@ func (r *Rotation) RecordFor(agent, modelID string) error {
 		return err
 	}
 	if err := config.WriteFileAtomic(path, []byte(modelID+"\n"), 0o600); err != nil {
-		return err
+		return fmt.Errorf("rotation.state not saved: %w", err)
 	}
 	pickedErr := config.WriteFileAtomic(r.pickedPath(), []byte(modelID+"\n"), 0o600)
 	// Usage recording is best-effort; do not fail rotation write if usage fails.
 	// It runs whether or not last-picked.state was written: the launch goes
 	// ahead either way, so it is counted either way.
 	_ = r.store.RecordFor(agent, modelID)
-	return pickedErr
+	if pickedErr != nil {
+		return fmt.Errorf("last-picked.state not saved: %w", pickedErr)
+	}
+	return nil
 }
 
 // RecordProfile records a slot-profile launch: it writes profileID to
@@ -98,7 +102,10 @@ func (r *Rotation) RecordFor(agent, modelID string) error {
 func (r *Rotation) RecordProfile(agent, profileID string) error {
 	pickedErr := config.WriteFileAtomic(r.pickedPath(), []byte(profileID+"\n"), 0o600)
 	_ = r.store.RecordFor(agent, profileID)
-	return pickedErr
+	if pickedErr != nil {
+		return fmt.Errorf("last-picked.state not saved: %w", pickedErr)
+	}
+	return nil
 }
 
 // NextFromEligible returns the first model after the last launched one, in

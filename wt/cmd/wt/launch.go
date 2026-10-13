@@ -265,7 +265,9 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		ensureRouteBeforeLaunch(cfg, m)
 	}
 	if rerr := rotation.New().RecordFor(agent, m.ID); rerr != nil {
-		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
+		// RecordFor names the file that failed: rotation.state, or
+		// last-picked.state, a write of its own.
+		fmt.Fprintf(os.Stderr, "note: %v\n", rerr)
 	}
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)

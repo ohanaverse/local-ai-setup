@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -245,6 +246,19 @@ func (p *ProfileRow) Launch() profiles.SlotLaunch {
 		Env:           p.Check.Profile.Env,
 		ConfigContent: p.Check.Profile.ConfigContent,
 	}
+}
+
+// SlotRouteError words a route a slot profile's launch could not ensure by
+// the slot it fills: "slot haiku: LiteLLM route for <id> not written: <cause>".
+// Any other error is returned as it is. It lives here because both launch
+// paths use it — cmd/wt's launchSlotProfile and the TUI's prepareSlot — and
+// neither package may import the other.
+func SlotRouteError(p *ProfileRow, err error) error {
+	var re *lifecycle.RouteEnsureError
+	if errors.As(err, &re) {
+		return fmt.Errorf("slot %s: %w", p.SlotOf(re.ModelID), err)
+	}
+	return err
 }
 
 // SlotPrefixReserved reports whether something in the registry holds the

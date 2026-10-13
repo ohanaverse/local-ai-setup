@@ -93,16 +93,6 @@ type slotDeps struct {
 	wait      func()
 }
 
-// slotRouteError words a route failure the way the non-TUI path does: it
-// names the slot whose model could not be routed.
-func slotRouteError(p *catalog.ProfileRow, err error) error {
-	var re *lifecycle.RouteEnsureError
-	if errors.As(err, &re) {
-		return fmt.Errorf("slot %s: %w", p.SlotOf(re.ModelID), err)
-	}
-	return err
-}
-
 // prepareSlot is the first stage: steps 1 to 3 of the launch flow and, for a
 // row that needs no start, steps 5 to 7 (finishSlotRoutes). It runs in a
 // command; nothing in it touches the model.
@@ -143,7 +133,7 @@ func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []strin
 // returns.
 func slotRouteFailed(d slotDeps, res slotResult, buf *bytes.Buffer, err error) slotResult {
 	d.wait()
-	res.owed, res.err, res.notes = false, slotRouteError(res.row.Profile, err), buf.String()
+	res.owed, res.err, res.notes = false, catalog.SlotRouteError(res.row.Profile, err), buf.String()
 	return res
 }
 
@@ -404,7 +394,7 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		// The commit point: the applier succeeded and the agent runs next.
 		// Both writes are best-effort, as launchAndRecord's are.
 		if err := rotation.New().RecordProfile(agent, row.Model.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "note: last-picked state not saved: %v\n", err)
+			fmt.Fprintf(os.Stderr, "note: %v\n", err)
 		}
 		var ids []string
 		for _, sm := range row.Profile.Distinct() {

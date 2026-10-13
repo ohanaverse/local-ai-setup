@@ -1211,7 +1211,9 @@ func (m model) launchSelected() (model, tea.Cmd) {
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	var errs []string
 	if err := rotation.New().RecordFor(m.agent, m.launchModel.ID); err != nil {
-		errs = append(errs, "rotation state not saved: "+err.Error())
+		// RecordFor's error names the file that failed (rotation.state, or
+		// last-picked.state, a write of its own).
+		errs = append(errs, err.Error())
 	}
 	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil {
 		errs = append(errs, "refcount state not saved: "+err.Error())

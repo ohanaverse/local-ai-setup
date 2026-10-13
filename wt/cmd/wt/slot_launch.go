@@ -101,17 +101,6 @@ func slotReservedNote(a *app) string {
 	return ""
 }
 
-// slotRouteError words a route that could not be ensured by the slot it
-// fills: "slot haiku: LiteLLM route for <id> not written: <cause>". Any other
-// error is returned as it is.
-func slotRouteError(p *catalog.ProfileRow, err error) error {
-	var re *lifecycle.RouteEnsureError
-	if errors.As(err, &re) {
-		return fmt.Errorf("slot %s: %w", p.SlotOf(re.ModelID), err)
-	}
-	return err
-}
-
 // launchSlotProfile is the whole launch of one slot profile on the non-TUI
 // path: steps 1 to 10 of the spec's launch flow. row is the profile's catalog
 // row as resolveModel found it.
@@ -145,7 +134,7 @@ func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool
 	// write changed config.yaml and the proxy has not been restarted for it.
 	owed, err := ensureSlotRoutes(ctx, nil, cfg, p.Cloud(), false)
 	if err != nil {
-		return slotRouteError(p, err)
+		return catalog.SlotRouteError(p, err)
 	}
 
 	switch {
@@ -170,13 +159,13 @@ func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool
 		// wrote compares equal, changes nothing and owes no restart.
 		owed, err = ensureSlotRoutes(ctx, nil, cfg, []config.Model{p.Local.Model}, false)
 		if err != nil {
-			return slotRouteError(p, err)
+			return catalog.SlotRouteError(p, err)
 		}
 	case p.Local != nil:
 		// Step 5: a local model that was already running gets its route.
 		owed, err = ensureSlotRoutes(ctx, nil, cfg, []config.Model{p.Local.Model}, owed)
 		if err != nil {
-			return slotRouteError(p, err)
+			return catalog.SlotRouteError(p, err)
 		}
 	}
 
@@ -220,7 +209,7 @@ func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool
 	// Each distinct slot model gets a refcount line, so no other session's
 	// stop picker offers a model this one uses.
 	if rerr := rotation.New().RecordProfile(agent, row.Model.ID); rerr != nil {
-		fmt.Fprintf(os.Stderr, "note: last-picked state not saved: %v\n", rerr)
+		fmt.Fprintf(os.Stderr, "note: %v\n", rerr)
 	}
 	distinct := p.Distinct()
 	ids := make([]string, len(distinct))
