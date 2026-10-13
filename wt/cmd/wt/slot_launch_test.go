@@ -16,8 +16,11 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // startCall is what one engine call of a start carried.
@@ -481,5 +484,375 @@ func TestRunSlotAgentCmdReturnsARunError(t *testing.T) {
 	}
 	if !released {
 		t.Error("the session's refcount lines were not released after a failed run")
+	}
+}
+
+// runningQ is an inventory in which the fixture's local model is running.
+func runningQ() localmodels.Snapshot {
+	return localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/q", Artifact: "q", ModelName: "q", Registered: true, Running: true, ArtifactKnown: true},
+		},
+	}
+}
+
+// pinSlotProfile runs the non-TUI launch of `-A claude -M <pin>` with extra
+// passthrough args, as launchFiltered runs it.
+func pinSlotProfile(worktree string, cfg *config.Config, pin string, extraArgs ...string) error {
+	return launchFiltered("claude", worktree, cfg, false, "", "", pin, true, extraArgs, nil, nil)
+}
+
+// slotStateFiles are the files a recorded launch writes under wt's state
+// directory.
+var slotStateFiles = []string{"usage.jsonl", "rotation.state", "last-picked.state", "refcount.jsonl"}
+
+// TestLaunchSlotProfileSteps verifies the order of the launch flow and its
+// restart count for each shape of profile. The cloud slots' routes are
+// ensured first. An idle local model is then started and told whether a
+// restart is owed, so its own restart publishes the cloud routes; a running
+// one only has its route ensured. The proxy is restarted once when a write
+// is still owed and never otherwise, and it is probed on every launch before
+// the command is built. Two restarts would cost the user 20 to 40 seconds; a
+// missing one would start Claude Code against a proxy that does not know the
+// slot's id.
+func TestLaunchSlotProfileSteps(t *testing.T) {
+	cases := []struct {
+		name       string
+		slots      map[string]string
+		running    bool // the local model is already running
+		ensureOwed bool // a route write changed config.yaml
+		want       string
+	}{
+		{"all cloud, every route exists", slotCloud(), false, false,
+			"ensure:openrouter/a,openrouter/b;probe;build"},
+		{"all cloud, a route was missing", slotCloud(), false, true,
+			"ensure:openrouter/a,openrouter/b;restart;probe;build"},
+		{"idle local model, a cloud route was missing", slotMixed(), false, true,
+			"ensure:openrouter/a;start:omlx/q:owed=true;probe;build"},
+		{"idle local model, routes in place", slotMixed(), false, false,
+			"ensure:openrouter/a;start:omlx/q:owed=false;probe;build"},
+		{"running local model, routes in place", slotMixed(), true, false,
+			"ensure:openrouter/a;ensure:omlx/q;probe;build"},
+		{"running local model, a route was missing", slotMixed(), true, true,
+			"ensure:openrouter/a;ensure:omlx/q;restart;probe;build"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, worktree := slotLaunchEnv(t)
+			if tc.running {
+				stubProbeInventory(t, runningQ())
+			}
+			seams := stubSlotSeams(t)
+			seams.ensureOwed = tc.ensureOwed
+			sentinel := filepath.Join(t.TempDir(), "agent-ran")
+			seams.cmd = exec.Command("touch", sentinel)
+			stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", tc.slots))
+
+			var err error
+			captureFile(t, &os.Stdout, func() {
+				err = pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
+			})
+
+			if err != nil {
+				t.Fatalf("launch error = %v", err)
+			}
+			if got := seams.log(); got != tc.want {
+				t.Errorf("steps = %s\n want  %s", got, tc.want)
+			}
+			if n := strings.Count(seams.log(), "restart"); n > 1 {
+				t.Errorf("%d proxy restarts, want at most one", n)
+			}
+			if _, statErr := os.Stat(sentinel); statErr != nil {
+				t.Error("the agent command did not run")
+			}
+		})
+	}
+}
+
+// TestLaunchSlotProfileRecordsTheProfile verifies the bookkeeping of a profile
+// launch: one usage event under the profile's id, last-picked.state naming
+// the profile, rotation.state byte-identical, and one refcount line per
+// distinct slot model (a model filling two slots is counted once). The
+// profile then shows its launches in the picker and in `wt stats`, the
+// rotation of single-model launches is not disturbed, and another session's
+// stop picker does not offer a model this session uses.
+func TestLaunchSlotProfileRecordsTheProfile(t *testing.T) {
+	stateDir, worktree := slotLaunchEnv(t)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rotationState := filepath.Join(stateDir, "rotation.state")
+	if err := os.WriteFile(rotationState, []byte("openrouter/b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubSlotSeams(t)
+	stubSlotChecks(t, slotFixtureCheck(0, "cloud", "opus",
+		map[string]string{"opus": "openrouter/a", "sonnet": "openrouter/a", "haiku": "openrouter/b"}))
+
+	var err error
+	captureFile(t, &os.Stdout, func() {
+		err = pinSlotProfile(worktree, slotFixtureConfig(), "profile/cloud")
+	})
+	if err != nil {
+		t.Fatalf("launch error = %v", err)
+	}
+
+	counts := usage.NewStoreAt(stateDir).CountsForAgent("claude", []string{"profile/cloud", "openrouter/a"})
+	if counts["profile/cloud"].ThirtyDay != 1 || counts["openrouter/a"].ThirtyDay != 0 {
+		t.Errorf("usage = %+v, want one launch under profile/cloud and none under a slot model", counts)
+	}
+	if data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state")); string(data) != "profile/cloud\n" {
+		t.Errorf("last-picked.state = %q, want %q", data, "profile/cloud\n")
+	}
+	if data, _ := os.ReadFile(rotationState); string(data) != "openrouter/b\n" {
+		t.Errorf("rotation.state = %q, want it byte-identical (%q)", data, "openrouter/b\n")
+	}
+	refs := refcount.NewStoreAt(stateDir).Counts([]string{"openrouter/a", "openrouter/b", "profile/cloud"})
+	if refs["openrouter/a"] != 1 || refs["openrouter/b"] != 1 || refs["profile/cloud"] != 0 {
+		t.Errorf("refcounts = %v, want one line per distinct slot model and none under the profile id", refs)
+	}
+}
+
+// TestSlotProfileFailuresRunNoAgent is the fail-closed table: each row of the
+// spec's failure table ends with an error, no agent command run, and nothing
+// recorded. A failure that degraded to a launch would start Claude Code with
+// some slots still sending Anthropic ids, which the proxy rejects.
+func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
+	one := func(c profiles.SlotCheck) func() []profiles.SlotCheck {
+		return func() []profiles.SlotCheck { return []profiles.SlotCheck{c} }
+	}
+	cloud := func() profiles.SlotCheck { return slotFixtureCheck(0, "p", "opus", slotCloud()) }
+	mixed := func() profiles.SlotCheck { return slotFixtureCheck(0, "p", "opus", slotMixed()) }
+	notEligible := `model "profile/p" is not in the eligible list for agent "claude"`
+	cases := []struct {
+		name   string
+		checks func() []profiles.SlotCheck // nil: no profile loaded
+		cfg    func(*config.Config)
+		seams  func(*slotSeams)
+		args   []string
+		want   string // a substring of the error
+		steps  string // the engine steps that ran before the abort
+	}{
+		{name: "slot-profiles.toml does not parse", want: notEligible},
+		{name: "a profile has no usable name",
+			checks: func() []profiles.SlotCheck {
+				return []profiles.SlotCheck{{Profile: profiles.SlotProfile{Agent: "claude"}, Err: errors.New("name is missing")}}
+			},
+			want: notEligible},
+		{name: "two profiles share a name",
+			checks: func() []profiles.SlotCheck {
+				a, b := cloud(), cloud()
+				b.Index = 1
+				a.Duplicate, b.Duplicate = true, true
+				a.Err, b.Err = profiles.ErrSlotDuplicate, profiles.ErrSlotDuplicate
+				return []profiles.SlotCheck{a, b}
+			},
+			want: "duplicate profile name"},
+		{name: "a profile fails static validation",
+			checks: func() []profiles.SlotCheck {
+				c := cloud()
+				c.Err = errors.New(`default "x" is not a slot this profile fills`)
+				return []profiles.SlotCheck{c}
+			},
+			want: `default "x" is not a slot this profile fills`},
+		{name: "a profile fails resolved validation",
+			checks: one(slotFixtureCheck(0, "p", "opus", map[string]string{"opus": "openrouter/gone"})),
+			want:   "slot opus: openrouter/gone is not in the registry"},
+		{name: "the registry has a provider with id profile",
+			checks: one(cloud()),
+			cfg: func(c *config.Config) {
+				c.Providers = append(c.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
+			},
+			want: notEligible},
+		{name: "LiteLLM has no url",
+			checks: one(cloud()),
+			cfg:    func(c *config.Config) { c.SetLitellmForTest(config.LitellmState{APIKey: "sk-test-1234"}) },
+			want:   "no URL is configured"},
+		{name: "LiteLLM has no api key",
+			checks: one(cloud()),
+			cfg:    func(c *config.Config) { c.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"}) },
+			want:   "no API key is configured"},
+		{name: "passthrough args contain --settings",
+			checks: one(cloud()), args: []string{"--settings", "x.json"},
+			want: "a slot profile sets --settings itself"},
+		{name: "passthrough args contain --model=",
+			checks: one(cloud()), args: []string{"--model=opus"},
+			want: "a slot profile sets --model itself"},
+		{name: "a slot's route cannot be written",
+			checks: one(cloud()),
+			seams: func(s *slotSeams) {
+				s.ensureErr = &lifecycle.RouteEnsureError{ModelID: "openrouter/a", Err: litellm.ErrMissing}
+			},
+			want:  "slot opus: LiteLLM route for openrouter/a not written: LiteLLM config not found",
+			steps: "ensure:openrouter/a,openrouter/b"},
+		{name: "the local model's start is refused with a restart owed",
+			checks: one(mixed()),
+			seams: func(s *slotSeams) {
+				s.ensureOwed, s.startStill = true, true
+				s.startErr = errors.New("cancelled — omlx/other still running")
+			},
+			want:  "cancelled — omlx/other still running",
+			steps: "ensure:openrouter/a;start:omlx/q:owed=true;settle"},
+		{name: "the local model's start fails",
+			checks: one(mixed()),
+			seams:  func(s *slotSeams) { s.startErr = errors.New("failed to start omlx/q: server exited") },
+			want:   "failed to start omlx/q",
+			steps:  "ensure:openrouter/a;start:omlx/q:owed=false"},
+		{name: "the proxy restart fails",
+			checks: one(cloud()),
+			seams: func(s *slotSeams) {
+				s.ensureOwed = true
+				s.restartErr = errors.New("LiteLLM proxy not ready at http://localhost:4000: timed out")
+			},
+			want:  "LiteLLM proxy not ready",
+			steps: "ensure:openrouter/a,openrouter/b;restart"},
+		{name: "the proxy does not answer the probe",
+			checks: one(cloud()),
+			seams: func(s *slotSeams) {
+				s.probeErr = errors.New("the LiteLLM proxy does not answer at http://localhost:4000: connection refused")
+			},
+			want:  "does not answer at http://localhost:4000",
+			steps: "ensure:openrouter/a,openrouter/b;probe"},
+		{name: "the command cannot be built",
+			checks: one(cloud()),
+			seams:  func(s *slotSeams) { s.buildErr = errors.New("agent claude not installed") },
+			want:   "agent claude not installed",
+			steps:  "ensure:openrouter/a,openrouter/b;probe;build"},
+		{name: "the wrapper cannot be applied",
+			checks: func() []profiles.SlotCheck {
+				c := cloud()
+				c.Profile.Wrapper = &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz", ArgsTemplate: []string{"{{args}}"}}
+				return []profiles.SlotCheck{c}
+			},
+			want:  "not installed",
+			steps: "ensure:openrouter/a,openrouter/b;probe;build"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir, worktree := slotLaunchEnv(t)
+			seams := stubSlotSeams(t)
+			sentinel := filepath.Join(t.TempDir(), "agent-ran")
+			seams.cmd = exec.Command("touch", sentinel)
+			if tc.seams != nil {
+				tc.seams(seams)
+			}
+			if tc.checks != nil {
+				stubSlotChecks(t, tc.checks()...)
+			} else {
+				stubSlotChecks(t)
+			}
+			cfg := slotFixtureConfig()
+			if tc.cfg != nil {
+				tc.cfg(cfg)
+			}
+
+			var err error
+			stdout := captureFile(t, &os.Stdout, func() {
+				err = pinSlotProfile(worktree, cfg, "profile/p", tc.args...)
+			})
+
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
+			}
+			if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+				t.Error("the agent command ran after a failure")
+			}
+			if got := seams.log(); got != tc.steps {
+				t.Errorf("steps = %q, want %q", got, tc.steps)
+			}
+			if strings.Contains(stdout, "wt: claude ·") {
+				t.Errorf("stdout = %q, want no summary line: no session ran", stdout)
+			}
+			for _, name := range slotStateFiles {
+				if _, statErr := os.Stat(filepath.Join(stateDir, name)); !os.IsNotExist(statErr) {
+					t.Errorf("%s was written although the launch aborted", name)
+				}
+			}
+		})
+	}
+}
+
+// TestSlotProfileRouteErrorKeepsItsCause verifies the abort for a route that
+// could not be written names the slot and still carries the cause on its
+// chain, so a caller can tell a missing config.yaml from a lock timeout.
+func TestSlotProfileRouteErrorKeepsItsCause(t *testing.T) {
+	_, worktree := slotLaunchEnv(t)
+	seams := stubSlotSeams(t)
+	seams.ensureErr = &lifecycle.RouteEnsureError{ModelID: "openrouter/b", Err: litellm.ErrMissing}
+	stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotCloud()))
+
+	err := pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
+	if err == nil || !strings.HasPrefix(err.Error(), "slot haiku: ") {
+		t.Fatalf("err = %v, want it to start with the slot that names openrouter/b", err)
+	}
+	if !errors.Is(err, litellm.ErrMissing) {
+		t.Errorf("err = %v, want litellm.ErrMissing still on the chain", err)
+	}
+}
+
+// TestSlotProfileStartErrorIsAStartError verifies a failed or refused start of
+// the profile's local model is marked as a start's outcome. The root command
+// reads that mark to print the message once; without it the message and the
+// server's log tail would be printed twice.
+func TestSlotProfileStartErrorIsAStartError(t *testing.T) {
+	_, worktree := slotLaunchEnv(t)
+	seams := stubSlotSeams(t)
+	seams.startErr = errors.New("failed to start omlx/q: server exited")
+	stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotMixed()))
+
+	err := pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
+	if !isStartError(err) {
+		t.Errorf("err = %v, want it marked as a start error", err)
+	}
+}
+
+// TestSlotProfileLaunchSkipsAutomaticProfiles verifies a profile launch never
+// resolves, prompts for or applies an automatic profile, even when
+// profiles.toml has an entry that matches one of the slot models. The two
+// kinds of profile do not stack: an automatic env or settings file applied on
+// top could redirect a slot.
+func TestSlotProfileLaunchSkipsAutomaticProfiles(t *testing.T) {
+	stateDir, worktree := slotLaunchEnv(t)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[[profiles]]\nagent = \"claude\"\nmatch = \"provider\"\nprovider = \"openrouter\"\nenv = { WT_TEST_AUTO_PROFILE = \"1\" }\n"
+	if err := os.WriteFile(filepath.Join(stateDir, "profiles.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := slotFixtureConfig()
+	store, err := profiles.Load()
+	if err != nil {
+		t.Fatalf("profiles.Load() error = %v", err)
+	}
+	if profiles.Resolve(store, "claude", cfg, cfg.Models[0]).Empty() {
+		t.Fatal("fixture: the automatic profile does not match the slot model, so the test proves nothing")
+	}
+	loads, prompts := 0, 0
+	oldLoad, oldConfirm := loadProfileStore, confirmProfile
+	loadProfileStore = func() (profiles.Store, error) { loads++; return profiles.Load() }
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { prompts++; return true, nil }
+	t.Cleanup(func() { loadProfileStore, confirmProfile = oldLoad, oldConfirm })
+	seams := stubSlotSeams(t)
+	cmd := exec.Command("true")
+	seams.cmd = cmd
+	stubSlotChecks(t, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+
+	// The already-loaded store is handed in too, as runLaunchPath hands it to
+	// every launch: the profile path must ignore it.
+	pp := &precomputedProfiles{store: store}
+	captureFile(t, &os.Stdout, func() {
+		err = launchFiltered("claude", worktree, cfg, false, "", "", "profile/cloud", true, nil, nil, pp)
+	})
+
+	if err != nil {
+		t.Fatalf("launch error = %v", err)
+	}
+	if loads != 0 || prompts != 0 {
+		t.Errorf("profiles.toml loaded %d times and prompted %d times, want 0 and 0", loads, prompts)
+	}
+	if slices.Contains(cmd.Env, "WT_TEST_AUTO_PROFILE=1") {
+		t.Errorf("cmd.Env = %v: the automatic profile was applied to a slot-profile launch", cmd.Env)
 	}
 }

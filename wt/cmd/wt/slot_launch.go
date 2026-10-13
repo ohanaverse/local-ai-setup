@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 )
 
 // launchSlotChecks is the process-wide set of slot profiles resolveModel
@@ -44,6 +47,126 @@ var (
 	startSlotModel   = startForLaunchOwed
 	buildSlotCmd     = agents.BuildSlotLaunchCmd
 )
+
+// slotRouteError words a route that could not be ensured by the slot it
+// fills: "slot haiku: LiteLLM route for <id> not written: <cause>". Any other
+// error is returned as it is.
+func slotRouteError(p *catalog.ProfileRow, err error) error {
+	var re *lifecycle.RouteEnsureError
+	if errors.As(err, &re) {
+		return fmt.Errorf("slot %s: %w", p.SlotOf(re.ModelID), err)
+	}
+	return err
+}
+
+// launchSlotProfile is the whole launch of one slot profile on the non-TUI
+// path: steps 1 to 10 of the spec's launch flow. row is the profile's catalog
+// row as resolveModel found it.
+//
+// It fails closed. Every abort returns an error before the agent starts and
+// before anything is recorded, and no failure degrades to an unprofiled
+// launch. A local model started in step 4 is left running after a later
+// abort. The endpoint is always the LiteLLM proxy: nothing here reads
+// cfg.IsLitellm().
+func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool, row catalog.Row, extraArgs []string) error {
+	if row.Profile == nil {
+		return fmt.Errorf("%s is not a slot profile", row.Model.ID)
+	}
+	ctx := context.Background()
+
+	// Step 1: re-resolve against fresh state. The row may be seconds old, and
+	// its verdict decides whether a start runs.
+	snap := probeInventory(cfg)
+	row = catalog.ResolveSlotProfile(cfg, &snap, row.Profile.Check)
+	p := row.Profile
+	if row.Action() == catalog.ActionBlock {
+		return errors.New(row.BlockReason())
+	}
+
+	// Step 2: a passthrough flag that would replace the slot mapping.
+	if err := agents.CheckSlotPassthrough(agent, extraArgs); err != nil {
+		return err
+	}
+
+	// Step 3: the cloud slots' missing routes, restart deferred. owed says a
+	// write changed config.yaml and the proxy has not been restarted for it.
+	owed, err := ensureSlotRoutes(ctx, nil, cfg, p.Cloud(), false)
+	if err != nil {
+		return slotRouteError(p, err)
+	}
+
+	switch {
+	case row.Action() == catalog.ActionStart:
+		// Step 4: start the local model. The start writes its route and
+		// restarts the proxy itself; told a restart is owed, that one restart
+		// publishes the cloud routes too.
+		still, serr := startSlotModel(cfg, *p.Local, allowReplace, owed)
+		if serr != nil {
+			if still {
+				// A refusal that was not retried touched nothing: the written
+				// cloud routes are published here, so they are live for the
+				// next attempt.
+				settleRoutesNow(ctx, cfg)
+			}
+			return asStartError(serr)
+		}
+		owed = false
+	case p.Local != nil:
+		// Step 5: a local model that was already running gets its route.
+		owed, err = ensureSlotRoutes(ctx, nil, cfg, []config.Model{p.Local.Model}, owed)
+		if err != nil {
+			return slotRouteError(p, err)
+		}
+	}
+
+	// Step 6: one restart, only when a write is still owed.
+	if owed {
+		fmt.Fprintf(osStderr, "wt: restarting the LiteLLM proxy for %s\n", row.Model.ID)
+		if err := restartProxyNow(ctx, cfg); err != nil {
+			return err
+		}
+	}
+
+	// Step 7: the proxy must answer, on every launch.
+	if err := probeProxyNow(ctx, cfg); err != nil {
+		return err
+	}
+
+	// Step 8: the command, through the agent's slot build.
+	cmd, err := buildSlotCmd(p.Launch(), worktreePath, yolo, cfg, extraArgs)
+	if err != nil {
+		return err
+	}
+	if wd, werr := shellDir(); werr == nil {
+		for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
+			fmt.Fprintln(osStderr, note)
+		}
+	}
+
+	// Step 9: args and wrapper, fail closed. Automatic profiles are never
+	// applied: applyProfileForLaunch is not on this path.
+	cleanup, err := applySlotProfile(cmd, agent, row)
+	if err != nil {
+		return err
+	}
+
+	// Step 10: record, then run. The profile's launch is recorded under its
+	// own id and moves the picker's marker; rotation.state is not touched.
+	// Each distinct slot model gets a refcount line, so no other session's
+	// stop picker offers a model this one uses.
+	if rerr := rotation.New().RecordProfile(agent, row.Model.ID); rerr != nil {
+		fmt.Fprintf(os.Stderr, "note: last-picked state not saved: %v\n", rerr)
+	}
+	distinct := p.Distinct()
+	ids := make([]string, len(distinct))
+	for i, m := range distinct {
+		ids[i] = m.ID
+	}
+	if rerr := refcount.NewStore().RecordAll(os.Getpid(), ids); rerr != nil {
+		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
+	}
+	return runSlotAgentCmd(cmd, agent, row, cfg, cleanup)
+}
 
 // applySlotProfile is the fail-closed applier of a slot-profile launch. It
 // runs the self-heal of a settings file left by an earlier automatic-profile

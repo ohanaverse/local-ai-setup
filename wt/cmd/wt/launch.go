@@ -200,6 +200,13 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	} else {
 		m, err = resolveModelFromEligible(agent, eligible)
 	}
+	// A -M pin of a slot profile is its own launch unit: none of the
+	// single-model steps below (the ollama check, the route check, rotation,
+	// the automatic profile) apply to it.
+	var pin *slotPin
+	if errors.As(err, &pin) {
+		return launchSlotProfile(agent, worktreePath, cfg, yolo, pin.row, extraArgs)
+	}
 	if err != nil {
 		// When multiple models are eligible and no pin was supplied, rotate
 		// through the global model list to the next model supported by agent.
