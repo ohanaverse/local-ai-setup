@@ -104,6 +104,34 @@ def build_specs(
     )
 
 
+def _parsed[T](
+    spec: SourceSpec[T],
+    snapshot: snapshots.Snapshot,
+    body: bytes,
+    *,
+    status: str,
+    fallback: bool,
+    warn: Warn,
+) -> SourceResult[T] | None:
+    """The snapshot's bytes as a result. One that does not parse is renamed
+    `.bad`, its new path is passed to `warn`, and there is no result."""
+    try:
+        data = spec.parse(body)
+    except SourceParseError as exc:
+        bad = snapshots.mark_bad(snapshot)
+        warn(f"{exc}; snapshot set aside as {bad.path}")
+        return None
+    return SourceResult(
+        name=spec.name,
+        status=status,
+        fallback=fallback,
+        fetched_at=snapshot.fetched_at,
+        records=spec.count(data),
+        data=data,
+        snapshot=snapshot.path,
+    )
+
+
 def _from_snapshots[T](
     spec: SourceSpec[T], cache: Path, *, fallback: bool, warn: Warn
 ) -> SourceResult[T]:
@@ -117,21 +145,9 @@ def _from_snapshots[T](
         except OSError as exc:
             warn(f"{spec.name}: cannot read the snapshot {snapshot.path}: {exc.strerror}")
             continue
-        try:
-            data = spec.parse(body)
-        except SourceParseError as exc:
-            bad = snapshots.mark_bad(snapshot)
-            warn(f"{exc}; snapshot set aside as {bad.path}")
-            continue
-        return SourceResult(
-            name=spec.name,
-            status="stale",
-            fallback=fallback,
-            fetched_at=snapshot.fetched_at,
-            records=spec.count(data),
-            data=data,
-            snapshot=snapshot.path,
-        )
+        result = _parsed(spec, snapshot, body, status="stale", fallback=fallback, warn=warn)
+        if result is not None:
+            return result
     raise SourceUnavailable([spec.name])
 
 
@@ -162,21 +178,8 @@ def load_source[T](
         warn(f"{spec.name}: download failed: {exc}")
         return _from_snapshots(spec, cache, fallback=True, warn=warn)
     snapshot = snapshots.save(cache, spec.name, spec.ext, body, now)
-    try:
-        data = spec.parse(body)
-    except SourceParseError as exc:
-        bad = snapshots.mark_bad(snapshot)
-        warn(f"{exc}; snapshot set aside as {bad.path}")
-        return _from_snapshots(spec, cache, fallback=True, warn=warn)
-    return SourceResult(
-        name=spec.name,
-        status="ok",
-        fallback=False,
-        fetched_at=snapshot.fetched_at,
-        records=spec.count(data),
-        data=data,
-        snapshot=snapshot.path,
-    )
+    result = _parsed(spec, snapshot, body, status="ok", fallback=False, warn=warn)
+    return result or _from_snapshots(spec, cache, fallback=True, warn=warn)
 
 
 def load_all(
