@@ -4,6 +4,7 @@ no contracts file. A field an older file lacks prints as `?`."""
 
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Any
 
 from modeltiers.contracts import RANK, SIGNAL_SOURCE, SOURCES, STAMP
@@ -76,10 +77,11 @@ def stale_warning(doc: Document, now: datetime) -> str | None:
 
 def number(value: Any) -> float | None:
     """A number the file holds, or None for anything else. `True` is not a
-    number here, though Python counts it as one."""
+    number here, though Python counts it as one, and neither are the `nan`
+    and `inf` that TOML can spell: nothing sorts or prints as either."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return float(value)
+    return float(value) if isfinite(value) else None
 
 
 def score(entry: Mapping[str, Any], name: str) -> float | None:

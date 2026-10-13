@@ -148,19 +148,24 @@ def render(doc: Document) -> str:
     return "\n".join(parts)
 
 
-def write_document(path: Path, doc: Document) -> None:
-    """Write the document atomically: a temporary file in the same directory,
-    then a rename over `path`. A reader sees the old file or the new one."""
+def write_text(path: Path, text: str) -> None:
+    """Write a file atomically: a temporary file in the same directory, then
+    a rename over `path`. A reader sees the old file or the new one."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     temporary = Path(name)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(render(doc))
+            stream.write(text)
         temporary.replace(path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def write_document(path: Path, doc: Document) -> None:
+    """Write `tiers.toml`, atomically."""
+    write_text(path, render(doc))
 
 
 def read_document(path: Path) -> Document:

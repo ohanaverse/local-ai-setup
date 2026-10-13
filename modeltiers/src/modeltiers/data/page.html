@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model tiers</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --text: #1c1d1f;
+    --muted: #666a70;
+    --line: #e1e2e4;
+    --head: #f2f3f4;
+    --hover: #f5f7fa;
+    --focus: #2563eb;
+    --marathon-bg: #ece5fb; --marathon-fg: #4c2a9c;
+    --deep-bg: #dfeafc;     --deep-fg: #1b4a9c;
+    --standard-bg: #dcf2e6; --standard-fg: #17603a;
+    --quick-bg: #fbeed3;    --quick-fg: #7a4d05;
+    --unrated-bg: #ececed;  --unrated-fg: #55585d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141516;
+      --panel: #1b1c1e;
+      --text: #e7e8ea;
+      --muted: #9a9ea5;
+      --line: #2e3033;
+      --head: #222426;
+      --hover: #23262a;
+      --focus: #7aa7ff;
+      --marathon-bg: #33265c; --marathon-fg: #d6c8ff;
+      --deep-bg: #1c3158;     --deep-fg: #bcd4ff;
+      --standard-bg: #173d2a; --standard-fg: #b5e8cb;
+      --quick-bg: #47340c;    --quick-fg: #f6d99a;
+      --unrated-bg: #2c2e31;  --unrated-fg: #b4b7bc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 40px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1500px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 650; }
+  .age { margin: 0 0 16px; color: var(--muted); }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end;
+    margin-bottom: 12px;
+  }
+  .controls label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+  .controls input, .controls select {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+  }
+  .controls input { width: min(320px, 80vw); }
+  #count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .scroll {
+    overflow-x: auto; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  table { border-collapse: collapse; width: 100%; white-space: nowrap; }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: var(--hover); }
+  thead th { position: sticky; top: 0; background: var(--head); padding: 0; z-index: 1; }
+  th button {
+    all: unset; box-sizing: border-box; display: block; width: 100%;
+    padding: 8px 10px; cursor: pointer;
+    font-size: 12px; font-weight: 600; color: var(--muted);
+  }
+  th button:hover { color: var(--text); }
+  th button:focus-visible, .controls :focus-visible {
+    outline: 2px solid var(--focus); outline-offset: -2px;
+  }
+  th[aria-sort="ascending"] button, th[aria-sort="descending"] button { color: var(--text); }
+  th[aria-sort="ascending"] button::after { content: " \25B2"; font-size: 9px; }
+  th[aria-sort="descending"] button::after { content: " \25BC"; font-size: 9px; }
+  .num, th.num button { text-align: right; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td.name { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
+  td.dim, .none { color: var(--muted); }
+  .chip {
+    display: inline-block; min-width: 78px; padding: 1px 8px;
+    border-radius: 999px; font-size: 12px; font-weight: 600; text-align: center;
+  }
+  .chip.marathon { background: var(--marathon-bg); color: var(--marathon-fg); }
+  .chip.deep { background: var(--deep-bg); color: var(--deep-fg); }
+  .chip.standard { background: var(--standard-bg); color: var(--standard-fg); }
+  .chip.quick { background: var(--quick-bg); color: var(--quick-fg); }
+  .chip.unrated { background: var(--unrated-bg); color: var(--unrated-fg); }
+  #empty, #noscript { padding: 28px; text-align: center; color: var(--muted); }
+  footer { margin-top: 20px; color: var(--muted); font-size: 12px; }
+  footer p { margin: 0 0 4px; }
+  footer ul { margin: 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Model tiers</h1>
+  <p class="age">{{age}}</p>
+  <div class="controls">
+    <label>Filter by name or key
+      <input id="filter" type="search" autocomplete="off" spellcheck="false">
+    </label>
+    <label>Tier
+      <select id="tier">
+        <option value="">All tiers</option>
+        <option value="marathon">marathon</option>
+        <option value="deep">deep</option>
+        <option value="standard">standard</option>
+        <option value="quick">quick</option>
+        <option value="unrated">unrated</option>
+      </select>
+    </label>
+    <label>Rows
+      <select id="kind">
+        <option value="">Models and candidates</option>
+        <option value="model">My models</option>
+        <option value="candidate">Candidates</option>
+      </select>
+    </label>
+    <span id="count" role="status"></span>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="body"></tbody>
+    </table>
+    <div id="empty" hidden>No row matches these filters.</div>
+    <noscript><div id="noscript">The table is drawn by a script in this file; allow scripts for it to appear.</div></noscript>
+  </div>
+  <footer>
+    <p>Tiers are advisory. Scores are as each source published them; a dash means the source gave none.</p>
+    <ul>
+{{attribution}}
+    </ul>
+  </footer>
+</main>
+<script id="data" type="application/json">{{data}}</script>
+<script>
+"use strict";
+(function () {
+  const data = JSON.parse(document.getElementById("data").textContent);
+  const NONE = "–";
+  const COLUMNS = [
+    { key: "kind", label: "rows", type: "text", title: "One of my models, or a candidate no inventory row uses" },
+    { key: "tier", label: "tier", type: "tier", title: "Final tier, after the gates" },
+    { key: "confidence", label: "conf", type: "text", title: "How far the votes agree" },
+    { key: "name", label: "model", type: "text", title: "provider/model, or the canonical key of a candidate" },
+    { key: "open_weights", label: "open", type: "flag", title: "Open weights, by any models.dev row of the key" },
+    { key: "context", label: "context", type: "num", title: "Context window the tier was gated on, in tokens" },
+    { key: "intelligence_index", label: "intel", type: "num", title: "Artificial Analysis intelligence index (votes)" },
+    { key: "arena_agent", label: "arena", type: "num", title: "Arena agent score (votes)" },
+    { key: "eci", label: "eci", type: "num", title: "Epoch Capabilities Index (votes)" },
+    { key: "coding_index", label: "coding", type: "num", title: "Artificial Analysis coding index (does not vote)" },
+    { key: "agentic_index", label: "agentic", type: "num", title: "Artificial Analysis agentic index (does not vote)" },
+    { key: "canonical", label: "canonical", type: "text", title: "The key the model resolved to" },
+    { key: "reason", label: "reason", type: "text", title: "Why an unrated row is unrated" },
+  ];
+  const byKey = new Map(COLUMNS.map((column) => [column.key, column]));
+  const state = { key: null, descending: false, text: "", tier: "", kind: "" };
+
+  // What a row sorts by in one column: a number, a string, or null for nothing.
+  function sortValue(row, column) {
+    const value = row[column.key];
+    if (value === null || value === undefined) return null;
+    if (column.type === "tier") {
+      return Object.prototype.hasOwnProperty.call(data.ranks, value) ? data.ranks[value] : null;
+    }
+    if (column.type === "flag") return value ? 1 : 0;
+    if (column.type === "num") return value;
+    return String(value).toLowerCase();
+  }
+
+  function shown() {
+    const needle = state.text.trim().toLowerCase();
+    const rows = data.rows.filter((row) => {
+      if (state.tier && row.tier !== state.tier) return false;
+      if (state.kind && row.kind !== state.kind) return false;
+      if (!needle) return true;
+      return [row.name, row.canonical].some(
+        (text) => typeof text === "string" && text.toLowerCase().includes(needle)
+      );
+    });
+    const column = byKey.get(state.key);
+    if (!column) return rows;
+    const sign = state.descending ? -1 : 1;
+    // Array.prototype.sort is stable: equal rows keep the file's order, and a
+    // row with nothing in the column goes last whichever way the sort runs.
+    return rows.slice().sort((a, b) => {
+      const x = sortValue(a, column);
+      const y = sortValue(b, column);
+      if (x === null || y === null) return (x === null) - (y === null);
+      if (x < y) return -sign;
+      if (x > y) return sign;
+      return 0;
+    });
+  }
+
+  function cellText(row, column) {
+    const value = row[column.key];
+    if (value === null || value === undefined) return NONE;
+    if (column.type === "flag") return value ? "T" : "F";
+    if (column.key === "context") return value.toLocaleString("en-US");
+    if (column.type === "num") return String(Number(value.toFixed(4)));
+    if (column.key === "kind") return value === "model" ? "mine" : value;
+    return String(value);
+  }
+
+  function cell(row, column) {
+    const td = document.createElement("td");
+    const text = cellText(row, column);
+    if (column.type === "tier" && text !== NONE) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      if (Object.prototype.hasOwnProperty.call(data.ranks, text)) chip.classList.add(text);
+      chip.textContent = text;
+      td.appendChild(chip);
+      return td;
+    }
+    td.textContent = text;
+    if (column.type === "num") td.classList.add("num");
+    if (column.key === "name" || column.key === "canonical") td.classList.add("name");
+    // A candidate is named by its key: the second copy is only an echo.
+    const echo = column.key === "canonical" && row.canonical === row.name;
+    if (text === NONE || echo || column.key === "kind" || column.key === "reason") {
+      td.classList.add("dim");
+    }
+    return td;
+  }
+
+  function render() {
+    const rows = shown();
+    const body = document.getElementById("body");
+    body.replaceChildren(
+      ...rows.map((row) => {
+        const tr = document.createElement("tr");
+        tr.append(...COLUMNS.map((column) => cell(row, column)));
+        return tr;
+      })
+    );
+    document.getElementById("empty").hidden = rows.length > 0;
+    document.getElementById("count").textContent =
+      rows.length + " of " + data.rows.length + " rows";
+    for (const th of document.getElementById("head").children) {
+      const active = th.dataset.key === state.key;
+      if (active) th.setAttribute("aria-sort", state.descending ? "descending" : "ascending");
+      else th.removeAttribute("aria-sort");
+    }
+  }
+
+  // The first click on a column: text runs A to Z, everything else highest first.
+  function sortBy(key) {
+    if (state.key === key) {
+      state.descending = !state.descending;
+    } else {
+      state.key = key;
+      state.descending = byKey.get(key).type !== "text";
+    }
+    render();
+  }
+
+  const head = document.getElementById("head");
+  for (const column of COLUMNS) {
+    const th = document.createElement("th");
+    th.dataset.key = column.key;
+    th.scope = "col";
+    if (column.type === "num") th.className = "num";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = column.label;
+    button.title = column.title;
+    button.addEventListener("click", () => sortBy(column.key));
+    th.appendChild(button);
+    head.appendChild(th);
+  }
+
+  const filter = document.getElementById("filter");
+  filter.addEventListener("input", () => { state.text = filter.value; render(); });
+  for (const name of ["tier", "kind"]) {
+    const select = document.getElementById(name);
+    select.addEventListener("change", () => { state[name] = select.value; render(); });
+  }
+
+  // `show --sort` names the file's columns; the page calls `model` its `name`.
+  const first = data.sort === "model" ? "name" : data.sort;
+  if (byKey.has(first)) sortBy(first);
+  else render();
+})();
+</script>
+</body>
+</html>

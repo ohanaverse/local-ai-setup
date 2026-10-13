@@ -751,6 +751,57 @@ def test_show_sort_and_wide_reorder_and_widen_the_table(
     assert lines[4].split()[3] == "ollama/qwen3.8:27b-mlx"
 
 
+@pytest.mark.usefixtures("written")
+def test_show_html_writes_the_page_and_prints_only_where(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "pages" / "tiers.html"  # the directory does not exist yet
+    late = _reader_deps(T0 + timedelta(days=15))
+    assert cli.main(["show", "--html", str(target), "--sort", "eci"], deps=late) == 0
+    captured = capsys.readouterr()
+    assert captured.out == f"wrote {target}\n"
+    assert captured.err == (
+        "warning: tiers.toml is 15 days old; run `modeltiers run` to refresh it\n"
+    )
+    text = target.read_text(encoding="utf-8")
+    assert text.startswith("<!doctype html>")
+    assert "(15 days old), contracts fixture-1" in text
+    assert '"sort": "eci"' in text
+    assert "ollama/glm-5.3:cloud" in text
+    assert "anthropic/claude-opus-5-5" in text  # the candidates are always there
+    assert [p.name for p in target.parent.iterdir()] == ["tiers.html"]
+
+
+@pytest.mark.usefixtures("written")
+def test_show_html_names_the_whole_path_of_a_relative_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["show", "--html", "tiers.html"], deps=_reader_deps(T0)) == 0
+    assert capsys.readouterr().out == f"wrote {tmp_path.resolve() / 'tiers.html'}\n"
+
+
+@pytest.mark.usefixtures("written")
+def test_show_html_that_cannot_be_written_exits_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["show", "--html", str(tmp_path)], deps=_reader_deps(T0)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("modeltiers: ")
+    # The half-written copy beside it is gone.
+    assert [p.name for p in tmp_path.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_show_html_without_a_tiers_file_writes_no_page(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "tiers.html"
+    assert cli.main(["show", "--html", str(target)], deps=_reader_deps(T0)) == 1
+    assert "run `modeltiers run` to write it" in capsys.readouterr().err
+    assert not target.exists()
+
+
 def test_show_refuses_a_sort_column_it_does_not_have(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

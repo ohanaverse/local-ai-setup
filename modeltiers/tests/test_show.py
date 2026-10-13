@@ -374,10 +374,22 @@ def test_a_value_that_is_not_a_number_sorts_as_missing() -> None:
             {"provider_id": "p", "model_name": "text", "scores": {"eci": "high"}},
             {"provider_id": "p", "model_name": "flag", "scores": {"eci": True}},
             {"provider_id": "p", "model_name": "table", "scores": "none"},
+            {"provider_id": "p", "model_name": "nan", "scores": {"eci": float("nan")}},
+            {"provider_id": "p", "model_name": "inf", "scores": {"eci": float("inf")}},
             {"provider_id": "p", "model_name": "scored", "scores": {"eci": 150.0}},
         ]
     }
-    assert _models(show.table_lines(doc, sort="eci")) == ["p/scored", "p/text", "p/flag", "p/table"]
+    lines = show.table_lines(doc, sort="eci", wide=True)
+    assert [line.split()[-2] for line in lines[1:7]] == [
+        "p/scored",
+        "p/text",
+        "p/flag",
+        "p/table",
+        "p/nan",
+        "p/inf",
+    ]
+    # Each of them is a dash in its own column, not a score.
+    assert [line.split()[7] for line in lines[1:7]] == ["150", "-", "-", "-", "-", "-"]
 
 
 WIDE = [
