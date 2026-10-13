@@ -909,8 +909,10 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	m.models.Select(pos)
 
 	// The single-row shortcut launches only: a lone start row must show the
-	// picker and wait for Enter, never start a server unasked.
-	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start {
+	// picker and wait for Enter, never start a server unasked. A lone
+	// slot-profile row waits too: the shortcut launches the row as a model,
+	// and a profile row's model is only its id.
+	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start && tbl.items[0].profile == nil {
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel

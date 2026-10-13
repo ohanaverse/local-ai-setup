@@ -153,8 +153,16 @@ func (m *model) modelFrames() []listFrame {
 			// gives it up at 80 columns), and this line is not. It is on
 			// the mode line, not a line of its own, so the footer is as tall
 			// as it was and nothing about the fit changes.
+			//
+			// A slot-profile row has the line to itself: its slots, or its
+			// block reason (slotLine). Every profile launches through the
+			// proxy, so neither the mode nor a price is named for it.
 			if it, ok := m.models.SelectedItem().(*modelItem); ok {
-				mode = modeLine(mode, it.cost, inner)
+				if it.profile != nil {
+					mode = slotLine(it.profile, inner)
+				} else {
+					mode = modeLine(mode, it.cost, inner)
+				}
 			}
 			// Enter's effect depends on the highlighted row — launch for a cloud or
 			// already-running row, start through the lifecycle engine for a

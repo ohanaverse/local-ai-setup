@@ -4,6 +4,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -348,5 +349,129 @@ func TestSlotLine(t *testing.T) {
 	}
 	if got := slotLine(nil, 76); got != "" {
 		t.Errorf("slotLine(nil) = %q, want nothing", got)
+	}
+}
+
+// footerLine is the line of view that sits just above the picker's key
+// hints: the mode line, or the slot line when a profile row is highlighted.
+func footerLine(t *testing.T, view string) string {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "[↑/↓] navigate") && i > 0 {
+			return strings.TrimSpace(lines[i-1])
+		}
+	}
+	t.Fatalf("the view has no key hints:\n%s", view)
+	return ""
+}
+
+// TestProfileRowScreenFitsAndShowsItsSlots pins the picker with profile rows
+// on a real-sized screen, through Update and View, at 80x24, 40x12 and
+// 120x50. With a profile row highlighted the line under the table is that
+// profile's slot line, whole entries only, and names neither the LiteLLM
+// mode nor a price; on a blocked row it is the reason. It takes the mode
+// line's place, so the screen is no taller than with a model highlighted,
+// and moving back to a model row brings the mode line back. A slot line on a
+// line of its own would push the header off the top of a short terminal.
+func TestProfileRowScreenFitsAndShowsItsSlots(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {40, 12}, {120, 50}} {
+		width, height := size[0], size[1]
+		name := fmt.Sprintf("%dx%d", width, height)
+		stubInventory(t, runningOmlxSnapshot())
+		m := slotPicker(t, slotTestConfig(), slotRowChecks(), width, height)
+		if got, want := strings.Join(itemIDs(m), ","), "profile/cloud,profile/mixed,profile/broken,"; !strings.HasPrefix(got, want) {
+			t.Fatalf("%s: rows = %s, want the three profiles first, in file order", name, got)
+		}
+
+		m.models.Select(indexOfID(m, "openrouter/a"))
+		m = resized(t, m, width, height)
+		plain := m.View()
+		assertFits(t, name+", model row", plain, width, height)
+		if got, want := footerLine(t, plain), "LiteLLM: on   cost 0.4/0.04/1.6"; got != want {
+			t.Errorf("%s, model row: the line under the table = %q, want %q", name, got, want)
+		}
+
+		for id, want := range map[string]string{
+			"profile/cloud":  "opus* a · haiku b",
+			"profile/mixed":  "sonnet* a · haiku qwen3.8",
+			"profile/broken": cutLines("slot haiku: openrouter/gone is not in the registry", width-2*pickerPadX),
+		} {
+			m.models.Select(indexOfID(m, id))
+			m = resized(t, m, width, height)
+			view := m.View()
+			assertFits(t, name+", on "+id, view, width, height)
+			if got := footerLine(t, view); got != want {
+				t.Errorf("%s, on %s: the line under the table = %q, want %q", name, id, got, want)
+			}
+			if strings.Contains(view, "LiteLLM:") || strings.Contains(view, "cost ") {
+				t.Errorf("%s, on %s: the view names the LiteLLM mode or a price:\n%s", name, id, view)
+			}
+			if got, want := lipgloss.Height(view), lipgloss.Height(plain); got != want {
+				t.Errorf("%s, on %s: the view is %d lines, want the %d it is with a model row highlighted", name, id, got, want)
+			}
+			if !strings.Contains(view, id) {
+				t.Errorf("%s, on %s: the row is not on screen:\n%s", name, id, view)
+			}
+		}
+	}
+}
+
+// TestProfileSlotLineIsCutToWholeEntriesOnScreen pins the "+N more" cut on
+// the screen itself: a profile whose slot list is wider than the picker shows
+// as many whole entries as fit and counts the rest, at every size. Without
+// the cut the footer's clip would end the line mid-name at the right edge.
+func TestProfileSlotLineIsCutToWholeEntriesOnScreen(t *testing.T) {
+	cfg := slotTestConfig()
+	for _, name := range []string{"glm-5.2:cloud", "kimi-k3:cloud", "glm-5.3-flash:cloud"} {
+		cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/" + name, ProviderID: "openrouter", ModelName: name, Family: "x", Tags: []string{"code"}})
+	}
+	checks := []profiles.SlotCheck{slotCheckFor(0, "ollama-cloud", "opus", map[string]string{
+		"fable": "openrouter/kimi-k3:cloud", "opus": "openrouter/glm-5.2:cloud",
+		"sonnet": "openrouter/glm-5.3-flash:cloud", "haiku": "omlx/qwen3.8",
+	})}
+	const opus, fable, sonnet, haiku = "opus* glm-5.2:cloud", "fable kimi-k3:cloud", "sonnet glm-5.3-flash:cloud", "haiku qwen3.8"
+	for _, c := range []struct {
+		width, height int
+		want          string
+	}{
+		{80, 24, opus + " · " + fable + " · +2 more"},
+		{40, 12, opus + " · +3 more"},
+		{120, 50, opus + " · " + fable + " · " + sonnet + " · " + haiku},
+	} {
+		stubInventory(t, runningOmlxSnapshot())
+		m := slotPicker(t, cfg, checks, c.width, c.height)
+		m.models.Select(indexOfID(m, "profile/ollama-cloud"))
+		m = resized(t, m, c.width, c.height)
+		view := m.View()
+		assertFits(t, "slot line", view, c.width, c.height)
+		if got := footerLine(t, view); got != c.want {
+			t.Errorf("%dx%d: the line under the table = %q, want %q", c.width, c.height, got, c.want)
+		}
+	}
+}
+
+// TestLoneProfileRowKeepsThePickerOpen pins the single-row shortcut: a table
+// whose one row is a profile opens the picker and waits for Enter. The
+// shortcut launches the highlighted row as a model, and a profile row's model
+// is only its id, so auto-launching it would fail with "unknown provider".
+func TestLoneProfileRowKeepsThePickerOpen(t *testing.T) {
+	cfg := slotTestConfig()
+	// The agent's own eligible list is the local model alone, and the probe
+	// confirms it is not on disk, so it has no row.
+	cfg.Agents[0].SupportedProviders = []string{"omlx"}
+	stubInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/qwen3.8", ModelName: "qwen3.8", Registered: true, ArtifactKnown: true}},
+	})
+	checks := []profiles.SlotCheck{slotCheckFor(0, "cloud", "opus", map[string]string{"opus": "openrouter/a"})}
+
+	m := slotPicker(t, cfg, checks, 80, 24)
+
+	if got := strings.Join(itemIDs(m), ","); got != "profile/cloud" {
+		t.Fatalf("rows = %s, want the profile alone", got)
+	}
+	if m.phase != phaseModel || m.status != "" || m.launchModel.ID != "" {
+		t.Errorf("phase = %v status = %q launch model = %q, want the picker open and nothing launched", m.phase, m.status, m.launchModel.ID)
 	}
 }
