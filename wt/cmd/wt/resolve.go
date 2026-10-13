@@ -143,6 +143,11 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 // resolveModel is what lets the non-TUI path make the same decisions the
 // table displays.
 func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) string {
+	// A slot-profile row has no route of its own: its Model is the row id
+	// only, and its verdict is resolved validation's (catalog.ResolveSlotProfile).
+	if row.IsProfile() {
+		return row.BlockReason()
+	}
 	route, err := cfg.ResolveRoute(row.Model, agents.ProtocolsFor(agent))
 	switch {
 	case row.RefusedByRoute(route, err):
@@ -165,6 +170,11 @@ func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) stri
 func launchableModels(cfg *config.Config, agent string, rows []catalog.Row) []config.Model {
 	var out []config.Model
 	for _, r := range rows {
+		// A slot profile is reached by a -M pin only: it is never rotated
+		// into and never the single launchable model.
+		if r.IsProfile() {
+			continue
+		}
 		if r.Action() != catalog.ActionLaunch {
 			continue
 		}
