@@ -37,6 +37,7 @@ const (
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
+	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
 )
 
 // model holds the entire UI state.
@@ -116,6 +117,12 @@ type model struct {
 	routing  *routingState // in-flight route check (phaseRouting); nil when idle
 	routeRun int           // monotonically increasing run id; stale messages are dropped by id
 
+	// slot-profile launch: Enter on a profile row runs the launch flow's
+	// route writes, restart and probe behind phaseSlot. The flow is kept
+	// while the profile's local model starts and on the replace dialog.
+	slot    *slotFlow // in-flight profile launch; nil when idle
+	slotRun int       // monotonically increasing run id; stale messages are dropped by id
+
 	// new-worktree prompt
 	newInput         textinput.Model
 	newError         string
@@ -194,6 +201,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	case routeDoneMsg, routeTickMsg:
 		// Likewise exactly the set handleRouteMsg handles.
 		return m.handleRouteMsg(msg)
+	case slotPreparedMsg, slotSettledMsg, slotTickMsg:
+		// Likewise exactly the set handleSlotMsg handles.
+		return m.handleSlotMsg(msg)
+	case slotAbortMsg:
+		// The slot applier failed after the terminal was released: no agent
+		// ran and nothing was recorded.
+		m.status = "launch failed: " + msg.err.Error()
+		m.phase = phaseModel
+		return m.refreshTable()
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -319,6 +335,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// the cursor, pop a screen or quit by accident. Only ctrl+c gets out.
 		if m.phase == phaseRouting {
 			return m.handleRouteKey(msg)
+		}
+		// And a profile launch's route stage, for the same reason.
+		if m.phase == phaseSlot && m.slot != nil {
+			return m.handleSlotKey(msg)
 		}
 		// A status that has the screen to itself (statusAlone) is taken down
 		// by the next key, which does nothing else: the table was not on
@@ -465,6 +485,13 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				highlighted, ok := m.models.SelectedItem().(*modelItem)
 				if !ok {
 					return m, nil
+				}
+				if highlighted.profile != nil && highlighted.blocked == "" {
+					// A slot profile is its own launch unit: its routes, its
+					// local model's start and its command all come from the
+					// profile, never from this row's id-only Model. A blocked
+					// profile falls through to the reason below.
+					return m.beginSlotLaunch(highlighted)
 				}
 				if highlighted.start {
 					// A start row: run the model through the lifecycle engine
@@ -623,6 +650,12 @@ func (m model) View() string {
 			return "route update (waiting for window size)"
 		}
 		return clip(m.routingView(), m.width)
+	}
+	if m.phase == phaseSlot {
+		if m.width <= 0 || m.height <= 0 {
+			return "slot profile launch (waiting for window size)"
+		}
+		return clip(m.slotView(), m.width)
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
@@ -1070,6 +1103,18 @@ func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
 // in this same Update, unless the check had to write the route, in which case
 // phaseRouting shows the proxy restart first.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
+	// A guard, not a path: Enter and the pin send a profile row to
+	// beginSlotLaunch themselves. Anything else that lands here with a
+	// profile highlighted must not go on to ResolveRoute and the single-model
+	// launch with the row's id-only Model.
+	if it, ok := m.models.SelectedItem().(*modelItem); ok && it.profile != nil {
+		if it.blocked != "" {
+			m.status = it.blocked
+			m.phase = phaseModel
+			return m, nil
+		}
+		return m.beginSlotLaunch(it)
+	}
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.models is the single source of truth.
 	highlighted, ok := m.models.SelectedItem().(*modelItem)
@@ -1336,6 +1381,9 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 			fmt.Fprintln(w, "wt: waiting for the LiteLLM proxy restart…")
 		}
 		pendingRouteNotes += fm.routing.settle()
+	}
+	if fm, ok := final.(model); ok {
+		settleQuitSlot(fm, w)
 	}
 	flushRouteNotes(w)
 	// A start that was still running when wt quit (ctrl+c twice on the start

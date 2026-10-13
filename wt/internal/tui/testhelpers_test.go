@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -114,6 +116,23 @@ func TestMain(m *testing.M) {
 	// The start flow asks whether a proxy restart is in flight before it
 	// waits for one; no test may read the engine's real answer.
 	routesPending = func() bool { return false }
+	// The slot-profile launch: unstubbed, Enter on a profile row would
+	// rewrite the developer's real config.yaml, restart their proxy and look
+	// the agent binary up. Each seam fails closed; tests that reach the flow
+	// call stubSlotSeams.
+	ensureSlotRoutes = func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error) {
+		return false, errors.New("ensureSlotRoutes not stubbed in this test")
+	}
+	restartProxyNow = func(context.Context, *config.Config) error {
+		return errors.New("restartProxyNow not stubbed in this test")
+	}
+	probeProxyNow = func(context.Context, *config.Config) error {
+		return errors.New("probeProxyNow not stubbed in this test")
+	}
+	settleRoutesNow = func(context.Context, *config.Config) {}
+	buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
+		return nil, errors.New("buildSlotCmd not stubbed in this test")
+	}
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.
 	releaseSession = func() {}

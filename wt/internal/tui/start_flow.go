@@ -365,7 +365,7 @@ func buildReplaceChoices() []list.Item {
 //
 // The seams are read HERE, on the caller's goroutine, so a test seam swap
 // never races the goroutine's late first read.
-func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow bool, id int) (<-chan tea.Msg, *startOutput) {
+func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow, restartOwed bool, id int) (<-chan tea.Msg, *startOutput) {
 	ch := make(chan tea.Msg, 16)
 	start, wait, pending, settle := startModel, waitPendingRoutes, routesPending, settleStart
 	out := &startOutput{}
@@ -377,7 +377,7 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 			case <-ctx.Done():
 			}
 		}
-		err := start(ctx, cfg, t, lifecycle.Options{AllowReplace: allow, Progress: stage, Out: out})
+		err := start(ctx, cfg, t, lifecycle.Options{AllowReplace: allow, Progress: stage, Out: out, RestartOwed: restartOwed})
 		if pending() {
 			// Not through stage: a cancelled start has a done context, and
 			// the screen still has to say what it is waiting for.
@@ -411,12 +411,19 @@ func startTick(id int) tea.Cmd {
 
 // beginStart starts it through the engine and enters phaseStarting.
 func (m model) beginStart(it *modelItem, allowReplace bool) (model, tea.Cmd) {
+	return m.beginStartOwed(it, allowReplace, false)
+}
+
+// beginStartOwed is beginStart for a caller that already owes a proxy
+// restart: a profile launch whose cloud-route write changed config.yaml. The
+// engine's one restart then publishes that write too (Options.RestartOwed).
+func (m model) beginStartOwed(it *modelItem, allowReplace, restartOwed bool) (model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.startRun++
 	// Any refresh still in flight predates this start; finishStart issues its own.
 	m.refreshGen++
 	id := m.startRun
-	ch, out := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, id)
+	ch, out := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, restartOwed, id)
 	m.start = &startState{id: id, item: it, began: time.Now(), cancel: cancel, ch: ch, out: out}
 	m.phase = phaseStarting
 	m.status = ""
