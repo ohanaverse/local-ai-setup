@@ -268,3 +268,94 @@ func TestLiveReportsEveryRecordedModel(t *testing.T) {
 		t.Fatalf("Live = %v, want omlx/registered:2 omlx/Discovered-4bit:1 and no swept entry", got)
 	}
 }
+
+// readEntries decodes every line of dir/refcount.jsonl, in file order. A
+// missing file is no entries.
+func readEntries(t *testing.T, dir string) []entry {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "refcount.jsonl"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read refcount file: %v", err)
+	}
+	var out []entry
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		var e entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			t.Fatalf("refcount line %q: %v", scanner.Text(), err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// TestRecordAll verifies a slot-profile session is recorded as one line per
+// distinct model it uses. A model that fills three slots must count as one
+// session, not three: the picker's in-use column and the question `wt stop`
+// asks before halting a server both count lines.
+func TestRecordAll(t *testing.T) {
+	tests := []struct {
+		name string
+		ids  []string
+		want []string
+	}{
+		{name: "one line per model", ids: []string{"openrouter/a", "ollama/b:cloud", "omlx/c"}, want: []string{"openrouter/a", "ollama/b:cloud", "omlx/c"}},
+		{name: "a model in several slots is recorded once", ids: []string{"omlx/c", "openrouter/a", "omlx/c", "omlx/c"}, want: []string{"omlx/c", "openrouter/a"}},
+		{name: "an empty id is skipped", ids: []string{"", "openrouter/a"}, want: []string{"openrouter/a"}},
+		{name: "nothing to record", ids: nil, want: nil},
+		{name: "only empty ids", ids: []string{"", ""}, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store := NewStoreAt(dir)
+			if err := store.RecordAll(4242, tt.ids); err != nil {
+				t.Fatalf("RecordAll: %v", err)
+			}
+			got := readEntries(t, dir)
+			if len(got) != len(tt.want) {
+				t.Fatalf("entries = %v, want one per id of %v", got, tt.want)
+			}
+			for i, e := range got {
+				if e.Pid != 4242 || e.ModelID != tt.want[i] {
+					t.Errorf("entry %d = %+v, want pid 4242 model %q", i, e, tt.want[i])
+				}
+			}
+			if len(tt.want) == 0 {
+				if _, err := os.Stat(filepath.Join(dir, "refcount.jsonl")); !os.IsNotExist(err) {
+					t.Errorf("refcount.jsonl exists with nothing recorded (stat err = %v)", err)
+				}
+			}
+		})
+	}
+}
+
+// TestRecordAllKeepsOtherSessionsAndReleasesTogether verifies RecordAll
+// appends beside another session's entry, each of its models then counts that
+// session, and one Release drops every line of the pid. If a line outlived
+// the session, the stop picker would never again offer that model.
+func TestRecordAllKeepsOtherSessionsAndReleasesTogether(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	if err := store.Record(111, "omlx/c"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := store.RecordAll(222, []string{"openrouter/a", "omlx/c"}); err != nil {
+		t.Fatalf("RecordAll: %v", err)
+	}
+	got := store.Counts([]string{"openrouter/a", "omlx/c"})
+	if got["openrouter/a"] != 1 || got["omlx/c"] != 2 {
+		t.Fatalf("Counts = %v, want openrouter/a:1 omlx/c:2", got)
+	}
+
+	if err := store.Release(222); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	got = store.Counts([]string{"openrouter/a", "omlx/c"})
+	if got["openrouter/a"] != 0 || got["omlx/c"] != 1 {
+		t.Fatalf("Counts after Release = %v, want openrouter/a:0 omlx/c:1 (the other session's line stays)", got)
+	}
+}

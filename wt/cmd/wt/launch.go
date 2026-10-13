@@ -200,6 +200,13 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	} else {
 		m, err = resolveModelFromEligible(agent, eligible)
 	}
+	// A -M pin of a slot profile is its own launch unit: none of the
+	// single-model steps below (the ollama check, the route check, rotation,
+	// the automatic profile) apply to it.
+	var pin *slotPin
+	if errors.As(err, &pin) {
+		return launchSlotProfile(agent, worktreePath, cfg, yolo, pin.row, extraArgs)
+	}
 	if err != nil {
 		// When multiple models are eligible and no pin was supplied, rotate
 		// through the global model list to the next model supported by agent.
@@ -258,7 +265,9 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		ensureRouteBeforeLaunch(cfg, m)
 	}
 	if rerr := rotation.New().RecordFor(agent, m.ID); rerr != nil {
-		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
+		// RecordFor names the file that failed: rotation.state, or
+		// last-picked.state, a write of its own.
+		fmt.Fprintf(os.Stderr, "note: %v\n", rerr)
 	}
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)

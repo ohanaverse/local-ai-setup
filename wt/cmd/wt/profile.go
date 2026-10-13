@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/spf13/cobra"
@@ -35,33 +36,46 @@ func profileCmd(a *app) *cobra.Command {
 	listC := &cobra.Command{
 		Use: "list", Short: "List every defined profile", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
 			// A load error means profiles.toml is malformed/unreadable —
 			// a.profiles is NOT real data (it's the zero-value Store{}), so
 			// rendering it as "(no profiles defined)" would misreport a
 			// broken file as an empty one. Report the real error instead.
+			// The slot-profile section is produced independently of it: it
+			// is printed first, and this error is the one returned.
 			if a.profilesLoadErr != nil {
+				_ = writeSlotProfileList(out, a)
 				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
 			}
 			if len(a.profiles.Profiles) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "(no profiles defined)")
-				return nil
+				fmt.Fprintln(out, "(no profiles defined)")
+			} else {
+				for _, p := range a.profiles.Profiles {
+					fmt.Fprintf(out, "%s: match=%s %s\n", p.Agent, p.Match, matchValueForDisplay(p))
+				}
+				if a.profilesValidateErr != nil {
+					fmt.Fprintf(out, "warning: profiles.toml failed validation — profiles are disabled for every launch: %v\n", a.profilesValidateErr)
+				}
 			}
-			for _, p := range a.profiles.Profiles {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s: match=%s %s\n", p.Agent, p.Match, matchValueForDisplay(p))
-			}
-			if a.profilesValidateErr != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "warning: profiles.toml failed validation — profiles are disabled for every launch: %v\n", a.profilesValidateErr)
-			}
-			return nil
+			return writeSlotProfileList(out, a)
 		},
 	}
 
 	var showAgent, showModel string
 	showC := &cobra.Command{
-		Use: "show", Short: "Dry-run profile resolution for an agent/model, without launching", Args: cobra.NoArgs, SilenceUsage: true,
+		Use: "show", Short: "Dry-run profile resolution for an agent/model, or show a slot profile (-M profile/<name>), without launching", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if showAgent == "" {
 				return fmt.Errorf("-A/--agent is required")
+			}
+			// A -M value with the profile/ prefix names a slot profile. That
+			// branch reads slot-profiles.toml only, so it runs before any
+			// profiles.toml check. When the registry holds the prefix (a
+			// provider with id "profile", or a model whose id begins with
+			// "profile/") no slot-profile row exists and the id is a
+			// registry model's: the automatic branch below handles it.
+			if strings.HasPrefix(showModel, profiles.SlotIDPrefix) && !catalog.SlotPrefixReserved(a.cfg) {
+				return showSlotProfile(cmd.OutOrStdout(), a, showAgent, showModel)
 			}
 			if a.profilesLoadErr != nil {
 				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
@@ -105,7 +119,7 @@ func profileCmd(a *app) *cobra.Command {
 		},
 	}
 	showC.Flags().StringVarP(&showAgent, "agent", "A", "", "agent to resolve for")
-	showC.Flags().StringVarP(&showModel, "model", "M", "", "model id to resolve for")
+	showC.Flags().StringVarP(&showModel, "model", "M", "", "model id to resolve for, or profile/<name> for a slot profile")
 
 	statusC := &cobra.Command{
 		Use: "status", Short: "Show whether the profile layer is enabled", Args: cobra.NoArgs, SilenceUsage: true,

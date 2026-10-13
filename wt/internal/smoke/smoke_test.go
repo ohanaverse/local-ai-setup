@@ -20,6 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // smokeFixtureConfig builds a small multi-agent, multi-provider config:
@@ -1188,5 +1189,35 @@ func TestRealBuildAndRunSetsPWDToTheRowDir(t *testing.T) {
 	}
 	if len(pwd) != 1 || pwd[0] != "PWD="+dir {
 		t.Fatalf("the agent's PWD entries were %v, want exactly PWD=%s", pwd, dir)
+	}
+}
+
+// TestCandidatesNeverIncludeASlotProfile verifies `wt smoke` offers no slot
+// profile, even with a valid slot-profiles.toml for one of its agents in the
+// config home. Smoke tests one model against each agent; a profile is several
+// models and one agent, and a profile row among the candidates would be run
+// as a model named "profile/<name>" and fail every agent.
+func TestCandidatesNeverIncludeASlotProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	if err := os.MkdirAll(filepath.Dir(profiles.SlotPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[[profile]]\nname = \"all\"\nagent = \"claude\"\ndefault = \"opus\"\n\n[profile.slots]\nopus = \"ollama/running:1\"\n"
+	if err := os.WriteFile(profiles.SlotPath(), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, restore := candidatesFixture(t)
+	defer restore()
+
+	got := Candidates(cfg)
+
+	if len(got) != 2 {
+		t.Errorf("Candidates returned %d rows, want the fixture's two (running and idle)", len(got))
+	}
+	for _, c := range got {
+		if c.Row.IsProfile() || strings.HasPrefix(c.Row.Model.ID, profiles.SlotIDPrefix) {
+			t.Errorf("Candidates offers the slot profile %s", c.Row.Model.ID)
+		}
 	}
 }

@@ -44,6 +44,8 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 //     catalog.MissingReason when the pin is in the eligible list and the
 //     probe can say why it has no row (not on disk, a stopped mlx_lm_server
 //     pairing), else "not in the eligible list".
+//   - pinned names a slot profile ("profile/<name>") whose row is not
+//     blocked → a *slotPin carrying the row; nothing is started here.
 //   - no pin, empty launchable → error (pin-the-model wording when rows
 //     existed; catalog.NoRowsReason when models were eligible but none has a
 //     row; generic "no models match" when nothing was eligible)
@@ -74,6 +76,10 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		// hideDiscovered), so rotation can never land on a model the
 		// filter cannot describe.
 		HideDiscovered: tags != "" || family != "",
+		// Slot profiles are pin targets only: launchableModels leaves their
+		// rows out, so neither the single-model auto-launch nor rotation can
+		// return one. nil outside runLaunchPath.
+		SlotProfiles: launchSlotChecks,
 	})
 	launchable := launchableModels(cfg, agent, rows)
 
@@ -102,6 +108,14 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		if reason := pickerBlockedReason(cfg, agent, row); reason != "" {
 			return config.Model{}, launchable, fmt.Errorf("%s", reason)
 		}
+		// A slot profile is its own launch unit: nothing is started here.
+		// The caller runs launchSlotProfile, which writes the cloud slots'
+		// routes first and then starts the local model, so one proxy restart
+		// publishes both. A blocked profile never reaches this line: the
+		// check above returned its reason.
+		if row.IsProfile() {
+			return config.Model{}, launchable, &slotPin{row: row}
+		}
 		switch row.Action() {
 		case catalog.ActionLaunch:
 			return row.Model, launchable, nil
@@ -115,12 +129,21 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	}
 
 	if len(launchable) == 0 {
-		if len(rows) == 0 && len(eligible) > 0 {
+		// Profile rows are pin targets only. Without a pin the wording below
+		// is chosen from the model rows alone, so it is what it was before
+		// slot profiles existed.
+		modelRows := 0
+		for _, r := range rows {
+			if !r.IsProfile() {
+				modelRows++
+			}
+		}
+		if modelRows == 0 && len(eligible) > 0 {
 			// Every eligible model is a local one with no row (#179 Phase B):
 			// the filters matched, the models just are not on disk or running.
 			return config.Model{}, nil, errors.New(catalog.NoRowsReason(agent))
 		}
-		if len(rows) == 0 {
+		if modelRows == 0 {
 			return config.Model{}, nil, fmt.Errorf("no models match agent %q with tags %q and family %q", agent, tags, family)
 		}
 		// Models matched; none is usable without starting one. Say which
@@ -143,6 +166,11 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 // resolveModel is what lets the non-TUI path make the same decisions the
 // table displays.
 func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) string {
+	// A slot-profile row has no route of its own: its Model is the row id
+	// only, and its verdict is resolved validation's (catalog.ResolveSlotProfile).
+	if row.IsProfile() {
+		return row.BlockReason()
+	}
 	route, err := cfg.ResolveRoute(row.Model, agents.ProtocolsFor(agent))
 	switch {
 	case row.RefusedByRoute(route, err):
@@ -165,6 +193,11 @@ func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) stri
 func launchableModels(cfg *config.Config, agent string, rows []catalog.Row) []config.Model {
 	var out []config.Model
 	for _, r := range rows {
+		// A slot profile is reached by a -M pin only: it is never rotated
+		// into and never the single launchable model.
+		if r.IsProfile() {
+			continue
+		}
 		if r.Action() != catalog.ActionLaunch {
 			continue
 		}

@@ -168,6 +168,11 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		routes = make([]resolvedRoute, len(rows))
 		var wg sync.WaitGroup
 		for i, r := range rows {
+			if r.Profile != nil {
+				// A slot-profile row has no route of its own: its Model is
+				// the row id only, and its verdict is resolved validation's.
+				continue
+			}
 			wg.Add(1)
 			go func(i int, m config.Model) {
 				defer wg.Done()
@@ -186,6 +191,9 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	timePriced := false
 	for i, r := range rows {
 		fam[i] = r.Model.Family
+		if r.Profile != nil {
+			fam[i] = "profile"
+		}
 		if fam[i] == "" {
 			fam[i] = "-"
 		}
@@ -221,6 +229,9 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	items := make([]*modelItem, 0, len(rows))
 	for i, r := range rows {
 		loc := string(r.Location)
+		if r.Profile != nil {
+			loc = r.Profile.Loc
+		}
 		if loc == "" {
 			loc = "-"
 		}
@@ -241,7 +252,12 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		case catalog.ActionStart:
 			it.start = true
 		}
-		if cfg != nil {
+		if r.Profile != nil {
+			// The slot line takes the mode line's place for this row
+			// (slotLine), so the item carries the profile and no price note.
+			it.profile, it.cost = r.Profile, ""
+		}
+		if cfg != nil && r.Profile == nil {
 			route, err := routes[i].route, routes[i].err
 			switch {
 			case r.RefusedByRoute(route, err):

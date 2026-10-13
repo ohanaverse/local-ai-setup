@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,6 +98,36 @@ func RoutesPending() bool { return routesInFlight.Load() > 0 }
 //     prompt — therefore wait here rather than only at process exit.
 func WaitPendingRoutes() {
 	routeWG.Wait()
+}
+
+// lastRestart is the outcome of the most recent proxy restart attempt this
+// process made: nil when it restarted and (where it was waited for) answered,
+// else why it did not. Both restart paths record it, bounceProxyAsync and
+// RestartProxy, and only ProbeProxy reads it. It starts nil: a process that
+// has restarted nothing has no failed restart.
+//
+// It exists because bounceProxyAsync only prints a failure. A start that was
+// given Options.RestartOwed settles the caller's owed restart through it, so
+// without this a slot-profile launch whose restart command failed would go
+// on: the old proxy is still up, answers the liveness probe, and knows none
+// of the routes written since.
+var lastRestart struct {
+	sync.Mutex
+	err error
+}
+
+// setLastRestartErr records the outcome of a restart attempt (nil: it worked).
+func setLastRestartErr(err error) {
+	lastRestart.Lock()
+	defer lastRestart.Unlock()
+	lastRestart.err = err
+}
+
+// lastRestartErr is the recorded outcome of the most recent restart attempt.
+func lastRestartErr() error {
+	lastRestart.Lock()
+	defer lastRestart.Unlock()
+	return lastRestart.err
 }
 
 const (
@@ -279,6 +310,17 @@ func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool)
 		}
 	}
 	return litellm.Change{}, false
+}
+
+// Routable reports whether wt writes a LiteLLM route for m at launch: the
+// predicate of modelRouteChange, which EnsureModelRoute skips a model on and
+// EnsureModelRoutes fails on (ErrNotRoutable). It is exported so a slot
+// profile's resolved validation (internal/catalog) blocks the row by the
+// same rule its route write would fail by, instead of a copy of it. It
+// writes and probes nothing.
+func Routable(cfg *config.Config, m config.Model) bool {
+	_, ok := modelRouteChange(cfg, m)
+	return ok
 }
 
 // EnsureModelRoute is EnsureRoute for a launch row's model, the form the
@@ -591,6 +633,10 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 // to bounce: applyAndReport after a route write changed the file (or a forced
 // mode asked for a bounce anyway), and bounceRoutes to settle writes an earlier
 // deferred call already made.
+//
+// It returns nothing and fails no caller: a failed restart command or a
+// readiness timeout is printed. The outcome is also remembered (lastRestart),
+// which is how ProbeProxy fails a slot-profile launch after it.
 func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 	url := cfg.LitellmBaseURL()
 	routeWG.Add(1)
@@ -626,13 +672,26 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
 		// restart is expected" case to stay quiet about — suppressing them on
 		// that theory is exactly what hid this path failing silently.
-		for _, w := range restartProxy(bgCtx) {
+		//
+		// What is printed is also remembered (lastRestart), for ProbeProxy:
+		// the restart command's warnings when it gave any, else the failed
+		// readiness wait, else nil, which clears an earlier failure.
+		var failed error
+		warnings := restartProxy(bgCtx)
+		for _, w := range warnings {
 			routePrintf(bgCtx, "wt: %s\n", w)
+		}
+		if len(warnings) > 0 {
+			failed = errors.New(strings.Join(warnings, "; "))
 		}
 		if wasUp {
 			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
 				routePrintf(bgCtx, "wt: %v\n", err)
+				if failed == nil {
+					failed = err
+				}
 			}
 		}
+		setLastRestartErr(failed)
 	}()
 }

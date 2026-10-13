@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
@@ -42,6 +43,46 @@ func modeLine(mode, cost string, width int) string {
 		return cost
 	}
 	return mode
+}
+
+// slotLine is the line under the model table while a slot-profile row is
+// highlighted; it takes the mode line's place and adds no line to the frame.
+// A blocked row shows its reason, cut with an ellipsis when it is too wide.
+// Any other row lists the slots the profile fills, the default first and
+// marked "*", the rest in the agent's declared order, each with its model's
+// provider-side name. Entries are shown whole or not at all, as the mode
+// line's price is (modeLine): the longest run of leading entries that fits
+// width is shown and the rest are counted as "+N more". It is "" when not
+// even that count fits. A width that is not positive cuts nothing.
+func slotLine(p *catalog.ProfileRow, width int) string {
+	if p == nil {
+		return ""
+	}
+	if p.Verdict == catalog.ActionBlock {
+		return cutLines(p.Reason, width)
+	}
+	const sep = " · "
+	def := p.Check.Profile.Default
+	slots := p.Check.Profile.FilledOrder(p.Check.Declared)
+	entries := make([]string, len(slots))
+	for i, s := range slots {
+		label := s
+		if s == def {
+			label += "*"
+		}
+		entries[i] = label + " " + p.Models[s].ModelName
+	}
+	for shown := len(entries); shown >= 0; shown-- {
+		parts := append([]string(nil), entries[:shown]...)
+		if rest := len(entries) - shown; rest > 0 {
+			parts = append(parts, fmt.Sprintf("+%d more", rest))
+		}
+		line := strings.Join(parts, sep)
+		if width <= 0 || lipgloss.Width(line) <= width {
+			return line
+		}
+	}
+	return ""
 }
 
 func listExtent(l list.Model, avail int) (width, floor int) { return tuilayout.ListExtent(l, avail) }
@@ -112,8 +153,16 @@ func (m *model) modelFrames() []listFrame {
 			// gives it up at 80 columns), and this line is not. It is on
 			// the mode line, not a line of its own, so the footer is as tall
 			// as it was and nothing about the fit changes.
+			//
+			// A slot-profile row has the line to itself: its slots, or its
+			// block reason (slotLine). Every profile launches through the
+			// proxy, so neither the mode nor a price is named for it.
 			if it, ok := m.models.SelectedItem().(*modelItem); ok {
-				mode = modeLine(mode, it.cost, inner)
+				if it.profile != nil {
+					mode = slotLine(it.profile, inner)
+				} else {
+					mode = modeLine(mode, it.cost, inner)
+				}
 			}
 			// Enter's effect depends on the highlighted row — launch for a cloud or
 			// already-running row, start through the lifecycle engine for a

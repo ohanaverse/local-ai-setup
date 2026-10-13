@@ -606,6 +606,18 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 			return m
 		})
 	}
+	// The picker with three slot-profile rows above its model rows and the
+	// cursor on one of them, so the slot line (or a blocked row's reason) is
+	// the line under the table.
+	profilePicker := func(id, status string) sizedView {
+		return modelPhase(func(t *testing.T, width, height int) model {
+			stubInventory(t, runningOmlxSnapshot())
+			m := slotPicker(t, slotTestConfig(), slotRowChecks(), width, height)
+			m.models.Select(indexOfID(m, id))
+			m.status = status
+			return m
+		})
+	}
 	phases := []struct {
 		name string
 		view sizedView
@@ -618,6 +630,9 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		{"agent picker, long status", agentPicker(pairingPinReason())},
 		{"model picker", modelPicker("")},
 		{"model picker, status", modelPicker(layoutStatus)},
+		{"model picker, profile row", profilePicker("profile/mixed", "")},
+		{"model picker, profile row, status", profilePicker("profile/mixed", layoutStatus)},
+		{"model picker, blocked profile row", profilePicker("profile/broken", "")},
 		{"ollama warning", modelPhase(func(t *testing.T, width, height int) model {
 			m := model{cfg: &config.Config{}, theme: themes.Default, phase: phaseOllamaWarn, width: width, height: height}
 			m.ollamaWarnModel = list.New(buildOllamaChoices(), ThemedListDelegate(m.theme), 78, 22)

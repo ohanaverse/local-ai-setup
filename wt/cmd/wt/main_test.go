@@ -262,7 +262,7 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles) error {
 		gotAgent = agent
 		gotPinned = pinned
 		return nil
@@ -315,7 +315,7 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 
 			var got, called bool
 			oldTuiRun := tuiRun
-			tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
+			tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles) error {
 				got, called = allowReplace, true
 				return nil
 			}
@@ -369,7 +369,7 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles) error {
 		gotAgent = agent
 		gotPinned = pinned
 		return nil
@@ -551,7 +551,7 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 
 	var called bool
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles) error {
 		called = true
 		return nil
 	}
@@ -762,7 +762,7 @@ func TestRunLaunchPath(t *testing.T) {
 			oldSweep := sweepRefcounts
 			var gotPath string
 			var gotTUI, gotLaunch, gotGuard, gotSweep bool
-			tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier) error {
+			tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
 				gotTUI = true
 				gotPath = c.launchPath
 				return nil
@@ -952,7 +952,7 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 
 	var gotAgent string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles) error {
 		gotAgent = agent
 		return nil
 	}
@@ -1003,7 +1003,7 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 
 	var tuiCalled bool
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles) error {
 		tuiCalled = true
 		return nil
 	}
@@ -1053,7 +1053,7 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 
 	var captured tui.ProfileApplier
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile tui.ProfileApplier) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile tui.ProfileApplier, _ tui.SlotProfiles) error {
 		captured = applyProfile
 		return nil
 	}
@@ -1159,5 +1159,34 @@ func TestBrokenRegistryLinkIsNotAPassthrough(t *testing.T) {
 	}
 	if called {
 		t.Error("launchPassthrough was called for a broken registry link")
+	}
+}
+
+// TestRunLaunchPathHandsTheTUIItsSlotProfiles pins the one line that turns
+// slot profiles on in the picker: runLaunchPath gives tui.Run the profiles
+// newApp loaded and the fail-closed applier. With the zero value the picker
+// shows no profile row and says nothing about why.
+func TestRunLaunchPathHandsTheTUIItsSlotProfiles(t *testing.T) {
+	// runLaunchPath sets the process-wide launchSlotChecks; this restores it.
+	stubSlotChecks(t)
+	var got tui.SlotProfiles
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, _ tui.ProfileApplier, slots tui.SlotProfiles) error {
+		got = slots
+		return nil
+	}
+	t.Cleanup(func() { tuiRun = oldTuiRun })
+
+	a := &app{cfg: &config.Config{}}
+	a.slotChecks = []profiles.SlotCheck{slotFixtureCheck(0, "cloud", "opus", map[string]string{"opus": "openrouter/a"})}
+
+	if err := runLaunchPath(&cobra.Command{}, a, "", "", "", "", nil, "", ""); err != nil {
+		t.Fatalf("runLaunchPath() error = %v", err)
+	}
+	if len(got.Checks) != 1 || got.Checks[0].Label() != "profile/cloud" {
+		t.Errorf("Checks = %+v, want the app's one slot profile", got.Checks)
+	}
+	if got.Apply == nil {
+		t.Error("Apply is nil: every profile launch from the picker would abort with \"no slot-profile applier\"")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -37,6 +38,16 @@ type tableRow struct {
 	timed bool
 }
 
+// costModel is the model a row is priced as: its own, or for a slot-profile
+// row the default slot's model. A profile row whose default slot did not
+// resolve (a blocked row) has the zero Model, which has no price.
+func (r tableRow) costModel() config.Model {
+	if r.Profile == nil {
+		return r.Model
+	}
+	return r.Profile.Models[r.Profile.Check.Profile.Default]
+}
+
 // pricedAt is the row with its clock set to at and its price resolved for
 // that instant: the model's flat prices, or those of the cost.time_prices
 // row whose window holds it (config.ModelCost.PriceAt). The zero time gives
@@ -44,7 +55,8 @@ type tableRow struct {
 func (r tableRow) pricedAt(at time.Time) tableRow {
 	r.at, r.in, r.timed = at, config.PriceInForce{}, false
 	if !at.IsZero() {
-		r.in, r.timed = r.Model.Cost.PriceAt(at), r.Model.Cost.TimePriced()
+		cost := r.costModel().Cost
+		r.in, r.timed = cost.PriceAt(at), cost.TimePriced()
 	}
 	return r
 }
@@ -55,7 +67,7 @@ func (r tableRow) pricedAt(at time.Time) tableRow {
 // prices.
 func (r tableRow) price() config.PriceInForce {
 	if r.at.IsZero() {
-		return r.Model.Cost.Flat()
+		return r.costModel().Cost.Flat()
 	}
 	return r.in
 }
@@ -65,7 +77,7 @@ func (r tableRow) price() config.PriceInForce {
 // what marks the row's price with "~". A row with no clock asks its model.
 func (r tableRow) timePriced() bool {
 	if r.at.IsZero() {
-		return r.Model.Cost.TimePriced()
+		return r.costModel().Cost.TimePriced()
 	}
 	return r.timed
 }
@@ -88,6 +100,10 @@ type tableInput struct {
 	// now is the instant the rows are priced at. The zero time means the
 	// picker's clock (pickerNow), which is what both pickers leave it at.
 	now time.Time
+	// slots opts in to slot-profile rows (catalog.Input.SlotProfiles): the
+	// statically validated profiles. nil, which is what the picker of
+	// `wt start` and `wt smoke` leaves it at, means no profile rows.
+	slots []profiles.SlotCheck
 }
 
 // buildRows builds the shared catalog rows and decorates them with the
@@ -101,6 +117,7 @@ func buildRows(in tableInput) []tableRow {
 		Models:         in.models,
 		Inventory:      in.inventory,
 		HideDiscovered: in.hideDiscovered,
+		SlotProfiles:   in.slots,
 	})
 	// One reading of the clock for the whole table: the rows are sorted by
 	// the price in force, and two rows priced on two sides of a window
@@ -172,6 +189,10 @@ func rowCostKey(r tableRow) costKey {
 // native row that resolves local and is not running still sorts after the
 // native group-1 rows, by id, not "in group-1 order".
 //
+// Slot-profile rows are a band of their own between the two halves:
+// native rows, then profile rows in the order of slot-profiles.toml, then
+// every other row. A profile row is never compared by cost, usage or id.
+//
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and
 // enterModelPhase's no-rotation fallback picks the first actionable row. A
@@ -181,10 +202,24 @@ func sortRows(rows []tableRow) {
 	// and sorts with them, so it is never the default pick while it cannot
 	// answer.
 	group1 := func(r tableRow) bool { return r.Location != config.LocationLocal || r.Ready() }
+	// band is the first thing compared: 0 for a native row, 1 for a
+	// slot-profile row, 2 for every other row. A lower band sorts first.
+	band := func(r tableRow) int {
+		switch {
+		case r.Profile != nil:
+			return 1
+		case r.Model.Native:
+			return 0
+		}
+		return 2
+	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
-		if a.Model.Native != b.Model.Native {
-			return a.Model.Native
+		if ba, bb := band(a), band(b); ba != bb {
+			return ba < bb
+		}
+		if a.Profile != nil {
+			return a.Profile.Check.Index < b.Profile.Check.Index
 		}
 		ga, gb := group1(a), group1(b)
 		if ga != gb {

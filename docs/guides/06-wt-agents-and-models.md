@@ -167,7 +167,12 @@ registry entry — matching LiteLLM's `model_list` entries.
   ```
 
   Output is a single model id — e.g. `ollama/kimi-k2.7-code:cloud` (example; yours depends on your registry and last launch) — i.e. "the model after the last-launched one, walking the global list filtered to tag `code`". It prints only; it never writes state.
-- `rotation.state` is written by every model **launch**, through the picker or not (`Rotation.RecordFor()`), which also appends to `usage.jsonl` (§8). A cancelled ollama warning and `esc` leave rotation untouched.
+- `rotation.state` is written by every single-model **launch**, through the picker or not (`Rotation.RecordFor()`), which also writes `last-picked.state` and appends to `usage.jsonl` (§8). A cancelled ollama warning and `esc` leave rotation untouched.
+- The picker's `> ` marker is read from `~/.config/agent-wt/last-picked.state`: the row launched last, which can be a slot profile (§10). Launching a slot profile moves the marker and **does not** move rotation: `rotation.state` keeps the last single-model launch, and the next rotated launch is what it would have been. When your last pick was a slot profile that is still usable, the cursor starts on it.
+
+  ```bash
+  cat ~/.config/agent-wt/last-picked.state   # from: any dir, read-only — one line, a row id
+  ```
 
 ### 6. `wt config`
 
@@ -257,6 +262,51 @@ An interactive launch that resolves a non-empty profile **asks before applying**
 
 Full reference — all four agents' mechanisms, file-safety/self-heal rules, claude/codex/opencode working entries: `wt/docs/wt-agents/profiles.md`.
 
+### 10. Slot profiles (Claude Code)
+
+A launch names one model, and Claude Code uses several: its other tiers (background work, subagents, a `/model` switch) keep their Anthropic ids, which the proxy rejects. A **slot profile** maps each of Claude Code's four slots (`fable`, `opus`, `sonnet`, `haiku`) to a registry model, in one launch, always through the LiteLLM proxy. It is a different thing from the automatic profiles of §9: you write it, name it and choose it.
+
+**Step 1 — write the file.** `~/.config/agent-wt/slot-profiles.toml`, by hand (wt never writes it). Take the ids from `wt model list`; the ones below are placeholders:
+
+```toml
+[[profile]]
+name    = "<name>"          # lowercase letters, digits, hyphens
+agent   = "claude"
+default = "sonnet"          # the slot the session starts on
+
+[profile.slots]             # slots you leave out use the default slot's model
+opus   = "<registry id>"
+sonnet = "<registry id>"
+haiku  = "<registry id>"
+```
+
+A profile may mix cloud and local models and providers. It may name one distinct local model.
+
+**Step 2 — check it.**
+
+```bash
+wt profile list                                # from: any dir, read-only — the file's own errors and unknown keys
+wt profile show -A claude -M profile/<name>    # from: any dir — launch, start or blocked, and what claude would be given
+```
+
+`show` starts no model, writes no route and restarts nothing. A blocked profile prints its reason and exits non-zero.
+
+**Step 3 — launch it.** Pick the `profile/<name>` row in the claude model picker (profile rows sit after the native rows), or pin it:
+
+```bash
+claude-wt -M profile/<name>
+```
+
+- A profile whose local model is not running starts it first, then launches.
+- The launch writes any missing routes and restarts the proxy at most once; with every route in place it restarts nothing.
+- A profile that cannot be fully applied does not launch. The picker shows the reason; a pin without the picker exits non-zero with it.
+- `--settings` and `--model` after `--` are refused: either would replace the slot mapping.
+- wt writes no Claude Code settings file for the launch.
+
+Slot profiles are reached from the picker and the pin only. Rotation, `wt start` and `wt smoke` ignore them, and `-T`/`-F` hide them.
+
+Full reference — every field, every blocked reason, what Claude Code is given: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slot-profiles.md).
+
 ## Verification
 
 Live-ran (2026-08-29, all read-only):
@@ -282,7 +332,7 @@ Model pin dry explanation (no agent launch required): suppose `ollama/qwen3.8:27
 - **Stale PATH binary:** `/Users/keith/.local/bin/wt` (2026-08-27) reads its model catalog from `config.toml`, missing registry-only models; rebuild with the Prerequisites command. After a rebuild, expect `wt rotate code`'s pair-check behavior to change until tags exist in the registry (also flagged in [03-model-families](03-model-families.md)).
 - **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `/Users/keith/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
 - **`-W` is the real flag.** The `-w` short form was removed and now errors with `-w is removed; use -W or --worktree`.
-- **`rotation.state` is written by model launches only** (`RecordFor()`); the `wt rotate <tag>` probe and `esc`/canceled prompts never touch it. One global slot — per-tag/agent state files are legacy migration inputs.
+- **`rotation.state` is written by single-model launches only** (`RecordFor()`); the `wt rotate <tag>` probe, `esc`/canceled prompts and slot-profile launches never touch it. One global slot — per-tag/agent state files are legacy migration inputs. The picker's `> ` marker is a second file, `last-picked.state`, which every recorded launch writes.
 
 ## Going deeper
 

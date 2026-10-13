@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
@@ -59,6 +61,28 @@ func TestMain(m *testing.M) {
 	// config.yaml and restart their proxy. Tests that assert on it call
 	// stubEnsureRoute.
 	ensureModelRoute = func(*config.Config, config.Model) bool { return false }
+	// The slot-profile launch seams (slot_launch.go): unstubbed they would
+	// write the developer's real config.yaml, restart their proxy, start a
+	// real model or run a real agent binary. Tests call stubSlotSeams.
+	// settleRoutesNow returns nothing, so its fail-closed form is a panic.
+	ensureSlotRoutes = func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error) {
+		return false, errors.New("ensureSlotRoutes not stubbed in this test")
+	}
+	restartProxyNow = func(context.Context, *config.Config) error {
+		return errors.New("restartProxyNow not stubbed in this test")
+	}
+	probeProxyNow = func(context.Context, *config.Config) error {
+		return errors.New("probeProxyNow not stubbed in this test")
+	}
+	settleRoutesNow = func(context.Context, *config.Config) {
+		panic("settleRoutesNow not stubbed in this test")
+	}
+	startSlotModel = func(*config.Config, catalog.Row, bool, bool) (bool, error) {
+		return false, errors.New("startSlotModel not stubbed in this test")
+	}
+	buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
+		return nil, errors.New("buildSlotCmd not stubbed in this test")
+	}
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.
 	releaseSession = func() {}

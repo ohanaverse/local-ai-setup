@@ -4,6 +4,20 @@
 
 ### Added
 
+- Slot profiles: a named, hand-written entry in
+  `~/.config/agent-wt/slot-profiles.toml` assigns a registry model to each of
+  Claude Code's model slots (`fable`, `opus`, `sonnet`, `haiku`), so
+  background work, subagents and `/model` switches no longer send Anthropic
+  ids the LiteLLM proxy rejects. A profile is a row in the claude model
+  picker, after the native rows, and `-M profile/<name>` pins it. A launch
+  always goes through the proxy, may mix cloud models with one local model
+  (started first when idle), restarts the proxy at most once, writes no
+  Claude Code settings file, and never starts unless the whole profile
+  applies. `wt profile list` and `wt profile show -A claude -M profile/<name>`
+  report profiles; `wt stats` gives each its own launch row. Rotation,
+  `wt start` and `wt smoke` ignore slot profiles. Every single-model launch
+  now also writes `last-picked.state`, the picker's marker, beside
+  `rotation.state`. See `docs/wt-agents/slot-profiles.md`.
 - `wt cloud-sync` gains its second flow, `ollama`, replacing
   `modelman ollama-catalog sync` (which still works): it mirrors
   <https://ollama.com/pricing> into the registry's ollama cloud entries

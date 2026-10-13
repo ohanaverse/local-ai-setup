@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -69,6 +70,8 @@ type modelItem struct {
 	// for the highlighted row (costNote); "" for a row with no per-token
 	// price.
 	cost string
+	// profile is set on a slot-profile row; model then holds only the row id.
+	profile *catalog.ProfileRow
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps

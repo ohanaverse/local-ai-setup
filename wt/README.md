@@ -115,7 +115,8 @@ Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
 The `internal/rotation` package implements tag-based model rotation. Any tag can be a rotation group, not just `code` and `design`. Rotation is implicit: every picker entry lands the cursor on the model after the one most recently launched, and pressing Enter records the launch. There is no `r` key — the user navigates with up/down and the rotation advances as a side effect of launching.
 
-- State is persisted to `~/.config/agent-wt/rotation.state` (single global slot: the last-launched model ID)
+- State is persisted to `~/.config/agent-wt/rotation.state` (single global slot: the model ID of the last single-model launch)
+- `~/.config/agent-wt/last-picked.state` holds the row the picker's `> ` marker sits on. Every launch writes it, a slot-profile launch included, which leaves `rotation.state` alone
 - Legacy per-tag `rotation-<tag>.state` files are one-shot migration inputs; they are merged into the global slot on first run and then deleted
 - The `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
 

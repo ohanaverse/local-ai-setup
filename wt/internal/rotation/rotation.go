@@ -1,8 +1,10 @@
-// Package rotation manages the global last-launched model and computes the
-// next model to present in the picker.
+// Package rotation manages the global last-launched model, the row the
+// picker's marker sits on, and computes the next model to present in the
+// picker.
 package rotation
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
-// Rotation reads and writes the single global rotation.state file.
+// Rotation reads and writes two one-line files in the config directory:
+// rotation.state, the registry id of the last single-model launch (the
+// rotation position), and last-picked.state, the id of the last row launched
+// from the picker, which may be a slot profile's (the picker's marker).
 type Rotation struct {
 	dir   string
 	store usage.Store
@@ -48,18 +53,58 @@ func (r *Rotation) Last() (string, bool) {
 	return id, true
 }
 
-// RecordFor writes modelID as the new last-launched model and records a usage
-// event attributed to the agent.
+// pickedPath is <dir>/last-picked.state.
+func (r *Rotation) pickedPath() string {
+	return filepath.Join(r.dir, "last-picked.state")
+}
+
+// LastPicked is the row id the picker's marker sits on: last-picked.state,
+// or, when that file is missing or empty, Last(). The fallback keeps state
+// written before last-picked.state existed working: there the last-launched
+// model is also the last-picked row.
+func (r *Rotation) LastPicked() (string, bool) {
+	if data, err := os.ReadFile(r.pickedPath()); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id, true
+		}
+	}
+	return r.Last()
+}
+
+// RecordFor writes modelID as the new last-launched model and as the
+// last-picked row, and records a usage event attributed to the agent. Writing
+// both files is what moves the picker's marker off a slot profile once a
+// single model is launched after it.
 func (r *Rotation) RecordFor(agent, modelID string) error {
 	path := r.statePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	if err := config.WriteFileAtomic(path, []byte(modelID+"\n"), 0o600); err != nil {
-		return err
+		return fmt.Errorf("rotation.state not saved: %w", err)
 	}
+	pickedErr := config.WriteFileAtomic(r.pickedPath(), []byte(modelID+"\n"), 0o600)
 	// Usage recording is best-effort; do not fail rotation write if usage fails.
+	// It runs whether or not last-picked.state was written: the launch goes
+	// ahead either way, so it is counted either way.
 	_ = r.store.RecordFor(agent, modelID)
+	if pickedErr != nil {
+		return fmt.Errorf("last-picked.state not saved: %w", pickedErr)
+	}
+	return nil
+}
+
+// RecordProfile records a slot-profile launch: it writes profileID to
+// last-picked.state and appends the usage event for agent and profileID
+// (best-effort, as RecordFor's is). It never touches rotation.state, so the
+// rotation position stays on the last single-model launch: rotation.state
+// holds one bare registry id, and a profile id is not one.
+func (r *Rotation) RecordProfile(agent, profileID string) error {
+	pickedErr := config.WriteFileAtomic(r.pickedPath(), []byte(profileID+"\n"), 0o600)
+	_ = r.store.RecordFor(agent, profileID)
+	if pickedErr != nil {
+		return fmt.Errorf("last-picked.state not saved: %w", pickedErr)
+	}
 	return nil
 }
 

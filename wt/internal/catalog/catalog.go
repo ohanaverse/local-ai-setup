@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // Status is a row's presence state.
@@ -48,6 +49,11 @@ type Row struct {
 	// routes it, so a launch through the proxy would fail with "Invalid
 	// model name". RefusedByRoute refuses it there; direct, it launches.
 	Unmapped bool
+	// Profile is set on a slot-profile row and nil on every model row. A
+	// profile row's Model holds the row id ("profile/<name>") and nothing
+	// else, so code that reads another Model field, resolves a route or
+	// starts the model must test Profile first.
+	Profile *ProfileRow
 }
 
 // Input gathers everything Build needs. Models is the caller's eligible list
@@ -69,6 +75,10 @@ type Input struct {
 	Models         []config.Model
 	Inventory      *localmodels.Snapshot
 	HideDiscovered bool
+	// SlotProfiles opts in to slot-profile rows: the statically validated
+	// profiles (profiles.ValidateSlots). nil means no profile rows. Only the
+	// agent picker and the -M pin set it; `wt start` and `wt smoke` never do.
+	SlotProfiles []profiles.SlotCheck
 }
 
 // Build turns Input into rows.
@@ -143,7 +153,7 @@ func Build(in Input) []Row {
 			seen[e.ModelID] = true
 		}
 	}
-	return rows
+	return append(rows, slotRows(in)...)
 }
 
 // listed reports whether a registered inventory entry gets a row: it is
@@ -277,6 +287,9 @@ func (r Row) Ready() bool { return r.Running && !r.Loading }
 // model is loaded, where launching it would hand an agent a model that cannot
 // answer yet.
 func (r Row) Action() Action {
+	if r.Profile != nil {
+		return r.Profile.Verdict
+	}
 	if r.Location != config.LocationLocal || r.Ready() {
 		return ActionLaunch
 	}
@@ -289,6 +302,9 @@ func (r Row) Action() Action {
 // BlockReason is the status line for an ActionBlock row ("" otherwise): a
 // local model that is not running, on a provider wt has no engine to start.
 func (r Row) BlockReason() string {
+	if r.Profile != nil {
+		return r.Profile.Reason
+	}
 	if r.Action() != ActionBlock {
 		return ""
 	}

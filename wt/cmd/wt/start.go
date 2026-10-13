@@ -225,15 +225,53 @@ func startProgress(id string, done <-chan struct{}, began time.Time) func(lifecy
 	}
 }
 
-// startForLaunch starts the local model behind a -M pin on the non-TUI path.
-// It reports progress on stderr and cancels on Ctrl+C; a second Ctrl+C exits
-// the process (the signal handler is restored once the first cancels, so a
-// hung teardown cannot trap the user).
+// startForLaunch starts the local model behind a -M pin on the non-TUI path;
+// it is also the driver of `wt start` and `wt smoke` (startModel). It reports
+// progress on stderr and cancels on Ctrl+C; a second Ctrl+C exits the process
+// (the signal handler is restored once the first cancels, so a hung teardown
+// cannot trap the user).
 //
 // It never asks for permission to stop an occupant unless the pin needs it:
 // only an OccupiedError or an OccupancyUnknownError reaches the confirm path,
 // and only on the first attempt. Any other failure is returned as-is.
+//
+// A Ctrl+C that came too late to stop the start is not an error here: the
+// model is running, which is what `wt start` reports.
 func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) error {
+	_, _, err := driveStart(cfg, row, allowReplace, false)
+	return err
+}
+
+// startForLaunchOwed is startForLaunch for a caller that already owes a proxy
+// restart: a slot-profile launch that wrote a cloud slot's route before
+// starting its local model. restartOwed goes to both engine attempts as
+// lifecycle.Options.RestartOwed, so the start's own restart publishes that
+// route too.
+//
+// stillOwed is true only when restartOwed was true and the function returns
+// after a refusal it did not retry: the y/N prompt was declined, failed, or
+// was interrupted. The engine touched nothing then, so the caller settles the
+// restart (lifecycle.SettleRoutes). On every other return the engine has
+// started the one restart, or nothing was owed.
+//
+// Its caller launches an agent next, so a Ctrl+C that lost to the start (at
+// the routing stage, or as the load finished) is an error here, in the TUI's
+// words for the same key: "started <id>; launch cancelled". The model stays
+// running and its start is settled first.
+func startForLaunchOwed(cfg *config.Config, row catalog.Row, allowReplace, restartOwed bool) (stillOwed bool, err error) {
+	stillOwed, cancelled, err := driveStart(cfg, row, allowReplace, restartOwed)
+	if err == nil && cancelled {
+		return false, fmt.Errorf("started %s; launch cancelled", row.Model.ID)
+	}
+	return stillOwed, err
+}
+
+// driveStart is the driver behind startForLaunch and startForLaunchOwed.
+// cancelled is meaningful only beside a nil error: the start succeeded and was
+// settled, and Ctrl+C had arrived by then. The engine cannot report that (it
+// returns nil once the model is up) and the settle drops cancellation on
+// purpose, so the signal context is the only record of the key.
+func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed bool) (stillOwed, cancelled bool, err error) {
 	ctx, stop := startSignalCtx()
 	defer stop()
 	go func() {
@@ -249,16 +287,26 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	report := startProgress(id, done, began)
 
 	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
-	opts := lifecycle.Options{Progress: report}
+	opts := lifecycle.Options{Progress: report, RestartOwed: restartOwed}
 
-	err := lifecycleStart(ctx, cfg, target, opts)
+	// settled ends a start the engine reported done. ctx is done only when a
+	// signal arrived: the goroutine above calls stop() after ctx.Done(), and
+	// the deferred stop() runs after this result is evaluated.
+	settled := func(serr error) (bool, bool, error) {
+		if serr != nil {
+			return false, false, serr
+		}
+		return false, ctx.Err() != nil, nil
+	}
+
+	err = lifecycleStart(ctx, cfg, target, opts)
 	if err == nil {
 		// The agent launch follows immediately and routes through LiteLLM:
 		// settle the route hook's async proxy restart first.
-		return settleStart(ctx, cfg, id, target)
+		return settled(settleStart(ctx, cfg, id, target))
 	}
 	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("cancelled before %s started: %w", id, err)
+		return false, false, fmt.Errorf("cancelled before %s started: %w", id, err)
 	}
 
 	// ask races the prompt against ctx: the read on /dev/tty cannot be
@@ -272,8 +320,8 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 		}
 		ch := make(chan answer, 1)
 		go func() {
-			ok, err := askReplace(question)
-			ch <- answer{ok, err}
+			ok, aerr := askReplace(question)
+			ch <- answer{ok, aerr}
 		}()
 		select {
 		case a := <-ch:
@@ -299,10 +347,10 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 		if !allowReplace {
 			ok, perr := ask(fmt.Sprintf("starting %s will stop %s; continue?", id, names))
 			if perr != nil {
-				return perr
+				return restartOwed, false, perr
 			}
 			if !ok {
-				return fmt.Errorf("cancelled — %s still running", names)
+				return restartOwed, false, fmt.Errorf("cancelled — %s still running", names)
 			}
 		}
 		fmt.Fprintf(osStderr, "wt: replacing %s\n", names)
@@ -310,15 +358,15 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 		if !allowReplace {
 			ok, perr := ask(fmt.Sprintf("cannot tell whether %s at %s is already serving a model; replace it with %s?", unk.ProviderID, unk.Origin, id))
 			if perr != nil {
-				return perr
+				return restartOwed, false, perr
 			}
 			if !ok {
-				return fmt.Errorf("cancelled — %s may still be serving a model", unk.ProviderID)
+				return restartOwed, false, fmt.Errorf("cancelled — %s may still be serving a model", unk.ProviderID)
 			}
 		}
 		fmt.Fprintf(osStderr, "wt: replacing whatever %s is serving at %s\n", unk.ProviderID, unk.Origin)
 	default:
-		return startFailure(id, err)
+		return false, false, startFailure(id, err)
 	}
 
 	opts.AllowReplace = true
@@ -326,14 +374,14 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	if err == nil {
 		// Same as the first attempt: the proxy must carry the new route (and
 		// have dropped the replaced occupant's) before the agent launches.
-		return settleStart(ctx, cfg, id, target)
+		return settled(settleStart(ctx, cfg, id, target))
 	}
 	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("cancelled before %s started: %w", id, err)
+		return false, false, fmt.Errorf("cancelled before %s started: %w", id, err)
 	}
 	// Replace was already granted; anything that fails now is a different
 	// failure — report it rather than prompting again.
-	return startFailure(id, err)
+	return false, false, startFailure(id, err)
 }
 
 // startError carries the shared one-line wording while keeping the engine's

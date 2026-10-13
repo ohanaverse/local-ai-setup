@@ -6,6 +6,14 @@ from the same agent × model location/provider/id `wt` already computes
 `docs/superpowers/specs/2026-09-24-wt-agent-profiles-design.md` (monorepo
 root) for the full design; this page is the operator-facing reference.
 
+This page covers **automatic profiles**: unnamed entries wt applies to a
+single-model launch that matches them. A **slot profile** is a different
+kind: a named entry you pick in the model picker, which assigns a registry
+model to each of Claude Code's model slots. Slot profiles have their own
+file and page: [slot-profiles.md](slot-profiles.md). `wt profile list` and
+`wt profile show` report both kinds; `wt profile on|off|status` and
+everything else on this page are about automatic profiles only.
+
 **Nothing is enabled out of the box.** `~/.config/agent-wt/profiles.toml`
 starts absent (equivalent to `enabled = true`, zero profiles) — the
 example config below is a worked, verified local-model starting point,
@@ -245,19 +253,12 @@ the same entry matches an `ollama`, `omlx`, or `mtplx` model.
   rejects. Use `["{{args}}"]`. A missing wrapper binary is the one fatal
   profile error — a requested wrapper must actually run — so `little-coder`
   must be on `PATH`.
-- **The claude `ANTHROPIC_DEFAULT_*_MODEL` mapping cannot use
-  `{{model_name}}`.** With LiteLLM on, a launch routes through the proxy
-  using the full registry id (`ollama/qwen3.8:27b-mlx`); that is what
-  `wt/internal/litellm` writes as the proxy's `model_name`. The only value
-  placeholder `internal/profiles` substitutes is `{{model_name}}` =
-  `m.ModelName` (`qwen3.8:27b-mlx`), which the proxy does not know. The
-  mapping is therefore omitted above. To route claude's tier defaults to
-  a local model, add a `match = "model"` profile per model with the
-  literal registry id, or turn LiteLLM off (`wt litellm off`) so the
-  provider-side `{{model_name}}` is what's dialled — that only yields
-  direct mode if the provider speaks claude's protocol; a provider with
-  no Anthropic support still force-routes through LiteLLM. There is no
-  `{{model_ref}}`/`{{model_id}}` placeholder yet.
+- **Mapping claude's model slots is a slot profile's job, not this file's.**
+  The `ANTHROPIC_DEFAULT_*_MODEL` variables need the registry id the proxy
+  routes, and the only placeholder here, `{{model_name}}`, is the
+  provider-side name. A slot profile names a registry model per slot and wt
+  passes the ids itself: see [slot-profiles.md](slot-profiles.md). Do not
+  set those variables in an automatic profile.
 - **The claude attribution header belongs in `config_content`, not
   `env`.** A shell environment variable does not stick for
   `CLAUDE_CODE_ATTRIBUTION_HEADER`; it has to be set in Claude Code's

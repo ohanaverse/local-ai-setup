@@ -32,6 +32,19 @@ type app struct {
 	// profile can never actually apply at launch time (applyProfileForLaunch
 	// also runs Validate and degrades gracefully on failure).
 	profilesValidateErr error
+	// slotChecks is slot-profiles.toml after static validation
+	// (profiles.ValidateSlots), in file order; nil when the file is missing
+	// or did not load. A check that is not Usable is kept: `wt profile list`
+	// reports it by its position and a launch warns about it once.
+	slotChecks []profiles.SlotCheck
+	// slotUnknown is the keys of slot-profiles.toml the schema does not name
+	// (profiles.SlotStore.Unknown). The file loaded, and what such a key
+	// holds was not read: a launch warns about each once, and so does
+	// `wt profile list`. It can be set while slotChecks is nil.
+	slotUnknown []string
+	// slotLoadErr is profiles.LoadSlots' error: a parse or read failure.
+	// It never stops wt; a launch prints it once and shows no profile rows.
+	slotLoadErr error
 }
 
 // profileState packages a's already-loaded profiles.toml state for
@@ -72,6 +85,10 @@ func agentRequiredMechanism(agent string, m profiles.Mechanism) (profiles.Mechan
 	return mr.RequiredMechanism(m)
 }
 
+// loadSlotStore is a seam for tests: production reads
+// ~/.config/agent-wt/slot-profiles.toml (profiles.LoadSlots).
+var loadSlotStore = profiles.LoadSlots
+
 // newApp loads the config (best-effort), the active theme, and the
 // profiles store. Config and profiles validation errors are stored in the
 // returned app rather than returned as a fatal error, so `wt config`/
@@ -100,8 +117,20 @@ func newApp() (*app, error) {
 	if profilesLoadErr == nil {
 		profilesValidateErr = profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism)
 	}
+	// Slot profiles load independently of profiles.toml: an error in either
+	// file never hides the other.
+	var slotChecks []profiles.SlotCheck
+	slotStore, slotLoadErr := loadSlotStore()
+	if slotLoadErr == nil && len(slotStore.Profiles) > 0 {
+		slotChecks = profiles.ValidateSlots(slotStore, agents.SlotDrivers())
+	}
+	var slotUnknown []string
+	if slotLoadErr == nil {
+		slotUnknown = slotStore.Unknown
+	}
 	return &app{
 		cfg: cfg, cfgErr: cfgErr, loadErr: loadErr, theme: theme,
 		profiles: store, profilesLoadErr: profilesLoadErr, profilesValidateErr: profilesValidateErr,
+		slotChecks: slotChecks, slotUnknown: slotUnknown, slotLoadErr: slotLoadErr,
 	}, nil
 }

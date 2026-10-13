@@ -75,7 +75,14 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 	// exercise the wait; the proxy-down case overrides it.
 	probeProxy = func(context.Context, string, time.Duration) bool { return true }
 	routesWarn = &warn
-	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn, restartProxy = oa, ow, op, ww, or })
+	// The remembered restart outcome is package state like the seams: clear it
+	// going in, and again once this test's last restart has finished (the
+	// cleanup below this one runs first and waits for it).
+	setLastRestartErr(nil)
+	t.Cleanup(func() {
+		applyRoutes, waitProxy, probeProxy, routesWarn, restartProxy = oa, ow, op, ww, or
+		setLastRestartErr(nil)
+	})
 	// Registered last, so it runs FIRST: settle any in-flight restart before
 	// the seams above are put back underneath it.
 	t.Cleanup(WaitPendingRoutes)

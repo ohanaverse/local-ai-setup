@@ -8,6 +8,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 )
 
@@ -618,5 +619,223 @@ func TestResolveModelSoleRunningDiscoveredAutoResolves(t *testing.T) {
 	}
 	if calls.called {
 		t.Error("a launch row must not reach the start driver")
+	}
+}
+
+// slotGuardRows builds the catalog rows for agent "claude" with three slot
+// profiles opted in: "cloud" (every slot a cloud model, a launch row), "idle"
+// (its one local model is on disk and not running, a start row) and "broken"
+// (a slot names a model the registry does not have, a blocked row). It
+// returns the config and the rows.
+func slotGuardRows(t *testing.T) (*config.Config, []catalog.Row) {
+	t.Helper()
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Location: config.LocationCloud},
+			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/a", ProviderID: "openrouter", ModelName: "a", Tags: []string{"code"}},
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter", "omlx"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
+	check := func(index int, name string, slots map[string]string) profiles.SlotCheck {
+		return profiles.SlotCheck{
+			Index:    index,
+			Profile:  profiles.SlotProfile{Name: name, Agent: "claude", Default: "opus", Slots: slots},
+			Usable:   true,
+			Declared: []string{"fable", "opus", "sonnet", "haiku"},
+		}
+	}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Artifact: "qwen3.8", ModelName: "qwen3.8", Registered: true, ArtifactKnown: true},
+		},
+	}
+	eligible, err := cfg.EligibleModels("claude", "", "")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	rows := catalog.Build(catalog.Input{
+		Config: cfg, Agent: "claude", Models: eligible, Inventory: &snap,
+		SlotProfiles: []profiles.SlotCheck{
+			check(0, "cloud", map[string]string{"opus": "openrouter/a"}),
+			check(1, "idle", map[string]string{"opus": "omlx/qwen3.8"}),
+			check(2, "broken", map[string]string{"opus": "openrouter/gone"}),
+		},
+	})
+	return cfg, rows
+}
+
+// TestLaunchableModelsExcludesProfileRows verifies a slot profile's row is
+// never in the launchable list, whatever its verdict. Rotation and the
+// single-launchable auto-launch read that list, and a profile row's model is
+// only an id: returned from it, a bare `wt -W x -A claude` would try to
+// launch "profile/cloud" as a model and fail with "unknown provider".
+func TestLaunchableModelsExcludesProfileRows(t *testing.T) {
+	cfg, rows := slotGuardRows(t)
+	if row, ok := catalog.Find(rows, "profile/cloud"); !ok || row.Action() != catalog.ActionLaunch {
+		t.Fatalf("fixture: profile/cloud found = %t action = %v, want a launch row", ok, row.Action())
+	}
+
+	var got []string
+	for _, m := range launchableModels(cfg, "claude", rows) {
+		got = append(got, m.ID)
+	}
+
+	if strings.Join(got, ",") != "openrouter/a" {
+		t.Errorf("launchable = %v, want the one cloud model and no profile", got)
+	}
+}
+
+// TestPickerBlockedReasonReadsAProfileRowsOwnVerdict verifies the non-TUI
+// path judges a profile row by resolved validation and never asks
+// ResolveRoute about it. A profile row has no provider, so the route lookup
+// fails with "unknown provider": a start profile would be refused with that
+// text instead of starting its local model, and a blocked profile would lose
+// its real reason.
+func TestPickerBlockedReasonReadsAProfileRowsOwnVerdict(t *testing.T) {
+	cfg, rows := slotGuardRows(t)
+	for _, c := range []struct {
+		id     string
+		action catalog.Action
+		want   string
+	}{
+		{"profile/cloud", catalog.ActionLaunch, ""},
+		{"profile/idle", catalog.ActionStart, ""},
+		{"profile/broken", catalog.ActionBlock, "slot opus: openrouter/gone is not in the registry"},
+	} {
+		row, ok := catalog.Find(rows, c.id)
+		if !ok || row.Action() != c.action {
+			t.Fatalf("fixture: %s found = %t action = %v, want action %v", c.id, ok, row.Action(), c.action)
+		}
+		if got := pickerBlockedReason(cfg, "claude", row); got != c.want {
+			t.Errorf("pickerBlockedReason(%s) = %q, want %q", c.id, got, c.want)
+		}
+	}
+}
+
+// TestResolveModelSlotProfilePin verifies what resolveModel does with a
+// `-M profile/<name>` pin. A launch or start row comes back as a *slotPin
+// carrying the row, and nothing is started here: the profile launch starts
+// its local model itself, after the cloud routes are written. A blocked row
+// is an error with the row's reason. A profile of another agent, an unknown
+// name, and any profile under -T get the existing "not in the eligible list"
+// message. If a start row were started here, the proxy would restart twice;
+// if a blocked row came back as a pin, a broken profile would launch.
+func TestResolveModelSlotProfilePin(t *testing.T) {
+	checks := []profiles.SlotCheck{
+		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
+		slotFixtureCheck(1, "mixed", "opus", slotMixed()),
+		slotFixtureCheck(2, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
+	}
+	cases := []struct {
+		name       string
+		agent      string
+		tags       string
+		pinned     string
+		wantAction catalog.Action // read only when wantErr is ""
+		wantErr    string         // "" means a *slotPin is expected
+	}{
+		{"launch row", "claude", "", "profile/cloud", catalog.ActionLaunch, ""},
+		{"start row is not started here", "claude", "", "profile/mixed", catalog.ActionStart, ""},
+		{"blocked row", "claude", "", "profile/broken", 0, "slot opus: openrouter/gone is not in the registry"},
+		{"another agent's profile", "pi", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "pi"`},
+		{"unknown profile", "claude", "", "profile/nope", 0, `model "profile/nope" is not in the eligible list for agent "claude"`},
+		{"hidden under -T", "claude", "code", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "claude"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			started := stubStartDriver(t, nil)
+			stubSlotChecks(t, checks...)
+			cfg := slotFixtureConfig()
+			cfg.Agents = append(cfg.Agents, config.Agent{Name: "pi", SupportedProviders: []string{"openrouter", "omlx"}})
+
+			m, _, err := resolveModel(tc.agent, cfg, tc.tags, "", tc.pinned)
+
+			if m.ID != "" {
+				t.Errorf("model = %q, want none: a profile is not a model", m.ID)
+			}
+			if started.called {
+				t.Error("resolveModel started a model for a profile pin")
+			}
+			var pin *slotPin
+			isPin := errors.As(err, &pin)
+			if tc.wantErr != "" {
+				if isPin || err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if !isPin {
+				t.Fatalf("err = %v, want a *slotPin", err)
+			}
+			if pin.row.Model.ID != tc.pinned || pin.row.Action() != tc.wantAction {
+				t.Errorf("pin row = %s with action %v, want %s with action %v", pin.row.Model.ID, pin.row.Action(), tc.pinned, tc.wantAction)
+			}
+		})
+	}
+}
+
+// TestResolveModelWithoutAPinIgnoresSlotProfiles verifies the non-TUI path
+// with no -M is what it was before slot profiles existed: the same model, the
+// same launchable list and the same error text with and without loaded
+// profiles. A profile row must never be auto-launched, rotated to, or change
+// the wording that tells the user why nothing can launch.
+func TestResolveModelWithoutAPinIgnoresSlotProfiles(t *testing.T) {
+	missing := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/q", ModelName: "q", Registered: true, ArtifactKnown: true},
+		},
+	}
+	cases := []struct {
+		name   string
+		models func([]config.Model) []config.Model
+		snap   *localmodels.Snapshot
+		slots  map[string]string
+		want   string // a substring of the outcome, to prove the case is the one named
+	}{
+		{"several launchable models", func(ms []config.Model) []config.Model { return ms }, nil, slotCloud(), "multiple models match"},
+		{"one launchable model", func(ms []config.Model) []config.Model { return ms[:1] }, nil, map[string]string{"opus": "openrouter/a"}, "openrouter/a|openrouter/a|"},
+		{"no eligible model has a row", func(ms []config.Model) []config.Model { return ms[2:] }, &missing, map[string]string{"opus": "omlx/q"}, catalog.NoRowsReason("claude")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.snap != nil {
+				stubProbeInventory(t, *tc.snap)
+			}
+			cfg := slotFixtureConfig()
+			cfg.Models = tc.models(cfg.Models)
+			outcome := func() string {
+				m, launchable, err := resolveModel("claude", cfg, "", "", "")
+				ids := make([]string, len(launchable))
+				for i, l := range launchable {
+					ids[i] = l.ID
+				}
+				msg := ""
+				if err != nil {
+					msg = err.Error()
+				}
+				return m.ID + "|" + strings.Join(ids, ",") + "|" + msg
+			}
+			old := launchSlotChecks
+			t.Cleanup(func() { launchSlotChecks = old })
+
+			launchSlotChecks = nil
+			before := outcome()
+			launchSlotChecks = []profiles.SlotCheck{slotFixtureCheck(0, "p", "opus", tc.slots)}
+			after := outcome()
+
+			if !strings.Contains(before, tc.want) {
+				t.Fatalf("outcome without profiles = %q, want it to contain %q", before, tc.want)
+			}
+			if after != before {
+				t.Errorf("outcome with a profile loaded = %q, want %q (unchanged)", after, before)
+			}
+		})
 	}
 }

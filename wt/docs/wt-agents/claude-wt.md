@@ -65,6 +65,23 @@ The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`
 
 claude only speaks the `anthropic` wire protocol, so a provider that doesn't serve it (e.g. openrouter, `openai-chat` only) forces LiteLLM routing regardless of the on/off setting — wt prints a one-line stderr notice when that happens.
 
+### Slot profiles
+
+A single-model launch redirects only the model it names. Claude Code's other
+tiers (background work, subagents, a `/model` switch) keep their Anthropic
+ids, which the proxy rejects with `Invalid model name`. A slot profile maps
+all four slots (`fable`, `opus`, `sonnet`, `haiku`) to registry models in
+one launch, through the LiteLLM proxy:
+
+```bash
+claude-wt -M profile/<name>     # or pick the profile/<name> row in the model picker
+```
+
+wt then passes `--model <default slot>` and one inline `--settings` JSON
+holding `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot. It writes no
+settings file. The file format, the picker row and every failure are in
+[slot-profiles.md](slot-profiles.md).
+
 ## Sessions
 
 `wt` leaves sessions to Claude Code: every launch starts fresh, and `wt` never looks one up, prompts about one, or adds a resume flag. To continue a conversation, pass claude's own flags after `--`; `wt` hands them over unchanged on every launch path, the picker included.

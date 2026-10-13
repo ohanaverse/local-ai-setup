@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
@@ -36,6 +37,7 @@ const (
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
+	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
 )
 
 // model holds the entire UI state.
@@ -91,6 +93,10 @@ type model struct {
 	activeTags   string // comma-delimited tag filter from -T/--tags; "" = no filter
 	activeFamily string // comma-delimited family filter from -F/--family; "" = no filter
 
+	// slotChecks are the statically validated slot profiles
+	// (profiles.ValidateSlots). nil means the picker shows no profile row.
+	slotChecks []profiles.SlotCheck
+
 	// default-branch guard warning (title-only; the confirm prompt was removed)
 	defaultBranch string // repo default branch (e.g. main)
 
@@ -110,6 +116,12 @@ type model struct {
 	// freezing the picker.
 	routing  *routingState // in-flight route check (phaseRouting); nil when idle
 	routeRun int           // monotonically increasing run id; stale messages are dropped by id
+
+	// slot-profile launch: Enter on a profile row runs the launch flow's
+	// route writes, restart and probe behind phaseSlot. The flow is kept
+	// while the profile's local model starts and on the replace dialog.
+	slot    *slotFlow // in-flight profile launch; nil when idle
+	slotRun int       // monotonically increasing run id; stale messages are dropped by id
 
 	// new-worktree prompt
 	newInput         textinput.Model
@@ -189,6 +201,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	case routeDoneMsg, routeTickMsg:
 		// Likewise exactly the set handleRouteMsg handles.
 		return m.handleRouteMsg(msg)
+	case slotPreparedMsg, slotSettledMsg, slotTickMsg:
+		// Likewise exactly the set handleSlotMsg handles.
+		return m.handleSlotMsg(msg)
+	case slotAbortMsg:
+		// The slot applier failed after the terminal was released: no agent
+		// ran and nothing was recorded.
+		m.status = "launch failed: " + msg.err.Error()
+		m.phase = phaseModel
+		return m.refreshTable()
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -315,6 +336,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if m.phase == phaseRouting {
 			return m.handleRouteKey(msg)
 		}
+		// And a profile launch's route stage, for the same reason.
+		if m.phase == phaseSlot && m.slot != nil {
+			return m.handleSlotKey(msg)
+		}
 		// A status that has the screen to itself (statusAlone) is taken down
 		// by the next key, which does nothing else: the table was not on
 		// screen, so no key can have been meant for it. ctrl+c still quits.
@@ -373,6 +398,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn || m.phase == phaseReplaceConfirm {
+				if m.phase == phaseReplaceConfirm {
+					m = m.dropSlot()
+				}
 				m.phase = phaseModel
 				m.status = ""
 				return m, nil
@@ -461,6 +489,13 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				if !ok {
 					return m, nil
 				}
+				if highlighted.profile != nil && highlighted.blocked == "" {
+					// A slot profile is its own launch unit: its routes, its
+					// local model's start and its command all come from the
+					// profile, never from this row's id-only Model. A blocked
+					// profile falls through to the reason below.
+					return m.beginSlotLaunch(highlighted)
+				}
 				if highlighted.start {
 					// A start row: run the model through the lifecycle engine
 					// instead of launching. start and blocked are mutually
@@ -519,9 +554,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				if item, ok := m.replace.choices.SelectedItem().(choiceItem); ok {
 					switch item.choice {
 					case replaceCancelChoice:
+						// A profile launch that got this far ends here; a
+						// restart it still owes is settled (dropSlot).
+						m = m.dropSlot()
 						m.phase = phaseModel
 						return m, nil
 					case replaceProceedChoice:
+						if m.slot != nil {
+							return m.beginStartOwed(m.replace.item, true, m.slot.owed)
+						}
 						return m.beginStart(m.replace.item, true)
 					}
 				}
@@ -618,6 +659,12 @@ func (m model) View() string {
 			return "route update (waiting for window size)"
 		}
 		return clip(m.routingView(), m.width)
+	}
+	if m.phase == phaseSlot {
+		if m.width <= 0 || m.height <= 0 {
+			return "slot profile launch (waiting for window size)"
+		}
+		return clip(m.slotView(), m.width)
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
@@ -770,8 +817,10 @@ func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
 // the pin and the picker can never disagree: a launch row (cloud, or a local
 // model the probe reports running) proceeds straight to launch, an idle local
 // start row is selected and shown for the user to start, and a blocked row
-// routes back with the row's own reason. A mismatch routes to phaseAgent (the
-// bad pin is cleared so re-entry validates fresh).
+// routes back with the row's own reason. A pinned slot profile
+// (-M profile/<name>) that is not blocked begins its launch through
+// beginSlotLaunch; a blocked one routes back like any blocked row. A mismatch
+// routes to phaseAgent (the bad pin is cleared so re-entry validates fresh).
 //
 // The header's tag line and hideDiscovered answer two different questions
 // and are intentionally not the same value: the tag line shows firstTag (the
@@ -805,9 +854,9 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	snap := &inv
 
 	// One Rotation for both the marker and the cursor (each New() scans the
-	// config dir). A missing rotation.state yields "". tableFor also reads it
-	// for the marker; the cursor logic below reuses rot so the config dir is
-	// scanned once.
+	// config dir). tableFor reads the last-picked row id from it for the
+	// marker ("" when nothing was ever launched); the cursor logic below
+	// reuses rot so the config dir is scanned once.
 	rot := rotation.New()
 	tbl, lastID := m.tableFor(agent, models, snap, rot)
 
@@ -851,6 +900,18 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 			// agent picker, where the user can choose another agent or fix
 			// the model.
 			return routeBack(it.blocked)
+		case it.profile != nil:
+			// A slot profile: begin its launch, as the non-TUI pin does. The
+			// row is selected first so a failed launch returns to the picker
+			// on it. --replace applies when its local model has to start
+			// (handleSlotMsg reads it against the pin).
+			m.models.Select(idx)
+			m.phase = phaseModel
+			pinned, ok := m.models.SelectedItem().(*modelItem)
+			if !ok {
+				return m, nil
+			}
+			return m.beginSlotLaunch(pinned)
 		case it.start:
 			// The pin needs a start: run it through the same start flow every
 			// other start row uses, exactly as the non-TUI -M path does, so
@@ -873,28 +934,42 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return routeBack(catalog.NoRowsReason(agent))
 	}
 
-	// Cursor: the rotation's next-to-use model among actionable rows
-	// (launch or start — anything without a hint), otherwise the first
-	// actionable row, otherwise the top.
+	// Cursor, in this order: the last-picked row when it is a slot profile
+	// that is here and not blocked (profiles do not rotate, so the one just
+	// used is offered again); otherwise the rotation's next-to-use model
+	// among actionable model rows (launch or start: anything without a
+	// hint); otherwise the first actionable row, a profile row included;
+	// otherwise the top.
+	//
+	// actionable holds model rows only. Rotation walks the registry, so a
+	// profile row could never be its answer, and a profile row's model is an
+	// id with nothing else in it.
 	var actionable []config.Model
 	first := -1
 	for i, it := range tbl.items {
-		if it.blocked == "" {
+		if it.blocked != "" {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		if it.profile == nil {
 			actionable = append(actionable, it.model)
-			if first < 0 {
-				first = i
-			}
 		}
 	}
 	pos := 0
 	if first >= 0 {
 		pos = first
 	}
-	// Rotation positions the cursor only when the last-launched model is a
-	// registry model: with no rotation state (or a stale/discovered id that
-	// is never in cfg.Models) NextFromEligible would fall back to the
-	// registry-first model, so the first launchable row is used instead.
-	if lastID != "" && config.IndexModelByID(m.cfg.Models, lastID) >= 0 {
+	if idx, ok := idIndex[lastID]; ok && tbl.items[idx].profile != nil && tbl.items[idx].blocked == "" {
+		pos = idx
+	} else if rotLast, _ := rot.Last(); rotLast != "" && config.IndexModelByID(m.cfg.Models, rotLast) >= 0 {
+		// Rotation positions the cursor only when the last-launched model is
+		// a registry model: with no rotation state (or a stale/discovered id
+		// that is never in cfg.Models) NextFromEligible would fall back to
+		// the registry-first model, so the first actionable row is used
+		// instead. The pointer is read from rotation.state (rot.Last), not
+		// from lastID: after a profile launch the two differ.
 		if next, ok := rot.NextFromEligible(actionable, m.cfg); ok {
 			if idx, ok := idIndex[next.ID]; ok {
 				pos = idx
@@ -904,8 +979,10 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	m.models.Select(pos)
 
 	// The single-row shortcut launches only: a lone start row must show the
-	// picker and wait for Enter, never start a server unasked.
-	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start {
+	// picker and wait for Enter, never start a server unasked. A lone
+	// slot-profile row waits too: the shortcut launches the row as a model,
+	// and a profile row's model is only its id.
+	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start && tbl.items[0].profile == nil {
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
@@ -929,18 +1006,21 @@ func (m model) routeBackToAgent(status string) (model, tea.Cmd) {
 }
 
 // tableFor builds the selector table for agent from models and an inventory
-// snapshot, returning the table and the rotation's last-launched id. It is
-// the exact table build enterModelPhase performs (rotation last id from rot,
+// snapshot, returning the table and the last-picked row id, which is the row
+// the marker sits on: a model's id or a slot profile's (rot.LastPicked). It
+// is not the rotation pointer; a caller that needs that reads rot.Last. This
+// is the exact table build enterModelPhase performs (last-picked id from rot,
 // agent-scoped survey stats, one usage + refcount store read), shared with
 // refreshTable so a rebuilt table matches the original in every column.
 func (m model) tableFor(agent string, models []config.Model, snap *localmodels.Snapshot, rot *rotation.Rotation) (modelTable, string) {
-	lastID, _ := rot.Last()
+	lastID, _ := rot.LastPicked()
 	// Agent-scoped 30-day survey stats, one Events() read for the picker.
 	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
 	tbl := buildTable(tableInput{
 		cfg: m.cfg, agent: agent, models: models, inventory: snap,
 		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
 		usage:          newUsageStore(), stats: surveyStats,
+		slots: m.slotChecks,
 	}, newRefcountStore(), lastID)
 	return tbl, lastID
 }
@@ -974,11 +1054,11 @@ func (m model) refreshTable() (model, tea.Cmd) {
 	}
 	m.refreshGen++
 	gen := m.refreshGen
-	// The command captures only the values tableFor reads (cfg and the active
-	// -T/-F filters), never the live model: the goroutine must not touch it,
-	// and copying the whole struct would pin its lists and inputs for the
-	// duration of the probe.
-	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily}
+	// The command captures only the values tableFor reads (cfg, the active
+	// -T/-F filters and the slot profiles), never the live model: the
+	// goroutine must not touch it, and copying the whole struct would pin its
+	// lists and inputs for the duration of the probe.
+	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily, slotChecks: m.slotChecks}
 	agent, models := m.agent, m.tableModels
 	return m, func() tea.Msg {
 		inv := runInventory(src.cfg)
@@ -1046,6 +1126,18 @@ func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
 // in this same Update, unless the check had to write the route, in which case
 // phaseRouting shows the proxy restart first.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
+	// A guard, not a path: Enter and the pin send a profile row to
+	// beginSlotLaunch themselves. Anything else that lands here with a
+	// profile highlighted must not go on to ResolveRoute and the single-model
+	// launch with the row's id-only Model.
+	if it, ok := m.models.SelectedItem().(*modelItem); ok && it.profile != nil {
+		if it.blocked != "" {
+			m.status = it.blocked
+			m.phase = phaseModel
+			return m, nil
+		}
+		return m.beginSlotLaunch(it)
+	}
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.models is the single source of truth.
 	highlighted, ok := m.models.SelectedItem().(*modelItem)
@@ -1119,7 +1211,9 @@ func (m model) launchSelected() (model, tea.Cmd) {
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	var errs []string
 	if err := rotation.New().RecordFor(m.agent, m.launchModel.ID); err != nil {
-		errs = append(errs, "rotation state not saved: "+err.Error())
+		// RecordFor's error names the file that failed (rotation.state, or
+		// last-picked.state, a write of its own).
+		errs = append(errs, err.Error())
 	}
 	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil {
 		errs = append(errs, "refcount state not saved: "+err.Error())
@@ -1266,8 +1360,12 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // this session makes; cmd/wt's main.go builds it as a closure over the
 // already-loaded profiles.toml state (mirrors the non-TUI path's
 // applyProfileForLaunch).
-func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier) error {
-	p := tea.NewProgram(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), tea.WithAltScreen())
+// slots carries the slot profiles: the picker shows a row for each one that
+// names this agent, and a profile launch applies slots.Apply in place of
+// applyProfile.
+func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles) error {
+	initial := withSlotProfiles(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), slots)
+	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
@@ -1309,6 +1407,9 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 		}
 		pendingRouteNotes += fm.routing.settle()
 	}
+	if fm, ok := final.(model); ok {
+		settleQuitSlot(fm, w)
+	}
 	flushRouteNotes(w)
 	// A start that was still running when wt quit (ctrl+c twice on the start
 	// screen) never reported, so what the engine had printed is still in its
@@ -1326,10 +1427,15 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	// or config.yaml rewritten and the proxy never restarted. The quit while
 	// a cancel drains is not waited for: that ctrl+c is the way out of a
 	// teardown that hangs.
+	//
+	// The start of a profile's local model was told a restart is owed. The
+	// quit that is waited for settles it after the wait (settleQuitSlotStart);
+	// the one that is not was settled above (settleQuitSlot).
 	if fm, ok := final.(model); ok && fm.start != nil && fm.start.out != nil {
 		fm.start.out.release(w)
 		if fm.start.quitting {
 			settleQuitStart(fm.start.ch, w)
+			settleQuitSlotStart(fm)
 		}
 	}
 }
@@ -1373,6 +1479,19 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 	summary := pendingSummary
 	pendingSurveyState = pendingSurvey{}
 	pendingSummary = ""
+
+	if launched.profile {
+		// A slot-profile session. The refcount lines are released, then the
+		// stop picker runs as after any non-native launch; it is not
+		// filtered to the profile. No survey and no price notice: the
+		// profile is not one priced registry model.
+		releaseSession()
+		runStopPhase(cfg)
+		if summary != "" {
+			fmt.Println("\n" + summary)
+		}
+		return
+	}
 
 	var stats string
 	if launched.agent != "" {

@@ -10,7 +10,9 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // launchDoneMsg is emitted after the agent subprocess exits.
@@ -66,6 +68,8 @@ func flushRouteNotes(w io.Writer) {
 type pendingSurvey struct {
 	agent string
 	m     config.Model
+	// profile marks a slot-profile session: no survey and no price notice.
+	profile bool
 }
 
 // pendingSurveyState is populated by runAndWaitCmd next to pendingSummary.
@@ -93,6 +97,34 @@ type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model) (cleanup f
 // runAndWaitCmd treats that as a no-op, matching the non-TUI path's own
 // graceful-degradation posture for a missing/disabled profiles.toml.
 var profileApplier ProfileApplier
+
+// SlotProfileApplier applies a slot profile's args and wrapper to cmd. It
+// fails closed: an error aborts the launch. cmd/wt hands in applySlotProfile.
+// It is a second closure beside ProfileApplier for the same reason that one
+// exists: this package cannot import cmd/wt.
+type SlotProfileApplier func(cmd *exec.Cmd, agent string, row catalog.Row) (cleanup func() error, err error)
+
+// SlotProfiles is what Run needs for slot profiles: the statically validated
+// profiles (the picker builds their rows) and the applier of a profile launch.
+type SlotProfiles struct {
+	Checks []profiles.SlotCheck
+	Apply  SlotProfileApplier
+}
+
+// slotApplier is set by Run from SlotProfiles.Apply. nil means no applier:
+// a profile launch then aborts with "no slot-profile applier". It is never a
+// no-op, unlike a nil profileApplier: a slot profile that cannot be fully
+// applied must not launch.
+var slotApplier SlotProfileApplier
+
+// withSlotProfiles is how Run's slot argument reaches the TUI: the checks go
+// on the model, the applier into its seam. It is split out of Run so a test
+// can pin it without a real tea.Program.
+func withSlotProfiles(m model, s SlotProfiles) model {
+	slotApplier = s.Apply
+	m.slotChecks = s.Checks
+	return m
+}
 
 // launchAgent builds the command for agent/model in worktreePath, appending
 // any passthrough args unchanged, and queues the pre-launch notes about the
