@@ -36,6 +36,18 @@ records = 6
 unresolved = 0
 attribution = "Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks, CC BY 4.0"
 
+[alignment.arena_agent]
+slope = 103.59921841274206
+intercept = 41.88951209043778
+shared = 3
+typical_miss = 1.0978083098775118
+
+[alignment.eci]
+slope = 1.0793397112615362
+intercept = -123.82658665394834
+shared = 3
+typical_miss = 1.056222524320934
+
 [[models]]
 provider_id = "ollama"
 model_name = "glm-5.3:cloud"
@@ -49,6 +61,12 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 1048576
+aligned_score = 44.3
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
 notes = []
 
 [models.votes]
@@ -80,6 +98,11 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 1048576
+aligned_score = 43.5
+aligned_sources = [
+    "arena_agent",
+    "eci",
+]
 notes = []
 
 [models.votes]
@@ -107,6 +130,12 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 1048576
+aligned_score = 44.3
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
 notes = []
 
 [models.votes]
@@ -137,6 +166,10 @@ confidence = "low"
 basis = "inherited"
 open_weights = true
 tool_call = true
+aligned_score = 33.7
+aligned_sources = [
+    "intelligence_index",
+]
 notes = [
     "local build: served context unknown; context gate skipped",
 ]
@@ -164,6 +197,11 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 512000
+aligned_score = 34.7
+aligned_sources = [
+    "arena_agent",
+    "eci",
+]
 notes = [
     "host row has no canonical id; matched by name",
 ]
@@ -230,6 +268,12 @@ confidence = "high"
 open_weights = false
 tool_call = true
 context = 1000000
+aligned_score = 57.0
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
 notes = [
     "context is the largest among the key's models.dev rows",
 ]
@@ -257,6 +301,12 @@ confidence = "high"
 open_weights = false
 tool_call = true
 context = 1000000
+aligned_score = 50.6
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
 notes = [
     "context is the largest among the key's models.dev rows",
 ]

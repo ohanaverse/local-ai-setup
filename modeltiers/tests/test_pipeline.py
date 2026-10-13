@@ -442,3 +442,61 @@ def test_a_sentinel_may_name_an_alias_declared_key(
     assert candidate.verdict.notes == (
         "key has no models.dev rows; tool-calling and context gates skipped",
     )
+
+
+# --- the aligned score ----------------------------------------------------------
+
+
+def test_every_other_signal_is_fitted_over_the_keys_it_shares_with_the_index(
+    assignment: Assignment,
+) -> None:
+    fits = assignment.alignment.fits
+    # GLM-5.3, Opus 5.5 and Fable 5 have all three scores; no other key has
+    # the index and another signal.
+    assert [(fit.signal, fit.shared) for fit in fits.values()] == [("arena_agent", 3), ("eci", 3)]
+    assert fits["eci"].slope == pytest.approx(1.0793, abs=1e-4)
+    assert fits["eci"].typical_miss == pytest.approx(1.056, abs=1e-3)
+    assert assignment.alignment.refused == {}
+
+
+def test_a_model_is_aligned_on_the_scores_its_key_has(assignment: Assignment) -> None:
+    by_name = {m.identity.row.model_name: m.aligned for m in assignment.models}
+    glm = by_name["glm-5.3:cloud"]
+    assert glm is not None
+    assert (glm.score, glm.sources) == (44.3, ("intelligence_index", "arena_agent", "eci"))
+    # Two rows of one key have one score.
+    assert by_name["z-ai/glm-5.3"] == glm
+    # No index of its own: the two translated scores alone.
+    deepseek = by_name["deepseek-v4-pro:cloud"]
+    assert deepseek is not None
+    assert (deepseek.score, deepseek.sources) == (43.5, ("arena_agent", "eci"))
+    # A local build takes its key's score, here the index alone.
+    local = by_name["qwen3.8:27b-mlx"]
+    assert local is not None
+    assert (local.score, local.sources) == (33.7, ("intelligence_index",))
+    # An ignored row and a key nothing scored have none.
+    assert by_name["nomic-embed-text:latest"] is None
+    assert by_name["gemma4:31b-mlx"] is None
+    assert [(c.canonical, c.aligned.score) for c in assignment.candidates if c.aligned] == [
+        ("anthropic/claude-opus-5-5", 57.0),
+        ("anthropic/claude-fable-5", 50.6),
+    ]
+
+
+def test_the_aligned_score_changes_no_tier(
+    inventory: Inventory, sources: Sources, fixture_aliases: Aliases, rule: Contracts
+) -> None:
+    identity = pipeline.resolve_all(inventory, sources, fixture_aliases)
+    fitted = pipeline.assign_all(identity, rule, min_shared=3)
+    unfitted = pipeline.assign_all(identity, rule)  # the default minimum: nothing is fitted
+    assert unfitted.alignment.fits == {}
+    assert list(unfitted.alignment.refused) == ["arena_agent", "eci"]
+    assert _tiers(fitted) == _tiers(unfitted)
+    assert [c.verdict for c in fitted.candidates] == [c.verdict for c in unfitted.candidates]
+    assert fitted.sentinels == unfitted.sentinels
+    # With no line, only a model's own index is left.
+    scores = {m.identity.row.model_name: m.aligned for m in unfitted.models}
+    assert scores["deepseek-v4-pro:cloud"] is None
+    glm = scores["glm-5.3:cloud"]
+    assert glm is not None
+    assert (glm.score, glm.sources) == (44.8, ("intelligence_index",))

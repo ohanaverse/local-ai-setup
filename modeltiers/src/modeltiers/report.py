@@ -65,6 +65,24 @@ def unresolved_lines(assignment: Assignment) -> list[str]:
     return lines
 
 
+def alignment_lines(assignment: Assignment) -> list[str]:
+    """One line per signal fitted to the intelligence index: how many models
+    the line rests on and how far it typically misses."""
+    return [
+        f"alignment: {fit.signal} on {fit.shared} shared models, "
+        f"typical miss {fit.typical_miss:.1f} points"
+        for fit in assignment.alignment.fits.values()
+    ]
+
+
+def alignment_warnings(assignment: Assignment) -> list[str]:
+    """One line per signal that models have and no line was fitted for."""
+    return [
+        f"alignment: {signal} is in no aligned score: {reason}"
+        for signal, reason in assignment.alignment.refused.items()
+    ]
+
+
 def sentinel_lines(assignment: Assignment) -> list[str]:
     """One line when every sentinel holds. Otherwise every sentinel: its
     scores, its votes, its pinned values and what differs."""

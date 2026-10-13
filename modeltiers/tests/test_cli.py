@@ -1,9 +1,11 @@
+import tomllib
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import FIXTURES, SAMPLE, T0, scaled_openrouter, without_timestamps
+from conftest import ALIGN_MIN, FIXTURES, SAMPLE, T0, scaled_openrouter, without_timestamps
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch, snapshots
@@ -85,6 +87,8 @@ def first_report(out: Path, last: str) -> str:
     return (
         HEAD
         + "sentinels: 4 of 4 hold\n"
+        + "alignment: arena_agent on 3 shared models, typical miss 1.1 points\n"
+        + "alignment: eci on 3 shared models, typical miss 1.1 points\n"
         + f"changes: no existing file at {out}; the full table follows\n"
         + TABLE
         + "candidates: 2 (list them with --candidates)\n"
@@ -115,6 +119,7 @@ def _deps(
         specs=specs,
         aliases_path=aliases_path,
         contracts_path=contracts_path,
+        align_min=ALIGN_MIN,
     )
     return deps, fetcher
 
@@ -132,6 +137,33 @@ def test_run_writes_the_contract_sample_and_reports(
     assert captured.err == MTPLX_WARNING
     assert without_timestamps(out.read_text()) == without_timestamps(SAMPLE.read_text())
     assert [p.name for p in out.parent.iterdir()] == ["tiers.toml"]
+
+
+def test_a_signal_too_few_models_share_is_warned_about_and_left_out(
+    specs: SourceSpecs, good_answers: Answers, out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deps = replace(_deps(specs, good_answers)[0], align_min=4)  # the fixtures share three
+    assert cli.main(RUN, deps=deps) == 0
+    captured = capsys.readouterr()
+    assert captured.err == (
+        MTPLX_WARNING
+        + "warning: alignment: arena_agent is in no aligned score: 3 models have both it and "
+        "intelligence_index, under the minimum of 4\n"
+        + "warning: alignment: eci is in no aligned score: 3 models have both it and "
+        "intelligence_index, under the minimum of 4\n"
+    )
+    assert "alignment:" not in captured.out
+    written = tomllib.loads(out.read_text())
+    assert "alignment" not in written
+    # A model with an index keeps it as its score; one without has none.
+    by_name = {m["model_name"]: m for m in written["models"]}
+    assert by_name["glm-5.3:cloud"]["aligned_score"] == 44.8
+    assert by_name["glm-5.3:cloud"]["aligned_sources"] == ["intelligence_index"]
+    assert "aligned_score" not in by_name["deepseek-v4-pro:cloud"]
+    # The tiers are the ones a fitted run gives.
+    assert [m["tier"] for m in written["models"]] == [
+        m["tier"] for m in tomllib.loads(SAMPLE.read_text())["models"]
+    ]
 
 
 def test_dry_run_prints_the_same_report_and_writes_nothing(
@@ -174,6 +206,8 @@ def test_a_second_run_reports_against_the_existing_file(
     report = capsys.readouterr().out
     assert report.endswith(
         "sentinels: 4 of 4 hold\n"
+        "alignment: arena_agent on 3 shared models, typical miss 1.1 points\n"
+        "alignment: eci on 3 shared models, typical miss 1.1 points\n"
         "changes since 2026-10-12T15:58:00Z:\n" + NO_CHANGES + ATTRIBUTION + f"wrote {out}\n"
     )
     assert 'generated_at = "2026-10-19T15:58:00Z"' in out.read_text()

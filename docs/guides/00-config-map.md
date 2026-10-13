@@ -85,6 +85,12 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 1048576
+aligned_score = 44.3
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
 notes = []
 
 [models.votes]
