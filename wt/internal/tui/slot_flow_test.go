@@ -674,6 +674,9 @@ var omlxTarget = lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", Mode
 func TestStartProfileRowStartsItsLocalModelThenLaunches(t *testing.T) {
 	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 	starting, stub := mixedStarting(t, true)
+	// The start wrote the local model's row, so the check after it finds the
+	// row in place and changes nothing.
+	stub.ensureOwed = false
 	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) {
 		return func() error { return nil }, nil
 	})
@@ -693,8 +696,8 @@ func TestStartProfileRowStartsItsLocalModelThenLaunches(t *testing.T) {
 	}
 	launching, launch := updateMsg(settling, slotStageFrom(t, cmd)())
 
-	if got, want := stub.got(), "ensure:openrouter/a:owed=false,probe,build"; got != want {
-		t.Fatalf("events = %q, want %q (no restart of the flow's own, no second route write)", got, want)
+	if got, want := stub.got(), "ensure:openrouter/a:owed=false,ensure:omlx/qwen3.8:owed=false,wait,probe,build"; got != want {
+		t.Fatalf("events = %q, want %q (the started model's route checked, and no restart of the flow's own)", got, want)
 	}
 	if launching.slot != nil || launch == nil {
 		t.Fatal("the flow did not end in a run command")
@@ -706,6 +709,65 @@ func TestStartProfileRowStartsItsLocalModelThenLaunches(t *testing.T) {
 	if counts["openrouter/a"] != 1 || counts["omlx/qwen3.8"] != 1 {
 		t.Errorf("refcounts = %v, want one line per distinct slot model, the local one included", counts)
 	}
+}
+
+// TestStartedProfileModelRouteIsCheckedBeforeTheLaunch pins the failure
+// table's route row for a profile whose local model had to start. The start's
+// route hook never fails the start: a route it could not write (config.yaml
+// missing, a rejected row) is only printed. So the stage after the start
+// checks the route as the first stage checks a running model's. A route that
+// cannot be written aborts naming the slot, with no command built and nothing
+// recorded; without the check Claude Code launches and that slot answers
+// "Invalid model name". A check that had to write the row costs the one
+// restart that publishes it.
+func TestStartedProfileModelRouteIsCheckedBeforeTheLaunch(t *testing.T) {
+	afterStart := func(t *testing.T, arrange func(*slotStub)) (model, tea.Cmd, *slotStub) {
+		t.Helper()
+		stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+		starting, stub := mixedStarting(t, false)
+		stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) {
+			return func() error { return nil }, nil
+		})
+		arrange(stub)
+		settling, cmd := updateMsg(starting, recvStart(t, starting))
+		if settling.phase != phaseSlot || settling.slot == nil {
+			t.Fatalf("phase = %v slot = %v, want the stage after the start", settling.phase, settling.slot)
+		}
+		next, after := updateMsg(settling, slotStageFrom(t, cmd)())
+		return next, after, stub
+	}
+
+	t.Run("a route that cannot be written aborts", func(t *testing.T) {
+		back, after, stub := afterStart(t, func(s *slotStub) {
+			s.ensureErr = &lifecycle.RouteEnsureError{ModelID: "omlx/qwen3.8", Err: errors.New("LiteLLM config not found")}
+		})
+		if back.phase != phaseModel || back.slot != nil {
+			t.Fatalf("phase = %v slot = %v, want the picker with the flow ended", back.phase, back.slot)
+		}
+		if want := "slot haiku: LiteLLM route for omlx/qwen3.8 not written: LiteLLM config not found"; back.status != want {
+			t.Errorf("status = %q, want %q", back.status, want)
+		}
+		if got, want := stub.got(), "ensure:openrouter/a:owed=false,ensure:omlx/qwen3.8:owed=false,wait"; got != want {
+			t.Errorf("events = %q, want %q (no probe, no build)", got, want)
+		}
+		if after == nil {
+			t.Fatal("no command: the picker must re-probe after an aborted launch")
+		}
+		if _, ok := after().(tableRefreshedMsg); !ok {
+			t.Error("the command after an abort is not the table refresh")
+		}
+		assertNothingRecorded(t)
+	})
+
+	t.Run("a route the check had to write is published by one restart", func(t *testing.T) {
+		launching, launch, stub := afterStart(t, func(s *slotStub) { s.ensureOwed = true })
+		if got, want := stub.got(), "ensure:openrouter/a:owed=false,ensure:omlx/qwen3.8:owed=false,restart,wait,probe,build"; got != want {
+			t.Errorf("events = %q, want %q", got, want)
+		}
+		if launching.slot != nil || launch == nil {
+			t.Fatal("the flow did not end in a run command")
+		}
+	})
 }
 
 // TestProfileStartRefusedKeepsTheOwedRestart pins the replace dialog for a

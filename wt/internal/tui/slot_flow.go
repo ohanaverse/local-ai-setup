@@ -72,7 +72,7 @@ type slotPreparedMsg struct { // steps 1-3 done, and 5-7 for a launch row
 	id  int
 	res slotResult
 }
-type slotSettledMsg struct { // step 7 done after a start
+type slotSettledMsg struct { // steps 5-7 done after a start
 	id  int
 	res slotResult
 }
@@ -104,20 +104,16 @@ func slotRouteError(p *catalog.ProfileRow, err error) error {
 }
 
 // prepareSlot is the first stage: steps 1 to 3 of the launch flow and, for a
-// row that needs no start, steps 5 to 7. It runs in a command; nothing in it
-// touches the model.
+// row that needs no start, steps 5 to 7 (finishSlotRoutes). It runs in a
+// command; nothing in it touches the model.
 //
 //  1. Re-resolve the profile against a fresh probe.
 //  2. Refuse a passthrough flag that would replace the slot mapping.
 //  3. Write the cloud slots' missing routes, restart deferred.
-//  5. Write the local model's route when it is already running.
-//  6. Restart the proxy once if a write changed config.yaml.
-//  7. Wait for any proxy restart in flight, then probe the proxy.
 //
 // A start row stops after step 3: the start that follows writes the local
 // route and restarts the proxy itself, and is told a restart is owed.
 func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []string, check profiles.SlotCheck) slotResult {
-	ctx := context.Background()
 	buf := &bytes.Buffer{}
 	inv := d.inventory(cfg)
 	row := catalog.ResolveSlotProfile(cfg, &inv, check)
@@ -130,25 +126,42 @@ func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []strin
 		res.err = err
 		return res
 	}
-	p := row.Profile
-	routeFailed := func(err error) slotResult {
-		// The ensure settled what was owed with an asynchronous restart,
-		// which prints its warnings into buf until the wait returns.
-		d.wait()
-		res.owed, res.err, res.notes = false, slotRouteError(p, err), buf.String()
-		return res
-	}
-	owed, err := d.ensure(ctx, buf, cfg, p.Cloud(), false)
+	owed, err := d.ensure(context.Background(), buf, cfg, row.Profile.Cloud(), false)
 	if err != nil {
-		return routeFailed(err)
+		return slotRouteFailed(d, res, buf, err)
 	}
 	if row.Action() == catalog.ActionStart {
 		res.owed, res.notes = owed, buf.String()
 		return res
 	}
-	if p.Local != nil {
+	return finishSlotRoutes(d, cfg, res, buf, owed)
+}
+
+// slotRouteFailed ends a stage whose route write failed: the error names the
+// slot, and nothing is owed. The ensure settled what was owed with an
+// asynchronous restart, which prints its warnings into buf until the wait
+// returns.
+func slotRouteFailed(d slotDeps, res slotResult, buf *bytes.Buffer, err error) slotResult {
+	d.wait()
+	res.owed, res.err, res.notes = false, slotRouteError(res.row.Profile, err), buf.String()
+	return res
+}
+
+// finishSlotRoutes is steps 5 to 7 for res.row, whose local model (if it has
+// one) is running: the tail of the first stage for a launch row, and the
+// whole stage after a start (settleSlotAfterStart).
+//
+//  5. Write the local model's route when it has none.
+//  6. Restart the proxy once if a write changed config.yaml.
+//  7. Wait for any proxy restart in flight, then probe the proxy.
+//
+// owed says an earlier write of this launch changed config.yaml.
+func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *bytes.Buffer, owed bool) slotResult {
+	ctx := context.Background()
+	if p := res.row.Profile; p.Local != nil {
+		var err error
 		if owed, err = d.ensure(ctx, buf, cfg, []config.Model{p.Local.Model}, owed); err != nil {
-			return routeFailed(err)
+			return slotRouteFailed(d, res, buf, err)
 		}
 	}
 	res.notes = buf.String()
@@ -199,7 +212,7 @@ func (m model) beginSlotLaunch(it *modelItem) (model, tea.Cmd) {
 	if it == nil || it.profile == nil {
 		return m, nil
 	}
-	d := slotDeps{inventory: runInventory, ensure: ensureSlotRoutes, restart: restartProxyNow, probe: probeProxyNow, wait: waitPendingRoutes}
+	d := currentSlotDeps()
 	cfg, agent, extraArgs, check := m.cfg, m.agent, m.extraArgs, it.profile.Check
 	// Any table refresh still in flight predates this launch.
 	m.refreshGen++
@@ -208,16 +221,26 @@ func (m model) beginSlotLaunch(it *modelItem) (model, tea.Cmd) {
 		func(id int, res slotResult) tea.Msg { return slotPreparedMsg{id: id, res: res} })
 }
 
-// settleSlotAfterStart is the stage after the profile's local model started.
-// The start wrote the model's route and restarted the proxy, which published
-// the cloud routes too, so nothing is owed; what is left is step 7, the probe.
+// currentSlotDeps reads the seams a stage uses. It is called on the update
+// goroutine.
+func currentSlotDeps() slotDeps {
+	return slotDeps{inventory: runInventory, ensure: ensureSlotRoutes, restart: restartProxyNow, probe: probeProxyNow, wait: waitPendingRoutes}
+}
+
+// settleSlotAfterStart is the stage after the profile's local model started:
+// steps 5 to 7 (finishSlotRoutes). The start restarted the proxy, which
+// published the cloud routes too, so nothing is owed going in. Its route hook
+// never fails the start, though: a route it could not write is only printed.
+// So the model's route is checked here as a running model's is, and a failure
+// aborts the launch. A row the start wrote compares equal, changes nothing and
+// costs no restart.
 func (m model) settleSlotAfterStart() (model, tea.Cmd) {
-	probe, cfg := probeProxyNow, m.cfg
+	d, cfg := currentSlotDeps(), m.cfg
 	st := *m.slot
 	st.owed = false
 	row := st.row
 	return m.runSlotStage(st,
-		func() slotResult { return slotResult{row: row, err: probe(context.Background(), cfg)} },
+		func() slotResult { return finishSlotRoutes(d, cfg, slotResult{row: row}, &bytes.Buffer{}, false) },
 		func(id int, res slotResult) tea.Msg { return slotSettledMsg{id: id, res: res} })
 }
 

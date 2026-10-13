@@ -125,7 +125,8 @@ func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool
 	case row.Action() == catalog.ActionStart:
 		// Step 4: start the local model. The start writes its route and
 		// restarts the proxy itself; told a restart is owed, that one restart
-		// publishes the cloud routes too.
+		// publishes the cloud routes too. A Ctrl+C that lost to the start
+		// comes back as an error, so no agent runs after it.
 		still, serr := startSlotModel(cfg, *p.Local, allowReplace, owed)
 		if serr != nil {
 			if still {
@@ -136,7 +137,14 @@ func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool
 			}
 			return asStartError(serr)
 		}
-		owed = false
+		// The start's route hook never fails the start: a route it could not
+		// write is only printed. So the model's route is checked here as step
+		// 5 checks a running model's, and a failure aborts. A row the start
+		// wrote compares equal, changes nothing and owes no restart.
+		owed, err = ensureSlotRoutes(ctx, nil, cfg, []config.Model{p.Local.Model}, false)
+		if err != nil {
+			return slotRouteError(p, err)
+		}
 	case p.Local != nil:
 		// Step 5: a local model that was already running gets its route.
 		owed, err = ensureSlotRoutes(ctx, nil, cfg, []config.Model{p.Local.Model}, owed)

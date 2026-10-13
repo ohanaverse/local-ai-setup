@@ -212,8 +212,11 @@ and nothing is recorded.
 1. Check the profile again against fresh state.
 2. Refuse passthrough arguments that would replace the slot mapping.
 3. Write the LiteLLM route of each cloud slot model that has none.
-4. Start the local model if it is not running.
-5. Write the local model's route if it was already running.
+4. Start the local model if it is not running. The start writes the model's
+   route and restarts the proxy.
+5. Write the local model's route if it has none: for a model that was already
+   running, and as a check after a start, whose own route write is not allowed
+   to fail the start.
 6. Restart the proxy once, if a route was written and no start restarted it.
 7. Wait for any proxy restart still in flight, then check that the proxy
    answers. The check refuses the launch if the most recent restart wt
@@ -412,6 +415,7 @@ without the profile.
 | `--settings` or `--model` after `--` | `a slot profile sets --model itself: remove it from the arguments after --` |
 | A route cannot be written, or `config.yaml` is missing | `slot <s>: LiteLLM route for <id> not written: <cause>` |
 | The local model's start is refused or fails | The start's own error |
+| Ctrl+C with `-M profile/<name>`, too late to stop the local model's start | `started <id>; launch cancelled`. The model stays running; Claude Code does not start |
 | The proxy restart fails or times out | The restart's error. Routes already written stay for the next attempt |
 | The most recent proxy restart failed | `the last LiteLLM proxy restart failed, so routes written since may not be live: <cause>`. The launch is refused until a later restart succeeds or a new wt process starts |
 | The proxy does not answer | `the LiteLLM proxy does not answer at <url>: <cause>` |

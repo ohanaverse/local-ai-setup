@@ -522,6 +522,57 @@ type settleCall struct {
 	ctxErr error
 }
 
+// TestCtrlCThatLostToTheStartCancelsOnlyTheLaunch pins what a Ctrl+C does when
+// it arrives too late to stop the start: at the routing stage, or as the load
+// finished. The engine returns nil then, and the settle drops cancellation on
+// purpose, so nothing but the signal context remembers the key. A slot-profile
+// launch (startForLaunchOwed) must end with "started <id>; launch cancelled",
+// the TUI's wording for the same key, after the settle ran: otherwise Claude
+// Code starts, and the launch is recorded, after the user cancelled.
+// startForLaunch is also `wt start`'s and `wt smoke`'s driver, where a model
+// that started is the success the command reports, so it still returns nil.
+func TestCtrlCThatLostToTheStartCancelsOnlyTheLaunch(t *testing.T) {
+	arrange := func(t *testing.T) *[]string {
+		t.Helper()
+		cancel := stubSignals(t)
+		old := lifecycleStart
+		lifecycleStart = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
+			cancel() // the Ctrl+C that lost
+			return nil
+		}
+		t.Cleanup(func() { lifecycleStart = old })
+		var mu sync.Mutex
+		log := &[]string{}
+		_, release, _ := stubSettleStart(t, log, &mu, nil)
+		release()
+		return log
+	}
+
+	t.Run("a slot-profile launch is cancelled", func(t *testing.T) {
+		log := arrange(t)
+		still, err := startForLaunchOwed(&config.Config{}, startTestRow(), false, true)
+		if err == nil || err.Error() != "started omlx/qwen3.8; launch cancelled" {
+			t.Fatalf("err = %v, want \"started omlx/qwen3.8; launch cancelled\"", err)
+		}
+		if still {
+			t.Error("stillOwed = true, want false: the engine made the one restart")
+		}
+		if len(*log) != 1 {
+			t.Errorf("settle calls = %v, want one: the started model's route and proxy restart are still settled", *log)
+		}
+	})
+
+	t.Run("wt start's driver still reports the start", func(t *testing.T) {
+		log := arrange(t)
+		if err := startForLaunch(&config.Config{}, startTestRow(), false); err != nil {
+			t.Fatalf("startForLaunch() error = %v, want nil: the model is running", err)
+		}
+		if len(*log) != 1 {
+			t.Errorf("settle calls = %v, want one", *log)
+		}
+	})
+}
+
 // TestStartForLaunchSettlesTheStartBeforeReturning pins the ordering the
 // agent launch depends on: the LiteLLM proxy restart the route hook kicks off
 // runs asynchronously, and startForLaunch's caller hands the model straight to

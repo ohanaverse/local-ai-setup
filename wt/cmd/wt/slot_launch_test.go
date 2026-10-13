@@ -177,12 +177,17 @@ type slotSeams struct {
 	events     []string
 	ensureOwed bool // what ensureSlotRoutes reports as owed when it adds nothing to owedIn
 	ensureErr  error
-	startStill bool
-	startErr   error
-	restartErr error
-	probeErr   error
-	buildErr   error
-	cmd        *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
+	// startedOwed and startedErr script the ensure made after the start stub
+	// ran: the check of the started local model's route.
+	startedOwed bool
+	startedErr  error
+	started     bool
+	startStill  bool
+	startErr    error
+	restartErr  error
+	probeErr    error
+	buildErr    error
+	cmd         *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
 }
 
 // log is the recorded events joined with ";".
@@ -204,6 +209,12 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 			ids[i] = m.ID
 		}
 		s.events = append(s.events, "ensure:"+strings.Join(ids, ","))
+		if s.started {
+			if s.startedErr != nil {
+				return false, s.startedErr
+			}
+			return owedIn || s.startedOwed, nil
+		}
 		if s.ensureErr != nil {
 			return false, s.ensureErr
 		}
@@ -220,6 +231,7 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 	settleRoutesNow = func(context.Context, *config.Config) { s.events = append(s.events, "settle") }
 	startSlotModel = func(_ *config.Config, row catalog.Row, _ bool, owed bool) (bool, error) {
 		s.events = append(s.events, fmt.Sprintf("start:%s:owed=%t", row.Model.ID, owed))
+		s.started = true
 		return s.startStill, s.startErr
 	}
 	buildSlotCmd = func(_ profiles.SlotLaunch, worktreePath string, _ bool, _ *config.Config, _ []string) (*exec.Cmd, error) {
@@ -527,19 +539,23 @@ func TestLaunchSlotProfileSteps(t *testing.T) {
 		running    bool // the local model is already running
 		ensureOwed bool // a route write changed config.yaml
 		want       string
+		// startedOwed: the route check after the start had to write the row.
+		startedOwed bool
 	}{
 		{"all cloud, every route exists", slotCloud(), false, false,
-			"ensure:openrouter/a,openrouter/b;wait;probe;build"},
+			"ensure:openrouter/a,openrouter/b;wait;probe;build", false},
 		{"all cloud, a route was missing", slotCloud(), false, true,
-			"ensure:openrouter/a,openrouter/b;restart;wait;probe;build"},
+			"ensure:openrouter/a,openrouter/b;restart;wait;probe;build", false},
 		{"idle local model, a cloud route was missing", slotMixed(), false, true,
-			"ensure:openrouter/a;start:omlx/q:owed=true;wait;probe;build"},
+			"ensure:openrouter/a;start:omlx/q:owed=true;ensure:omlx/q;wait;probe;build", false},
 		{"idle local model, routes in place", slotMixed(), false, false,
-			"ensure:openrouter/a;start:omlx/q:owed=false;wait;probe;build"},
+			"ensure:openrouter/a;start:omlx/q:owed=false;ensure:omlx/q;wait;probe;build", false},
+		{"idle local model, the start left its route unwritten", slotMixed(), false, false,
+			"ensure:openrouter/a;start:omlx/q:owed=false;ensure:omlx/q;restart;wait;probe;build", true},
 		{"running local model, routes in place", slotMixed(), true, false,
-			"ensure:openrouter/a;ensure:omlx/q;wait;probe;build"},
+			"ensure:openrouter/a;ensure:omlx/q;wait;probe;build", false},
 		{"running local model, a route was missing", slotMixed(), true, true,
-			"ensure:openrouter/a;ensure:omlx/q;restart;wait;probe;build"},
+			"ensure:openrouter/a;ensure:omlx/q;restart;wait;probe;build", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -548,7 +564,7 @@ func TestLaunchSlotProfileSteps(t *testing.T) {
 				stubProbeInventory(t, runningQ())
 			}
 			seams := stubSlotSeams(t)
-			seams.ensureOwed = tc.ensureOwed
+			seams.ensureOwed, seams.startedOwed = tc.ensureOwed, tc.startedOwed
 			sentinel := filepath.Join(t.TempDir(), "agent-ran")
 			seams.cmd = exec.Command("touch", sentinel)
 			stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", tc.slots))
@@ -703,6 +719,18 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 			seams:  func(s *slotSeams) { s.startErr = errors.New("failed to start omlx/q: server exited") },
 			want:   "failed to start omlx/q",
 			steps:  "ensure:openrouter/a;start:omlx/q:owed=false"},
+		{name: "Ctrl+C lost to the local model's start",
+			checks: one(mixed()),
+			seams:  func(s *slotSeams) { s.startErr = errors.New("started omlx/q; launch cancelled") },
+			want:   "started omlx/q; launch cancelled",
+			steps:  "ensure:openrouter/a;start:omlx/q:owed=false"},
+		{name: "the started local model's route cannot be written",
+			checks: one(mixed()),
+			seams: func(s *slotSeams) {
+				s.startedErr = &lifecycle.RouteEnsureError{ModelID: "omlx/q", Err: litellm.ErrMissing}
+			},
+			want:  "slot haiku: LiteLLM route for omlx/q not written: LiteLLM config not found",
+			steps: "ensure:openrouter/a;start:omlx/q:owed=false;ensure:omlx/q"},
 		{name: "the proxy restart fails",
 			checks: one(cloud()),
 			seams: func(s *slotSeams) {
