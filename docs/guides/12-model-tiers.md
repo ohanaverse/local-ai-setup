@@ -165,7 +165,7 @@ with the attribution lines of the sources whose data they print.
   `F`, or `-` when models.dev has no row for the key or the row is ignored), `context`, the
   scores `intel`, `arena`, `eci`, `coding` and `agentic`, then `aligned` and
   `src` (below). A `-` is a value the file does not have. The table is then
-  about 165 columns wide.
+  wider than most terminal windows: widen yours, or use the page.
 - **`--sort COLUMN`** orders the rows by `tier`, `model`, `context`,
   `intelligence_index`, `arena_agent`, `eci`, `coding_index`,
   `agentic_index` or `aligned`. `model` is alphabetical; every other column puts the
@@ -192,7 +192,8 @@ different sources scored. `aligned` is the one column that does:
   fit: `alignment: <signal> on N shared models, typical miss M points`.
 - A model's aligned score is the plain average of its own intelligence index
   and of each of its other voting scores put through its line. It is in
-  intelligence-index points.
+  intelligence-index points. A line's answer is never lower than the lowest
+  index any model has in that run, nor higher than the highest.
 - `src` is how many scores it rests on, from 1 to 3. `explain` prints the
   parts: `arena_agent <score> as <index points>`.
 
@@ -205,9 +206,20 @@ Read it with three cautions:
 - **It decides nothing.** No tier, gate or sentinel reads it, and the lines
   are fitted again on every run, so a score can move a little when nothing
   about the model changed.
+- **A local build has its hosted model's score.** No source scores your
+  quantized copy. Like its tier, its aligned score is the one the model's key
+  has, and `explain` says `basis inherited`.
+- **The bottom of the scale is flat.** The weakest models all come out near
+  the lowest index of the run, because the lines are not read below it.
 
-A signal that fewer than 20 models share with the intelligence index is not
-fitted: `run` prints a `warning:` and that signal is in no aligned score.
+A signal is left out of every aligned score when the run cannot fit it, and
+`run` says so on stderr: `warning: alignment: <signal> is in no aligned
+score: <why>`. The reasons: fewer than 20 models have both it and the
+intelligence index; those models do not vary in one of the two; no finite
+line fits them; or the line does not slope up, which means the source ranks
+the shared models against the index. None of these needs an action from you
+and none changes a tier. Models with their own index keep it as their score;
+a model that source alone scored has none until a later run fits it.
 
 Illustrative example from the test fixtures: what `explain` prints for one
 fixture row, before its attribution lines.

@@ -116,13 +116,16 @@ def _sources(assignment: Assignment, sources: Sources) -> Document:
 
 def _alignment(assignment: Assignment) -> Document:
     """One table per fitted signal: the line that turns its score into index
-    points, so a reader of the file alone can work an aligned score out again."""
+    points and the bounds its answer is held within, so a reader of the file
+    alone can work an aligned score out again."""
     return {
         signal: {
             "slope": fit.slope,
             "intercept": fit.intercept,
             "shared": fit.shared,
             "typical_miss": fit.typical_miss,
+            "floor": fit.floor,
+            "ceiling": fit.ceiling,
         }
         for signal, fit in assignment.alignment.fits.items()
     }

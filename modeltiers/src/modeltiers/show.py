@@ -96,6 +96,15 @@ def score(entry: Mapping[str, Any], name: str) -> float | None:
     return number(scores.get(name)) if isinstance(scores, dict) else None
 
 
+def aligned_count(entry: Mapping[str, Any]) -> int | None:
+    """How many scores an entry's aligned score rests on: None without a
+    score, and for anything but a list of signal names beside it."""
+    sources = entry.get("aligned_sources")
+    if number(entry.get("aligned_score")) is None or not isinstance(sources, list):
+        return None
+    return len(sources) if all(isinstance(name, str) for name in sources) else None
+
+
 def ordered(
     found: list[Mapping[str, Any]], column: str | None, name: Callable[[Mapping[str, Any]], str]
 ) -> list[Mapping[str, Any]]:
@@ -135,11 +144,15 @@ def _wide_cells(entry: Mapping[str, Any]) -> str:
     opened = entry.get("open_weights")
     flag = "T" if opened is True else "F" if opened is False else "-"
     context = number(entry.get("context"))
-    values = (*(score(entry, name) for name in SCORE_COLUMNS), number(entry.get("aligned_score")))
+    values = (score(entry, name) for name in SCORE_COLUMNS)
     scores = "  ".join(f"{'-' if v is None else short(v):>8}" for v in values)
-    sources = entry.get("aligned_sources")
-    count = len(sources) if isinstance(sources, list) else "-"
-    return f"{flag:<4}  {'-' if context is None else int(context):>8}  {scores}  {count:>3}  "
+    aligned = number(entry.get("aligned_score"))
+    count = aligned_count(entry)
+    return (
+        f"{flag:<4}  {'-' if context is None else int(context):>8}  {scores}  "
+        f"{'-' if aligned is None else format(aligned, '.1f'):>8}  "
+        f"{'-' if count is None else count:>3}  "
+    )
 
 
 def _row(entry: Mapping[str, Any], name: str, width: int, canonical: str | None, wide: bool) -> str:
@@ -212,20 +225,21 @@ def _pairs(table: Mapping[str, Any]) -> str:
 
 def _aligned(entry: Mapping[str, Any], fits: Any) -> str:
     """The aligned score and what it is the mean of: the index as it is, and
-    each other score with the index points the file's line turns it into. A
-    source whose line the file does not give is named alone."""
+    each other score with the index points the file's line turns it into,
+    held within the line's bounds. A source whose line the file does not give
+    is named alone."""
     found = number(entry.get("aligned_score"))
     if found is None:
         return "none"
     sources = entry.get("aligned_sources")
     if not isinstance(sources, list):
-        return short(found)
+        return f"{found:.1f}"
     parts = []
     for name in sources:
         raw = score(entry, str(name))
-        fit = fits.get(name) if isinstance(fits, dict) and isinstance(name, str) else None
-        slope = number(fit.get("slope")) if isinstance(fit, dict) else None
-        intercept = number(fit.get("intercept")) if isinstance(fit, dict) else None
+        found_fit = fits.get(name) if isinstance(fits, dict) and isinstance(name, str) else None
+        fit: Mapping[str, Any] = found_fit if isinstance(found_fit, dict) else {}
+        slope, intercept = number(fit.get("slope")), number(fit.get("intercept"))
         if raw is None:
             parts.append(str(name))
         elif name == ANCHOR:
@@ -233,8 +247,12 @@ def _aligned(entry: Mapping[str, Any], fits: Any) -> str:
         elif slope is None or intercept is None:
             parts.append(str(name))
         else:
-            parts.append(f"{name} {short(raw)} as {slope * raw + intercept:.1f}")
-    return f"{short(found)} ({'; '.join(parts)})"
+            floor, ceiling = number(fit.get("floor")), number(fit.get("ceiling"))
+            points = slope * raw + intercept
+            points = points if floor is None else max(points, floor)
+            points = points if ceiling is None else min(points, ceiling)
+            parts.append(f"{name} {short(raw)} as {points:.1f}")
+    return f"{found:.1f} ({'; '.join(parts)})"
 
 
 def _entry_lines(title: str, entry: Mapping[str, Any], fits: Any = None) -> list[str]:

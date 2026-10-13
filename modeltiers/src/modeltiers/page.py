@@ -44,9 +44,8 @@ def _row(kind: str, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
         "context": None if context is None else int(context),
     }
     row.update({column: show.score(entry, column) for column in SCORE_COLUMNS})
-    sources = entry.get("aligned_sources")
     row["aligned_score"] = show.number(entry.get("aligned_score"))
-    row["aligned_sources"] = len(sources) if isinstance(sources, list) else None
+    row["aligned_sources"] = show.aligned_count(entry)
     return row
 
 
@@ -81,8 +80,8 @@ def _alignment_note(doc: Document) -> str:
             misses.append(f"{miss:.1f} points ({signal})")
     if not misses:
         return (
-            "No signal could be fitted for this file, so aligned is the "
-            "intelligence index alone and a model without one has none."
+            "This file holds no fitted line: an aligned score in it is a model's own "
+            "intelligence index, and a file written before the score existed has none."
         )
     return (
         f"The lines fitted for this file typically miss by {' and '.join(misses)}; "

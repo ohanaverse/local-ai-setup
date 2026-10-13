@@ -152,7 +152,7 @@ def test_explain_a_candidate_by_its_key_in_any_case(document: dict[str, Any]) ->
         "  votes:       intelligence_index deep, arena_agent deep, eci deep",
         "  scores:      intelligence_index 57.6, arena_agent 0.1433, "
         "arena_agent_ci_lower 0.1215, eci 167.33",
-        "  aligned:     57 (intelligence_index 57.6; arena_agent 0.1433 as 56.7; eci 167.33 as 56.8)",
+        "  aligned:     57.0 (intelligence_index 57.6; arena_agent 0.1433 as 56.7; eci 167.33 as 56.8)",
         "  efforts:     arena_agent high",
         "  tool_call:   true",
         "  context:     1000000",
@@ -462,7 +462,7 @@ def test_the_wide_table_adds_open_weights_context_and_the_scores(
     # A candidate row has the same columns before its key.
     assert lines[-2] == (
         "M  marathon  high    F      1000000      57.6    0.1433    167.33"
-        "         -         -        57    3  anthropic/claude-opus-5-5"
+        "         -         -      57.0    3  anthropic/claude-opus-5-5"
     )
     assert len(lines) == len(show.table_lines(document, candidates=True))
 
@@ -501,7 +501,7 @@ def test_the_wide_table_ends_its_scores_with_the_aligned_score_and_its_source_co
     assert glm[10:12] == ["44.3", "3"]
     assert deepseek[10:12] == ["43.5", "2"]
     assert lines[6].split()[10:12] == ["-", "-"]  # the ignored row
-    assert lines[-2].split()[10:12] == ["57", "3"]  # Opus 5.5, a candidate
+    assert lines[-2].split()[10:12] == ["57.0", "3"]  # Opus 5.5: one decimal, as written
 
 
 def test_an_aligned_score_of_the_wrong_type_is_a_dash_and_sorts_last() -> None:
@@ -514,7 +514,21 @@ def test_an_aligned_score_of_the_wrong_type_is_a_dash_and_sorts_last() -> None:
     }
     lines = show.table_lines(doc, sort="aligned", wide=True)
     assert [line.split()[-2] for line in lines[1:4]] == ["p/odd", "p/bare", "p/text"]
-    assert [line.split()[10:12] for line in lines[1:4]] == [["50", "-"], ["40", "-"], ["-", "-"]]
+    # A count is shown only beside a score, and only for a list of names.
+    assert [line.split()[10:12] for line in lines[1:4]] == [
+        ["50.0", "-"],
+        ["40.0", "-"],
+        ["-", "-"],
+    ]
+    doc["models"][0]["aligned_sources"] = ["eci", "arena_agent"]  # no score beside it
+    doc["models"][1]["aligned_sources"] = ["eci", 7]
+    doc["models"][2]["aligned_sources"] = ["eci", "arena_agent"]
+    lines = show.table_lines(doc, sort="aligned", wide=True)
+    assert [line.split()[10:12] for line in lines[1:4]] == [
+        ["50.0", "2"],
+        ["40.0", "-"],
+        ["-", "-"],
+    ]
 
 
 def test_explain_says_what_the_aligned_score_is_made_of(document: dict[str, Any]) -> None:
@@ -554,3 +568,37 @@ def test_explain_without_the_files_fits_names_the_sources_alone(
     lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
     assert lines is not None
     assert "  aligned:     44.3" in lines
+
+
+def test_candidates_are_sorted_by_their_aligned_scores_too() -> None:
+    doc = {
+        "candidates": [
+            {"canonical": "v/low", "aligned_score": 20.0, "aligned_sources": ["eci"]},
+            {"canonical": "v/none"},
+            {"canonical": "v/high", "aligned_score": 50.0, "aligned_sources": ["eci"]},
+        ]
+    }
+    lines = show.table_lines(doc, candidates=True, sort="aligned")
+    assert [line.split()[-1] for line in lines[-3:]] == ["v/high", "v/low", "v/none"]
+
+
+def test_explain_holds_a_translated_score_inside_the_files_bounds(
+    document: dict[str, Any],
+) -> None:
+    doc = copy.deepcopy(document)
+    doc["alignment"]["eci"].update(floor=44.5, ceiling=50.0)
+    lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
+    assert lines is not None
+    # The line alone gives 44.1; the file says nothing under 44.5.
+    assert (
+        "  aligned:     44.3 (intelligence_index 44.8; arena_agent 0.0215 as 44.1; "
+        "eci 155.61 as 44.5)" in lines
+    )
+    opus = show.explain_lines(doc, "anthropic/claude-opus-5-5")
+    assert opus is not None
+    assert "eci 167.33 as 50.0)" in next(line for line in opus if "aligned:" in line)
+    # Bounds of another type are no bounds.
+    doc["alignment"]["eci"].update(floor="low", ceiling=True)
+    lines = show.explain_lines(doc, "ollama/glm-5.3:cloud")
+    assert lines is not None
+    assert "eci 155.61 as 44.1)" in next(line for line in lines if "aligned:" in line)

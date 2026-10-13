@@ -12,7 +12,8 @@ nothing: no tier, gate or sentinel reads it.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from statistics import fmean, linear_regression
+from math import isfinite
+from statistics import StatisticsError, fmean, linear_regression
 
 from modeltiers.contracts import SIGNALS
 
@@ -23,16 +24,23 @@ DECIMALS = 1  # the fit misses by whole points; more places would claim more
 
 @dataclass(frozen=True)
 class Fit:
-    """One signal's line: `ANCHOR` is about `slope * score + intercept`."""
+    """One signal's line: `ANCHOR` is about `slope * score + intercept`,
+    within the index values this run's models have."""
 
     signal: str
     slope: float
     intercept: float
     shared: int  # the models the line was fitted on
     typical_miss: float  # root mean square of what the line leaves, in index points
+    floor: float  # the lowest index any model of the run has
+    ceiling: float  # the highest
 
     def translate(self, score: float) -> float:
-        return self.slope * score + self.intercept
+        """The score in index points, never under `floor` or over `ceiling`.
+        The sources do not stay on one line at the ends of the scale, so a
+        line read far enough gives an index no model has: a weak model's
+        Epoch score comes out below zero."""
+        return min(max(self.slope * score + self.intercept, self.floor), self.ceiling)
 
 
 @dataclass(frozen=True)
@@ -53,9 +61,11 @@ class Aligned:
     parts: Mapping[str, float]  # signal -> its estimate in index points, unrounded
 
 
-def _fit(signal: str, pairs: list[tuple[float, float]], min_shared: int) -> Fit | str:
+def _fit(
+    signal: str, pairs: list[tuple[float, float]], min_shared: int, floor: float, ceiling: float
+) -> Fit | str:
     """The least-squares line over (signal score, anchor score) pairs, or why
-    there is none."""
+    there is none. `floor` and `ceiling` bound what the line may answer."""
     count = len(pairs)
     if count < min_shared:
         return f"{count} models have both it and {ANCHOR}, under the minimum of {min_shared}"
@@ -63,16 +73,26 @@ def _fit(signal: str, pairs: list[tuple[float, float]], min_shared: int) -> Fit 
     anchors = [anchor for _, anchor in pairs]
     if len(set(scores)) == 1 or len(set(anchors)) == 1:
         return f"the {count} shared models do not vary in it or in {ANCHOR}"
-    slope, intercept = linear_regression(scores, anchors)
+    unfit = f"no finite line fits the {count} shared models"
+    try:
+        slope, intercept = linear_regression(scores, anchors)
+        misses = [anchor - (slope * score + intercept) for score, anchor in pairs]
+        typical_miss = fmean(miss * miss for miss in misses) ** 0.5
+    except (StatisticsError, OverflowError):
+        # Scores that differ by less than the arithmetic can tell, or by more.
+        return unfit
+    if not (isfinite(slope) and isfinite(intercept) and isfinite(typical_miss)):
+        return unfit
     if slope <= 0:
         return f"it ranks the {count} shared models against {ANCHOR}"
-    misses = [anchor - (slope * score + intercept) for score, anchor in pairs]
     return Fit(
         signal=signal,
         slope=slope,
         intercept=intercept,
         shared=count,
-        typical_miss=fmean(miss * miss for miss in misses) ** 0.5,
+        typical_miss=typical_miss,
+        floor=floor,
+        ceiling=ceiling,
     )
 
 
@@ -84,6 +104,7 @@ def fit_all(
     neither fitted nor refused."""
     fits: dict[str, Fit] = {}
     refused: dict[str, str] = {}
+    every = [found[ANCHOR] for found in scores.values() if ANCHOR in found]
     for signal in SIGNALS:
         if signal == ANCHOR or not any(signal in found for found in scores.values()):
             continue
@@ -92,7 +113,8 @@ def fit_all(
             for found in scores.values()
             if signal in found and ANCHOR in found
         ]
-        result = _fit(signal, pairs, min_shared)
+        # With no index at all there are no pairs, and the fit is refused.
+        result = _fit(signal, pairs, min_shared, min(every, default=0.0), max(every, default=0.0))
         if isinstance(result, Fit):
             fits[signal] = result
         else:

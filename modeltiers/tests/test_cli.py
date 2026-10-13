@@ -441,6 +441,7 @@ def test_no_command_is_a_usage_error() -> None:
 
 def test_default_deps_are_the_real_seams() -> None:
     deps = cli.Deps()
+    assert deps.align_min == 20  # what a real run fits on, not the fixtures' three
     assert deps.fetcher is fetch.http_fetcher
     assert deps.specs.arena.name == "arena"
     assert deps.now().tzinfo is not None

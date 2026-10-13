@@ -25,7 +25,22 @@ def test_a_line_through_exact_points_is_found_and_misses_nothing() -> None:
     assert fit.intercept == pytest.approx(-50.0)
     assert fit.typical_miss == pytest.approx(0.0)
     assert fit.translate(150.0) == pytest.approx(25.0)
+    # The index values the run's models have: it answers with nothing outside them.
+    assert (fit.floor, fit.ceiling) == (10.0, 40.0)
     assert alignment.refused == {}
+
+
+def test_a_line_never_answers_outside_the_index_values_the_run_has() -> None:
+    """The sources do not stay on one line at the ends of the scale. Read far
+    enough, a line gives an index no model has."""
+    scores = _keys(intelligence_index=[10.0, 20.0, 30.0, 40.0], eci=[120.0, 140.0, 160.0, 180.0])
+    fit = align.fit_all(scores, min_shared=4).fits["eci"]
+    assert fit.translate(60.0) == 10.0  # the line alone says -20
+    assert fit.translate(120.0) == pytest.approx(10.0)
+    assert fit.translate(260.0) == 40.0  # the line alone says 80
+    weak = align.aligned({"intelligence_index": 4.0, "eci": 60.0}, Alignment({"eci": fit}, {}))
+    assert weak is not None
+    assert (weak.score, weak.parts) == (7.0, {"intelligence_index": 4.0, "eci": 10.0})
 
 
 def test_the_typical_miss_is_the_root_mean_square_of_what_the_line_leaves() -> None:
@@ -46,6 +61,8 @@ def test_only_keys_with_both_scores_are_fitted_on() -> None:
     fit = align.fit_all(scores, min_shared=3).fits["eci"]
     assert fit.shared == 3
     assert fit.slope == pytest.approx(0.5)
+    # The bounds are every model's index, shared with this signal or not.
+    assert (fit.floor, fit.ceiling) == (10.0, 50.0)
 
 
 def test_too_few_shared_keys_is_refused_with_the_count() -> None:
@@ -65,6 +82,28 @@ def test_a_source_that_ranks_the_other_way_is_refused() -> None:
     alignment = align.fit_all(scores, min_shared=4)
     assert alignment.fits == {}
     assert alignment.refused == {"eci": "it ranks the 4 shared models against intelligence_index"}
+
+
+def test_a_flat_line_is_refused_as_one_that_ranks_nothing() -> None:
+    # eci 0, 1, 2, 3 against index 1, 0, 0, 1: the least-squares slope is exactly 0.
+    scores = _keys(intelligence_index=[1.0, 0.0, 0.0, 1.0], eci=[0.0, 1.0, 2.0, 3.0])
+    alignment = align.fit_all(scores, min_shared=4)
+    assert alignment.fits == {}
+    assert alignment.refused == {"eci": "it ranks the 4 shared models against intelligence_index"}
+
+
+@pytest.mark.parametrize(
+    "eci",
+    [
+        [130.0, 140.0, 150.0, 1e308],  # the sums overflow: no finite line
+        [0.0, 0.0, 0.0, 5e-324],  # differs, and too little to fit on
+    ],
+)
+def test_scores_no_finite_line_fits_are_refused_and_not_a_traceback(eci: list[float]) -> None:
+    scores = _keys(intelligence_index=[10.0, 20.0, 30.0, 40.0], eci=eci)
+    alignment = align.fit_all(scores, min_shared=4)
+    assert alignment.fits == {}
+    assert alignment.refused == {"eci": "no finite line fits the 4 shared models"}
 
 
 @pytest.mark.parametrize(
@@ -102,8 +141,10 @@ def test_a_signal_no_key_has_is_neither_fitted_nor_refused() -> None:
 
 FITS = Alignment(
     fits={
-        "arena_agent": Fit("arena_agent", slope=100.0, intercept=40.0, shared=30, typical_miss=3.0),
-        "eci": Fit("eci", slope=0.5, intercept=-50.0, shared=90, typical_miss=4.0),
+        "arena_agent": Fit(
+            "arena_agent", 100.0, 40.0, shared=30, typical_miss=3.0, floor=5.0, ceiling=60.0
+        ),
+        "eci": Fit("eci", 0.5, -50.0, shared=90, typical_miss=4.0, floor=5.0, ceiling=60.0),
     },
     refused={},
 )
